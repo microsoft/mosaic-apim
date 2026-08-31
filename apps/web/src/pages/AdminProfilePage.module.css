@@ -1,0 +1,154 @@
+.page {
+  display: grid;
+  gap: 20px;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 20px;
+}
+
+.card {
+  padding: 24px;
+  gap: 18px;
+  border: 1px solid var(--mosaic-border);
+  background: var(--mosaic-surface);
+  box-shadow: var(--mosaic-shadow);
+}
+
+.identityHeader,
+.sectionHeader {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.avatar {
+  width: 56px;
+  height: 56px;
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--mosaic-primary-soft);
+  color: var(--mosaic-primary);
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.cardDescription,
+.helperText,
+.scope {
+  color: var(--mosaic-text-muted);
+}
+
+.cardDescription {
+  margin-top: 8px;
+  display: block;
+}
+
+.definitionList {
+  margin: 0;
+  display: grid;
+  gap: 12px;
+}
+
+.definitionRow {
+  padding: 12px 0;
+  display: grid;
+  grid-template-columns: minmax(0, 150px) minmax(0, 1fr);
+  gap: 12px;
+  border-bottom: 1px solid var(--mosaic-border-soft);
+}
+
+.definitionRow:last-child {
+  border-bottom: 0;
+}
+
+.definitionRow dt,
+.infoLabel {
+  color: var(--mosaic-text-muted);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.definitionRow dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--mosaic-text);
+  font-weight: 600;
+}
+
+.titleRow {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.sampleBadge {
+  color: var(--mosaic-warning) !important;
+  background: var(--mosaic-warning-soft) !important;
+  font-weight: 700;
+}
+
+.emphasis {
+  font-weight: 600;
+}
+
+.list,
+.timeline {
+  display: grid;
+  gap: 12px;
+}
+
+.listItem,
+.timelineItem {
+  padding: 14px 16px;
+  display: grid;
+  gap: 6px;
+  border: 1px solid var(--mosaic-border-soft);
+  border-radius: 8px;
+  background: var(--mosaic-surface-subtle);
+}
+
+.itemHeader {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.metadataGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+.metadataItem {
+  display: grid;
+  gap: 8px;
+}
+
+.actionRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+@media (max-width: 680px) {
+  .card {
+    padding: 20px;
+  }
+
+  .definitionRow,
+  .itemHeader {
+    grid-template-columns: 1fr;
+  }
+
+  .itemHeader {
+    display: grid;
+  }
+}

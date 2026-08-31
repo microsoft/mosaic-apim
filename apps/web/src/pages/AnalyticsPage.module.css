@@ -1,0 +1,316 @@
+.page {
+  min-width: 0;
+}
+
+.headerControls {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 12px;
+}
+
+.filterControl {
+  min-width: 180px;
+  display: grid;
+  gap: 4px;
+  color: var(--mosaic-text-muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.exportStatus {
+  margin-bottom: 18px;
+  color: var(--mosaic-text-muted);
+  font-size: 13px;
+}
+
+.kpiGrid {
+  margin-bottom: 18px;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.kpiCard {
+  min-height: 148px;
+  padding: 18px !important;
+  gap: 8px !important;
+  border: 1px solid var(--mosaic-border) !important;
+  background: var(--mosaic-surface) !important;
+  box-shadow: var(--mosaic-shadow) !important;
+}
+
+.kpiWarning {
+  border-color: var(--mosaic-warning) !important;
+}
+
+.kpiLabel {
+  color: var(--mosaic-text-muted);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.kpiValue {
+  color: var(--mosaic-text);
+  font-size: 30px;
+  font-weight: 650;
+  letter-spacing: -0.03em;
+}
+
+.kpiDetail {
+  color: var(--mosaic-primary);
+}
+
+.warningDetail {
+  color: var(--mosaic-warning);
+}
+
+.analyticsGrid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
+  gap: 16px;
+}
+
+.volumePanel {
+  min-height: 360px;
+}
+
+.groupsPanel,
+.errorsPanel,
+.integrationPanel,
+.latencyPanel {
+  overflow: hidden;
+}
+
+.chartArea {
+  position: relative;
+  height: 280px;
+  margin: 22px 24px 12px 34px;
+  border-left: 1px solid var(--mosaic-border-soft);
+  border-bottom: 1px solid var(--mosaic-border-soft);
+  overflow: hidden;
+}
+
+.chartGrid {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+}
+
+.chartGrid span {
+  width: 100%;
+  border-top: 1px dashed var(--mosaic-border-soft);
+}
+
+.lineChart {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.areaLine {
+  fill: var(--mosaic-primary-soft);
+  stroke: none;
+}
+
+.dataLine {
+  fill: none;
+  stroke: var(--mosaic-primary);
+  stroke-width: 2.3;
+  vector-effect: non-scaling-stroke;
+}
+
+.axisLabels,
+.chartSummary {
+  padding: 0 24px 18px;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.axisLabels {
+  color: var(--mosaic-text-muted);
+  font-size: 12px;
+}
+
+.chartSummary div {
+  display: grid;
+  gap: 3px;
+}
+
+.chartSummary span,
+.dialogContent span {
+  color: var(--mosaic-text-muted);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.tableWrap {
+  overflow-x: auto;
+}
+
+.metricBarCell {
+  min-width: 180px;
+  display: grid;
+  gap: 7px;
+}
+
+.progressTrack {
+  height: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--mosaic-surface-strong);
+}
+
+.progressTrack span {
+  height: 100%;
+  display: block;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--mosaic-primary), color-mix(in srgb, var(--mosaic-primary) 55%, white));
+}
+
+.endpointList {
+  padding: 16px;
+  display: grid;
+  gap: 14px;
+}
+
+.endpointRow {
+  padding: 14px;
+  display: grid;
+  gap: 10px;
+  border: 1px solid var(--mosaic-border-soft);
+  border-radius: 8px;
+  background: var(--mosaic-surface);
+}
+
+.endpointHeader,
+.endpointMetrics,
+.integrationHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.endpointHeader > div:first-child {
+  display: grid;
+  gap: 4px;
+}
+
+.endpointMetrics {
+  color: var(--mosaic-text-muted);
+  font-size: 13px;
+}
+
+.severityPill,
+.integrationBadge {
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.severityCritical {
+  background: var(--mosaic-danger-soft);
+  color: var(--mosaic-danger);
+}
+
+.severityWarning,
+.integrationDelayed {
+  background: var(--mosaic-warning-soft);
+  color: var(--mosaic-warning);
+}
+
+.severityInfo,
+.integrationPlanned {
+  background: var(--mosaic-primary-soft);
+  color: var(--mosaic-primary);
+}
+
+.integrationHealthy {
+  background: var(--mosaic-success-soft);
+  color: var(--mosaic-success);
+}
+
+.errorMessage {
+  display: grid;
+  gap: 2px;
+}
+
+.errorMessage span,
+.mutedText {
+  color: var(--mosaic-text-muted);
+}
+
+.integrationList {
+  padding: 16px;
+  display: grid;
+  gap: 12px;
+}
+
+.integrationCard {
+  padding: 14px;
+  display: grid;
+  gap: 8px;
+  border: 1px solid var(--mosaic-border-soft);
+  border-radius: 8px;
+  background: var(--mosaic-surface-subtle);
+}
+
+.emptyState {
+  padding: 18px 0;
+  text-align: center;
+}
+
+.dialogContent {
+  display: grid;
+  gap: 14px;
+}
+
+.dialogContent div {
+  display: grid;
+  gap: 4px;
+}
+
+@media (max-width: 1160px) {
+  .kpiGrid,
+  .analyticsGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .volumePanel {
+    grid-column: span 2;
+  }
+}
+
+@media (max-width: 760px) {
+  .headerControls,
+  .chartSummary,
+  .endpointHeader,
+  .endpointMetrics,
+  .integrationHeader {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .kpiGrid,
+  .analyticsGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .volumePanel {
+    grid-column: auto;
+  }
+
+  .axisLabels {
+    flex-wrap: wrap;
+  }
+}
