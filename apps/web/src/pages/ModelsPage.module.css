@@ -265,3 +265,159 @@
     flex-direction: column;
   }
 }
+
+/* Model endpoint onboarding */
+
+.suggestionCard,
+.listCard,
+.accessCard {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  padding: 1.25rem;
+}
+
+.suggestionRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+  padding-block: 0.5rem;
+  border-top: 1px solid var(--colorNeutralStroke2);
+}
+
+.suggestionRow:first-of-type {
+  border-top: none;
+}
+
+.suggestionText {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-width: 16rem;
+  flex: 1 1 20rem;
+}
+
+.suggestionHeading {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.scanIssue {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding-block: 0.5rem;
+  border-top: 1px solid var(--colorNeutralStroke2);
+}
+
+.scanIssue:first-of-type {
+  border-top: none;
+}
+
+.accessSection {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding-block: 0.75rem;
+  border-top: 1px solid var(--colorNeutralStroke2);
+}
+
+.accessSection:first-of-type {
+  border-top: none;
+}
+
+.runtimeRow {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.remediation {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  align-items: flex-start;
+}
+
+.commandBlock {
+  width: 100%;
+  margin: 0;
+  padding: 0.75rem;
+  border-radius: var(--borderRadiusMedium);
+  background: var(--colorNeutralBackground3);
+  font-family: var(--fontFamilyMonospace);
+  font-size: 0.8125rem;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.cellStack {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+}
+
+.rowButton {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--colorBrandForegroundLink);
+  font: inherit;
+  font-weight: var(--fontWeightSemibold);
+  text-align: left;
+  cursor: pointer;
+}
+
+.rowButton:hover,
+.rowButton:focus-visible {
+  text-decoration: underline;
+}
+
+.selectedRow :global(td) {
+  background: var(--colorNeutralBackground1Selected);
+}
+
+.inlineActions {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.dialogForm {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.muted {
+  color: var(--colorNeutralForeground3);
+}
+
+.footnote {
+  color: var(--colorNeutralForeground3);
+}
+
+.connectedBadge {
+  background: var(--colorStatusSuccessBackground1);
+  color: var(--colorStatusSuccessForeground1);
+}
+
+.attentionBadge {
+  background: var(--colorStatusDangerBackground1);
+  color: var(--colorStatusDangerForeground1);
+}
+
+.degradedBadge {
+  background: var(--colorStatusWarningBackground1);
+  color: var(--colorStatusWarningForeground1);
+}
+
+.pendingBadge {
+  background: var(--colorNeutralBackground3);
+  color: var(--colorNeutralForeground2);
+}
+

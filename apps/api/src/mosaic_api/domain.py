@@ -13,18 +13,52 @@ APIM_API_VERSION = "2024-05-01"
 # never the gateway sync that administrators depend on.
 APIM_MCP_API_VERSION = "2025-09-01-preview"
 AUTHORIZATION_API_VERSION = "2022-04-01"
+SUBSCRIPTIONS_API_VERSION = "2022-12-01"
+COGNITIVE_SERVICES_API_VERSION = "2024-10-01"
 APIM_PROVIDER_NAMESPACE = "Microsoft.ApiManagement"
 APIM_RESOURCE_TYPE = "service"
+COGNITIVE_SERVICES_PROVIDER_NAMESPACE = "Microsoft.CognitiveServices"
+COGNITIVE_SERVICES_RESOURCE_TYPE = "accounts"
 APIM_READER_ROLE_NAME = "API Management Service Reader Role"
 APIM_READER_ROLE_ID = "71522526-b88f-4d52-b57f-d31fc3546d0d"
 APIM_CONTRIBUTOR_ROLE_NAME = "API Management Service Contributor"
 APIM_CONTRIBUTOR_ROLE_ID = "312a565d-c81f-4fd8-895a-4e21e48d571c"
+
+# MOSAIC enumerates model deployments with the built-in Reader role. Every "Cognitive Services *"
+# and "Foundry *" role that grants control-plane deployment read also carries data-plane
+# ``dataActions`` (usually ``Microsoft.CognitiveServices/*``, i.e. full inference) and frequently
+# ``accounts/listkeys/action``. Reader is the only built-in that grants
+# ``Microsoft.CognitiveServices/accounts/deployments/read`` with no data actions, no key access, and
+# no write. It also grants ``Microsoft.Authorization/roleAssignments/read``, which is what verifying
+# a gateway's runtime access requires, so one assignment covers both jobs.
+READER_ROLE_NAME = "Reader"
+READER_ROLE_ID = "acdd72a7-3385-48ef-bd42-f606fba81ae7"
+
+# Runtime roles are reported for the gateway's managed identity and never granted by MOSAIC. They
+# are keyed by role definition ID rather than name: the Foundry roles were renamed in 2026
+# ("Azure AI User" became "Foundry User") and Microsoft advises binding to the GUID while the
+# rename rolls out. The GUIDs are unchanged by the rename.
+AZURE_OPENAI_USER_ROLE_NAME = "Cognitive Services OpenAI User"
+AZURE_OPENAI_USER_ROLE_ID = "5e0bd9bd-7b93-4f28-af87-19fc36ad61bd"
+COGNITIVE_SERVICES_USER_ROLE_NAME = "Cognitive Services User"
+COGNITIVE_SERVICES_USER_ROLE_ID = "a97b65f3-24c7-4388-baec-2e87135dc908"
+FOUNDRY_USER_ROLE_NAME = "Foundry User"
+FOUNDRY_USER_ROLE_ID = "53ca6127-db72-4b80-b1b0-d745d6d5456d"
 
 _APIM_RESOURCE_ID_PATTERN = re.compile(
     r"^/subscriptions/(?P<subscription>[0-9a-fA-F-]{36})"
     r"/resourceGroups/(?P<resourceGroup>[^/]{1,90})"
     r"/providers/Microsoft\.ApiManagement/service"
     r"/(?P<serviceName>[^/]{1,50})$",
+    re.IGNORECASE,
+)
+
+_COGNITIVE_SERVICES_RESOURCE_ID_PATTERN = re.compile(
+    r"^/subscriptions/(?P<subscription>[0-9a-fA-F-]{36})"
+    r"/resourceGroups/(?P<resourceGroup>[^/]{1,90})"
+    r"/providers/Microsoft\.CognitiveServices/accounts"
+    r"/(?P<accountName>[^/]{1,64})"
+    r"(?:/projects/(?P<projectName>[^/]{1,64}))?$",
     re.IGNORECASE,
 )
 
@@ -74,6 +108,62 @@ class ApimResourceId(BaseModel):
             f"/resourceGroups/{self.resource_group}"
             f"/providers/{APIM_PROVIDER_NAMESPACE}/{APIM_RESOURCE_TYPE}/{self.service_name}"
         )
+
+    @property
+    def dedupe_key(self) -> str:
+        return self.canonical.casefold()
+
+
+class CognitiveServicesResourceId(BaseModel):
+    """An Azure AI resource ID, optionally naming a Foundry project.
+
+    Deployments are never children of a project: ``accounts/{account}/projects/{project}`` exposes
+    only descriptive properties, and models are enumerated at the parent account. ``account_scope``
+    therefore resolves upward, while ``canonical`` preserves whatever the administrator registered.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    subscription_id: str
+    resource_group: str
+    account_name: str
+    project_name: str | None = None
+
+    @classmethod
+    def parse(cls, value: str) -> "CognitiveServicesResourceId":
+        candidate = value.strip().rstrip("/")
+        if not candidate.startswith("/"):
+            candidate = f"/{candidate}"
+        match = _COGNITIVE_SERVICES_RESOURCE_ID_PATTERN.match(candidate)
+        if not match:
+            raise ValueError(
+                "Expected an Azure AI resource ID of the form /subscriptions/{subscriptionId}"
+                "/resourceGroups/{resourceGroup}/providers/Microsoft.CognitiveServices/accounts"
+                "/{accountName}, optionally followed by /projects/{projectName}"
+            )
+        return cls(
+            subscription_id=match.group("subscription").lower(),
+            resource_group=match.group("resourceGroup"),
+            account_name=match.group("accountName"),
+            project_name=match.group("projectName"),
+        )
+
+    @property
+    def account_scope(self) -> str:
+        """The account that owns the deployments, regardless of whether a project was registered."""
+
+        return (
+            f"/subscriptions/{self.subscription_id}"
+            f"/resourceGroups/{self.resource_group}"
+            f"/providers/{COGNITIVE_SERVICES_PROVIDER_NAMESPACE}"
+            f"/{COGNITIVE_SERVICES_RESOURCE_TYPE}/{self.account_name}"
+        )
+
+    @property
+    def canonical(self) -> str:
+        if self.project_name:
+            return f"{self.account_scope}/projects/{self.project_name}"
+        return self.account_scope
 
     @property
     def dedupe_key(self) -> str:
@@ -158,6 +248,13 @@ class AccessRemediation(MosaicModel):
     scope: str
     principal_id: str | None = None
     command: str
+    custom_role_definition: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "A narrower custom role an operator may create instead of the built-in role. It is "
+            "offered, never created: MOSAIC cannot define roles any more than it can assign them."
+        ),
+    )
 
 
 class GatewayAccess(MosaicModel):
@@ -197,6 +294,21 @@ class GatewayCapabilities(MosaicModel):
     management_api_version: str = APIM_API_VERSION
     ai_gateway_policies: CapabilitySupport = CapabilitySupport.UNKNOWN
     mcp_servers: CapabilitySupport = CapabilitySupport.UNKNOWN
+    principal_id: str | None = Field(
+        default=None,
+        description=(
+            "Object ID of the gateway's managed identity. This is the principal that must hold a "
+            "data-plane role on a model endpoint for the gateway to call it at runtime."
+        ),
+    )
+    identity_observed: bool = Field(
+        default=False,
+        description=(
+            "Whether MOSAIC has actually read this gateway's identity block. A missing "
+            "``principal_id`` on a gateway that was never observed means 'not known yet', not "
+            "'has no identity', and the two must not be reported the same way."
+        ),
+    )
     notes: list[str] = Field(default_factory=list)
 
 
@@ -256,12 +368,122 @@ class GatewaySyncRun(Entity):
     actor_object_id: str | None = None
 
 
-class FoundryConnection(Entity):
-    entity_type: Literal["foundryConnection"] = "foundryConnection"
+class ModelProvider(StrEnum):
+    AZURE_OPENAI = "azureOpenAi"
+    AZURE_AI_FOUNDRY = "azureAiFoundry"
+    OPENAI_COMPATIBLE = "openAiCompatible"
+
+
+class EndpointAuthMode(StrEnum):
+    MANAGED_IDENTITY = "managedIdentity"
+    API_KEY = "apiKey"
+
+
+class ModelEndpointStatus(StrEnum):
+    PENDING = "pending"
+    CONNECTED = "connected"
+    DEGRADED = "degraded"
+    UNAUTHORIZED = "unauthorized"
+    UNREACHABLE = "unreachable"
+
+
+class RuntimeAccessEvaluation(StrEnum):
+    ROLE_ASSIGNMENTS = "roleAssignments"
+    NO_GATEWAY_IDENTITY = "noGatewayIdentity"
+    NOT_APPLICABLE = "notApplicable"
+    NOT_EVALUATED = "notEvaluated"
+
+
+class EndpointAccess(MosaicModel):
+    """Whether MOSAIC's own identity can enumerate models on an endpoint."""
+
+    can_read: bool = False
+    evaluation: AccessEvaluation = AccessEvaluation.NOT_EVALUATED
+    checked_at: datetime | None = None
+    missing_actions: list[str] = Field(default_factory=list)
+    remediation: AccessRemediation | None = None
+    message: str | None = None
+
+
+class GatewayRuntimeAccess(MosaicModel):
+    """Whether one registered gateway's managed identity can call this endpoint at runtime.
+
+    This is a different question from :class:`EndpointAccess`, asked of a different principal
+    against a different plane. MOSAIC reads role assignments to answer it and never grants one.
+    """
+
+    gateway_id: str
+    gateway_name: str
+    apim_principal_id: str | None = None
+    can_invoke: bool = False
+    evaluation: RuntimeAccessEvaluation = RuntimeAccessEvaluation.NOT_EVALUATED
+    checked_at: datetime | None = None
+    required_role_name: str | None = None
+    required_role_definition_id: str | None = None
+    assignment_scope: str | None = None
+    inherited: bool = False
+    remediation: AccessRemediation | None = None
+    message: str | None = None
+
+
+class ModelEndpointCapabilities(MosaicModel):
+    kind: str | None = None
+    sku_name: str | None = None
+    location: str | None = None
+    provisioning_state: str | None = None
+    public_network_access: str | None = None
+    local_auth_disabled: bool | None = None
+    management_api_version: str = COGNITIVE_SERVICES_API_VERSION
+    notes: list[str] = Field(default_factory=list)
+
+
+class ModelInventorySummary(MosaicModel):
+    deployments: int = 0
+    available_models: int = 0
+    succeeded_deployments: int = 0
+    deprecated_deployments: int = 0
+
+
+class ModelEndpoint(Entity):
+    """A registered provider endpoint MOSAIC reads models from.
+
+    Azure endpoints are identified by resource ID and read with MOSAIC's managed identity.
+    OpenAI-compatible endpoints are identified by URL and read with a key MOSAIC resolves from Key
+    Vault at call time; only the secret URI is ever stored.
+    """
+
+    entity_type: Literal["modelEndpoint"] = "modelEndpoint"
     name: str
+    provider: ModelProvider
     endpoint: AnyHttpUrl
-    azure_resource_id: str
-    credential_reference_id: str
+    azure_resource_id: str | None = None
+    subscription_id: str | None = None
+    resource_group: str | None = None
+    account_name: str | None = None
+    project_name: str | None = None
+    environment_label: str | None = None
+    auth_mode: EndpointAuthMode = EndpointAuthMode.MANAGED_IDENTITY
+    credential_reference_id: str | None = None
+    status: ModelEndpointStatus = ModelEndpointStatus.PENDING
+    access: EndpointAccess = Field(default_factory=EndpointAccess)
+    runtime_access: list[GatewayRuntimeAccess] = Field(default_factory=list)
+    capabilities: ModelEndpointCapabilities = Field(default_factory=ModelEndpointCapabilities)
+    inventory: ModelInventorySummary = Field(default_factory=ModelInventorySummary)
+    last_synced_at: datetime | None = None
+    last_sync_error: str | None = None
+
+
+class ModelEndpointSyncRun(Entity):
+    entity_type: Literal["modelEndpointSyncRun"] = "modelEndpointSyncRun"
+    endpoint_id: str
+    status: GatewaySyncStatus = GatewaySyncStatus.RUNNING
+    started_at: datetime = Field(default_factory=utc_now)
+    completed_at: datetime | None = None
+    duration_ms: int | None = None
+    counts: ModelInventorySummary = Field(default_factory=ModelInventorySummary)
+    removed: int = 0
+    errors: list[str] = Field(default_factory=list)
+    actor_object_id: str | None = None
 
 
 class CatalogModel(Entity):
@@ -273,7 +495,7 @@ class CatalogModel(Entity):
 
 class ModelDeployment(Entity):
     entity_type: Literal["modelDeployment"] = "modelDeployment"
-    foundry_connection_id: str
+    model_endpoint_id: str
     catalog_model_id: str | None = None
     deployment_name: str
     endpoint: AnyHttpUrl
@@ -477,6 +699,13 @@ class GatewayUpdate(MosaicModel):
     environment_label: str | None = Field(default=None, max_length=60)
     management_mode: ManagementMode | None = None
 
+    @field_validator("name")
+    @classmethod
+    def name_cannot_be_null(cls, value: str | None) -> str:
+        if value is None:
+            raise ValueError("name cannot be null")
+        return value
+
 
 class GatewaySuggestion(MosaicModel):
     azure_resource_id: str
@@ -486,6 +715,106 @@ class GatewaySuggestion(MosaicModel):
     already_registered: bool
     gateway_id: str | None = None
     reason: str
+
+
+class ModelEndpointCreate(MosaicModel):
+    """Register an Azure endpoint by resource ID, or any other endpoint by URL.
+
+    ``credential_secret_uri`` is a Key Vault secret identifier, never a key. MOSAIC resolves it at
+    discovery time with the Key Vault Secrets User role it already holds, and stores only the URI.
+    """
+
+    azure_resource_id: str | None = Field(default=None, max_length=512)
+    endpoint: AnyHttpUrl | None = None
+    name: str | None = Field(default=None, max_length=120)
+    environment_label: str | None = Field(default=None, max_length=60)
+    provider: ModelProvider | None = None
+    credential_secret_uri: AnyHttpUrl | None = None
+
+    @field_validator("azure_resource_id")
+    @classmethod
+    def validate_resource_id(cls, value: str | None) -> str | None:
+        if value is None or not value.strip():
+            return None
+        return CognitiveServicesResourceId.parse(value).canonical
+
+    @model_validator(mode="after")
+    def validate_identification(self) -> Self:
+        if not self.azure_resource_id and not self.endpoint:
+            raise ValueError(
+                "Provide an Azure resource ID for an Azure AI endpoint, or a URL for an "
+                "OpenAI-compatible endpoint"
+            )
+        if not self.azure_resource_id:
+            if self.provider is None:
+                self.provider = ModelProvider.OPENAI_COMPATIBLE
+            if self.provider != ModelProvider.OPENAI_COMPATIBLE:
+                raise ValueError(
+                    "Azure OpenAI and Azure AI Foundry endpoints must be registered by resource ID "
+                    "so MOSAIC can read their deployments with its managed identity"
+                )
+            if self.credential_secret_uri is None:
+                raise ValueError(
+                    "An OpenAI-compatible endpoint needs a Key Vault secret URI holding its API key"
+                )
+        return self
+
+
+class ModelEndpointUpdate(MosaicModel):
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    environment_label: str | None = Field(default=None, max_length=60)
+    credential_secret_uri: AnyHttpUrl | None = None
+
+    @field_validator("name")
+    @classmethod
+    def name_cannot_be_null(cls, value: str | None) -> str:
+        # ``exclude_unset`` keeps an explicitly submitted null, which would then fail validation
+        # against the required field on the entity and surface as a 500 rather than a 4xx.
+        if value is None:
+            raise ValueError("name cannot be null")
+        return value
+
+
+class SuggestionSource(StrEnum):
+    BOOTSTRAP = "bootstrap"
+    GATEWAY_BACKEND = "gatewayBackend"
+    SUBSCRIPTION_SCAN = "subscriptionScan"
+
+
+class ModelEndpointSuggestion(MosaicModel):
+    """An endpoint MOSAIC believes is worth registering, and how it found it.
+
+    ``azure_resource_id`` is absent when a gateway routes to a hostname MOSAIC cannot resolve to a
+    resource; the hostname is still offered so an administrator can finish the identification.
+    """
+
+    source: SuggestionSource
+    endpoint: AnyHttpUrl | None = None
+    azure_resource_id: str | None = None
+    account_name: str | None = None
+    resource_group: str | None = None
+    subscription_id: str | None = None
+    kind: str | None = None
+    location: str | None = None
+    provider: ModelProvider | None = None
+    already_registered: bool = False
+    model_endpoint_id: str | None = None
+    reason: str
+
+
+class SubscriptionScanIssue(MosaicModel):
+    """One subscription MOSAIC could not enumerate, and what would fix it."""
+
+    subscription_id: str
+    display_name: str | None = None
+    message: str
+    remediation: AccessRemediation | None = None
+
+
+class ModelEndpointSuggestionView(MosaicModel):
+    suggestions: list[ModelEndpointSuggestion] = Field(default_factory=list)
+    scan_issues: list[SubscriptionScanIssue] = Field(default_factory=list)
+    subscriptions_scanned: int = 0
 
 
 class ImportRequest(MosaicModel):

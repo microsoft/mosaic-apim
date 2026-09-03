@@ -7,10 +7,11 @@ Management's AI gateway capabilities. It stores desired governance state, plans 
 should map to APIM, and presents telemetry from Azure Monitor. It does **not** proxy model traffic
 or replace APIM.
 
-This release adds gateway onboarding on top of the identity foundation: administrators register
+This release adds model endpoint onboarding on top of gateway onboarding: administrators register
 Entra principals and MOSAIC access groups, bring an existing API Management service under MOSAIC,
-and see its APIs, endpoints, products, subscriptions, and policies described in plain language —
-without ever reading policy XML or opening the Azure portal.
+register the Azure OpenAI and Azure AI Foundry endpoints it fronts, and see the models deployed on
+them — along with whether the gateway can actually call each one — without ever reading policy XML
+or opening the Azure portal.
 
 ## Architecture and trust boundaries
 
@@ -21,7 +22,8 @@ flowchart LR
     API -->|Managed identity| Cosmos[(Cosmos DB desired and observed state)]
     API -->|Secret URI only| KV[Key Vault]
     API -. read-only ARM .-> APIM[Registered API Management gateways]
-    APIM -->|Runtime model traffic| Foundry[Existing Foundry endpoints]
+    API -. read-only ARM .-> Foundry[Registered Azure AI model endpoints]
+    APIM -->|Runtime model traffic, gateway managed identity| Foundry
     APIM --> Monitor[Azure Monitor / App Insights / Log Analytics]
     API --> Monitor
     Web --> Monitor
@@ -33,7 +35,7 @@ flowchart LR
 | Runtime traffic and enforcement | APIM | Observe and explain now; plan and apply in later phases |
 | Identity objects and authentication | Microsoft Entra ID | Store object IDs only; validate tokens and `Admin` role |
 | Credentials | Key Vault | Store secret URIs only, never secret values |
-| Foundry deployments | Existing Azure AI/Foundry resources | Model a bring-your-own connection boundary |
+| Foundry deployments | Existing Azure AI/Foundry resources | Enumerate deployed models read-only; report, never grant, the gateway's runtime access |
 | Traffic/token telemetry | Azure Monitor stack | Emit application telemetry; query/chargeback is deferred |
 
 MOSAIC never silently substitutes in-memory data or local authentication in Azure. Both are
@@ -48,6 +50,10 @@ explicit local/test modes and application startup rejects them when `MOSAIC_ENVI
 - Multi-gateway onboarding: register any existing API Management service by resource ID, verify
   access, and mirror its APIs, endpoints, products, subscriptions, users, groups, backends, and
   named value metadata into Cosmos
+- Model endpoint onboarding: register Azure OpenAI and Azure AI Foundry resources, verify MOSAIC's
+  control-plane access, discover the deployments and available models on them, and report — per
+  registered gateway — whether that gateway's managed identity can actually call them
+- MCP servers already present in a registered gateway are detected and counted
 - Plain-language policy view: policy XML is parsed in memory and reduced to a digest plus redacted
   semantic facets, so administrators never see markup and MOSAIC never stores it
 - AI surface detection that identifies which APIs and backends front large language models, across
@@ -66,12 +72,11 @@ explicit local/test modes and application startup rejects them when `MOSAIC_ENVI
   Log Analytics, Application Insights, diagnostics, managed identities, and narrow RBAC
 - Idempotent Entra application/service-principal setup through `azd` hooks
 
-The Gateways workspace, the Identity workspace, gateway import on the Models and MCPs workspaces,
-and the deterministic policy preview use live API contracts. The Foundry connection and deployment
-sections of Models, entitlements, analytics, policy metadata, and other future operational
-experiences are interactive frontend previews labeled **Sample data** or **Local preview**. They
-never claim to mutate Azure, query Azure Monitor, or substitute sample data for a failed API
-request.
+The Gateways workspace, the Identity workspace, the Models and MCPs workspaces, and the
+deterministic policy preview use live API contracts. Entitlements, analytics, policy metadata, and
+other future operational experiences are interactive frontend previews labeled **Sample data** or
+**Local preview**. They never claim to mutate Azure, query Azure Monitor, or substitute sample data
+for a failed API request.
 
 ## Prerequisites
 
@@ -177,7 +182,9 @@ azd down --purge
 Every entity contains `tenantId`; this initial deployment is single-tenant but the data contract is
 not. The domain distinguishes:
 
-- `FoundryConnection`: connection to an existing provider/Foundry resource
+- `ModelEndpoint`: a registered Azure OpenAI, Azure AI Foundry, or OpenAI-compatible endpoint, its
+  verified control-plane access, and per-gateway runtime readiness
+- `ModelEndpointSyncRun`: the outcome of one model discovery run
 - `CatalogModel`: provider model identity/version
 - `ModelDeployment`: callable deployed endpoint
 - `Principal`, `Group`, `GroupMembership`
@@ -188,7 +195,6 @@ not. The domain distinguishes:
 - `Entitlement`: group-to-deployment grant plus token enforcement configuration
 - `CredentialReference`: Key Vault secret URI only
 - `PolicyRevision`, `SyncOperation`, `AuditEvent`
-
 Cosmos uses:
 
 | Container | Partition key | Purpose |
@@ -222,8 +228,13 @@ measured scale, not speculation.
 - Key Vault uses RBAC, soft delete, and purge protection.
 - Backend access is scoped to Cosmos data contributor, Key Vault Secrets User, APIM reader,
   Log Analytics Reader, and Monitoring Reader. It has no APIM policy-write role.
+- On model endpoints MOSAIC asks only for `Reader`. It deliberately holds no data-plane inference
+  right and no `listKeys` permission on any Azure AI resource, so it cannot call a model or read an
+  account key even where it can enumerate deployments.
 - MOSAIC never reads subscription keys or named value secret values, and never persists or renders
   policy XML. Policy documents are reduced to a digest plus redacted facets in memory.
+- Credentials for non-Azure endpoints are stored as Key Vault secret URIs only. MOSAIC resolves a
+  secret at call time and never persists, returns, or logs its value.
 - Frontend and backend pull from ACR through their managed identities.
 
 ## Gateways
@@ -286,6 +297,11 @@ had not.
 Record IDs are deterministic, so re-importing after a sync refreshes a record in place instead of
 duplicating it. Deleting a gateway deletes what was imported from it.
 
+MCP servers are detected too. API Management models an MCP server as an API with `type: mcp`, which
+is only visible from management API version `2025-09-01-preview`, so MOSAIC issues that one call
+separately from the stable version it pins everywhere else. A service tier or release channel
+without that version is not a fault: MCP visibility is reduced and the sync still succeeds.
+
 ### Policies without markup
 
 MOSAIC parses API Management policy XML in memory and keeps only a SHA-256 digest and redacted
@@ -305,6 +321,48 @@ When MOSAIC begins writing, it will author named `mosaic-*` policy fragments tha
 include, rather than rewriting whole policy documents. Fragments are inventoried now so that
 ownership boundary already exists.
 
+## Model endpoints
+
+A model endpoint is an Azure OpenAI or Azure AI Foundry resource that a gateway fronts.
+Administrators register one by resource ID, or accept a suggestion. MOSAIC then reads the
+deployments on it. It never calls a model, and it never changes the resource.
+
+Every endpoint has **two** access relationships, held by two different identities:
+
+| Relationship | Identity | Plane | What it enables |
+| --- | --- | --- | --- |
+| Onboarding | MOSAIC's managed identity | Control plane | Listing the deployed models |
+| Runtime | **The gateway's** managed identity | Data plane | Actually calling those models |
+
+They are reported separately, because an endpoint MOSAIC reads perfectly well can still be
+uncallable through a gateway.
+
+MOSAIC asks only for `Reader`:
+
+| Purpose | Role | Role definition ID |
+| --- | --- | --- |
+| MOSAIC enumerating models | Reader | `acdd72a7-3385-48ef-bd42-f606fba81ae7` |
+| Gateway calling an Azure OpenAI resource | Cognitive Services OpenAI User | `5e0bd9bd-7b93-4f28-af87-19fc36ad61bd` |
+| Gateway calling an AI Services resource | Cognitive Services User | `a97b65f3-24c7-4388-baec-2e87135dc908` |
+| Gateway calling a Foundry project | Foundry User | `53ca6127-db72-4b80-b1b0-d745d6d5456d` |
+
+Every role whose name begins `Cognitive Services` or `Foundry` that grants control-plane deployment
+read also grants data-plane inference, and most also grant `listKeys`. `Reader` is the only built-in
+that grants the read alone, and it additionally covers the role-assignment read the runtime check
+needs. MOSAIC also emits a narrower custom role definition for operators who want one; that role
+omits the role-assignment read, so runtime access then reports as *not evaluated* rather than
+guessing. The runtime roles are matched by GUID rather than name because Microsoft renamed the
+Foundry roles in 2026 (`Azure AI User` became `Foundry User`) without changing their IDs.
+
+MOSAIC finds endpoints three ways: a pasted resource ID, hosts it already observed as AI backends
+inside a registered gateway, and an enumeration of Azure AI accounts across visible subscriptions.
+The last needs `Reader` at subscription scope, which MOSAIC does not grant itself — a subscription
+it cannot read is reported with the command that would fix it and skipped, so one missing assignment
+never blanks the list.
+
+OpenAI-compatible endpoints are registered with a Key Vault secret identifier the operator created.
+MOSAIC stores the URI only; discovery for those endpoints is not implemented yet.
+
 ## Reconciliation boundary
 
 The API contains a deterministic policy preview using current documented policies:
@@ -323,10 +381,12 @@ not publish policies or report reconciliation success.
 
 1. **Foundation:** secure deployment, domain, directory CRUD, runtime configuration, observability
    wiring, typed APIM/Foundry/reconciliation boundaries.
-2. **Gateway onboarding (this release):** multi-gateway registry, access verification with guided
+2. **Gateway onboarding:** multi-gateway registry, access verification with guided
    remediation, full inventory synchronisation, AI surface detection, and plain-language policy.
 3. **Model onboarding (this release):** discover MCP servers, detect model-fronting APIs across
-   Azure and third-party providers, and import a chosen selection into MOSAIC's desired state.
+   Azure and third-party providers and import a chosen selection into desired state, and register
+   Azure OpenAI and Foundry endpoints to enumerate their deployed models and verify each gateway's
+   runtime access to them.
 4. **Entitlements and enrollment:** group grants, APIM products/subscriptions or identity access,
    MOSAIC-owned policy fragments, plan/apply/rollback, drift and failure UX.
 5. **Insights and chargeback:** Azure Monitor queries, token/traffic/cost allocation, budgets and

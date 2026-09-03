@@ -202,9 +202,9 @@ function AdminShell() {
             className="deploy-button"
             appearance="primary"
             icon={<AddRegular />}
-            onClick={() => navigate('/models?deploy=1')}
+            onClick={() => navigate('/models?register=1')}
           >
-            Deploy Model
+            Add model endpoint
           </Button>
           <Menu>
             <MenuTrigger disableButtonEnhancement>

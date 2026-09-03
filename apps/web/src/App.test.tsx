@@ -50,7 +50,7 @@ describe('App shell', () => {
     ]) {
       expect(screen.getByRole('link', { name: label })).toBeVisible()
     }
-    expect(screen.getByRole('button', { name: 'Deploy Model' })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Add model endpoint' })).toBeVisible()
     expect(screen.queryByText('AzureLite')).not.toBeInTheDocument()
   })
 })

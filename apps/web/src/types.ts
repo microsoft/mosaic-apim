@@ -114,6 +114,7 @@ export interface AccessRemediation {
   scope: string
   principalId?: string | null
   command: string
+  customRoleDefinition?: Record<string, unknown> | null
 }
 
 export interface GatewayAccess {
@@ -135,6 +136,8 @@ export interface GatewayCapabilities {
   managementApiVersion: string
   aiGatewayPolicies: CapabilitySupport
   mcpServers: CapabilitySupport
+  principalId?: string | null
+  identityObserved: boolean
   notes: string[]
 }
 
@@ -431,4 +434,168 @@ export interface GatewayPolicyView {
   recognizedCount: number
   unrecognizedCount: number
   mosaicManagedCount: number
+}
+
+export type ModelProvider = 'azureOpenAi' | 'azureAiFoundry' | 'openAiCompatible'
+export type EndpointAuthMode = 'managedIdentity' | 'apiKey'
+export type ModelEndpointStatus =
+  | 'pending'
+  | 'connected'
+  | 'degraded'
+  | 'unauthorized'
+  | 'unreachable'
+
+/**
+ * How MOSAIC established whether a gateway can invoke an endpoint.
+ *
+ * `notEvaluated` is deliberately distinct from a negative answer: MOSAIC not being able to read
+ * role assignments is not the same as the gateway lacking the role.
+ */
+export type RuntimeAccessEvaluation =
+  | 'roleAssignments'
+  | 'noGatewayIdentity'
+  | 'notApplicable'
+  | 'notEvaluated'
+
+export type SuggestionSource = 'bootstrap' | 'gatewayBackend' | 'subscriptionScan'
+
+/** Whether MOSAIC's own identity can enumerate models on an endpoint. */
+export interface EndpointAccess {
+  canRead: boolean
+  evaluation: AccessEvaluation
+  checkedAt?: string | null
+  missingActions: string[]
+  remediation?: AccessRemediation | null
+  message?: string | null
+}
+
+/** Whether one gateway's managed identity can call an endpoint at runtime. */
+export interface GatewayRuntimeAccess {
+  gatewayId: string
+  gatewayName: string
+  apimPrincipalId?: string | null
+  canInvoke: boolean
+  evaluation: RuntimeAccessEvaluation
+  checkedAt?: string | null
+  requiredRoleName?: string | null
+  requiredRoleDefinitionId?: string | null
+  assignmentScope?: string | null
+  inherited: boolean
+  remediation?: AccessRemediation | null
+  message?: string | null
+}
+
+export interface ModelEndpointCapabilities {
+  kind?: string | null
+  skuName?: string | null
+  location?: string | null
+  provisioningState?: string | null
+  publicNetworkAccess?: string | null
+  localAuthDisabled?: boolean | null
+  managementApiVersion: string
+  notes: string[]
+}
+
+export interface ModelInventorySummary {
+  deployments: number
+  availableModels: number
+  succeededDeployments: number
+  deprecatedDeployments: number
+}
+
+export interface ModelEndpoint {
+  id: string
+  tenantId: string
+  name: string
+  provider: ModelProvider
+  endpoint: string
+  azureResourceId?: string | null
+  subscriptionId?: string | null
+  resourceGroup?: string | null
+  accountName?: string | null
+  projectName?: string | null
+  environmentLabel?: string | null
+  authMode: EndpointAuthMode
+  credentialReferenceId?: string | null
+  status: ModelEndpointStatus
+  access: EndpointAccess
+  runtimeAccess: GatewayRuntimeAccess[]
+  capabilities: ModelEndpointCapabilities
+  inventory: ModelInventorySummary
+  lastSyncedAt?: string | null
+  lastSyncError?: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+export interface ModelEndpointSyncRun {
+  id: string
+  tenantId: string
+  endpointId: string
+  status: GatewaySyncStatus
+  startedAt: string
+  completedAt?: string | null
+  durationMs?: number | null
+  counts: ModelInventorySummary
+  removed: number
+  errors: string[]
+}
+
+export interface ObservedModelDeployment {
+  id: string
+  endpointId: string
+  deploymentName: string
+  modelName?: string | null
+  modelVersion?: string | null
+  modelFormat?: string | null
+  modelPublisher?: string | null
+  skuName?: string | null
+  skuCapacity?: number | null
+  provisioningState?: string | null
+  raiPolicyName?: string | null
+  capabilities: Record<string, string>
+  requestPaths: string[]
+  observedAt: string
+}
+
+export interface ObservedAvailableModel {
+  id: string
+  endpointId: string
+  modelName: string
+  modelFormat?: string | null
+  modelVersion?: string | null
+  lifecycleStatus?: string | null
+  maxCapacity?: number | null
+  capabilities: Record<string, string>
+  deprecationInference?: string | null
+  deprecationFineTune?: string | null
+  observedAt: string
+}
+
+export interface ModelEndpointSuggestion {
+  source: SuggestionSource
+  endpoint?: string | null
+  azureResourceId?: string | null
+  accountName?: string | null
+  resourceGroup?: string | null
+  subscriptionId?: string | null
+  kind?: string | null
+  location?: string | null
+  provider?: ModelProvider | null
+  alreadyRegistered: boolean
+  modelEndpointId?: string | null
+  reason: string
+}
+
+export interface SubscriptionScanIssue {
+  subscriptionId: string
+  displayName?: string | null
+  message: string
+  remediation?: AccessRemediation | null
+}
+
+export interface ModelEndpointSuggestionView {
+  suggestions: ModelEndpointSuggestion[]
+  scanIssues: SubscriptionScanIssue[]
+  subscriptionsScanned: number
 }

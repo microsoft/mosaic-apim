@@ -197,6 +197,65 @@ OBSERVED_ENTITY_TYPES: tuple[str, ...] = (
 )
 
 
+class ObservedModelEntity(Entity):
+    """Base for state MOSAIC observed on a *model endpoint*.
+
+    Deliberately a sibling of :class:`ObservedEntity` rather than a subclass. Observed gateway
+    documents are keyed on ``gatewayId`` in Cosmos SQL; introducing a shared scope field would
+    orphan every existing document, because a query on the new field cannot sweep documents written
+    with only the old one. Two explicit shapes cost a little duplication and no migration.
+    """
+
+    endpoint_id: str
+    snapshot_id: str
+    observed_at: datetime = Field(default_factory=utc_now)
+
+
+class ObservedModelDeployment(ObservedModelEntity):
+    """A model deployment MOSAIC read from a provider endpoint.
+
+    This is the callable unit an entitlement will later grant access to, so its ID is deterministic
+    and stable across syncs.
+    """
+
+    entity_type: Literal["observedModelDeployment"] = "observedModelDeployment"
+    deployment_name: str
+    model_name: str | None = None
+    model_version: str | None = None
+    model_format: str | None = None
+    model_publisher: str | None = None
+    sku_name: str | None = None
+    sku_capacity: int | None = None
+    provisioning_state: str | None = None
+    rai_policy_name: str | None = None
+    capabilities: dict[str, str] = Field(default_factory=dict)
+    request_paths: list[str] = Field(default_factory=list)
+
+
+class ObservedAvailableModel(ObservedModelEntity):
+    """A model the endpoint could host but has not deployed.
+
+    Kept separate from :class:`ObservedModelDeployment` so the UI never implies something callable
+    that is not actually deployed.
+    """
+
+    entity_type: Literal["observedAvailableModel"] = "observedAvailableModel"
+    model_name: str
+    model_format: str | None = None
+    model_version: str | None = None
+    lifecycle_status: str | None = None
+    max_capacity: int | None = None
+    capabilities: dict[str, str] = Field(default_factory=dict)
+    deprecation_inference: str | None = None
+    deprecation_fine_tune: str | None = None
+
+
+OBSERVED_MODEL_ENTITY_TYPES: tuple[str, ...] = (
+    "observedModelDeployment",
+    "observedAvailableModel",
+)
+
+
 class GatewayPolicyView(MosaicModel):
     """The policy surface of a gateway, already reduced to plain language."""
 
@@ -226,6 +285,7 @@ class AnnotatedApi(MosaicModel):
 
 __all__ = [
     "OBSERVED_ENTITY_TYPES",
+    "OBSERVED_MODEL_ENTITY_TYPES",
     "AiBackendKind",
     "AnnotatedApi",
     "FacetConfidence",
@@ -237,9 +297,12 @@ __all__ = [
     "ObservedApi",
     "ObservedApimGroup",
     "ObservedApimUser",
+    "ObservedAvailableModel",
     "ObservedBackend",
     "ObservedEntity",
     "ObservedMcpServer",
+    "ObservedModelDeployment",
+    "ObservedModelEntity",
     "ObservedNamedValue",
     "ObservedOperation",
     "ObservedPolicyDocument",

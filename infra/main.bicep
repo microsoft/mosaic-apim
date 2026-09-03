@@ -565,6 +565,7 @@ output WEB_APP_PRINCIPAL_ID string = webApp.outputs.principalId
 output APIM_NAME string = apim.outputs.name
 output APIM_GATEWAY_URL string = apimGatewayUrl
 output APIM_RESOURCE_ID string = apim.outputs.id
+output APIM_PRINCIPAL_ID string = apimResource.identity.principalId
 output AZURE_CONTAINER_REGISTRY_ENDPOINT string = acr.outputs.loginServer
 output AZURE_CONTAINER_REGISTRY_NAME string = acr.outputs.name
 output COSMOSDB_ACCOUNT_NAME string = cosmos.outputs.name

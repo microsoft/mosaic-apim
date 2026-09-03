@@ -6,6 +6,7 @@ from mosaic_api.auth import AuthContext, require_admin
 from mosaic_api.domain import (
     Gateway,
     GatewayCreate,
+    GatewayRuntimeAccess,
     GatewaySuggestion,
     GatewaySyncRun,
     GatewayUpdate,
@@ -18,6 +19,11 @@ from mosaic_api.domain import (
     McpServerCandidateList,
     ModelApi,
     ModelApiCandidateList,
+    ModelEndpoint,
+    ModelEndpointCreate,
+    ModelEndpointSuggestionView,
+    ModelEndpointSyncRun,
+    ModelEndpointUpdate,
     PolicyPreview,
     PolicyPreviewRequest,
     Principal,
@@ -30,15 +36,17 @@ from mosaic_api.observed import (
     ObservedApi,
     ObservedApimGroup,
     ObservedApimUser,
+    ObservedAvailableModel,
     ObservedBackend,
     ObservedMcpServer,
+    ObservedModelDeployment,
     ObservedNamedValue,
     ObservedOperation,
     ObservedProduct,
     ObservedSubscription,
     ScopedPolicyView,
 )
-from mosaic_api.services import DirectoryService, GatewayService
+from mosaic_api.services import DirectoryService, GatewayService, ModelEndpointService
 from mosaic_api.services.directory import Actor
 
 Admin = Annotated[AuthContext, Depends(require_admin)]
@@ -50,6 +58,10 @@ def _service(request: Request) -> DirectoryService:
 
 def _gateways(request: Request) -> GatewayService:
     return cast(GatewayService, request.app.state.gateway_service)
+
+
+def _endpoints(request: Request) -> ModelEndpointService:
+    return cast(ModelEndpointService, request.app.state.model_endpoint_service)
 
 
 def _actor(auth: AuthContext) -> Actor:
@@ -279,6 +291,109 @@ async def get_operation_policy(
     return await _gateways(request).operation_policy(
         _actor(auth), gateway_id, api_name, operation_name
     )
+
+
+@router.get("/model-endpoints", response_model=list[ModelEndpoint])
+async def list_model_endpoints(request: Request, auth: Admin) -> list[ModelEndpoint]:
+    return await _endpoints(request).list_endpoints(_actor(auth))
+
+
+@router.post(
+    "/model-endpoints", response_model=ModelEndpoint, status_code=status.HTTP_201_CREATED
+)
+async def register_model_endpoint(
+    request: Request, auth: Admin, payload: ModelEndpointCreate
+) -> ModelEndpoint:
+    return await _endpoints(request).register(_actor(auth), payload)
+
+
+@router.get("/model-endpoints/suggested", response_model=ModelEndpointSuggestionView)
+async def suggested_model_endpoints(
+    request: Request, auth: Admin
+) -> ModelEndpointSuggestionView:
+    return await _endpoints(request).suggestions(_actor(auth))
+
+
+@router.get("/model-endpoints/{endpoint_id}", response_model=ModelEndpoint)
+async def get_model_endpoint(request: Request, auth: Admin, endpoint_id: str) -> ModelEndpoint:
+    return await _endpoints(request).get_endpoint(_actor(auth), endpoint_id)
+
+
+@router.patch("/model-endpoints/{endpoint_id}", response_model=ModelEndpoint)
+async def update_model_endpoint(
+    request: Request, auth: Admin, endpoint_id: str, payload: ModelEndpointUpdate
+) -> ModelEndpoint:
+    return await _endpoints(request).update(_actor(auth), endpoint_id, payload)
+
+
+@router.delete("/model-endpoints/{endpoint_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_model_endpoint(request: Request, auth: Admin, endpoint_id: str) -> Response:
+    await _endpoints(request).delete(_actor(auth), endpoint_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post("/model-endpoints/{endpoint_id}/preflight", response_model=ModelEndpoint)
+async def preflight_model_endpoint(
+    request: Request, auth: Admin, endpoint_id: str
+) -> ModelEndpoint:
+    return await _endpoints(request).preflight(_actor(auth), endpoint_id)
+
+
+@router.post(
+    "/model-endpoints/{endpoint_id}/sync",
+    response_model=ModelEndpointSyncRun,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def sync_model_endpoint(
+    request: Request, auth: Admin, endpoint_id: str
+) -> ModelEndpointSyncRun:
+    return await _endpoints(request).start_sync(_actor(auth), endpoint_id)
+
+
+@router.get(
+    "/model-endpoints/{endpoint_id}/sync-runs", response_model=list[ModelEndpointSyncRun]
+)
+async def list_model_endpoint_sync_runs(
+    request: Request, auth: Admin, endpoint_id: str
+) -> list[ModelEndpointSyncRun]:
+    return await _endpoints(request).list_sync_runs(_actor(auth), endpoint_id)
+
+
+@router.get(
+    "/model-endpoints/{endpoint_id}/sync-runs/{run_id}", response_model=ModelEndpointSyncRun
+)
+async def get_model_endpoint_sync_run(
+    request: Request, auth: Admin, endpoint_id: str, run_id: str
+) -> ModelEndpointSyncRun:
+    return await _endpoints(request).get_sync_run(_actor(auth), run_id)
+
+
+@router.get(
+    "/model-endpoints/{endpoint_id}/deployments", response_model=list[ObservedModelDeployment]
+)
+async def list_model_endpoint_deployments(
+    request: Request, auth: Admin, endpoint_id: str
+) -> list[ObservedModelDeployment]:
+    return await _endpoints(request).list_deployments(_actor(auth), endpoint_id)
+
+
+@router.get(
+    "/model-endpoints/{endpoint_id}/available-models",
+    response_model=list[ObservedAvailableModel],
+)
+async def list_model_endpoint_available_models(
+    request: Request, auth: Admin, endpoint_id: str
+) -> list[ObservedAvailableModel]:
+    return await _endpoints(request).list_available_models(_actor(auth), endpoint_id)
+
+
+@router.get(
+    "/model-endpoints/{endpoint_id}/runtime-access", response_model=list[GatewayRuntimeAccess]
+)
+async def get_model_endpoint_runtime_access(
+    request: Request, auth: Admin, endpoint_id: str
+) -> list[GatewayRuntimeAccess]:
+    return await _endpoints(request).runtime_access(_actor(auth), endpoint_id)
 
 
 @router.get("/gateways/{gateway_id}/mcp-servers", response_model=list[ObservedMcpServer])

@@ -13,17 +13,22 @@ from mosaic_api.api import router
 from mosaic_api.auth import EntraAuthenticator, LocalAuthenticator
 from mosaic_api.config import AuthMode, Environment, RepositoryBackend, Settings, get_settings
 from mosaic_api.errors import DomainError, domain_error_handler
+from mosaic_api.integrations.aoai import CognitiveServicesClient
+from mosaic_api.integrations.aoai.client import SubscriptionScanner
 from mosaic_api.integrations.apim import ApimClient, ArmClient
 from mosaic_api.observability import configure_logging, configure_telemetry
 from mosaic_api.repositories import (
     CosmosDirectoryRepository,
     CosmosGatewayRepository,
+    CosmosModelEndpointRepository,
     DirectoryRepository,
     GatewayRepository,
     InMemoryDirectoryRepository,
     InMemoryGatewayRepository,
+    InMemoryModelEndpointRepository,
+    ModelEndpointRepository,
 )
-from mosaic_api.services import DirectoryService, GatewayService
+from mosaic_api.services import DirectoryService, GatewayService, ModelEndpointService
 
 logger = structlog.get_logger()
 
@@ -45,9 +50,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         cosmos_client: CosmosClient | None = None
         repository: DirectoryRepository
         gateway_repository: GatewayRepository
+        endpoint_repository: ModelEndpointRepository
         if app_settings.repository_backend is RepositoryBackend.MEMORY:
             repository = InMemoryDirectoryRepository()
             gateway_repository = InMemoryGatewayRepository()
+            endpoint_repository = InMemoryModelEndpointRepository()
         else:
             cosmos_client = CosmosClient(
                 str(app_settings.cosmos_endpoint), credential=credential
@@ -60,6 +67,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 owns_client=False,
             )
             gateway_repository = CosmosGatewayRepository(
+                cosmos_client,
+                app_settings.cosmos_database,
+                app_settings.cosmos_desired_state_container,
+                app_settings.cosmos_audit_events_container,
+                app_settings.cosmos_sync_operations_container,
+                app_settings.cosmos_observed_state_container,
+                owns_client=False,
+            )
+            endpoint_repository = CosmosModelEndpointRepository(
                 cosmos_client,
                 app_settings.cosmos_database,
                 app_settings.cosmos_desired_state_container,
@@ -81,10 +97,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             identity_resolver=arm_client.caller_object_id,
             bootstrap_resource_id=app_settings.apim_bootstrap_resource_id,
         )
+        model_endpoint_service = ModelEndpointService(
+            endpoint_repository,
+            gateway_repository=gateway_repository,
+            client_factory=lambda resource: CognitiveServicesClient(arm_client, resource),
+            scanner=SubscriptionScanner(arm_client),
+            principal_id=app_settings.managed_identity_principal_id,
+            identity_resolver=arm_client.caller_object_id,
+        )
         app.state.repository = repository
         app.state.gateway_repository = gateway_repository
+        app.state.model_endpoint_repository = endpoint_repository
         app.state.directory_service = DirectoryService(repository)
         app.state.gateway_service = gateway_service
+        app.state.model_endpoint_service = model_endpoint_service
         app.state.authenticator = authenticator
         try:
             reaped = await gateway_service.reap_stale_sync_runs(app_settings.tenant_id)
@@ -92,16 +118,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 logger.warning("gateway_sync_runs_reaped", count=reaped)
         except Exception:
             logger.exception("gateway_sync_reap_failed")
+        try:
+            reaped = await model_endpoint_service.reap_stale_sync_runs(app_settings.tenant_id)
+            if reaped:
+                logger.warning("endpoint_sync_runs_reaped", count=reaped)
+        except Exception:
+            logger.exception("endpoint_sync_reap_failed")
         gateway_service.schedule_bootstrap(app_settings.tenant_id)
         logger.info("application_started", environment=app_settings.environment)
         try:
             yield
         finally:
             await gateway_service.aclose()
+            await model_endpoint_service.aclose()
             await authenticator.close()
             await arm_client.close()
             await repository.close()
             await gateway_repository.close()
+            await endpoint_repository.close()
             if cosmos_client:
                 await cosmos_client.close()
             await credential.close()
@@ -139,11 +173,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def ready(request: Request) -> JSONResponse:
         repository = getattr(request.app.state, "repository", None)
         gateway_repository = getattr(request.app.state, "gateway_repository", None)
+        endpoint_repository = getattr(request.app.state, "model_endpoint_repository", None)
         is_ready = (
             repository is not None
             and await repository.ready()
             and gateway_repository is not None
             and await gateway_repository.ready()
+            and endpoint_repository is not None
+            and await endpoint_repository.ready()
         )
         return JSONResponse(
             status_code=status.HTTP_200_OK if is_ready else status.HTTP_503_SERVICE_UNAVAILABLE,

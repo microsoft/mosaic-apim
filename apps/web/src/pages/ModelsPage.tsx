@@ -12,13 +12,15 @@ import {
   Input,
   MessageBar,
   MessageBarBody,
-  Select,
+  MessageBarTitle,
   Table,
   TableBody,
   TableCell,
   TableHeader,
   TableHeaderCell,
   TableRow,
+  Tab,
+  TabList,
   Text,
   Title3,
 } from '@fluentui/react-components'
@@ -29,259 +31,80 @@ import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { useMosaicApi } from '../api'
 import { EmptyState, ErrorState, Loading } from '../components/AsyncState'
 import { ImportFromGatewayDialog } from '../components/ImportFromGatewayDialog'
-import { PageHeader, PreviewNotice } from '../components/PageHeader'
+import { PageHeader } from '../components/PageHeader'
 import { AI_KIND_LABELS } from '../labels'
-import type { Gateway } from '../types'
+import type {
+  Gateway,
+  GatewayRuntimeAccess,
+  ModelEndpoint,
+  ModelEndpointStatus,
+  ModelProvider,
+  SuggestionSource,
+} from '../types'
 import styles from './ModelsPage.module.css'
 
-const foundryProviders = [
-  'Azure AI Foundry',
-  'Azure OpenAI',
-  'OpenAI compatible',
-] as const
-
-type FoundryProvider = (typeof foundryProviders)[number]
-type ConnectionSource = 'sample' | 'local'
-type ConnectionState = 'connected' | 'preview'
-type DeploymentStatus = 'ready' | 'syncing' | 'attention' | 'stopped'
-
-interface PreviewFoundryConnection {
-  id: string
-  displayName: string
-  provider: FoundryProvider
-  endpoint: string
-  azureResourceId: string
-  createdAt: string
-  source: ConnectionSource
-  state: ConnectionState
+const statusLabels: Record<ModelEndpointStatus, string> = {
+  pending: 'Not checked',
+  connected: 'Connected',
+  degraded: 'Partial data',
+  unauthorized: 'Access needed',
+  unreachable: 'Unreachable',
 }
 
-interface PreviewModelDeployment {
-  id: string
-  foundryConnectionId: string
-  deploymentName: string
-  modelName: string
-  modelVersion: string
-  endpoint: string
-  requestPath: '/chat/completions' | '/embeddings'
-  regionLabel: string
-  status: DeploymentStatus
-  updatedAt: string
-  source: ConnectionSource
-  notes: string
+const statusClasses: Record<ModelEndpointStatus, string> = {
+  pending: styles.pendingBadge,
+  connected: styles.connectedBadge,
+  degraded: styles.degradedBadge,
+  unauthorized: styles.attentionBadge,
+  unreachable: styles.attentionBadge,
 }
 
-interface ModelDeployDraft {
-  foundryConnectionId: string
-  deploymentName: string
-  modelName: string
-  modelVersion: string
-  requestPath: '/chat/completions' | '/embeddings'
+const providerLabels: Record<ModelProvider, string> = {
+  azureOpenAi: 'Azure OpenAI',
+  azureAiFoundry: 'Azure AI Foundry',
+  openAiCompatible: 'OpenAI compatible',
 }
 
-interface BannerState {
-  intent: 'success' | 'warning' | 'error'
-  message: string
+const sourceLabels: Record<SuggestionSource, string> = {
+  bootstrap: 'Deployed with MOSAIC',
+  gatewayBackend: 'Used by a gateway',
+  subscriptionScan: 'Found in a subscription',
 }
 
-const sampleConnections: PreviewFoundryConnection[] = [
-  {
-    id: 'conn-eastus-preview',
-    displayName: 'Azure AI Foundry / East US',
-    provider: 'Azure AI Foundry',
-    endpoint: 'https://mosaic-eastus.services.ai.azure.com',
-    azureResourceId:
-      '/subscriptions/sample-sub/resourceGroups/mosaic-preview/providers/Microsoft.CognitiveServices/accounts/mosaic-eastus',
-    createdAt: '2026-08-08T15:20:00Z',
-    source: 'sample',
-    state: 'connected',
-  },
-  {
-    id: 'conn-openai-europe',
-    displayName: 'Azure OpenAI / West Europe',
-    provider: 'Azure OpenAI',
-    endpoint: 'https://contoso-weu.openai.azure.com',
-    azureResourceId:
-      '/subscriptions/sample-sub/resourceGroups/contoso-preview/providers/Microsoft.CognitiveServices/accounts/contoso-weu',
-    createdAt: '2026-08-09T09:10:00Z',
-    source: 'sample',
-    state: 'connected',
-  },
-] satisfies PreviewFoundryConnection[]
-
-const sampleDeployments: PreviewModelDeployment[] = [
-  {
-    id: 'dep-gpt41-prod',
-    foundryConnectionId: 'conn-eastus-preview',
-    deploymentName: 'gpt-4.1-prod',
-    modelName: 'gpt-4.1',
-    modelVersion: '2026-07-18',
-    endpoint:
-      'https://mosaic-eastus.services.ai.azure.com/openai/deployments/gpt-4.1-prod/chat/completions',
-    requestPath: '/chat/completions',
-    regionLabel: 'East US',
-    status: 'ready',
-    updatedAt: '2026-08-12T14:02:00Z',
-    source: 'sample',
-    notes: 'Sample endpoint metadata only. MOSAIC is not polling Foundry in this preview.',
-  },
-  {
-    id: 'dep-embed-3-large',
-    foundryConnectionId: 'conn-eastus-preview',
-    deploymentName: 'text-embedding-3-large',
-    modelName: 'text-embedding-3-large',
-    modelVersion: '2026-05-30',
-    endpoint:
-      'https://mosaic-eastus.services.ai.azure.com/openai/deployments/text-embedding-3-large/embeddings',
-    requestPath: '/embeddings',
-    regionLabel: 'East US',
-    status: 'syncing',
-    updatedAt: '2026-08-12T10:35:00Z',
-    source: 'sample',
-    notes: 'Local sync state can move between preview statuses without changing Azure.',
-  },
-  {
-    id: 'dep-gpt4o-mini',
-    foundryConnectionId: 'conn-openai-europe',
-    deploymentName: 'gpt-4o-mini',
-    modelName: 'gpt-4o-mini',
-    modelVersion: '2026-06-22',
-    endpoint:
-      'https://contoso-weu.openai.azure.com/openai/deployments/gpt-4o-mini/chat/completions',
-    requestPath: '/chat/completions',
-    regionLabel: 'West Europe',
-    status: 'attention',
-    updatedAt: '2026-08-11T18:40:00Z',
-    source: 'sample',
-    notes: 'Sample health warnings are browser-only and do not reflect live validation.',
-  },
-  {
-    id: 'dep-legacy-assistant',
-    foundryConnectionId: 'conn-openai-europe',
-    deploymentName: 'assistant-archive',
-    modelName: 'gpt-35-turbo',
-    modelVersion: '2025-12-01',
-    endpoint:
-      'https://contoso-weu.openai.azure.com/openai/deployments/assistant-archive/chat/completions',
-    requestPath: '/chat/completions',
-    regionLabel: 'West Europe',
-    status: 'stopped',
-    updatedAt: '2026-08-10T12:15:00Z',
-    source: 'sample',
-    notes: 'Stopped indicates a local preview state, not a Foundry shutdown.',
-  },
-] satisfies PreviewModelDeployment[]
-
-const deployableModelsByProvider: Record<FoundryProvider, { name: string; version: string }[]> = {
-  'Azure AI Foundry': [
-    { name: 'gpt-4.1', version: '2026-07-18' },
-    { name: 'text-embedding-3-large', version: '2026-05-30' },
-    { name: 'phi-4', version: '2026-06-01' },
-  ],
-  'Azure OpenAI': [
-    { name: 'gpt-4o-mini', version: '2026-06-22' },
-    { name: 'gpt-4.1-mini', version: '2026-07-11' },
-    { name: 'text-embedding-3-small', version: '2026-03-12' },
-  ],
-  'OpenAI compatible': [
-    { name: 'llama-4-maverick', version: 'preview' },
-    { name: 'mistral-large', version: 'preview' },
-    { name: 'custom-chat', version: 'preview' },
-  ],
+function formatTimestamp(value?: string | null): string {
+  return value ? new Date(value).toLocaleString() : 'Never'
 }
 
-function isFoundryProvider(value: string): value is FoundryProvider {
-  return foundryProviders.some((provider) => provider === value)
+function EndpointStatusBadge({ status }: { status: ModelEndpointStatus }) {
+  return (
+    <Badge appearance="tint" className={statusClasses[status]}>
+      {statusLabels[status]}
+    </Badge>
+  )
 }
 
-function isRequestPath(
-  value: string,
-): value is PreviewModelDeployment['requestPath'] {
-  return value === '/chat/completions' || value === '/embeddings'
-}
+function CommandBlock({ command }: { command: string }) {
+  const [copied, setCopied] = useState(false)
 
-function formatTimestamp(value: string): string {
-  return new Intl.DateTimeFormat(undefined, {
-    month: 'short',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-  }).format(new Date(value))
-}
-
-function normalizeEndpoint(value: string): string | null {
-  try {
-    const url = new URL(value.trim())
-    const normalizedPath = url.pathname.replace(/\/+$/, '')
-    return `${url.origin}${normalizedPath}` || url.origin
-  } catch {
-    return null
+  async function copy() {
+    try {
+      await navigator.clipboard?.writeText(command)
+      setCopied(true)
+    } catch {
+      setCopied(false)
+    }
   }
+
+  return (
+    <div className={styles.remediation}>
+      <pre className={styles.commandBlock}>{command}</pre>
+      <Button appearance="secondary" onClick={() => void copy()}>
+        {copied ? 'Copied' : 'Copy command'}
+      </Button>
+    </div>
+  )
 }
 
-function buildPreviewPath(
-  baseEndpoint: string,
-  deploymentName: string,
-  requestPath: PreviewModelDeployment['requestPath'],
-): string {
-  return `${baseEndpoint.replace(/\/+$/, '')}/openai/deployments/${deploymentName}${requestPath}`
-}
-
-function derivePreviewRegion(endpoint: string): string {
-  try {
-    const host = new URL(endpoint).host
-    const firstSegment = host.split('.')[0] ?? 'custom'
-    return firstSegment.replace(/[-_]/g, ' ')
-  } catch {
-    return 'Custom'
-  }
-}
-
-function deploymentStatusLabel(status: DeploymentStatus): string {
-  switch (status) {
-    case 'ready':
-      return 'Ready'
-    case 'syncing':
-      return 'Preview syncing'
-    case 'attention':
-      return 'Needs attention'
-    case 'stopped':
-      return 'Stopped'
-  }
-}
-
-function deploymentStatusClass(status: DeploymentStatus): string {
-  switch (status) {
-    case 'ready':
-      return styles.statusReady
-    case 'syncing':
-      return styles.statusSyncing
-    case 'attention':
-      return styles.statusAttention
-    case 'stopped':
-      return styles.statusStopped
-  }
-}
-
-function connectionStateClass(state: ConnectionState): string {
-  return state === 'connected' ? styles.statusReady : styles.statusSyncing
-}
-
-function createDeploymentDraft(
-  connectionId: string,
-  provider: FoundryProvider,
-): ModelDeployDraft {
-  const defaultModel = deployableModelsByProvider[provider][0]
-  return {
-    foundryConnectionId: connectionId,
-    deploymentName: `${defaultModel.name.replace(/[^a-z0-9]+/gi, '-').toLowerCase()}-preview`,
-    modelName: defaultModel.name,
-    modelVersion: defaultModel.version,
-    requestPath: '/chat/completions',
-  }
-}
-
-/** The live half of this page: model APIs adopted from a gateway, backed by the MOSAIC API. */
 function ImportedModelApis({ onRemoved }: { onRemoved: (message: string) => void }) {
   const api = useMosaicApi()
   const queryClient = useQueryClient()
@@ -322,7 +145,6 @@ function ImportedModelApis({ onRemoved }: { onRemoved: (message: string) => void
           </Text>
         </div>
       </div>
-
       {removeMutation.isError && <ErrorState error={removeMutation.error} />}
       {modelApis.isPending && <Loading label="Loading imported model APIs..." />}
       {modelApis.isError && <ErrorState error={modelApis.error} />}
@@ -390,112 +212,206 @@ function ImportedModelApis({ onRemoved }: { onRemoved: (message: string) => void
   )
 }
 
-export function ModelsPage() {
+/**
+ * A model endpoint has two independent access relationships, held by two different identities.
+ * Collapsing them into one verdict would hide the common failure where MOSAIC can read an
+ * endpoint perfectly well but the gateway still cannot call it.
+ */
+function AccessPanel({ endpoint }: { endpoint: ModelEndpoint }) {
+  const { access, runtimeAccess } = endpoint
+
+  return (
+    <Card className={styles.accessCard}>
+      <Title3 as="h2">Access</Title3>
+
+      <section className={styles.accessSection}>
+        <MessageBar intent={access.canRead ? 'success' : 'error'}>
+          <MessageBarBody>
+            <MessageBarTitle>
+              {access.canRead
+                ? 'MOSAIC can read this endpoint'
+                : 'MOSAIC cannot read this endpoint'}
+            </MessageBarTitle>
+            {access.message}
+          </MessageBarBody>
+        </MessageBar>
+        <Text size={200} className={styles.muted}>
+          This is what lets MOSAIC list the models deployed here. It grants no ability to call
+          them.
+        </Text>
+        {access.remediation && (
+          <>
+            <Text block>
+              Grant the <strong>{access.remediation.roleName}</strong> role to MOSAIC at this
+              scope. Someone with permission to assign roles must run:
+            </Text>
+            <CommandBlock command={access.remediation.command} />
+            {access.remediation.customRoleDefinition && (
+              <Text size={200} className={styles.muted}>
+                Reader is the narrowest built-in role that grants this without also granting
+                inference or key access. A tighter custom role is possible, but it omits the
+                role-assignment read that the gateway check below depends on.
+              </Text>
+            )}
+          </>
+        )}
+      </section>
+
+      <section className={styles.accessSection}>
+        <Text weight="semibold">Gateways calling this endpoint</Text>
+        <Text size={200} className={styles.muted}>
+          At runtime the gateway authenticates as itself, not as MOSAIC, so it needs its own role
+          on this endpoint. MOSAIC reports this and never assigns it.
+        </Text>
+        {runtimeAccess.length === 0 ? (
+          <Text size={200}>No gateways are registered yet.</Text>
+        ) : (
+          runtimeAccess.map((entry) => (
+            <RuntimeAccessRow key={entry.gatewayId} access={entry} />
+          ))
+        )}
+      </section>
+    </Card>
+  )
+}
+
+function RuntimeAccessRow({ access }: { access: GatewayRuntimeAccess }) {
+  const intent =
+    access.evaluation === 'notEvaluated'
+      ? 'warning'
+      : access.canInvoke
+        ? 'success'
+        : 'error'
+
+  return (
+    <div className={styles.runtimeRow}>
+      <MessageBar intent={intent}>
+        <MessageBarBody>
+          <MessageBarTitle>{access.gatewayName}</MessageBarTitle>
+          {access.message}
+        </MessageBarBody>
+      </MessageBar>
+      {access.inherited && access.assignmentScope && (
+        <Text size={200} className={styles.muted}>
+          Inherited from {access.assignmentScope}. It works, but it is broader than an assignment
+          made directly on this endpoint.
+        </Text>
+      )}
+      {access.remediation && <CommandBlock command={access.remediation.command} />}
+    </div>
+  )
+}
+
+function ModelEndpoints() {
+  const api = useMosaicApi()
   const location = useLocation()
   const navigate = useNavigate()
-  const secretInputRef = useRef<HTMLInputElement | null>(null)
-  const hasConsumedDeployQueryRef = useRef(false)
-  const hasConsumedImportQueryRef = useRef(false)
-  const [importOpen, setImportOpen] = useState(false)
-  const [liveBanner, setLiveBanner] = useState<string | null>(null)
+  const queryClient = useQueryClient()
+  const hasConsumedRegisterQueryRef = useRef(false)
+  const [dialogOpen, setDialogOpen] = useState(false)
+  const [mode, setMode] = useState<'azure' | 'compatible'>('azure')
+  const [resourceId, setResourceId] = useState('')
+  const [endpointUrl, setEndpointUrl] = useState('')
+  const [secretUri, setSecretUri] = useState('')
+  const [name, setName] = useState('')
+  const [environmentLabel, setEnvironmentLabel] = useState('')
+  const [selectedId, setSelectedId] = useState<string | null>(null)
 
-  const [provider, setProvider] = useState<FoundryProvider>('Azure AI Foundry')
-  const [baseEndpoint, setBaseEndpoint] = useState('')
-  const [connections, setConnections] = useState<PreviewFoundryConnection[]>(sampleConnections)
-  const [deployments, setDeployments] = useState<PreviewModelDeployment[]>(sampleDeployments)
-  const [selectedDeploymentId, setSelectedDeploymentId] = useState(sampleDeployments[0]?.id ?? '')
-  const [providerFilter, setProviderFilter] = useState<'all' | FoundryProvider>('all')
-  const [statusFilter, setStatusFilter] = useState<'all' | DeploymentStatus>('all')
-  const [searchText, setSearchText] = useState('')
-  const [banner, setBanner] = useState<BannerState | null>(null)
-  const [formError, setFormError] = useState<string | null>(null)
-  const [deployDialogOpen, setDeployDialogOpen] = useState(false)
-  const [deployDraft, setDeployDraft] = useState<ModelDeployDraft>(() =>
-    createDeploymentDraft(sampleConnections[0]?.id ?? '', sampleConnections[0]?.provider ?? 'Azure AI Foundry'),
+  const endpoints = useQuery({
+    queryKey: ['model-endpoints'],
+    queryFn: api.listModelEndpoints,
+  })
+  const suggestions = useQuery({
+    queryKey: ['model-endpoint-suggestions'],
+    queryFn: api.listSuggestedModelEndpoints,
+  })
+
+  const selected =
+    endpoints.data?.find((item) => item.id === selectedId) ?? endpoints.data?.[0] ?? null
+
+  const deployments = useQuery({
+    queryKey: ['model-deployments', selected?.id],
+    queryFn: () => api.listModelDeployments(selected!.id),
+    enabled: Boolean(selected),
+  })
+
+  async function refresh() {
+    await queryClient.invalidateQueries({ queryKey: ['model-endpoints'] })
+    await queryClient.invalidateQueries({ queryKey: ['model-endpoint-suggestions'] })
+    await queryClient.invalidateQueries({ queryKey: ['model-deployments'] })
+  }
+
+  const register = useMutation({
+    mutationFn: api.registerModelEndpoint,
+    onSuccess: async (endpoint) => {
+      setResourceId('')
+      setEndpointUrl('')
+      setSecretUri('')
+      setName('')
+      setEnvironmentLabel('')
+      closeDialog()
+      setSelectedId(endpoint.id)
+      await refresh()
+    },
+  })
+
+  const sync = useMutation({ mutationFn: api.syncModelEndpoint, onSuccess: refresh })
+  const recheck = useMutation({ mutationFn: api.preflightModelEndpoint, onSuccess: refresh })
+  const remove = useMutation({
+    mutationFn: api.deleteModelEndpoint,
+    onSuccess: async () => {
+      setSelectedId(null)
+      await refresh()
+    },
+  })
+
+  function submit(event: FormEvent) {
+    event.preventDefault()
+    if (mode === 'azure') {
+      register.mutate({
+        azureResourceId: resourceId.trim(),
+        name: name.trim() || undefined,
+        environmentLabel: environmentLabel.trim() || undefined,
+      })
+      return
+    }
+    register.mutate({
+      endpoint: endpointUrl.trim(),
+      credentialSecretUri: secretUri.trim(),
+      name: name.trim() || undefined,
+      environmentLabel: environmentLabel.trim() || undefined,
+    })
+  }
+
+  const pending = (suggestions.data?.suggestions ?? []).filter(
+    (item) => !item.alreadyRegistered,
   )
-  const [deployError, setDeployError] = useState<string | null>(null)
+  const scanIssues = suggestions.data?.scanIssues ?? []
 
-  const selectedDeployment = useMemo(
-    () => deployments.find((deployment) => deployment.id === selectedDeploymentId) ?? null,
-    [deployments, selectedDeploymentId],
-  )
-
-  const queryRequestsDeployDialog = useMemo(() => {
-    const params = new URLSearchParams(location.search)
-    return params.get('deploy') === '1'
-  }, [location.search])
-
-  const requestedImportGatewayId = useMemo(
-    () => new URLSearchParams(location.search).get('import'),
+  // The shell's "Add model endpoint" action lands here with ?register=1, so the button opens the
+  // real registration form rather than dropping the administrator on the page with no next step.
+  const requestedRegister = useMemo(
+    () => new URLSearchParams(location.search).get('register') === '1',
     [location.search],
   )
 
-  const filteredDeployments = useMemo(() => {
-    const normalizedSearch = searchText.trim().toLowerCase()
-    return deployments.filter((deployment) => {
-      const connection = connections.find(
-        (item) => item.id === deployment.foundryConnectionId,
-      )
-      const matchesProvider =
-        providerFilter === 'all' || connection?.provider === providerFilter
-      const matchesStatus = statusFilter === 'all' || deployment.status === statusFilter
-      const matchesSearch =
-        normalizedSearch.length === 0 ||
-        deployment.deploymentName.toLowerCase().includes(normalizedSearch) ||
-        deployment.modelName.toLowerCase().includes(normalizedSearch) ||
-        deployment.endpoint.toLowerCase().includes(normalizedSearch) ||
-        connection?.displayName.toLowerCase().includes(normalizedSearch) === true
-      return matchesProvider && matchesStatus && matchesSearch
-    })
-  }, [connections, deployments, providerFilter, searchText, statusFilter])
-
   useEffect(() => {
-    if (queryRequestsDeployDialog && !hasConsumedDeployQueryRef.current) {
-      hasConsumedDeployQueryRef.current = true
-      setDeployDialogOpen(true)
+    if (requestedRegister && !hasConsumedRegisterQueryRef.current) {
+      hasConsumedRegisterQueryRef.current = true
+      setDialogOpen(true)
     }
-    if (!queryRequestsDeployDialog) {
-      hasConsumedDeployQueryRef.current = false
+    if (!requestedRegister) {
+      hasConsumedRegisterQueryRef.current = false
     }
-  }, [queryRequestsDeployDialog])
+  }, [requestedRegister])
 
-  useEffect(() => {
-    if (requestedImportGatewayId && !hasConsumedImportQueryRef.current) {
-      hasConsumedImportQueryRef.current = true
-      setImportOpen(true)
-    }
-    if (!requestedImportGatewayId) {
-      hasConsumedImportQueryRef.current = false
-    }
-  }, [requestedImportGatewayId])
-
-  useEffect(() => {
-    if (!filteredDeployments.length) {
-      if (selectedDeploymentId !== '') {
-        setSelectedDeploymentId('')
-      }
-      return
-    }
-    if (!filteredDeployments.some((deployment) => deployment.id === selectedDeploymentId)) {
-      setSelectedDeploymentId(filteredDeployments[0].id)
-    }
-  }, [filteredDeployments, selectedDeploymentId])
-
-  useEffect(() => {
-    const selectedConnection = connections.find(
-      (connection) => connection.id === deployDraft.foundryConnectionId,
-    )
-    if (!selectedConnection && connections[0]) {
-      setDeployDraft(createDeploymentDraft(connections[0].id, connections[0].provider))
-    }
-  }, [connections, deployDraft.foundryConnectionId])
-
-  function removeDeployQueryIfPresent() {
+  function closeDialog() {
+    setDialogOpen(false)
     const params = new URLSearchParams(location.search)
-    if (!params.has('deploy')) {
+    if (!params.has('register')) {
       return
     }
-    params.delete('deploy')
+    params.delete('register')
     const nextSearch = params.toString()
     navigate(
       {
@@ -506,6 +422,328 @@ export function ModelsPage() {
       { replace: true },
     )
   }
+
+  return (
+    <>
+      <Card className={styles.panel}>
+        <div className={styles.panelHeader}>
+          <div>
+            <Title3 as="h2">Model endpoints</Title3>
+            <Text>
+              Azure OpenAI and Azure AI Foundry resources your gateways front. MOSAIC reads the
+              models deployed on them; it never changes them and never calls a model.
+            </Text>
+          </div>
+          <Button
+            appearance="primary"
+            icon={<AddRegular />}
+            onClick={() => setDialogOpen(true)}
+          >
+            Register endpoint
+          </Button>
+        </div>
+
+        {!dialogOpen && register.isError && <ErrorState error={register.error} />}
+
+        {endpoints.isPending && <Loading label="Loading model endpoints" />}
+        {endpoints.isError && <ErrorState error={endpoints.error} />}
+        {endpoints.data?.length === 0 && (
+          <EmptyState title="No model endpoints yet">
+            Register an Azure OpenAI or Azure AI Foundry resource to see the models deployed on it.
+          </EmptyState>
+        )}
+
+        {endpoints.data && endpoints.data.length > 0 && (
+          <>
+            <div className={styles.tableWrap}>
+              <Table aria-label="Registered model endpoints">
+                <TableHeader>
+                  <TableRow>
+                    <TableHeaderCell>Endpoint</TableHeaderCell>
+                    <TableHeaderCell>Provider</TableHeaderCell>
+                    <TableHeaderCell>Status</TableHeaderCell>
+                    <TableHeaderCell>Models</TableHeaderCell>
+                    <TableHeaderCell>Last synced</TableHeaderCell>
+                    <TableHeaderCell>Actions</TableHeaderCell>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {endpoints.data.map((endpoint) => (
+                    <TableRow
+                      key={endpoint.id}
+                      className={endpoint.id === selected?.id ? styles.selectedRow : undefined}
+                    >
+                      <TableCell>
+                        <div className={styles.cellStack}>
+                          <button
+                            type="button"
+                            className={styles.rowButton}
+                            onClick={() => setSelectedId(endpoint.id)}
+                          >
+                            {endpoint.name}
+                          </button>
+                          <span className={styles.secondaryCell}>{endpoint.endpoint}</span>
+                        </div>
+                      </TableCell>
+                      <TableCell>{providerLabels[endpoint.provider]}</TableCell>
+                      <TableCell>
+                        <EndpointStatusBadge status={endpoint.status} />
+                      </TableCell>
+                      <TableCell>{endpoint.inventory.deployments}</TableCell>
+                      <TableCell>{formatTimestamp(endpoint.lastSyncedAt)}</TableCell>
+                      <TableCell>
+                        <div className={styles.actionRow}>
+                          <Button
+                            appearance="secondary"
+                            onClick={() => recheck.mutate(endpoint.id)}
+                            disabled={recheck.isPending}
+                          >
+                            Check access
+                          </Button>
+                          <Button
+                            appearance="secondary"
+                            onClick={() => sync.mutate(endpoint.id)}
+                            disabled={sync.isPending || !endpoint.access.canRead}
+                          >
+                            Sync models
+                          </Button>
+                          <Button
+                            appearance="subtle"
+                            onClick={() => remove.mutate(endpoint.id)}
+                            disabled={remove.isPending}
+                          >
+                            Remove
+                          </Button>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+            <Text size={200} className={styles.muted}>
+              Removing an endpoint deletes only what MOSAIC stored about it. The Azure resource and
+              its deployments are never modified.
+            </Text>
+          </>
+        )}
+      </Card>
+
+      {pending.length > 0 && (
+        <Card className={styles.panel}>
+          <Title3 as="h2">Endpoints MOSAIC found</Title3>
+          {pending.map((item) => (
+            <div
+              key={item.azureResourceId ?? item.endpoint ?? item.reason}
+              className={styles.suggestionRow}
+            >
+              <div className={styles.suggestionText}>
+                <div className={styles.suggestionHeading}>
+                  <Text weight="semibold">
+                    {item.accountName ?? item.endpoint ?? 'Unidentified endpoint'}
+                  </Text>
+                  <Badge appearance="outline">{sourceLabels[item.source]}</Badge>
+                </div>
+                <Text size={200} className={styles.muted}>
+                  {item.reason}
+                  {item.provider ? ` ${providerLabels[item.provider]}.` : ''}
+                </Text>
+              </div>
+              {item.azureResourceId ? (
+                <Button
+                  appearance="primary"
+                  onClick={() => register.mutate({ azureResourceId: item.azureResourceId! })}
+                  disabled={register.isPending}
+                >
+                  Register
+                </Button>
+              ) : (
+                <Text size={200} className={styles.muted}>
+                  Needs a resource ID
+                </Text>
+              )}
+            </div>
+          ))}
+        </Card>
+      )}
+
+      {scanIssues.length > 0 && (
+        <Card className={styles.panel}>
+          <Title3 as="h2">Subscriptions MOSAIC could not scan</Title3>
+          {scanIssues.map((issue) => (
+            <div key={issue.subscriptionId} className={styles.scanIssue}>
+              <Text size={200}>
+                <strong>{issue.displayName ?? issue.subscriptionId}</strong> — {issue.message}
+              </Text>
+              {issue.remediation && <CommandBlock command={issue.remediation.command} />}
+            </div>
+          ))}
+        </Card>
+      )}
+
+      {selected && <AccessPanel endpoint={selected} />}
+
+      {selected && (
+        <Card className={styles.panel}>
+          <Title3 as="h2">Models on {selected.name}</Title3>
+          {selected.lastSyncError && (
+            <MessageBar intent="warning">
+              <MessageBarBody>
+                <MessageBarTitle>The last sync was incomplete</MessageBarTitle>
+                {selected.lastSyncError}
+              </MessageBarBody>
+            </MessageBar>
+          )}
+          {deployments.isPending && <Loading label="Loading models" />}
+          {deployments.isError && <ErrorState error={deployments.error} />}
+          {deployments.data?.length === 0 && (
+            <EmptyState title="No models discovered yet">
+              Run a sync to read the deployments on this endpoint.
+            </EmptyState>
+          )}
+          {deployments.data && deployments.data.length > 0 && (
+            <div className={styles.tableWrap}>
+              <Table aria-label="Discovered model deployments">
+                <TableHeader>
+                  <TableRow>
+                    <TableHeaderCell>Deployment</TableHeaderCell>
+                    <TableHeaderCell>Model</TableHeaderCell>
+                    <TableHeaderCell>Version</TableHeaderCell>
+                    <TableHeaderCell>Capacity</TableHeaderCell>
+                    <TableHeaderCell>State</TableHeaderCell>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {deployments.data.map((deployment) => (
+                    <TableRow key={deployment.id}>
+                      <TableCell>
+                        <div className={styles.cellStack}>
+                          <span className={styles.primaryCell}>
+                            {deployment.deploymentName}
+                          </span>
+                          {deployment.requestPaths.length > 0 && (
+                            <span className={styles.secondaryCell}>
+                              {deployment.requestPaths.join(', ')}
+                            </span>
+                          )}
+                        </div>
+                      </TableCell>
+                      <TableCell>{deployment.modelName ?? 'Unknown'}</TableCell>
+                      <TableCell>{deployment.modelVersion ?? '—'}</TableCell>
+                      <TableCell>
+                        {deployment.skuCapacity != null
+                          ? `${deployment.skuName ?? ''} ${deployment.skuCapacity}`.trim()
+                          : (deployment.skuName ?? '—')}
+                      </TableCell>
+                      <TableCell>{deployment.provisioningState ?? 'Unknown'}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          )}
+        </Card>
+      )}
+
+      <Dialog open={dialogOpen} onOpenChange={(_, data) => (data.open ? setDialogOpen(true) : closeDialog())}>
+        <DialogSurface>
+          <form onSubmit={submit}>
+            <DialogBody>
+              <DialogTitle>Register model endpoint</DialogTitle>
+              <DialogContent className={styles.dialogForm}>
+                <TabList
+                  selectedValue={mode}
+                  onTabSelect={(_, data) => setMode(data.value as 'azure' | 'compatible')}
+                >
+                  <Tab value="azure">Azure AI</Tab>
+                  <Tab value="compatible">OpenAI compatible</Tab>
+                </TabList>
+
+                {mode === 'azure' ? (
+                  <Field
+                    label="Azure resource ID"
+                    required
+                    hint="An Azure OpenAI or Azure AI Foundry resource. MOSAIC reads it with its own managed identity."
+                  >
+                    <Input
+                      value={resourceId}
+                      onChange={(_, data) => setResourceId(data.value)}
+                      placeholder="/subscriptions/.../providers/Microsoft.CognitiveServices/accounts/my-account"
+                    />
+                  </Field>
+                ) : (
+                  <>
+                    <Field label="Endpoint URL" required>
+                      <Input
+                        value={endpointUrl}
+                        onChange={(_, data) => setEndpointUrl(data.value)}
+                        placeholder="https://models.example.com/v1"
+                      />
+                    </Field>
+                    <Field
+                      label="Key Vault secret URI"
+                      required
+                      hint="Store the API key in Key Vault and paste its secret identifier. MOSAIC stores only this URI, never the key."
+                    >
+                      <Input
+                        value={secretUri}
+                        onChange={(_, data) => setSecretUri(data.value)}
+                        placeholder="https://my-vault.vault.azure.net/secrets/model-key"
+                      />
+                    </Field>
+                  </>
+                )}
+
+                <Field label="Display name">
+                  <Input value={name} onChange={(_, data) => setName(data.value)} />
+                </Field>
+                <Field label="Environment label">
+                  <Input
+                    value={environmentLabel}
+                    onChange={(_, data) => setEnvironmentLabel(data.value)}
+                    placeholder="Production"
+                  />
+                </Field>
+
+                {register.isError && <ErrorState error={register.error} />}
+              </DialogContent>
+              <DialogActions>
+                <Button appearance="secondary" onClick={closeDialog}>
+                  Cancel
+                </Button>
+                <Button appearance="primary" type="submit" disabled={register.isPending}>
+                  Register
+                </Button>
+              </DialogActions>
+            </DialogBody>
+          </form>
+        </DialogSurface>
+      </Dialog>
+    </>
+  )
+}
+
+export function ModelsPage() {
+  const location = useLocation()
+  const navigate = useNavigate()
+  const hasConsumedImportQueryRef = useRef(false)
+  const [importOpen, setImportOpen] = useState(false)
+  const [liveBanner, setLiveBanner] = useState<string | null>(null)
+
+  const requestedImportGatewayId = useMemo(
+    () => new URLSearchParams(location.search).get('import'),
+    [location.search],
+  )
+
+  useEffect(() => {
+    if (requestedImportGatewayId && !hasConsumedImportQueryRef.current) {
+      hasConsumedImportQueryRef.current = true
+      setImportOpen(true)
+    }
+    if (!requestedImportGatewayId) {
+      hasConsumedImportQueryRef.current = false
+    }
+  }, [requestedImportGatewayId])
 
   function removeImportQueryIfPresent() {
     const params = new URLSearchParams(location.search)
@@ -524,181 +762,16 @@ export function ModelsPage() {
     )
   }
 
-  function openDeployDialogForConnection(connectionId?: string) {
-    const selectedConnection =
-      connections.find((connection) => connection.id === connectionId) ?? connections[0]
-    if (!selectedConnection) {
-      setBanner({
-        intent: 'warning',
-        message: 'Add a preview connection first. Deploy actions only create local sample rows.',
-      })
-      return
-    }
-    setDeployDraft(createDeploymentDraft(selectedConnection.id, selectedConnection.provider))
-    setDeployError(null)
-    setDeployDialogOpen(true)
-  }
-
-  function closeDeployDialog() {
-    setDeployDialogOpen(false)
-    setDeployError(null)
-    removeDeployQueryIfPresent()
-  }
-
-  function updateDeployment(
-    deploymentId: string,
-    nextStatus: DeploymentStatus,
-    message: string,
-  ) {
-    setDeployments((current) =>
-      current.map((deployment) =>
-        deployment.id === deploymentId
-          ? {
-              ...deployment,
-              status: nextStatus,
-              updatedAt: new Date().toISOString(),
-            }
-          : deployment,
-      ),
-    )
-    setBanner({ intent: 'success', message })
-  }
-
-  function removeDeployment(deploymentId: string) {
-    setDeployments((current) => current.filter((deployment) => deployment.id !== deploymentId))
-    setBanner({
-      intent: 'warning',
-      message: 'Removed the preview row locally. No Foundry deployment or endpoint was deleted.',
-    })
-  }
-
-  function submitConnection(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-    const normalizedEndpoint = normalizeEndpoint(baseEndpoint)
-    if (!normalizedEndpoint) {
-      setFormError('Enter a valid base URL for the preview connection.')
-      return
-    }
-
-    const now = new Date().toISOString()
-    const connectionId = `conn-local-${Date.now()}`
-    const host = new URL(normalizedEndpoint).host
-    const deploymentName = `preview-${host.replace(/[^a-z0-9]+/gi, '-').toLowerCase()}`
-    const secretProvided = Boolean(secretInputRef.current?.value.trim())
-    const connection: PreviewFoundryConnection = {
-      id: connectionId,
-      displayName: `${provider} / ${host}`,
-      provider,
-      endpoint: normalizedEndpoint,
-      azureResourceId: `/local-preview/${host}`,
-      createdAt: now,
-      source: 'local',
-      state: 'preview',
-    }
-    const deployment: PreviewModelDeployment = {
-      id: `dep-local-${Date.now()}`,
-      foundryConnectionId: connectionId,
-      deploymentName,
-      modelName: deployableModelsByProvider[provider][0].name,
-      modelVersion: deployableModelsByProvider[provider][0].version,
-      endpoint: buildPreviewPath(normalizedEndpoint, deploymentName, '/chat/completions'),
-      requestPath: '/chat/completions',
-      regionLabel: derivePreviewRegion(normalizedEndpoint),
-      status: 'syncing',
-      updatedAt: now,
-      source: 'local',
-      notes:
-        'Created from the browser preview form. No connection validation, secret persistence, or Foundry deployment occurred.',
-    }
-
-    setConnections((current) => [connection, ...current])
-    setDeployments((current) => [deployment, ...current])
-    setSelectedDeploymentId(deployment.id)
-    setBaseEndpoint('')
-    setFormError(null)
-    if (secretInputRef.current) {
-      secretInputRef.current.value = ''
-    }
-    setBanner({
-      intent: 'success',
-      message: secretProvided
-        ? 'Added a local preview connection and draft endpoint. The submitted secret was discarded immediately.'
-        : 'Added a local preview connection and draft endpoint. No Foundry validation or deployment call occurred.',
-    })
-  }
-
-  function submitDeployDialog(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-    const selectedConnection = connections.find(
-      (connection) => connection.id === deployDraft.foundryConnectionId,
-    )
-    if (!selectedConnection) {
-      setDeployError('Choose a preview connection before adding a deployment row.')
-      return
-    }
-
-    const trimmedName = deployDraft.deploymentName.trim()
-    const trimmedModelName = deployDraft.modelName.trim()
-    const trimmedVersion = deployDraft.modelVersion.trim()
-
-    if (!trimmedName || !trimmedModelName || !trimmedVersion) {
-      setDeployError('Deployment name, model name, and model version are required.')
-      return
-    }
-
-    const now = new Date().toISOString()
-    const deployment: PreviewModelDeployment = {
-      id: `dep-local-${Date.now()}`,
-      foundryConnectionId: selectedConnection.id,
-      deploymentName: trimmedName,
-      modelName: trimmedModelName,
-      modelVersion: trimmedVersion,
-      endpoint: buildPreviewPath(
-        selectedConnection.endpoint,
-        trimmedName,
-        deployDraft.requestPath,
-      ),
-      requestPath: deployDraft.requestPath,
-      regionLabel: derivePreviewRegion(selectedConnection.endpoint),
-      status: 'syncing',
-      updatedAt: now,
-      source: 'local',
-      notes:
-        'Deploy Model adds a local preview endpoint row only. Azure AI Foundry was not contacted from this page.',
-    }
-
-    setDeployments((current) => [deployment, ...current])
-    setSelectedDeploymentId(deployment.id)
-    setDeployDialogOpen(false)
-    setDeployError(null)
-    removeDeployQueryIfPresent()
-    setBanner({
-      intent: 'success',
-      message: 'Added a local preview deployment row. No model deployment was created in Azure.',
-    })
-  }
-
-  const readyCount = deployments.filter((deployment) => deployment.status === 'ready').length
-  const localCount = deployments.filter((deployment) => deployment.source === 'local').length
-
   return (
     <section className={styles.page}>
       <PageHeader
         title="Models"
-        description="Model APIs MOSAIC governs, imported from your API Management gateways."
+        description="Model APIs MOSAIC governs, and the provider endpoints they are served from. Everything here is read from Azure or recorded as intent; MOSAIC never changes API Management or your model resources."
+        source="live"
         actions={
-          <>
-            <Button
-              appearance="primary"
-              icon={<AddRegular />}
-              onClick={() => setImportOpen(true)}
-            >
-              Import from gateway
-            </Button>
-            <Button appearance="secondary" onClick={() => openDeployDialogForConnection()}>
-              Deploy model
-            </Button>
-          </>
+          <Button appearance="primary" icon={<AddRegular />} onClick={() => setImportOpen(true)}>
+            Import from gateway
+          </Button>
         }
       />
 
@@ -710,486 +783,7 @@ export function ModelsPage() {
 
       <ImportedModelApis onRemoved={setLiveBanner} />
 
-      <PreviewNotice kind="sample">
-        Everything below this line is a preview. It mixes typed sample endpoints with browser-only
-        edits. MOSAIC does not validate Foundry connections, persist secrets, or deploy models from
-        this page yet.
-      </PreviewNotice>
-
-      {banner && (
-        <MessageBar intent={banner.intent}>
-          <MessageBarBody>{banner.message}</MessageBarBody>
-        </MessageBar>
-      )}
-
-      <div className={styles.heroGrid}>
-        <Card className={styles.panel}>
-          <div className={styles.panelHeader}>
-            <div>
-              <Title3 as="h2">Add preview connection</Title3>
-              <Text>Capture a provider endpoint and create a local draft deployment row.</Text>
-            </div>
-          </div>
-          <form className={styles.connectionForm} onSubmit={submitConnection}>
-            <Field label="Provider" required>
-              <Select
-                aria-label="Foundry provider"
-                value={provider}
-                onChange={(event) => {
-                  if (isFoundryProvider(event.target.value)) {
-                    setProvider(event.target.value)
-                  }
-                }}
-              >
-                {foundryProviders.map((option) => (
-                  <option key={option} value={option}>
-                    {option}
-                  </option>
-                ))}
-              </Select>
-            </Field>
-            <Field label="Base URL" required>
-              <Input
-                aria-label="Foundry base URL"
-                placeholder="https://example.openai.azure.com"
-                type="url"
-                value={baseEndpoint}
-                onChange={(_, data) => setBaseEndpoint(data.value)}
-              />
-            </Field>
-            <Field label="Connection secret (optional)">
-              <Input
-                ref={secretInputRef}
-                aria-label="Optional connection secret"
-                placeholder="Paste a key or token for local form testing"
-                type="password"
-                autoComplete="new-password"
-              />
-            </Field>
-            {formError && (
-              <MessageBar intent="error">
-                <MessageBarBody>{formError}</MessageBarBody>
-              </MessageBar>
-            )}
-            <div className={styles.formActions}>
-              <Button appearance="primary" type="submit">
-                Add preview connection
-              </Button>
-              <Text size={200}>
-                Secrets are never shown back and are cleared after submit.
-              </Text>
-            </div>
-          </form>
-        </Card>
-
-        <div className={styles.summaryGrid}>
-          <Card className={styles.summaryCard}>
-            <Text>Preview connections</Text>
-            <strong>{connections.length}</strong>
-            <Text>Sample plus local browser rows.</Text>
-          </Card>
-          <Card className={styles.summaryCard}>
-            <Text>Ready endpoints</Text>
-            <strong>{readyCount}</strong>
-            <Text>Local status only. Azure is unchanged.</Text>
-          </Card>
-          <Card className={styles.summaryCard}>
-            <Text>Local additions</Text>
-            <strong>{localCount}</strong>
-            <Text>Connections and deployments created in this browser.</Text>
-          </Card>
-        </div>
-      </div>
-
-      <Card className={styles.panel}>
-        <div className={styles.panelHeader}>
-          <div>
-            <Title3 as="h2">Active model endpoints</Title3>
-            <Text>Filter the preview inventory and inspect connection or status details.</Text>
-          </div>
-        </div>
-
-        <div className={styles.filterBar}>
-          <Field className={styles.searchField} label="Search endpoints">
-            <Input
-              aria-label="Search endpoints"
-              placeholder="Search deployments, models, or endpoints"
-              value={searchText}
-              onChange={(_, data) => setSearchText(data.value)}
-            />
-          </Field>
-          <Field label="Provider">
-            <Select
-              aria-label="Filter by provider"
-              value={providerFilter}
-              onChange={(event) => {
-                const nextValue = event.target.value
-                if (nextValue === 'all' || isFoundryProvider(nextValue)) {
-                  setProviderFilter(nextValue)
-                }
-              }}
-            >
-              <option value="all">All providers</option>
-              {foundryProviders.map((option) => (
-                <option key={option} value={option}>
-                  {option}
-                </option>
-              ))}
-            </Select>
-          </Field>
-          <Field label="Status">
-            <Select
-              aria-label="Filter by deployment status"
-              value={statusFilter}
-              onChange={(event) => {
-                const nextValue = event.target.value
-                if (
-                  nextValue === 'all' ||
-                  nextValue === 'ready' ||
-                  nextValue === 'syncing' ||
-                  nextValue === 'attention' ||
-                  nextValue === 'stopped'
-                ) {
-                  setStatusFilter(nextValue)
-                }
-              }}
-            >
-              <option value="all">All statuses</option>
-              <option value="ready">Ready</option>
-              <option value="syncing">Preview syncing</option>
-              <option value="attention">Needs attention</option>
-              <option value="stopped">Stopped</option>
-            </Select>
-          </Field>
-        </div>
-
-        <div className={styles.resultsLayout}>
-          <div className={styles.tableWrap}>
-            <Table aria-label="Preview model deployments">
-              <TableHeader>
-                <TableRow>
-                  <TableHeaderCell>Deployment</TableHeaderCell>
-                  <TableHeaderCell>Model</TableHeaderCell>
-                  <TableHeaderCell>Provider</TableHeaderCell>
-                  <TableHeaderCell>Status</TableHeaderCell>
-                  <TableHeaderCell>Source</TableHeaderCell>
-                  <TableHeaderCell>Updated</TableHeaderCell>
-                  <TableHeaderCell>
-                    <span className={styles.srOnly}>Actions</span>
-                  </TableHeaderCell>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {filteredDeployments.map((deployment) => {
-                  const connection = connections.find(
-                    (item) => item.id === deployment.foundryConnectionId,
-                  )
-                  const isSelected = deployment.id === selectedDeploymentId
-                  return (
-                    <TableRow
-                      key={deployment.id}
-                      aria-selected={isSelected}
-                      className={isSelected ? styles.selectedRow : undefined}
-                    >
-                      <TableCell>
-                        <button
-                          className={styles.rowButton}
-                          type="button"
-                          onClick={() => setSelectedDeploymentId(deployment.id)}
-                        >
-                          <span className={styles.primaryCell}>{deployment.deploymentName}</span>
-                          <span className={styles.secondaryCell}>{deployment.endpoint}</span>
-                        </button>
-                      </TableCell>
-                      <TableCell>
-                        <div className={styles.cellStack}>
-                          <span>{deployment.modelName}</span>
-                          <span className={styles.secondaryCell}>{deployment.modelVersion}</span>
-                        </div>
-                      </TableCell>
-                      <TableCell>{connection?.provider ?? 'Unknown connection'}</TableCell>
-                      <TableCell>
-                        <Badge
-                          appearance="filled"
-                          className={deploymentStatusClass(deployment.status)}
-                        >
-                          {deploymentStatusLabel(deployment.status)}
-                        </Badge>
-                      </TableCell>
-                      <TableCell>
-                        <Badge appearance="tint">
-                          {deployment.source === 'sample' ? 'Sample' : 'Local'}
-                        </Badge>
-                      </TableCell>
-                      <TableCell>{formatTimestamp(deployment.updatedAt)}</TableCell>
-                      <TableCell>
-                        <Button
-                          appearance="subtle"
-                          onClick={() => openDeployDialogForConnection(deployment.foundryConnectionId)}
-                        >
-                          Clone
-                        </Button>
-                      </TableCell>
-                    </TableRow>
-                  )
-                })}
-              </TableBody>
-            </Table>
-            {filteredDeployments.length === 0 && (
-              <div className={styles.emptyState}>
-                <Title3 as="h3">No endpoints match these filters</Title3>
-                <Text>Adjust the preview filters or add another local connection.</Text>
-              </div>
-            )}
-          </div>
-
-          {selectedDeployment && (
-            <Card className={styles.detailCard}>
-              <div className={styles.detailHeader}>
-                <div>
-                  <Title3 as="h2">{selectedDeployment.deploymentName}</Title3>
-                  <Text>{selectedDeployment.modelName}</Text>
-                </div>
-                <Badge
-                  appearance="filled"
-                  className={deploymentStatusClass(selectedDeployment.status)}
-                >
-                  {deploymentStatusLabel(selectedDeployment.status)}
-                </Badge>
-              </div>
-
-              <dl className={styles.detailList}>
-                <div>
-                  <dt>Connection</dt>
-                  <dd>
-                    {connections.find(
-                      (connection) => connection.id === selectedDeployment.foundryConnectionId,
-                    )?.displayName ?? 'Unknown connection'}
-                  </dd>
-                </div>
-                <div>
-                  <dt>Endpoint</dt>
-                  <dd className={styles.breakValue}>{selectedDeployment.endpoint}</dd>
-                </div>
-                <div>
-                  <dt>Route</dt>
-                  <dd>{selectedDeployment.requestPath}</dd>
-                </div>
-                <div>
-                  <dt>Region label</dt>
-                  <dd>{selectedDeployment.regionLabel}</dd>
-                </div>
-                <div>
-                  <dt>Updated</dt>
-                  <dd>{formatTimestamp(selectedDeployment.updatedAt)}</dd>
-                </div>
-                <div>
-                  <dt>Connection state</dt>
-                  <dd>
-                    <Badge
-                      appearance="filled"
-                      className={connectionStateClass(
-                        connections.find(
-                          (connection) =>
-                            connection.id === selectedDeployment.foundryConnectionId,
-                        )?.state ?? 'preview',
-                      )}
-                    >
-                      {connections.find(
-                        (connection) =>
-                          connection.id === selectedDeployment.foundryConnectionId,
-                      )?.state === 'connected'
-                        ? 'Connected preview'
-                        : 'Preview added locally'}
-                    </Badge>
-                  </dd>
-                </div>
-              </dl>
-
-              <div className={styles.noteCard}>
-                <Text>{selectedDeployment.notes}</Text>
-              </div>
-
-              <div className={styles.actionRow}>
-                {selectedDeployment.status === 'ready' && (
-                  <Button
-                    onClick={() =>
-                      updateDeployment(
-                        selectedDeployment.id,
-                        'stopped',
-                        'Marked the endpoint as stopped in local preview state. Azure was not updated.',
-                      )
-                    }
-                  >
-                    Pause locally
-                  </Button>
-                )}
-                {selectedDeployment.status === 'stopped' && (
-                  <Button
-                    onClick={() =>
-                      updateDeployment(
-                        selectedDeployment.id,
-                        'ready',
-                        'Returned the endpoint to ready in local preview state only.',
-                      )
-                    }
-                  >
-                    Resume locally
-                  </Button>
-                )}
-                {selectedDeployment.status === 'attention' && (
-                  <Button
-                    onClick={() =>
-                      updateDeployment(
-                        selectedDeployment.id,
-                        'syncing',
-                        'Queued a local retry state. No Azure deployment action was triggered.',
-                      )
-                    }
-                  >
-                    Retry locally
-                  </Button>
-                )}
-                {selectedDeployment.status === 'syncing' && (
-                  <Button
-                    onClick={() =>
-                      updateDeployment(
-                        selectedDeployment.id,
-                        'ready',
-                        'Marked the preview sync as complete locally. Azure is unchanged.',
-                      )
-                    }
-                  >
-                    Mark ready
-                  </Button>
-                )}
-                <Button
-                  appearance="secondary"
-                  onClick={() => openDeployDialogForConnection(selectedDeployment.foundryConnectionId)}
-                >
-                  Deploy similar model
-                </Button>
-                <Button
-                  appearance="subtle"
-                  onClick={() => removeDeployment(selectedDeployment.id)}
-                >
-                  Remove preview row
-                </Button>
-              </div>
-            </Card>
-          )}
-        </div>
-      </Card>
-
-      <Dialog
-        open={deployDialogOpen}
-        onOpenChange={(_, data) => {
-          if (!data.open) {
-            closeDeployDialog()
-          }
-        }}
-      >
-        <DialogSurface>
-          <DialogBody>
-            <DialogTitle>Deploy model</DialogTitle>
-            <DialogContent>
-              <form className={styles.dialogForm} onSubmit={submitDeployDialog}>
-                <Text>
-                  This dialog adds a preview deployment row only. It does not call Azure AI
-                  Foundry.
-                </Text>
-                <Field label="Connection" required>
-                  <Select
-                    aria-label="Choose a connection for the preview deployment"
-                    value={deployDraft.foundryConnectionId}
-                    onChange={(event) => {
-                      const connection = connections.find(
-                        (item) => item.id === event.target.value,
-                      )
-                      if (connection) {
-                        setDeployDraft(createDeploymentDraft(connection.id, connection.provider))
-                      }
-                    }}
-                  >
-                    {connections.map((connection) => (
-                      <option key={connection.id} value={connection.id}>
-                        {connection.displayName}
-                      </option>
-                    ))}
-                  </Select>
-                </Field>
-                <Field label="Deployment name" required>
-                  <Input
-                    aria-label="Deployment name"
-                    value={deployDraft.deploymentName}
-                    onChange={(_, data) =>
-                      setDeployDraft((current) => ({
-                        ...current,
-                        deploymentName: data.value,
-                      }))
-                    }
-                  />
-                </Field>
-                <Field label="Model name" required>
-                  <Input
-                    aria-label="Model name"
-                    value={deployDraft.modelName}
-                    onChange={(_, data) =>
-                      setDeployDraft((current) => ({
-                        ...current,
-                        modelName: data.value,
-                      }))
-                    }
-                  />
-                </Field>
-                <Field label="Model version" required>
-                  <Input
-                    aria-label="Model version"
-                    value={deployDraft.modelVersion}
-                    onChange={(_, data) =>
-                      setDeployDraft((current) => ({
-                        ...current,
-                        modelVersion: data.value,
-                      }))
-                    }
-                  />
-                </Field>
-                <Field label="Endpoint route">
-                  <Select
-                    aria-label="Preview endpoint route"
-                    value={deployDraft.requestPath}
-                    onChange={(event) => {
-                      const nextPath = event.target.value
-                      if (isRequestPath(nextPath)) {
-                        setDeployDraft((current) => ({
-                          ...current,
-                          requestPath: nextPath,
-                        }))
-                      }
-                    }}
-                  >
-                    <option value="/chat/completions">/chat/completions</option>
-                    <option value="/embeddings">/embeddings</option>
-                  </Select>
-                </Field>
-                {deployError && (
-                  <MessageBar intent="error">
-                    <MessageBarBody>{deployError}</MessageBarBody>
-                  </MessageBar>
-                )}
-                <DialogActions>
-                  <Button appearance="secondary" onClick={closeDeployDialog} type="button">
-                    Cancel
-                  </Button>
-                  <Button appearance="primary" type="submit">
-                    Add preview deployment
-                  </Button>
-                </DialogActions>
-              </form>
-            </DialogContent>
-          </DialogBody>
-        </DialogSurface>
-      </Dialog>
+      <ModelEndpoints />
 
       <ImportFromGatewayDialog
         kind="apis"
@@ -1209,3 +803,4 @@ export function ModelsPage() {
     </section>
   )
 }
+
