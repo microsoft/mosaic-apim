@@ -1,0 +1,278 @@
+.page {
+  min-width: 0;
+}
+
+.rangeControl {
+  display: grid;
+  gap: 4px;
+  color: var(--mosaic-text-muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.liveSection {
+  margin-bottom: 20px;
+}
+
+.sectionHeading {
+  margin-bottom: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.sectionHeading h2 {
+  margin: 0 0 2px;
+  font-size: 18px;
+}
+
+.sectionHeading span {
+  color: var(--mosaic-text-muted);
+}
+
+.liveGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.inventoryCard {
+  min-height: 86px;
+  padding: 16px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  border: 1px solid var(--mosaic-border);
+  border-radius: 8px;
+  background: var(--mosaic-surface);
+  color: var(--mosaic-text);
+  box-shadow: var(--mosaic-shadow);
+  text-align: left;
+  cursor: pointer;
+}
+
+.inventoryCard:hover {
+  border-color: var(--mosaic-primary);
+}
+
+.inventoryCard > span:last-child {
+  display: grid;
+  gap: 2px;
+}
+
+.inventoryCard strong {
+  min-height: 29px;
+  display: flex;
+  align-items: center;
+  color: var(--mosaic-text);
+  font-size: 24px;
+}
+
+.inventoryCard small {
+  color: var(--mosaic-text-muted);
+  font-size: 13px;
+}
+
+.inventoryIcon {
+  width: 42px;
+  height: 42px;
+  flex: 0 0 42px;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  background: var(--mosaic-primary-soft);
+  color: var(--mosaic-primary);
+}
+
+.inventoryIcon svg {
+  width: 24px;
+  height: 24px;
+}
+
+.metricGrid {
+  margin-bottom: 16px;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.metricCard {
+  min-height: 156px;
+  padding: 18px !important;
+  gap: 8px !important;
+  border: 1px solid var(--mosaic-border) !important;
+  background: var(--mosaic-surface) !important;
+  box-shadow: var(--mosaic-shadow) !important;
+}
+
+.warningCard {
+  border-color: var(--mosaic-warning) !important;
+}
+
+.metricLabel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--mosaic-text-muted);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.metricIcon {
+  color: var(--mosaic-primary);
+}
+
+.metricValue {
+  color: var(--mosaic-text);
+  font-size: 30px;
+  font-weight: 650;
+  letter-spacing: -0.03em;
+}
+
+.trendDetail,
+.warningDetail {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--mosaic-primary);
+}
+
+.warningDetail {
+  color: var(--mosaic-warning);
+}
+
+.metricCard :global(.source-badge) {
+  align-self: start;
+  margin-top: auto;
+}
+
+.dashboardGrid {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(260px, 1fr);
+  gap: 16px;
+}
+
+.volumePanel {
+  min-height: 350px;
+  grid-row: span 2;
+}
+
+.chartArea {
+  position: relative;
+  height: 270px;
+  margin: 22px 24px 16px 34px;
+  border-left: 1px solid var(--mosaic-border-soft);
+  border-bottom: 1px solid var(--mosaic-border-soft);
+  overflow: hidden;
+}
+
+.chartGrid {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+}
+
+.chartGrid span {
+  width: 100%;
+  border-top: 1px dashed var(--mosaic-border-soft);
+}
+
+.lineChart {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.dataLine {
+  fill: none;
+  stroke: var(--mosaic-primary);
+  stroke-width: 2.2;
+  vector-effect: non-scaling-stroke;
+}
+
+.areaLine {
+  fill: var(--mosaic-primary-soft);
+  stroke: none;
+}
+
+.modelList,
+.healthList {
+  padding: 16px;
+  display: grid;
+  gap: 16px;
+}
+
+.modelRow {
+  display: grid;
+  gap: 7px;
+}
+
+.modelRow > div:first-child {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.modelRow span {
+  color: var(--mosaic-text-muted);
+}
+
+.progressTrack {
+  height: 7px;
+  overflow: hidden;
+  border-radius: 4px;
+  background: var(--mosaic-surface-strong);
+}
+
+.progressTrack span {
+  height: 100%;
+  display: block;
+  border-radius: inherit;
+  background: var(--mosaic-primary);
+}
+
+.healthList {
+  gap: 0;
+}
+
+.healthList > div {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  border-bottom: 1px solid var(--mosaic-border-soft);
+}
+
+.healthList > div:last-child {
+  border-bottom: 0;
+}
+
+@media (max-width: 1050px) {
+  .dashboardGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .volumePanel {
+    grid-row: auto;
+  }
+}
+
+@media (max-width: 760px) {
+  .liveGrid,
+  .metricGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .chartArea {
+    height: 220px;
+    margin-left: 20px;
+  }
+}

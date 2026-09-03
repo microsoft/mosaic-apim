@@ -1,0 +1,396 @@
+.page {
+  display: grid;
+  gap: 20px;
+}
+
+.toolbar {
+  padding: 16px 18px;
+  display: grid;
+  gap: 16px;
+  border: 1px solid var(--mosaic-border);
+  border-radius: 12px;
+  background: var(--mosaic-surface);
+  box-shadow: var(--mosaic-shadow);
+}
+
+.tabs {
+  overflow-x: auto;
+}
+
+.toolbarControls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.searchInput {
+  width: min(360px, 100%);
+}
+
+.searchInput :global(span) {
+  width: 100%;
+}
+
+.actionRow {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.contentGrid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.8fr) minmax(320px, 1fr);
+  align-items: start;
+  gap: 16px;
+}
+
+.listCard,
+.detailCard {
+  border: 1px solid var(--mosaic-border-soft);
+  background: var(--mosaic-surface);
+  box-shadow: var(--mosaic-shadow);
+}
+
+.listCard {
+  overflow: hidden;
+}
+
+.detailCard {
+  padding: 18px;
+  display: grid;
+  gap: 16px;
+  position: sticky;
+  top: calc(var(--topbar-height) + 24px);
+}
+
+.cardHeader {
+  padding: 16px 18px 12px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid var(--mosaic-border-soft);
+}
+
+.cardHeaderText {
+  display: grid;
+  gap: 4px;
+}
+
+.tableWrapper {
+  overflow: auto;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.table th {
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--mosaic-border-soft);
+  background: var(--mosaic-surface-subtle);
+  color: var(--mosaic-text-muted);
+  text-align: left;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.table td {
+  padding: 12px 16px;
+  border-top: 1px solid var(--mosaic-border-soft);
+  vertical-align: top;
+  font-size: 14px;
+}
+
+.selectableRow:hover td,
+.selectableRow:focus-within td {
+  background: var(--mosaic-surface-subtle);
+}
+
+.selectedRow td {
+  background: var(--mosaic-primary-soft);
+}
+
+.rowButton {
+  width: 100%;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+  border: none;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.rowButton:focus-visible {
+  outline: 2px solid var(--mosaic-primary);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.rowPrimary {
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.rowSecondary,
+.muted,
+.helperText,
+.groupListDescription,
+.eyebrow,
+.readOnlyLabel {
+  color: var(--mosaic-text-muted);
+}
+
+.rowSecondary {
+  font-size: 12px;
+}
+
+.monospace {
+  font-family: Consolas, 'Courier New', Courier, monospace;
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.detailHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.detailTitleBlock {
+  min-width: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.eyebrow,
+.readOnlyLabel {
+  font-size: 12px;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.badgeRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.detailSection {
+  display: grid;
+  gap: 12px;
+}
+
+.formActions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.helperText {
+  font-size: 12px;
+  max-width: 32rem;
+}
+
+.readOnlyPanel {
+  padding: 12px 14px;
+  display: grid;
+  gap: 6px;
+  border: 1px solid var(--mosaic-border-soft);
+  border-radius: 10px;
+  background: var(--mosaic-surface-subtle);
+}
+
+.metadataGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.inlineForm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 8px;
+}
+
+.memberField {
+  min-width: 240px;
+  flex: 1 1 240px;
+}
+
+.addMemberButton {
+  flex: 0 0 auto;
+}
+
+.memberList {
+  display: grid;
+  gap: 8px;
+}
+
+.memberRow {
+  padding: 12px 14px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid var(--mosaic-border-soft);
+  border-radius: 10px;
+  background: var(--mosaic-surface-subtle);
+}
+
+.memberMeta {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.memberName {
+  font-weight: 600;
+}
+
+.groupList {
+  padding: 12px;
+  display: grid;
+  gap: 8px;
+}
+
+.groupListItem {
+  width: 100%;
+  padding: 12px 14px;
+  display: grid;
+  gap: 4px;
+  border: 1px solid var(--mosaic-border-soft);
+  border-radius: 10px;
+  background: var(--mosaic-surface);
+  color: var(--mosaic-text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.groupListItem:hover,
+.groupListItem:focus-visible {
+  border-color: var(--mosaic-primary);
+  background: var(--mosaic-surface-subtle);
+}
+
+.groupListItem:focus-visible {
+  outline: 2px solid var(--mosaic-primary);
+  outline-offset: 2px;
+}
+
+.groupListItemSelected {
+  border-color: var(--mosaic-primary);
+  background: var(--mosaic-primary-soft);
+  box-shadow: inset 0 0 0 1px var(--mosaic-primary);
+}
+
+.groupListTitle {
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.groupListDescription {
+  font-size: 12px;
+}
+
+.emptyPanel {
+  padding: 16px;
+}
+
+.dialogForm {
+  display: grid;
+  gap: 12px;
+}
+
+.dangerButton {
+  color: var(--mosaic-danger);
+}
+
+.dangerButton:hover,
+.dangerButton:focus-visible {
+  background: var(--mosaic-danger-soft);
+}
+
+.liveBadge {
+  background: var(--mosaic-success-soft);
+  color: var(--mosaic-success);
+}
+
+.userBadge {
+  background: var(--mosaic-primary-soft);
+  color: var(--mosaic-primary);
+}
+
+.servicePrincipalBadge {
+  background: var(--mosaic-warning-soft);
+  color: var(--mosaic-warning);
+}
+
+.managedIdentityBadge,
+.groupBadge {
+  background: var(--mosaic-surface-strong);
+  color: var(--mosaic-text);
+}
+
+@media (max-width: 980px) {
+  .contentGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .detailCard {
+    position: static;
+  }
+
+  .searchInput {
+    width: 100%;
+  }
+
+  .toolbarControls {
+    align-items: stretch;
+  }
+}
+
+@media (max-width: 640px) {
+  .toolbar,
+  .detailCard {
+    padding: 14px;
+  }
+
+  .cardHeader {
+    padding: 14px;
+  }
+
+  .table th,
+  .table td {
+    padding: 10px 12px;
+  }
+
+  .metadataGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .formActions {
+    align-items: stretch;
+  }
+
+  .actionRow {
+    width: 100%;
+    justify-content: stretch;
+  }
+
+  .actionRow > * {
+    flex: 1 1 100%;
+  }
+}

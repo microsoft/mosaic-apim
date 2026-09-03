@@ -1,0 +1,267 @@
+.page {
+  display: grid;
+  gap: 20px;
+}
+
+.heroGrid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.45fr) minmax(280px, 0.9fr);
+  gap: 20px;
+}
+
+.panel {
+  border: 1px solid var(--mosaic-border);
+  border-radius: 8px;
+  background: var(--mosaic-surface);
+  box-shadow: var(--mosaic-shadow);
+}
+
+.panelHeader {
+  padding: 18px 20px 0;
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.connectionForm,
+.dialogForm {
+  padding: 18px 20px 20px;
+  display: grid;
+  gap: 16px;
+}
+
+.formActions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+
+.summaryGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 16px;
+}
+
+.summaryCard {
+  min-height: 132px;
+  padding: 18px;
+  display: grid;
+  gap: 6px;
+  border: 1px solid var(--mosaic-border);
+  background: var(--mosaic-surface);
+  box-shadow: var(--mosaic-shadow);
+}
+
+.summaryCard strong {
+  font-size: 28px;
+  line-height: 1.1;
+  color: var(--mosaic-text);
+}
+
+.filterBar {
+  padding: 18px 20px 0;
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) repeat(2, minmax(180px, 1fr));
+  gap: 16px;
+}
+
+.searchField {
+  min-width: 0;
+}
+
+.resultsLayout {
+  padding: 18px 20px 20px;
+  display: grid;
+  grid-template-columns: minmax(0, 1.8fr) minmax(300px, 1fr);
+  gap: 20px;
+}
+
+.tableWrap {
+  min-width: 0;
+  overflow: auto;
+  border: 1px solid var(--mosaic-border-soft);
+  border-radius: 8px;
+}
+
+.tableWrap :global(table) {
+  width: 100%;
+}
+
+.tableWrap :global(th) {
+  background: var(--mosaic-surface-subtle);
+  color: var(--mosaic-text-muted);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.tableWrap :global(th),
+.tableWrap :global(td) {
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--mosaic-border-soft);
+  vertical-align: top;
+}
+
+.selectedRow :global(td) {
+  background: var(--mosaic-primary-soft);
+}
+
+.rowButton {
+  width: 100%;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.rowButton:hover .primaryCell {
+  color: var(--mosaic-primary);
+}
+
+.primaryCell {
+  font-weight: 600;
+  color: var(--mosaic-text);
+}
+
+.secondaryCell {
+  color: var(--mosaic-text-muted);
+  font-size: 12px;
+  word-break: break-word;
+}
+
+.cellStack {
+  display: grid;
+  gap: 4px;
+}
+
+.detailCard {
+  padding: 20px;
+  display: grid;
+  align-content: start;
+  gap: 16px;
+  border: 1px solid var(--mosaic-border);
+  background: var(--mosaic-surface);
+  box-shadow: var(--mosaic-shadow);
+}
+
+.detailHeader {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.detailList {
+  margin: 0;
+  display: grid;
+  gap: 12px;
+}
+
+.detailList div {
+  display: grid;
+  gap: 4px;
+}
+
+.detailList dt {
+  color: var(--mosaic-text-muted);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.detailList dd {
+  margin: 0;
+  color: var(--mosaic-text);
+}
+
+.breakValue {
+  word-break: break-word;
+}
+
+.noteCard {
+  padding: 12px 14px;
+  border: 1px solid var(--mosaic-border-soft);
+  border-radius: 8px;
+  background: var(--mosaic-surface-subtle);
+}
+
+.actionRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.emptyState {
+  padding: 28px;
+  display: grid;
+  gap: 8px;
+  text-align: center;
+}
+
+.emptyState h3 {
+  margin: 0;
+}
+
+.statusReady,
+.statusSyncing,
+.statusAttention,
+.statusStopped {
+  border: 1px solid transparent;
+}
+
+.statusReady {
+  color: var(--mosaic-success) !important;
+  background: var(--mosaic-success-soft) !important;
+}
+
+.statusSyncing {
+  color: var(--mosaic-primary) !important;
+  background: var(--mosaic-primary-soft) !important;
+}
+
+.statusAttention {
+  color: var(--mosaic-warning) !important;
+  background: var(--mosaic-warning-soft) !important;
+}
+
+.statusStopped {
+  color: var(--mosaic-text-muted) !important;
+  background: var(--mosaic-surface-subtle) !important;
+}
+
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+@media (max-width: 1024px) {
+  .heroGrid,
+  .resultsLayout {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 760px) {
+  .filterBar {
+    grid-template-columns: 1fr;
+  }
+
+  .panelHeader,
+  .formActions,
+  .detailHeader {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}

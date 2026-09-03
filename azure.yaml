@@ -1,0 +1,43 @@
+name: mosaic
+metadata:
+  template: mosaic-infrastructure@0.1.0
+
+infra:
+  provider: bicep
+  path: infra
+
+hooks:
+  preprovision:
+    windows:
+      shell: pwsh
+      run: python .\scripts\entra_bootstrap.py preprovision
+    posix:
+      shell: sh
+      run: python ./scripts/entra_bootstrap.py preprovision
+  postprovision:
+    windows:
+      shell: pwsh
+      run: python .\scripts\entra_bootstrap.py postprovision
+    posix:
+      shell: sh
+      run: python ./scripts/entra_bootstrap.py postprovision
+
+services:
+  api:
+    project: .
+    host: appservice
+    language: docker
+    docker:
+      context: .
+      path: ./apps/api/Dockerfile
+      buildArgs:
+        - PIP_INDEX_URL=${MOSAIC_PYTHON_INDEX_URL}
+      remoteBuild: true
+  web:
+    project: .
+    host: appservice
+    language: docker
+    docker:
+      context: .
+      path: ./apps/web/Dockerfile
+      remoteBuild: true
