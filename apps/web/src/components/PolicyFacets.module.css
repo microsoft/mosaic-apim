@@ -1,0 +1,55 @@
+.facetList {
+  display: grid;
+  gap: 10px;
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.facet {
+  display: grid;
+  gap: 4px;
+  padding: 12px 14px;
+  border: 1px solid var(--mosaic-border-soft);
+  border-radius: 8px;
+  background: var(--mosaic-surface-subtle);
+}
+
+.facetHeader {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.facetDetail {
+  color: var(--mosaic-text-muted);
+}
+
+.policyCard {
+  padding: 18px;
+  display: grid;
+  gap: 12px;
+  border: 1px solid var(--mosaic-border-soft);
+  background: var(--mosaic-surface);
+  box-shadow: var(--mosaic-shadow);
+}
+
+.unrecognizedNote {
+  color: var(--mosaic-warning);
+}
+
+.kindBadge {
+  color: var(--mosaic-primary);
+  background: var(--mosaic-primary-soft);
+}
+
+.externalBadge {
+  color: var(--mosaic-warning);
+  background: var(--mosaic-warning-soft);
+}
+
+.managedBadge {
+  color: var(--mosaic-success);
+  background: var(--mosaic-success-soft);
+}

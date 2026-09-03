@@ -1,0 +1,36 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "environmentName": {
+      "value": "${AZURE_ENV_NAME}"
+    },
+    "location": {
+      "value": "${AZURE_LOCATION}"
+    },
+    "apimPublisherName": {
+      "value": "${MOSAIC_APIM_PUBLISHER_NAME}"
+    },
+    "apimPublisherEmail": {
+      "value": "${MOSAIC_APIM_PUBLISHER_EMAIL}"
+    },
+    "tenantId": {
+      "value": "${MOSAIC_TENANT_ID}"
+    },
+    "apiAppClientId": {
+      "value": "${MOSAIC_API_CLIENT_ID}"
+    },
+    "apiServicePrincipalObjectId": {
+      "value": "${MOSAIC_API_SERVICE_PRINCIPAL_OBJECT_ID}"
+    },
+    "spaAppClientId": {
+      "value": "${MOSAIC_SPA_CLIENT_ID}"
+    },
+    "apiApplicationIdUri": {
+      "value": "${MOSAIC_API_APPLICATION_ID_URI}"
+    },
+    "apiScope": {
+      "value": "${MOSAIC_API_SCOPE}"
+    }
+  }
+}

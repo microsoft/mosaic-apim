@@ -1,0 +1,100 @@
+.page {
+  display: grid;
+  gap: 20px;
+}
+
+.backLink {
+  color: var(--mosaic-primary);
+  font-size: 13px;
+  text-decoration: none;
+  width: fit-content;
+}
+
+.backLink:hover,
+.backLink:focus-visible {
+  text-decoration: underline;
+}
+
+.headerActions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.tabs {
+  overflow-x: auto;
+  border-bottom: 1px solid var(--mosaic-border-soft);
+}
+
+.tabPanel {
+  display: grid;
+  gap: 16px;
+}
+
+.metricGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 16px;
+}
+
+.metricCard {
+  padding: 18px;
+  display: grid;
+  gap: 4px;
+  border: 1px solid var(--mosaic-border-soft);
+  background: var(--mosaic-surface);
+  box-shadow: var(--mosaic-shadow);
+}
+
+.metricValue {
+  margin: 0;
+}
+
+.muted {
+  color: var(--mosaic-text-muted);
+}
+
+.detailCard {
+  padding: 18px;
+  display: grid;
+  gap: 10px;
+  border: 1px solid var(--mosaic-border-soft);
+  background: var(--mosaic-surface);
+  box-shadow: var(--mosaic-shadow);
+}
+
+.apiCard {
+  padding: 18px;
+  display: grid;
+  gap: 12px;
+  border: 1px solid var(--mosaic-border-soft);
+  background: var(--mosaic-surface);
+  box-shadow: var(--mosaic-shadow);
+}
+
+.apiHeader {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.apiHeaderText {
+  display: grid;
+  gap: 2px;
+}
+
+.aiBadge {
+  color: var(--mosaic-primary);
+  background: var(--mosaic-primary-soft);
+}
+
+.sectionHeading {
+  margin: 0;
+}
+
+.syncError {
+  color: var(--mosaic-warning);
+}

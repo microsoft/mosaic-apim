@@ -1,0 +1,125 @@
+.page {
+  display: grid;
+  gap: 20px;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 20px;
+}
+
+.card {
+  padding: 24px;
+  gap: 18px;
+  border: 1px solid var(--mosaic-border);
+  background: var(--mosaic-surface);
+  box-shadow: var(--mosaic-shadow);
+}
+
+.cardHeader {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.cardDescription {
+  margin-top: 8px;
+  display: block;
+  color: var(--mosaic-text-muted);
+}
+
+.definitionList {
+  margin: 0;
+  display: grid;
+  gap: 12px;
+}
+
+.definitionRow {
+  padding: 12px 0;
+  display: grid;
+  grid-template-columns: minmax(0, 180px) minmax(0, 1fr);
+  gap: 12px;
+  border-bottom: 1px solid var(--mosaic-border-soft);
+}
+
+.definitionRow:last-child {
+  border-bottom: 0;
+}
+
+.definitionRow dt {
+  color: var(--mosaic-text-muted);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.definitionRow dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--mosaic-text);
+  font-weight: 600;
+}
+
+.caption {
+  color: var(--mosaic-text-muted);
+}
+
+.radioGroup {
+  display: grid;
+  gap: 12px;
+}
+
+.radioOption {
+  padding: 14px 16px;
+  display: grid;
+  gap: 6px;
+  border: 1px solid var(--mosaic-border);
+  border-radius: 8px;
+  background: var(--mosaic-surface-subtle);
+}
+
+.radioDescription {
+  padding-left: 28px;
+  color: var(--mosaic-text-muted);
+}
+
+.appearanceSummary {
+  padding: 16px;
+  display: grid;
+  gap: 6px;
+  border-radius: 8px;
+  background: var(--mosaic-primary-soft);
+  color: var(--mosaic-text);
+}
+
+.emphasis {
+  font-weight: 600;
+}
+
+.integrationForm {
+  display: grid;
+  gap: 16px;
+}
+
+.formActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+@media (max-width: 680px) {
+  .card {
+    padding: 20px;
+  }
+
+  .definitionRow {
+    grid-template-columns: 1fr;
+    gap: 6px;
+  }
+
+  .radioDescription {
+    padding-left: 0;
+  }
+}

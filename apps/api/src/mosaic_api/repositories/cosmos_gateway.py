@@ -1,0 +1,244 @@
+from typing import Any
+
+import structlog
+from azure.cosmos import exceptions
+from azure.cosmos.aio import ContainerProxy, CosmosClient
+
+from mosaic_api.domain import AuditEvent, Gateway, GatewaySyncRun, GatewaySyncStatus
+from mosaic_api.observed import ObservedEntity
+from mosaic_api.repositories.cosmos import CosmosRepositoryBase
+
+logger = structlog.get_logger()
+
+OBSERVED_DELETE_BATCH = 50
+
+
+class CosmosGatewayRepository(CosmosRepositoryBase):
+    """Gateways and sync runs are desired state; the inventory snapshot is observed state.
+
+    They are kept in separate containers because observed documents churn on every sync and are
+    disposable, while desired state is authored by administrators and audited.
+    """
+
+    def __init__(
+        self,
+        client: CosmosClient,
+        database_name: str,
+        desired_state_container: str,
+        audit_events_container: str,
+        sync_operations_container: str,
+        observed_state_container: str,
+        *,
+        owns_client: bool = False,
+    ) -> None:
+        super().__init__(
+            client,
+            database_name,
+            desired_state_container,
+            audit_events_container,
+            owns_client=owns_client,
+        )
+        database = client.get_database_client(database_name)
+        self._sync: ContainerProxy = database.get_container_client(sync_operations_container)
+        self._observed: ContainerProxy = database.get_container_client(observed_state_container)
+
+    async def ready(self) -> bool:
+        if not await super().ready():
+            return False
+        try:
+            await self._sync.read()
+            await self._observed.read()
+        except exceptions.CosmosHttpResponseError:
+            return False
+        return True
+
+    async def list_gateways(self, tenant_id: str) -> list[Gateway]:
+        items = await self._query(Gateway, tenant_id, "gateway")
+        return sorted(items, key=lambda item: item.name.casefold())
+
+    async def get_gateway(self, tenant_id: str, gateway_id: str) -> Gateway | None:
+        return await self._read(Gateway, tenant_id, gateway_id)
+
+    async def find_gateway_by_resource_id(
+        self, tenant_id: str, azure_resource_id: str
+    ) -> Gateway | None:
+        items = await self._query(
+            Gateway,
+            tenant_id,
+            "gateway",
+            " AND LOWER(c.azureResourceId) = @resourceId",
+            [{"name": "@resourceId", "value": azure_resource_id.casefold()}],
+        )
+        return items[0] if items else None
+
+    async def create_gateway(self, gateway: Gateway, audit_event: AuditEvent) -> Gateway:
+        await self._mutate(
+            gateway,
+            None,
+            audit_event,
+            "create",
+            conflict_message="This API Management service is already registered",
+        )
+        return gateway
+
+    async def save_gateway(self, gateway: Gateway, audit_event: AuditEvent) -> Gateway:
+        await self._mutate(
+            gateway,
+            None,
+            audit_event,
+            "replace",
+            conflict_message="The gateway changed; reload it and try again",
+        )
+        return gateway
+
+    async def record_gateway_state(self, gateway: Gateway) -> Gateway:
+        await self._desired.upsert_item(self._document(gateway))
+        return gateway
+
+    async def delete_gateway(self, gateway: Gateway, audit_event: AuditEvent) -> None:
+        await self.delete_observed_for_gateway(gateway.tenant_id, gateway.id)
+        await self._delete_sync_runs(gateway.tenant_id, gateway.id)
+        await self._mutate(
+            gateway,
+            gateway.id,
+            audit_event,
+            "delete",
+            conflict_message="The gateway changed; reload it and try again",
+        )
+
+    async def save_sync_run(self, run: GatewaySyncRun) -> GatewaySyncRun:
+        await self._sync.upsert_item(self._document(run))
+        return run
+
+    async def get_sync_run(self, tenant_id: str, run_id: str) -> GatewaySyncRun | None:
+        try:
+            item = await self._sync.read_item(item=run_id, partition_key=tenant_id)
+        except exceptions.CosmosResourceNotFoundError:
+            return None
+        run = self._model(GatewaySyncRun, item)
+        return run if run.tenant_id == tenant_id else None
+
+    async def _query_sync_runs(
+        self, tenant_id: str, extra: str, parameters: list[dict[str, Any]]
+    ) -> list[GatewaySyncRun]:
+        query = "SELECT * FROM c WHERE c.tenantId = @tenantId AND c.entityType = @entityType"
+        query += extra
+        items = self._sync.query_items(
+            query=query,
+            parameters=[
+                {"name": "@tenantId", "value": tenant_id},
+                {"name": "@entityType", "value": "gatewaySyncRun"},
+                *parameters,
+            ],
+            partition_key=tenant_id,
+        )
+        return [self._model(GatewaySyncRun, item) async for item in items]
+
+    async def list_sync_runs(
+        self, tenant_id: str, gateway_id: str, *, limit: int = 20
+    ) -> list[GatewaySyncRun]:
+        runs = await self._query_sync_runs(
+            tenant_id,
+            " AND c.gatewayId = @gatewayId",
+            [{"name": "@gatewayId", "value": gateway_id}],
+        )
+        runs.sort(key=lambda run: run.started_at, reverse=True)
+        return runs[:limit]
+
+    async def list_unfinished_sync_runs(self, tenant_id: str) -> list[GatewaySyncRun]:
+        return await self._query_sync_runs(
+            tenant_id,
+            " AND c.status = @status",
+            [{"name": "@status", "value": GatewaySyncStatus.RUNNING.value}],
+        )
+
+    async def _delete_sync_runs(self, tenant_id: str, gateway_id: str) -> None:
+        for run in await self.list_sync_runs(tenant_id, gateway_id, limit=1000):
+            try:
+                await self._sync.delete_item(item=run.id, partition_key=tenant_id)
+            except exceptions.CosmosResourceNotFoundError:
+                continue
+
+    async def replace_observed(
+        self,
+        tenant_id: str,
+        gateway_id: str,
+        entities: list[ObservedEntity],
+        snapshot_id: str,
+        incomplete_types: set[str] | None = None,
+    ) -> int:
+        for entity in entities:
+            await self._observed.upsert_item(self._document(entity))
+        # A section MOSAIC failed to read looks empty in this snapshot. Sweeping those types would
+        # turn "could not read" into "does not exist", so they keep their previous documents until a
+        # clean sync supersedes them.
+        untrusted = sorted(incomplete_types or set())
+        stale = self._observed.query_items(
+            query=(
+                "SELECT c.id FROM c WHERE c.tenantId = @tenantId AND c.gatewayId = @gatewayId "
+                "AND c.snapshotId != @snapshotId "
+                "AND NOT ARRAY_CONTAINS(@untrusted, c.entityType)"
+            ),
+            parameters=[
+                {"name": "@tenantId", "value": tenant_id},
+                {"name": "@gatewayId", "value": gateway_id},
+                {"name": "@snapshotId", "value": snapshot_id},
+                {"name": "@untrusted", "value": untrusted},
+            ],
+            partition_key=tenant_id,
+        )
+        removed = 0
+        async for item in stale:
+            item_id = item.get("id")
+            if not isinstance(item_id, str):
+                continue
+            try:
+                await self._observed.delete_item(item=item_id, partition_key=tenant_id)
+                removed += 1
+            except exceptions.CosmosResourceNotFoundError:
+                continue
+        return removed
+
+    async def list_observed[T: ObservedEntity](
+        self,
+        model_type: type[T],
+        tenant_id: str,
+        gateway_id: str,
+        entity_type: str,
+    ) -> list[T]:
+        items = self._observed.query_items(
+            query=(
+                "SELECT * FROM c WHERE c.tenantId = @tenantId AND c.gatewayId = @gatewayId "
+                "AND c.entityType = @entityType"
+            ),
+            parameters=[
+                {"name": "@tenantId", "value": tenant_id},
+                {"name": "@gatewayId", "value": gateway_id},
+                {"name": "@entityType", "value": entity_type},
+            ],
+            partition_key=tenant_id,
+        )
+        return [self._model(model_type, item) async for item in items]
+
+    async def delete_observed_for_gateway(self, tenant_id: str, gateway_id: str) -> int:
+        items = self._observed.query_items(
+            query=(
+                "SELECT c.id FROM c WHERE c.tenantId = @tenantId AND c.gatewayId = @gatewayId"
+            ),
+            parameters=[
+                {"name": "@tenantId", "value": tenant_id},
+                {"name": "@gatewayId", "value": gateway_id},
+            ],
+            partition_key=tenant_id,
+        )
+        removed = 0
+        async for item in items:
+            item_id = item.get("id")
+            if not isinstance(item_id, str):
+                continue
+            try:
+                await self._observed.delete_item(item=item_id, partition_key=tenant_id)
+                removed += 1
+            except exceptions.CosmosResourceNotFoundError:
+                continue
+        return removed

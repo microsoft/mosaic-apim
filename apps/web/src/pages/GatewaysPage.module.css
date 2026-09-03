@@ -1,0 +1,157 @@
+.page {
+  display: grid;
+  gap: 20px;
+}
+
+.toolbar {
+  padding: 16px 18px;
+  display: grid;
+  gap: 16px;
+  border: 1px solid var(--mosaic-border);
+  border-radius: 12px;
+  background: var(--mosaic-surface);
+  box-shadow: var(--mosaic-shadow);
+}
+
+.suggestionCard {
+  padding: 18px;
+  display: grid;
+  gap: 12px;
+  border: 1px solid var(--mosaic-primary);
+  background: var(--mosaic-primary-soft);
+  box-shadow: var(--mosaic-shadow);
+}
+
+.suggestionRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.suggestionText {
+  display: grid;
+  gap: 2px;
+}
+
+.accessCard {
+  padding: 18px;
+  display: grid;
+  gap: 14px;
+  border: 1px solid var(--mosaic-border-soft);
+  background: var(--mosaic-surface);
+  box-shadow: var(--mosaic-shadow);
+}
+
+.accessFacts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 20px;
+}
+
+.remediation {
+  display: grid;
+  gap: 10px;
+  justify-items: start;
+}
+
+.commandBlock {
+  width: 100%;
+  margin: 0;
+  padding: 12px 16px;
+  overflow-x: auto;
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--mosaic-code-text);
+  background: var(--mosaic-code-bg);
+  border: 1px solid var(--mosaic-border-soft);
+  border-radius: 8px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.listCard {
+  overflow: hidden;
+  border: 1px solid var(--mosaic-border-soft);
+  background: var(--mosaic-surface);
+  box-shadow: var(--mosaic-shadow);
+}
+
+.cardHeader {
+  padding: 16px 18px 12px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid var(--mosaic-border-soft);
+}
+
+.cardHeaderText {
+  display: grid;
+  gap: 4px;
+}
+
+.gatewayName {
+  display: grid;
+  gap: 2px;
+}
+
+.gatewayLink {
+  color: var(--mosaic-primary);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.gatewayLink:hover,
+.gatewayLink:focus-visible {
+  text-decoration: underline;
+}
+
+.inlineActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.dialogForm {
+  display: grid;
+  gap: 16px;
+}
+
+.muted {
+  color: var(--mosaic-text-muted);
+}
+
+.footnote {
+  display: block;
+  padding: 0 18px 16px;
+  color: var(--mosaic-text-muted);
+}
+
+.connectedBadge {
+  color: var(--mosaic-success);
+  background: var(--mosaic-success-soft);
+}
+
+.attentionBadge {
+  color: var(--mosaic-danger);
+  background: var(--mosaic-danger-soft);
+}
+
+.degradedBadge {
+  color: var(--mosaic-warning);
+  background: var(--mosaic-warning-soft);
+}
+
+.pendingBadge {
+  color: var(--mosaic-text-muted);
+  background: var(--mosaic-surface-strong);
+}
+
+@media (max-width: 900px) {
+  .suggestionRow {
+    align-items: flex-start;
+  }
+}
