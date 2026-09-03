@@ -6,6 +6,8 @@ from mosaic_api.domain import (
     GatewaySyncRun,
     Group,
     GroupMembership,
+    McpServer,
+    ModelApi,
     Principal,
 )
 from mosaic_api.observed import ObservedEntity
@@ -124,3 +126,27 @@ class GatewayRepository(Protocol):
     ) -> list[T]: ...
 
     async def delete_observed_for_gateway(self, tenant_id: str, gateway_id: str) -> int: ...
+
+    async def list_model_apis(
+        self, tenant_id: str, *, gateway_id: str | None = None
+    ) -> list[ModelApi]: ...
+
+    async def get_model_api(self, tenant_id: str, model_api_id: str) -> ModelApi | None: ...
+
+    async def save_model_api(self, model_api: ModelApi, audit_event: AuditEvent) -> ModelApi:
+        """Upsert, because re-importing an already-adopted API must refresh it, not duplicate it."""
+        ...
+
+    async def delete_model_api(self, model_api: ModelApi, audit_event: AuditEvent) -> None: ...
+
+    async def list_mcp_servers(
+        self, tenant_id: str, *, gateway_id: str | None = None
+    ) -> list[McpServer]: ...
+
+    async def get_mcp_server(self, tenant_id: str, mcp_server_id: str) -> McpServer | None: ...
+
+    async def save_mcp_server(
+        self, mcp_server: McpServer, audit_event: AuditEvent
+    ) -> McpServer: ...
+
+    async def delete_mcp_server(self, mcp_server: McpServer, audit_event: AuditEvent) -> None: ...

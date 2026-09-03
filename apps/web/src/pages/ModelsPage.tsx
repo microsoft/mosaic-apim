@@ -22,10 +22,17 @@ import {
   Text,
   Title3,
 } from '@fluentui/react-components'
+import { AddRegular } from '@fluentui/react-icons'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { type FormEvent, useEffect, useMemo, useRef, useState } from 'react'
-import { useLocation, useNavigate } from 'react-router-dom'
+import { Link, useLocation, useNavigate } from 'react-router-dom'
+import { useMosaicApi } from '../api'
+import { EmptyState, ErrorState, Loading } from '../components/AsyncState'
+import { ImportFromGatewayDialog } from '../components/ImportFromGatewayDialog'
 import { PageHeader, PreviewNotice } from '../components/PageHeader'
-import styles from './ModelFoundryPage.module.css'
+import { AI_KIND_LABELS } from '../labels'
+import type { Gateway } from '../types'
+import styles from './ModelsPage.module.css'
 
 const foundryProviders = [
   'Azure AI Foundry',
@@ -274,11 +281,123 @@ function createDeploymentDraft(
   }
 }
 
-export function ModelFoundryPage() {
+/** The live half of this page: model APIs adopted from a gateway, backed by the MOSAIC API. */
+function ImportedModelApis({ onRemoved }: { onRemoved: (message: string) => void }) {
+  const api = useMosaicApi()
+  const queryClient = useQueryClient()
+
+  const modelApis = useQuery({
+    queryKey: ['model-apis'],
+    queryFn: () => api.listModelApis(),
+  })
+  const gateways = useQuery({
+    queryKey: ['gateways'],
+    queryFn: () => api.listGateways(),
+  })
+
+  const gatewaysById = useMemo(() => {
+    const map = new Map<string, Gateway>()
+    for (const gateway of gateways.data ?? []) {
+      map.set(gateway.id, gateway)
+    }
+    return map
+  }, [gateways.data])
+
+  const removeMutation = useMutation({
+    mutationFn: (id: string) => api.deleteModelApi(id),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['model-apis'] })
+      onRemoved('Stopped governing that API. Nothing changed in API Management.')
+    },
+  })
+
+  return (
+    <Card className={styles.panel}>
+      <div className={styles.panelHeader}>
+        <div>
+          <Title3 as="h2">Imported model APIs</Title3>
+          <Text>
+            APIs an administrator adopted from a gateway. Importing records governance intent and
+            never changes API Management.
+          </Text>
+        </div>
+      </div>
+
+      {removeMutation.isError && <ErrorState error={removeMutation.error} />}
+      {modelApis.isPending && <Loading label="Loading imported model APIs..." />}
+      {modelApis.isError && <ErrorState error={modelApis.error} />}
+      {modelApis.isSuccess &&
+        (modelApis.data.length === 0 ? (
+          <EmptyState title="No model APIs imported yet">
+            Synchronise a gateway, then import the APIs that front your models. MOSAIC pre-selects
+            the ones it recognises, and you decide what to adopt.
+          </EmptyState>
+        ) : (
+          <div className={styles.tableWrap}>
+            <Table aria-label="Imported model APIs">
+              <TableHeader>
+                <TableRow>
+                  <TableHeaderCell>API</TableHeaderCell>
+                  <TableHeaderCell>Provider</TableHeaderCell>
+                  <TableHeaderCell>Operations</TableHeaderCell>
+                  <TableHeaderCell>Gateway</TableHeaderCell>
+                  <TableHeaderCell>Actions</TableHeaderCell>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {modelApis.data.map((record) => (
+                  <TableRow key={record.id}>
+                    <TableCell>
+                      <div className={styles.cellStack}>
+                        <span className={styles.primaryCell}>{record.displayName}</span>
+                        <span className={styles.secondaryCell}>/{record.path}</span>
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      <div className={styles.cellStack}>
+                        <span className={styles.secondaryCell}>
+                          {AI_KIND_LABELS[record.aiKind] || 'Not recognised'}
+                        </span>
+                        {record.selection === 'manual' && (
+                          <Badge appearance="tint" className={styles.statusSyncing}>
+                            Chosen by an administrator
+                          </Badge>
+                        )}
+                      </div>
+                    </TableCell>
+                    <TableCell>{record.operationCount}</TableCell>
+                    <TableCell>
+                      <Link to={`/gateways/${record.gatewayId}`}>
+                        {gatewaysById.get(record.gatewayId)?.name ?? record.gatewayId}
+                      </Link>
+                    </TableCell>
+                    <TableCell>
+                      <Button
+                        appearance="subtle"
+                        disabled={removeMutation.isPending}
+                        onClick={() => removeMutation.mutate(record.id)}
+                      >
+                        Remove
+                      </Button>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        ))}
+    </Card>
+  )
+}
+
+export function ModelsPage() {
   const location = useLocation()
   const navigate = useNavigate()
   const secretInputRef = useRef<HTMLInputElement | null>(null)
   const hasConsumedDeployQueryRef = useRef(false)
+  const hasConsumedImportQueryRef = useRef(false)
+  const [importOpen, setImportOpen] = useState(false)
+  const [liveBanner, setLiveBanner] = useState<string | null>(null)
 
   const [provider, setProvider] = useState<FoundryProvider>('Azure AI Foundry')
   const [baseEndpoint, setBaseEndpoint] = useState('')
@@ -305,6 +424,11 @@ export function ModelFoundryPage() {
     const params = new URLSearchParams(location.search)
     return params.get('deploy') === '1'
   }, [location.search])
+
+  const requestedImportGatewayId = useMemo(
+    () => new URLSearchParams(location.search).get('import'),
+    [location.search],
+  )
 
   const filteredDeployments = useMemo(() => {
     const normalizedSearch = searchText.trim().toLowerCase()
@@ -336,6 +460,16 @@ export function ModelFoundryPage() {
   }, [queryRequestsDeployDialog])
 
   useEffect(() => {
+    if (requestedImportGatewayId && !hasConsumedImportQueryRef.current) {
+      hasConsumedImportQueryRef.current = true
+      setImportOpen(true)
+    }
+    if (!requestedImportGatewayId) {
+      hasConsumedImportQueryRef.current = false
+    }
+  }, [requestedImportGatewayId])
+
+  useEffect(() => {
     if (!filteredDeployments.length) {
       if (selectedDeploymentId !== '') {
         setSelectedDeploymentId('')
@@ -362,6 +496,23 @@ export function ModelFoundryPage() {
       return
     }
     params.delete('deploy')
+    const nextSearch = params.toString()
+    navigate(
+      {
+        pathname: location.pathname,
+        search: nextSearch ? `?${nextSearch}` : '',
+        hash: location.hash,
+      },
+      { replace: true },
+    )
+  }
+
+  function removeImportQueryIfPresent() {
+    const params = new URLSearchParams(location.search)
+    if (!params.has('import')) {
+      return
+    }
+    params.delete('import')
     const nextSearch = params.toString()
     navigate(
       {
@@ -533,19 +684,36 @@ export function ModelFoundryPage() {
   return (
     <section className={styles.page}>
       <PageHeader
-        title="Model Foundry"
-        description="Preview Foundry connections, endpoint metadata, and deployment interactions before live import and validation are wired."
-        source="sample"
+        title="Models"
+        description="Model APIs MOSAIC governs, imported from your API Management gateways."
         actions={
-          <Button appearance="primary" onClick={() => openDeployDialogForConnection()}>
-            Deploy model
-          </Button>
+          <>
+            <Button
+              appearance="primary"
+              icon={<AddRegular />}
+              onClick={() => setImportOpen(true)}
+            >
+              Import from gateway
+            </Button>
+            <Button appearance="secondary" onClick={() => openDeployDialogForConnection()}>
+              Deploy model
+            </Button>
+          </>
         }
       />
 
+      {liveBanner && (
+        <MessageBar intent="success">
+          <MessageBarBody>{liveBanner}</MessageBarBody>
+        </MessageBar>
+      )}
+
+      <ImportedModelApis onRemoved={setLiveBanner} />
+
       <PreviewNotice kind="sample">
-        This preview mixes typed sample endpoints with browser-only edits. MOSAIC does not
-        validate Foundry connections, persist secrets, or deploy models from this page yet.
+        Everything below this line is a preview. It mixes typed sample endpoints with browser-only
+        edits. MOSAIC does not validate Foundry connections, persist secrets, or deploy models from
+        this page yet.
       </PreviewNotice>
 
       {banner && (
@@ -1022,6 +1190,22 @@ export function ModelFoundryPage() {
           </DialogBody>
         </DialogSurface>
       </Dialog>
+
+      <ImportFromGatewayDialog
+        kind="apis"
+        open={importOpen}
+        initialGatewayId={requestedImportGatewayId}
+        onClose={() => {
+          setImportOpen(false)
+          removeImportQueryIfPresent()
+        }}
+        onImported={(count) =>
+          setLiveBanner(
+            `Imported ${count} model API${count === 1 ? '' : 's'}. MOSAIC recorded them as ` +
+              'governed; API Management is unchanged.',
+          )
+        }
+      />
     </section>
   )
 }

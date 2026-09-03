@@ -24,8 +24,18 @@ from mosaic_api.domain import (
     GatewaySyncRun,
     GatewaySyncStatus,
     GatewayUpdate,
+    ImportRequest,
+    ImportSelection,
     ManagementMode,
+    McpServer,
+    McpServerCandidate,
+    McpServerCandidateList,
+    ModelApi,
+    ModelApiCandidate,
+    ModelApiCandidateList,
     deterministic_id,
+    mcp_server_id,
+    model_api_id,
     new_id,
     utc_now,
 )
@@ -33,11 +43,13 @@ from mosaic_api.errors import ConflictError, NotFoundError, ValidationError
 from mosaic_api.integrations.apim import ApimClient, InventoryCollector, run_preflight
 from mosaic_api.integrations.apim.policy_semantics import analyze_policy, summarize_facets
 from mosaic_api.observed import (
+    AiBackendKind,
     GatewayPolicyView,
     ObservedApi,
     ObservedApimGroup,
     ObservedApimUser,
     ObservedBackend,
+    ObservedMcpServer,
     ObservedNamedValue,
     ObservedOperation,
     ObservedPolicyDocument,
@@ -102,12 +114,14 @@ class GatewayService:
         return self._principal_id
 
     @staticmethod
-    def _audit(actor: Actor, action: str, resource_id: str) -> AuditEvent:
+    def _audit(
+        actor: Actor, action: str, resource_id: str, resource_type: str = "gateway"
+    ) -> AuditEvent:
         return AuditEvent(
             id=new_id("audit"),
             tenant_id=actor.tenant_id,
             action=action,
-            resource_type="gateway",
+            resource_type=resource_type,
             resource_id=resource_id,
             actor_object_id=actor.object_id,
         )
@@ -187,10 +201,16 @@ class GatewayService:
         client = self._client_factory(resource)
         result = await run_preflight(client, principal_id=await self._resolve_principal_id())
         capabilities = result.capabilities
+        # Preflight reads the service resource, not its contents, so it cannot re-derive
+        # capabilities that only a sync can establish. Carry those forward instead of resetting
+        # them to unknown on every access check.
+        carried: dict[str, CapabilitySupport] = {}
         if gateway.capabilities.ai_gateway_policies == CapabilitySupport.AVAILABLE:
-            capabilities = capabilities.model_copy(
-                update={"ai_gateway_policies": CapabilitySupport.AVAILABLE}
-            )
+            carried["ai_gateway_policies"] = CapabilitySupport.AVAILABLE
+        if gateway.capabilities.mcp_servers != CapabilitySupport.UNKNOWN:
+            carried["mcp_servers"] = gateway.capabilities.mcp_servers
+        if carried:
+            capabilities = capabilities.model_copy(update=carried)
         return gateway.model_copy(
             update={
                 "access": result.access,
@@ -286,7 +306,15 @@ class GatewayService:
                     CapabilitySupport.AVAILABLE
                     if snapshot.ai_policy_observed
                     else current.capabilities.ai_gateway_policies
-                )
+                ),
+                # Unlike AI policy, an MCP answer is authoritative in both directions: the service
+                # either implements the preview contract or it does not. Only an inconclusive read
+                # leaves the previous value in place.
+                "mcp_servers": (
+                    current.capabilities.mcp_servers
+                    if snapshot.mcp_support == CapabilitySupport.UNKNOWN
+                    else snapshot.mcp_support
+                ),
             }
         )
         await self._repository.record_gateway_state(
@@ -402,6 +430,15 @@ class GatewayService:
             items = [item for item in items if item.api_name == api_name]
         return sorted(items, key=lambda item: (item.api_name, item.url_template, item.method))
 
+    async def list_observed_mcp_servers(
+        self, actor: Actor, gateway_id: str
+    ) -> list[ObservedMcpServer]:
+        await self.get_gateway(actor, gateway_id)
+        items = await self._repository.list_observed(
+            ObservedMcpServer, actor.tenant_id, gateway_id, "observedMcpServer"
+        )
+        return sorted(items, key=lambda item: item.display_name.casefold())
+
     async def list_products(self, actor: Actor, gateway_id: str) -> list[ObservedProduct]:
         await self.get_gateway(actor, gateway_id)
         items = await self._repository.list_observed(
@@ -508,6 +545,255 @@ class GatewayService:
             content_sha256=analysis.content_sha256,
             facets=analysis.facets,
             unrecognized_elements=sorted(set(analysis.unrecognized_elements)),
+        )
+
+    # ------------------------------------------------------------------
+    # Adoption
+    #
+    # Importing is a Cosmos write and nothing else. MOSAIC creates no API Management resource,
+    # changes no policy, and calls no Azure write API; it records that an administrator placed an
+    # already-existing API or MCP server under MOSAIC governance. ADR 0001 is unaffected.
+    # ------------------------------------------------------------------
+
+    async def _synced_gateway(self, actor: Actor, gateway_id: str) -> Gateway:
+        gateway = await self.get_gateway(actor, gateway_id)
+        if gateway.last_synced_at is None:
+            raise ValidationError(
+                "Synchronise this gateway before importing from it, so MOSAIC imports what the "
+                "gateway actually contains rather than a guess.",
+                details={"gatewayId": gateway_id},
+            )
+        return gateway
+
+    async def list_importable_apis(
+        self, actor: Actor, gateway_id: str
+    ) -> ModelApiCandidateList:
+        """Every observed API, with the model-fronting ones flagged as recommended.
+
+        Deliberately not filtered to detected APIs only. Detection covers the providers MOSAIC
+        recognises, and an administrator fronting a model MOSAIC has never seen still needs a way to
+        adopt it.
+        """
+
+        gateway = await self.get_gateway(actor, gateway_id)
+        observed = await self._repository.list_observed(
+            ObservedApi, actor.tenant_id, gateway_id, "observedApi"
+        )
+        adopted = {
+            item.api_name.casefold()
+            for item in await self._repository.list_model_apis(
+                actor.tenant_id, gateway_id=gateway_id
+            )
+        }
+        candidates = [
+            ModelApiCandidate(
+                api_name=api.name,
+                display_name=api.display_name,
+                path=api.path,
+                service_url=api.service_url,
+                ai_kind=api.ai_kind,
+                ai_signals=api.ai_signals,
+                operation_count=api.operation_count,
+                product_names=api.product_names,
+                recommended=api.ai_kind != AiBackendKind.NONE,
+                already_imported=api.name.casefold() in adopted,
+            )
+            for api in observed
+        ]
+        candidates.sort(key=lambda item: (not item.recommended, item.display_name.casefold()))
+        return ModelApiCandidateList(
+            gateway_id=gateway_id,
+            snapshot_id=observed[0].snapshot_id if observed else None,
+            last_synced_at=gateway.last_synced_at,
+            candidates=candidates,
+        )
+
+    async def list_importable_mcp_servers(
+        self, actor: Actor, gateway_id: str
+    ) -> McpServerCandidateList:
+        gateway = await self.get_gateway(actor, gateway_id)
+        observed = await self._repository.list_observed(
+            ObservedMcpServer, actor.tenant_id, gateway_id, "observedMcpServer"
+        )
+        adopted = {
+            item.api_name.casefold()
+            for item in await self._repository.list_mcp_servers(
+                actor.tenant_id, gateway_id=gateway_id
+            )
+        }
+        candidates = [
+            McpServerCandidate(
+                api_name=server.name,
+                display_name=server.display_name,
+                path=server.path,
+                service_url=server.service_url,
+                kind=server.kind,
+                transport_type=server.transport_type,
+                tool_count=server.tool_count,
+                already_imported=server.name.casefold() in adopted,
+            )
+            for server in observed
+        ]
+        candidates.sort(key=lambda item: item.display_name.casefold())
+        return McpServerCandidateList(
+            gateway_id=gateway_id,
+            snapshot_id=observed[0].snapshot_id if observed else None,
+            last_synced_at=gateway.last_synced_at,
+            support=gateway.capabilities.mcp_servers,
+            candidates=candidates,
+        )
+
+    @staticmethod
+    def _match_requested[T](
+        requested: list[str], observed: list[T], name_of: Callable[[T], str], noun: str
+    ) -> list[T]:
+        """Resolve requested names against the snapshot, refusing to invent anything.
+
+        A name MOSAIC cannot see is an error rather than a silent skip: importing four of five
+        selected APIs and reporting success would leave an administrator believing they had
+        governed something they had not.
+        """
+
+        by_name = {name_of(item).casefold(): item for item in observed}
+        matched: list[T] = []
+        unknown: list[str] = []
+        for name in requested:
+            item = by_name.get(name.casefold())
+            if item is None:
+                unknown.append(name)
+            else:
+                matched.append(item)
+        if unknown:
+            raise ValidationError(
+                f"MOSAIC did not observe {'these' if len(unknown) > 1 else 'this'} {noun} in the "
+                "gateway's most recent sync. Re-synchronise and try again.",
+                details={"unknown": unknown},
+            )
+        return matched
+
+    async def import_model_apis(
+        self, actor: Actor, gateway_id: str, request: ImportRequest
+    ) -> list[ModelApi]:
+        await self._synced_gateway(actor, gateway_id)
+        observed = await self._repository.list_observed(
+            ObservedApi, actor.tenant_id, gateway_id, "observedApi"
+        )
+        selected = self._match_requested(request.api_names, observed, lambda api: api.name, "API")
+
+        imported: list[ModelApi] = []
+        for api in selected:
+            record = ModelApi(
+                id=model_api_id(actor.tenant_id, gateway_id, api.name),
+                tenant_id=actor.tenant_id,
+                gateway_id=gateway_id,
+                api_name=api.name,
+                display_name=api.display_name,
+                path=api.path,
+                service_url=api.service_url,
+                protocols=api.protocols,
+                ai_kind=api.ai_kind,
+                ai_signals=api.ai_signals,
+                subscription_required=api.subscription_required,
+                operation_count=api.operation_count,
+                product_names=api.product_names,
+                selection=(
+                    ImportSelection.DETECTED
+                    if api.ai_kind != AiBackendKind.NONE
+                    else ImportSelection.MANUAL
+                ),
+                imported_from_snapshot_id=api.snapshot_id,
+                imported_by=actor.object_id,
+            )
+            imported.append(
+                await self._repository.save_model_api(
+                    record,
+                    self._audit(actor, "modelApi.imported", record.id, resource_type="modelApi"),
+                )
+            )
+        logger.info(
+            "model_apis_imported",
+            gateway_id=gateway_id,
+            count=len(imported),
+            tenant_id=actor.tenant_id,
+        )
+        return imported
+
+    async def import_mcp_servers(
+        self, actor: Actor, gateway_id: str, request: ImportRequest
+    ) -> list[McpServer]:
+        await self._synced_gateway(actor, gateway_id)
+        observed = await self._repository.list_observed(
+            ObservedMcpServer, actor.tenant_id, gateway_id, "observedMcpServer"
+        )
+        selected = self._match_requested(
+            request.api_names, observed, lambda server: server.name, "MCP server"
+        )
+
+        imported: list[McpServer] = []
+        for server in selected:
+            record = McpServer(
+                id=mcp_server_id(actor.tenant_id, gateway_id, server.name),
+                tenant_id=actor.tenant_id,
+                gateway_id=gateway_id,
+                api_name=server.name,
+                display_name=server.display_name,
+                path=server.path,
+                service_url=server.service_url,
+                protocols=server.protocols,
+                kind=server.kind,
+                transport_type=server.transport_type,
+                endpoints=server.endpoints,
+                tools=server.tools,
+                tool_count=server.tool_count,
+                subscription_required=server.subscription_required,
+                product_names=server.product_names,
+                imported_from_snapshot_id=server.snapshot_id,
+                imported_by=actor.object_id,
+            )
+            imported.append(
+                await self._repository.save_mcp_server(
+                    record,
+                    self._audit(actor, "mcpServer.imported", record.id, resource_type="mcpServer"),
+                )
+            )
+        logger.info(
+            "mcp_servers_imported",
+            gateway_id=gateway_id,
+            count=len(imported),
+            tenant_id=actor.tenant_id,
+        )
+        return imported
+
+    async def list_model_apis(
+        self, actor: Actor, gateway_id: str | None = None
+    ) -> list[ModelApi]:
+        if gateway_id is not None:
+            await self.get_gateway(actor, gateway_id)
+        return await self._repository.list_model_apis(actor.tenant_id, gateway_id=gateway_id)
+
+    async def list_mcp_servers(
+        self, actor: Actor, gateway_id: str | None = None
+    ) -> list[McpServer]:
+        if gateway_id is not None:
+            await self.get_gateway(actor, gateway_id)
+        return await self._repository.list_mcp_servers(actor.tenant_id, gateway_id=gateway_id)
+
+    async def delete_model_api(self, actor: Actor, model_api_record_id: str) -> None:
+        record = await self._repository.get_model_api(actor.tenant_id, model_api_record_id)
+        if not record:
+            raise NotFoundError("Model API was not found", details={"id": model_api_record_id})
+        await self._repository.delete_model_api(
+            record,
+            self._audit(actor, "modelApi.removed", record.id, resource_type="modelApi"),
+        )
+
+    async def delete_mcp_server(self, actor: Actor, mcp_server_record_id: str) -> None:
+        record = await self._repository.get_mcp_server(actor.tenant_id, mcp_server_record_id)
+        if not record:
+            raise NotFoundError("MCP server was not found", details={"id": mcp_server_record_id})
+        await self._repository.delete_mcp_server(
+            record,
+            self._audit(actor, "mcpServer.removed", record.id, resource_type="mcpServer"),
         )
 
     async def suggestions(self, actor: Actor) -> list[GatewaySuggestion]:

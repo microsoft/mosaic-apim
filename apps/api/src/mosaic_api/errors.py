@@ -51,6 +51,18 @@ class UpstreamError(DomainError):
     code = "gateway_unreachable"
 
 
+class UpstreamUnsupportedError(DomainError):
+    """The Azure resource does not implement the API version a MOSAIC feature needs.
+
+    Distinct from ``UpstreamError`` because it is not a failure to resolve: the service answered,
+    and the answer is that this capability is not available here. Callers report it as an absent
+    capability rather than degrading a whole operation.
+    """
+
+    status_code = 501
+    code = "gateway_capability_unsupported"
+
+
 class ErrorBody(BaseModel):
     model_config = ConfigDict(serialize_by_alias=True)
 

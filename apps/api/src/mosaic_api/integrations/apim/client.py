@@ -17,6 +17,7 @@ from azure.core.exceptions import ClientAuthenticationError
 
 from mosaic_api.domain import (
     APIM_API_VERSION,
+    APIM_MCP_API_VERSION,
     AUTHORIZATION_API_VERSION,
     ApimResourceId,
 )
@@ -24,6 +25,7 @@ from mosaic_api.errors import (
     UpstreamAuthorizationError,
     UpstreamError,
     UpstreamNotFoundError,
+    UpstreamUnsupportedError,
 )
 
 logger = structlog.get_logger()
@@ -32,6 +34,19 @@ ARM_SCOPE = "https://management.azure.com/.default"
 ARM_BASE_URL = "https://management.azure.com"
 MAX_ATTEMPTS = 4
 MAX_RETRY_DELAY_SECONDS = 20.0
+
+# ARM signals "this service does not speak that contract" through a small set of error codes. The
+# code is matched first because it is stable; the message is only a fallback for services that
+# return a bare description.
+_UNSUPPORTED_VERSION_CODES: frozenset[str] = frozenset(
+    {
+        "invalidapiversionparameter",
+        "noregisteredproviderfound",
+        "unsupportedapiversion",
+        "invalidresourcetype",
+    }
+)
+_UNSUPPORTED_VERSION_MARKERS: tuple[str, ...] = ("api-version", "api version")
 
 JsonObject = dict[str, Any]
 
@@ -118,6 +133,21 @@ class ArmClient:
                 return message
         return response.reason_phrase or f"HTTP {response.status_code}"
 
+    @staticmethod
+    def _upstream_code(response: httpx.Response) -> str | None:
+        """The machine-readable ARM error code, which is far steadier than its message text."""
+
+        try:
+            payload = response.json()
+        except ValueError:
+            return None
+        error = payload.get("error") if isinstance(payload, dict) else None
+        if isinstance(error, dict):
+            code = error.get("code")
+            if isinstance(code, str) and code:
+                return code
+        return None
+
     async def request(
         self,
         url: str,
@@ -175,6 +205,7 @@ class ArmClient:
                     details={
                         "url": target,
                         "statusCode": response.status_code,
+                        "code": self._upstream_code(response),
                         "reason": self._upstream_detail(response),
                     },
                 )
@@ -242,6 +273,7 @@ class ApimClient:
         self._resource = resource
         self._base = resource.canonical
         self._params = {"api-version": APIM_API_VERSION}
+        self._mcp_params = {"api-version": APIM_MCP_API_VERSION}
 
     @property
     def resource(self) -> ApimResourceId:
@@ -303,6 +335,48 @@ class ApimClient:
 
     async def list_named_values(self) -> list[JsonObject]:
         return await self._collection("namedValues")
+
+    @staticmethod
+    def _is_unsupported_version(error: UpstreamError) -> bool:
+        if error.details.get("statusCode") not in {400, 404}:
+            return False
+        code = str(error.details.get("code") or "").casefold()
+        if code in _UNSUPPORTED_VERSION_CODES:
+            return True
+        reason = str(error.details.get("reason") or "").casefold()
+        return any(marker in reason for marker in _UNSUPPORTED_VERSION_MARKERS)
+
+    async def _mcp_collection(self, segment: str, **extra: str) -> list[JsonObject]:
+        """Read an MCP sub-resource on the preview contract.
+
+        A service that does not implement the preview version raises
+        ``UpstreamUnsupportedError`` so the caller can record an absent capability. Every other
+        failure propagates unchanged, because "MOSAIC could not read this" and "this gateway has no
+        MCP servers" must never collapse into the same answer.
+        """
+
+        try:
+            return await self._arm.list(
+                f"{self._base}/{segment}",
+                params={**self._mcp_params, **extra},
+                allow_not_found=True,
+            )
+        except UpstreamError as error:
+            if self._is_unsupported_version(error):
+                raise UpstreamUnsupportedError(
+                    "This API Management service does not support MCP servers",
+                    details={
+                        "apiVersion": APIM_MCP_API_VERSION,
+                        "reason": error.details.get("reason"),
+                    },
+                ) from error
+            raise
+
+    async def list_mcp_servers(self) -> list[JsonObject]:
+        return await self._mcp_collection("apis", **{"$filter": "type eq 'mcp'"})
+
+    async def list_mcp_tools(self, mcp_server_name: str) -> list[JsonObject]:
+        return await self._mcp_collection(f"apis/{mcp_server_name}/tools")
 
     async def list_policy_fragments(self) -> list[JsonObject]:
         return await self._collection("policyFragments")

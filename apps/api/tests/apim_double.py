@@ -64,6 +64,9 @@ MOSAIC_FRAGMENT = """
 </fragment>
 """
 
+STABLE_API_VERSION = "2024-05-01"
+MCP_API_VERSION = "2025-09-01-preview"
+
 
 class FakeCredential:
     def __init__(self) -> None:
@@ -86,10 +89,14 @@ class FakeApim:
         permissions: list[dict[str, Any]] | None = None,
         service_status: int = 200,
         permissions_status: int = 200,
+        supports_mcp: bool = True,
     ) -> None:
         self.permissions = READER_PERMISSIONS if permissions is None else permissions
         self.service_status = service_status
         self.permissions_status = permissions_status
+        # Mirrors a service that has not been upgraded to the preview management contract. Such a
+        # service rejects the version outright rather than returning an empty list.
+        self.supports_mcp = supports_mcp
         self.requests: list[str] = []
         self.failures: dict[str, int] = {}
         self.persistent_failures: dict[str, int] = {}
@@ -120,10 +127,29 @@ class FakeApim:
         injected = self._maybe_fail(suffix)
         if injected is not None:
             return injected
+        api_version = request.url.params.get("api-version")
+        if api_version == MCP_API_VERSION and not self.supports_mcp:
+            return httpx.Response(
+                400,
+                json={
+                    "error": {
+                        "code": "InvalidApiVersionParameter",
+                        "message": (
+                            f"The api-version '{MCP_API_VERSION}' is invalid. "
+                            "The supported versions are '2024-05-01'."
+                        ),
+                    }
+                },
+            )
         page = request.url.params.get("page")
-        return self._route(suffix, page)
+        return self._route(suffix, page, request.url.params.get("$filter"))
 
-    def _route(self, suffix: str, page: str | None) -> httpx.Response:
+    def _route(
+        self,
+        suffix: str,
+        page: str | None,
+        api_filter: str | None,
+    ) -> httpx.Response:
         if suffix == "":
             if self.service_status != 200:
                 return httpx.Response(
@@ -137,6 +163,8 @@ class FakeApim:
                 )
             return httpx.Response(200, json={"value": self.permissions})
         if suffix == "apis":
+            if api_filter and "mcp" in api_filter:
+                return self._collection(self._mcp_servers())
             return self._paged_apis(page)
 
         routes = {
@@ -147,6 +175,8 @@ class FakeApim:
             "apis/echo-api/policies/policy": lambda: httpx.Response(
                 404, json={"error": {"message": "policy not found"}}
             ),
+            "apis/orders-mcp/tools": lambda: self._collection(self._mcp_tools()),
+            "apis/weather-mcp/tools": lambda: self._collection([]),
             "products": lambda: self._collection(self._products()),
             "products/gold/apis": lambda: self._collection(
                 [{"name": "chat-api", "properties": {}}]
@@ -230,10 +260,69 @@ class FakeApim:
                             "isCurrent": True,
                             "subscriptionRequired": True,
                         },
-                    }
+                    },
+                    {
+                        # An MCP server also appears in an unfiltered API listing. It must not be
+                        # collected as an ordinary API, or one resource shows up twice.
+                        "name": "orders-mcp",
+                        "properties": {
+                            "type": "mcp",
+                            "displayName": "Orders MCP",
+                            "path": "orders-mcp",
+                            "protocols": ["https"],
+                            "isCurrent": True,
+                            "subscriptionRequired": True,
+                        },
+                    },
                 ]
             },
         )
+
+    @staticmethod
+    def _mcp_servers() -> list[dict[str, Any]]:
+        return [
+            {
+                "name": "orders-mcp",
+                "properties": {
+                    "type": "mcp",
+                    "displayName": "Orders MCP",
+                    "path": "orders-mcp",
+                    "protocols": ["https"],
+                    "subscriptionRequired": True,
+                },
+            },
+            {
+                "name": "weather-mcp",
+                "properties": {
+                    "type": "mcp",
+                    "displayName": "Weather MCP",
+                    "path": "weather-mcp",
+                    "protocols": ["https"],
+                    "serviceUrl": "https://mcp.contoso.com?code=PassthroughSecret",
+                    "subscriptionRequired": False,
+                    "mcpProperties": {
+                        "transportType": "sse",
+                        "endpoints": [
+                            {"name": "sse", "uriTemplate": "/sse"},
+                            {"name": "message", "uriTemplate": "/messages"},
+                        ],
+                    },
+                },
+            },
+        ]
+
+    @staticmethod
+    def _mcp_tools() -> list[dict[str, Any]]:
+        return [
+            {
+                "name": "listOrders",
+                "properties": {
+                    "displayName": "listOrders",
+                    "description": "List all orders for a customer",
+                    "operationId": f"{RESOURCE_ID}/apis/echo-api/operations/get-echo",
+                },
+            }
+        ]
 
     @staticmethod
     def _chat_operations() -> list[dict[str, Any]]:

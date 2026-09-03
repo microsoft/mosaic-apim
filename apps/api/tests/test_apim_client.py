@@ -17,7 +17,7 @@ def _client(fake: FakeApim) -> ApimClient:
 async def test_list_follows_next_link_across_pages(fake_apim: FakeApim) -> None:
     apis = await _client(fake_apim).list_apis()
 
-    assert [api["name"] for api in apis] == ["chat-api", "echo-api"]
+    assert [api["name"] for api in apis] == ["chat-api", "echo-api", "orders-mcp"]
 
 
 async def test_service_read_returns_sku_and_gateway_url(fake_apim: FakeApim) -> None:

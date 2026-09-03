@@ -10,14 +10,18 @@ state MOSAIC stores in ``domain``. Two rules apply to every model here:
 """
 
 from datetime import datetime
-from enum import StrEnum
 from typing import Literal
 
 from pydantic import Field
 
 from mosaic_api.domain import (
+    AiBackendKind,
     Entity,
     FacetConfidence,
+    McpEndpoint,
+    McpServerKind,
+    McpTool,
+    McpTransportType,
     MosaicModel,
     PolicyFacet,
     PolicyFacetKind,
@@ -25,14 +29,6 @@ from mosaic_api.domain import (
     PolicySection,
     utc_now,
 )
-
-
-class AiBackendKind(StrEnum):
-    AZURE_OPENAI = "azureOpenAi"
-    AZURE_AI_FOUNDRY = "azureAiFoundry"
-    AZURE_AI_INFERENCE = "azureAiInference"
-    OTHER_LLM = "otherLlm"
-    NONE = "none"
 
 
 class ObservedEntity(Entity):
@@ -66,6 +62,29 @@ class ObservedOperation(ObservedEntity):
     display_name: str
     method: str
     url_template: str
+
+
+class ObservedMcpServer(ObservedEntity):
+    """An MCP server hosted by the gateway.
+
+    API Management models these as APIs of type ``mcp``, but they are kept as their own observed
+    type because they are a different product surface: tools rather than operations, and a
+    transport rather than a set of HTTP verbs.
+    """
+
+    entity_type: Literal["observedMcpServer"] = "observedMcpServer"
+    name: str
+    display_name: str
+    path: str
+    protocols: list[str] = Field(default_factory=list)
+    service_url: str | None = None
+    kind: McpServerKind = McpServerKind.REST_API_BACKED
+    transport_type: McpTransportType = McpTransportType.UNKNOWN
+    endpoints: list[McpEndpoint] = Field(default_factory=list)
+    tools: list[McpTool] = Field(default_factory=list)
+    tool_count: int = 0
+    subscription_required: bool = True
+    product_names: list[str] = Field(default_factory=list)
 
 
 class ObservedProduct(ObservedEntity):
@@ -166,6 +185,7 @@ class ObservedPolicyFragment(ObservedEntity):
 OBSERVED_ENTITY_TYPES: tuple[str, ...] = (
     "observedApi",
     "observedOperation",
+    "observedMcpServer",
     "observedProduct",
     "observedSubscription",
     "observedApimUser",
@@ -210,10 +230,16 @@ __all__ = [
     "AnnotatedApi",
     "FacetConfidence",
     "GatewayPolicyView",
-    "ObservedApi",    "ObservedApimGroup",
+    "McpEndpoint",
+    "McpServerKind",
+    "McpTool",
+    "McpTransportType",
+    "ObservedApi",
+    "ObservedApimGroup",
     "ObservedApimUser",
     "ObservedBackend",
     "ObservedEntity",
+    "ObservedMcpServer",
     "ObservedNamedValue",
     "ObservedOperation",
     "ObservedPolicyDocument",

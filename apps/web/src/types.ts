@@ -65,8 +65,29 @@ export type AiBackendKind =
   | 'azureOpenAi'
   | 'azureAiFoundry'
   | 'azureAiInference'
+  | 'openAi'
+  | 'anthropic'
+  | 'googleVertex'
+  | 'awsBedrock'
   | 'otherLlm'
   | 'none'
+
+export type ImportSelection = 'detected' | 'manual'
+export type McpTransportType = 'streamable' | 'sse' | 'unknown'
+export type McpServerKind = 'restApiBacked' | 'passthrough'
+
+export interface McpEndpoint {
+  name: string
+  uriTemplate: string
+}
+
+export interface McpTool {
+  name: string
+  displayName: string
+  description?: string | null
+  backingApiName?: string | null
+  backingOperationName?: string | null
+}
 
 export type PolicyScope = 'global' | 'product' | 'api' | 'operation'
 export type PolicySection = 'inbound' | 'backend' | 'outbound' | 'onError' | 'unknown'
@@ -113,12 +134,14 @@ export interface GatewayCapabilities {
   gatewayUrl?: string | null
   managementApiVersion: string
   aiGatewayPolicies: CapabilitySupport
+  mcpServers: CapabilitySupport
   notes: string[]
 }
 
 export interface GatewayInventorySummary {
   apis: number
   aiApis: number
+  mcpServers: number
   operations: number
   products: number
   subscriptions: number
@@ -204,6 +227,108 @@ export interface ObservedOperation {
   displayName: string
   method: string
   urlTemplate: string
+}
+
+export interface ObservedMcpServer {
+  id: string
+  name: string
+  displayName: string
+  path: string
+  protocols: string[]
+  serviceUrl?: string | null
+  kind: McpServerKind
+  transportType: McpTransportType
+  endpoints: McpEndpoint[]
+  tools: McpTool[]
+  toolCount: number
+  subscriptionRequired: boolean
+  productNames: string[]
+}
+
+export interface ModelApi {
+  id: string
+  tenantId: string
+  gatewayId: string
+  apiName: string
+  displayName: string
+  path: string
+  serviceUrl?: string | null
+  protocols: string[]
+  aiKind: AiBackendKind
+  aiSignals: string[]
+  subscriptionRequired: boolean
+  operationCount: number
+  productNames: string[]
+  selection: ImportSelection
+  importedFromSnapshotId: string
+  importedAt: string
+  importedBy?: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+export interface McpServer {
+  id: string
+  tenantId: string
+  gatewayId: string
+  apiName: string
+  displayName: string
+  path: string
+  serviceUrl?: string | null
+  protocols: string[]
+  kind: McpServerKind
+  transportType: McpTransportType
+  endpoints: McpEndpoint[]
+  tools: McpTool[]
+  toolCount: number
+  subscriptionRequired: boolean
+  productNames: string[]
+  selection: ImportSelection
+  importedFromSnapshotId: string
+  importedAt: string
+  importedBy?: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+export interface ModelApiCandidate {
+  apiName: string
+  displayName: string
+  path: string
+  serviceUrl?: string | null
+  aiKind: AiBackendKind
+  aiSignals: string[]
+  operationCount: number
+  productNames: string[]
+  recommended: boolean
+  alreadyImported: boolean
+}
+
+export interface McpServerCandidate {
+  apiName: string
+  displayName: string
+  path: string
+  serviceUrl?: string | null
+  kind: McpServerKind
+  transportType: McpTransportType
+  toolCount: number
+  recommended: boolean
+  alreadyImported: boolean
+}
+
+export interface ModelApiCandidateList {
+  gatewayId: string
+  snapshotId?: string | null
+  lastSyncedAt?: string | null
+  candidates: ModelApiCandidate[]
+}
+
+export interface McpServerCandidateList {
+  gatewayId: string
+  snapshotId?: string | null
+  lastSyncedAt?: string | null
+  support: CapabilitySupport
+  candidates: McpServerCandidate[]
 }
 
 export interface ObservedProduct {

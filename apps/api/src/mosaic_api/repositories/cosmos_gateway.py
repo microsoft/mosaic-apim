@@ -4,7 +4,14 @@ import structlog
 from azure.cosmos import exceptions
 from azure.cosmos.aio import ContainerProxy, CosmosClient
 
-from mosaic_api.domain import AuditEvent, Gateway, GatewaySyncRun, GatewaySyncStatus
+from mosaic_api.domain import (
+    AuditEvent,
+    Gateway,
+    GatewaySyncRun,
+    GatewaySyncStatus,
+    McpServer,
+    ModelApi,
+)
 from mosaic_api.observed import ObservedEntity
 from mosaic_api.repositories.cosmos import CosmosRepositoryBase
 
@@ -98,6 +105,7 @@ class CosmosGatewayRepository(CosmosRepositoryBase):
     async def delete_gateway(self, gateway: Gateway, audit_event: AuditEvent) -> None:
         await self.delete_observed_for_gateway(gateway.tenant_id, gateway.id)
         await self._delete_sync_runs(gateway.tenant_id, gateway.id)
+        await self._delete_adopted(gateway.tenant_id, gateway.id)
         await self._mutate(
             gateway,
             gateway.id,
@@ -105,6 +113,21 @@ class CosmosGatewayRepository(CosmosRepositoryBase):
             "delete",
             conflict_message="The gateway changed; reload it and try again",
         )
+
+    async def _delete_adopted(self, tenant_id: str, gateway_id: str) -> None:
+        """Adopted records outlive a sync but not the gateway they describe."""
+
+        adopted: list[str] = [
+            item.id for item in await self.list_model_apis(tenant_id, gateway_id=gateway_id)
+        ]
+        adopted.extend(
+            item.id for item in await self.list_mcp_servers(tenant_id, gateway_id=gateway_id)
+        )
+        for item_id in adopted:
+            try:
+                await self._desired.delete_item(item=item_id, partition_key=tenant_id)
+            except exceptions.CosmosResourceNotFoundError:
+                continue
 
     async def save_sync_run(self, run: GatewaySyncRun) -> GatewaySyncRun:
         await self._sync.upsert_item(self._document(run))
@@ -242,3 +265,55 @@ class CosmosGatewayRepository(CosmosRepositoryBase):
             except exceptions.CosmosResourceNotFoundError:
                 continue
         return removed
+
+    @staticmethod
+    def _gateway_filter(gateway_id: str | None) -> tuple[str, list[dict[str, Any]]]:
+        if gateway_id is None:
+            return "", []
+        return " AND c.gatewayId = @gatewayId", [{"name": "@gatewayId", "value": gateway_id}]
+
+    async def list_model_apis(
+        self, tenant_id: str, *, gateway_id: str | None = None
+    ) -> list[ModelApi]:
+        extra, parameters = self._gateway_filter(gateway_id)
+        items = await self._query(ModelApi, tenant_id, "modelApi", extra, parameters)
+        return sorted(items, key=lambda item: item.display_name.casefold())
+
+    async def get_model_api(self, tenant_id: str, model_api_id: str) -> ModelApi | None:
+        return await self._read(ModelApi, tenant_id, model_api_id)
+
+    async def save_model_api(self, model_api: ModelApi, audit_event: AuditEvent) -> ModelApi:
+        await self._mutate(model_api, None, audit_event, "upsert")
+        return model_api
+
+    async def delete_model_api(self, model_api: ModelApi, audit_event: AuditEvent) -> None:
+        await self._mutate(
+            model_api,
+            model_api.id,
+            audit_event,
+            "delete",
+            conflict_message="The model API changed; reload it and try again",
+        )
+
+    async def list_mcp_servers(
+        self, tenant_id: str, *, gateway_id: str | None = None
+    ) -> list[McpServer]:
+        extra, parameters = self._gateway_filter(gateway_id)
+        items = await self._query(McpServer, tenant_id, "mcpServer", extra, parameters)
+        return sorted(items, key=lambda item: item.display_name.casefold())
+
+    async def get_mcp_server(self, tenant_id: str, mcp_server_id: str) -> McpServer | None:
+        return await self._read(McpServer, tenant_id, mcp_server_id)
+
+    async def save_mcp_server(self, mcp_server: McpServer, audit_event: AuditEvent) -> McpServer:
+        await self._mutate(mcp_server, None, audit_event, "upsert")
+        return mcp_server
+
+    async def delete_mcp_server(self, mcp_server: McpServer, audit_event: AuditEvent) -> None:
+        await self._mutate(
+            mcp_server,
+            mcp_server.id,
+            audit_event,
+            "delete",
+            conflict_message="The MCP server changed; reload it and try again",
+        )

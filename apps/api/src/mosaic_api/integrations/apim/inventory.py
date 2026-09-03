@@ -15,8 +15,17 @@ from typing import Any, Literal
 
 import structlog
 
-from mosaic_api.domain import GatewayInventorySummary, deterministic_id, new_id
-from mosaic_api.errors import DomainError
+from mosaic_api.domain import (
+    CapabilitySupport,
+    GatewayInventorySummary,
+    McpEndpoint,
+    McpServerKind,
+    McpTool,
+    McpTransportType,
+    deterministic_id,
+    new_id,
+)
+from mosaic_api.errors import DomainError, UpstreamUnsupportedError
 from mosaic_api.integrations.apim.ai_detection import AI_POLICY_ELEMENTS, classify_api, classify_url
 from mosaic_api.integrations.apim.client import ApimClient, JsonObject
 from mosaic_api.integrations.apim.policy_semantics import (
@@ -32,6 +41,7 @@ from mosaic_api.observed import (
     ObservedApimUser,
     ObservedBackend,
     ObservedEntity,
+    ObservedMcpServer,
     ObservedNamedValue,
     ObservedOperation,
     ObservedPolicyDocument,
@@ -47,6 +57,7 @@ DEFAULT_CONCURRENCY = 8
 
 API_TYPE = "observedApi"
 OPERATION_TYPE = "observedOperation"
+MCP_SERVER_TYPE = "observedMcpServer"
 PRODUCT_TYPE = "observedProduct"
 SUBSCRIPTION_TYPE = "observedSubscription"
 USER_TYPE = "observedApimUser"
@@ -56,6 +67,8 @@ NAMED_VALUE_TYPE = "observedNamedValue"
 POLICY_TYPE = "observedPolicyDocument"
 FRAGMENT_TYPE = "observedPolicyFragment"
 
+MCP_API_TYPE = "mcp"
+
 SubscriptionScopeKind = Literal["allApis", "product", "api", "unknown"]
 
 
@@ -64,6 +77,7 @@ class InventorySnapshot:
     snapshot_id: str
     apis: list[ObservedApi] = field(default_factory=list)
     operations: list[ObservedOperation] = field(default_factory=list)
+    mcp_servers: list[ObservedMcpServer] = field(default_factory=list)
     products: list[ObservedProduct] = field(default_factory=list)
     subscriptions: list[ObservedSubscription] = field(default_factory=list)
     users: list[ObservedApimUser] = field(default_factory=list)
@@ -75,11 +89,13 @@ class InventorySnapshot:
     errors: list[str] = field(default_factory=list)
     incomplete_types: set[str] = field(default_factory=set)
     ai_policy_observed: bool = False
+    mcp_support: CapabilitySupport = CapabilitySupport.UNKNOWN
 
     def entities(self) -> list[ObservedEntity]:
         entities: list[ObservedEntity] = []
         entities.extend(self.apis)
         entities.extend(self.operations)
+        entities.extend(self.mcp_servers)
         entities.extend(self.products)
         entities.extend(self.subscriptions)
         entities.extend(self.users)
@@ -108,6 +124,7 @@ class InventorySnapshot:
         return GatewayInventorySummary(
             apis=len(self.apis),
             ai_apis=sum(1 for api in self.apis if api.ai_kind != AiBackendKind.NONE),
+            mcp_servers=len(self.mcp_servers),
             operations=len(self.operations),
             products=len(self.products),
             subscriptions=len(self.subscriptions),
@@ -165,6 +182,57 @@ def _named(items: list[JsonObject]) -> list[tuple[str, JsonObject]]:
     """Pair each item with its name, dropping anything unnamed so later zips stay aligned."""
 
     return [(name, item) for item in items if (name := _text(item.get("name")))]
+
+
+def _api_type(item: JsonObject) -> str | None:
+    properties = _properties(item)
+    value = _text(properties.get("type")) or _text(properties.get("apiType"))
+    return value.casefold() if value else None
+
+
+def _mcp_transport(value: object) -> McpTransportType:
+    text = _text(value)
+    if not text:
+        return McpTransportType.UNKNOWN
+    try:
+        return McpTransportType(text.casefold())
+    except ValueError:
+        return McpTransportType.UNKNOWN
+
+
+def _mcp_endpoints(value: object) -> list[McpEndpoint]:
+    if not isinstance(value, list):
+        return []
+    endpoints: list[McpEndpoint] = []
+    for entry in value:
+        if not isinstance(entry, dict):
+            continue
+        name = _text(entry.get("name"))
+        template = _text(entry.get("uriTemplate"))
+        if name and template:
+            endpoints.append(McpEndpoint(name=name, uri_template=template))
+    return endpoints
+
+
+def _split_operation_id(value: object) -> tuple[str | None, str | None]:
+    """Pull the API and operation names out of a tool's ARM operation ID.
+
+    Tools reference their backing operation by full resource ID. Only the two trailing names are
+    useful to an administrator, and keeping the whole ID would put a subscription ID in the UI.
+    """
+
+    text = _text(value)
+    if not text:
+        return None, None
+    trimmed = text.rstrip("/")
+    operation_index = trimmed.rfind("/operations/")
+    if operation_index == -1:
+        return None, None
+    operation_name = trimmed[operation_index + len("/operations/") :] or None
+    api_segment = trimmed[:operation_index]
+    api_index = api_segment.rfind("/apis/")
+    api_name = api_segment[api_index + len("/apis/") :] if api_index != -1 else None
+    return api_name or None, operation_name
 
 
 def _subscription_scope(scope: str) -> tuple[SubscriptionScopeKind, str | None]:
@@ -289,6 +357,7 @@ class InventoryCollector:
         await self._collect_service_policy()
         product_api_map = await self._collect_products(product_items)
         await self._collect_apis(api_items, product_api_map, backend_kinds)
+        await self._collect_mcp_servers(product_api_map)
         await self._collect_fragments(fragment_items)
         await self._collect_users(user_items, group_items)
 
@@ -533,7 +602,13 @@ class InventoryCollector:
         product_api_map: dict[str, list[str]],
         backend_kinds: dict[str, AiBackendKind],
     ) -> None:
-        entries = _named(items)
+        # MCP servers are APIs of type ``mcp`` in the ARM model. They are collected separately, so
+        # exclude them here rather than listing one resource twice under two different shapes.
+        entries = [
+            (name, item)
+            for name, item in _named(items)
+            if _api_type(item) != MCP_API_TYPE
+        ]
         operation_lists = await asyncio.gather(
             *(
                 self._guard(
@@ -626,6 +701,93 @@ class InventoryCollector:
                 )
             )
         return templates
+
+    async def _collect_mcp_servers(self, product_api_map: dict[str, list[str]]) -> None:
+        """Collect MCP servers, treating an unsupported preview contract as an absent capability.
+
+        Three outcomes are deliberately distinct. A service that answers is ``available``. A
+        service that rejects the preview API version is ``unavailable`` and produces no error,
+        because "this gateway is too old for MCP" is not a failure an operator can act on. Any
+        other failure leaves support ``unknown``, records the error, and exempts the type from the
+        sweep, so a transient outage never reads as "the MCP servers were deleted".
+        """
+
+        try:
+            async with self._semaphore:
+                items = await self._client.list_mcp_servers()
+        except UpstreamUnsupportedError:
+            self._snapshot.mcp_support = CapabilitySupport.UNAVAILABLE
+            logger.info("inventory_mcp_unsupported", gateway_id=self._gateway_id)
+            return
+        except DomainError as error:
+            self._snapshot.errors.append(f"MCP servers: {error.message}")
+            self._snapshot.incomplete_types.add(MCP_SERVER_TYPE)
+            logger.warning("inventory_section_failed", section="MCP servers", reason=error.message)
+            return
+
+        self._snapshot.mcp_support = CapabilitySupport.AVAILABLE
+        entries = _named(items)
+        tool_lists = await asyncio.gather(
+            *(
+                self._guard(
+                    f"tools for MCP server {name}",
+                    partial(self._client.list_mcp_tools, name),
+                    _no_items(),
+                    affects=(MCP_SERVER_TYPE,),
+                )
+                for name, _ in entries
+            )
+        )
+
+        for (name, item), tool_items in zip(entries, tool_lists, strict=True):
+            properties = _properties(item)
+            mcp_properties = properties.get("mcpProperties")
+            mcp_properties = mcp_properties if isinstance(mcp_properties, dict) else {}
+            service_url = _text(properties.get("serviceUrl"))
+            tools = self._read_mcp_tools(tool_items)
+            self._snapshot.mcp_servers.append(
+                ObservedMcpServer(
+                    id=self._id("obsMcpServer", name),
+                    tenant_id=self._tenant_id,
+                    gateway_id=self._gateway_id,
+                    snapshot_id=self._snapshot_id,
+                    name=name,
+                    display_name=_text(properties.get("displayName")) or name,
+                    path=_text(properties.get("path")) or "",
+                    protocols=_string_list(properties.get("protocols")),
+                    service_url=sanitize_url(service_url),
+                    # A passthrough server declares the external backend it forwards to; a
+                    # REST-backed one has no service URL of its own and reaches its tools through
+                    # operations on other APIs.
+                    kind=(
+                        McpServerKind.PASSTHROUGH
+                        if mcp_properties
+                        else McpServerKind.REST_API_BACKED
+                    ),
+                    transport_type=_mcp_transport(mcp_properties.get("transportType")),
+                    endpoints=_mcp_endpoints(mcp_properties.get("endpoints")),
+                    tools=tools,
+                    tool_count=len(tools),
+                    subscription_required=_flag(properties.get("subscriptionRequired"), True),
+                    product_names=product_api_map.get(name, []),
+                )
+            )
+
+    def _read_mcp_tools(self, items: list[JsonObject]) -> list[McpTool]:
+        tools: list[McpTool] = []
+        for name, item in _named(items):
+            properties = _properties(item)
+            api_name, operation_name = _split_operation_id(properties.get("operationId"))
+            tools.append(
+                McpTool(
+                    name=name,
+                    display_name=_text(properties.get("displayName")) or name,
+                    description=_text(properties.get("description")),
+                    backing_api_name=api_name,
+                    backing_operation_name=operation_name,
+                )
+            )
+        return tools
 
     async def _collect_fragments(self, items: list[JsonObject]) -> None:
         entries = _named(items)

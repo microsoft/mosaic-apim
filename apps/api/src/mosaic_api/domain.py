@@ -8,6 +8,10 @@ from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field, field_validator, 
 from pydantic.alias_generators import to_camel
 
 APIM_API_VERSION = "2024-05-01"
+# MCP servers are only visible on a preview contract. It is deliberately not the version the rest
+# of the inventory uses: a preview API that changes or disappears must degrade MCP discovery alone,
+# never the gateway sync that administrators depend on.
+APIM_MCP_API_VERSION = "2025-09-01-preview"
 AUTHORIZATION_API_VERSION = "2022-04-01"
 APIM_PROVIDER_NAMESPACE = "Microsoft.ApiManagement"
 APIM_RESOURCE_TYPE = "service"
@@ -166,6 +170,24 @@ class GatewayAccess(MosaicModel):
     message: str | None = None
 
 
+class AiBackendKind(StrEnum):
+    """Which model provider an API or backend fronts.
+
+    Lives here rather than in ``observed`` because adopted desired state records the classification
+    that was true at import, and ``observed`` imports from this module rather than the reverse.
+    """
+
+    AZURE_OPENAI = "azureOpenAi"
+    AZURE_AI_FOUNDRY = "azureAiFoundry"
+    AZURE_AI_INFERENCE = "azureAiInference"
+    OPEN_AI = "openAi"
+    ANTHROPIC = "anthropic"
+    GOOGLE_VERTEX = "googleVertex"
+    AWS_BEDROCK = "awsBedrock"
+    OTHER_LLM = "otherLlm"
+    NONE = "none"
+
+
 class GatewayCapabilities(MosaicModel):
     sku_name: str | None = None
     sku_capacity: int | None = None
@@ -174,12 +196,14 @@ class GatewayCapabilities(MosaicModel):
     gateway_url: AnyHttpUrl | None = None
     management_api_version: str = APIM_API_VERSION
     ai_gateway_policies: CapabilitySupport = CapabilitySupport.UNKNOWN
+    mcp_servers: CapabilitySupport = CapabilitySupport.UNKNOWN
     notes: list[str] = Field(default_factory=list)
 
 
 class GatewayInventorySummary(MosaicModel):
     apis: int = 0
     ai_apis: int = 0
+    mcp_servers: int = 0
     operations: int = 0
     products: int = 0
     subscriptions: int = 0
@@ -253,6 +277,95 @@ class ModelDeployment(Entity):
     catalog_model_id: str | None = None
     deployment_name: str
     endpoint: AnyHttpUrl
+
+
+class ImportSelection(StrEnum):
+    """Whether MOSAIC recommended an import or the administrator chose it themselves."""
+
+    DETECTED = "detected"
+    MANUAL = "manual"
+
+
+class McpTransportType(StrEnum):
+    STREAMABLE = "streamable"
+    SSE = "sse"
+    UNKNOWN = "unknown"
+
+
+class McpServerKind(StrEnum):
+    REST_API_BACKED = "restApiBacked"
+    PASSTHROUGH = "passthrough"
+
+
+class McpEndpoint(MosaicModel):
+    name: str
+    uri_template: str
+
+
+class McpTool(MosaicModel):
+    name: str
+    display_name: str
+    description: str | None = None
+    backing_api_name: str | None = None
+    backing_operation_name: str | None = None
+
+
+class ModelApi(Entity):
+    """An API Management API an administrator adopted as a governed model endpoint.
+
+    Adoption is a Cosmos write, never an Azure one. The record is desired state: it says MOSAIC
+    governs this API, and it survives the sweep that rebuilds ``observed-state`` on every sync.
+    """
+
+    entity_type: Literal["modelApi"] = "modelApi"
+    gateway_id: str
+    api_name: str
+    display_name: str
+    path: str
+    service_url: str | None = None
+    protocols: list[str] = Field(default_factory=list)
+    ai_kind: AiBackendKind = AiBackendKind.NONE
+    ai_signals: list[str] = Field(default_factory=list)
+    subscription_required: bool = True
+    operation_count: int = 0
+    product_names: list[str] = Field(default_factory=list)
+    selection: ImportSelection = ImportSelection.DETECTED
+    imported_from_snapshot_id: str
+    imported_at: datetime = Field(default_factory=utc_now)
+    imported_by: str | None = None
+
+
+class McpServer(Entity):
+    """An API Management MCP server an administrator adopted."""
+
+    entity_type: Literal["mcpServer"] = "mcpServer"
+    gateway_id: str
+    api_name: str
+    display_name: str
+    path: str
+    service_url: str | None = None
+    protocols: list[str] = Field(default_factory=list)
+    kind: McpServerKind = McpServerKind.REST_API_BACKED
+    transport_type: McpTransportType = McpTransportType.UNKNOWN
+    endpoints: list[McpEndpoint] = Field(default_factory=list)
+    tools: list[McpTool] = Field(default_factory=list)
+    tool_count: int = 0
+    subscription_required: bool = True
+    product_names: list[str] = Field(default_factory=list)
+    selection: ImportSelection = ImportSelection.DETECTED
+    imported_from_snapshot_id: str
+    imported_at: datetime = Field(default_factory=utc_now)
+    imported_by: str | None = None
+
+
+def model_api_id(tenant_id: str, gateway_id: str, api_name: str) -> str:
+    """Deterministic so re-importing an API updates the record instead of duplicating it."""
+
+    return deterministic_id("modelApi", tenant_id, gateway_id, api_name)
+
+
+def mcp_server_id(tenant_id: str, gateway_id: str, api_name: str) -> str:
+    return deterministic_id("mcpServer", tenant_id, gateway_id, api_name)
 
 
 class TokenEnforcement(MosaicModel):
@@ -373,6 +486,73 @@ class GatewaySuggestion(MosaicModel):
     already_registered: bool
     gateway_id: str | None = None
     reason: str
+
+
+class ImportRequest(MosaicModel):
+    """The APIM API names an administrator chose to adopt.
+
+    Detection decides which boxes start checked, not which imports are allowed. An administrator
+    may adopt an API MOSAIC did not recognise, so no name is rejected for failing classification —
+    only for being absent from the gateway's current snapshot.
+    """
+
+    api_names: list[str] = Field(min_length=1, max_length=500)
+
+    @field_validator("api_names")
+    @classmethod
+    def clean_names(cls, value: list[str]) -> list[str]:
+        cleaned: list[str] = []
+        seen: set[str] = set()
+        for name in value:
+            trimmed = name.strip()
+            if not trimmed:
+                raise ValueError("apiNames cannot contain blank entries")
+            key = trimmed.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            cleaned.append(trimmed)
+        return cleaned
+
+
+class ModelApiCandidate(MosaicModel):
+    api_name: str
+    display_name: str
+    path: str
+    service_url: str | None = None
+    ai_kind: AiBackendKind = AiBackendKind.NONE
+    ai_signals: list[str] = Field(default_factory=list)
+    operation_count: int = 0
+    product_names: list[str] = Field(default_factory=list)
+    recommended: bool = False
+    already_imported: bool = False
+
+
+class McpServerCandidate(MosaicModel):
+    api_name: str
+    display_name: str
+    path: str
+    service_url: str | None = None
+    kind: McpServerKind = McpServerKind.REST_API_BACKED
+    transport_type: McpTransportType = McpTransportType.UNKNOWN
+    tool_count: int = 0
+    recommended: bool = True
+    already_imported: bool = False
+
+
+class ModelApiCandidateList(MosaicModel):
+    gateway_id: str
+    snapshot_id: str | None = None
+    last_synced_at: datetime | None = None
+    candidates: list[ModelApiCandidate] = Field(default_factory=list)
+
+
+class McpServerCandidateList(MosaicModel):
+    gateway_id: str
+    snapshot_id: str | None = None
+    last_synced_at: datetime | None = None
+    support: CapabilitySupport = CapabilitySupport.UNKNOWN
+    candidates: list[McpServerCandidate] = Field(default_factory=list)
 
 
 class PolicyScope(StrEnum):

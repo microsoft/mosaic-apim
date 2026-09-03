@@ -1,0 +1,63 @@
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  border: 1px solid var(--mosaic-border-soft);
+  background: var(--mosaic-surface);
+  box-shadow: var(--mosaic-shadow);
+}
+
+.panelHeader {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.panelHeading {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.nameCell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.pathText {
+  color: var(--mosaic-text-muted);
+  overflow-wrap: anywhere;
+}
+
+.toolList {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 4px 0 0;
+  padding: 0;
+  list-style: none;
+  color: var(--mosaic-text-muted);
+}
+
+.transportBadge {
+  color: var(--mosaic-primary);
+  background: var(--mosaic-primary-soft);
+}
+
+.gatewayLink {
+  color: var(--mosaic-primary);
+}
+
+.rowActions {
+  display: flex;
+  justify-content: flex-end;
+}
