@@ -46,11 +46,13 @@ function gateway(overrides: Partial<Gateway> = {}): Gateway {
       gatewayUrl: 'https://apim-contoso-dev.azure-api.net',
       managementApiVersion: '2024-05-01',
       aiGatewayPolicies: 'available',
+      mcpServers: 'available',
       notes: [],
     },
     inventory: {
       apis: 12,
       aiApis: 4,
+      mcpServers: 2,
       operations: 40,
       products: 3,
       subscriptions: 87,

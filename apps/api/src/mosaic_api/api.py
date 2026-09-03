@@ -13,6 +13,11 @@ from mosaic_api.domain import (
     GroupCreate,
     GroupMembership,
     GroupUpdate,
+    ImportRequest,
+    McpServer,
+    McpServerCandidateList,
+    ModelApi,
+    ModelApiCandidateList,
     PolicyPreview,
     PolicyPreviewRequest,
     Principal,
@@ -26,6 +31,7 @@ from mosaic_api.observed import (
     ObservedApimGroup,
     ObservedApimUser,
     ObservedBackend,
+    ObservedMcpServer,
     ObservedNamedValue,
     ObservedOperation,
     ObservedProduct,
@@ -273,3 +279,74 @@ async def get_operation_policy(
     return await _gateways(request).operation_policy(
         _actor(auth), gateway_id, api_name, operation_name
     )
+
+
+@router.get("/gateways/{gateway_id}/mcp-servers", response_model=list[ObservedMcpServer])
+async def list_gateway_mcp_servers(
+    request: Request, auth: Admin, gateway_id: str
+) -> list[ObservedMcpServer]:
+    return await _gateways(request).list_observed_mcp_servers(_actor(auth), gateway_id)
+
+
+@router.get("/gateways/{gateway_id}/importable-apis", response_model=ModelApiCandidateList)
+async def list_importable_apis(
+    request: Request, auth: Admin, gateway_id: str
+) -> ModelApiCandidateList:
+    return await _gateways(request).list_importable_apis(_actor(auth), gateway_id)
+
+
+@router.get(
+    "/gateways/{gateway_id}/importable-mcp-servers", response_model=McpServerCandidateList
+)
+async def list_importable_mcp_servers(
+    request: Request, auth: Admin, gateway_id: str
+) -> McpServerCandidateList:
+    return await _gateways(request).list_importable_mcp_servers(_actor(auth), gateway_id)
+
+
+@router.post(
+    "/gateways/{gateway_id}/import-apis",
+    response_model=list[ModelApi],
+    status_code=status.HTTP_201_CREATED,
+)
+async def import_model_apis(
+    request: Request, auth: Admin, gateway_id: str, payload: ImportRequest
+) -> list[ModelApi]:
+    return await _gateways(request).import_model_apis(_actor(auth), gateway_id, payload)
+
+
+@router.post(
+    "/gateways/{gateway_id}/import-mcp-servers",
+    response_model=list[McpServer],
+    status_code=status.HTTP_201_CREATED,
+)
+async def import_mcp_servers(
+    request: Request, auth: Admin, gateway_id: str, payload: ImportRequest
+) -> list[McpServer]:
+    return await _gateways(request).import_mcp_servers(_actor(auth), gateway_id, payload)
+
+
+@router.get("/model-apis", response_model=list[ModelApi])
+async def list_model_apis(
+    request: Request, auth: Admin, gateway: str | None = None
+) -> list[ModelApi]:
+    return await _gateways(request).list_model_apis(_actor(auth), gateway)
+
+
+@router.get("/mcp-servers", response_model=list[McpServer])
+async def list_mcp_servers(
+    request: Request, auth: Admin, gateway: str | None = None
+) -> list[McpServer]:
+    return await _gateways(request).list_mcp_servers(_actor(auth), gateway)
+
+
+@router.delete("/model-apis/{model_api_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_model_api(request: Request, auth: Admin, model_api_id: str) -> Response:
+    await _gateways(request).delete_model_api(_actor(auth), model_api_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.delete("/mcp-servers/{mcp_server_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_mcp_server(request: Request, auth: Admin, mcp_server_id: str) -> Response:
+    await _gateways(request).delete_mcp_server(_actor(auth), mcp_server_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

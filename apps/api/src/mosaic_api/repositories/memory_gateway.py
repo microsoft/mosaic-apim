@@ -1,4 +1,11 @@
-from mosaic_api.domain import AuditEvent, Gateway, GatewaySyncRun, GatewaySyncStatus
+from mosaic_api.domain import (
+    AuditEvent,
+    Gateway,
+    GatewaySyncRun,
+    GatewaySyncStatus,
+    McpServer,
+    ModelApi,
+)
 from mosaic_api.errors import ConflictError
 from mosaic_api.observed import ObservedEntity
 
@@ -10,6 +17,8 @@ class InMemoryGatewayRepository:
         self.gateways: dict[str, Gateway] = {}
         self.sync_runs: dict[str, GatewaySyncRun] = {}
         self.observed: dict[str, ObservedEntity] = {}
+        self.model_apis: dict[str, ModelApi] = {}
+        self.mcp_servers: dict[str, McpServer] = {}
         self.audit_events: dict[str, AuditEvent] = {}
 
     async def ready(self) -> bool:
@@ -64,6 +73,20 @@ class InMemoryGatewayRepository:
             if run.tenant_id == gateway.tenant_id and run.gateway_id == gateway.id
         ]:
             self.sync_runs.pop(run_id, None)
+        # Adopted records describe a gateway that no longer exists, so they go with it rather than
+        # lingering as intent MOSAIC can never reconcile.
+        for model_api_id in [
+            item.id
+            for item in self.model_apis.values()
+            if item.tenant_id == gateway.tenant_id and item.gateway_id == gateway.id
+        ]:
+            self.model_apis.pop(model_api_id, None)
+        for mcp_server_id in [
+            item.id
+            for item in self.mcp_servers.values()
+            if item.tenant_id == gateway.tenant_id and item.gateway_id == gateway.id
+        ]:
+            self.mcp_servers.pop(mcp_server_id, None)
         self.gateways.pop(gateway.id, None)
         self.audit_events[audit_event.id] = audit_event
 
@@ -141,3 +164,51 @@ class InMemoryGatewayRepository:
         for key in stale:
             self.observed.pop(key, None)
         return len(stale)
+
+    async def list_model_apis(
+        self, tenant_id: str, *, gateway_id: str | None = None
+    ) -> list[ModelApi]:
+        items = [
+            item
+            for item in self.model_apis.values()
+            if item.tenant_id == tenant_id
+            and (gateway_id is None or item.gateway_id == gateway_id)
+        ]
+        return sorted(items, key=lambda item: item.display_name.casefold())
+
+    async def get_model_api(self, tenant_id: str, model_api_id: str) -> ModelApi | None:
+        item = self.model_apis.get(model_api_id)
+        return item if item and item.tenant_id == tenant_id else None
+
+    async def save_model_api(self, model_api: ModelApi, audit_event: AuditEvent) -> ModelApi:
+        self.model_apis[model_api.id] = model_api
+        self.audit_events[audit_event.id] = audit_event
+        return model_api
+
+    async def delete_model_api(self, model_api: ModelApi, audit_event: AuditEvent) -> None:
+        self.model_apis.pop(model_api.id, None)
+        self.audit_events[audit_event.id] = audit_event
+
+    async def list_mcp_servers(
+        self, tenant_id: str, *, gateway_id: str | None = None
+    ) -> list[McpServer]:
+        items = [
+            item
+            for item in self.mcp_servers.values()
+            if item.tenant_id == tenant_id
+            and (gateway_id is None or item.gateway_id == gateway_id)
+        ]
+        return sorted(items, key=lambda item: item.display_name.casefold())
+
+    async def get_mcp_server(self, tenant_id: str, mcp_server_id: str) -> McpServer | None:
+        item = self.mcp_servers.get(mcp_server_id)
+        return item if item and item.tenant_id == tenant_id else None
+
+    async def save_mcp_server(self, mcp_server: McpServer, audit_event: AuditEvent) -> McpServer:
+        self.mcp_servers[mcp_server.id] = mcp_server
+        self.audit_events[audit_event.id] = audit_event
+        return mcp_server
+
+    async def delete_mcp_server(self, mcp_server: McpServer, audit_event: AuditEvent) -> None:
+        self.mcp_servers.pop(mcp_server.id, None)
+        self.audit_events[audit_event.id] = audit_event

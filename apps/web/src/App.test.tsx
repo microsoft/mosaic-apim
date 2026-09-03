@@ -39,7 +39,8 @@ describe('App shell', () => {
     expect(screen.getAllByText('MOSAIC').length).toBeGreaterThan(0)
     for (const label of [
       'Dashboard',
-      'Model Foundry',
+      'Models',
+      'MCPs',
       'Identity',
       'Entitlements',
       'Policies',

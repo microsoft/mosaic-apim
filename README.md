@@ -50,7 +50,11 @@ explicit local/test modes and application startup rejects them when `MOSAIC_ENVI
   named value metadata into Cosmos
 - Plain-language policy view: policy XML is parsed in memory and reduced to a digest plus redacted
   semantic facets, so administrators never see markup and MOSAIC never stores it
-- AI surface detection that identifies which APIs and backends front Azure AI models
+- AI surface detection that identifies which APIs and backends front large language models, across
+  Azure OpenAI, Azure AI Foundry, Azure AI inference, OpenAI, Anthropic, Google Vertex AI, and
+  AWS Bedrock
+- MCP server discovery, and import of selected model APIs and MCP servers from a synchronised
+  gateway into MOSAIC's own desired state
 - Async repository abstraction with explicit in-memory and Cosmos implementations
 - React/TypeScript/Vite administrator console using Fluent UI, React Router, TanStack Query, and
   MSAL, with responsive navigation and persisted light/dark/system themes
@@ -62,8 +66,9 @@ explicit local/test modes and application startup rejects them when `MOSAIC_ENVI
   Log Analytics, Application Insights, diagnostics, managed identities, and narrow RBAC
 - Idempotent Entra application/service-principal setup through `azd` hooks
 
-The Gateways workspace, the Identity workspace, and the deterministic policy preview use live API
-contracts. Model Foundry, entitlements, analytics, policy metadata, and other future operational
+The Gateways workspace, the Identity workspace, gateway import on the Models and MCPs workspaces,
+and the deterministic policy preview use live API contracts. The Foundry connection and deployment
+sections of Models, entitlements, analytics, policy metadata, and other future operational
 experiences are interactive frontend previews labeled **Sample data** or **Local preview**. They
 never claim to mutate Azure, query Azure Monitor, or substitute sample data for a failed API
 request.
@@ -178,6 +183,8 @@ not. The domain distinguishes:
 - `Principal`, `Group`, `GroupMembership`
 - `Gateway`: a registered API Management service, its verified access, and its inventory summary
 - `GatewaySyncRun`: the outcome of one inventory synchronisation
+- `ModelApi`: an API Management API an administrator adopted as a governed model endpoint
+- `McpServer`: an API Management MCP server an administrator adopted
 - `Entitlement`: group-to-deployment grant plus token enforcement configuration
 - `CredentialReference`: Key Vault secret URI only
 - `PolicyRevision`, `SyncOperation`, `AuditEvent`
@@ -240,12 +247,44 @@ The needed roles are:
 Write capability is reported so the UI can explain what enrollment will require, but this release
 performs no write against API Management and is granted no write role.
 
-Synchronisation collects APIs and their operations, products, subscriptions, gateway users and
-groups, backends, named value metadata, and policies at the service, product, and API scopes.
-Operation-scope policies are read on demand rather than during a full sync. A failure reading one
-collection degrades the run to `partial` and is recorded, rather than discarding the whole snapshot —
-and the entity types it could not read are exempt from the stale-document sweep, so a transient
-failure never looks like a deletion.
+Synchronisation collects APIs and their operations, MCP servers and their tools, products,
+subscriptions, gateway users and groups, backends, named value metadata, and policies at the
+service, product, and API scopes. Operation-scope policies are read on demand rather than during a
+full sync. A failure reading one collection degrades the run to `partial` and is recorded, rather
+than discarding the whole snapshot — and the entity types it could not read are exempt from the
+stale-document sweep, so a transient failure never looks like a deletion.
+
+### MCP servers
+
+API Management models an MCP server as an API of type `mcp`, visible only on management API version
+`2025-09-01-preview` or later. MOSAIC keeps its inventory on the stable `2024-05-01` contract and
+uses the preview version for MCP discovery alone, so a preview API that changes cannot break the
+sync administrators depend on.
+
+A service that rejects the preview version is not a failure. MOSAIC records
+`capabilities.mcpServers` as `unavailable`, the run still succeeds, and the MCPs workspace explains
+why the gateway has nothing to offer. Any other read failure is reported as an error and exempts
+MCP servers from the sweep, keeping "MOSAIC could not read this" distinct from "there are none".
+
+### Importing models and MCP servers
+
+Observed state is disposable and rebuilt on every sync. Importing promotes a selection of it into
+`desired-state` as `ModelApi` and `McpServer` records: MOSAIC now governs these, and the records
+survive the sweep.
+
+Importing is a Cosmos write and nothing else. No API Management resource is created, changed, or
+deleted, no policy is written, and no Azure write API is called. ADR 0001 is unaffected and the
+contributor role stays ungranted.
+
+Detection decides which rows arrive pre-checked, not which imports are allowed. Every observed API
+is offered, an administrator can adopt one MOSAIC did not recognise or skip one it did, and the
+record keeps whether the choice was `detected` or `manual`. A name absent from the gateway's most
+recent snapshot is rejected outright rather than skipped, because importing four of five selected
+APIs and reporting success would leave an administrator believing they had governed something they
+had not.
+
+Record IDs are deterministic, so re-importing after a sync refreshes a record in place instead of
+duplicating it. Deleting a gateway deletes what was imported from it.
 
 ### Policies without markup
 
@@ -286,12 +325,14 @@ not publish policies or report reconciliation success.
    wiring, typed APIM/Foundry/reconciliation boundaries.
 2. **Gateway onboarding (this release):** multi-gateway registry, access verification with guided
    remediation, full inventory synchronisation, AI surface detection, and plain-language policy.
-3. **Model onboarding:** validate existing Foundry connections and import catalog/deployment state.
+3. **Model onboarding (this release):** discover MCP servers, detect model-fronting APIs across
+   Azure and third-party providers, and import a chosen selection into MOSAIC's desired state.
 4. **Entitlements and enrollment:** group grants, APIM products/subscriptions or identity access,
    MOSAIC-owned policy fragments, plan/apply/rollback, drift and failure UX.
 5. **Insights and chargeback:** Azure Monitor queries, token/traffic/cost allocation, budgets and
    administrator/developer dashboards.
-6. **Catalog ecosystem:** MCP and API Center experiences, broader self-service workflows.
+6. **Catalog ecosystem:** API Center experiences, MCP tool-level governance, broader self-service
+   workflows.
 7. **Production hardening:** private networking, multi-region/production APIM tiers, CMK where
    required, measured partition scaling, retention and operational SLOs.
 

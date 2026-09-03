@@ -2,6 +2,12 @@ import {
   Badge,
   Button,
   Card,
+  Menu,
+  MenuButton,
+  MenuItem,
+  MenuList,
+  MenuPopover,
+  MenuTrigger,
   Tab,
   TabList,
   Text,
@@ -9,26 +15,20 @@ import {
 } from '@fluentui/react-components'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useMosaicApi } from '../api'
 import { EmptyState, ErrorState, Loading } from '../components/AsyncState'
+import { AI_KIND_LABELS } from '../labels'
 import { PolicyDocumentCard, PolicyFragmentCard } from '../components/PolicyFacets'
 import type { AiBackendKind, Gateway } from '../types'
 import { PageHeader } from '../components/PageHeader'
 import { AccessPanel, GatewayStatusBadge } from './GatewaysPage'
 import styles from './GatewayDetailPage.module.css'
 
-const AI_LABELS: Record<AiBackendKind, string> = {
-  azureOpenAi: 'Azure OpenAI',
-  azureAiFoundry: 'Azure AI Foundry',
-  azureAiInference: 'Azure AI inference',
-  otherLlm: 'Model endpoint',
-  none: '',
-}
-
 type TabKey =
   | 'overview'
   | 'apis'
+  | 'mcpServers'
   | 'products'
   | 'subscriptions'
   | 'identities'
@@ -41,7 +41,7 @@ function AiBadge({ kind }: { kind: AiBackendKind }) {
   }
   return (
     <Badge appearance="tint" className={styles.aiBadge}>
-      {AI_LABELS[kind]}
+      {AI_KIND_LABELS[kind]}
     </Badge>
   )
 }
@@ -62,6 +62,15 @@ function Overview({ gateway }: { gateway: Gateway }) {
           <Text size={200}>Endpoints</Text>
           <Title3 as="p">{inventory.operations}</Title3>
           <Text size={200}>operations across all APIs</Text>
+        </Card>
+        <Card className={styles.metricCard}>
+          <Text size={200}>MCP servers</Text>
+          <Title3 as="p">{inventory.mcpServers}</Title3>
+          <Text size={200}>
+            {capabilities.mcpServers === 'unavailable'
+              ? 'not supported on this service'
+              : 'hosted by this gateway'}
+          </Text>
         </Card>
         <Card className={styles.metricCard}>
           <Text size={200}>Access paths</Text>
@@ -166,6 +175,80 @@ function ApisTab({ gatewayId }: { gatewayId: string }) {
               </tbody>
             </table>
           </div>
+        </Card>
+      ))}
+    </>
+  )
+}
+
+function McpServersTab({ gatewayId }: { gatewayId: string }) {
+  const api = useMosaicApi()
+  const servers = useQuery({
+    queryKey: ['gateway-mcp-servers', gatewayId],
+    queryFn: () => api.listGatewayMcpServers(gatewayId),
+  })
+
+  if (servers.isPending) return <Loading label="Loading MCP servers" />
+  if (servers.isError) return <ErrorState error={servers.error} />
+  if (servers.data.length === 0) {
+    return (
+      <EmptyState title="No MCP servers">
+        MOSAIC observed no MCP servers here. They also require an API Management service on a
+        management API version that supports them.
+      </EmptyState>
+    )
+  }
+
+  return (
+    <>
+      {servers.data.map((server) => (
+        <Card key={server.id} className={styles.apiCard}>
+          <div className={styles.apiHeader}>
+            <div>
+              <Title3 as="h3">{server.displayName}</Title3>
+              <Text size={200}>
+                /{server.path} · {server.toolCount} tool{server.toolCount === 1 ? '' : 's'}
+                {server.productNames.length > 0 && ` · in ${server.productNames.join(', ')}`}
+              </Text>
+            </div>
+            <Badge appearance="tint" className={styles.aiBadge}>
+              {server.kind === 'passthrough'
+                ? `Passthrough · ${server.transportType === 'sse' ? 'SSE' : 'Streamable HTTP'}`
+                : 'Backed by REST APIs'}
+            </Badge>
+          </div>
+          {server.endpoints.length > 0 && (
+            <Text block size={200}>
+              Endpoints:{' '}
+              {server.endpoints.map((endpoint) => `${endpoint.name} ${endpoint.uriTemplate}`).join(', ')}
+            </Text>
+          )}
+          {server.tools.length > 0 && (
+            <div className="table-scroll">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Tool</th>
+                    <th>Description</th>
+                    <th>Backing operation</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {server.tools.map((tool) => (
+                    <tr key={tool.name}>
+                      <td>{tool.displayName}</td>
+                      <td>{tool.description ?? '—'}</td>
+                      <td>
+                        {tool.backingApiName
+                          ? `${tool.backingApiName}/${tool.backingOperationName ?? ''}`
+                          : '—'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </Card>
       ))}
     </>
@@ -464,6 +547,7 @@ function BackendsTab({ gatewayId }: { gatewayId: string }) {
 export function GatewayDetailPage() {
   const { gatewayId = '' } = useParams()
   const api = useMosaicApi()
+  const navigate = useNavigate()
   const queryClient = useQueryClient()
   const [tab, setTab] = useState<TabKey>('overview')
 
@@ -494,6 +578,25 @@ export function GatewayDetailPage() {
         actions={
           <div className={styles.headerActions}>
             <GatewayStatusBadge status={gateway.data.status} />
+            <Menu>
+              <MenuTrigger disableButtonEnhancement>
+                <MenuButton appearance="secondary" disabled={!gateway.data.lastSyncedAt}>
+                  Import
+                </MenuButton>
+              </MenuTrigger>
+              <MenuPopover>
+                <MenuList>
+                  {/* Both entries hand off to the section that owns the resource, so the import
+                      workflow is the same wherever an administrator starts it. */}
+                  <MenuItem onClick={() => navigate(`/models?import=${gatewayId}`)}>
+                    APIs
+                  </MenuItem>
+                  <MenuItem onClick={() => navigate(`/mcps?import=${gatewayId}`)}>
+                    MCP servers
+                  </MenuItem>
+                </MenuList>
+              </MenuPopover>
+            </Menu>
             <Button
               appearance="primary"
               onClick={() => sync.mutate()}
@@ -517,6 +620,7 @@ export function GatewayDetailPage() {
       >
         <Tab value="overview">Overview</Tab>
         <Tab value="apis">APIs and endpoints</Tab>
+        <Tab value="mcpServers">MCP servers</Tab>
         <Tab value="products">Products</Tab>
         <Tab value="subscriptions">Subscriptions</Tab>
         <Tab value="identities">Users and groups</Tab>
@@ -527,6 +631,7 @@ export function GatewayDetailPage() {
       <div className={styles.tabPanel}>
         {tab === 'overview' && <Overview gateway={gateway.data} />}
         {tab === 'apis' && <ApisTab gatewayId={gatewayId} />}
+        {tab === 'mcpServers' && <McpServersTab gatewayId={gatewayId} />}
         {tab === 'products' && <ProductsTab gatewayId={gatewayId} />}
         {tab === 'subscriptions' && <SubscriptionsTab gatewayId={gatewayId} />}
         {tab === 'identities' && <IdentitiesTab gatewayId={gatewayId} />}

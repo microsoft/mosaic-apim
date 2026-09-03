@@ -9,10 +9,15 @@ import type {
   GatewaySyncRun,
   Group,
   GroupMembership,
+  McpServer,
+  McpServerCandidateList,
+  ModelApi,
+  ModelApiCandidateList,
   ObservedApi,
   ObservedApimGroup,
   ObservedApimUser,
   ObservedBackend,
+  ObservedMcpServer,
   ObservedNamedValue,
   ObservedOperation,
   ObservedProduct,
@@ -91,6 +96,15 @@ export interface MosaicApi {
   listGatewayBackends(gatewayId: string): Promise<ObservedBackend[]>
   listGatewayNamedValues(gatewayId: string): Promise<ObservedNamedValue[]>
   getGatewayPolicies(gatewayId: string): Promise<GatewayPolicyView>
+  listGatewayMcpServers(gatewayId: string): Promise<ObservedMcpServer[]>
+  listImportableApis(gatewayId: string): Promise<ModelApiCandidateList>
+  listImportableMcpServers(gatewayId: string): Promise<McpServerCandidateList>
+  importModelApis(gatewayId: string, apiNames: string[]): Promise<ModelApi[]>
+  importMcpServers(gatewayId: string, apiNames: string[]): Promise<McpServer[]>
+  listModelApis(gatewayId?: string): Promise<ModelApi[]>
+  listMcpServers(gatewayId?: string): Promise<McpServer[]>
+  deleteModelApi(modelApiId: string): Promise<void>
+  deleteMcpServer(mcpServerId: string): Promise<void>
   previewPolicy(payload: {
     enforcement: TokenEnforcement
     backendResource?: string
@@ -198,6 +212,32 @@ export function useMosaicApi(): MosaicApi {
       listGatewayNamedValues: (id) =>
         request<ObservedNamedValue[]>(`/api/v1/gateways/${id}/named-values`),
       getGatewayPolicies: (id) => request<GatewayPolicyView>(`/api/v1/gateways/${id}/policies`),
+      listGatewayMcpServers: (id) =>
+        request<ObservedMcpServer[]>(`/api/v1/gateways/${id}/mcp-servers`),
+      listImportableApis: (id) =>
+        request<ModelApiCandidateList>(`/api/v1/gateways/${id}/importable-apis`),
+      listImportableMcpServers: (id) =>
+        request<McpServerCandidateList>(`/api/v1/gateways/${id}/importable-mcp-servers`),
+      importModelApis: (id, apiNames) =>
+        request<ModelApi[]>(`/api/v1/gateways/${id}/import-apis`, {
+          method: 'POST',
+          body: { apiNames },
+        }),
+      importMcpServers: (id, apiNames) =>
+        request<McpServer[]>(`/api/v1/gateways/${id}/import-mcp-servers`, {
+          method: 'POST',
+          body: { apiNames },
+        }),
+      listModelApis: (gatewayId) =>
+        request<ModelApi[]>(
+          `/api/v1/model-apis${gatewayId ? `?gateway=${encodeURIComponent(gatewayId)}` : ''}`,
+        ),
+      listMcpServers: (gatewayId) =>
+        request<McpServer[]>(
+          `/api/v1/mcp-servers${gatewayId ? `?gateway=${encodeURIComponent(gatewayId)}` : ''}`,
+        ),
+      deleteModelApi: (id) => request<void>(`/api/v1/model-apis/${id}`, { method: 'DELETE' }),
+      deleteMcpServer: (id) => request<void>(`/api/v1/mcp-servers/${id}`, { method: 'DELETE' }),
       previewPolicy: (payload) =>
         request<PolicyPreview>('/api/v1/policies/preview', {
           method: 'POST',

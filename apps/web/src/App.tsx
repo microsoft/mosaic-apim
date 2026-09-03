@@ -23,6 +23,7 @@ import {
   PersonAccountsRegular,
   PersonCircleRegular,
   PlugConnectedRegular,
+  PuzzlePieceRegular,
   QuestionCircleRegular,
   SearchRegular,
   SettingsRegular,
@@ -47,7 +48,8 @@ import { EntitlementsPage } from './pages/EntitlementsPage'
 import { GatewayDetailPage } from './pages/GatewayDetailPage'
 import { GatewaysPage } from './pages/GatewaysPage'
 import { IdentityPage } from './pages/IdentityPage'
-import { ModelFoundryPage } from './pages/ModelFoundryPage'
+import { McpsPage } from './pages/McpsPage'
+import { ModelsPage } from './pages/ModelsPage'
 import { PoliciesPage } from './pages/PoliciesPage'
 import { SettingsPage } from './pages/SettingsPage'
 import { SupportPage } from './pages/SupportPage'
@@ -64,7 +66,8 @@ interface NavigationItem {
 const primaryNavigation: NavigationItem[] = [
   { to: '/dashboard', label: 'Dashboard', icon: <HomeRegular /> },
   { to: '/gateways', label: 'Gateways', icon: <PlugConnectedRegular /> },
-  { to: '/models', label: 'Model Foundry', icon: <CloudDatabaseRegular /> },
+  { to: '/models', label: 'Models', icon: <CloudDatabaseRegular /> },
+  { to: '/mcps', label: 'MCPs', icon: <PuzzlePieceRegular /> },
   { to: '/identity', label: 'Identity', icon: <PersonAccountsRegular /> },
   { to: '/entitlements', label: 'Entitlements', icon: <ShieldKeyholeRegular /> },
   { to: '/policies', label: 'Policies', icon: <CodeTextEditRegular /> },
@@ -279,7 +282,8 @@ export default function App() {
             <Route path="/dashboard" element={<DashboardPage />} />
             <Route path="/gateways" element={<GatewaysPage />} />
             <Route path="/gateways/:gatewayId" element={<GatewayDetailPage />} />
-            <Route path="/models" element={<ModelFoundryPage />} />
+            <Route path="/models" element={<ModelsPage />} />
+            <Route path="/mcps" element={<McpsPage />} />
             <Route path="/identity" element={<IdentityPage />} />
             <Route path="/principals" element={<Navigate to="/identity?tab=users" replace />} />
             <Route path="/groups" element={<Navigate to="/identity?tab=groups" replace />} />
