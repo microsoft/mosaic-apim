@@ -5,7 +5,6 @@ access is missing MOSAIC reports the exact role, scope, and command an operator 
 role assignment must be granted out-of-band by someone with more privilege than MOSAIC has.
 """
 
-import re
 from dataclasses import dataclass
 
 from mosaic_api.domain import (
@@ -24,6 +23,7 @@ from mosaic_api.domain import (
 )
 from mosaic_api.errors import UpstreamAuthorizationError, UpstreamError, UpstreamNotFoundError
 from mosaic_api.integrations.apim.client import ApimClient, JsonObject
+from mosaic_api.integrations.rbac import permits as _permits
 
 READ_ACTIONS: tuple[str, ...] = (
     "Microsoft.ApiManagement/service/read",
@@ -54,31 +54,6 @@ class PreflightResult:
     service_name: str | None = None
 
 
-def _action_matches(pattern: str, action: str) -> bool:
-    regex = re.escape(pattern).replace(r"\*", ".*")
-    return re.fullmatch(regex, action, re.IGNORECASE) is not None
-
-
-def _permits(permissions: list[JsonObject], action: str) -> bool:
-    """Evaluate RBAC per assignment: notActions only subtract from their own actions."""
-
-    for permission in permissions:
-        actions = permission.get("actions")
-        granted = isinstance(actions, list) and any(
-            isinstance(pattern, str) and _action_matches(pattern, action) for pattern in actions
-        )
-        if not granted:
-            continue
-        not_actions = permission.get("notActions")
-        excluded = isinstance(not_actions, list) and any(
-            isinstance(pattern, str) and _action_matches(pattern, action)
-            for pattern in not_actions
-        )
-        if not excluded:
-            return True
-    return False
-
-
 def build_remediation(
     resource: ApimResourceId,
     *,
@@ -104,6 +79,30 @@ def build_remediation(
     )
 
 
+def _identity_principal_id(identity: JsonObject) -> tuple[str | None, int]:
+    """The principal a gateway authenticates as, and how many identities it has.
+
+    ARM only populates the top-level ``principalId`` for a system-assigned identity. A service using
+    user-assigned identities exposes each principal under ``userAssignedIdentities`` instead, and
+    reading only the top level would report such a gateway as having no identity at all.
+    """
+
+    principal_id = identity.get("principalId")
+    assigned = identity.get("userAssignedIdentities")
+    user_assigned = [
+        value.get("principalId")
+        for value in (assigned.values() if isinstance(assigned, dict) else [])
+        if isinstance(value, dict) and isinstance(value.get("principalId"), str)
+    ]
+    if isinstance(principal_id, str) and principal_id:
+        return principal_id, 1 + len(user_assigned)
+    if user_assigned:
+        # Which one a policy actually uses depends on its client-id, which MOSAIC cannot know from
+        # the service description. The count is reported so the UI can say so.
+        return str(user_assigned[0]), len(user_assigned)
+    return None, 0
+
+
 def _capabilities(service: JsonObject | None) -> GatewayCapabilities:
     if not service:
         return GatewayCapabilities(
@@ -111,15 +110,32 @@ def _capabilities(service: JsonObject | None) -> GatewayCapabilities:
         )
     sku = service.get("sku") if isinstance(service.get("sku"), dict) else {}
     properties = service.get("properties") if isinstance(service.get("properties"), dict) else {}
+    identity = service.get("identity") if isinstance(service.get("identity"), dict) else {}
     sku_name = sku.get("name") if isinstance(sku, dict) else None
     sku_capacity = sku.get("capacity") if isinstance(sku, dict) else None
     gateway_url = properties.get("gatewayUrl") if isinstance(properties, dict) else None
     provisioning_state = (
         properties.get("provisioningState") if isinstance(properties, dict) else None
     )
+    # The gateway's own managed identity is the principal that must hold a data-plane role on a
+    # model endpoint before the gateway can call it. Capturing it here means the endpoint runtime
+    # check never has to re-read the API Management service.
+    principal_id, identity_count = _identity_principal_id(
+        identity if isinstance(identity, dict) else {}
+    )
     notes = [
         "MOSAIC reports AI gateway policy support only once it observes those policies in use.",
     ]
+    if principal_id is None:
+        notes.append(
+            "This gateway has no managed identity, so it cannot authenticate to model endpoints "
+            "without a key."
+        )
+    elif identity_count > 1:
+        notes.append(
+            f"This gateway has {identity_count} managed identities. Which one it uses depends on "
+            "the client ID in each policy, so confirm the role is assigned to the right one."
+        )
     return GatewayCapabilities(
         sku_name=sku_name if isinstance(sku_name, str) else None,
         sku_capacity=sku_capacity if isinstance(sku_capacity, int) else None,
@@ -129,6 +145,8 @@ def _capabilities(service: JsonObject | None) -> GatewayCapabilities:
         location=service.get("location") if isinstance(service.get("location"), str) else None,
         gateway_url=gateway_url if isinstance(gateway_url, str) else None,
         ai_gateway_policies=CapabilitySupport.UNKNOWN,
+        principal_id=principal_id,
+        identity_observed=True,
         notes=notes,
     )
 

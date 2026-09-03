@@ -2,15 +2,18 @@ from typing import Protocol
 
 from mosaic_api.domain import (
     AuditEvent,
+    CredentialReference,
     Gateway,
     GatewaySyncRun,
     Group,
     GroupMembership,
     McpServer,
     ModelApi,
+    ModelEndpoint,
+    ModelEndpointSyncRun,
     Principal,
 )
-from mosaic_api.observed import ObservedEntity
+from mosaic_api.observed import ObservedEntity, ObservedModelEntity
 
 
 class DirectoryRepository(Protocol):
@@ -150,3 +153,87 @@ class GatewayRepository(Protocol):
     ) -> McpServer: ...
 
     async def delete_mcp_server(self, mcp_server: McpServer, audit_event: AuditEvent) -> None: ...
+
+
+class ModelEndpointRepository(Protocol):
+    """Persistence for registered model endpoints and the models MOSAIC observed on them.
+
+    Structurally parallel to :class:`GatewayRepository`, but keyed on ``endpointId`` rather than
+    ``gatewayId``. The two observed shapes are deliberately separate; see
+    :class:`~mosaic_api.observed.ObservedModelEntity`.
+    """
+
+    async def ready(self) -> bool: ...
+
+    async def close(self) -> None: ...
+
+    async def list_endpoints(self, tenant_id: str) -> list[ModelEndpoint]: ...
+
+    async def get_endpoint(self, tenant_id: str, endpoint_id: str) -> ModelEndpoint | None: ...
+
+    async def find_endpoint_by_resource_id(
+        self, tenant_id: str, azure_resource_id: str
+    ) -> ModelEndpoint | None: ...
+
+    async def find_endpoint_by_url(self, tenant_id: str, endpoint: str) -> ModelEndpoint | None: ...
+
+    async def create_endpoint(
+        self, endpoint: ModelEndpoint, audit_event: AuditEvent
+    ) -> ModelEndpoint: ...
+
+    async def save_endpoint(
+        self, endpoint: ModelEndpoint, audit_event: AuditEvent
+    ) -> ModelEndpoint: ...
+
+    async def record_endpoint_state(self, endpoint: ModelEndpoint) -> ModelEndpoint:
+        """Persist observation results without emitting an administrator audit event."""
+        ...
+
+    async def delete_endpoint(self, endpoint: ModelEndpoint, audit_event: AuditEvent) -> None: ...
+
+    async def get_credential(
+        self, tenant_id: str, credential_id: str
+    ) -> CredentialReference | None: ...
+
+    async def save_credential(
+        self, credential: CredentialReference, audit_event: AuditEvent
+    ) -> CredentialReference: ...
+
+    async def save_endpoint_sync_run(self, run: ModelEndpointSyncRun) -> ModelEndpointSyncRun: ...
+
+    async def get_endpoint_sync_run(
+        self, tenant_id: str, run_id: str
+    ) -> ModelEndpointSyncRun | None: ...
+
+    async def list_endpoint_sync_runs(
+        self, tenant_id: str, endpoint_id: str, *, limit: int = 20
+    ) -> list[ModelEndpointSyncRun]: ...
+
+    async def list_unfinished_endpoint_sync_runs(
+        self, tenant_id: str
+    ) -> list[ModelEndpointSyncRun]: ...
+
+    async def replace_observed_models(
+        self,
+        tenant_id: str,
+        endpoint_id: str,
+        entities: list[ObservedModelEntity],
+        snapshot_id: str,
+        incomplete_types: set[str] | None = None,
+    ) -> int:
+        """Upsert the snapshot and remove documents that were not part of it. Returns removals.
+
+        ``incomplete_types`` names entity types MOSAIC could not read in this pass; they are exempt
+        from the sweep so a failed read is never mistaken for a deletion.
+        """
+        ...
+
+    async def list_observed_models[T: ObservedModelEntity](
+        self,
+        model_type: type[T],
+        tenant_id: str,
+        endpoint_id: str,
+        entity_type: str,
+    ) -> list[T]: ...
+
+    async def delete_observed_for_endpoint(self, tenant_id: str, endpoint_id: str) -> int: ...

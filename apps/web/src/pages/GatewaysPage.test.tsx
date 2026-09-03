@@ -47,6 +47,8 @@ function gateway(overrides: Partial<Gateway> = {}): Gateway {
       managementApiVersion: '2024-05-01',
       aiGatewayPolicies: 'available',
       mcpServers: 'available',
+      principalId: '11111111-1111-1111-1111-111111111111',
+      identityObserved: true,
       notes: [],
     },
     inventory: {

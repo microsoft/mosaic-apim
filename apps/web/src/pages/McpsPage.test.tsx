@@ -41,6 +41,7 @@ function buildGateway(overrides: Partial<Gateway> = {}): Gateway {
       managementApiVersion: '2024-05-01',
       aiGatewayPolicies: 'available',
       mcpServers: 'available',
+      identityObserved: true,
       notes: [],
     },
     inventory: {
@@ -239,3 +240,4 @@ describe('McpsPage', () => {
     expect(await screen.findByText('Not synchronised')).toBeVisible()
   })
 })
+

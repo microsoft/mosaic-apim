@@ -13,6 +13,7 @@ from azure.core.credentials import AccessToken
 SUBSCRIPTION_ID = "00000000-0000-0000-0000-000000000000"
 RESOURCE_GROUP = "rg-contoso-dev"
 SERVICE_NAME = "apim-contoso-dev"
+APIM_PRINCIPAL_ID = "11111111-1111-1111-1111-111111111111"
 RESOURCE_ID = (
     f"/subscriptions/{SUBSCRIPTION_ID}"
     f"/resourceGroups/{RESOURCE_GROUP}"
@@ -100,6 +101,12 @@ class FakeApim:
         self.requests: list[str] = []
         self.failures: dict[str, int] = {}
         self.persistent_failures: dict[str, int] = {}
+        # ARM reports a system-assigned principal at the top level, but a user-assigned one only
+        # under userAssignedIdentities. Tests override this to cover both shapes.
+        self.identity: dict[str, Any] | None = {
+            "type": "SystemAssigned",
+            "principalId": APIM_PRINCIPAL_ID,
+        }
 
     def fail_once(self, path_suffix: str, status_code: int) -> None:
         self.failures[path_suffix] = status_code
@@ -208,9 +215,8 @@ class FakeApim:
     def _policy(xml: str) -> httpx.Response:
         return httpx.Response(200, json={"properties": {"value": xml, "format": "rawxml"}})
 
-    @staticmethod
-    def _service() -> dict[str, Any]:
-        return {
+    def _service(self) -> dict[str, Any]:
+        service: dict[str, Any] = {
             "name": SERVICE_NAME,
             "location": "eastus2",
             "sku": {"name": "Developer", "capacity": 1},
@@ -219,6 +225,9 @@ class FakeApim:
                 "gatewayUrl": f"https://{SERVICE_NAME}.azure-api.net",
             },
         }
+        if self.identity is not None:
+            service["identity"] = self.identity
+        return service
 
     def _paged_apis(self, page: str | None) -> httpx.Response:
         if page is None:

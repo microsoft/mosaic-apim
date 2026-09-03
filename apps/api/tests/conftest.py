@@ -3,16 +3,19 @@ from typing import Any, cast
 
 import httpx
 import pytest
+from aoai_double import FakeCognitiveServices
 from apim_double import RESOURCE_ID, FakeApim, FakeCredential
 from azure.core.credentials_async import AsyncTokenCredential
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from mosaic_api.config import AuthMode, Environment, RepositoryBackend, Settings
 from mosaic_api.domain import ApimResourceId
+from mosaic_api.integrations.aoai import CognitiveServicesClient
+from mosaic_api.integrations.aoai.client import SubscriptionScanner
 from mosaic_api.integrations.apim import ApimClient, ArmClient
 from mosaic_api.main import create_app
-from mosaic_api.repositories import InMemoryGatewayRepository
-from mosaic_api.services import GatewayService
+from mosaic_api.repositories import InMemoryGatewayRepository, InMemoryModelEndpointRepository
+from mosaic_api.services import GatewayService, ModelEndpointService
 
 
 async def _no_sleep(_seconds: float) -> None:
@@ -92,3 +95,72 @@ def gateway_client(
 @pytest.fixture
 def apim_resource() -> ApimResourceId:
     return ApimResourceId.parse(RESOURCE_ID)
+
+
+@pytest.fixture
+def fake_aoai() -> FakeCognitiveServices:
+    return FakeCognitiveServices()
+
+
+def build_aoai_arm_client(fake: FakeCognitiveServices) -> ArmClient:
+    transport = httpx.MockTransport(fake.handler)
+    return ArmClient(
+        cast(AsyncTokenCredential, FakeCredential()),
+        client=httpx.AsyncClient(transport=transport),
+        sleep=_no_sleep,
+    )
+
+
+def build_endpoint_service(
+    fake: FakeCognitiveServices,
+    *,
+    repository: InMemoryModelEndpointRepository | None = None,
+    gateway_repository: InMemoryGatewayRepository | None = None,
+    scanner: bool = True,
+    **kwargs: Any,
+) -> ModelEndpointService:
+    arm = build_aoai_arm_client(fake)
+    return ModelEndpointService(
+        repository or InMemoryModelEndpointRepository(),
+        gateway_repository=gateway_repository or InMemoryGatewayRepository(),
+        client_factory=lambda resource: CognitiveServicesClient(arm, resource),
+        scanner=SubscriptionScanner(arm) if scanner else None,
+        principal_id=kwargs.pop("principal_id", "mosaic-managed-identity"),
+    )
+
+
+@pytest.fixture
+def endpoint_repository() -> InMemoryModelEndpointRepository:
+    return InMemoryModelEndpointRepository()
+
+
+@pytest.fixture
+def endpoint_service(
+    fake_aoai: FakeCognitiveServices,
+    endpoint_repository: InMemoryModelEndpointRepository,
+    gateway_repository: InMemoryGatewayRepository,
+) -> ModelEndpointService:
+    return build_endpoint_service(
+        fake_aoai,
+        repository=endpoint_repository,
+        gateway_repository=gateway_repository,
+    )
+
+
+@pytest.fixture
+def endpoint_client(
+    settings: Settings,
+    fake_aoai: FakeCognitiveServices,
+    endpoint_repository: InMemoryModelEndpointRepository,
+    gateway_repository: InMemoryGatewayRepository,
+) -> Iterator[TestClient]:
+    app: FastAPI = create_app(settings)
+    with TestClient(app) as test_client:
+        app.state.gateway_repository = gateway_repository
+        app.state.model_endpoint_repository = endpoint_repository
+        app.state.model_endpoint_service = build_endpoint_service(
+            fake_aoai,
+            repository=endpoint_repository,
+            gateway_repository=gateway_repository,
+        )
+        yield test_client

@@ -5,6 +5,7 @@ import type {
   ApiErrorBody,
   Gateway,
   GatewayPolicyView,
+  GatewayRuntimeAccess,
   GatewaySuggestion,
   GatewaySyncRun,
   Group,
@@ -13,11 +14,16 @@ import type {
   McpServerCandidateList,
   ModelApi,
   ModelApiCandidateList,
+  ModelEndpoint,
+  ModelEndpointSuggestionView,
+  ModelEndpointSyncRun,
   ObservedApi,
   ObservedApimGroup,
   ObservedApimUser,
+  ObservedAvailableModel,
   ObservedBackend,
   ObservedMcpServer,
+  ObservedModelDeployment,
   ObservedNamedValue,
   ObservedOperation,
   ObservedProduct,
@@ -109,6 +115,31 @@ export interface MosaicApi {
     enforcement: TokenEnforcement
     backendResource?: string
   }): Promise<PolicyPreview>
+  listModelEndpoints(): Promise<ModelEndpoint[]>
+  registerModelEndpoint(payload: {
+    azureResourceId?: string
+    endpoint?: string
+    name?: string
+    environmentLabel?: string
+    credentialSecretUri?: string
+  }): Promise<ModelEndpoint>
+  getModelEndpoint(endpointId: string): Promise<ModelEndpoint>
+  updateModelEndpoint(
+    endpointId: string,
+    payload: {
+      name?: string
+      environmentLabel?: string | null
+      credentialSecretUri?: string
+    },
+  ): Promise<ModelEndpoint>
+  deleteModelEndpoint(endpointId: string): Promise<void>
+  preflightModelEndpoint(endpointId: string): Promise<ModelEndpoint>
+  syncModelEndpoint(endpointId: string): Promise<ModelEndpointSyncRun>
+  listModelEndpointSyncRuns(endpointId: string): Promise<ModelEndpointSyncRun[]>
+  listModelDeployments(endpointId: string): Promise<ObservedModelDeployment[]>
+  listAvailableModels(endpointId: string): Promise<ObservedAvailableModel[]>
+  getModelEndpointRuntimeAccess(endpointId: string): Promise<GatewayRuntimeAccess[]>
+  listSuggestedModelEndpoints(): Promise<ModelEndpointSuggestionView>
 }
 
 export function useMosaicApi(): MosaicApi {
@@ -243,6 +274,31 @@ export function useMosaicApi(): MosaicApi {
           method: 'POST',
           body: payload,
         }),
+      listModelEndpoints: () => request<ModelEndpoint[]>('/api/v1/model-endpoints'),
+      registerModelEndpoint: (payload) =>
+        request<ModelEndpoint>('/api/v1/model-endpoints', { method: 'POST', body: payload }),
+      getModelEndpoint: (id) => request<ModelEndpoint>(`/api/v1/model-endpoints/${id}`),
+      updateModelEndpoint: (id, payload) =>
+        request<ModelEndpoint>(`/api/v1/model-endpoints/${id}`, {
+          method: 'PATCH',
+          body: payload,
+        }),
+      deleteModelEndpoint: (id) =>
+        request<void>(`/api/v1/model-endpoints/${id}`, { method: 'DELETE' }),
+      preflightModelEndpoint: (id) =>
+        request<ModelEndpoint>(`/api/v1/model-endpoints/${id}/preflight`, { method: 'POST' }),
+      syncModelEndpoint: (id) =>
+        request<ModelEndpointSyncRun>(`/api/v1/model-endpoints/${id}/sync`, { method: 'POST' }),
+      listModelEndpointSyncRuns: (id) =>
+        request<ModelEndpointSyncRun[]>(`/api/v1/model-endpoints/${id}/sync-runs`),
+      listModelDeployments: (id) =>
+        request<ObservedModelDeployment[]>(`/api/v1/model-endpoints/${id}/deployments`),
+      listAvailableModels: (id) =>
+        request<ObservedAvailableModel[]>(`/api/v1/model-endpoints/${id}/available-models`),
+      getModelEndpointRuntimeAccess: (id) =>
+        request<GatewayRuntimeAccess[]>(`/api/v1/model-endpoints/${id}/runtime-access`),
+      listSuggestedModelEndpoints: () =>
+        request<ModelEndpointSuggestionView>('/api/v1/model-endpoints/suggested'),
     }
   }, [accounts, instance])
 }
