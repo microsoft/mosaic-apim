@@ -10,6 +10,8 @@ from conftest import build_gateway_service
 from fastapi.testclient import TestClient
 from mosaic_api.domain import (
     CapabilitySupport,
+    CatalogEntryUpdate,
+    CatalogVisibility,
     Gateway,
     GatewayCreate,
     GatewaySyncStatus,
@@ -266,6 +268,46 @@ async def test_reimporting_updates_in_place_instead_of_duplicating(
 
     assert first[0].id == second[0].id
     assert len(await gateway_service.list_model_apis(ACTOR, gateway.id)) == 1
+
+
+async def test_reimporting_preserves_administrator_authored_catalog_metadata(
+    gateway_service: GatewayService,
+) -> None:
+    """Visibility and summary are authored, not discovered, so a re-sync must not reset them."""
+
+    gateway = await _registered_and_synced(gateway_service)
+    request = ImportRequest(api_names=["chat-api"])
+    imported = await gateway_service.import_model_apis(ACTOR, gateway.id, request)
+    await gateway_service.update_model_api_catalog(
+        ACTOR,
+        imported[0].id,
+        CatalogEntryUpdate(visibility=CatalogVisibility.PRIVATE, summary="Restricted"),
+    )
+
+    await gateway_service.sync_now(ACTOR, gateway.id)
+    reimported = await gateway_service.import_model_apis(ACTOR, gateway.id, request)
+
+    assert reimported[0].visibility == CatalogVisibility.PRIVATE
+    assert reimported[0].summary == "Restricted"
+
+
+async def test_reimporting_preserves_mcp_catalog_metadata(
+    gateway_service: GatewayService,
+) -> None:
+    gateway = await _registered_and_synced(gateway_service)
+    request = ImportRequest(api_names=["orders-mcp"])
+    imported = await gateway_service.import_mcp_servers(ACTOR, gateway.id, request)
+    await gateway_service.update_mcp_server_catalog(
+        ACTOR,
+        imported[0].id,
+        CatalogEntryUpdate(visibility=CatalogVisibility.PRIVATE, summary="Internal tooling"),
+    )
+
+    await gateway_service.sync_now(ACTOR, gateway.id)
+    reimported = await gateway_service.import_mcp_servers(ACTOR, gateway.id, request)
+
+    assert reimported[0].visibility == CatalogVisibility.PRIVATE
+    assert reimported[0].summary == "Internal tooling"
 
 
 async def test_importing_an_unobserved_name_is_rejected(

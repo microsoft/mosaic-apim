@@ -1,8 +1,10 @@
 from typing import Protocol
 
 from mosaic_api.domain import (
+    AccessRequest,
     AuditEvent,
     CredentialReference,
+    Entitlement,
     Gateway,
     GatewaySyncRun,
     Group,
@@ -237,3 +239,55 @@ class ModelEndpointRepository(Protocol):
     ) -> list[T]: ...
 
     async def delete_observed_for_endpoint(self, tenant_id: str, endpoint_id: str) -> int: ...
+
+
+class EntitlementRepository(Protocol):
+    """Persistence for entitlements and access requests.
+
+    Both live in ``desired-state`` alongside the directory and gateway records they reference, so
+    a grant and its audit event commit in one transactional batch on the same partition.
+    """
+
+    async def ready(self) -> bool: ...
+
+    async def close(self) -> None: ...
+
+    async def list_entitlements(
+        self,
+        tenant_id: str,
+        *,
+        subject_id: str | None = None,
+        resource_id: str | None = None,
+    ) -> list[Entitlement]: ...
+
+    async def get_entitlement(self, tenant_id: str, entitlement_id: str) -> Entitlement | None: ...
+
+    async def create_entitlement(
+        self, entitlement: Entitlement, audit_event: AuditEvent
+    ) -> Entitlement: ...
+
+    async def save_entitlement(
+        self, entitlement: Entitlement, audit_event: AuditEvent
+    ) -> Entitlement: ...
+
+    async def delete_entitlement(
+        self, entitlement: Entitlement, audit_event: AuditEvent
+    ) -> None: ...
+
+    async def list_access_requests(
+        self,
+        tenant_id: str,
+        *,
+        requester_object_id: str | None = None,
+        state: str | None = None,
+    ) -> list[AccessRequest]: ...
+
+    async def get_access_request(self, tenant_id: str, request_id: str) -> AccessRequest | None: ...
+
+    async def create_access_request(
+        self, access_request: AccessRequest, audit_event: AuditEvent
+    ) -> AccessRequest: ...
+
+    async def save_access_request(
+        self, access_request: AccessRequest, audit_event: AuditEvent
+    ) -> AccessRequest: ...

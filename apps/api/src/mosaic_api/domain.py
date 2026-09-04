@@ -532,6 +532,17 @@ class McpTool(MosaicModel):
     backing_operation_name: str | None = None
 
 
+class CatalogVisibility(StrEnum):
+    """Whether a governed resource is discoverable in the end-user portal.
+
+    ``catalog`` means any portal user can see that it exists and request access; it does not grant
+    use. ``private`` means only entitled users see it at all.
+    """
+
+    CATALOG = "catalog"
+    PRIVATE = "private"
+
+
 class ModelApi(Entity):
     """An API Management API an administrator adopted as a governed model endpoint.
 
@@ -551,6 +562,8 @@ class ModelApi(Entity):
     subscription_required: bool = True
     operation_count: int = 0
     product_names: list[str] = Field(default_factory=list)
+    visibility: CatalogVisibility = CatalogVisibility.CATALOG
+    summary: str | None = None
     selection: ImportSelection = ImportSelection.DETECTED
     imported_from_snapshot_id: str
     imported_at: datetime = Field(default_factory=utc_now)
@@ -574,10 +587,19 @@ class McpServer(Entity):
     tool_count: int = 0
     subscription_required: bool = True
     product_names: list[str] = Field(default_factory=list)
+    visibility: CatalogVisibility = CatalogVisibility.CATALOG
+    summary: str | None = None
     selection: ImportSelection = ImportSelection.DETECTED
     imported_from_snapshot_id: str
     imported_at: datetime = Field(default_factory=utc_now)
     imported_by: str | None = None
+
+
+class CatalogEntryUpdate(MosaicModel):
+    """Administrator-authored catalog metadata, kept separate from what a sync discovers."""
+
+    visibility: CatalogVisibility | None = None
+    summary: str | None = None
 
 
 def model_api_id(tenant_id: str, gateway_id: str, api_name: str) -> str:
@@ -590,11 +612,14 @@ def mcp_server_id(tenant_id: str, gateway_id: str, api_name: str) -> str:
     return deterministic_id("mcpServer", tenant_id, gateway_id, api_name)
 
 
+QuotaPeriod = Literal["Hourly", "Daily", "Weekly", "Monthly", "Yearly"]
+
+
 class TokenEnforcement(MosaicModel):
     counter_key_expression: str
     tokens_per_minute: int | None = Field(default=None, ge=1)
     token_quota: int | None = Field(default=None, ge=1)
-    token_quota_period: Literal["Hourly", "Daily", "Weekly", "Monthly", "Yearly"] | None = None
+    token_quota_period: QuotaPeriod | None = None
     estimate_prompt_tokens: bool = True
 
     @model_validator(mode="after")
@@ -608,12 +633,218 @@ class TokenEnforcement(MosaicModel):
         return self
 
 
+class RequestEnforcement(MosaicModel):
+    """Call limits, which API Management enforces with different policies to token limits.
+
+    ``calls`` over ``renewal_period_seconds`` is a short sliding window (``rate-limit-by-key``);
+    ``call_quota`` over ``call_quota_period`` is a long accounting window (``quota-by-key``). They
+    are independent, and a caller commonly has both.
+    """
+
+    counter_key_expression: str
+    calls: int | None = Field(default=None, ge=1)
+    renewal_period_seconds: int | None = Field(default=None, ge=1)
+    call_quota: int | None = Field(default=None, ge=1)
+    call_quota_period: QuotaPeriod | None = None
+
+    @model_validator(mode="after")
+    def validate_limits(self) -> Self:
+        if self.calls is None and self.call_quota is None:
+            raise ValueError("At least one call rate or quota must be configured")
+        if (self.calls is None) != (self.renewal_period_seconds is None):
+            raise ValueError("A call rate needs both a call count and a renewal period")
+        if (self.call_quota is None) != (self.call_quota_period is None):
+            raise ValueError("A call quota needs both a quota and a quota period")
+        return self
+
+
+class EntitlementEnforcement(MosaicModel):
+    """What restricts a subject's use of a resource.
+
+    Token limits keep the exact shape of :class:`TokenEnforcement` because the policy preview and
+    the ``llm-token-limit`` renderer already speak it. An entitlement with no enforcement at all is
+    a legitimate unrestricted grant, so this whole object is optional on the entitlement; when it
+    is present it must actually restrict something.
+    """
+
+    tokens: TokenEnforcement | None = None
+    requests: RequestEnforcement | None = None
+
+    @model_validator(mode="after")
+    def validate_present(self) -> Self:
+        if self.tokens is None and self.requests is None:
+            raise ValueError(
+                "Enforcement must configure a token or request limit; omit it entirely for an "
+                "unrestricted entitlement"
+            )
+        return self
+
+
+class EntitlementSubjectKind(StrEnum):
+    USER = "user"
+    GROUP = "group"
+    APPLICATION = "application"
+
+
+class EntitlementResourceKind(StrEnum):
+    MODEL_API = "modelApi"
+    MCP_SERVER = "mcpServer"
+    MODEL_DEPLOYMENT = "modelDeployment"
+    PRODUCT = "product"
+
+
+class EntitlementSubject(MosaicModel):
+    """Who a grant is for.
+
+    ``user`` and ``application`` name a :class:`Principal`; ``group`` names a :class:`Group`. The
+    distinction between a user and an application is the principal's own kind, kept here so a
+    reader of the entitlement does not have to dereference it.
+    """
+
+    kind: EntitlementSubjectKind
+    id: str
+
+
+class EntitlementResource(MosaicModel):
+    """What a grant is over.
+
+    ``modelApi`` and ``mcpServer`` name desired-state records that carry their own gateway.
+    ``product`` and ``modelDeployment`` name observed records, which are scoped to the gateway or
+    model endpoint MOSAIC read them from, so those require ``scope_id``.
+    """
+
+    kind: EntitlementResourceKind
+    id: str
+    scope_id: str | None = None
+
+    @model_validator(mode="after")
+    def validate_scope(self) -> Self:
+        if self.kind in {"product", "modelDeployment"} and not self.scope_id:
+            raise ValueError(
+                f"A {self.kind} entitlement needs scopeId naming the gateway or model endpoint "
+                "it was observed on"
+            )
+        return self
+
+
+class BindingSource(StrEnum):
+    INFERRED = "inferred"
+    MANUAL = "manual"
+    ORCHESTRATED = "orchestrated"
+
+
+class EntitlementBinding(MosaicModel):
+    """The API Management object that realizes an entitlement at runtime.
+
+    MOSAIC does not write to API Management (ADR 0001), so this records the product or subscription
+    that an administrator identified or that MOSAIC inferred from observed state. It exists because
+    gateway telemetry is keyed on the subscription: ``ApimSubscriptionId`` in
+    ``ApiManagementGatewayLogs`` and ``ApiManagementGatewayLlmLog`` is the subscription's resource
+    name, and without this binding a Cosmos entitlement cannot be joined to a usage row.
+
+    When MOSAIC begins orchestrating the assignment it will populate the same field with
+    ``source`` of ``orchestrated``; nothing downstream has to change.
+    """
+
+    gateway_id: str
+    apim_product_name: str | None = None
+    apim_subscription_name: str | None = None
+    counter_key_expression: str | None = None
+    source: BindingSource = BindingSource.MANUAL
+    bound_at: datetime | None = None
+
+
 class Entitlement(Entity):
+    """A grant of a governed resource to a subject, and the limits that apply to it.
+
+    Cosmos is the source of truth. An entitlement with no ``enforcement`` is unrestricted, which
+    the portal reports as such rather than rendering a limit of zero.
+    """
+
     entity_type: Literal["entitlement"] = "entitlement"
-    group_id: str
-    model_deployment_id: str
+    subject: EntitlementSubject
+    resource: EntitlementResource
     enabled: bool = True
-    enforcement: TokenEnforcement
+    enforcement: EntitlementEnforcement | None = None
+    binding: EntitlementBinding | None = None
+    notes: str | None = None
+
+
+class EntitlementCreate(MosaicModel):
+    subject: EntitlementSubject
+    resource: EntitlementResource
+    enabled: bool = True
+    enforcement: EntitlementEnforcement | None = None
+    binding: EntitlementBinding | None = None
+    notes: str | None = None
+
+
+class EntitlementUpdate(MosaicModel):
+    enabled: bool | None = None
+    enforcement: EntitlementEnforcement | None = None
+    binding: EntitlementBinding | None = None
+    notes: str | None = None
+
+
+def entitlement_id(
+    tenant_id: str,
+    subject: EntitlementSubject,
+    resource: EntitlementResource,
+) -> str:
+    """Deterministic, so re-granting the same pair updates the record instead of duplicating it."""
+
+    return deterministic_id(
+        "entitlement",
+        tenant_id,
+        str(subject.kind),
+        subject.id,
+        str(resource.kind),
+        resource.id,
+        resource.scope_id or "",
+    )
+
+
+class GrantPath(StrEnum):
+    DIRECT = "direct"
+    GROUP = "group"
+
+
+class ResolvedEntitlement(MosaicModel):
+    """An entitlement that applies to a principal, and how it reached them."""
+
+    entitlement: Entitlement
+    via: GrantPath
+    via_group_id: str | None = None
+    via_group_name: str | None = None
+
+
+class AccessRequestState(StrEnum):
+    PENDING = "pending"
+    APPROVED = "approved"
+    DENIED = "denied"
+    WITHDRAWN = "withdrawn"
+
+
+class AccessRequest(Entity):
+    entity_type: Literal["accessRequest"] = "accessRequest"
+    requester_object_id: str
+    requester_principal_id: str | None = None
+    resource: EntitlementResource
+    justification: str | None = None
+    state: AccessRequestState = AccessRequestState.PENDING
+    decided_by_object_id: str | None = None
+    decided_at: datetime | None = None
+    decision_note: str | None = None
+    granted_entitlement_id: str | None = None
+
+
+class AccessRequestCreate(MosaicModel):
+    resource: EntitlementResource
+    justification: str | None = None
+
+
+class AccessRequestDecision(MosaicModel):
+    note: str | None = None
 
 
 class CredentialReference(Entity):

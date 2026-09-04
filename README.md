@@ -52,6 +52,10 @@ explicit local/test modes and application startup rejects them when `MOSAIC_ENVI
 - Multi-gateway onboarding: register any existing API Management service by resource ID, verify
   access, and mirror its APIs, endpoints, products, subscriptions, users, groups, backends, and
   named value metadata into Cosmos
+- Entitlements as desired state: grants to a user, group, or application over a model API, MCP
+  server, product, or model deployment; token and request limits; catalog visibility; access
+  requests; and effective-access resolution that reports whether a grant arrived directly or
+  through a group
 - Model endpoint onboarding: register Azure OpenAI and Azure AI Foundry resources, verify MOSAIC's
   control-plane access, discover the deployments and available models on them, and report — per
   registered gateway — whether that gateway's managed identity can actually call them
@@ -75,10 +79,11 @@ explicit local/test modes and application startup rejects them when `MOSAIC_ENVI
 - Idempotent Entra application/service-principal setup through `azd` hooks
 
 The Gateways workspace, the Identity workspace, the Models and MCPs workspaces, and the
-deterministic policy preview use live API contracts. Entitlements, analytics, policy metadata, and
-other future operational experiences are interactive frontend previews labeled **Sample data** or
-**Local preview**. They never claim to mutate Azure, query Azure Monitor, or substitute sample data
-for a failed API request.
+deterministic policy preview use live API contracts. Entitlements and access requests have a live
+API contract; the Entitlements workspace has not been rewired to it yet and is still a frontend
+preview. Analytics, policy metadata, and other future operational experiences are interactive
+frontend previews labeled **Sample data** or **Local preview**. They never claim to mutate Azure,
+query Azure Monitor, or substitute sample data for a failed API request.
 
 ## Prerequisites
 
@@ -203,7 +208,9 @@ not. The domain distinguishes:
 - `GatewaySyncRun`: the outcome of one inventory synchronisation
 - `ModelApi`: an API Management API an administrator adopted as a governed model endpoint
 - `McpServer`: an API Management MCP server an administrator adopted
-- `Entitlement`: group-to-deployment grant plus token enforcement configuration
+- `Entitlement`: a grant of a governed resource to a user, group, or application, its token and
+  request limits, and the API Management product or subscription binding that realizes it
+- `AccessRequest`: a portal user's request for a resource they can see but are not entitled to
 - `CredentialReference`: Key Vault secret URI only
 - `PolicyRevision`, `SyncOperation`, `AuditEvent`
 Cosmos uses:
