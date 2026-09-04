@@ -61,3 +61,95 @@
   display: flex;
   justify-content: flex-end;
 }
+
+.actionRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.cellStack {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.rowButton {
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  font-weight: 600;
+  color: var(--mosaic-primary);
+  text-align: left;
+  cursor: pointer;
+}
+
+.rowButton:hover,
+.rowButton:focus-visible {
+  text-decoration: underline;
+}
+
+.secondaryCell {
+  color: var(--mosaic-text-muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.selectedRow :global(td) {
+  background: var(--mosaic-primary-soft);
+}
+
+.dialogForm {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.muted {
+  color: var(--mosaic-text-muted);
+}
+
+.hintList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.schemaCell {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.connectedBadge {
+  color: var(--mosaic-success);
+  background: var(--mosaic-success-soft);
+}
+
+.attentionBadge {
+  color: var(--mosaic-danger);
+  background: var(--mosaic-danger-soft);
+}
+
+.degradedBadge {
+  color: var(--mosaic-warning);
+  background: var(--mosaic-warning-soft);
+}
+
+.pendingBadge {
+  background: var(--colorNeutralBackground3);
+  color: var(--colorNeutralForeground2);
+}
+
+.claimBadge {
+  background: var(--colorNeutralBackground3);
+  color: var(--colorNeutralForeground2);
+}
+
+.unstatedBadge {
+  background: transparent;
+  color: var(--mosaic-text-muted);
+  border: 1px dashed var(--mosaic-border-soft);
+}

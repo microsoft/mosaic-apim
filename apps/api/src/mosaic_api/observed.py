@@ -10,7 +10,7 @@ state MOSAIC stores in ``domain``. Two rules apply to every model here:
 """
 
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import Field
 
@@ -18,8 +18,8 @@ from mosaic_api.domain import (
     AiBackendKind,
     Entity,
     FacetConfidence,
-    McpEndpoint,
     McpServerKind,
+    McpServerRoute,
     McpTool,
     McpTransportType,
     MosaicModel,
@@ -80,7 +80,7 @@ class ObservedMcpServer(ObservedEntity):
     service_url: str | None = None
     kind: McpServerKind = McpServerKind.REST_API_BACKED
     transport_type: McpTransportType = McpTransportType.UNKNOWN
-    endpoints: list[McpEndpoint] = Field(default_factory=list)
+    endpoints: list[McpServerRoute] = Field(default_factory=list)
     tools: list[McpTool] = Field(default_factory=list)
     tool_count: int = 0
     subscription_required: bool = True
@@ -197,13 +197,17 @@ OBSERVED_ENTITY_TYPES: tuple[str, ...] = (
 )
 
 
-class ObservedModelEntity(Entity):
-    """Base for state MOSAIC observed on a *model endpoint*.
+class ObservedEndpointEntity(Entity):
+    """Base for state MOSAIC observed on a *registered endpoint* — a model endpoint or an MCP one.
 
     Deliberately a sibling of :class:`ObservedEntity` rather than a subclass. Observed gateway
     documents are keyed on ``gatewayId`` in Cosmos SQL; introducing a shared scope field would
     orphan every existing document, because a query on the new field cannot sweep documents written
     with only the old one. Two explicit shapes cost a little duplication and no migration.
+
+    ADR 0006 named MCP tools as the third scope that should force a generalisation rather than a
+    third copy. That generalisation is this rename: the sweep already keys on ``endpointId``, and
+    an MCP endpoint is an endpoint, so tools live here and nothing had to be migrated.
     """
 
     endpoint_id: str
@@ -211,7 +215,7 @@ class ObservedModelEntity(Entity):
     observed_at: datetime = Field(default_factory=utc_now)
 
 
-class ObservedModelDeployment(ObservedModelEntity):
+class ObservedModelDeployment(ObservedEndpointEntity):
     """A model deployment MOSAIC read from a provider endpoint.
 
     This is the callable unit an entitlement will later grant access to, so its ID is deterministic
@@ -232,7 +236,7 @@ class ObservedModelDeployment(ObservedModelEntity):
     request_paths: list[str] = Field(default_factory=list)
 
 
-class ObservedAvailableModel(ObservedModelEntity):
+class ObservedAvailableModel(ObservedEndpointEntity):
     """A model the endpoint could host but has not deployed.
 
     Kept separate from :class:`ObservedModelDeployment` so the UI never implies something callable
@@ -250,9 +254,59 @@ class ObservedAvailableModel(ObservedModelEntity):
     deprecation_fine_tune: str | None = None
 
 
-OBSERVED_MODEL_ENTITY_TYPES: tuple[str, ...] = (
+class McpToolAnnotations(MosaicModel):
+    """The server's own claims about what a tool does, stored exactly as it stated them.
+
+    Every hint is tri-state on purpose. The MCP specification defines ``destructiveHint`` and
+    ``openWorldHint`` as defaulting to **true**, and ``readOnlyHint``/``idempotentHint`` as
+    defaulting to false, so collapsing an absent hint into its default would turn "the server
+    said nothing" into a claim it never made — and in the safe direction for two of the four,
+    which is the dangerous way round for a governance product.
+
+    The specification is also explicit that clients "MUST consider tool annotations to be
+    untrusted". These are assertions by the server, never verdicts by MOSAIC.
+    """
+
+    title: str | None = None
+    read_only_hint: bool | None = None
+    destructive_hint: bool | None = None
+    idempotent_hint: bool | None = None
+    open_world_hint: bool | None = None
+
+    def stated_anything(self) -> bool:
+        return any(
+            value is not None
+            for value in (
+                self.read_only_hint,
+                self.destructive_hint,
+                self.idempotent_hint,
+                self.open_world_hint,
+            )
+        )
+
+
+class ObservedMcpTool(ObservedEndpointEntity):
+    """A tool a registered MCP server declared.
+
+    Richer than the :class:`~mosaic_api.domain.McpTool` read from API Management, which exposes
+    only a name, display name, description, and backing operation. The schemas and annotations
+    here exist nowhere in the management plane; they come from the server itself.
+    """
+
+    entity_type: Literal["observedMcpTool"] = "observedMcpTool"
+    name: str
+    display_name: str
+    title: str | None = None
+    description: str | None = None
+    input_schema: dict[str, Any] | None = None
+    output_schema: dict[str, Any] | None = None
+    annotations: McpToolAnnotations | None = None
+
+
+OBSERVED_ENDPOINT_ENTITY_TYPES: tuple[str, ...] = (
     "observedModelDeployment",
     "observedAvailableModel",
+    "observedMcpTool",
 )
 
 
@@ -284,25 +338,27 @@ class AnnotatedApi(MosaicModel):
 
 
 __all__ = [
+    "OBSERVED_ENDPOINT_ENTITY_TYPES",
     "OBSERVED_ENTITY_TYPES",
-    "OBSERVED_MODEL_ENTITY_TYPES",
     "AiBackendKind",
     "AnnotatedApi",
     "FacetConfidence",
     "GatewayPolicyView",
-    "McpEndpoint",
     "McpServerKind",
+    "McpServerRoute",
     "McpTool",
+    "McpToolAnnotations",
     "McpTransportType",
     "ObservedApi",
     "ObservedApimGroup",
     "ObservedApimUser",
     "ObservedAvailableModel",
     "ObservedBackend",
+    "ObservedEndpointEntity",
     "ObservedEntity",
     "ObservedMcpServer",
+    "ObservedMcpTool",
     "ObservedModelDeployment",
-    "ObservedModelEntity",
     "ObservedNamedValue",
     "ObservedOperation",
     "ObservedPolicyDocument",

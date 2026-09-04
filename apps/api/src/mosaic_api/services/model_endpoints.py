@@ -413,7 +413,7 @@ class ModelEndpointService:
             logger.info("endpoint_sync_discarded", endpoint_id=endpoint.id, reason="removed")
             return
 
-        removed = await self._repository.replace_observed_models(
+        removed = await self._repository.replace_observed_for_endpoint(
             endpoint.tenant_id,
             endpoint.id,
             snapshot.entities(),
@@ -529,7 +529,7 @@ class ModelEndpointService:
         self, actor: Actor, endpoint_id: str
     ) -> list[ObservedModelDeployment]:
         await self.get_endpoint(actor, endpoint_id)
-        items = await self._repository.list_observed_models(
+        items = await self._repository.list_observed_for_endpoint(
             ObservedModelDeployment, actor.tenant_id, endpoint_id, "observedModelDeployment"
         )
         return sorted(items, key=lambda item: item.deployment_name.casefold())
@@ -538,7 +538,7 @@ class ModelEndpointService:
         self, actor: Actor, endpoint_id: str
     ) -> list[ObservedAvailableModel]:
         await self.get_endpoint(actor, endpoint_id)
-        items = await self._repository.list_observed_models(
+        items = await self._repository.list_observed_for_endpoint(
             ObservedAvailableModel, actor.tenant_id, endpoint_id, "observedAvailableModel"
         )
         return sorted(

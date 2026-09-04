@@ -10,6 +10,9 @@ import type {
   GatewaySyncRun,
   Group,
   GroupMembership,
+  McpAuthMode,
+  McpEndpoint,
+  McpEndpointSyncRun,
   McpServer,
   McpServerCandidateList,
   ModelApi,
@@ -23,6 +26,7 @@ import type {
   ObservedAvailableModel,
   ObservedBackend,
   ObservedMcpServer,
+  ObservedMcpTool,
   ObservedModelDeployment,
   ObservedNamedValue,
   ObservedOperation,
@@ -140,6 +144,30 @@ export interface MosaicApi {
   listAvailableModels(endpointId: string): Promise<ObservedAvailableModel[]>
   getModelEndpointRuntimeAccess(endpointId: string): Promise<GatewayRuntimeAccess[]>
   listSuggestedModelEndpoints(): Promise<ModelEndpointSuggestionView>
+  listMcpEndpoints(): Promise<McpEndpoint[]>
+  registerMcpEndpoint(payload: {
+    endpoint: string
+    name?: string
+    environmentLabel?: string
+    authMode?: McpAuthMode
+    credentialSecretUri?: string
+    resourceAudience?: string
+  }): Promise<McpEndpoint>
+  getMcpEndpoint(endpointId: string): Promise<McpEndpoint>
+  updateMcpEndpoint(
+    endpointId: string,
+    payload: {
+      name?: string
+      environmentLabel?: string | null
+      credentialSecretUri?: string
+      resourceAudience?: string
+    },
+  ): Promise<McpEndpoint>
+  deleteMcpEndpoint(endpointId: string): Promise<void>
+  preflightMcpEndpoint(endpointId: string): Promise<McpEndpoint>
+  syncMcpEndpoint(endpointId: string): Promise<McpEndpointSyncRun>
+  listMcpEndpointSyncRuns(endpointId: string): Promise<McpEndpointSyncRun[]>
+  listMcpEndpointTools(endpointId: string): Promise<ObservedMcpTool[]>
 }
 
 export function useMosaicApi(): MosaicApi {
@@ -299,6 +327,22 @@ export function useMosaicApi(): MosaicApi {
         request<GatewayRuntimeAccess[]>(`/api/v1/model-endpoints/${id}/runtime-access`),
       listSuggestedModelEndpoints: () =>
         request<ModelEndpointSuggestionView>('/api/v1/model-endpoints/suggested'),
+      listMcpEndpoints: () => request<McpEndpoint[]>('/api/v1/mcp-endpoints'),
+      registerMcpEndpoint: (payload) =>
+        request<McpEndpoint>('/api/v1/mcp-endpoints', { method: 'POST', body: payload }),
+      getMcpEndpoint: (id) => request<McpEndpoint>(`/api/v1/mcp-endpoints/${id}`),
+      updateMcpEndpoint: (id, payload) =>
+        request<McpEndpoint>(`/api/v1/mcp-endpoints/${id}`, { method: 'PATCH', body: payload }),
+      deleteMcpEndpoint: (id) =>
+        request<void>(`/api/v1/mcp-endpoints/${id}`, { method: 'DELETE' }),
+      preflightMcpEndpoint: (id) =>
+        request<McpEndpoint>(`/api/v1/mcp-endpoints/${id}/preflight`, { method: 'POST' }),
+      syncMcpEndpoint: (id) =>
+        request<McpEndpointSyncRun>(`/api/v1/mcp-endpoints/${id}/sync`, { method: 'POST' }),
+      listMcpEndpointSyncRuns: (id) =>
+        request<McpEndpointSyncRun[]>(`/api/v1/mcp-endpoints/${id}/sync-runs`),
+      listMcpEndpointTools: (id) =>
+        request<ObservedMcpTool[]>(`/api/v1/mcp-endpoints/${id}/tools`),
     }
   }, [accounts, instance])
 }

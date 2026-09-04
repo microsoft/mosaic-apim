@@ -15,6 +15,10 @@ from mosaic_api.domain import (
     GroupMembership,
     GroupUpdate,
     ImportRequest,
+    McpEndpoint,
+    McpEndpointCreate,
+    McpEndpointSyncRun,
+    McpEndpointUpdate,
     McpServer,
     McpServerCandidateList,
     ModelApi,
@@ -39,6 +43,7 @@ from mosaic_api.observed import (
     ObservedAvailableModel,
     ObservedBackend,
     ObservedMcpServer,
+    ObservedMcpTool,
     ObservedModelDeployment,
     ObservedNamedValue,
     ObservedOperation,
@@ -46,7 +51,12 @@ from mosaic_api.observed import (
     ObservedSubscription,
     ScopedPolicyView,
 )
-from mosaic_api.services import DirectoryService, GatewayService, ModelEndpointService
+from mosaic_api.services import (
+    DirectoryService,
+    GatewayService,
+    McpEndpointService,
+    ModelEndpointService,
+)
 from mosaic_api.services.directory import Actor
 
 Admin = Annotated[AuthContext, Depends(require_admin)]
@@ -62,6 +72,10 @@ def _gateways(request: Request) -> GatewayService:
 
 def _endpoints(request: Request) -> ModelEndpointService:
     return cast(ModelEndpointService, request.app.state.model_endpoint_service)
+
+
+def _mcp_endpoints(request: Request) -> McpEndpointService:
+    return cast(McpEndpointService, request.app.state.mcp_endpoint_service)
 
 
 def _actor(auth: AuthContext) -> Actor:
@@ -394,6 +408,75 @@ async def get_model_endpoint_runtime_access(
     request: Request, auth: Admin, endpoint_id: str
 ) -> list[GatewayRuntimeAccess]:
     return await _endpoints(request).runtime_access(_actor(auth), endpoint_id)
+
+
+@router.get("/mcp-endpoints", response_model=list[McpEndpoint])
+async def list_mcp_endpoints(request: Request, auth: Admin) -> list[McpEndpoint]:
+    return await _mcp_endpoints(request).list_endpoints(_actor(auth))
+
+
+@router.post("/mcp-endpoints", response_model=McpEndpoint, status_code=status.HTTP_201_CREATED)
+async def register_mcp_endpoint(
+    request: Request, auth: Admin, payload: McpEndpointCreate
+) -> McpEndpoint:
+    return await _mcp_endpoints(request).register(_actor(auth), payload)
+
+
+@router.get("/mcp-endpoints/{endpoint_id}", response_model=McpEndpoint)
+async def get_mcp_endpoint(request: Request, auth: Admin, endpoint_id: str) -> McpEndpoint:
+    return await _mcp_endpoints(request).get_endpoint(_actor(auth), endpoint_id)
+
+
+@router.patch("/mcp-endpoints/{endpoint_id}", response_model=McpEndpoint)
+async def update_mcp_endpoint(
+    request: Request, auth: Admin, endpoint_id: str, payload: McpEndpointUpdate
+) -> McpEndpoint:
+    return await _mcp_endpoints(request).update(_actor(auth), endpoint_id, payload)
+
+
+@router.delete("/mcp-endpoints/{endpoint_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_mcp_endpoint(request: Request, auth: Admin, endpoint_id: str) -> Response:
+    await _mcp_endpoints(request).delete(_actor(auth), endpoint_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post("/mcp-endpoints/{endpoint_id}/preflight", response_model=McpEndpoint)
+async def preflight_mcp_endpoint(request: Request, auth: Admin, endpoint_id: str) -> McpEndpoint:
+    return await _mcp_endpoints(request).preflight(_actor(auth), endpoint_id)
+
+
+@router.post(
+    "/mcp-endpoints/{endpoint_id}/sync",
+    response_model=McpEndpointSyncRun,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def sync_mcp_endpoint(
+    request: Request, auth: Admin, endpoint_id: str
+) -> McpEndpointSyncRun:
+    return await _mcp_endpoints(request).start_sync(_actor(auth), endpoint_id)
+
+
+@router.get("/mcp-endpoints/{endpoint_id}/sync-runs", response_model=list[McpEndpointSyncRun])
+async def list_mcp_endpoint_sync_runs(
+    request: Request, auth: Admin, endpoint_id: str
+) -> list[McpEndpointSyncRun]:
+    return await _mcp_endpoints(request).list_sync_runs(_actor(auth), endpoint_id)
+
+
+@router.get(
+    "/mcp-endpoints/{endpoint_id}/sync-runs/{run_id}", response_model=McpEndpointSyncRun
+)
+async def get_mcp_endpoint_sync_run(
+    request: Request, auth: Admin, endpoint_id: str, run_id: str
+) -> McpEndpointSyncRun:
+    return await _mcp_endpoints(request).get_sync_run(_actor(auth), run_id)
+
+
+@router.get("/mcp-endpoints/{endpoint_id}/tools", response_model=list[ObservedMcpTool])
+async def list_mcp_endpoint_tools(
+    request: Request, auth: Admin, endpoint_id: str
+) -> list[ObservedMcpTool]:
+    return await _mcp_endpoints(request).list_tools(_actor(auth), endpoint_id)
 
 
 @router.get("/gateways/{gateway_id}/mcp-servers", response_model=list[ObservedMcpServer])

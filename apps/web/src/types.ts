@@ -76,7 +76,8 @@ export type ImportSelection = 'detected' | 'manual'
 export type McpTransportType = 'streamable' | 'sse' | 'unknown'
 export type McpServerKind = 'restApiBacked' | 'passthrough'
 
-export interface McpEndpoint {
+/** One named URI template an API Management MCP server is reachable on. */
+export interface McpServerRoute {
   name: string
   uriTemplate: string
 }
@@ -241,7 +242,7 @@ export interface ObservedMcpServer {
   serviceUrl?: string | null
   kind: McpServerKind
   transportType: McpTransportType
-  endpoints: McpEndpoint[]
+  endpoints: McpServerRoute[]
   tools: McpTool[]
   toolCount: number
   subscriptionRequired: boolean
@@ -281,7 +282,7 @@ export interface McpServer {
   protocols: string[]
   kind: McpServerKind
   transportType: McpTransportType
-  endpoints: McpEndpoint[]
+  endpoints: McpServerRoute[]
   tools: McpTool[]
   toolCount: number
   subscriptionRequired: boolean
@@ -598,4 +599,122 @@ export interface ModelEndpointSuggestionView {
   suggestions: ModelEndpointSuggestion[]
   scanIssues: SubscriptionScanIssue[]
   subscriptionsScanned: number
+}
+
+export type McpAuthMode = 'none' | 'apiKey' | 'managedIdentity'
+
+/**
+ * `unsupportedProtocol` and `unsupportedTransport` are deliberately distinct from the failure
+ * states: the server answered, and the answer is that it speaks something MOSAIC does not. Neither
+ * is cleared by retrying.
+ */
+export type McpEndpointStatus =
+  | 'pending'
+  | 'connected'
+  | 'degraded'
+  | 'unauthorized'
+  | 'unreachable'
+  | 'unsupportedProtocol'
+  | 'unsupportedTransport'
+
+export type McpDiscoveryEvaluation = 'handshake' | 'authorizationRequired' | 'notEvaluated'
+
+/** What a 401 asked for, so "needs authorization" never reads as "unreachable". */
+export interface McpAuthChallenge {
+  scheme?: string | null
+  resourceMetadataUrl?: string | null
+  scope?: string | null
+}
+
+/** Whether MOSAIC can reach and read a registered MCP server. */
+export interface McpDiscoveryAccess {
+  canDiscover: boolean
+  evaluation: McpDiscoveryEvaluation
+  checkedAt?: string | null
+  challenge?: McpAuthChallenge | null
+  message?: string | null
+}
+
+export interface McpEndpointCapabilities {
+  protocolVersion?: string | null
+  offeredProtocolVersion: string
+  transportType: McpTransportType
+  serverName?: string | null
+  serverTitle?: string | null
+  serverVersion?: string | null
+  instructions?: string | null
+  supportsTools: CapabilitySupport
+  sessionManaged: boolean
+  notes: string[]
+}
+
+/**
+ * Counts only what a server actually stated. There is no destructive count on purpose:
+ * `destructiveHint` defaults to true when absent, so counting it would report silence as a claim.
+ */
+export interface McpInventorySummary {
+  tools: number
+  readOnlyTools: number
+  unannotatedTools: number
+}
+
+export interface McpEndpoint {
+  id: string
+  tenantId: string
+  name: string
+  endpoint: string
+  environmentLabel?: string | null
+  authMode: McpAuthMode
+  credentialReferenceId?: string | null
+  resourceAudience?: string | null
+  status: McpEndpointStatus
+  access: McpDiscoveryAccess
+  capabilities: McpEndpointCapabilities
+  inventory: McpInventorySummary
+  lastSyncedAt?: string | null
+  lastSyncError?: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+export interface McpEndpointSyncRun {
+  id: string
+  tenantId: string
+  endpointId: string
+  status: GatewaySyncStatus
+  startedAt: string
+  completedAt?: string | null
+  durationMs?: number | null
+  counts: McpInventorySummary
+  removed: number
+  errors: string[]
+}
+
+/**
+ * A server's own claims about a tool. Every hint is tri-state: `null` means the server said
+ * nothing, which is not the same as saying `false`. The MCP specification defaults
+ * `destructiveHint` and `openWorldHint` to *true*, and states that clients must treat annotations
+ * as untrusted, so these are never rendered as guarantees.
+ */
+export interface McpToolAnnotations {
+  title?: string | null
+  readOnlyHint?: boolean | null
+  destructiveHint?: boolean | null
+  idempotentHint?: boolean | null
+  openWorldHint?: boolean | null
+}
+
+export interface ObservedMcpTool {
+  id: string
+  tenantId: string
+  endpointId: string
+  snapshotId: string
+  observedAt: string
+  name: string
+  displayName: string
+  title?: string | null
+  description?: string | null
+  inputSchema?: Record<string, unknown> | null
+  outputSchema?: Record<string, unknown> | null
+  annotations?: McpToolAnnotations | null
 }

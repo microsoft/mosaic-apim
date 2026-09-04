@@ -53,6 +53,9 @@ explicit local/test modes and application startup rejects them when `MOSAIC_ENVI
 - Model endpoint onboarding: register Azure OpenAI and Azure AI Foundry resources, verify MOSAIC's
   control-plane access, discover the deployments and available models on them, and report — per
   registered gateway — whether that gateway's managed identity can actually call them
+- MCP server registration: register a Model Context Protocol server by URL, connect to it as a
+  read-only client, and record the tools it declares — including the input schemas, output schemas,
+  and behaviour annotations that API Management's management plane does not expose
 - MCP servers already present in a registered gateway are detected and counted
 - Plain-language policy view: policy XML is parsed in memory and reduced to a digest plus redacted
   semantic facets, so administrators never see markup and MOSAIC never stores it
@@ -192,6 +195,7 @@ not. The domain distinguishes:
 - `GatewaySyncRun`: the outcome of one inventory synchronisation
 - `ModelApi`: an API Management API an administrator adopted as a governed model endpoint
 - `McpServer`: an API Management MCP server an administrator adopted
+- `McpEndpoint`: a registered MCP server MOSAIC connects to and reads tools from
 - `Entitlement`: group-to-deployment grant plus token enforcement configuration
 - `CredentialReference`: Key Vault secret URI only
 - `PolicyRevision`, `SyncOperation`, `AuditEvent`
@@ -302,6 +306,43 @@ is only visible from management API version `2025-09-01-preview`, so MOSAIC issu
 separately from the stable version it pins everywhere else. A service tier or release channel
 without that version is not a fault: MCP visibility is reduced and the sync still succeeds.
 
+### Registering MCP servers
+
+Importing covers servers a gateway already hosts. Registering covers the rest: an administrator
+gives MOSAIC a Model Context Protocol server URL, and MOSAIC connects to it directly. That matters
+for two reasons — a server can be governed before any gateway fronts it, which is what publishing
+into API Management will need, and the management plane cannot describe a tool properly. ARM
+returns only a name, display name, description, and backing operation. **Input schemas, output
+schemas, and behaviour annotations exist nowhere in it**, and only the server can supply them.
+
+MOSAIC acts as a minimal read-only MCP client. It performs `initialize`, sends
+`notifications/initialized`, pages `tools/list`, and ends the session. **It never calls a tool.**
+
+An MCP server has no control plane, so unlike a model endpoint there is no way to ask "may MOSAIC
+read this" without connecting. Registration therefore runs the handshake and stops; discovering
+tools is a separate, explicitly requested sync.
+
+MOSAIC implements the protocol's *handshake* era. The current revision, `2026-07-28`, is stateless
+— it removed the handshake, the session header, and the GET stream — while API Management speaks
+the handshake era. MOSAIC offers `2025-11-25` and accepts a counter-offer down to `2024-11-05`. A
+server outside that range is recorded as `unsupportedProtocol`, and an SSE-only server as
+`unsupportedTransport`. Both are capabilities, not failures: neither is something an operator fixes
+by retrying. A server that does not advertise a `tools` capability records zero tools without
+`tools/list` ever being called, which stays distinct from a read that failed.
+
+Because this is MOSAIC's first outbound call to a host it did not derive from an Azure resource ID,
+the boundary is deliberate. HTTPS is required outside local development; loopback, link-local, and
+private addresses are refused, including the instance metadata address; redirects are never
+followed; a managed-identity token is attached only to an audience the operator explicitly named;
+and responses and page counts are bounded. Only a Key Vault secret *URI* is stored, resolved at
+call time. `401` is reported as "needs authorization", with the scope and resource metadata URL the
+server asked for, never as "unreachable".
+
+Tool annotations are recorded as the **server's claims**, never as MOSAIC's findings. The
+specification defaults `destructiveHint` and `openWorldHint` to *true* and requires clients to
+treat annotations as untrusted, so an absent hint is stored and displayed as "not stated" rather
+than as its default — a tool that said nothing is never rendered as if it promised to be safe.
+
 ### Policies without markup
 
 MOSAIC parses API Management policy XML in memory and keeps only a SHA-256 digest and redacted
@@ -383,10 +424,11 @@ not publish policies or report reconciliation success.
    wiring, typed APIM/Foundry/reconciliation boundaries.
 2. **Gateway onboarding:** multi-gateway registry, access verification with guided
    remediation, full inventory synchronisation, AI surface detection, and plain-language policy.
-3. **Model onboarding (this release):** discover MCP servers, detect model-fronting APIs across
-   Azure and third-party providers and import a chosen selection into desired state, and register
-   Azure OpenAI and Foundry endpoints to enumerate their deployed models and verify each gateway's
-   runtime access to them.
+3. **Model and MCP onboarding (this release):** discover MCP servers, detect model-fronting APIs
+   across Azure and third-party providers and import a chosen selection into desired state,
+   register Azure OpenAI and Foundry endpoints to enumerate their deployed models and verify each
+   gateway's runtime access to them, and register MCP servers directly to record the tools they
+   declare.
 4. **Entitlements and enrollment:** group grants, APIM products/subscriptions or identity access,
    MOSAIC-owned policy fragments, plan/apply/rollback, drift and failure UX.
 5. **Insights and chargeback:** Azure Monitor queries, token/traffic/cost allocation, budgets and
