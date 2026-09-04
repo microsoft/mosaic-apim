@@ -26,6 +26,7 @@ from mosaic_api.config import AuthMode, Environment, RepositoryBackend, Settings
 from mosaic_api.main import create_app
 
 KEY_ID = "test-key"
+PORTAL_PREFIX = "/api/v1/portal"
 
 Admin = Annotated[AuthContext, Depends(require_admin)]
 PortalUser = Annotated[AuthContext, Depends(require_portal_user)]
@@ -180,11 +181,15 @@ def _admin_routes(app: FastAPI) -> list[tuple[str, str]]:
 
     Read from the schema rather than ``app.routes`` so the check keeps covering every route as
     FastAPI changes how included routers are represented internally.
+
+    ``/api/v1/portal`` is excluded because it is deliberately reachable by a portal user; it has
+    its own coverage in ``test_portal_api.py``. The prefix is the only exemption, so a new admin
+    route added anywhere else is still caught by this test rather than quietly ungated.
     """
 
     calls: list[tuple[str, str]] = []
     for path, operations in app.openapi()["paths"].items():
-        if not path.startswith("/api/v1"):
+        if not path.startswith("/api/v1") or path.startswith(PORTAL_PREFIX):
             continue
         concrete = path
         while "{" in concrete:
@@ -228,6 +233,45 @@ def test_every_admin_route_refuses_a_portal_only_caller(portal_only_client: Test
         ):
             unexpected.append((method, path, response.status_code, response.text[:120]))
     assert not unexpected, unexpected
+
+
+def _portal_routes(app: FastAPI) -> list[tuple[str, str]]:
+    calls: list[tuple[str, str]] = []
+    for path, operations in app.openapi()["paths"].items():
+        if not path.startswith(PORTAL_PREFIX):
+            continue
+        concrete = path
+        while "{" in concrete:
+            start = concrete.index("{")
+            end = concrete.index("}", start)
+            concrete = f"{concrete[:start]}placeholder{concrete[end + 1 :]}"
+        for method in operations:
+            if method.upper() in {"HEAD", "OPTIONS", "PARAMETERS"}:
+                continue
+            calls.append((method.upper(), concrete))
+    return calls
+
+
+def test_every_portal_route_admits_a_portal_only_caller(
+    portal_only_client: TestClient,
+) -> None:
+    """The inverse of the exemption above.
+
+    Excluding the portal prefix from the admin sweep would otherwise hide a portal route that
+    accidentally demanded ``Admin``, which would lock every end user out of the thing built for
+    them. A 404 or a validation error is fine here; a 403 is not.
+    """
+
+    routes = _portal_routes(portal_only_client.app)
+    assert routes, "expected the portal surface to be published"
+    forbidden = []
+    for method, path in routes:
+        response = portal_only_client.request(
+            method, path, json={} if method in {"POST", "PUT", "PATCH"} else None
+        )
+        if response.status_code == 403:
+            forbidden.append((method, path, response.text[:120]))
+    assert not forbidden, forbidden
 
 
 def test_role_names_must_differ() -> None:

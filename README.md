@@ -24,7 +24,9 @@ deterministic plan and an explicit apply, only to a gateway an administrator has
 ```mermaid
 flowchart LR
     Admin[Administrator browser] -->|Entra token with Admin role| Web[MOSAIC web]
+    User[End-user browser] -->|Entra token with User role| Portal[MOSAIC portal]
     Web -->|Bearer token| API[MOSAIC API]
+    Portal -->|Bearer token| API
     API -->|Managed identity| Cosmos[(Cosmos DB desired and observed state)]
     API -->|Secret URI only| KV[Key Vault]
     API -. read-only ARM .-> Foundry[Registered Azure AI model endpoints]
@@ -33,7 +35,14 @@ flowchart LR
     APIM --> Monitor[Azure Monitor / App Insights / Log Analytics]
     API --> Monitor
     Web --> Monitor
+    Portal --> Monitor
 ```
+
+The administrator console and the end-user portal are separate applications with separate
+Entra registrations and separate app roles, so they are independently governable. The portal
+reaches only `/api/v1/portal/*`, and every route there is scoped to the caller's own token —
+none of them accept a subject or requester parameter. See
+[ADR 0008](docs/adr/0008-portal-identity-and-role-separation.md).
 
 | Concern | Source of truth | MOSAIC responsibility |
 | --- | --- | --- |
@@ -87,13 +96,17 @@ explicit local/test modes and application startup rejects them when `MOSAIC_ENVI
 - Typed APIM read and write boundaries kept in separate classes, plus Foundry import and
   deterministic policy authoring that never returns markup
 - Separate non-root frontend/backend containers
-- ACR remote builds for both images, so deployment does not depend on a local Docker daemon
-- `azd` and modular Bicep for two Linux Web Apps on one plan, ACR, Cosmos, Key Vault, APIM,
+- End-user portal: a separate SPA on its own Entra registration and the `User` app role, where
+  a non-administrator sees what they are entitled to, how each grant reached them, the catalog
+  of governed resources, and can request access to something they cannot yet use
+- ACR remote builds for every image, so deployment does not depend on a local Docker daemon
+- `azd` and modular Bicep for three Linux Web Apps on one plan, ACR, Cosmos, Key Vault, APIM,
   Log Analytics, Application Insights, diagnostics, managed identities, and narrow RBAC
 - Idempotent Entra application/service-principal setup through `azd` hooks
 
 The Gateways workspace, the Identity workspace, the Models and MCPs workspaces, the Entitlements
-workspace, model publishing, and the deterministic policy preview use live API contracts. Analytics,
+workspace, model publishing, the end-user portal, and the deterministic policy preview use live
+API contracts. Analytics,
 policy metadata, and other future operational experiences are interactive frontend previews labeled
 **Sample data** or **Local preview**. They never claim to mutate Azure, query Azure Monitor, or
 substitute sample data for a failed API request.
@@ -192,9 +205,9 @@ The preprovision hook idempotently creates three single-tenant Entra registratio
 - `mosaic-dev-portal`: end-user portal SPA redirects and delegated permission to the API
 
 It assigns the deploying user the initial `Admin` role. The postprovision hook adds the deployed
-web redirect, and the deployed portal redirect once a portal web app exists. A directory
-authorization failure stops deployment and identifies the failed operation; identity setup is
-never skipped.
+web redirect and the deployed portal redirect, the latter from the `PORTAL_APP_URL` output of
+the portal App Service. A directory authorization failure stops deployment and identifies the
+failed operation; identity setup is never skipped.
 
 Assign the `User` app role — normally to an Entra group — to everyone who should reach the portal.
 Tenant membership alone does not grant it.
@@ -540,8 +553,8 @@ already acknowledged for imported records.
    application over a model API, MCP server, product, or deployment; the APIM product/subscription
    binding that realizes each grant; catalog visibility and access requests; orchestrating that
    binding from a publication so `EntitlementBinding.source` becomes `orchestrated`; drift and
-   failure UX. The `User` app role and the `mosaic-<env>-portal` registration that gate the
-   end-user experience ship here first; see
+   failure UX. The `User` app role, the `mosaic-<env>-portal` registration, and the end-user portal
+   itself ship here; see
    [ADR 0008](docs/adr/0008-portal-identity-and-role-separation.md).
 6. **Insights and chargeback:** Azure Monitor queries over `ApiManagementGatewayLogs` and
    `ApiManagementGatewayLlmLog`, consumption measured against each entitlement's own enforcement
