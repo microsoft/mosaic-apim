@@ -23,6 +23,7 @@ from mosaic_api.domain import (
 )
 from mosaic_api.errors import (
     UpstreamAuthorizationError,
+    UpstreamConflictError,
     UpstreamError,
     UpstreamNotFoundError,
     UpstreamUnsupportedError,
@@ -34,6 +35,11 @@ ARM_SCOPE = "https://management.azure.com/.default"
 ARM_BASE_URL = "https://management.azure.com"
 MAX_ATTEMPTS = 4
 MAX_RETRY_DELAY_SECONDS = 20.0
+MAX_POLL_ATTEMPTS = 60
+DEFAULT_POLL_DELAY_SECONDS = 2.0
+
+_TERMINAL_OPERATION_STATES: frozenset[str] = frozenset({"succeeded"})
+_FAILED_OPERATION_STATES: frozenset[str] = frozenset({"failed", "canceled", "cancelled"})
 
 # ARM signals "this service does not speak that contract" through a small set of error codes. The
 # code is matched first because it is stable; the message is only a fallback for services that
@@ -155,6 +161,18 @@ class ArmClient:
         params: dict[str, str] | None = None,
         allow_not_found: bool = False,
     ) -> httpx.Response | None:
+        return await self._send("GET", url, params=params, allow_not_found=allow_not_found)
+
+    async def _send(
+        self,
+        method: str,
+        url: str,
+        *,
+        params: dict[str, str] | None = None,
+        json: JsonObject | None = None,
+        if_match: str | None = None,
+        allow_not_found: bool = False,
+    ) -> httpx.Response | None:
         target = url if url.startswith("http") else f"{self._base_url}{url}"
         last_error: str = "unknown error"
         for attempt in range(MAX_ATTEMPTS):
@@ -162,8 +180,12 @@ class ArmClient:
                 "Authorization": await self._authorization_header(),
                 "Accept": "application/json",
             }
+            if if_match is not None:
+                headers["If-Match"] = if_match
             try:
-                response = await self._client.get(target, params=params, headers=headers)
+                response = await self._client.request(
+                    method, target, params=params, json=json, headers=headers
+                )
             except httpx.HTTPError as error:
                 last_error = str(error)
                 if attempt == MAX_ATTEMPTS - 1:
@@ -186,6 +208,11 @@ class ArmClient:
                     "The Azure resource was not found",
                     details={"url": target, "reason": self._upstream_detail(response)},
                 )
+            if response.status_code == 412:
+                raise UpstreamConflictError(
+                    "The Azure resource changed since MOSAIC last read it",
+                    details={"url": target, "reason": self._upstream_detail(response)},
+                )
             if response.status_code == 429 or response.status_code >= 500:
                 last_error = self._upstream_detail(response)
                 if attempt == MAX_ATTEMPTS - 1:
@@ -194,6 +221,7 @@ class ArmClient:
                 logger.warning(
                     "arm_request_retry",
                     url=target,
+                    method=method,
                     status_code=response.status_code,
                     delay_seconds=delay,
                 )
@@ -263,6 +291,109 @@ class ArmClient:
         if next_url:
             logger.warning("arm_paging_truncated", url=url, pages=pages)
         return items
+
+    async def _await_operation(self, response: httpx.Response) -> None:
+        """Poll an Azure long-running operation to completion.
+
+        A write that returns 202 has not happened yet. Treating it as done would make the *next*
+        plan step fail against a resource that does not exist, and the reported cause would be the
+        wrong step entirely.
+
+        The two polling styles are handled together. An ``Azure-AsyncOperation`` endpoint answers
+        200 with a ``status`` body throughout, so completion is decided by that status and never by
+        the response code. A ``Location`` endpoint answers 202 while running and then returns the
+        resource itself, which carries no operation status at all.
+        """
+
+        poll_url = response.headers.get("Azure-AsyncOperation") or response.headers.get("Location")
+        if not poll_url:
+            return
+        delay = self._poll_delay(response, DEFAULT_POLL_DELAY_SECONDS)
+        for _ in range(MAX_POLL_ATTEMPTS):
+            await self._sleep(delay)
+            polled = await self._send("GET", poll_url, allow_not_found=True)
+            if polled is None:
+                return
+            state = self._operation_state(polled)
+            if state in _FAILED_OPERATION_STATES:
+                raise UpstreamError(
+                    "The Azure operation did not succeed",
+                    details={"url": poll_url, "status": state},
+                )
+            if state in _TERMINAL_OPERATION_STATES:
+                return
+            if not state and polled.status_code != 202:
+                return
+            delay = self._poll_delay(polled, delay)
+
+        raise UpstreamError(
+            "The Azure operation did not complete in time",
+            details={"url": poll_url},
+        )
+
+    @staticmethod
+    def _poll_delay(response: httpx.Response, fallback: float) -> float:
+        header = response.headers.get("Retry-After")
+        if header:
+            try:
+                return min(float(header), MAX_RETRY_DELAY_SECONDS)
+            except ValueError:
+                pass
+        return min(fallback, MAX_RETRY_DELAY_SECONDS)
+
+    @staticmethod
+    def _operation_state(response: httpx.Response) -> str:
+        try:
+            payload = response.json()
+        except ValueError:
+            return ""
+        if not isinstance(payload, dict):
+            return ""
+        state = payload.get("status") or payload.get("properties", {}).get("provisioningState")
+        return str(state).casefold() if isinstance(state, str) else ""
+
+    async def put(
+        self,
+        url: str,
+        payload: JsonObject,
+        *,
+        params: dict[str, str] | None = None,
+        if_match: str | None = None,
+    ) -> JsonObject | None:
+        """Create or replace a resource. Idempotent, so the shared retry policy is safe."""
+
+        response = await self._send("PUT", url, params=params, json=payload, if_match=if_match)
+        if response is None:
+            return None
+        if response.status_code in {201, 202}:
+            await self._await_operation(response)
+        try:
+            body = response.json()
+        except ValueError:
+            return None
+        return body if isinstance(body, dict) else None
+
+    async def delete(
+        self,
+        url: str,
+        *,
+        params: dict[str, str] | None = None,
+        if_match: str | None = None,
+    ) -> bool:
+        """Remove a resource. Returns whether it was there to remove.
+
+        A 404 is success, not an error: rollback and unpublish both need deleting something already
+        gone to be a no-op rather than a failure that masks the real one.
+        """
+
+        response = await self._send(
+            "DELETE", url, params=params, if_match=if_match, allow_not_found=True
+        )
+        if response is None:
+            return False
+        if response.status_code == 202:
+            await self._await_operation(response)
+        return response.status_code != 204
 
 
 class ApimClient:
@@ -411,3 +542,26 @@ class ApimClient:
 
     async def get_policy_fragment(self, name: str) -> str | None:
         return await self._policy_value(f"{self._base}/policyFragments/{name}")
+
+    async def _sub_resource(self, segment: str) -> JsonObject | None:
+        return await self._arm.get(
+            f"{self._base}/{segment}", params=self._params, allow_not_found=True
+        )
+
+    async def get_api(self, name: str) -> JsonObject | None:
+        return await self._sub_resource(f"apis/{name}")
+
+    async def get_api_operation(self, api_name: str, name: str) -> JsonObject | None:
+        return await self._sub_resource(f"apis/{api_name}/operations/{name}")
+
+    async def get_backend(self, name: str) -> JsonObject | None:
+        return await self._sub_resource(f"backends/{name}")
+
+    async def get_product(self, name: str) -> JsonObject | None:
+        return await self._sub_resource(f"products/{name}")
+
+    async def get_subscription(self, name: str) -> JsonObject | None:
+        return await self._sub_resource(f"subscriptions/{name}")
+
+    async def get_policy_fragment_resource(self, name: str) -> JsonObject | None:
+        return await self._sub_resource(f"policyFragments/{name}")

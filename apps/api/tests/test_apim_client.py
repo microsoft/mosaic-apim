@@ -6,8 +6,13 @@ from apim_double import RESOURCE_ID, FakeApim, FakeCredential
 from azure.core.credentials_async import AsyncTokenCredential
 from conftest import _no_sleep, build_arm_client
 from mosaic_api.domain import ApimResourceId
-from mosaic_api.errors import UpstreamAuthorizationError, UpstreamError, UpstreamNotFoundError
-from mosaic_api.integrations.apim import ApimClient, ArmClient
+from mosaic_api.errors import (
+    UpstreamAuthorizationError,
+    UpstreamConflictError,
+    UpstreamError,
+    UpstreamNotFoundError,
+)
+from mosaic_api.integrations.apim import ApimClient, ApimWriter, ArmClient
 
 
 def _client(fake: FakeApim) -> ApimClient:
@@ -99,3 +104,84 @@ async def test_effective_permissions_degrade_to_none_when_denied() -> None:
     fake = FakeApim(permissions_status=403)
 
     assert await _client(fake).effective_permissions() is None
+
+
+async def test_put_returns_the_written_resource(fake_apim: FakeApim) -> None:
+    arm = build_arm_client(fake_apim)
+
+    written = await arm.put(
+        f"{RESOURCE_ID}/backends/mosaic-test",
+        {"properties": {"url": "https://contoso.openai.azure.com", "protocol": "http"}},
+        params={"api-version": "2024-05-01"},
+    )
+
+    assert written is not None
+    assert written["name"] == "mosaic-test"
+    assert fake_apim.write_paths("PUT") == ["backends/mosaic-test"]
+
+
+async def test_delete_of_a_missing_resource_is_not_an_error(fake_apim: FakeApim) -> None:
+    arm = build_arm_client(fake_apim)
+
+    removed = await arm.delete(
+        f"{RESOURCE_ID}/backends/never-created", params={"api-version": "2024-05-01"}
+    )
+
+    assert removed is False
+
+
+async def test_delete_sends_an_if_match_header(fake_apim: FakeApim) -> None:
+    writer = ApimWriter(build_arm_client(fake_apim), ApimResourceId.parse(RESOURCE_ID))
+    await writer.put_backend("mosaic-test", url="https://contoso.openai.azure.com", title="t")
+
+    assert await writer.delete_backend("mosaic-test") is True
+    assert fake_apim.write_paths("DELETE") == ["backends/mosaic-test"]
+
+
+async def test_a_precondition_failure_is_reported_as_a_conflict(fake_apim: FakeApim) -> None:
+    fake_apim.fail_write("backends/mosaic-test", 412)
+    arm = build_arm_client(fake_apim)
+
+    with pytest.raises(UpstreamConflictError) as error:
+        await arm.put(
+            f"{RESOURCE_ID}/backends/mosaic-test",
+            {"properties": {}},
+            params={"api-version": "2024-05-01"},
+            if_match='"stale"',
+        )
+
+    assert error.value.status_code == 409
+
+
+async def test_a_throttled_write_is_retried(fake_apim: FakeApim) -> None:
+    fake_apim.fail_write("backends/mosaic-test", 429)
+    arm = build_arm_client(fake_apim)
+
+    with pytest.raises(UpstreamError):
+        await arm.put(
+            f"{RESOURCE_ID}/backends/mosaic-test",
+            {"properties": {}},
+            params={"api-version": "2024-05-01"},
+        )
+
+    assert fake_apim.write_paths("PUT").count("backends/mosaic-test") == 4
+
+
+async def test_an_in_progress_operation_is_polled_until_it_settles(fake_apim: FakeApim) -> None:
+    fake_apim.make_async("backends/mosaic-test", polls=3)
+    writer = ApimWriter(build_arm_client(fake_apim), ApimResourceId.parse(RESOURCE_ID))
+
+    await writer.put_backend("mosaic-test", url="https://contoso.openai.azure.com", title="t")
+
+    polls = [path for path in fake_apim.requests if "mosaic-test-operations" in path]
+    assert len(polls) == 4
+
+
+async def test_a_failed_operation_raises_rather_than_reporting_success(
+    fake_apim: FakeApim,
+) -> None:
+    fake_apim.make_async("backends/mosaic-test", polls=0, result="Failed")
+    writer = ApimWriter(build_arm_client(fake_apim), ApimResourceId.parse(RESOURCE_ID))
+
+    with pytest.raises(UpstreamError):
+        await writer.put_backend("mosaic-test", url="https://contoso.openai.azure.com", title="t")

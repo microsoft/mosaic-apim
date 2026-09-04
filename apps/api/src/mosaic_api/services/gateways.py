@@ -1,9 +1,9 @@
 """Gateway registration, observation, and inventory synchronisation.
 
 This service is read-only against Azure by construction. It registers a gateway, verifies MOSAIC's
-access, and mirrors what it observes into Cosmos. It never writes to API Management: enrollment and
-policy authoring arrive in a later phase, and until then reporting write capability is the most this
-layer does with it.
+access, and mirrors what it observes into Cosmos. API Management writes belong to
+:mod:`mosaic_api.services.publishing`, which is the only place MOSAIC changes a gateway, and which
+this service gates by refusing to move a gateway into ``manage`` mode on unverified write access.
 """
 
 import asyncio
@@ -182,10 +182,17 @@ class GatewayService:
         gateway = await self.get_gateway(actor, gateway_id)
         changes = request.model_dump(exclude_unset=True, by_alias=False)
         mode = changes.get("management_mode")
-        if mode is not None and mode != ManagementMode.OBSERVE:
+        # Two independent conditions gate every APIM write: the administrator's recorded intent,
+        # and Azure's permission model. Neither substitutes for the other, so a gateway cannot be
+        # moved into manage mode on the strength of a role assignment MOSAIC has not confirmed.
+        if mode is not None and mode != ManagementMode.OBSERVE and not gateway.access.can_write:
             raise ValidationError(
-                "MOSAIC does not write to API Management yet, so gateways stay in observe mode.",
-                details={"managementMode": str(mode)},
+                "MOSAIC cannot write to this gateway yet, so it cannot be managed. Grant the "
+                "role shown on the gateway and re-run the access check first.",
+                details={
+                    "managementMode": str(mode),
+                    "missingActions": gateway.access.missing_actions,
+                },
             )
         if "name" in changes and changes["name"] is not None:
             changes["name"] = str(changes["name"]).strip()
@@ -203,6 +210,22 @@ class GatewayService:
 
     async def delete(self, actor: Actor, gateway_id: str) -> None:
         gateway = await self.get_gateway(actor, gateway_id)
+        # Forgetting a gateway MOSAIC published into would strand real API Management resources
+        # with nothing left that knows it owns them. Removing them is a decision an administrator
+        # has to make explicitly, so it is asked for rather than assumed either way.
+        published = [
+            item
+            for item in await self._repository.list_publications(
+                actor.tenant_id, gateway_id=gateway_id
+            )
+            if item.created_resources()
+        ]
+        if published:
+            raise ConflictError(
+                "MOSAIC published models into this gateway. Unpublish them first, so their API "
+                "Management resources are removed rather than orphaned.",
+                details={"publications": [item.display_name for item in published]},
+            )
         await self._repository.delete_gateway(
             gateway, self._audit(actor, "gateway.removed", gateway.id)
         )

@@ -4,6 +4,7 @@ Tests drive the real ``ArmClient``/``ApimClient``/``InventoryCollector`` against
 paging, error mapping, policy parsing, and AI detection are all covered by the same fixture.
 """
 
+import json
 import time
 from typing import Any
 
@@ -67,6 +68,7 @@ MOSAIC_FRAGMENT = """
 
 STABLE_API_VERSION = "2024-05-01"
 MCP_API_VERSION = "2025-09-01-preview"
+OPERATION_PREFIX = "/mosaic-test-operations/"
 
 
 class FakeCredential:
@@ -101,6 +103,15 @@ class FakeApim:
         self.requests: list[str] = []
         self.failures: dict[str, int] = {}
         self.persistent_failures: dict[str, int] = {}
+        # Writes are recorded in order so tests can assert dependency ordering and rollback
+        # direction, and stored so a later read observes what a write created.
+        self.writes: list[tuple[str, str]] = []
+        self.written: dict[str, dict[str, Any]] = {}
+        self.write_failures: dict[str, int] = {}
+        self.delete_failures: dict[str, int] = {}
+        self.async_writes: set[str] = set()
+        self.operation_polls: dict[str, int] = {}
+        self.operation_result: dict[str, str] = {}
         # ARM reports a system-assigned principal at the top level, but a user-assigned one only
         # under userAssignedIdentities. Tests override this to cover both shapes.
         self.identity: dict[str, Any] | None = {
@@ -113,6 +124,29 @@ class FakeApim:
 
     def fail_always(self, path_suffix: str, status_code: int) -> None:
         self.persistent_failures[path_suffix] = status_code
+
+    def fail_write(self, path_suffix: str, status_code: int = 500) -> None:
+        self.write_failures[path_suffix] = status_code
+
+    def fail_delete(self, path_suffix: str, status_code: int = 500) -> None:
+        """Let a resource be created but refuse to remove it, so rollback itself has to fail."""
+
+        self.delete_failures[path_suffix] = status_code
+
+    def make_async(self, path_suffix: str, *, polls: int = 1, result: str = "Succeeded") -> None:
+        """Make one write return 202 and settle only after ``polls`` in-progress responses."""
+
+        self.async_writes.add(path_suffix)
+        self.operation_polls[path_suffix] = polls
+        self.operation_result[path_suffix] = result
+
+    def seed(self, path_suffix: str, payload: dict[str, Any] | None = None) -> None:
+        """Pretend a resource already exists, so a plan reports update rather than create."""
+
+        self.written[path_suffix] = payload or {"properties": {}}
+
+    def write_paths(self, method: str | None = None) -> list[str]:
+        return [suffix for verb, suffix in self.writes if method is None or verb == method]
 
     def _maybe_fail(self, suffix: str) -> httpx.Response | None:
         status_code = self.persistent_failures.get(suffix) or self.failures.pop(suffix, None)
@@ -128,9 +162,13 @@ class FakeApim:
     def handler(self, request: httpx.Request) -> httpx.Response:
         path = request.url.path
         self.requests.append(path)
+        if path.startswith(OPERATION_PREFIX):
+            return self._operation(path)
         if not path.startswith(RESOURCE_ID):
             return httpx.Response(404, json={"error": {"message": "unknown resource"}})
         suffix = path[len(RESOURCE_ID) :].strip("/")
+        if request.method in {"PUT", "DELETE"}:
+            return self._write(request, suffix)
         injected = self._maybe_fail(suffix)
         if injected is not None:
             return injected
@@ -148,8 +186,76 @@ class FakeApim:
                     }
                 },
             )
+        if suffix in self.written:
+            return httpx.Response(200, json=self._written_resource(suffix))
+        product_apis = self._written_product_apis(suffix)
+        if product_apis is not None:
+            return product_apis
         page = request.url.params.get("page")
         return self._route(suffix, page, request.url.params.get("$filter"))
+
+    def _written_product_apis(self, suffix: str) -> httpx.Response | None:
+        """Serve the product/API links a write created, so a re-plan sees its own effects."""
+
+        if not suffix.startswith("products/") or not suffix.endswith("/apis"):
+            return None
+        product = suffix[: -len("/apis")]
+        if product not in self.written:
+            return None
+        prefix = f"{suffix}/"
+        return self._collection(
+            [
+                {"name": key[len(prefix) :], "properties": {}}
+                for key in sorted(self.written)
+                if key.startswith(prefix)
+            ]
+        )
+
+    def _written_resource(self, suffix: str) -> dict[str, Any]:
+        stored = self.written[suffix]
+        return {"name": suffix.rsplit("/", 1)[-1], **stored}
+
+    def _write(self, request: httpx.Request, suffix: str) -> httpx.Response:
+        self.writes.append((request.method, suffix))
+        failures = self.delete_failures if request.method == "DELETE" else self.write_failures
+        status_code = failures.get(suffix)
+        if status_code is not None:
+            headers = {"Retry-After": "0"} if status_code == 429 else {}
+            return httpx.Response(
+                status_code,
+                json={"error": {"message": f"injected write {status_code}"}},
+                headers=headers,
+            )
+        if request.method == "DELETE":
+            existed = self.written.pop(suffix, None) is not None
+            return httpx.Response(200 if existed else 204)
+        try:
+            body = json.loads(request.content) if request.content else {}
+        except ValueError:
+            body = {}
+        self.written[suffix] = body if isinstance(body, dict) else {}
+        if suffix in self.async_writes:
+            operation = f"{OPERATION_PREFIX}{len(self.writes)}"
+            self.operation_polls[operation] = self.operation_polls.get(suffix, 1)
+            self.operation_result[operation] = self.operation_result.get(suffix, "Succeeded")
+            return httpx.Response(
+                202,
+                json={},
+                headers={
+                    "Azure-AsyncOperation": f"https://management.azure.com{operation}",
+                    "Retry-After": "0",
+                },
+            )
+        return httpx.Response(200, json=self._written_resource(suffix))
+
+    def _operation(self, path: str) -> httpx.Response:
+        remaining = self.operation_polls.get(path, 0)
+        if remaining > 0:
+            self.operation_polls[path] = remaining - 1
+            return httpx.Response(
+                200, json={"status": "InProgress"}, headers={"Retry-After": "0"}
+            )
+        return httpx.Response(200, json={"status": self.operation_result.get(path, "Succeeded")})
 
     def _route(
         self,
@@ -176,8 +282,10 @@ class FakeApim:
 
         routes = {
             "policies/policy": lambda: self._policy(GLOBAL_POLICY),
+            "apis/chat-api": lambda: httpx.Response(200, json=self._api_definitions()[0]),
             "apis/chat-api/operations": lambda: self._collection(self._chat_operations()),
             "apis/chat-api/policies/policy": lambda: self._policy(CHAT_API_POLICY),
+            "apis/echo-api": lambda: httpx.Response(200, json=self._api_definitions()[1]),
             "apis/echo-api/operations": lambda: self._collection(self._echo_operations()),
             "apis/echo-api/policies/policy": lambda: httpx.Response(
                 404, json={"error": {"message": "policy not found"}}
@@ -230,62 +338,61 @@ class FakeApim:
         return service
 
     def _paged_apis(self, page: str | None) -> httpx.Response:
+        chat, echo, mcp = self._api_definitions()
         if page is None:
             return httpx.Response(
                 200,
                 json={
-                    "value": [
-                        {
-                            "name": "chat-api",
-                            "properties": {
-                                "displayName": "Chat completions",
-                                "path": "openai",
-                                "protocols": ["https"],
-                                "serviceUrl": "https://contoso.openai.azure.com/openai",
-                                "apiRevision": "1",
-                                "isCurrent": True,
-                                "subscriptionRequired": True,
-                            },
-                        }
-                    ],
+                    "value": [chat],
                     "nextLink": (
                         f"https://management.azure.com{RESOURCE_ID}/apis"
                         "?api-version=2024-05-01&page=2"
                     ),
                 },
             )
-        return httpx.Response(
-            200,
-            json={
-                "value": [
-                    {
-                        "name": "echo-api",
-                        "properties": {
-                            "displayName": "Echo",
-                            "path": "echo",
-                            "protocols": ["https"],
-                            "serviceUrl": "https://echo.contoso.com",
-                            "apiRevision": "1",
-                            "isCurrent": True,
-                            "subscriptionRequired": True,
-                        },
-                    },
-                    {
-                        # An MCP server also appears in an unfiltered API listing. It must not be
-                        # collected as an ordinary API, or one resource shows up twice.
-                        "name": "orders-mcp",
-                        "properties": {
-                            "type": "mcp",
-                            "displayName": "Orders MCP",
-                            "path": "orders-mcp",
-                            "protocols": ["https"],
-                            "isCurrent": True,
-                            "subscriptionRequired": True,
-                        },
-                    },
-                ]
+        return httpx.Response(200, json={"value": [echo, mcp]})
+
+    @staticmethod
+    def _api_definitions() -> list[dict[str, Any]]:
+        return [
+            {
+                "name": "chat-api",
+                "properties": {
+                    "displayName": "Chat completions",
+                    "path": "openai",
+                    "protocols": ["https"],
+                    "serviceUrl": "https://contoso.openai.azure.com/openai",
+                    "apiRevision": "1",
+                    "isCurrent": True,
+                    "subscriptionRequired": True,
+                },
             },
-        )
+            {
+                "name": "echo-api",
+                "properties": {
+                    "displayName": "Echo",
+                    "path": "echo",
+                    "protocols": ["https"],
+                    "serviceUrl": "https://echo.contoso.com",
+                    "apiRevision": "1",
+                    "isCurrent": True,
+                    "subscriptionRequired": True,
+                },
+            },
+            {
+                # An MCP server also appears in an unfiltered API listing. It must not be
+                # collected as an ordinary API, or one resource shows up twice.
+                "name": "orders-mcp",
+                "properties": {
+                    "type": "mcp",
+                    "displayName": "Orders MCP",
+                    "path": "orders-mcp",
+                    "protocols": ["https"],
+                    "isCurrent": True,
+                    "subscriptionRequired": True,
+                },
+            },
+        ]
 
     @staticmethod
     def _mcp_servers() -> list[dict[str, Any]]:

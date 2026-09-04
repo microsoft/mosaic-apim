@@ -39,10 +39,23 @@ READ_ACTIONS: tuple[str, ...] = (
 )
 
 WRITE_ACTIONS: tuple[str, ...] = (
+    "Microsoft.ApiManagement/service/apis/write",
+    "Microsoft.ApiManagement/service/apis/delete",
+    "Microsoft.ApiManagement/service/apis/operations/write",
+    "Microsoft.ApiManagement/service/apis/operations/delete",
+    "Microsoft.ApiManagement/service/apis/policies/write",
+    "Microsoft.ApiManagement/service/apis/policies/delete",
+    "Microsoft.ApiManagement/service/backends/write",
+    "Microsoft.ApiManagement/service/backends/delete",
     "Microsoft.ApiManagement/service/policies/write",
     "Microsoft.ApiManagement/service/policyFragments/write",
+    "Microsoft.ApiManagement/service/policyFragments/delete",
     "Microsoft.ApiManagement/service/products/write",
+    "Microsoft.ApiManagement/service/products/delete",
+    "Microsoft.ApiManagement/service/products/apis/write",
+    "Microsoft.ApiManagement/service/products/apis/delete",
     "Microsoft.ApiManagement/service/subscriptions/write",
+    "Microsoft.ApiManagement/service/subscriptions/delete",
 )
 
 
@@ -239,8 +252,8 @@ async def run_preflight(
             "MOSAIC can read this gateway."
             if can_write
             else (
-                "MOSAIC can read this gateway. Enrollment will later need write access, which is "
-                "not granted."
+                "MOSAIC can read this gateway. Publishing models into it needs write access, "
+                "which is not granted."
             )
         )
         remediation = (

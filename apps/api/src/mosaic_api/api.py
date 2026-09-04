@@ -40,6 +40,12 @@ from mosaic_api.domain import (
     Principal,
     PrincipalCreate,
     PrincipalUpdate,
+    Publication,
+    PublicationCreate,
+    PublicationUpdate,
+    PublishableModel,
+    PublishPlan,
+    PublishRun,
     ResolvedEntitlement,
 )
 from mosaic_api.integrations.policy import render_policy_preview
@@ -65,6 +71,7 @@ from mosaic_api.services import (
     GatewayService,
     McpEndpointService,
     ModelEndpointService,
+    PublishingService,
 )
 from mosaic_api.services.directory import Actor
 
@@ -85,6 +92,10 @@ def _endpoints(request: Request) -> ModelEndpointService:
 
 def _entitlements(request: Request) -> EntitlementService:
     return cast(EntitlementService, request.app.state.entitlement_service)
+
+
+def _publishing(request: Request) -> PublishingService:
+    return cast(PublishingService, request.app.state.publishing_service)
 
 
 def _mcp_endpoints(request: Request) -> McpEndpointService:
@@ -654,3 +665,88 @@ async def deny_access_request(
     return await _entitlements(request).decide_access_request(
         _actor(auth), request_id, state=AccessRequestState.DENIED, note=payload.note
     )
+
+
+@router.get("/gateways/{gateway_id}/publishable-models", response_model=list[PublishableModel])
+async def list_publishable_models(
+    request: Request, auth: Admin, gateway_id: str
+) -> list[PublishableModel]:
+    return await _publishing(request).publishable_models(_actor(auth), gateway_id)
+
+
+@router.get("/publications", response_model=list[Publication])
+async def list_publications(
+    request: Request, auth: Admin, gateway: str | None = None
+) -> list[Publication]:
+    return await _publishing(request).list_publications(_actor(auth), gateway)
+
+
+@router.post("/publications", response_model=Publication, status_code=status.HTTP_201_CREATED)
+async def create_publication(
+    request: Request, auth: Admin, payload: PublicationCreate
+) -> Publication:
+    return await _publishing(request).create(_actor(auth), payload)
+
+
+@router.get("/publications/{publication_id}", response_model=Publication)
+async def get_publication(request: Request, auth: Admin, publication_id: str) -> Publication:
+    return await _publishing(request).get_publication(_actor(auth), publication_id)
+
+
+@router.patch("/publications/{publication_id}", response_model=Publication)
+async def update_publication(
+    request: Request, auth: Admin, publication_id: str, payload: PublicationUpdate
+) -> Publication:
+    return await _publishing(request).update(_actor(auth), publication_id, payload)
+
+
+@router.delete("/publications/{publication_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_publication(request: Request, auth: Admin, publication_id: str) -> Response:
+    await _publishing(request).delete(_actor(auth), publication_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post("/publications/{publication_id}/plan", response_model=PublishPlan)
+async def plan_publication(request: Request, auth: Admin, publication_id: str) -> PublishPlan:
+    return await _publishing(request).plan(_actor(auth), publication_id)
+
+
+@router.post(
+    "/publications/{publication_id}/apply",
+    response_model=PublishRun,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def apply_publication(
+    request: Request, auth: Admin, publication_id: str, plan: str | None = None
+) -> PublishRun:
+    return await _publishing(request).apply(_actor(auth), publication_id, plan)
+
+
+@router.post(
+    "/publications/{publication_id}/unpublish",
+    response_model=PublishRun,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def unpublish_publication(
+    request: Request, auth: Admin, publication_id: str
+) -> PublishRun:
+    return await _publishing(request).unpublish(_actor(auth), publication_id)
+
+
+@router.get("/publications/{publication_id}/runs", response_model=list[PublishRun])
+async def list_publish_runs(
+    request: Request, auth: Admin, publication_id: str
+) -> list[PublishRun]:
+    return await _publishing(request).list_runs(_actor(auth), publication_id)
+
+
+@router.get("/publications/{publication_id}/runs/{run_id}", response_model=PublishRun)
+async def get_publish_run(
+    request: Request, auth: Admin, publication_id: str, run_id: str
+) -> PublishRun:
+    return await _publishing(request).get_run(_actor(auth), run_id)
+
+
+@router.get("/publish-plans/{plan_id}", response_model=PublishPlan)
+async def get_publish_plan(request: Request, auth: Admin, plan_id: str) -> PublishPlan:
+    return await _publishing(request).get_plan(_actor(auth), plan_id)

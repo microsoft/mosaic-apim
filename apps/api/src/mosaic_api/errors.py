@@ -63,6 +63,18 @@ class UpstreamUnsupportedError(DomainError):
     code = "gateway_capability_unsupported"
 
 
+class UpstreamConflictError(DomainError):
+    """The upstream resource changed between MOSAIC reading it and writing it.
+
+    Distinct from :class:`ConflictError`, which is about MOSAIC's own records. This one means an
+    ``If-Match`` precondition failed, so the plan was built against a state that no longer exists
+    and applying it would overwrite somebody else's change.
+    """
+
+    status_code = 409
+    code = "gateway_precondition_failed"
+
+
 class ErrorBody(BaseModel):
     model_config = ConfigDict(serialize_by_alias=True)
 

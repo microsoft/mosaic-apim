@@ -1025,6 +1025,105 @@ class AccessRequestDecision(MosaicModel):
     note: str | None = None
 
 
+MOSAIC_RESOURCE_PREFIX = "mosaic-"
+_SLUG_PATTERN = re.compile(r"[^a-z0-9]+")
+
+
+def apim_slug(value: str, *, max_length: int = 40) -> str:
+    """Reduce a display name to something API Management accepts as a resource name."""
+
+    slug = _SLUG_PATTERN.sub("-", value.casefold()).strip("-")
+    return slug[:max_length].strip("-")
+
+
+def publication_slug(endpoint_name: str, deployment_name: str) -> str:
+    parts = [part for part in (apim_slug(endpoint_name), apim_slug(deployment_name)) if part]
+    return "-".join(parts) or "model"
+
+
+def publication_id(
+    tenant_id: str, gateway_id: str, model_endpoint_id: str, deployment_name: str
+) -> str:
+    """Deterministic so publishing the same deployment twice refreshes intent, never forks it."""
+
+    return deterministic_id(
+        "publication", tenant_id, gateway_id, model_endpoint_id, deployment_name
+    )
+
+
+class PublicationStatus(StrEnum):
+    DRAFT = "draft"
+    PLANNED = "planned"
+    APPLYING = "applying"
+    PUBLISHED = "published"
+    FAILED = "failed"
+    ROLLED_BACK = "rolledBack"
+
+
+class PublishedResourceKind(StrEnum):
+    """The API Management resource types a publication creates, in dependency order."""
+
+    POLICY_FRAGMENT = "policyFragment"
+    BACKEND = "backend"
+    API = "api"
+    API_OPERATION = "apiOperation"
+    API_POLICY = "apiPolicy"
+    PRODUCT = "product"
+    PRODUCT_API = "productApi"
+    SUBSCRIPTION = "subscription"
+
+
+class PublishedResource(MosaicModel):
+    """One API Management resource a publication apply touched.
+
+    ``created_by_mosaic`` is recorded at the moment of the write, never inferred afterwards from a
+    name. A product that merely happens to match a MOSAIC name was not created by MOSAIC, and
+    rollback and unpublish must never delete it.
+    """
+
+    kind: PublishedResourceKind
+    name: str
+    resource_id: str
+    created_by_mosaic: bool = False
+    applied_at: datetime = Field(default_factory=utc_now)
+
+
+class Publication(Entity):
+    """An administrator's intent to expose one model deployment through one gateway.
+
+    Desired state. Saving it writes only to Cosmos; API Management is changed by an explicit apply
+    against a specific plan, never as a side effect of recording the intent.
+    """
+
+    entity_type: Literal["publication"] = "publication"
+    gateway_id: str
+    model_endpoint_id: str
+    deployment_name: str
+    provider: ModelProvider
+    display_name: str
+    api_name: str
+    api_path: str
+    backend_name: str
+    fragment_name: str
+    product_name: str
+    subscription_name: str
+    subscription_required: bool = True
+    enforcement: TokenEnforcement
+    shape_version: str
+    status: PublicationStatus = PublicationStatus.DRAFT
+    resources: list[PublishedResource] = Field(default_factory=list)
+    last_plan_id: str | None = None
+    last_plan_digest: str | None = None
+    last_run_id: str | None = None
+    last_applied_at: datetime | None = None
+    last_error: str | None = None
+
+    def created_resources(self) -> list[PublishedResource]:
+        """The subset rollback and unpublish are allowed to delete."""
+
+        return [resource for resource in self.resources if resource.created_by_mosaic]
+
+
 class CredentialReference(Entity):
     entity_type: Literal["credentialReference"] = "credentialReference"
     name: str
@@ -1422,3 +1521,153 @@ class PolicyPreview(MosaicModel):
     facets: list[PolicyFacet] = Field(default_factory=list)
     unrecognized_elements: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+
+
+class PublishAction(StrEnum):
+    CREATE = "create"
+    UPDATE = "update"
+    DELETE = "delete"
+    NO_CHANGE = "noChange"
+
+
+class PublishStepStatus(StrEnum):
+    PENDING = "pending"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    SKIPPED = "skipped"
+    ROLLED_BACK = "rolledBack"
+    ROLLBACK_FAILED = "rollbackFailed"
+
+
+class PublishRunStatus(StrEnum):
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    ROLLED_BACK = "rolledBack"
+    ROLLBACK_FAILED = "rollbackFailed"
+
+
+class PublishPlanStep(MosaicModel):
+    """One API Management write the plan intends to perform.
+
+    ``existed`` is what MOSAIC observed *before* applying. It is what makes rollback able to
+    distinguish a resource it created from one it merely updated.
+    """
+
+    kind: PublishedResourceKind
+    name: str
+    action: PublishAction
+    reason: str
+    resource_id: str
+    existed: bool = False
+
+
+class PublishPlan(Entity):
+    """A deterministic, persisted description of the writes an apply will perform.
+
+    Apply runs against a specific plan and rejects one whose digest no longer matches the
+    publication, so an administrator can never approve one set of changes and have another applied.
+    """
+
+    entity_type: Literal["publishPlan"] = "publishPlan"
+    publication_id: str
+    gateway_id: str
+    digest: str
+    steps: list[PublishPlanStep] = Field(default_factory=list)
+    facets: list[PolicyFacet] = Field(default_factory=list)
+    policy_content_sha256: str | None = None
+    warnings: list[str] = Field(default_factory=list)
+    actor_object_id: str | None = None
+
+
+class PublishStepResult(MosaicModel):
+    kind: PublishedResourceKind
+    name: str
+    action: PublishAction
+    status: PublishStepStatus = PublishStepStatus.PENDING
+    resource_id: str
+    created_by_mosaic: bool = False
+    error: str | None = None
+
+
+class PublishRun(Entity):
+    """The audited result of one apply, including what a rollback did or failed to do."""
+
+    entity_type: Literal["publishRun"] = "publishRun"
+    publication_id: str
+    gateway_id: str
+    plan_id: str
+    plan_digest: str
+    status: PublishRunStatus = PublishRunStatus.RUNNING
+    started_at: datetime = Field(default_factory=utc_now)
+    completed_at: datetime | None = None
+    duration_ms: int | None = None
+    steps: list[PublishStepResult] = Field(default_factory=list)
+    rolled_back: bool = False
+    orphaned_resources: list[PublishedResource] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+    actor_object_id: str | None = None
+
+
+class PublicationCreate(MosaicModel):
+    gateway_id: str = Field(min_length=1, max_length=128)
+    model_endpoint_id: str = Field(min_length=1, max_length=128)
+    deployment_name: str = Field(min_length=1, max_length=64)
+    display_name: str | None = Field(default=None, min_length=1, max_length=200)
+    api_name: str | None = Field(default=None, min_length=1, max_length=80)
+    api_path: str | None = Field(default=None, min_length=1, max_length=200)
+    product_name: str | None = Field(default=None, min_length=1, max_length=80)
+    subscription_required: bool = True
+    enforcement: TokenEnforcement
+
+    @field_validator("api_name", "product_name")
+    @classmethod
+    def validate_resource_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        candidate = value.strip()
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]*", candidate):
+            raise ValueError(
+                "API Management resource names must start with a letter or digit and contain "
+                "only letters, digits, and hyphens"
+            )
+        return candidate
+
+    @field_validator("api_path")
+    @classmethod
+    def validate_path(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        candidate = value.strip().strip("/")
+        if not candidate or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9\-/]*", candidate):
+            raise ValueError(
+                "An API path may contain only letters, digits, hyphens, and forward slashes"
+            )
+        return candidate
+
+
+class PublicationUpdate(MosaicModel):
+    display_name: str | None = Field(default=None, min_length=1, max_length=200)
+    subscription_required: bool | None = None
+    enforcement: TokenEnforcement | None = None
+
+
+class PublishableModel(MosaicModel):
+    """A deployment on a registered endpoint that could be published through a given gateway.
+
+    ``runtime_access`` is carried through unchanged rather than collapsed into a boolean, because
+    ADR 0006's distinction between "the gateway cannot call this" and "MOSAIC could not evaluate
+    whether the gateway can call this" has to survive into the publish experience.
+    """
+
+    model_endpoint_id: str
+    endpoint_name: str
+    provider: ModelProvider
+    deployment_name: str
+    model_name: str | None = None
+    model_version: str | None = None
+    publication_id: str | None = None
+    publication_status: PublicationStatus | None = None
+    suggested_api_name: str = ""
+    suggested_api_path: str = ""
+    runtime_access: GatewayRuntimeAccess | None = None
