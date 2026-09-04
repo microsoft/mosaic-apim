@@ -52,6 +52,16 @@ class Settings(BaseSettings):
     apim_subscription_id: str | None = None
     apim_resource_group: str | None = None
     apim_service_name: str | None = None
+    mcp_discovery_timeout_seconds: float = Field(default=20.0, gt=0, le=120)
+    mcp_allow_private_endpoints: bool = Field(
+        default=False,
+        description=(
+            "Permit registering an MCP server on a loopback, link-local, or private address. Off "
+            "by default: MOSAIC has no private network path to one, and refusing keeps a "
+            "managed-identity token away from the instance metadata service. Intended for local "
+            "development only."
+        ),
+    )
     log_level: str = "INFO"
 
     @model_validator(mode="after")
@@ -61,6 +71,11 @@ class Settings(BaseSettings):
                 raise ValueError("Azure deployments must use Entra authentication")
             if self.repository_backend is not RepositoryBackend.COSMOS:
                 raise ValueError("Azure deployments must use Cosmos persistence")
+            if self.mcp_allow_private_endpoints:
+                raise ValueError(
+                    "Private MCP endpoints are a local development affordance and must not be "
+                    "enabled in Azure"
+                )
         if self.auth_mode is AuthMode.LOCAL and self.environment not in {
             Environment.LOCAL,
             Environment.TEST,

@@ -9,13 +9,15 @@ from mosaic_api.domain import (
     GatewaySyncRun,
     Group,
     GroupMembership,
+    McpEndpoint,
+    McpEndpointSyncRun,
     McpServer,
     ModelApi,
     ModelEndpoint,
     ModelEndpointSyncRun,
     Principal,
 )
-from mosaic_api.observed import ObservedEntity, ObservedModelEntity
+from mosaic_api.observed import ObservedEndpointEntity, ObservedEntity
 
 
 class DirectoryRepository(Protocol):
@@ -157,12 +159,45 @@ class GatewayRepository(Protocol):
     async def delete_mcp_server(self, mcp_server: McpServer, audit_event: AuditEvent) -> None: ...
 
 
-class ModelEndpointRepository(Protocol):
+class EndpointStateRepository(Protocol):
+    """The endpoint-scoped observed store, shared by model endpoints and MCP endpoints.
+
+    Keyed on ``endpointId``, so a sweep for one registered endpoint can never reach another's
+    documents — nor the gateway inventory, which is keyed on ``gatewayId``.
+    """
+
+    async def replace_observed_for_endpoint(
+        self,
+        tenant_id: str,
+        endpoint_id: str,
+        entities: list[ObservedEndpointEntity],
+        snapshot_id: str,
+        incomplete_types: set[str] | None = None,
+    ) -> int:
+        """Upsert the snapshot and remove documents that were not part of it. Returns removals.
+
+        ``incomplete_types`` names entity types MOSAIC could not read in this pass; they are exempt
+        from the sweep so a failed read is never mistaken for a deletion.
+        """
+        ...
+
+    async def list_observed_for_endpoint[T: ObservedEndpointEntity](
+        self,
+        model_type: type[T],
+        tenant_id: str,
+        endpoint_id: str,
+        entity_type: str,
+    ) -> list[T]: ...
+
+    async def delete_observed_for_endpoint(self, tenant_id: str, endpoint_id: str) -> int: ...
+
+
+class ModelEndpointRepository(EndpointStateRepository, Protocol):
     """Persistence for registered model endpoints and the models MOSAIC observed on them.
 
     Structurally parallel to :class:`GatewayRepository`, but keyed on ``endpointId`` rather than
     ``gatewayId``. The two observed shapes are deliberately separate; see
-    :class:`~mosaic_api.observed.ObservedModelEntity`.
+    :class:`~mosaic_api.observed.ObservedEndpointEntity`.
     """
 
     async def ready(self) -> bool: ...
@@ -215,30 +250,59 @@ class ModelEndpointRepository(Protocol):
         self, tenant_id: str
     ) -> list[ModelEndpointSyncRun]: ...
 
-    async def replace_observed_models(
-        self,
-        tenant_id: str,
-        endpoint_id: str,
-        entities: list[ObservedModelEntity],
-        snapshot_id: str,
-        incomplete_types: set[str] | None = None,
-    ) -> int:
-        """Upsert the snapshot and remove documents that were not part of it. Returns removals.
 
-        ``incomplete_types`` names entity types MOSAIC could not read in this pass; they are exempt
-        from the sweep so a failed read is never mistaken for a deletion.
-        """
+class McpEndpointRepository(EndpointStateRepository, Protocol):
+    """Persistence for registered MCP servers and the tools MOSAIC observed on them.
+
+    The same shape as :class:`ModelEndpointRepository` minus the Azure resource lookup: an MCP
+    server is identified by URL, because it need not be an Azure resource at all.
+    """
+
+    async def ready(self) -> bool: ...
+
+    async def close(self) -> None: ...
+
+    async def list_endpoints(self, tenant_id: str) -> list[McpEndpoint]: ...
+
+    async def get_endpoint(self, tenant_id: str, endpoint_id: str) -> McpEndpoint | None: ...
+
+    async def find_endpoint_by_url(self, tenant_id: str, endpoint: str) -> McpEndpoint | None: ...
+
+    async def create_endpoint(
+        self, endpoint: McpEndpoint, audit_event: AuditEvent
+    ) -> McpEndpoint: ...
+
+    async def save_endpoint(
+        self, endpoint: McpEndpoint, audit_event: AuditEvent
+    ) -> McpEndpoint: ...
+
+    async def record_endpoint_state(self, endpoint: McpEndpoint) -> McpEndpoint:
+        """Persist observation results without emitting an administrator audit event."""
         ...
 
-    async def list_observed_models[T: ObservedModelEntity](
-        self,
-        model_type: type[T],
-        tenant_id: str,
-        endpoint_id: str,
-        entity_type: str,
-    ) -> list[T]: ...
+    async def delete_endpoint(self, endpoint: McpEndpoint, audit_event: AuditEvent) -> None: ...
 
-    async def delete_observed_for_endpoint(self, tenant_id: str, endpoint_id: str) -> int: ...
+    async def get_credential(
+        self, tenant_id: str, credential_id: str
+    ) -> CredentialReference | None: ...
+
+    async def save_credential(
+        self, credential: CredentialReference, audit_event: AuditEvent
+    ) -> CredentialReference: ...
+
+    async def save_endpoint_sync_run(self, run: McpEndpointSyncRun) -> McpEndpointSyncRun: ...
+
+    async def get_endpoint_sync_run(
+        self, tenant_id: str, run_id: str
+    ) -> McpEndpointSyncRun | None: ...
+
+    async def list_endpoint_sync_runs(
+        self, tenant_id: str, endpoint_id: str, *, limit: int = 20
+    ) -> list[McpEndpointSyncRun]: ...
+
+    async def list_unfinished_endpoint_sync_runs(
+        self, tenant_id: str
+    ) -> list[McpEndpointSyncRun]: ...
 
 
 class EntitlementRepository(Protocol):

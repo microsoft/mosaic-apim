@@ -1,4 +1,4 @@
-# ADR 0007: Separate authentication from authorization and give the portal its own identity
+# ADR 0008: Separate authentication from authorization and give the portal its own identity
 
 **Status:** Accepted
 

@@ -1,4 +1,4 @@
-# ADR 0008: Entitlement subjects, resources, and the API Management binding
+# ADR 0009: Entitlement subjects, resources, and the API Management binding
 
 **Status:** Accepted
 

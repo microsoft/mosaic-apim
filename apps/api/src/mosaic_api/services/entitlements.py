@@ -168,7 +168,7 @@ class EntitlementService:
                 )
         elif resource.kind == "modelDeployment":
             scope_id = resource.scope_id or ""
-            deployments = await self._endpoints.list_observed_models(
+            deployments = await self._endpoints.list_observed_for_endpoint(
                 ObservedModelDeployment, actor.tenant_id, scope_id, "observedModelDeployment"
             )
             deployment = next((item for item in deployments if item.id == resource.id), None)

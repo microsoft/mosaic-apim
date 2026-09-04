@@ -2,6 +2,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
 
+import httpx
 import structlog
 from azure.cosmos.aio import CosmosClient
 from azure.identity.aio import DefaultAzureCredential, ManagedIdentityCredential
@@ -16,11 +17,13 @@ from mosaic_api.errors import DomainError, domain_error_handler
 from mosaic_api.integrations.aoai import CognitiveServicesClient
 from mosaic_api.integrations.aoai.client import SubscriptionScanner
 from mosaic_api.integrations.apim import ApimClient, ArmClient
+from mosaic_api.integrations.mcp import EntraTokenProvider, KeyVaultSecretReader
 from mosaic_api.observability import configure_logging, configure_telemetry
 from mosaic_api.repositories import (
     CosmosDirectoryRepository,
     CosmosEntitlementRepository,
     CosmosGatewayRepository,
+    CosmosMcpEndpointRepository,
     CosmosModelEndpointRepository,
     DirectoryRepository,
     EntitlementRepository,
@@ -28,15 +31,19 @@ from mosaic_api.repositories import (
     InMemoryDirectoryRepository,
     InMemoryEntitlementRepository,
     InMemoryGatewayRepository,
+    InMemoryMcpEndpointRepository,
     InMemoryModelEndpointRepository,
+    McpEndpointRepository,
     ModelEndpointRepository,
 )
 from mosaic_api.services import (
     DirectoryService,
     EntitlementService,
     GatewayService,
+    McpEndpointService,
     ModelEndpointService,
 )
+from mosaic_api.services.mcp_endpoints import build_mcp_client_factory
 
 logger = structlog.get_logger()
 
@@ -60,11 +67,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         gateway_repository: GatewayRepository
         endpoint_repository: ModelEndpointRepository
         entitlement_repository: EntitlementRepository
+        mcp_repository: McpEndpointRepository
         if app_settings.repository_backend is RepositoryBackend.MEMORY:
             repository = InMemoryDirectoryRepository()
             gateway_repository = InMemoryGatewayRepository()
             endpoint_repository = InMemoryModelEndpointRepository()
             entitlement_repository = InMemoryEntitlementRepository()
+            mcp_repository = InMemoryMcpEndpointRepository()
         else:
             cosmos_client = CosmosClient(
                 str(app_settings.cosmos_endpoint), credential=credential
@@ -86,6 +95,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 owns_client=False,
             )
             endpoint_repository = CosmosModelEndpointRepository(
+                cosmos_client,
+                app_settings.cosmos_database,
+                app_settings.cosmos_desired_state_container,
+                app_settings.cosmos_audit_events_container,
+                app_settings.cosmos_sync_operations_container,
+                app_settings.cosmos_observed_state_container,
+                owns_client=False,
+            )
+            mcp_repository = CosmosMcpEndpointRepository(
                 cosmos_client,
                 app_settings.cosmos_database,
                 app_settings.cosmos_desired_state_container,
@@ -122,13 +140,30 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             principal_id=app_settings.managed_identity_principal_id,
             identity_resolver=arm_client.caller_object_id,
         )
+        # A dedicated client for outbound MCP calls: redirects are refused per request, and the
+        # connection pool for operator-supplied hosts is kept away from the ARM one.
+        mcp_http_client = httpx.AsyncClient(
+            timeout=httpx.Timeout(app_settings.mcp_discovery_timeout_seconds, connect=10.0),
+            follow_redirects=False,
+        )
+        key_vault_reader = KeyVaultSecretReader(credential)
+        mcp_endpoint_service = McpEndpointService(
+            mcp_repository,
+            client_factory=build_mcp_client_factory(mcp_http_client),
+            secret_resolver=key_vault_reader.read,
+            token_resolver=EntraTokenProvider(credential).token_for,
+            require_https=app_settings.environment is Environment.AZURE,
+            allow_private_endpoints=app_settings.mcp_allow_private_endpoints,
+        )
         app.state.repository = repository
         app.state.gateway_repository = gateway_repository
         app.state.model_endpoint_repository = endpoint_repository
         app.state.entitlement_repository = entitlement_repository
+        app.state.mcp_endpoint_repository = mcp_repository
         app.state.directory_service = DirectoryService(repository)
         app.state.gateway_service = gateway_service
         app.state.model_endpoint_service = model_endpoint_service
+        app.state.mcp_endpoint_service = mcp_endpoint_service
         app.state.entitlement_service = EntitlementService(
             entitlement_repository,
             directory_repository=repository,
@@ -148,6 +183,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 logger.warning("endpoint_sync_runs_reaped", count=reaped)
         except Exception:
             logger.exception("endpoint_sync_reap_failed")
+        try:
+            reaped = await mcp_endpoint_service.reap_stale_sync_runs(app_settings.tenant_id)
+            if reaped:
+                logger.warning("mcp_endpoint_sync_runs_reaped", count=reaped)
+        except Exception:
+            logger.exception("mcp_endpoint_sync_reap_failed")
         gateway_service.schedule_bootstrap(app_settings.tenant_id)
         logger.info("application_started", environment=app_settings.environment)
         try:
@@ -155,12 +196,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         finally:
             await gateway_service.aclose()
             await model_endpoint_service.aclose()
+            await mcp_endpoint_service.aclose()
             await authenticator.close()
             await arm_client.close()
+            await key_vault_reader.close()
+            await mcp_http_client.aclose()
             await repository.close()
             await gateway_repository.close()
             await endpoint_repository.close()
             await entitlement_repository.close()
+            await mcp_repository.close()
             if cosmos_client:
                 await cosmos_client.close()
             await credential.close()
@@ -200,6 +245,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         gateway_repository = getattr(request.app.state, "gateway_repository", None)
         endpoint_repository = getattr(request.app.state, "model_endpoint_repository", None)
         entitlement_repository = getattr(request.app.state, "entitlement_repository", None)
+        mcp_repository = getattr(request.app.state, "mcp_endpoint_repository", None)
         is_ready = (
             repository is not None
             and await repository.ready()
@@ -209,6 +255,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             and await endpoint_repository.ready()
             and entitlement_repository is not None
             and await entitlement_repository.ready()
+            and mcp_repository is not None
+            and await mcp_repository.ready()
         )
         return JSONResponse(
             status_code=status.HTTP_200_OK if is_ready else status.HTTP_503_SERVICE_UNAVAILABLE,
