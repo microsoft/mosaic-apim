@@ -9,6 +9,8 @@ import type {
   GatewayRuntimeAccess,
   ModelApi,
   ModelEndpoint,
+  Publication,
+  PublishPlan,
 } from '../types'
 
 const RESOURCE_ID =
@@ -94,9 +96,75 @@ const modelApi: ModelApi = {
   updatedAt: '2026-09-01T12:10:00Z',
 }
 
+
+const publication: Publication = {
+  id: 'pub_1',
+  tenantId: 'tenant-test',
+  entityType: 'publication',
+  gatewayId: 'gateway_1',
+  modelEndpointId: 'endpoint_1',
+  deploymentName: 'gpt-4o-prod',
+  provider: 'azureOpenAi',
+  displayName: 'GPT-4o production',
+  apiName: 'gpt-4o-api',
+  apiPath: 'models/gpt-4o',
+  backendName: 'backend',
+  fragmentName: 'fragment',
+  productName: 'product',
+  subscriptionName: 'subscription',
+  subscriptionRequired: true,
+  enforcement: {
+    counterKeyExpression: '@(context.Subscription.Id)',
+    tokensPerMinute: 12000,
+    estimatePromptTokens: true,
+  },
+  shapeVersion: '1',
+  status: 'published',
+  resources: [],
+  lastPlanId: 'plan_1',
+  lastPlanDigest: 'digest',
+  lastRunId: 'run_1',
+  lastAppliedAt: '2026-09-01T12:30:00Z',
+  lastError: null,
+  createdAt: '2026-09-01T12:00:00Z',
+  updatedAt: '2026-09-01T12:30:00Z',
+}
+
+const publishPlan: PublishPlan = {
+  id: 'plan_1',
+  tenantId: 'tenant-test',
+  entityType: 'publishPlan',
+  publicationId: 'pub_1',
+  gatewayId: 'gateway_1',
+  digest: 'digest',
+  steps: [
+    {
+      kind: 'api',
+      name: 'gpt-4o-api',
+      action: 'create',
+      reason: 'Create the API for this deployment.',
+      resourceId: '/apis/gpt-4o-api',
+      existed: false,
+    },
+  ],
+  facets: [],
+  policyContentSha256: null,
+  warnings: ['Review runtime access before applying.'],
+  createdAt: '2026-09-01T12:00:00Z',
+  updatedAt: '2026-09-01T12:00:00Z',
+}
+
 const api = {
   listGateways: vi.fn(),
   listModelApis: vi.fn(),
+  deletePublication: vi.fn(),
+  unpublishPublication: vi.fn(),
+  getPublishRun: vi.fn(),
+  applyPublishPlan: vi.fn(),
+  createPublishPlan: vi.fn(),
+  createPublication: vi.fn(),
+  listPublishableModels: vi.fn(),
+  listPublications: vi.fn(),
   deleteModelApi: vi.fn(),
   listImportableApis: vi.fn(),
   importModelApis: vi.fn(),
@@ -109,9 +177,20 @@ const api = {
   listModelDeployments: vi.fn(),
 }
 
+const { TestApiError } = vi.hoisted(() => ({
+  TestApiError: class ApiError extends Error {
+    readonly status: number
+
+    constructor(message: string, status: number) {
+      super(message)
+      this.status = status
+    }
+  },
+}))
+
 vi.mock('../api', () => ({
   useMosaicApi: () => api,
-  ApiError: class extends Error {},
+  ApiError: TestApiError,
 }))
 
 function LocationProbe() {
@@ -138,6 +217,7 @@ describe('ModelsPage', () => {
     vi.clearAllMocks()
     api.listGateways.mockResolvedValue([gateway])
     api.listModelApis.mockResolvedValue([])
+    api.listPublications.mockResolvedValue([])
     api.listModelEndpoints.mockResolvedValue([])
     api.listSuggestedModelEndpoints.mockResolvedValue({
       suggestions: [],
@@ -177,6 +257,13 @@ describe('ModelsPage', () => {
       ],
     })
     api.importModelApis.mockResolvedValue([modelApi])
+    api.listPublishableModels.mockResolvedValue([])
+    api.createPublication.mockResolvedValue(publication)
+    api.createPublishPlan.mockResolvedValue(publishPlan)
+    api.applyPublishPlan.mockResolvedValue({ id: 'run_1', tenantId: 'tenant-test', entityType: 'publishRun', publicationId: 'pub_1', gatewayId: 'gateway_1', planId: 'plan_1', planDigest: 'digest', status: 'running', startedAt: '2026-09-01T12:00:00Z', completedAt: null, durationMs: null, steps: [], rolledBack: false, orphanedResources: [], errors: [], createdAt: '2026-09-01T12:00:00Z', updatedAt: '2026-09-01T12:00:00Z' })
+    api.getPublishRun.mockResolvedValue({ id: 'run_1', tenantId: 'tenant-test', entityType: 'publishRun', publicationId: 'pub_1', gatewayId: 'gateway_1', planId: 'plan_1', planDigest: 'digest', status: 'succeeded', startedAt: '2026-09-01T12:00:00Z', completedAt: '2026-09-01T12:00:01Z', durationMs: 1000, steps: [], rolledBack: false, orphanedResources: [], errors: [], createdAt: '2026-09-01T12:00:00Z', updatedAt: '2026-09-01T12:00:01Z' })
+    api.unpublishPublication.mockResolvedValue({ id: 'run_2' })
+    api.deletePublication.mockResolvedValue(undefined)
   })
 
   it('invites an import when nothing has been adopted yet', async () => {
@@ -233,6 +320,90 @@ describe('ModelsPage', () => {
     await waitFor(() => {
       expect(screen.getByTestId('location')).toHaveTextContent('/models')
     })
+  })
+
+
+  it('lists published models with gateway and API path', async () => {
+    api.listPublications.mockResolvedValue([publication])
+
+    renderPage()
+
+    const table = await screen.findByRole('table', { name: 'Published models' })
+    expect(within(table).getByText('GPT-4o production')).toBeVisible()
+    expect(within(table).getByText('Published')).toBeVisible()
+    expect(within(table).getByRole('link', { name: 'Development gateway' })).toBeVisible()
+    expect(within(table).getByText('/models/gpt-4o')).toBeVisible()
+  })
+
+  it('opens plan review instead of applying when a publication has no current plan', async () => {
+    const user = userEvent.setup()
+    api.listPublications.mockResolvedValue([{ ...publication, lastPlanId: null }])
+
+    renderPage()
+
+    const table = await screen.findByRole('table', { name: 'Published models' })
+    await user.click(within(table).getByRole('button', { name: 'Apply' }))
+
+    await waitFor(() => expect(api.createPublishPlan).toHaveBeenCalledWith('pub_1'))
+    expect(api.applyPublishPlan).not.toHaveBeenCalled()
+    expect(await screen.findByRole('table', { name: 'Publish plan steps' })).toBeVisible()
+    expect(screen.getByText('Review runtime access before applying.')).toBeVisible()
+  })
+
+  it('applies the existing plan when a publication has a current plan', async () => {
+    const user = userEvent.setup()
+    api.listPublications.mockResolvedValue([publication])
+
+    renderPage()
+
+    const table = await screen.findByRole('table', { name: 'Published models' })
+    await user.click(within(table).getByRole('button', { name: 'Apply' }))
+
+    await waitFor(() => {
+      expect(api.applyPublishPlan).toHaveBeenCalledWith('pub_1', 'plan_1')
+    })
+    expect(api.createPublishPlan).not.toHaveBeenCalled()
+  })
+
+  it('routes a stale direct apply back to fresh plan review', async () => {
+    const user = userEvent.setup()
+    api.listPublications.mockResolvedValue([publication])
+    api.applyPublishPlan.mockRejectedValue(new TestApiError('The publish plan is stale.', 409))
+
+    renderPage()
+
+    const table = await screen.findByRole('table', { name: 'Published models' })
+    await user.click(within(table).getByRole('button', { name: 'Apply' }))
+
+    await waitFor(() => {
+      expect(api.createPublishPlan).toHaveBeenCalledWith('pub_1')
+    })
+    expect(await screen.findByText('The publish plan is stale.')).toBeVisible()
+    expect(screen.getByRole('table', { name: 'Publish plan steps' })).toBeVisible()
+  })
+
+  it('does not claim the models page never changes API Management', async () => {
+    renderPage()
+
+    expect(
+      await screen.findByText(/Reading and importing do not change Azure/i),
+    ).toBeVisible()
+    expect(
+      screen.queryByText(/MOSAIC never changes API Management or your model resources/i),
+    ).not.toBeInTheDocument()
+  })
+
+  it('surfaces the conflict message when removing a publication that still owns resources', async () => {
+    const user = userEvent.setup()
+    api.listPublications.mockResolvedValue([publication])
+    api.deletePublication.mockRejectedValue(new Error('Unpublish before removing this publication.'))
+
+    renderPage()
+
+    const table = await screen.findByRole('table', { name: 'Published models' })
+    await user.click(within(table).getByRole('button', { name: 'Remove' }))
+
+    expect(await screen.findByText('Unpublish before removing this publication.')).toBeVisible()
   })
 
   it('opens the registration dialog from the shell query and clears it when closed', async () => {
@@ -336,6 +507,7 @@ describe('ModelsPage model endpoints', () => {
     vi.clearAllMocks()
     api.listGateways.mockResolvedValue([gateway])
     api.listModelApis.mockResolvedValue([])
+    api.listPublications.mockResolvedValue([])
     api.listModelEndpoints.mockResolvedValue([])
     api.listSuggestedModelEndpoints.mockResolvedValue({
       suggestions: [],
@@ -557,4 +729,3 @@ describe('ModelsPage model endpoints', () => {
     expect(screen.getByText(/az role assignment create/)).toBeVisible()
   })
 })
-

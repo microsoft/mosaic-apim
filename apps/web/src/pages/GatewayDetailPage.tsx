@@ -20,7 +20,7 @@ import { useMosaicApi } from '../api'
 import { EmptyState, ErrorState, Loading } from '../components/AsyncState'
 import { AI_KIND_LABELS } from '../labels'
 import { PolicyDocumentCard, PolicyFragmentCard } from '../components/PolicyFacets'
-import type { AiBackendKind, Gateway } from '../types'
+import type { AiBackendKind, Gateway, PublicationStatus } from '../types'
 import { PageHeader } from '../components/PageHeader'
 import { AccessPanel, GatewayStatusBadge } from './GatewaysPage'
 import styles from './GatewayDetailPage.module.css'
@@ -34,6 +34,63 @@ type TabKey =
   | 'identities'
   | 'policies'
   | 'backends'
+
+
+const publicationStatusLabels: Record<PublicationStatus, string> = {
+  draft: 'Draft',
+  planned: 'Planned',
+  applying: 'Applying',
+  published: 'Published',
+  failed: 'Failed',
+  rolledBack: 'Rolled back',
+}
+
+function PublishedModelsSection({ gatewayId }: { gatewayId: string }) {
+  const api = useMosaicApi()
+  const publications = useQuery({
+    queryKey: ['publications', gatewayId],
+    queryFn: () => api.listPublications(gatewayId),
+  })
+
+  if (publications.isPending) return <Loading label="Loading published models" />
+  if (publications.isError) return <ErrorState error={publications.error} />
+  if (publications.data.length === 0) {
+    return (
+      <EmptyState title="No models published into this gateway">
+        Publish a model from the Models page to create APIM resources here.
+      </EmptyState>
+    )
+  }
+
+  return (
+    <Card className={styles.apiCard}>
+      <Title3 as="h2">Published by MOSAIC</Title3>
+      <Text size={200}>Resources MOSAIC created through the model publication workflow.</Text>
+      <div className="table-scroll">
+        <table aria-label="Gateway published models">
+          <thead>
+            <tr>
+              <th>Publication</th>
+              <th>Status</th>
+              <th>API path</th>
+              <th>Last applied</th>
+            </tr>
+          </thead>
+          <tbody>
+            {publications.data.map((publication) => (
+              <tr key={publication.id}>
+                <td>{publication.displayName}</td>
+                <td>{publicationStatusLabels[publication.status]}</td>
+                <td>/{publication.apiPath}</td>
+                <td>{publication.lastAppliedAt ? new Date(publication.lastAppliedAt).toLocaleString() : 'Never'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </Card>
+  )
+}
 
 function AiBadge({ kind }: { kind: AiBackendKind }) {
   if (kind === 'none') {
@@ -629,7 +686,12 @@ export function GatewayDetailPage() {
       </TabList>
 
       <div className={styles.tabPanel}>
-        {tab === 'overview' && <Overview gateway={gateway.data} />}
+        {tab === 'overview' && (
+          <>
+            <Overview gateway={gateway.data} />
+            <PublishedModelsSection gatewayId={gatewayId} />
+          </>
+        )}
         {tab === 'apis' && <ApisTab gatewayId={gatewayId} />}
         {tab === 'mcpServers' && <McpServersTab gatewayId={gatewayId} />}
         {tab === 'products' && <ProductsTab gatewayId={gatewayId} />}

@@ -29,9 +29,10 @@ import { AddRegular } from '@fluentui/react-icons'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { type FormEvent, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
-import { useMosaicApi } from '../api'
+import { ApiError, useMosaicApi } from '../api'
 import { EmptyState, ErrorState, Loading } from '../components/AsyncState'
 import { ImportFromGatewayDialog } from '../components/ImportFromGatewayDialog'
+import { PublishModelDialog } from '../components/PublishModelDialog'
 import { PageHeader } from '../components/PageHeader'
 import { AI_KIND_LABELS } from '../labels'
 import type {
@@ -41,6 +42,10 @@ import type {
   ModelEndpoint,
   ModelEndpointStatus,
   ModelProvider,
+  Publication,
+  PublishPlan,
+  PublicationStatus,
+  PublishRun,
   SuggestionSource,
 } from '../types'
 import styles from './ModelsPage.module.css'
@@ -71,6 +76,203 @@ const sourceLabels: Record<SuggestionSource, string> = {
   bootstrap: 'Deployed with MOSAIC',
   gatewayBackend: 'Used by a gateway',
   subscriptionScan: 'Found in a subscription',
+}
+
+
+const publicationStatusLabels: Record<PublicationStatus, string> = {
+  draft: 'Draft',
+  planned: 'Planned',
+  applying: 'Applying',
+  published: 'Published',
+  failed: 'Failed',
+  rolledBack: 'Rolled back',
+}
+
+function PublicationStatusBadge({ status }: { status: PublicationStatus }) {
+  const attention = status === 'failed' || status === 'rolledBack'
+  const active = status === 'applying' || status === 'planned'
+  return (
+    <Badge
+      appearance="tint"
+      className={attention ? styles.statusAttention : active ? styles.statusSyncing : styles.statusReady}
+    >
+      {publicationStatusLabels[status]}
+    </Badge>
+  )
+}
+
+function PublishedModels({ onMessage }: { onMessage: (message: string) => void }) {
+  const api = useMosaicApi()
+  const queryClient = useQueryClient()
+  const [review, setReview] = useState<{
+    publication: Publication
+    plan: PublishPlan
+    message?: string
+  } | null>(null)
+
+  const publications = useQuery({
+    queryKey: ['publications'],
+    queryFn: () => api.listPublications(),
+  })
+  const gateways = useQuery({
+    queryKey: ['gateways'],
+    queryFn: () => api.listGateways(),
+  })
+
+  const gatewaysById = useMemo(() => {
+    const map = new Map<string, Gateway>()
+    for (const gateway of gateways.data ?? []) map.set(gateway.id, gateway)
+    return map
+  }, [gateways.data])
+
+  async function refresh() {
+    await queryClient.invalidateQueries({ queryKey: ['publications'] })
+    await queryClient.invalidateQueries({ queryKey: ['publishable-models'] })
+  }
+
+  const replan = useMutation({
+    mutationFn: (publicationId: string) => api.createPublishPlan(publicationId),
+    onSuccess: async () => {
+      await refresh()
+      onMessage('Created a fresh publish plan. Review it before applying.')
+    },
+  })
+  const reviewPlan = useMutation({
+    mutationFn: async (publication: Publication) => ({
+      publication,
+      plan: await api.createPublishPlan(publication.id),
+    }),
+    onSuccess: ({ publication, plan }) => {
+      setReview({ publication, plan })
+    },
+  })
+  const apply = useMutation({
+    mutationFn: async (publication: Publication): Promise<PublishRun> => {
+      if (!publication.lastPlanId) throw new Error('Review the publish plan before applying it.')
+      return await api.applyPublishPlan(publication.id, publication.lastPlanId)
+    },
+    onSuccess: async (run) => {
+      await refresh()
+      onMessage(
+        run.status === 'succeeded'
+          ? 'Published model to API Management.'
+          : 'Publish run started. Refresh this page to see the latest status.',
+      )
+    },
+    onError: async (error, publication) => {
+      if (!(error instanceof ApiError) || error.status !== 409) return
+      // The server rejected the plan because the publication changed under it. Produce a fresh
+      // plan and put the administrator back in front of it rather than retrying silently.
+      try {
+        const plan = await api.createPublishPlan(publication.id)
+        setReview({ publication, plan, message: error.message })
+      } catch (replanError) {
+        onMessage(
+          replanError instanceof Error
+            ? `The publish plan is stale and MOSAIC could not produce a new one: ${replanError.message}`
+            : 'The publish plan is stale and MOSAIC could not produce a new one.',
+        )
+      }
+      await refresh()
+    },
+  })
+  const applyError =
+    apply.error && !(apply.error instanceof ApiError && apply.error.status === 409)
+      ? apply.error
+      : null
+  const unpublish = useMutation({
+    mutationFn: (publicationId: string) => api.unpublishPublication(publicationId),
+    onSuccess: async () => {
+      await refresh()
+      onMessage('Started unpublishing resources from API Management.')
+    },
+  })
+  const remove = useMutation({
+    mutationFn: (publicationId: string) => api.deletePublication(publicationId),
+    onSuccess: async () => {
+      await refresh()
+      onMessage('Removed the publication record.')
+    },
+  })
+
+  return (
+    <>
+    <Card className={styles.panel}>
+      <div className={styles.panelHeader}>
+        <div>
+          <Title3 as="h2">Published models</Title3>
+          <Text>Model deployments MOSAIC has planned or published into API Management.</Text>
+        </div>
+      </div>
+      {(replan.isError || reviewPlan.isError || applyError || unpublish.isError || remove.isError) && (
+        <ErrorState error={replan.error ?? reviewPlan.error ?? applyError ?? unpublish.error ?? remove.error} />
+      )}
+      {publications.isPending && <Loading label="Loading published models" />}
+      {publications.isError && <ErrorState error={publications.error} />}
+      {publications.isSuccess &&
+        (publications.data.length === 0 ? (
+          <EmptyState title="No models published yet">
+            Publish a registered model deployment to create APIM resources through an explicit plan and apply flow.
+          </EmptyState>
+        ) : (
+          <div className={styles.tableWrap}>
+            <Table aria-label="Published models">
+              <TableHeader>
+                <TableRow>
+                  <TableHeaderCell>Publication</TableHeaderCell>
+                  <TableHeaderCell>Status</TableHeaderCell>
+                  <TableHeaderCell>Gateway</TableHeaderCell>
+                  <TableHeaderCell>API path</TableHeaderCell>
+                  <TableHeaderCell>Last applied</TableHeaderCell>
+                  <TableHeaderCell>Actions</TableHeaderCell>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {publications.data.map((publication) => (
+                  <TableRow key={publication.id}>
+                    <TableCell>
+                      <div className={styles.cellStack}>
+                        <span className={styles.primaryCell}>{publication.displayName}</span>
+                        <span className={styles.secondaryCell}>{publication.deploymentName}</span>
+                      </div>
+                    </TableCell>
+                    <TableCell><PublicationStatusBadge status={publication.status} /></TableCell>
+                    <TableCell>
+                      <Link to={`/gateways/${publication.gatewayId}`}>
+                        {gatewaysById.get(publication.gatewayId)?.name ?? publication.gatewayId}
+                      </Link>
+                    </TableCell>
+                    <TableCell>/{publication.apiPath}</TableCell>
+                    <TableCell>{formatTimestamp(publication.lastAppliedAt)}</TableCell>
+                    <TableCell>
+                      <div className={styles.actionRow}>
+                        <Button appearance="secondary" disabled={replan.isPending} onClick={() => replan.mutate(publication.id)}>Re-plan</Button>
+                        <Button
+                          appearance="secondary"
+                          disabled={reviewPlan.isPending || apply.isPending}
+                          onClick={() => publication.lastPlanId ? apply.mutate(publication) : reviewPlan.mutate(publication)}
+                        >
+                          Apply
+                        </Button>
+                        <Button appearance="secondary" disabled={unpublish.isPending} onClick={() => unpublish.mutate(publication.id)}>Unpublish</Button>
+                        <Button appearance="subtle" disabled={remove.isPending} onClick={() => remove.mutate(publication.id)}>Remove</Button>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        ))}
+    </Card>
+    <PublishModelDialog
+      open={review !== null}
+      initialReview={review}
+      onClose={() => setReview(null)}
+      onPublished={onMessage}
+    />
+    </>
+  )
 }
 
 function formatTimestamp(value?: string | null): string {
@@ -756,6 +958,7 @@ export function ModelsPage() {
   const navigate = useNavigate()
   const hasConsumedImportQueryRef = useRef(false)
   const [importOpen, setImportOpen] = useState(false)
+  const [publishOpen, setPublishOpen] = useState(false)
   const [liveBanner, setLiveBanner] = useState<string | null>(null)
 
   const requestedImportGatewayId = useMemo(
@@ -794,12 +997,17 @@ export function ModelsPage() {
     <section className={styles.page}>
       <PageHeader
         title="Models"
-        description="Model APIs MOSAIC governs, and the provider endpoints they are served from. Everything here is read from Azure or recorded as intent; MOSAIC never changes API Management or your model resources."
+        description="Model APIs MOSAIC governs, and the provider endpoints they are served from. Reading and importing do not change Azure. Publishing changes API Management only after a reviewed plan is applied, and only for a gateway switched to managed mode."
         source="live"
         actions={
-          <Button appearance="primary" icon={<AddRegular />} onClick={() => setImportOpen(true)}>
-            Import from gateway
-          </Button>
+          <div className={styles.actionRow}>
+            <Button appearance="primary" icon={<AddRegular />} onClick={() => setPublishOpen(true)}>
+              Publish a model
+            </Button>
+            <Button appearance="secondary" onClick={() => setImportOpen(true)}>
+              Import from gateway
+            </Button>
+          </div>
         }
       />
 
@@ -809,9 +1017,17 @@ export function ModelsPage() {
         </MessageBar>
       )}
 
+      <PublishedModels onMessage={setLiveBanner} />
+
       <ImportedModelApis onRemoved={setLiveBanner} />
 
       <ModelEndpoints />
+
+      <PublishModelDialog
+        open={publishOpen}
+        onClose={() => setPublishOpen(false)}
+        onPublished={setLiveBanner}
+      />
 
       <ImportFromGatewayDialog
         kind="apis"
@@ -831,4 +1047,3 @@ export function ModelsPage() {
     </section>
   )
 }
-

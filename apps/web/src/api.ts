@@ -39,6 +39,10 @@ import type {
   ObservedOperation,
   ObservedProduct,
   ObservedSubscription,
+  Publication,
+  PublishableModel,
+  PublishPlan,
+  PublishRun,
   PolicyPreview,
   Principal,
   PrincipalKind,
@@ -105,6 +109,30 @@ export interface MosaicApi {
   getSyncRun(gatewayId: string, runId: string): Promise<GatewaySyncRun>
   listSyncRuns(gatewayId: string): Promise<GatewaySyncRun[]>
   listSuggestedGateways(): Promise<GatewaySuggestion[]>
+  listPublishableModels(gatewayId: string): Promise<PublishableModel[]>
+  listPublications(gatewayId?: string): Promise<Publication[]>
+  createPublication(payload: {
+    gatewayId: string
+    modelEndpointId: string
+    deploymentName: string
+    displayName?: string
+    apiName?: string
+    apiPath?: string
+    productName?: string
+    subscriptionRequired: boolean
+    enforcement: TokenEnforcement
+  }): Promise<Publication>
+  getPublication(publicationId: string): Promise<Publication>
+  updatePublication(
+    publicationId: string,
+    payload: { displayName?: string; subscriptionRequired?: boolean; enforcement?: TokenEnforcement },
+  ): Promise<Publication>
+  deletePublication(publicationId: string): Promise<void>
+  createPublishPlan(publicationId: string): Promise<PublishPlan>
+  applyPublishPlan(publicationId: string, planId: string): Promise<PublishRun>
+  unpublishPublication(publicationId: string): Promise<PublishRun>
+  listPublishRuns(publicationId: string): Promise<PublishRun[]>
+  getPublishRun(publicationId: string, runId: string): Promise<PublishRun>
   listGatewayApis(gatewayId: string): Promise<ObservedApi[]>
   listGatewayOperations(gatewayId: string, apiName?: string): Promise<ObservedOperation[]>
   listGatewayProducts(gatewayId: string): Promise<ObservedProduct[]>
@@ -296,6 +324,30 @@ export function useMosaicApi(): MosaicApi {
       listSyncRuns: (id) => request<GatewaySyncRun[]>(`/api/v1/gateways/${id}/sync-runs`),
       listSuggestedGateways: () =>
         request<GatewaySuggestion[]>('/api/v1/gateways/suggested'),
+      listPublishableModels: (id) =>
+        request<PublishableModel[]>(`/api/v1/gateways/${id}/publishable-models`),
+      listPublications: (gatewayId) =>
+        request<Publication[]>(
+          `/api/v1/publications${gatewayId ? `?gateway=${encodeURIComponent(gatewayId)}` : ''}`,
+        ),
+      createPublication: (payload) =>
+        request<Publication>('/api/v1/publications', { method: 'POST', body: payload }),
+      getPublication: (id) => request<Publication>(`/api/v1/publications/${id}`),
+      updatePublication: (id, payload) =>
+        request<Publication>(`/api/v1/publications/${id}`, { method: 'PATCH', body: payload }),
+      deletePublication: (id) =>
+        request<void>(`/api/v1/publications/${id}`, { method: 'DELETE' }),
+      createPublishPlan: (id) =>
+        request<PublishPlan>(`/api/v1/publications/${id}/plan`, { method: 'POST' }),
+      applyPublishPlan: (id, planId) =>
+        request<PublishRun>(`/api/v1/publications/${id}/apply?plan=${encodeURIComponent(planId)}`, {
+          method: 'POST',
+        }),
+      unpublishPublication: (id) =>
+        request<PublishRun>(`/api/v1/publications/${id}/unpublish`, { method: 'POST' }),
+      listPublishRuns: (id) => request<PublishRun[]>(`/api/v1/publications/${id}/runs`),
+      getPublishRun: (id, runId) =>
+        request<PublishRun>(`/api/v1/publications/${id}/runs/${runId}`),
       listGatewayApis: (id) => request<ObservedApi[]>(`/api/v1/gateways/${id}/apis`),
       listGatewayOperations: (id, apiName) =>
         request<ObservedOperation[]>(

@@ -11,6 +11,10 @@ from mosaic_api.domain import (
     GatewaySyncStatus,
     McpServer,
     ModelApi,
+    Publication,
+    PublishPlan,
+    PublishRun,
+    PublishRunStatus,
 )
 from mosaic_api.observed import ObservedEntity
 from mosaic_api.repositories.cosmos import CosmosRepositoryBase
@@ -122,6 +126,9 @@ class CosmosGatewayRepository(CosmosRepositoryBase):
         ]
         adopted.extend(
             item.id for item in await self.list_mcp_servers(tenant_id, gateway_id=gateway_id)
+        )
+        adopted.extend(
+            item.id for item in await self.list_publications(tenant_id, gateway_id=gateway_id)
         )
         for item_id in adopted:
             try:
@@ -316,4 +323,95 @@ class CosmosGatewayRepository(CosmosRepositoryBase):
             audit_event,
             "delete",
             conflict_message="The MCP server changed; reload it and try again",
+        )
+
+    async def list_publications(
+        self, tenant_id: str, *, gateway_id: str | None = None
+    ) -> list[Publication]:
+        extra, parameters = self._gateway_filter(gateway_id)
+        items = await self._query(Publication, tenant_id, "publication", extra, parameters)
+        return sorted(items, key=lambda item: item.display_name.casefold())
+
+    async def get_publication(self, tenant_id: str, publication_id: str) -> Publication | None:
+        return await self._read(Publication, tenant_id, publication_id)
+
+    async def save_publication(
+        self, publication: Publication, audit_event: AuditEvent
+    ) -> Publication:
+        await self._mutate(publication, None, audit_event, "upsert")
+        return publication
+
+    async def record_publication_state(self, publication: Publication) -> Publication:
+        await self._desired.upsert_item(self._document(publication))
+        return publication
+
+    async def delete_publication(
+        self, publication: Publication, audit_event: AuditEvent
+    ) -> None:
+        await self._mutate(
+            publication,
+            publication.id,
+            audit_event,
+            "delete",
+            conflict_message="The publication changed; reload it and try again",
+        )
+
+    # Plans and runs are reconciliation records rather than administrator-authored intent, so they
+    # live in the sync-operations container alongside gateway sync runs. See ADR 0002.
+    async def save_publish_plan(self, plan: PublishPlan) -> PublishPlan:
+        await self._sync.upsert_item(self._document(plan))
+        return plan
+
+    async def get_publish_plan(self, tenant_id: str, plan_id: str) -> PublishPlan | None:
+        try:
+            item = await self._sync.read_item(item=plan_id, partition_key=tenant_id)
+        except exceptions.CosmosResourceNotFoundError:
+            return None
+        plan = self._model(PublishPlan, item)
+        return plan if plan.tenant_id == tenant_id else None
+
+    async def save_publish_run(self, run: PublishRun) -> PublishRun:
+        await self._sync.upsert_item(self._document(run))
+        return run
+
+    async def get_publish_run(self, tenant_id: str, run_id: str) -> PublishRun | None:
+        try:
+            item = await self._sync.read_item(item=run_id, partition_key=tenant_id)
+        except exceptions.CosmosResourceNotFoundError:
+            return None
+        run = self._model(PublishRun, item)
+        return run if run.tenant_id == tenant_id else None
+
+    async def _query_publish_runs(
+        self, tenant_id: str, extra: str, parameters: list[dict[str, Any]]
+    ) -> list[PublishRun]:
+        query = "SELECT * FROM c WHERE c.tenantId = @tenantId AND c.entityType = @entityType"
+        query += extra
+        items = self._sync.query_items(
+            query=query,
+            parameters=[
+                {"name": "@tenantId", "value": tenant_id},
+                {"name": "@entityType", "value": "publishRun"},
+                *parameters,
+            ],
+            partition_key=tenant_id,
+        )
+        return [self._model(PublishRun, item) async for item in items]
+
+    async def list_publish_runs(
+        self, tenant_id: str, publication_id: str, *, limit: int = 20
+    ) -> list[PublishRun]:
+        runs = await self._query_publish_runs(
+            tenant_id,
+            " AND c.publicationId = @publicationId",
+            [{"name": "@publicationId", "value": publication_id}],
+        )
+        runs.sort(key=lambda run: run.started_at, reverse=True)
+        return runs[:limit]
+
+    async def list_unfinished_publish_runs(self, tenant_id: str) -> list[PublishRun]:
+        return await self._query_publish_runs(
+            tenant_id,
+            " AND c.status = @status",
+            [{"name": "@status", "value": PublishRunStatus.RUNNING.value}],
         )

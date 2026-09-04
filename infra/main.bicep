@@ -357,13 +357,16 @@ resource apiKeyVaultSecretsUser 'Microsoft.Authorization/roleAssignments@2022-04
   ]
 }
 
-resource apiApimReader 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(apimName, apiWebAppName, 'ApiManagementServiceReader')
+// Publishing a model creates APIs, backends, policy fragments, products and subscriptions in this
+// service, so read access is no longer sufficient. See ADR 0010, which also records that this
+// built-in role carries subscriptions/listSecrets and that MOSAIC never calls it.
+resource apiApimContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(apimName, apiWebAppName, 'ApiManagementServiceContributor')
   scope: apimResource
   properties: {
     principalId: apiApp.outputs.principalId
     principalType: 'ServicePrincipal'
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '71522526-b88f-4d52-b57f-d31fc3546d0d')
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '312a565d-c81f-4fd8-895a-4e21e48d571c')
   }
   dependsOn: [
     apim

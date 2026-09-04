@@ -618,6 +618,132 @@ export interface ModelEndpoint {
   updatedAt: string
 }
 
+
+export type PublicationStatus = 'draft' | 'planned' | 'applying' | 'published' | 'failed' | 'rolledBack'
+export type PublishAction = 'create' | 'update' | 'delete' | 'noChange'
+export type PublishStepStatus =
+  | 'pending'
+  | 'succeeded'
+  | 'failed'
+  | 'skipped'
+  | 'rolledBack'
+  | 'rollbackFailed'
+export type PublishRunStatus = 'running' | 'succeeded' | 'failed' | 'rolledBack' | 'rollbackFailed'
+export type PublishedResourceKind =
+  | 'policyFragment'
+  | 'backend'
+  | 'api'
+  | 'apiOperation'
+  | 'apiPolicy'
+  | 'product'
+  | 'productApi'
+  | 'subscription'
+
+export interface PublishedResource {
+  kind: PublishedResourceKind
+  name: string
+  resourceId: string
+  createdByMosaic: boolean
+  appliedAt: string
+}
+
+export interface PublishableModel {
+  modelEndpointId: string
+  endpointName: string
+  provider: ModelProvider
+  deploymentName: string
+  modelName: string | null
+  modelVersion: string | null
+  publicationId: string | null
+  publicationStatus: PublicationStatus | null
+  suggestedApiName: string
+  suggestedApiPath: string
+  runtimeAccess: GatewayRuntimeAccess | null
+}
+
+export interface Publication {
+  id: string
+  tenantId: string
+  entityType: 'publication'
+  gatewayId: string
+  modelEndpointId: string
+  deploymentName: string
+  provider: string
+  displayName: string
+  apiName: string
+  apiPath: string
+  backendName: string
+  fragmentName: string
+  productName: string
+  subscriptionName: string
+  subscriptionRequired: boolean
+  enforcement: TokenEnforcement
+  shapeVersion: string
+  status: PublicationStatus
+  resources: PublishedResource[]
+  lastPlanId: string | null
+  lastPlanDigest: string | null
+  lastRunId: string | null
+  lastAppliedAt: string | null
+  lastError: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+export interface PublishPlanStep {
+  kind: PublishedResourceKind
+  name: string
+  action: PublishAction
+  reason: string
+  resourceId: string
+  existed: boolean
+}
+
+export interface PublishPlan {
+  id: string
+  tenantId: string
+  entityType: 'publishPlan'
+  publicationId: string
+  gatewayId: string
+  digest: string
+  steps: PublishPlanStep[]
+  facets: PolicyFacet[]
+  policyContentSha256: string | null
+  warnings: string[]
+  createdAt: string
+  updatedAt: string
+}
+
+export interface PublishStepResult {
+  kind: PublishedResourceKind
+  name: string
+  action: PublishAction
+  status: PublishStepStatus
+  resourceId: string
+  createdByMosaic: boolean
+  error: string | null
+}
+
+export interface PublishRun {
+  id: string
+  tenantId: string
+  entityType: 'publishRun'
+  publicationId: string
+  gatewayId: string
+  planId: string
+  planDigest: string
+  status: PublishRunStatus
+  startedAt: string
+  completedAt: string | null
+  durationMs: number | null
+  steps: PublishStepResult[]
+  rolledBack: boolean
+  orphanedResources: PublishedResource[]
+  errors: string[]
+  createdAt: string
+  updatedAt: string
+}
+
 export interface ModelEndpointSyncRun {
   id: string
   tenantId: string

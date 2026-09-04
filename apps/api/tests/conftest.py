@@ -13,14 +13,19 @@ from mosaic_api.config import AuthMode, Environment, RepositoryBackend, Settings
 from mosaic_api.domain import ApimResourceId
 from mosaic_api.integrations.aoai import CognitiveServicesClient
 from mosaic_api.integrations.aoai.client import SubscriptionScanner
-from mosaic_api.integrations.apim import ApimClient, ArmClient
+from mosaic_api.integrations.apim import ApimClient, ApimWriter, ArmClient
 from mosaic_api.main import create_app
 from mosaic_api.repositories import (
     InMemoryGatewayRepository,
     InMemoryMcpEndpointRepository,
     InMemoryModelEndpointRepository,
 )
-from mosaic_api.services import GatewayService, McpEndpointService, ModelEndpointService
+from mosaic_api.services import (
+    GatewayService,
+    McpEndpointService,
+    ModelEndpointService,
+    PublishingService,
+)
 from mosaic_api.services.mcp_endpoints import build_mcp_client_factory
 
 
@@ -170,6 +175,20 @@ def endpoint_client(
             gateway_repository=gateway_repository,
         )
         yield test_client
+
+
+def build_publishing_service(
+    fake: FakeApim,
+    gateway_repository: InMemoryGatewayRepository,
+    endpoint_repository: InMemoryModelEndpointRepository,
+) -> PublishingService:
+    arm = build_arm_client(fake)
+    return PublishingService(
+        gateway_repository,
+        endpoint_repository=endpoint_repository,
+        client_factory=lambda resource: ApimClient(arm, resource),
+        writer_factory=lambda resource: ApimWriter(arm, resource),
+    )
 
 
 @pytest.fixture

@@ -16,7 +16,7 @@ from mosaic_api.config import AuthMode, Environment, RepositoryBackend, Settings
 from mosaic_api.errors import DomainError, domain_error_handler
 from mosaic_api.integrations.aoai import CognitiveServicesClient
 from mosaic_api.integrations.aoai.client import SubscriptionScanner
-from mosaic_api.integrations.apim import ApimClient, ArmClient
+from mosaic_api.integrations.apim import ApimClient, ApimWriter, ArmClient
 from mosaic_api.integrations.mcp import EntraTokenProvider, KeyVaultSecretReader
 from mosaic_api.observability import configure_logging, configure_telemetry
 from mosaic_api.repositories import (
@@ -42,6 +42,7 @@ from mosaic_api.services import (
     GatewayService,
     McpEndpointService,
     ModelEndpointService,
+    PublishingService,
 )
 from mosaic_api.services.mcp_endpoints import build_mcp_client_factory
 
@@ -140,6 +141,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             principal_id=app_settings.managed_identity_principal_id,
             identity_resolver=arm_client.caller_object_id,
         )
+        publishing_service = PublishingService(
+            gateway_repository,
+            endpoint_repository=endpoint_repository,
+            client_factory=lambda resource: ApimClient(arm_client, resource),
+            writer_factory=lambda resource: ApimWriter(arm_client, resource),
+        )
         # A dedicated client for outbound MCP calls: redirects are refused per request, and the
         # connection pool for operator-supplied hosts is kept away from the ARM one.
         mcp_http_client = httpx.AsyncClient(
@@ -163,6 +170,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.directory_service = DirectoryService(repository)
         app.state.gateway_service = gateway_service
         app.state.model_endpoint_service = model_endpoint_service
+        app.state.publishing_service = publishing_service
         app.state.mcp_endpoint_service = mcp_endpoint_service
         app.state.entitlement_service = EntitlementService(
             entitlement_repository,
@@ -184,6 +192,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except Exception:
             logger.exception("endpoint_sync_reap_failed")
         try:
+            reaped = await publishing_service.reap_stale_publish_runs(app_settings.tenant_id)
+            if reaped:
+                logger.warning("publish_runs_reaped", count=reaped)
+        except Exception:
+            logger.exception("publish_reap_failed")
+        try:
             reaped = await mcp_endpoint_service.reap_stale_sync_runs(app_settings.tenant_id)
             if reaped:
                 logger.warning("mcp_endpoint_sync_runs_reaped", count=reaped)
@@ -196,6 +210,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         finally:
             await gateway_service.aclose()
             await model_endpoint_service.aclose()
+            await publishing_service.aclose()
             await mcp_endpoint_service.aclose()
             await authenticator.close()
             await arm_client.close()

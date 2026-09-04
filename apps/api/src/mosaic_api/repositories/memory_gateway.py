@@ -5,6 +5,10 @@ from mosaic_api.domain import (
     GatewaySyncStatus,
     McpServer,
     ModelApi,
+    Publication,
+    PublishPlan,
+    PublishRun,
+    PublishRunStatus,
 )
 from mosaic_api.errors import ConflictError
 from mosaic_api.observed import ObservedEntity
@@ -19,6 +23,9 @@ class InMemoryGatewayRepository:
         self.observed: dict[str, ObservedEntity] = {}
         self.model_apis: dict[str, ModelApi] = {}
         self.mcp_servers: dict[str, McpServer] = {}
+        self.publications: dict[str, Publication] = {}
+        self.publish_plans: dict[str, PublishPlan] = {}
+        self.publish_runs: dict[str, PublishRun] = {}
         self.audit_events: dict[str, AuditEvent] = {}
 
     async def ready(self) -> bool:
@@ -87,6 +94,12 @@ class InMemoryGatewayRepository:
             if item.tenant_id == gateway.tenant_id and item.gateway_id == gateway.id
         ]:
             self.mcp_servers.pop(mcp_server_id, None)
+        for publication_key in [
+            item.id
+            for item in self.publications.values()
+            if item.tenant_id == gateway.tenant_id and item.gateway_id == gateway.id
+        ]:
+            self.publications.pop(publication_key, None)
         self.gateways.pop(gateway.id, None)
         self.audit_events[audit_event.id] = audit_event
 
@@ -212,3 +225,69 @@ class InMemoryGatewayRepository:
     async def delete_mcp_server(self, mcp_server: McpServer, audit_event: AuditEvent) -> None:
         self.mcp_servers.pop(mcp_server.id, None)
         self.audit_events[audit_event.id] = audit_event
+
+    async def list_publications(
+        self, tenant_id: str, *, gateway_id: str | None = None
+    ) -> list[Publication]:
+        items = [
+            item
+            for item in self.publications.values()
+            if item.tenant_id == tenant_id
+            and (gateway_id is None or item.gateway_id == gateway_id)
+        ]
+        return sorted(items, key=lambda item: item.display_name.casefold())
+
+    async def get_publication(self, tenant_id: str, publication_id: str) -> Publication | None:
+        item = self.publications.get(publication_id)
+        return item if item and item.tenant_id == tenant_id else None
+
+    async def save_publication(
+        self, publication: Publication, audit_event: AuditEvent
+    ) -> Publication:
+        self.publications[publication.id] = publication
+        self.audit_events[audit_event.id] = audit_event
+        return publication
+
+    async def record_publication_state(self, publication: Publication) -> Publication:
+        self.publications[publication.id] = publication
+        return publication
+
+    async def delete_publication(
+        self, publication: Publication, audit_event: AuditEvent
+    ) -> None:
+        self.publications.pop(publication.id, None)
+        self.audit_events[audit_event.id] = audit_event
+
+    async def save_publish_plan(self, plan: PublishPlan) -> PublishPlan:
+        self.publish_plans[plan.id] = plan
+        return plan
+
+    async def get_publish_plan(self, tenant_id: str, plan_id: str) -> PublishPlan | None:
+        plan = self.publish_plans.get(plan_id)
+        return plan if plan and plan.tenant_id == tenant_id else None
+
+    async def save_publish_run(self, run: PublishRun) -> PublishRun:
+        self.publish_runs[run.id] = run
+        return run
+
+    async def get_publish_run(self, tenant_id: str, run_id: str) -> PublishRun | None:
+        run = self.publish_runs.get(run_id)
+        return run if run and run.tenant_id == tenant_id else None
+
+    async def list_publish_runs(
+        self, tenant_id: str, publication_id: str, *, limit: int = 20
+    ) -> list[PublishRun]:
+        runs = [
+            run
+            for run in self.publish_runs.values()
+            if run.tenant_id == tenant_id and run.publication_id == publication_id
+        ]
+        runs.sort(key=lambda run: run.started_at, reverse=True)
+        return runs[:limit]
+
+    async def list_unfinished_publish_runs(self, tenant_id: str) -> list[PublishRun]:
+        return [
+            run
+            for run in self.publish_runs.values()
+            if run.tenant_id == tenant_id and run.status == PublishRunStatus.RUNNING
+        ]

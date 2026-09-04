@@ -286,7 +286,7 @@ export function PoliciesPage() {
                 Save draft
               </Button>
             </DisabledAction>
-            <DisabledAction hint="APIM reconciliation and rollout are not available yet.">
+            <DisabledAction hint="This workspace cannot apply policy to APIM. Publishing a model from the Models workspace is the supported way to write policy today.">
               <Button disabled aria-describedby="policies-unavailable-actions">
                 Apply to APIM
               </Button>
@@ -396,7 +396,7 @@ export function PoliciesPage() {
                   workflows are implemented.
                 </Text>
               </div>
-              <DisabledAction hint="Sync will remain unavailable until reconciliation can safely write to APIM.">
+              <DisabledAction hint="Continuous sync is not implemented. Publishing applies a plan once, on request, rather than reconciling in the background.">
                 <Switch
                   checked={selectedPolicy.syncEnabled}
                   disabled

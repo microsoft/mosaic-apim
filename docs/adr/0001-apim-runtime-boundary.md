@@ -1,6 +1,6 @@
 # ADR 0001: Keep APIM as the runtime plane
 
-**Status:** Accepted
+**Status:** Accepted, partially superseded by [ADR 0010](0010-publishing-models-into-apim.md)
 
 ## Context
 
@@ -13,8 +13,10 @@ MOSAIC is a control plane. Cosmos stores desired governance state. APIM remains 
 observed runtime configuration and handles every model request. Reconciliation is modeled as
 desired state -> observed state -> deterministic plan -> explicit apply -> audited result.
 
-The foundation grants the backend APIM read access only. Policy preview is deterministic and tested,
-but no policy write is performed until apply, failure recovery, and rollback are implemented.
+The foundation originally granted the backend APIM read access only. That constraint held until
+apply, failure recovery, and rollback existed; ADR 0010 records that they now do, and replaces the
+read-only boundary with a `management_mode` gate, deterministic plans, audited runs, and tracked
+rollback.
 
 ## Consequences
 

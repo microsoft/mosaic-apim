@@ -7,11 +7,17 @@ Management's AI gateway capabilities. It stores desired governance state, plans 
 should map to APIM, and presents telemetry from Azure Monitor. It does **not** proxy model traffic
 or replace APIM.
 
-This release adds model endpoint onboarding on top of gateway onboarding: administrators register
-Entra principals and MOSAIC access groups, bring an existing API Management service under MOSAIC,
-register the Azure OpenAI and Azure AI Foundry endpoints it fronts, and see the models deployed on
-them — along with whether the gateway can actually call each one — without ever reading policy XML
-or opening the Azure portal.
+This release adds model publishing on top of gateway, model endpoint, and MCP server onboarding:
+administrators register Entra principals and MOSAIC access groups, bring an existing API Management
+service under MOSAIC, register the Azure OpenAI and Azure AI Foundry endpoints it fronts, see the
+models deployed on them — along with whether the gateway can actually call each one — register MCP
+servers directly to record the tools they declare, and then expose a chosen model through a gateway,
+all without reading policy XML or opening the Azure portal.
+
+Publishing is the first thing MOSAIC writes to API Management. It writes only through a reviewed,
+deterministic plan and an explicit apply, only to a gateway an administrator has switched to
+`manage`, and it rolls back exactly what it created if a step fails. See
+[ADR 0010](docs/adr/0010-publishing-models-into-apim.md), which records what that cost.
 
 ## Architecture and trust boundaries
 
@@ -21,8 +27,8 @@ flowchart LR
     Web -->|Bearer token| API[MOSAIC API]
     API -->|Managed identity| Cosmos[(Cosmos DB desired and observed state)]
     API -->|Secret URI only| KV[Key Vault]
-    API -. read-only ARM .-> APIM[Registered API Management gateways]
     API -. read-only ARM .-> Foundry[Registered Azure AI model endpoints]
+    API -->|read ARM, and write on explicit apply| APIM[Registered API Management gateways]
     APIM -->|Runtime model traffic, gateway managed identity| Foundry
     APIM --> Monitor[Azure Monitor / App Insights / Log Analytics]
     API --> Monitor
@@ -32,7 +38,7 @@ flowchart LR
 | Concern | Source of truth | MOSAIC responsibility |
 | --- | --- | --- |
 | Governance intent | Cosmos DB | Store tenant-scoped desired state and audit mutations |
-| Runtime traffic and enforcement | APIM | Observe and explain now; plan and apply in later phases |
+| Runtime traffic and enforcement | APIM | Observe and explain; write only through a reviewed plan and an explicit apply |
 | Identity objects and authentication | Microsoft Entra ID | Store object IDs only; validate tokens and app roles |
 | Credentials | Key Vault | Store secret URIs only, never secret values |
 | Foundry deployments | Existing Azure AI/Foundry resources | Enumerate deployed models read-only; report, never grant, the gateway's runtime access |
@@ -70,11 +76,16 @@ explicit local/test modes and application startup rejects them when `MOSAIC_ENVI
   AWS Bedrock
 - MCP server discovery, and import of selected model APIs and MCP servers from a synchronised
   gateway into MOSAIC's own desired state
+- Model publishing: expose an observed deployment through a gateway by creating its policy fragment,
+  backend, API, operations, API policy, product, product link, and subscription — through a
+  persisted deterministic plan, an explicit apply, per-step results, and a rollback that deletes
+  only the resources that apply created
 - Async repository abstraction with explicit in-memory and Cosmos implementations
 - React/TypeScript/Vite administrator console using Fluent UI, React Router, TanStack Query, and
   MSAL, with responsive navigation and persisted light/dark/system themes
 - Runtime browser configuration; Azure IDs and service URLs are not baked into the web image
-- Typed read-only APIM, Foundry import, reconciliation, and deterministic policy-preview boundaries
+- Typed APIM read and write boundaries kept in separate classes, plus Foundry import and
+  deterministic policy authoring that never returns markup
 - Separate non-root frontend/backend containers
 - ACR remote builds for both images, so deployment does not depend on a local Docker daemon
 - `azd` and modular Bicep for two Linux Web Apps on one plan, ACR, Cosmos, Key Vault, APIM,
@@ -82,10 +93,14 @@ explicit local/test modes and application startup rejects them when `MOSAIC_ENVI
 - Idempotent Entra application/service-principal setup through `azd` hooks
 
 The Gateways workspace, the Identity workspace, the Models and MCPs workspaces, the Entitlements
-workspace, and the deterministic policy preview use live API contracts. Analytics, policy metadata,
-and other future operational experiences are interactive frontend previews labeled **Sample data**
-or **Local preview**. They never claim to mutate Azure, query Azure Monitor, or substitute sample
-data for a failed API request.
+workspace, model publishing, and the deterministic policy preview use live API contracts. Analytics,
+policy metadata, and other future operational experiences are interactive frontend previews labeled
+**Sample data** or **Local preview**. They never claim to mutate Azure, query Azure Monitor, or
+substitute sample data for a failed API request.
+
+Existing deployments need `azd provision` (or a manual role grant) before publishing works: the
+API's identity moves from the API Management reader role to contributor. Until it is granted,
+preflight reports the missing write permissions precisely rather than failing during an apply.
 
 ## Prerequisites
 
@@ -211,6 +226,9 @@ not. The domain distinguishes:
 - `ModelApi`: an API Management API an administrator adopted as a governed model endpoint
 - `McpServer`: an API Management MCP server an administrator adopted
 - `McpEndpoint`: a registered MCP server MOSAIC connects to and reads tools from
+- `Publication`: intent to expose one model deployment through one gateway, plus the API Management
+  resources an apply created and whether MOSAIC created each one
+- `PublishPlan`, `PublishRun`: the reviewed changes and the audited result of applying them
 - `Entitlement`: a grant of a governed resource to a user, group, or application, its token and
   request limits, and the API Management product or subscription binding that realizes it
 - `AccessRequest`: a portal user's request for a resource they can see but are not entitled to
@@ -221,7 +239,7 @@ Cosmos uses:
 | Container | Partition key | Purpose |
 | --- | --- | --- |
 | `desired-state` | `/tenantId` | Control-plane entities, tenant-local queries, and transactional audit outbox |
-| `sync-operations` | `/tenantId` | Reconciliation plans, gateway sync runs, and outcomes |
+| `sync-operations` | `/tenantId` | Gateway and endpoint sync runs, publish plans, and publish runs |
 | `observed-state` | `/tenantId` | What MOSAIC observed in each registered gateway |
 | `audit-events` | `/tenantId` | Append-only administrator mutation history |
 
@@ -252,13 +270,22 @@ measured scale, not speculation.
   `DefaultAzureCredential`; Azure uses `ManagedIdentityCredential`.
 - Cosmos local/key authentication and ACR admin credentials are disabled.
 - Key Vault uses RBAC, soft delete, and purge protection.
-- Backend access is scoped to Cosmos data contributor, Key Vault Secrets User, APIM reader,
-  Log Analytics Reader, and Monitoring Reader. It has no APIM policy-write role.
+- Backend access is scoped to Cosmos data contributor, Key Vault Secrets User, API Management
+  contributor, Log Analytics Reader, and Monitoring Reader.
+- API Management writes are bounded by two independent conditions rather than one: the role
+  assignment, and a gateway an administrator explicitly moved to `manage`. MOSAIC refuses that
+  switch until preflight has confirmed write access, and every write runs against a reviewed plan
+  whose digest still matches the intent it was produced from.
+- The contributor role carries `subscriptions/listSecrets`. MOSAIC never calls it, so it does not
+  read API Management subscription keys — but that is a product policy rather than a permission
+  boundary, unlike the model-endpoint case below. [ADR 0010](docs/adr/0010-publishing-models-into-apim.md)
+  records the trade rather than presenting the two as equivalent.
 - On model endpoints MOSAIC asks only for `Reader`. It deliberately holds no data-plane inference
   right and no `listKeys` permission on any Azure AI resource, so it cannot call a model or read an
   account key even where it can enumerate deployments.
-- MOSAIC never reads subscription keys or named value secret values, and never persists or renders
-  policy XML. Policy documents are reduced to a digest plus redacted facets in memory.
+- MOSAIC never reads named value secret values, and never persists or renders policy XML. Policy
+  documents — including the ones MOSAIC authors when publishing — are reduced to a digest plus
+  redacted facets in memory.
 - Credentials for non-Azure endpoints are stored as Key Vault secret URIs only. MOSAIC resolves a
   secret at call time and never persists, returns, or logs its value.
 - Frontend and backend pull from ACR through their managed identities.
@@ -278,11 +305,18 @@ The needed roles are:
 
 | Purpose | Role | Role definition ID |
 | --- | --- | --- |
-| Observing a gateway (today) | API Management Service Reader Role | `71522526-b88f-4d52-b57f-d31fc3546d0d` |
-| Enrollment and policy apply (later) | API Management Service Contributor | `312a565d-c81f-4fd8-895a-4e21e48d571c` |
+| Observing a gateway | API Management Service Reader Role | `71522526-b88f-4d52-b57f-d31fc3546d0d` |
+| Publishing models into a gateway | API Management Service Contributor | `312a565d-c81f-4fd8-895a-4e21e48d571c` |
 
-Write capability is reported so the UI can explain what enrollment will require, but this release
-performs no write against API Management and is granted no write role.
+A gateway MOSAIC can only read is fully usable for observation. Writing requires two independent
+conditions: the contributor role above, and an administrator switching the gateway from `observe` to
+`manage`. MOSAIC refuses the switch until preflight has actually confirmed write access, and refuses
+every write to a gateway left in `observe` mode however the role is assigned.
+
+The contributor role also grants `subscriptions/listSecrets`, so MOSAIC *could* read API Management
+subscription keys. It never calls that action — a published subscription is created and named, and
+the operator retrieves its key from Azure. That is a product policy rather than a permission
+boundary, and [ADR 0010](docs/adr/0010-publishing-models-into-apim.md) says so plainly.
 
 Synchronisation collects APIs and their operations, MCP servers and their tools, products,
 subscriptions, gateway users and groups, backends, named value metadata, and policies at the
@@ -426,19 +460,65 @@ never blanks the list.
 OpenAI-compatible endpoints are registered with a Key Vault secret identifier the operator created.
 MOSAIC stores the URI only; discovery for those endpoints is not implemented yet.
 
+## Publishing models
+
+Publishing takes a deployment MOSAIC observed on a registered model endpoint and exposes it through
+a registered gateway. It is the first thing MOSAIC writes to API Management, and it completes the
+loop [ADR 0001](docs/adr/0001-apim-runtime-boundary.md) described and deliberately stopped one step
+short of: desired state, observed state, deterministic plan, explicit apply, audited result.
+
+A `Publication` in `desired-state` records the intent. Saving it changes nothing in Azure. Planning
+it produces a persisted, deterministic `PublishPlan`; applying runs against that specific plan and
+rejects one whose digest no longer matches, so an administrator cannot approve one set of changes
+and have another applied. A `PublishRun` records the outcome of every step.
+
+Applying creates, in dependency order:
+
+| Order | Resource | Purpose |
+| --- | --- | --- |
+| 1 | `mosaic-*` policy fragment | Managed-identity authentication, backend routing, token limit, token metric |
+| 2 | Backend | The model endpoint origin, with query and fragment stripped |
+| 3 | API | The route, created with no `serviceUrl` so removing the fragment fails closed |
+| 4 | Operations | A curated, versioned set per provider |
+| 5 | API policy | A thin `<include-fragment>` of the MOSAIC fragment |
+| 6 | Product | Carries the API |
+| 7 | Product/API link | |
+| 8 | Subscription | Only when the publication requires one |
+
+Operation sets are shipped and versioned by MOSAIC rather than fetched from the provider, so a plan
+is deterministic and does not couple an APIM write to a third-party document being reachable. Azure
+OpenAI publishes chat completions, completions, embeddings, image generations, audio transcriptions
+and translations, and responses. Azure AI Services publishes the Foundry Models inference routes. A
+publication records the shape version that produced it, and OpenAI-compatible endpoints have no
+curated shape and are refused rather than guessed at.
+
+Every step records whether it created the resource or found one already there. If a step fails,
+MOSAIC reverses the completed steps and deletes **only** resources that run created — ownership is
+recorded at the moment of the write, never inferred from a name, so a product that merely matches a
+MOSAIC name is never destroyed. A resource MOSAIC replaced rather than created is not reverted,
+because the previous content was never stored; those are named in the run instead. If the rollback
+itself fails, the run reports `rollbackFailed` and lists exactly what was left behind.
+
+Unpublishing runs the same machinery over the tracked resources in reverse. A publication that still
+owns API Management resources cannot be deleted, and a gateway with published models cannot be
+removed, so intent is never dropped while the resources it created keep running.
+
 ## Reconciliation boundary
 
 The API contains a deterministic policy preview using current documented policies:
 
 - `authentication-managed-identity`
+- `set-backend-service`
 - `llm-token-limit`
+- `llm-emit-token-metric`
 
-The preview returns the same plain-language facets used for observed policy, plus a content digest.
-The generated XML stays in process for a future apply phase and is never serialised to a caller.
+The preview and the publish plan both return the same plain-language facets used for observed
+policy, plus a content digest. Generated XML stays in process and is never serialised to a caller,
+so MOSAIC-authored markup never reaches a browser any more than customer-authored markup does.
 
-The future lifecycle is explicit: load Cosmos desired state, observe APIM, create a deterministic
-plan, require apply authorization, execute, record outcome, and audit failures. This release does
-not publish policies or report reconciliation success.
+Nothing detects drift in the background yet. Re-planning a publication shows how API Management has
+diverged from it, which is the same gap [ADR 0005](docs/adr/0005-adopting-model-apis-and-mcp-servers.md)
+already acknowledged for imported records.
 
 ## Roadmap
 
@@ -451,19 +531,25 @@ not publish policies or report reconciliation success.
    register Azure OpenAI and Foundry endpoints to enumerate their deployed models and verify each
    gateway's runtime access to them, and register MCP servers directly to record the tools they
    declare.
-4. **Entitlements and enrollment (in progress):** entitlements granted to a user, group, or
+4. **Model publishing (this release):** expose an observed deployment through a gateway by writing
+   its policy fragment, backend, API, operations, product and subscription, through a deterministic
+   plan, an explicit apply, per-step results, and rollback that removes only what it created. This
+   is the orchestration [ADR 0009](docs/adr/0009-entitlement-subjects-resources-and-apim-binding.md)
+   defers to, for models.
+5. **Entitlements and enrollment (in progress):** entitlements granted to a user, group, or
    application over a model API, MCP server, product, or deployment; the APIM product/subscription
-   binding that realizes each grant; catalog visibility and access requests; MOSAIC-owned policy
-   fragments, plan/apply/rollback, drift and failure UX. The `User` app role and the
-   `mosaic-<env>-portal` registration that gate the end-user experience ship here first; see
+   binding that realizes each grant; catalog visibility and access requests; orchestrating that
+   binding from a publication so `EntitlementBinding.source` becomes `orchestrated`; drift and
+   failure UX. The `User` app role and the `mosaic-<env>-portal` registration that gate the
+   end-user experience ship here first; see
    [ADR 0008](docs/adr/0008-portal-identity-and-role-separation.md).
-5. **Insights and chargeback:** Azure Monitor queries over `ApiManagementGatewayLogs` and
+6. **Insights and chargeback:** Azure Monitor queries over `ApiManagementGatewayLogs` and
    `ApiManagementGatewayLlmLog`, consumption measured against each entitlement's own enforcement
    window, per-user attribution, token/traffic/cost allocation, budgets, and the end-user portal
    alongside administrator dashboards.
-6. **Catalog ecosystem:** API Center experiences, MCP tool-level governance, broader self-service
+7. **Catalog ecosystem:** API Center experiences, MCP tool-level governance, broader self-service
    workflows.
-7. **Production hardening:** private networking, multi-region/production APIM tiers, CMK where
+8. **Production hardening:** private networking, multi-region/production APIM tiers, CMK where
    required, measured partition scaling, retention and operational SLOs.
 
 See [the architecture decisions](docs/adr) for the durable rationale behind this foundation.

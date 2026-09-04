@@ -16,6 +16,9 @@ from mosaic_api.domain import (
     ModelEndpoint,
     ModelEndpointSyncRun,
     Principal,
+    Publication,
+    PublishPlan,
+    PublishRun,
 )
 from mosaic_api.observed import ObservedEndpointEntity, ObservedEntity
 
@@ -157,6 +160,42 @@ class GatewayRepository(Protocol):
     ) -> McpServer: ...
 
     async def delete_mcp_server(self, mcp_server: McpServer, audit_event: AuditEvent) -> None: ...
+
+    async def list_publications(
+        self, tenant_id: str, *, gateway_id: str | None = None
+    ) -> list[Publication]: ...
+
+    async def get_publication(
+        self, tenant_id: str, publication_id: str
+    ) -> Publication | None: ...
+
+    async def save_publication(
+        self, publication: Publication, audit_event: AuditEvent
+    ) -> Publication:
+        """Upsert, because the publication ID is deterministic per gateway/endpoint/deployment."""
+        ...
+
+    async def record_publication_state(self, publication: Publication) -> Publication:
+        """Persist apply progress without emitting a second administrator audit event."""
+        ...
+
+    async def delete_publication(
+        self, publication: Publication, audit_event: AuditEvent
+    ) -> None: ...
+
+    async def save_publish_plan(self, plan: PublishPlan) -> PublishPlan: ...
+
+    async def get_publish_plan(self, tenant_id: str, plan_id: str) -> PublishPlan | None: ...
+
+    async def save_publish_run(self, run: PublishRun) -> PublishRun: ...
+
+    async def get_publish_run(self, tenant_id: str, run_id: str) -> PublishRun | None: ...
+
+    async def list_publish_runs(
+        self, tenant_id: str, publication_id: str, *, limit: int = 20
+    ) -> list[PublishRun]: ...
+
+    async def list_unfinished_publish_runs(self, tenant_id: str) -> list[PublishRun]: ...
 
 
 class EndpointStateRepository(Protocol):

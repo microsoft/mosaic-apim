@@ -1,8 +1,13 @@
 import json
 import time
 
-from apim_double import RESOURCE_ID, SERVICE_NAME
+from apim_double import CONTRIBUTOR_PERMISSIONS, RESOURCE_ID, SERVICE_NAME, FakeApim
+from conftest import build_gateway_service
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from mosaic_api.config import Settings
+from mosaic_api.main import create_app
+from mosaic_api.repositories import InMemoryGatewayRepository
 
 
 def _register(client: TestClient, **payload: str) -> dict[str, object]:
@@ -82,7 +87,9 @@ def test_preflight_can_be_rerun(gateway_client: TestClient) -> None:
     assert response.json()["access"]["checkedAt"] is not None
 
 
-def test_management_mode_cannot_be_switched_to_manage(gateway_client: TestClient) -> None:
+def test_management_mode_is_refused_without_verified_write_access(
+    gateway_client: TestClient,
+) -> None:
     gateway = _register(gateway_client)
 
     response = gateway_client.patch(
@@ -90,7 +97,28 @@ def test_management_mode_cannot_be_switched_to_manage(gateway_client: TestClient
     )
 
     assert response.status_code == 422
-    assert "observe" in response.json()["message"]
+    assert "cannot write" in response.json()["message"]
+    assert response.json()["details"]["missingActions"]
+
+
+def test_management_mode_is_allowed_once_write_access_is_verified(
+    settings: Settings,
+    gateway_repository: InMemoryGatewayRepository,
+) -> None:
+    fake = FakeApim(permissions=CONTRIBUTOR_PERMISSIONS)
+    app: FastAPI = create_app(settings)
+    with TestClient(app) as client:
+        app.state.gateway_repository = gateway_repository
+        app.state.gateway_service = build_gateway_service(fake, gateway_repository)
+        gateway = _register(client)
+        assert gateway["access"]["canWrite"] is True
+
+        response = client.patch(
+            f"/api/v1/gateways/{gateway['id']}", json={"managementMode": "manage"}
+        )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["managementMode"] == "manage"
 
 
 def test_sync_populates_every_inventory_view(gateway_client: TestClient) -> None:
