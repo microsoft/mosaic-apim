@@ -26,6 +26,25 @@ function periodPhrase(period: QuotaPeriod): string {
 }
 
 /**
+ * A call rate needs both halves. Half of one would otherwise be dropped when the payload is
+ * built, and the grant would be created unrestricted while the UI reported success.
+ */
+export function callRateError(form: {
+  calls: string
+  renewalPeriodSeconds: string
+}): string | null {
+  const calls = Number(form.calls) || 0
+  const renewal = Number(form.renewalPeriodSeconds) || 0
+  if (calls > 0 && renewal <= 0) {
+    return 'Enter how many seconds the call limit is measured over, or clear the call count.'
+  }
+  if (renewal > 0 && calls <= 0 && form.calls.trim() !== '') {
+    return 'Enter a call count above zero, or clear it.'
+  }
+  return null
+}
+
+/**
  * Render an entitlement's limits as sentences, matching how MOSAIC already explains observed
  * policy. An entitlement with no enforcement is genuinely unrestricted and says so, rather than
  * implying a limit of zero.

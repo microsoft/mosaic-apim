@@ -3,7 +3,7 @@ import { render, screen } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { describe, expect, it, vi } from 'vitest'
 import type { Entitlement } from '../types'
-import { describeLimits } from '../entitlement-limits'
+import { callRateError, describeLimits } from '../entitlement-limits'
 import { EntitlementsPage } from './EntitlementsPage'
 
 const entitlement: Entitlement = {
@@ -133,5 +133,21 @@ describe('describeLimits', () => {
         },
       }),
     ).toEqual(['Limits traffic to 60 calls per minute.', 'Allows 100,000 calls per month.'])
+  })
+})
+
+describe('callRateError', () => {
+  it('refuses a half-filled call rate rather than dropping it silently', () => {
+    // Both halves are needed to build the limit; dropping one would create an unrestricted
+    // grant while the UI reported success.
+    expect(callRateError({ calls: '100', renewalPeriodSeconds: '' })).toBeTruthy()
+    expect(callRateError({ calls: '100', renewalPeriodSeconds: '0' })).toBeTruthy()
+    expect(callRateError({ calls: '0', renewalPeriodSeconds: '60' })).toBeTruthy()
+  })
+
+  it('accepts an empty pair and a complete pair', () => {
+    expect(callRateError({ calls: '', renewalPeriodSeconds: '60' })).toBeNull()
+    expect(callRateError({ calls: '', renewalPeriodSeconds: '' })).toBeNull()
+    expect(callRateError({ calls: '100', renewalPeriodSeconds: '60' })).toBeNull()
   })
 })

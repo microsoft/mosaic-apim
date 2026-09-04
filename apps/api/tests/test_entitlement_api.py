@@ -20,6 +20,7 @@ from mosaic_api.domain import (
     new_id,
 )
 from mosaic_api.main import create_app
+from mosaic_api.observed import ObservedApimUser, ObservedSubscription
 from mosaic_api.repositories import InMemoryGatewayRepository
 
 TENANT = "tenant-test"
@@ -314,3 +315,138 @@ async def test_observed_resources_require_a_scope(app_client: TestClient) -> Non
     )
     assert response.status_code == 422
     assert "scopeId" in response.text
+
+
+async def test_a_direct_grant_wins_over_a_group_grant_for_the_same_resource(
+    app_client: TestClient,
+) -> None:
+    """Otherwise a loose group limit could silently supersede a deliberately tight direct one."""
+
+    await _seed_model_api(app_client.app.state.gateway_repository)
+    principal = _principal(app_client, "user-object-8")
+    group = _group(app_client, "Everyone")
+    app_client.put(f"/api/v1/groups/{group['id']}/members/{principal['id']}")
+
+    tight = {
+        "tokens": {
+            "counterKeyExpression": "@(context.Subscription?.Key)",
+            "tokensPerMinute": 100,
+        }
+    }
+    loose = {
+        "tokens": {
+            "counterKeyExpression": "@(context.Subscription?.Key)",
+            "tokensPerMinute": 999999,
+        }
+    }
+    app_client.post(
+        "/api/v1/entitlements",
+        json={
+            "subject": {"kind": "group", "id": group["id"]},
+            "resource": {"kind": "modelApi", "id": "modelApi_seed"},
+            "enforcement": loose,
+        },
+    )
+    app_client.post(
+        "/api/v1/entitlements",
+        json={
+            "subject": {"kind": "user", "id": principal["id"]},
+            "resource": {"kind": "modelApi", "id": "modelApi_seed"},
+            "enforcement": tight,
+        },
+    )
+
+    resolved = app_client.get(
+        "/api/v1/entitlements/resolve", params={"principalId": principal["id"]}
+    ).json()
+
+    assert len(resolved) == 1, resolved
+    assert resolved[0]["via"] == "direct"
+    assert resolved[0]["entitlement"]["enforcement"]["tokens"]["tokensPerMinute"] == 100
+
+
+async def test_binding_is_inferred_from_the_subscription_the_principal_owns(
+    app_client: TestClient,
+) -> None:
+    """APIM reports ownerId as a resource path, so matching must reduce it to the user name."""
+
+    repository = app_client.app.state.gateway_repository
+    await _seed_model_api(repository)
+    principal = _principal(app_client, "entra-object-ada")
+
+    snapshot = "snapshot-1"
+    await repository.replace_observed(
+        TENANT,
+        "gateway_seed",
+        [
+            ObservedApimUser(
+                id="observedApimUser_ada",
+                tenant_id=TENANT,
+                gateway_id="gateway_seed",
+                snapshot_id=snapshot,
+                name="user-ada",
+                entra_object_id="entra-object-ada",
+            ),
+            ObservedSubscription(
+                id="observedSubscription_ada",
+                tenant_id=TENANT,
+                gateway_id="gateway_seed",
+                snapshot_id=snapshot,
+                name="sub-ada",
+                scope="/products/premium",
+                scope_kind="product",
+                scope_name="premium",
+                owner_id=(
+                    "/subscriptions/s/resourceGroups/rg/providers/Microsoft.ApiManagement"
+                    "/service/apim/users/user-ada"
+                ),
+                owner_label="user-ada",
+            ),
+        ],
+        snapshot,
+    )
+
+    created = app_client.post(
+        "/api/v1/entitlements",
+        json={
+            "subject": {"kind": "user", "id": principal["id"]},
+            "resource": {"kind": "modelApi", "id": "modelApi_seed"},
+        },
+    )
+    assert created.status_code == 201, created.text
+    binding = created.json()["binding"]
+    assert binding is not None, "expected the owning subscription to be inferred"
+    assert binding["apimSubscriptionName"] == "sub-ada"
+    assert binding["apimProductName"] == "premium"
+    assert binding["source"] == "inferred"
+
+
+async def test_an_explicit_null_leaves_a_non_nullable_field_alone(
+    app_client: TestClient,
+) -> None:
+    """A generated client that serialises unset optionals as null must not get a 500."""
+
+    seeded = await _seed_model_api(app_client.app.state.gateway_repository)
+    principal = _principal(app_client, "user-object-9")
+    created = app_client.post(
+        "/api/v1/entitlements",
+        json={
+            "subject": {"kind": "user", "id": principal["id"]},
+            "resource": {"kind": "modelApi", "id": "modelApi_seed"},
+        },
+    ).json()
+
+    patched = app_client.patch(
+        f"/api/v1/entitlements/{created['id']}", json={"enabled": None, "notes": "still on"}
+    )
+    assert patched.status_code == 200, patched.text
+    assert patched.json()["enabled"] is True
+    assert patched.json()["notes"] == "still on"
+
+    catalog = app_client.patch(
+        f"/api/v1/model-apis/{seeded.id}/catalog",
+        json={"visibility": None, "summary": "Described"},
+    )
+    assert catalog.status_code == 200, catalog.text
+    assert catalog.json()["visibility"] == "catalog"
+    assert catalog.json()["summary"] == "Described"

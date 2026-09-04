@@ -9,6 +9,7 @@ layer does with it.
 import asyncio
 from collections.abc import Awaitable, Callable
 from datetime import datetime
+from typing import Any
 
 import structlog
 
@@ -72,6 +73,19 @@ IdentityResolver = Callable[[], Awaitable[str | None]]
 STALE_RUN_MESSAGE = "The API restarted while this sync was running; its result is unknown."
 BOOTSTRAP_ACTOR = "system:bootstrap"
 BOOTSTRAP_TIMEOUT_SECONDS = 60.0
+
+
+def _catalog_changes(request: CatalogEntryUpdate) -> dict[str, Any]:
+    """Administrator-authored catalog fields to merge over a stored record.
+
+    ``visibility`` is not nullable on the record, so an explicit null means "leave it alone"
+    rather than a validation crash. ``summary`` is nullable and keeps its clear-on-null behaviour.
+    """
+
+    changes = request.model_dump(exclude_unset=True)
+    if changes.get("visibility") is None:
+        changes.pop("visibility", None)
+    return changes
 
 
 class GatewayService:
@@ -819,7 +833,7 @@ class GatewayService:
         updated = ModelApi.model_validate(
             {
                 **record.model_dump(by_alias=False),
-                **request.model_dump(exclude_unset=True),
+                **_catalog_changes(request),
                 "etag": record.etag,
                 "updated_at": utc_now(),
             }
@@ -838,7 +852,7 @@ class GatewayService:
         updated = McpServer.model_validate(
             {
                 **record.model_dump(by_alias=False),
-                **request.model_dump(exclude_unset=True),
+                **_catalog_changes(request),
                 "etag": record.etag,
                 "updated_at": utc_now(),
             }

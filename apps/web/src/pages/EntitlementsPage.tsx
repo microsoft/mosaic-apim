@@ -29,7 +29,7 @@ import { type FormEvent, useMemo, useState } from 'react'
 import { useMosaicApi } from '../api'
 import { EmptyState, ErrorState, Loading } from '../components/AsyncState'
 import { PageHeader } from '../components/PageHeader'
-import { DEFAULT_COUNTER_KEY, QUOTA_PERIODS, describeLimits } from '../entitlement-limits'
+import { DEFAULT_COUNTER_KEY, QUOTA_PERIODS, callRateError, describeLimits } from '../entitlement-limits'
 import type {
   EntitlementEnforcement,
   EntitlementResource,
@@ -207,7 +207,7 @@ export function EntitlementsPage() {
     event.preventDefault()
     const subject = subjectOptions.find((option) => option.id === form.subject)
     const resource = resourceOptions.find((option) => option.id === form.resource)
-    if (!subject || !resource) {
+    if (!subject || !resource || callRateError(form)) {
       return
     }
     createMutation.mutate({
@@ -220,6 +220,7 @@ export function EntitlementsPage() {
 
   const rows = entitlements.data ?? []
   const unbound = rows.filter((item) => !item.binding).length
+  const rateError = callRateError(form)
 
   return (
     <section className={styles.page}>
@@ -555,7 +556,7 @@ export function EntitlementsPage() {
                   </Field>
                 </div>
                 <div className={styles.switchGrid}>
-                  <Field label="Calls">
+                  <Field label="Calls" validationMessage={rateError ?? undefined}>
                     <Input
                       type="number"
                       min={1}
@@ -588,7 +589,12 @@ export function EntitlementsPage() {
                 <Button
                   appearance="primary"
                   type="submit"
-                  disabled={!form.subject || !form.resource || createMutation.isPending}
+                  disabled={
+                    !form.subject ||
+                    !form.resource ||
+                    Boolean(rateError) ||
+                    createMutation.isPending
+                  }
                 >
                   Grant access
                 </Button>

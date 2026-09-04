@@ -59,6 +59,25 @@ class ResourceDescriptor:
     product_names: tuple[str, ...] = ()
 
 
+def _subscription_owner(subscription: ObservedSubscription) -> str | None:
+    """The APIM user name that owns a subscription.
+
+    API Management reports ``ownerId`` as a resource path ending in ``/users/{name}``, while an
+    ``ObservedApimUser`` is keyed on the bare name, so the two are only comparable after the path
+    is reduced.
+    """
+
+    if subscription.owner_label:
+        return subscription.owner_label
+    if subscription.owner_id:
+        return subscription.owner_id.rsplit("/", 1)[-1]
+    return None
+
+
+def _resource_key(resource: EntitlementResource) -> tuple[str, str, str]:
+    return (str(resource.kind), resource.id, resource.scope_id or "")
+
+
 class EntitlementService:
     def __init__(
         self,
@@ -190,7 +209,9 @@ class EntitlementService:
         subscriptions = await self._gateways.list_observed(
             ObservedSubscription, actor.tenant_id, descriptor.gateway_id, "observedSubscription"
         )
-        owned = [item for item in subscriptions if item.owner_id == apim_user.name]
+        owned = [
+            item for item in subscriptions if _subscription_owner(item) == apim_user.name
+        ]
         candidates = [
             item
             for item in owned
@@ -273,6 +294,11 @@ class EntitlementService:
     ) -> Entitlement:
         entitlement = await self.get_entitlement(actor, entitlement_ref)
         changes = request.model_dump(exclude_unset=True)
+        # ``enabled`` is not nullable on the stored record, so an explicit null means "leave it
+        # alone" rather than a validation crash. ``enforcement``, ``binding``, and ``notes`` are
+        # nullable and keep their clear-on-null behaviour.
+        if changes.get("enabled") is None:
+            changes.pop("enabled", None)
         updated = Entitlement.model_validate(
             {
                 **entitlement.model_dump(by_alias=False),
@@ -312,12 +338,15 @@ class EntitlementService:
     async def resolve_for_principal(
         self, actor: Actor, principal_id: str
     ) -> list[ResolvedEntitlement]:
-        resolved: dict[str, ResolvedEntitlement] = {}
+        # Keyed on the resource, not the entitlement: a direct grant and a group grant over the
+        # same resource are different entitlements, and returning both would leave a consumer
+        # choosing arbitrarily between two contradictory limits.
+        resolved: dict[tuple[str, str, str], ResolvedEntitlement] = {}
         for entitlement in await self._repository.list_entitlements(
             actor.tenant_id, subject_id=principal_id
         ):
             if entitlement.subject.kind != "group" and entitlement.enabled:
-                resolved[entitlement.id] = ResolvedEntitlement(
+                resolved[_resource_key(entitlement.resource)] = ResolvedEntitlement(
                     entitlement=entitlement, via=GrantPath.DIRECT
                 )
 
@@ -331,11 +360,11 @@ class EntitlementService:
             ):
                 if entitlement.subject.kind != "group" or not entitlement.enabled:
                     continue
-                # A direct grant already answers "can I use this", and it is the more specific
-                # statement, so it is never replaced by a group grant.
-                if entitlement.id in resolved:
+                # A direct grant is the more specific statement about this person, so it wins over
+                # anything a group contributes for the same resource.
+                if _resource_key(entitlement.resource) in resolved:
                     continue
-                resolved[entitlement.id] = ResolvedEntitlement(
+                resolved[_resource_key(entitlement.resource)] = ResolvedEntitlement(
                     entitlement=entitlement,
                     via=GrantPath.GROUP,
                     via_group_id=membership.group_id,
