@@ -1,5 +1,6 @@
 import asyncio
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -13,9 +14,20 @@ from mosaic_api.config import Settings
 
 @dataclass(frozen=True)
 class AuthContext:
+    """The authenticated caller.
+
+    Authentication establishes *who* is calling and which app roles Entra issued them.
+    Deciding whether those roles are sufficient for a given route is authorization, and lives in
+    the ``require_*`` dependencies below rather than here, so one API can serve both the
+    administrator console and the end-user portal.
+    """
+
     object_id: str
     tenant_id: str
     roles: frozenset[str]
+
+    def has_any_role(self, *roles: str) -> bool:
+        return any(role in self.roles for role in roles)
 
 
 class Authenticator(Protocol):
@@ -25,11 +37,11 @@ class Authenticator(Protocol):
 
 
 class LocalAuthenticator:
-    def __init__(self, tenant_id: str) -> None:
+    def __init__(self, tenant_id: str, roles: Iterable[str] = ("Admin",)) -> None:
         self._context = AuthContext(
             object_id="local-admin",
             tenant_id=tenant_id,
-            roles=frozenset({"Admin"}),
+            roles=frozenset(roles),
         )
 
     async def authenticate(self, _request: Request) -> AuthContext:
@@ -57,7 +69,7 @@ class EntraAuthenticator:
         self._audience = settings.api_client_id
         self._issuer = settings.issuer.rstrip("/")
         self._discovery_url = settings.discovery_url
-        self._required_role = settings.required_role
+        self._accepted_roles = frozenset({settings.required_role, settings.portal_role})
         self._client = client or httpx.AsyncClient(timeout=10)
         self._owns_client = client is None
         self._cache_seconds = cache_seconds
@@ -168,10 +180,16 @@ class EntraAuthenticator:
         if claims.get("tid") != self._tenant_id:
             raise self._unauthorized("Access token tenant is not allowed")
         roles = frozenset(str(role) for role in claims.get("roles", []))
-        if self._required_role not in roles:
+        if not roles & self._accepted_roles:
+            # Fail closed at the edge: a tenant token carrying none of MOSAIC's app roles never
+            # reaches a route. Which of the accepted roles a given route needs is decided by the
+            # ``require_*`` dependencies.
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"The {self._required_role} app role is required",
+                detail=(
+                    "A MOSAIC app role is required: "
+                    f"{', '.join(sorted(self._accepted_roles))}"
+                ),
             )
         return AuthContext(
             object_id=str(claims["oid"]),
@@ -184,6 +202,37 @@ class EntraAuthenticator:
             await self._client.aclose()
 
 
-async def require_admin(request: Request) -> AuthContext:
+def _forbidden(role: str) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail=f"The {role} app role is required",
+    )
+
+
+async def _authenticate(request: Request) -> AuthContext:
     authenticator: Authenticator = request.app.state.authenticator
     return await authenticator.authenticate(request)
+
+
+async def require_admin(request: Request) -> AuthContext:
+    """Administrator console access. Nothing else satisfies it."""
+
+    settings: Settings = request.app.state.settings
+    context = await _authenticate(request)
+    if settings.required_role not in context.roles:
+        raise _forbidden(settings.required_role)
+    return context
+
+
+async def require_portal_user(request: Request) -> AuthContext:
+    """End-user portal access.
+
+    The administrator role also satisfies this, so an administrator can open the portal to see
+    what a user sees without holding a second role assignment.
+    """
+
+    settings: Settings = request.app.state.settings
+    context = await _authenticate(request)
+    if not context.has_any_role(settings.portal_role, settings.required_role):
+        raise _forbidden(settings.portal_role)
+    return context

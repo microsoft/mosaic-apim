@@ -38,6 +38,8 @@ class Settings(BaseSettings):
     entra_issuer: AnyHttpUrl | None = None
     entra_discovery_url: AnyHttpUrl | None = None
     required_role: str = "Admin"
+    portal_role: str = "User"
+    local_roles: list[str] = Field(default_factory=lambda: ["Admin", "User"])
     cosmos_endpoint: AnyHttpUrl | None = None
     cosmos_database: str = "mosaic"
     cosmos_desired_state_container: str = "desired-state"
@@ -88,6 +90,15 @@ class Settings(BaseSettings):
             raise ValueError("MOSAIC_API_CLIENT_ID is required for Entra authentication")
         if self.repository_backend is RepositoryBackend.COSMOS and not self.cosmos_endpoint:
             raise ValueError("MOSAIC_COSMOS_ENDPOINT is required for Cosmos persistence")
+        if not self.required_role.strip() or not self.portal_role.strip():
+            raise ValueError("Administrator and portal app role names cannot be empty")
+        if self.required_role.strip() == self.portal_role.strip():
+            # Collapsing the two names would make require_admin pass for every portal user, so
+            # an entire end-user population would silently hold the administrator surface.
+            raise ValueError(
+                "The administrator and portal app roles must be different; "
+                f"both are set to {self.required_role.strip()!r}"
+            )
         return self
 
     @property

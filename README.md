@@ -33,7 +33,7 @@ flowchart LR
 | --- | --- | --- |
 | Governance intent | Cosmos DB | Store tenant-scoped desired state and audit mutations |
 | Runtime traffic and enforcement | APIM | Observe and explain now; plan and apply in later phases |
-| Identity objects and authentication | Microsoft Entra ID | Store object IDs only; validate tokens and `Admin` role |
+| Identity objects and authentication | Microsoft Entra ID | Store object IDs only; validate tokens and app roles |
 | Credentials | Key Vault | Store secret URIs only, never secret values |
 | Foundry deployments | Existing Azure AI/Foundry resources | Enumerate deployed models read-only; report, never grant, the gateway's runtime access |
 | Traffic/token telemetry | Azure Monitor stack | Emit application telemetry; query/chargeback is deferred |
@@ -45,11 +45,17 @@ explicit local/test modes and application startup rejects them when `MOSAIC_ENVI
 
 - Python 3.12 FastAPI API with OpenAPI, structured JSON logging, Azure Monitor OpenTelemetry,
   correlation IDs, anonymous `/healthz` and dependency-aware `/readyz`
-- Entra issuer, audience, signature, tenant, expiry, algorithm, and `Admin` app-role validation
+- Entra issuer, audience, signature, tenant, expiry, and algorithm validation, with app-role
+  authorization decided per route: `Admin` for every administrative route, `User` for the
+  end-user portal surface
 - Principal, group, and membership CRUD with validation, stable errors, and audit events
 - Multi-gateway onboarding: register any existing API Management service by resource ID, verify
   access, and mirror its APIs, endpoints, products, subscriptions, users, groups, backends, and
   named value metadata into Cosmos
+- Entitlements as desired state: grants to a user, group, or application over a model API, MCP
+  server, product, or model deployment; token and request limits; catalog visibility; access
+  requests; and effective-access resolution that reports whether a grant arrived directly or
+  through a group
 - Model endpoint onboarding: register Azure OpenAI and Azure AI Foundry resources, verify MOSAIC's
   control-plane access, discover the deployments and available models on them, and report — per
   registered gateway — whether that gateway's managed identity can actually call them
@@ -75,11 +81,11 @@ explicit local/test modes and application startup rejects them when `MOSAIC_ENVI
   Log Analytics, Application Insights, diagnostics, managed identities, and narrow RBAC
 - Idempotent Entra application/service-principal setup through `azd` hooks
 
-The Gateways workspace, the Identity workspace, the Models and MCPs workspaces, and the
-deterministic policy preview use live API contracts. Entitlements, analytics, policy metadata, and
-other future operational experiences are interactive frontend previews labeled **Sample data** or
-**Local preview**. They never claim to mutate Azure, query Azure Monitor, or substitute sample data
-for a failed API request.
+The Gateways workspace, the Identity workspace, the Models and MCPs workspaces, the Entitlements
+workspace, and the deterministic policy preview use live API contracts. Analytics, policy metadata,
+and other future operational experiences are interactive frontend previews labeled **Sample data**
+or **Local preview**. They never claim to mutate Azure, query Azure Monitor, or substitute sample
+data for a failed API request.
 
 ## Prerequisites
 
@@ -114,6 +120,10 @@ $env:MOSAIC_REPOSITORY_BACKEND = "memory"
 $env:MOSAIC_TENANT_ID = "local-development"
 uv run mosaic-api
 ```
+
+Local authentication grants both the `Admin` and `User` app roles by default. Set
+`MOSAIC_LOCAL_ROLES` to narrow it — `'["User"]'` simulates an end user who must not reach an
+administrative route. The setting is rejected outside local and test environments.
 
 In a second terminal:
 
@@ -160,14 +170,19 @@ azd env set MOSAIC_PYTHON_INDEX_URL "https://pypi.org/simple"
 azd up
 ```
 
-The preprovision hook idempotently creates two single-tenant Entra registrations:
+The preprovision hook idempotently creates three single-tenant Entra registrations:
 
-- `mosaic-dev-api`: `access_as_user` delegated scope and `Admin` app role
-- `mosaic-dev-spa`: SPA redirects and delegated permission to the API
+- `mosaic-dev-api`: `access_as_user` delegated scope, plus an `Admin` and a `User` app role
+- `mosaic-dev-spa`: administrator console SPA redirects and delegated permission to the API
+- `mosaic-dev-portal`: end-user portal SPA redirects and delegated permission to the API
 
-It assigns the deploying user the initial `Admin` role. The postprovision hook adds the deployed web
-redirect. A directory authorization failure stops deployment and identifies the failed operation;
-identity setup is never skipped.
+It assigns the deploying user the initial `Admin` role. The postprovision hook adds the deployed
+web redirect, and the deployed portal redirect once a portal web app exists. A directory
+authorization failure stops deployment and identifies the failed operation; identity setup is
+never skipped.
+
+Assign the `User` app role — normally to an Entra group — to everyone who should reach the portal.
+Tenant membership alone does not grant it.
 
 APIM Developer is the dominant cost (currently roughly USD 51/month at continuous use) and can take
 30–60 minutes or longer to provision. The shared B1 Linux plan is roughly USD 13–15/month; Basic ACR
@@ -196,7 +211,9 @@ not. The domain distinguishes:
 - `ModelApi`: an API Management API an administrator adopted as a governed model endpoint
 - `McpServer`: an API Management MCP server an administrator adopted
 - `McpEndpoint`: a registered MCP server MOSAIC connects to and reads tools from
-- `Entitlement`: group-to-deployment grant plus token enforcement configuration
+- `Entitlement`: a grant of a governed resource to a user, group, or application, its token and
+  request limits, and the API Management product or subscription binding that realizes it
+- `AccessRequest`: a portal user's request for a resource they can see but are not entitled to
 - `CredentialReference`: Key Vault secret URI only
 - `PolicyRevision`, `SyncOperation`, `AuditEvent`
 Cosmos uses:
@@ -225,7 +242,12 @@ measured scale, not speculation.
 - Only health endpoints are anonymous.
 - Browser authentication uses authorization code + PKCE through MSAL.
 - The API accepts RS256 tokens from the configured tenant only, validates OIDC discovery/JWKS,
-  issuer, client-ID audience, signature, time claims, tenant, and `Admin` role.
+  issuer, client-ID audience, signature, time claims, and tenant. A token carrying none of
+  MOSAIC's app roles is rejected before any route is reached.
+- Authorization is a per-route decision, not part of authentication. `require_admin` demands the
+  `Admin` role and guards every administrative route; `require_portal_user` demands the `User`
+  role, which `Admin` also satisfies. Neither role is implied by tenant membership, so an operator
+  assigns `User` — usually to an Entra group — before anyone can use the portal.
 - Production uses system-assigned managed identities. Local Azure SDK access uses
   `DefaultAzureCredential`; Azure uses `ManagedIdentityCredential`.
 - Cosmos local/key authentication and ACR admin credentials are disabled.
@@ -424,15 +446,21 @@ not publish policies or report reconciliation success.
    wiring, typed APIM/Foundry/reconciliation boundaries.
 2. **Gateway onboarding:** multi-gateway registry, access verification with guided
    remediation, full inventory synchronisation, AI surface detection, and plain-language policy.
-3. **Model and MCP onboarding (this release):** discover MCP servers, detect model-fronting APIs
+3. **Model and MCP onboarding:** discover MCP servers, detect model-fronting APIs
    across Azure and third-party providers and import a chosen selection into desired state,
    register Azure OpenAI and Foundry endpoints to enumerate their deployed models and verify each
    gateway's runtime access to them, and register MCP servers directly to record the tools they
    declare.
-4. **Entitlements and enrollment:** group grants, APIM products/subscriptions or identity access,
-   MOSAIC-owned policy fragments, plan/apply/rollback, drift and failure UX.
-5. **Insights and chargeback:** Azure Monitor queries, token/traffic/cost allocation, budgets and
-   administrator/developer dashboards.
+4. **Entitlements and enrollment (in progress):** entitlements granted to a user, group, or
+   application over a model API, MCP server, product, or deployment; the APIM product/subscription
+   binding that realizes each grant; catalog visibility and access requests; MOSAIC-owned policy
+   fragments, plan/apply/rollback, drift and failure UX. The `User` app role and the
+   `mosaic-<env>-portal` registration that gate the end-user experience ship here first; see
+   [ADR 0008](docs/adr/0008-portal-identity-and-role-separation.md).
+5. **Insights and chargeback:** Azure Monitor queries over `ApiManagementGatewayLogs` and
+   `ApiManagementGatewayLlmLog`, consumption measured against each entitlement's own enforcement
+   window, per-user attribution, token/traffic/cost allocation, budgets, and the end-user portal
+   alongside administrator dashboards.
 6. **Catalog ecosystem:** API Center experiences, MCP tool-level governance, broader self-service
    workflows.
 7. **Production hardening:** private networking, multi-region/production APIM tiers, CMK where

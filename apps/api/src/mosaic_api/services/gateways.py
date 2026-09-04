@@ -9,6 +9,7 @@ layer does with it.
 import asyncio
 from collections.abc import Awaitable, Callable
 from datetime import datetime
+from typing import Any
 
 import structlog
 
@@ -16,6 +17,8 @@ from mosaic_api.domain import (
     ApimResourceId,
     AuditEvent,
     CapabilitySupport,
+    CatalogEntryUpdate,
+    CatalogVisibility,
     Gateway,
     GatewayCreate,
     GatewayInventorySummary,
@@ -70,6 +73,19 @@ IdentityResolver = Callable[[], Awaitable[str | None]]
 STALE_RUN_MESSAGE = "The API restarted while this sync was running; its result is unknown."
 BOOTSTRAP_ACTOR = "system:bootstrap"
 BOOTSTRAP_TIMEOUT_SECONDS = 60.0
+
+
+def _catalog_changes(request: CatalogEntryUpdate) -> dict[str, Any]:
+    """Administrator-authored catalog fields to merge over a stored record.
+
+    ``visibility`` is not nullable on the record, so an explicit null means "leave it alone"
+    rather than a validation crash. ``summary`` is nullable and keeps its clear-on-null behaviour.
+    """
+
+    changes = request.model_dump(exclude_unset=True)
+    if changes.get("visibility") is None:
+        changes.pop("visibility", None)
+    return changes
 
 
 class GatewayService:
@@ -682,8 +698,12 @@ class GatewayService:
 
         imported: list[ModelApi] = []
         for api in selected:
+            record_id = model_api_id(actor.tenant_id, gateway_id, api.name)
+            # Re-importing refreshes what the gateway reports. Catalog metadata is authored by an
+            # administrator, not discovered, so it is carried forward rather than reset.
+            existing = await self._repository.get_model_api(actor.tenant_id, record_id)
             record = ModelApi(
-                id=model_api_id(actor.tenant_id, gateway_id, api.name),
+                id=record_id,
                 tenant_id=actor.tenant_id,
                 gateway_id=gateway_id,
                 api_name=api.name,
@@ -696,6 +716,8 @@ class GatewayService:
                 subscription_required=api.subscription_required,
                 operation_count=api.operation_count,
                 product_names=api.product_names,
+                visibility=existing.visibility if existing else CatalogVisibility.CATALOG,
+                summary=existing.summary if existing else None,
                 selection=(
                     ImportSelection.DETECTED
                     if api.ai_kind != AiBackendKind.NONE
@@ -731,8 +753,10 @@ class GatewayService:
 
         imported: list[McpServer] = []
         for server in selected:
+            record_id = mcp_server_id(actor.tenant_id, gateway_id, server.name)
+            existing_server = await self._repository.get_mcp_server(actor.tenant_id, record_id)
             record = McpServer(
-                id=mcp_server_id(actor.tenant_id, gateway_id, server.name),
+                id=record_id,
                 tenant_id=actor.tenant_id,
                 gateway_id=gateway_id,
                 api_name=server.name,
@@ -747,6 +771,10 @@ class GatewayService:
                 tool_count=server.tool_count,
                 subscription_required=server.subscription_required,
                 product_names=server.product_names,
+                visibility=(
+                    existing_server.visibility if existing_server else CatalogVisibility.CATALOG
+                ),
+                summary=existing_server.summary if existing_server else None,
                 imported_from_snapshot_id=server.snapshot_id,
                 imported_by=actor.object_id,
             )
@@ -794,6 +822,44 @@ class GatewayService:
         await self._repository.delete_mcp_server(
             record,
             self._audit(actor, "mcpServer.removed", record.id, resource_type="mcpServer"),
+        )
+
+    async def update_model_api_catalog(
+        self, actor: Actor, model_api_record_id: str, request: CatalogEntryUpdate
+    ) -> ModelApi:
+        record = await self._repository.get_model_api(actor.tenant_id, model_api_record_id)
+        if not record:
+            raise NotFoundError("Model API was not found", details={"id": model_api_record_id})
+        updated = ModelApi.model_validate(
+            {
+                **record.model_dump(by_alias=False),
+                **_catalog_changes(request),
+                "etag": record.etag,
+                "updated_at": utc_now(),
+            }
+        )
+        return await self._repository.save_model_api(
+            updated,
+            self._audit(actor, "modelApi.catalogUpdated", updated.id, resource_type="modelApi"),
+        )
+
+    async def update_mcp_server_catalog(
+        self, actor: Actor, mcp_server_record_id: str, request: CatalogEntryUpdate
+    ) -> McpServer:
+        record = await self._repository.get_mcp_server(actor.tenant_id, mcp_server_record_id)
+        if not record:
+            raise NotFoundError("MCP server was not found", details={"id": mcp_server_record_id})
+        updated = McpServer.model_validate(
+            {
+                **record.model_dump(by_alias=False),
+                **_catalog_changes(request),
+                "etag": record.etag,
+                "updated_at": utc_now(),
+            }
+        )
+        return await self._repository.save_mcp_server(
+            updated,
+            self._audit(actor, "mcpServer.catalogUpdated", updated.id, resource_type="mcpServer"),
         )
 
     async def suggestions(self, actor: Actor) -> list[GatewaySuggestion]:

@@ -13,6 +13,7 @@ import {
   MessageBar,
   MessageBarBody,
   MessageBarTitle,
+  Select,
   Table,
   TableBody,
   TableCell,
@@ -33,6 +34,7 @@ import { EmptyState, ErrorState, Loading } from '../components/AsyncState'
 import { ImportFromGatewayDialog } from '../components/ImportFromGatewayDialog'
 import { PageHeader } from '../components/PageHeader'
 import type {
+  CatalogVisibility,
   Gateway,
   McpAuthMode,
   McpEndpoint,
@@ -581,6 +583,15 @@ function ImportedMcpServers({ onBanner }: { onBanner: (message: string) => void 
     },
   })
 
+  const visibilityMutation = useMutation({
+    mutationFn: ({ id, visibility }: { id: string; visibility: CatalogVisibility }) =>
+      api.updateMcpServerCatalog(id, { visibility }),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['mcp-servers'] })
+      onBanner('Updated who can discover this MCP server in the portal catalog.')
+    },
+  })
+
   return (
     <>
       <Card className={styles.panel}>
@@ -616,6 +627,7 @@ function ImportedMcpServers({ onBanner }: { onBanner: (message: string) => void 
                   <TableHeaderCell>Transport</TableHeaderCell>
                   <TableHeaderCell>Tools</TableHeaderCell>
                   <TableHeaderCell>Gateway</TableHeaderCell>
+                  <TableHeaderCell>Catalog</TableHeaderCell>
                   <TableHeaderCell>Actions</TableHeaderCell>
                 </TableRow>
               </TableHeader>
@@ -655,6 +667,22 @@ function ImportedMcpServers({ onBanner }: { onBanner: (message: string) => void 
                       <Link className={styles.gatewayLink} to={`/gateways/${server.gatewayId}`}>
                         {gatewayNames.get(server.gatewayId)?.name ?? server.gatewayId}
                       </Link>
+                    </TableCell>
+                    <TableCell>
+                      <Select
+                        aria-label={`Catalog visibility for ${server.displayName}`}
+                        value={server.visibility}
+                        disabled={visibilityMutation.isPending}
+                        onChange={(_, data) =>
+                          visibilityMutation.mutate({
+                            id: server.id,
+                            visibility: data.value as CatalogVisibility,
+                          })
+                        }
+                      >
+                        <option value="catalog">Discoverable</option>
+                        <option value="private">Entitled users only</option>
+                      </Select>
                     </TableCell>
                     <TableCell>
                       <div className={styles.rowActions}>

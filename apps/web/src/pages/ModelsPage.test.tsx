@@ -85,6 +85,7 @@ const modelApi: ModelApi = {
   subscriptionRequired: true,
   operationCount: 1,
   productNames: ['Gold tier'],
+  visibility: 'catalog',
   selection: 'detected',
   importedFromSnapshotId: 'snapshot_1',
   importedAt: '2026-09-01T12:10:00Z',

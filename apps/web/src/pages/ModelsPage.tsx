@@ -13,6 +13,7 @@ import {
   MessageBar,
   MessageBarBody,
   MessageBarTitle,
+  Select,
   Table,
   TableBody,
   TableCell,
@@ -34,6 +35,7 @@ import { ImportFromGatewayDialog } from '../components/ImportFromGatewayDialog'
 import { PageHeader } from '../components/PageHeader'
 import { AI_KIND_LABELS } from '../labels'
 import type {
+  CatalogVisibility,
   Gateway,
   GatewayRuntimeAccess,
   ModelEndpoint,
@@ -134,6 +136,15 @@ function ImportedModelApis({ onRemoved }: { onRemoved: (message: string) => void
     },
   })
 
+  const visibilityMutation = useMutation({
+    mutationFn: ({ id, visibility }: { id: string; visibility: CatalogVisibility }) =>
+      api.updateModelApiCatalog(id, { visibility }),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['model-apis'] })
+      onRemoved('Updated who can discover this API in the portal catalog.')
+    },
+  })
+
   return (
     <Card className={styles.panel}>
       <div className={styles.panelHeader}>
@@ -163,6 +174,7 @@ function ImportedModelApis({ onRemoved }: { onRemoved: (message: string) => void
                   <TableHeaderCell>Provider</TableHeaderCell>
                   <TableHeaderCell>Operations</TableHeaderCell>
                   <TableHeaderCell>Gateway</TableHeaderCell>
+                  <TableHeaderCell>Catalog</TableHeaderCell>
                   <TableHeaderCell>Actions</TableHeaderCell>
                 </TableRow>
               </TableHeader>
@@ -192,6 +204,22 @@ function ImportedModelApis({ onRemoved }: { onRemoved: (message: string) => void
                       <Link to={`/gateways/${record.gatewayId}`}>
                         {gatewaysById.get(record.gatewayId)?.name ?? record.gatewayId}
                       </Link>
+                    </TableCell>
+                    <TableCell>
+                      <Select
+                        aria-label={`Catalog visibility for ${record.displayName}`}
+                        value={record.visibility}
+                        disabled={visibilityMutation.isPending}
+                        onChange={(_, data) =>
+                          visibilityMutation.mutate({
+                            id: record.id,
+                            visibility: data.value as CatalogVisibility,
+                          })
+                        }
+                      >
+                        <option value="catalog">Discoverable</option>
+                        <option value="private">Entitled users only</option>
+                      </Select>
                     </TableCell>
                     <TableCell>
                       <Button

@@ -88,6 +88,7 @@ const mcpServer: McpServer = {
   toolCount: 0,
   subscriptionRequired: false,
   productNames: [],
+  visibility: 'catalog',
   selection: 'detected',
   importedFromSnapshotId: 'snapshot_1',
   importedAt: '2026-09-01T12:10:00Z',

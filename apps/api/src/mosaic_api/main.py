@@ -21,12 +21,15 @@ from mosaic_api.integrations.mcp import EntraTokenProvider, KeyVaultSecretReader
 from mosaic_api.observability import configure_logging, configure_telemetry
 from mosaic_api.repositories import (
     CosmosDirectoryRepository,
+    CosmosEntitlementRepository,
     CosmosGatewayRepository,
     CosmosMcpEndpointRepository,
     CosmosModelEndpointRepository,
     DirectoryRepository,
+    EntitlementRepository,
     GatewayRepository,
     InMemoryDirectoryRepository,
+    InMemoryEntitlementRepository,
     InMemoryGatewayRepository,
     InMemoryMcpEndpointRepository,
     InMemoryModelEndpointRepository,
@@ -35,6 +38,7 @@ from mosaic_api.repositories import (
 )
 from mosaic_api.services import (
     DirectoryService,
+    EntitlementService,
     GatewayService,
     McpEndpointService,
     ModelEndpointService,
@@ -62,11 +66,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         repository: DirectoryRepository
         gateway_repository: GatewayRepository
         endpoint_repository: ModelEndpointRepository
+        entitlement_repository: EntitlementRepository
         mcp_repository: McpEndpointRepository
         if app_settings.repository_backend is RepositoryBackend.MEMORY:
             repository = InMemoryDirectoryRepository()
             gateway_repository = InMemoryGatewayRepository()
             endpoint_repository = InMemoryModelEndpointRepository()
+            entitlement_repository = InMemoryEntitlementRepository()
             mcp_repository = InMemoryMcpEndpointRepository()
         else:
             cosmos_client = CosmosClient(
@@ -106,8 +112,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 app_settings.cosmos_observed_state_container,
                 owns_client=False,
             )
+            entitlement_repository = CosmosEntitlementRepository(
+                cosmos_client,
+                app_settings.cosmos_database,
+                app_settings.cosmos_desired_state_container,
+                app_settings.cosmos_audit_events_container,
+                owns_client=False,
+            )
         authenticator = (
-            LocalAuthenticator(app_settings.tenant_id)
+            LocalAuthenticator(app_settings.tenant_id, app_settings.local_roles)
             if app_settings.auth_mode is AuthMode.LOCAL
             else EntraAuthenticator(app_settings)
         )
@@ -145,11 +158,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.repository = repository
         app.state.gateway_repository = gateway_repository
         app.state.model_endpoint_repository = endpoint_repository
+        app.state.entitlement_repository = entitlement_repository
         app.state.mcp_endpoint_repository = mcp_repository
         app.state.directory_service = DirectoryService(repository)
         app.state.gateway_service = gateway_service
         app.state.model_endpoint_service = model_endpoint_service
         app.state.mcp_endpoint_service = mcp_endpoint_service
+        app.state.entitlement_service = EntitlementService(
+            entitlement_repository,
+            directory_repository=repository,
+            gateway_repository=gateway_repository,
+            endpoint_repository=endpoint_repository,
+        )
         app.state.authenticator = authenticator
         try:
             reaped = await gateway_service.reap_stale_sync_runs(app_settings.tenant_id)
@@ -184,6 +204,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             await repository.close()
             await gateway_repository.close()
             await endpoint_repository.close()
+            await entitlement_repository.close()
             await mcp_repository.close()
             if cosmos_client:
                 await cosmos_client.close()
@@ -223,6 +244,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         repository = getattr(request.app.state, "repository", None)
         gateway_repository = getattr(request.app.state, "gateway_repository", None)
         endpoint_repository = getattr(request.app.state, "model_endpoint_repository", None)
+        entitlement_repository = getattr(request.app.state, "entitlement_repository", None)
         mcp_repository = getattr(request.app.state, "mcp_endpoint_repository", None)
         is_ready = (
             repository is not None
@@ -231,6 +253,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             and await gateway_repository.ready()
             and endpoint_repository is not None
             and await endpoint_repository.ready()
+            and entitlement_repository is not None
+            and await entitlement_repository.ready()
             and mcp_repository is not None
             and await mcp_repository.ready()
         )

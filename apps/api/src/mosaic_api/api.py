@@ -1,9 +1,16 @@
 from typing import Annotated, cast
 
-from fastapi import APIRouter, Depends, Request, Response, status
+from fastapi import APIRouter, Depends, Query, Request, Response, status
 
 from mosaic_api.auth import AuthContext, require_admin
 from mosaic_api.domain import (
+    AccessRequest,
+    AccessRequestDecision,
+    AccessRequestState,
+    CatalogEntryUpdate,
+    Entitlement,
+    EntitlementCreate,
+    EntitlementUpdate,
     Gateway,
     GatewayCreate,
     GatewayRuntimeAccess,
@@ -33,6 +40,7 @@ from mosaic_api.domain import (
     Principal,
     PrincipalCreate,
     PrincipalUpdate,
+    ResolvedEntitlement,
 )
 from mosaic_api.integrations.policy import render_policy_preview
 from mosaic_api.observed import (
@@ -53,6 +61,7 @@ from mosaic_api.observed import (
 )
 from mosaic_api.services import (
     DirectoryService,
+    EntitlementService,
     GatewayService,
     McpEndpointService,
     ModelEndpointService,
@@ -72,6 +81,10 @@ def _gateways(request: Request) -> GatewayService:
 
 def _endpoints(request: Request) -> ModelEndpointService:
     return cast(ModelEndpointService, request.app.state.model_endpoint_service)
+
+
+def _entitlements(request: Request) -> EntitlementService:
+    return cast(EntitlementService, request.app.state.entitlement_service)
 
 
 def _mcp_endpoints(request: Request) -> McpEndpointService:
@@ -548,3 +561,96 @@ async def delete_model_api(request: Request, auth: Admin, model_api_id: str) -> 
 async def delete_mcp_server(request: Request, auth: Admin, mcp_server_id: str) -> Response:
     await _gateways(request).delete_mcp_server(_actor(auth), mcp_server_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.patch("/model-apis/{model_api_id}/catalog", response_model=ModelApi)
+async def update_model_api_catalog(
+    request: Request, auth: Admin, model_api_id: str, payload: CatalogEntryUpdate
+) -> ModelApi:
+    return await _gateways(request).update_model_api_catalog(
+        _actor(auth), model_api_id, payload
+    )
+
+
+@router.patch("/mcp-servers/{mcp_server_id}/catalog", response_model=McpServer)
+async def update_mcp_server_catalog(
+    request: Request, auth: Admin, mcp_server_id: str, payload: CatalogEntryUpdate
+) -> McpServer:
+    return await _gateways(request).update_mcp_server_catalog(
+        _actor(auth), mcp_server_id, payload
+    )
+
+
+@router.get("/entitlements", response_model=list[Entitlement])
+async def list_entitlements(
+    request: Request,
+    auth: Admin,
+    subject: str | None = None,
+    resource: str | None = None,
+) -> list[Entitlement]:
+    return await _entitlements(request).list_entitlements(
+        _actor(auth), subject_id=subject, resource_id=resource
+    )
+
+
+@router.post("/entitlements", response_model=Entitlement, status_code=status.HTTP_201_CREATED)
+async def create_entitlement(
+    request: Request, auth: Admin, payload: EntitlementCreate
+) -> Entitlement:
+    return await _entitlements(request).create_entitlement(_actor(auth), payload)
+
+
+@router.get("/entitlements/resolve", response_model=list[ResolvedEntitlement])
+async def resolve_entitlements(
+    request: Request,
+    auth: Admin,
+    principal_id: Annotated[str, Query(alias="principalId")],
+) -> list[ResolvedEntitlement]:
+    """Effective access for one principal, including what a group grant contributes."""
+
+    return await _entitlements(request).resolve_for_principal(_actor(auth), principal_id)
+
+
+@router.get("/entitlements/{entitlement_id}", response_model=Entitlement)
+async def get_entitlement(request: Request, auth: Admin, entitlement_id: str) -> Entitlement:
+    return await _entitlements(request).get_entitlement(_actor(auth), entitlement_id)
+
+
+@router.patch("/entitlements/{entitlement_id}", response_model=Entitlement)
+async def update_entitlement(
+    request: Request, auth: Admin, entitlement_id: str, payload: EntitlementUpdate
+) -> Entitlement:
+    return await _entitlements(request).update_entitlement(
+        _actor(auth), entitlement_id, payload
+    )
+
+
+@router.delete("/entitlements/{entitlement_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_entitlement(request: Request, auth: Admin, entitlement_id: str) -> Response:
+    await _entitlements(request).delete_entitlement(_actor(auth), entitlement_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get("/access-requests", response_model=list[AccessRequest])
+async def list_access_requests(
+    request: Request, auth: Admin, state: str | None = None
+) -> list[AccessRequest]:
+    return await _entitlements(request).list_access_requests(_actor(auth), state=state)
+
+
+@router.post("/access-requests/{request_id}/approve", response_model=AccessRequest)
+async def approve_access_request(
+    request: Request, auth: Admin, request_id: str, payload: AccessRequestDecision
+) -> AccessRequest:
+    return await _entitlements(request).decide_access_request(
+        _actor(auth), request_id, state=AccessRequestState.APPROVED, note=payload.note
+    )
+
+
+@router.post("/access-requests/{request_id}/deny", response_model=AccessRequest)
+async def deny_access_request(
+    request: Request, auth: Admin, request_id: str, payload: AccessRequestDecision
+) -> AccessRequest:
+    return await _entitlements(request).decide_access_request(
+        _actor(auth), request_id, state=AccessRequestState.DENIED, note=payload.note
+    )
