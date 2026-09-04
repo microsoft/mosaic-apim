@@ -2,7 +2,14 @@ import { useMsal } from '@azure/msal-react'
 import { useMemo } from 'react'
 import { runtimeConfig } from './runtime-config'
 import type {
+  AccessRequest,
   ApiErrorBody,
+  CatalogVisibility,
+  Entitlement,
+  EntitlementBinding,
+  EntitlementEnforcement,
+  EntitlementResource,
+  EntitlementSubject,
   Gateway,
   GatewayPolicyView,
   GatewayRuntimeAccess,
@@ -31,6 +38,7 @@ import type {
   PolicyPreview,
   Principal,
   PrincipalKind,
+  ResolvedEntitlement,
   TokenEnforcement,
 } from './types'
 
@@ -111,6 +119,37 @@ export interface MosaicApi {
   listMcpServers(gatewayId?: string): Promise<McpServer[]>
   deleteModelApi(modelApiId: string): Promise<void>
   deleteMcpServer(mcpServerId: string): Promise<void>
+  updateModelApiCatalog(
+    modelApiId: string,
+    payload: { visibility?: CatalogVisibility; summary?: string | null },
+  ): Promise<ModelApi>
+  updateMcpServerCatalog(
+    mcpServerId: string,
+    payload: { visibility?: CatalogVisibility; summary?: string | null },
+  ): Promise<McpServer>
+  listEntitlements(filters?: { subject?: string; resource?: string }): Promise<Entitlement[]>
+  createEntitlement(payload: {
+    subject: EntitlementSubject
+    resource: EntitlementResource
+    enabled?: boolean
+    enforcement?: EntitlementEnforcement | null
+    binding?: EntitlementBinding | null
+    notes?: string | null
+  }): Promise<Entitlement>
+  updateEntitlement(
+    entitlementId: string,
+    payload: {
+      enabled?: boolean
+      enforcement?: EntitlementEnforcement | null
+      binding?: EntitlementBinding | null
+      notes?: string | null
+    },
+  ): Promise<Entitlement>
+  deleteEntitlement(entitlementId: string): Promise<void>
+  resolveEntitlements(principalId: string): Promise<ResolvedEntitlement[]>
+  listAccessRequests(state?: string): Promise<AccessRequest[]>
+  approveAccessRequest(requestId: string, note?: string): Promise<AccessRequest>
+  denyAccessRequest(requestId: string, note?: string): Promise<AccessRequest>
   previewPolicy(payload: {
     enforcement: TokenEnforcement
     backendResource?: string
@@ -269,6 +308,51 @@ export function useMosaicApi(): MosaicApi {
         ),
       deleteModelApi: (id) => request<void>(`/api/v1/model-apis/${id}`, { method: 'DELETE' }),
       deleteMcpServer: (id) => request<void>(`/api/v1/mcp-servers/${id}`, { method: 'DELETE' }),
+      updateModelApiCatalog: (id, payload) =>
+        request<ModelApi>(`/api/v1/model-apis/${id}/catalog`, {
+          method: 'PATCH',
+          body: payload,
+        }),
+      updateMcpServerCatalog: (id, payload) =>
+        request<McpServer>(`/api/v1/mcp-servers/${id}/catalog`, {
+          method: 'PATCH',
+          body: payload,
+        }),
+      listEntitlements: (filters) => {
+        const params = new URLSearchParams()
+        if (filters?.subject) {
+          params.set('subject', filters.subject)
+        }
+        if (filters?.resource) {
+          params.set('resource', filters.resource)
+        }
+        const query = params.toString()
+        return request<Entitlement[]>(`/api/v1/entitlements${query ? `?${query}` : ''}`)
+      },
+      createEntitlement: (payload) =>
+        request<Entitlement>('/api/v1/entitlements', { method: 'POST', body: payload }),
+      updateEntitlement: (id, payload) =>
+        request<Entitlement>(`/api/v1/entitlements/${id}`, { method: 'PATCH', body: payload }),
+      deleteEntitlement: (id) =>
+        request<void>(`/api/v1/entitlements/${id}`, { method: 'DELETE' }),
+      resolveEntitlements: (principalId) =>
+        request<ResolvedEntitlement[]>(
+          `/api/v1/entitlements/resolve?principalId=${encodeURIComponent(principalId)}`,
+        ),
+      listAccessRequests: (state) =>
+        request<AccessRequest[]>(
+          `/api/v1/access-requests${state ? `?state=${encodeURIComponent(state)}` : ''}`,
+        ),
+      approveAccessRequest: (id, note) =>
+        request<AccessRequest>(`/api/v1/access-requests/${id}/approve`, {
+          method: 'POST',
+          body: { note },
+        }),
+      denyAccessRequest: (id, note) =>
+        request<AccessRequest>(`/api/v1/access-requests/${id}/deny`, {
+          method: 'POST',
+          body: { note },
+        }),
       previewPolicy: (payload) =>
         request<PolicyPreview>('/api/v1/policies/preview', {
           method: 'POST',

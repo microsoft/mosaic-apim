@@ -32,8 +32,93 @@ export interface TokenEnforcement {
   counterKeyExpression: string
   tokensPerMinute?: number
   tokenQuota?: number
-  tokenQuotaPeriod?: 'Hourly' | 'Daily' | 'Weekly' | 'Monthly' | 'Yearly'
+  tokenQuotaPeriod?: QuotaPeriod
   estimatePromptTokens: boolean
+}
+
+export type QuotaPeriod = 'Hourly' | 'Daily' | 'Weekly' | 'Monthly' | 'Yearly'
+
+export type CatalogVisibility = 'catalog' | 'private'
+
+export interface RequestEnforcement {
+  counterKeyExpression: string
+  calls?: number
+  renewalPeriodSeconds?: number
+  callQuota?: number
+  callQuotaPeriod?: QuotaPeriod
+}
+
+export interface EntitlementEnforcement {
+  tokens?: TokenEnforcement | null
+  requests?: RequestEnforcement | null
+}
+
+export type EntitlementSubjectKind = 'user' | 'group' | 'application'
+
+export type EntitlementResourceKind =
+  | 'modelApi'
+  | 'mcpServer'
+  | 'modelDeployment'
+  | 'product'
+
+export interface EntitlementSubject {
+  kind: EntitlementSubjectKind
+  id: string
+}
+
+export interface EntitlementResource {
+  kind: EntitlementResourceKind
+  id: string
+  scopeId?: string | null
+}
+
+export type BindingSource = 'inferred' | 'manual' | 'orchestrated'
+
+export interface EntitlementBinding {
+  gatewayId: string
+  apimProductName?: string | null
+  apimSubscriptionName?: string | null
+  counterKeyExpression?: string | null
+  source: BindingSource
+  boundAt?: string | null
+}
+
+export interface Entitlement {
+  id: string
+  tenantId: string
+  subject: EntitlementSubject
+  resource: EntitlementResource
+  enabled: boolean
+  enforcement?: EntitlementEnforcement | null
+  binding?: EntitlementBinding | null
+  notes?: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+export interface ResolvedEntitlement {
+  entitlement: Entitlement
+  via: 'direct' | 'group'
+  viaGroupId?: string | null
+  viaGroupName?: string | null
+}
+
+export type AccessRequestState = 'pending' | 'approved' | 'denied' | 'withdrawn'
+
+export interface AccessRequest {
+  id: string
+  tenantId: string
+  requesterObjectId: string
+  requesterPrincipalId?: string | null
+  resource: EntitlementResource
+  justification?: string | null
+  state: AccessRequestState
+  decidedByObjectId?: string | null
+  decidedAt?: string | null
+  decisionNote?: string | null
+  grantedEntitlementId?: string | null
+  createdAt: string
+  updatedAt: string
 }
 
 export interface PolicyPreview {
@@ -262,6 +347,8 @@ export interface ModelApi {
   subscriptionRequired: boolean
   operationCount: number
   productNames: string[]
+  visibility: CatalogVisibility
+  summary?: string | null
   selection: ImportSelection
   importedFromSnapshotId: string
   importedAt: string
@@ -286,6 +373,8 @@ export interface McpServer {
   toolCount: number
   subscriptionRequired: boolean
   productNames: string[]
+  visibility: CatalogVisibility
+  summary?: string | null
   selection: ImportSelection
   importedFromSnapshotId: string
   importedAt: string

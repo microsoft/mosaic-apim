@@ -78,12 +78,11 @@ explicit local/test modes and application startup rejects them when `MOSAIC_ENVI
   Log Analytics, Application Insights, diagnostics, managed identities, and narrow RBAC
 - Idempotent Entra application/service-principal setup through `azd` hooks
 
-The Gateways workspace, the Identity workspace, the Models and MCPs workspaces, and the
-deterministic policy preview use live API contracts. Entitlements and access requests have a live
-API contract; the Entitlements workspace has not been rewired to it yet and is still a frontend
-preview. Analytics, policy metadata, and other future operational experiences are interactive
-frontend previews labeled **Sample data** or **Local preview**. They never claim to mutate Azure,
-query Azure Monitor, or substitute sample data for a failed API request.
+The Gateways workspace, the Identity workspace, the Models and MCPs workspaces, the Entitlements
+workspace, and the deterministic policy preview use live API contracts. Analytics, policy metadata,
+and other future operational experiences are interactive frontend previews labeled **Sample data**
+or **Local preview**. They never claim to mutate Azure, query Azure Monitor, or substitute sample
+data for a failed API request.
 
 ## Prerequisites
 
