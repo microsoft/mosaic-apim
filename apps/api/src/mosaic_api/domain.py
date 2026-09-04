@@ -2,6 +2,7 @@ import re
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any, Literal, Self
+from urllib.parse import urlsplit, urlunsplit
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -44,6 +45,25 @@ COGNITIVE_SERVICES_USER_ROLE_NAME = "Cognitive Services User"
 COGNITIVE_SERVICES_USER_ROLE_ID = "a97b65f3-24c7-4388-baec-2e87135dc908"
 FOUNDRY_USER_ROLE_NAME = "Foundry User"
 FOUNDRY_USER_ROLE_ID = "53ca6127-db72-4b80-b1b0-d745d6d5456d"
+
+# MCP protocol revision MOSAIC offers when it connects to a registered MCP server.
+#
+# The current published revision, 2026-07-28, is a *stateless* protocol: it removed the
+# ``initialize`` handshake, the session header, and the GET stream outright. Everything from
+# 2025-11-25 back is the handshake era, and the handshake era is what API Management speaks.
+# MOSAIC implements that era alone, offers the newest revision of it, and accepts a server's
+# counter-offer from the set below. A server answering with anything else -- including a modern
+# stateless server -- is recorded as an unsupported protocol, which is a capability and not a
+# failure, exactly as an API Management service too old for MCP is.
+MCP_PROTOCOL_VERSION = "2025-11-25"
+MCP_SUPPORTED_PROTOCOL_VERSIONS: frozenset[str] = frozenset(
+    {"2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"}
+)
+# The ``MCP-Protocol-Version`` header was introduced in 2025-06-18. A server that negotiated an
+# earlier revision never defined it, so MOSAIC omits it rather than sending a header the server
+# is entitled to reject with 400.
+MCP_PROTOCOL_VERSION_HEADER_MINIMUM = "2025-06-18"
+MCP_CLIENT_NAME = "mosaic"
 
 _APIM_RESOURCE_ID_PATTERN = re.compile(
     r"^/subscriptions/(?P<subscription>[0-9a-fA-F-]{36})"
@@ -519,7 +539,14 @@ class McpServerKind(StrEnum):
     PASSTHROUGH = "passthrough"
 
 
-class McpEndpoint(MosaicModel):
+class McpServerRoute(MosaicModel):
+    """One named URI template an API Management MCP server is reachable on.
+
+    Named for what API Management calls it, not "endpoint": a streamable server declares a single
+    ``message`` route and an SSE server declares ``sse`` and ``message``. The registered-endpoint
+    entity is :class:`McpEndpoint`.
+    """
+
     name: str
     uri_template: str
 
@@ -569,7 +596,7 @@ class McpServer(Entity):
     protocols: list[str] = Field(default_factory=list)
     kind: McpServerKind = McpServerKind.REST_API_BACKED
     transport_type: McpTransportType = McpTransportType.UNKNOWN
-    endpoints: list[McpEndpoint] = Field(default_factory=list)
+    endpoints: list[McpServerRoute] = Field(default_factory=list)
     tools: list[McpTool] = Field(default_factory=list)
     tool_count: int = 0
     subscription_required: bool = True
@@ -588,6 +615,157 @@ def model_api_id(tenant_id: str, gateway_id: str, api_name: str) -> str:
 
 def mcp_server_id(tenant_id: str, gateway_id: str, api_name: str) -> str:
     return deterministic_id("mcpServer", tenant_id, gateway_id, api_name)
+
+
+class McpAuthMode(StrEnum):
+    """How MOSAIC authenticates when it connects to a registered MCP server.
+
+    Deliberately not :class:`EndpointAuthMode`. An MCP server may legitimately require no
+    credential at all, and that must never become a valid way to register a model endpoint.
+    """
+
+    NONE = "none"
+    API_KEY = "apiKey"
+    MANAGED_IDENTITY = "managedIdentity"
+
+
+class McpEndpointStatus(StrEnum):
+    PENDING = "pending"
+    CONNECTED = "connected"
+    DEGRADED = "degraded"
+    UNAUTHORIZED = "unauthorized"
+    UNREACHABLE = "unreachable"
+    # The server answered, and the answer is that it speaks a protocol revision or a transport
+    # MOSAIC does not. Neither is a fault an operator can clear by retrying, so both are held
+    # apart from the failure states above.
+    UNSUPPORTED_PROTOCOL = "unsupportedProtocol"
+    UNSUPPORTED_TRANSPORT = "unsupportedTransport"
+
+
+class McpDiscoveryEvaluation(StrEnum):
+    HANDSHAKE = "handshake"
+    AUTHORIZATION_REQUIRED = "authorizationRequired"
+    NOT_EVALUATED = "notEvaluated"
+
+
+class McpAuthChallenge(MosaicModel):
+    """What a ``401`` asked for, parsed from ``WWW-Authenticate``.
+
+    Recorded so that "this server wants credentials MOSAIC was not given" is never presented as
+    "this server is unreachable".
+    """
+
+    scheme: str | None = None
+    resource_metadata_url: str | None = None
+    scope: str | None = None
+
+
+class McpDiscoveryAccess(MosaicModel):
+    """Whether MOSAIC can reach and read a registered MCP server.
+
+    An MCP server has no control plane, so unlike :class:`EndpointAccess` this can only be
+    answered by connecting. There is deliberately no second, gateway-runtime relationship here:
+    API Management fronts an MCP server with a backend credential rather than a role assignment,
+    and Entra app roles are not readable over ARM at all.
+    """
+
+    can_discover: bool = False
+    evaluation: McpDiscoveryEvaluation = McpDiscoveryEvaluation.NOT_EVALUATED
+    checked_at: datetime | None = None
+    challenge: McpAuthChallenge | None = None
+    message: str | None = None
+
+
+class McpEndpointCapabilities(MosaicModel):
+    protocol_version: str | None = None
+    offered_protocol_version: str = MCP_PROTOCOL_VERSION
+    transport_type: McpTransportType = McpTransportType.STREAMABLE
+    server_name: str | None = None
+    server_title: str | None = None
+    server_version: str | None = None
+    instructions: str | None = None
+    supports_tools: CapabilitySupport = CapabilitySupport.UNKNOWN
+    session_managed: bool = False
+    notes: list[str] = Field(default_factory=list)
+
+
+class McpInventorySummary(MosaicModel):
+    """Counts only what the server actually stated.
+
+    There is no "destructive tools" count on purpose. ``destructiveHint`` and ``openWorldHint``
+    default to *true* when absent, so a count derived from the defaults would report tools as
+    destructive that simply said nothing. ``unannotated_tools`` reports that silence directly.
+    """
+
+    tools: int = 0
+    read_only_tools: int = 0
+    unannotated_tools: int = 0
+
+
+class McpEndpoint(Entity):
+    """A registered MCP server MOSAIC reads tools from.
+
+    The sibling of :class:`ModelEndpoint`: an administrator registers a server that exists
+    somewhere, and MOSAIC connects to it as a read-only MCP client to record what it offers.
+    MOSAIC never calls a tool, and creates nothing in Azure or API Management.
+    """
+
+    entity_type: Literal["mcpEndpoint"] = "mcpEndpoint"
+    name: str
+    endpoint: AnyHttpUrl
+    environment_label: str | None = None
+    auth_mode: McpAuthMode = McpAuthMode.NONE
+    credential_reference_id: str | None = None
+    resource_audience: str | None = Field(
+        default=None,
+        description=(
+            "The Entra audience a managed-identity token is requested for. Required rather than "
+            "inferred: a token is only ever attached when the operator named who it is for."
+        ),
+    )
+    status: McpEndpointStatus = McpEndpointStatus.PENDING
+    access: McpDiscoveryAccess = Field(default_factory=McpDiscoveryAccess)
+    capabilities: McpEndpointCapabilities = Field(default_factory=McpEndpointCapabilities)
+    inventory: McpInventorySummary = Field(default_factory=McpInventorySummary)
+    last_synced_at: datetime | None = None
+    last_sync_error: str | None = None
+
+
+class McpEndpointSyncRun(Entity):
+    entity_type: Literal["mcpEndpointSyncRun"] = "mcpEndpointSyncRun"
+    endpoint_id: str
+    status: GatewaySyncStatus = GatewaySyncStatus.RUNNING
+    started_at: datetime = Field(default_factory=utc_now)
+    completed_at: datetime | None = None
+    duration_ms: int | None = None
+    counts: McpInventorySummary = Field(default_factory=McpInventorySummary)
+    removed: int = 0
+    errors: list[str] = Field(default_factory=list)
+    actor_object_id: str | None = None
+
+
+def canonical_mcp_url(value: str) -> str:
+    """The canonical form of an MCP server URL, per the authorization spec's definition.
+
+    Lowercase scheme and host, no fragment, and no trailing slash on a non-root path. Used both
+    to key the record and as the RFC 8707 resource identifier, so the two can never disagree.
+    """
+
+    parts = urlsplit(value.strip())
+    host = (parts.hostname or "").casefold()
+    if not host:
+        raise ValueError("An MCP server URL must include a host")
+    netloc = f"[{host}]" if ":" in host else host
+    if parts.port is not None:
+        netloc = f"{netloc}:{parts.port}"
+    path = parts.path.rstrip("/")
+    return urlunsplit((parts.scheme.casefold(), netloc, path, parts.query, ""))
+
+
+def mcp_endpoint_id(tenant_id: str, url: str) -> str:
+    """Deterministic so re-registering the same server refreshes it instead of forking it."""
+
+    return deterministic_id("mcpEndpoint", tenant_id, canonical_mcp_url(url))
 
 
 class TokenEnforcement(MosaicModel):
@@ -764,6 +942,63 @@ class ModelEndpointUpdate(MosaicModel):
     name: str | None = Field(default=None, min_length=1, max_length=120)
     environment_label: str | None = Field(default=None, max_length=60)
     credential_secret_uri: AnyHttpUrl | None = None
+
+    @field_validator("name")
+    @classmethod
+    def name_cannot_be_null(cls, value: str | None) -> str:
+        # ``exclude_unset`` keeps an explicitly submitted null, which would then fail validation
+        # against the required field on the entity and surface as a 500 rather than a 4xx.
+        if value is None:
+            raise ValueError("name cannot be null")
+        return value
+
+
+class McpEndpointCreate(MosaicModel):
+    """Register an MCP server by URL.
+
+    ``credential_secret_uri`` is a Key Vault secret identifier holding a bearer token, never the
+    token itself. ``resource_audience`` names who a managed-identity token is for; MOSAIC will not
+    infer it, because attaching a token to a host nobody named is how a managed identity leaks.
+    """
+
+    endpoint: AnyHttpUrl
+    name: str | None = Field(default=None, max_length=120)
+    environment_label: str | None = Field(default=None, max_length=60)
+    auth_mode: McpAuthMode | None = None
+    credential_secret_uri: AnyHttpUrl | None = None
+    resource_audience: str | None = Field(default=None, max_length=512)
+
+    @model_validator(mode="after")
+    def validate_auth(self) -> Self:
+        if self.auth_mode is None:
+            if self.credential_secret_uri is not None:
+                self.auth_mode = McpAuthMode.API_KEY
+            elif self.resource_audience:
+                self.auth_mode = McpAuthMode.MANAGED_IDENTITY
+            else:
+                self.auth_mode = McpAuthMode.NONE
+        if self.auth_mode == McpAuthMode.API_KEY and self.credential_secret_uri is None:
+            raise ValueError(
+                "A key-authenticated MCP server needs a Key Vault secret URI holding its token"
+            )
+        if self.auth_mode == McpAuthMode.MANAGED_IDENTITY and not self.resource_audience:
+            raise ValueError(
+                "A managed-identity MCP server needs the audience its token should be issued for"
+            )
+        if self.auth_mode == McpAuthMode.NONE and (
+            self.credential_secret_uri is not None or self.resource_audience
+        ):
+            raise ValueError(
+                "An unauthenticated MCP server must not carry a secret URI or an audience"
+            )
+        return self
+
+
+class McpEndpointUpdate(MosaicModel):
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    environment_label: str | None = Field(default=None, max_length=60)
+    credential_secret_uri: AnyHttpUrl | None = None
+    resource_audience: str | None = Field(default=None, max_length=512)
 
     @field_validator("name")
     @classmethod

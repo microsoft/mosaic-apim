@@ -1,40 +1,26 @@
-from mosaic_api.domain import AuditEvent, ModelEndpoint, ModelEndpointSyncRun
+from mosaic_api.domain import AuditEvent, McpEndpoint, McpEndpointSyncRun
 from mosaic_api.errors import ConflictError
 from mosaic_api.repositories.memory_endpoint_state import InMemoryEndpointStateBase
 
 
-class InMemoryModelEndpointRepository(InMemoryEndpointStateBase):
+class InMemoryMcpEndpointRepository(InMemoryEndpointStateBase):
     """Explicit local/test persistence. Never selected in Azure environments."""
 
     def __init__(self) -> None:
         super().__init__()
-        self.endpoints: dict[str, ModelEndpoint] = {}
+        self.endpoints: dict[str, McpEndpoint] = {}
 
-    async def list_endpoints(self, tenant_id: str) -> list[ModelEndpoint]:
+    async def list_endpoints(self, tenant_id: str) -> list[McpEndpoint]:
         return sorted(
             (item for item in self.endpoints.values() if item.tenant_id == tenant_id),
             key=lambda item: item.name.casefold(),
         )
 
-    async def get_endpoint(self, tenant_id: str, endpoint_id: str) -> ModelEndpoint | None:
+    async def get_endpoint(self, tenant_id: str, endpoint_id: str) -> McpEndpoint | None:
         endpoint = self.endpoints.get(endpoint_id)
         return endpoint if endpoint and endpoint.tenant_id == tenant_id else None
 
-    async def find_endpoint_by_resource_id(
-        self, tenant_id: str, azure_resource_id: str
-    ) -> ModelEndpoint | None:
-        target = azure_resource_id.casefold()
-        return next(
-            (
-                endpoint
-                for endpoint in self.endpoints.values()
-                if endpoint.tenant_id == tenant_id
-                and (endpoint.azure_resource_id or "").casefold() == target
-            ),
-            None,
-        )
-
-    async def find_endpoint_by_url(self, tenant_id: str, endpoint: str) -> ModelEndpoint | None:
+    async def find_endpoint_by_url(self, tenant_id: str, endpoint: str) -> McpEndpoint | None:
         target = endpoint.casefold().rstrip("/")
         return next(
             (
@@ -46,46 +32,40 @@ class InMemoryModelEndpointRepository(InMemoryEndpointStateBase):
             None,
         )
 
-    async def create_endpoint(
-        self, endpoint: ModelEndpoint, audit_event: AuditEvent
-    ) -> ModelEndpoint:
+    async def create_endpoint(self, endpoint: McpEndpoint, audit_event: AuditEvent) -> McpEndpoint:
         if endpoint.id in self.endpoints:
-            raise ConflictError("This model endpoint is already registered")
+            raise ConflictError("This MCP server is already registered")
         return await self.save_endpoint(endpoint, audit_event)
 
-    async def save_endpoint(
-        self, endpoint: ModelEndpoint, audit_event: AuditEvent
-    ) -> ModelEndpoint:
+    async def save_endpoint(self, endpoint: McpEndpoint, audit_event: AuditEvent) -> McpEndpoint:
         self.endpoints[endpoint.id] = endpoint
         self.audit_events[audit_event.id] = audit_event
         return endpoint
 
-    async def record_endpoint_state(self, endpoint: ModelEndpoint) -> ModelEndpoint:
+    async def record_endpoint_state(self, endpoint: McpEndpoint) -> McpEndpoint:
         self.endpoints[endpoint.id] = endpoint
         return endpoint
 
-    async def delete_endpoint(self, endpoint: ModelEndpoint, audit_event: AuditEvent) -> None:
+    async def delete_endpoint(self, endpoint: McpEndpoint, audit_event: AuditEvent) -> None:
         await self.delete_observed_for_endpoint(endpoint.tenant_id, endpoint.id)
         self._delete_runs_for_endpoint(endpoint.tenant_id, endpoint.id)
         self.endpoints.pop(endpoint.id, None)
         self.audit_events[audit_event.id] = audit_event
 
-    async def save_endpoint_sync_run(self, run: ModelEndpointSyncRun) -> ModelEndpointSyncRun:
+    async def save_endpoint_sync_run(self, run: McpEndpointSyncRun) -> McpEndpointSyncRun:
         self.sync_runs[run.id] = run
         return run
 
     async def get_endpoint_sync_run(
         self, tenant_id: str, run_id: str
-    ) -> ModelEndpointSyncRun | None:
+    ) -> McpEndpointSyncRun | None:
         run = self.sync_runs.get(run_id)
         return run if run and run.tenant_id == tenant_id else None
 
     async def list_endpoint_sync_runs(
         self, tenant_id: str, endpoint_id: str, *, limit: int = 20
-    ) -> list[ModelEndpointSyncRun]:
+    ) -> list[McpEndpointSyncRun]:
         return self._runs_for_endpoint(tenant_id, endpoint_id, limit)
 
-    async def list_unfinished_endpoint_sync_runs(
-        self, tenant_id: str
-    ) -> list[ModelEndpointSyncRun]:
+    async def list_unfinished_endpoint_sync_runs(self, tenant_id: str) -> list[McpEndpointSyncRun]:
         return self._unfinished_runs(tenant_id)

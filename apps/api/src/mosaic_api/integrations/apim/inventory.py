@@ -18,8 +18,8 @@ import structlog
 from mosaic_api.domain import (
     CapabilitySupport,
     GatewayInventorySummary,
-    McpEndpoint,
     McpServerKind,
+    McpServerRoute,
     McpTool,
     McpTransportType,
     deterministic_id,
@@ -200,17 +200,17 @@ def _mcp_transport(value: object) -> McpTransportType:
         return McpTransportType.UNKNOWN
 
 
-def _mcp_endpoints(value: object) -> list[McpEndpoint]:
+def _mcp_endpoints(value: object) -> list[McpServerRoute]:
     if not isinstance(value, list):
         return []
-    endpoints: list[McpEndpoint] = []
+    endpoints: list[McpServerRoute] = []
     for entry in value:
         if not isinstance(entry, dict):
             continue
         name = _text(entry.get("name"))
         template = _text(entry.get("uriTemplate"))
         if name and template:
-            endpoints.append(McpEndpoint(name=name, uri_template=template))
+            endpoints.append(McpServerRoute(name=name, uri_template=template))
     return endpoints
 
 

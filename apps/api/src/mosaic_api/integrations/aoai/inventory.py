@@ -19,8 +19,8 @@ from mosaic_api.integrations.aoai.client import CognitiveServicesClient
 from mosaic_api.integrations.apim.client import JsonObject
 from mosaic_api.observed import (
     ObservedAvailableModel,
+    ObservedEndpointEntity,
     ObservedModelDeployment,
-    ObservedModelEntity,
 )
 
 logger = structlog.get_logger()
@@ -48,8 +48,8 @@ class ModelInventorySnapshot:
         self.errors: list[str] = []
         self.incomplete_types: set[str] = set()
 
-    def entities(self) -> list[ObservedModelEntity]:
-        entities: list[ObservedModelEntity] = []
+    def entities(self) -> list[ObservedEndpointEntity]:
+        entities: list[ObservedEndpointEntity] = []
         entities.extend(self.deployments)
         entities.extend(self.available_models)
         return entities
