@@ -18,8 +18,14 @@ DEFAULT_LOCALHOST_REDIRECTS = (
     "http://localhost:3000",
     "http://localhost:5173",
 )
+DEFAULT_PORTAL_LOCALHOST_REDIRECTS = (
+    "http://localhost:3001",
+    "http://localhost:5174",
+)
 API_SCOPE_VALUE = "access_as_user"
 APP_ROLE_VALUE = "Admin"
+PORTAL_ROLE_VALUE = "User"
+PORTAL_APP_NOTES = "MOSAIC end-user portal application registration managed by azd hooks."
 DIRECTORY_DENIAL_MARKERS = (
     "Authorization_RequestDenied",
     "Insufficient privileges",
@@ -46,6 +52,7 @@ class EntraContext:
     deployer_display_name: str
     deployer_email: str
     localhost_redirects: tuple[str, ...]
+    portal_localhost_redirects: tuple[str, ...] = DEFAULT_PORTAL_LOCALHOST_REDIRECTS
 
     @property
     def environment_label(self) -> str:
@@ -62,6 +69,10 @@ class EntraContext:
     @property
     def spa_display_name(self) -> str:
         return f"mosaic-{self.environment_label}-spa"
+
+    @property
+    def portal_display_name(self) -> str:
+        return f"mosaic-{self.environment_label}-portal"
 
     @property
     def app_tags(self) -> list[str]:
@@ -107,22 +118,23 @@ def admin_role_id() -> str:
     return deterministic_guid("entra/api/role/admin")
 
 
+def portal_role_id() -> str:
+    return deterministic_guid("entra/api/role/user")
+
+
 def build_api_app_payload(
     display_name: str,
     identifier_uri: str,
     tags: list[str],
-    preauthorized_spa_client_id: str | None = None,
+    preauthorized_client_ids: Iterable[str] | None = None,
 ) -> dict[str, Any]:
-    preauthorized_applications = (
-        [
-            {
-                "appId": preauthorized_spa_client_id,
-                "delegatedPermissionIds": [api_scope_id()],
-            }
-        ]
-        if preauthorized_spa_client_id
-        else []
-    )
+    preauthorized_applications = [
+        {
+            "appId": client_id,
+            "delegatedPermissionIds": [api_scope_id()],
+        }
+        for client_id in normalize_client_ids(preauthorized_client_ids)
+    ]
     return {
         "displayName": display_name,
         "identifierUris": [identifier_uri],
@@ -157,9 +169,30 @@ def build_api_app_payload(
                 "isEnabled": True,
                 "origin": "Application",
                 "value": APP_ROLE_VALUE,
-            }
+            },
+            {
+                "allowedMemberTypes": ["User", "Application"],
+                "description": (
+                    "MOSAIC end user. Grants the portal, not the administrator console. "
+                    "Assign it to an Entra group to onboard users in bulk."
+                ),
+                "displayName": PORTAL_ROLE_VALUE,
+                "id": portal_role_id(),
+                "isEnabled": True,
+                "origin": "Application",
+                "value": PORTAL_ROLE_VALUE,
+            },
         ],
     }
+
+
+def normalize_client_ids(client_ids: Iterable[str] | None) -> list[str]:
+    normalized: list[str] = []
+    for client_id in client_ids or ():
+        value = client_id.strip()
+        if value and value not in normalized:
+            normalized.append(value)
+    return normalized
 
 
 def build_spa_app_payload(
@@ -167,11 +200,12 @@ def build_spa_app_payload(
     api_application_client_id: str,
     redirect_uris: list[str],
     tags: list[str],
+    notes: str = "MOSAIC SPA application registration managed by azd hooks.",
 ) -> dict[str, Any]:
     return {
         "displayName": display_name,
         "isFallbackPublicClient": False,
-        "notes": "MOSAIC SPA application registration managed by azd hooks.",
+        "notes": notes,
         "requiredResourceAccess": [
             {
                 "resourceAppId": api_application_client_id,
@@ -269,6 +303,36 @@ def preprovision(runner: CliRunner, environment_name_override: str | None) -> No
         tags=context.app_tags,
         operation_name="create-or-update SPA service principal",
     )
+
+    portal_app = ensure_application(
+        runner=runner,
+        display_name=context.portal_display_name,
+        create_payload={
+            "displayName": context.portal_display_name,
+            "signInAudience": "AzureADMyOrg",
+            "tags": context.app_tags,
+        },
+        patch_builder=lambda existing: build_spa_app_payload(
+            display_name=context.portal_display_name,
+            api_application_client_id=api_app["appId"],
+            redirect_uris=normalize_redirect_uris(
+                [
+                    *context.portal_localhost_redirects,
+                    *application_redirect_uris(existing),
+                ]
+            ),
+            tags=context.app_tags,
+            notes=PORTAL_APP_NOTES,
+        ),
+        operation_name="create-or-update portal application registration",
+    )
+    portal_sp = ensure_service_principal(
+        runner,
+        app_id=portal_app["appId"],
+        tags=context.app_tags,
+        operation_name="create-or-update portal service principal",
+    )
+
     graph_request(
         runner,
         "PATCH",
@@ -277,9 +341,9 @@ def preprovision(runner: CliRunner, environment_name_override: str | None) -> No
             display_name=context.api_display_name,
             identifier_uri=f"api://{api_app['appId']}",
             tags=context.app_tags,
-            preauthorized_spa_client_id=spa_app["appId"],
+            preauthorized_client_ids=[spa_app["appId"], portal_app["appId"]],
         ),
-        operation_name="pre-authorize SPA delegated access to API",
+        operation_name="pre-authorize SPA and portal delegated access to API",
     )
 
     ensure_user_admin_role_assignment(
@@ -298,10 +362,19 @@ def preprovision(runner: CliRunner, environment_name_override: str | None) -> No
     set_azd_env(runner, "MOSAIC_API_SCOPE", f"api://{api_app['appId']}/{API_SCOPE_VALUE}")
     set_azd_env(runner, "MOSAIC_API_SCOPE_ID", api_scope_id())
     set_azd_env(runner, "MOSAIC_API_ADMIN_ROLE_ID", admin_role_id())
+    set_azd_env(runner, "MOSAIC_API_USER_ROLE_ID", portal_role_id())
     set_azd_env(runner, "MOSAIC_SPA_APP_OBJECT_ID", spa_app["id"])
     set_azd_env(runner, "MOSAIC_SPA_CLIENT_ID", spa_app["appId"])
     set_azd_env(runner, "MOSAIC_SPA_SERVICE_PRINCIPAL_OBJECT_ID", spa_sp["id"])
     set_azd_env(runner, "MOSAIC_SPA_LOCALHOST_REDIRECT_URIS", ",".join(context.localhost_redirects))
+    set_azd_env(runner, "MOSAIC_PORTAL_APP_OBJECT_ID", portal_app["id"])
+    set_azd_env(runner, "MOSAIC_PORTAL_CLIENT_ID", portal_app["appId"])
+    set_azd_env(runner, "MOSAIC_PORTAL_SERVICE_PRINCIPAL_OBJECT_ID", portal_sp["id"])
+    set_azd_env(
+        runner,
+        "MOSAIC_PORTAL_LOCALHOST_REDIRECT_URIS",
+        ",".join(context.portal_localhost_redirects),
+    )
     set_azd_env(runner, "MOSAIC_DEPLOYER_OBJECT_ID", context.deployer_object_id)
     set_azd_env(runner, "MOSAIC_APIM_PUBLISHER_NAME", context.deployer_display_name)
     set_azd_env(runner, "MOSAIC_APIM_PUBLISHER_EMAIL", context.deployer_email)
@@ -321,37 +394,87 @@ def postprovision(
             "Remediation: ensure infra/main.bicep outputs WEB_APP_URL and rerun `azd provision`."
         )
 
-    spa_app = find_application(
-        runner, context.spa_display_name, context.app_tags, "read SPA application registration"
+    patch_deployed_redirect(
+        runner,
+        context=context,
+        display_name=context.spa_display_name,
+        localhost_redirects=context.localhost_redirects,
+        deployed_url=deployed_web_url,
+        azd_env_key="MOSAIC_SPA_DEPLOYED_REDIRECT_URI",
+        operation_label="SPA",
     )
-    if spa_app is None:
+
+    # The portal registration always exists, but its deployed redirect only exists once the portal
+    # web app is deployed. Absent PORTAL_APP_URL there is no redirect to add, which is a different
+    # thing from skipping identity setup.
+    deployed_portal_url = os.environ.get("PORTAL_APP_URL")
+    if deployed_portal_url:
+        patch_deployed_redirect(
+            runner,
+            context=context,
+            display_name=context.portal_display_name,
+            localhost_redirects=context.portal_localhost_redirects,
+            deployed_url=deployed_portal_url,
+            azd_env_key="MOSAIC_PORTAL_DEPLOYED_REDIRECT_URI",
+            operation_label="portal",
+            notes=PORTAL_APP_NOTES,
+        )
+    else:
+        print(
+            "PORTAL_APP_URL was not set; the MOSAIC portal registration keeps only its localhost "
+            "redirects until the portal web app is deployed.",
+            file=sys.stderr,
+        )
+
+
+def patch_deployed_redirect(
+    runner: CliRunner,
+    *,
+    context: EntraContext,
+    display_name: str,
+    localhost_redirects: tuple[str, ...],
+    deployed_url: str,
+    azd_env_key: str,
+    operation_label: str,
+    notes: str | None = None,
+) -> None:
+    operation_name = f"patch deployed {operation_label} redirect URI"
+    application = find_application(
+        runner,
+        display_name,
+        context.app_tags,
+        f"read {operation_label} application registration",
+    )
+    if application is None:
         raise OperationFailed(
-            "Operation patch deployed SPA redirect URI failed: the MOSAIC SPA application "
+            f"Operation {operation_name} failed: the MOSAIC {operation_label} application "
             "registration does not exist. Remediation: run the preprovision hook or rerun "
             "`azd provision` so the app registrations are created first."
         )
 
     redirect_uris = normalize_redirect_uris(
         [
-            *context.localhost_redirects,
-            *application_redirect_uris(spa_app),
-            deployed_web_url,
+            *localhost_redirects,
+            *application_redirect_uris(application),
+            deployed_url,
         ]
     )
+    payload_kwargs = {"notes": notes} if notes else {}
     payload = build_spa_app_payload(
-        display_name=context.spa_display_name,
+        display_name=display_name,
         api_application_client_id=read_env_value("MOSAIC_API_CLIENT_ID", required=True),
         redirect_uris=redirect_uris,
         tags=context.app_tags,
+        **payload_kwargs,
     )
     graph_request(
         runner,
         "PATCH",
-        f"/applications/{spa_app['id']}",
+        f"/applications/{application['id']}",
         body=payload,
-        operation_name="patch deployed SPA redirect URI",
+        operation_name=operation_name,
     )
-    set_azd_env(runner, "MOSAIC_SPA_DEPLOYED_REDIRECT_URI", deployed_web_url)
+    set_azd_env(runner, azd_env_key, deployed_url)
 
 
 def build_context(runner: CliRunner, environment_name_override: str | None) -> EntraContext:
@@ -391,6 +514,11 @@ def build_context(runner: CliRunner, environment_name_override: str | None) -> E
         *DEFAULT_LOCALHOST_REDIRECTS,
         *(value for value in extra_redirects.split(",") if value),
     ]
+    extra_portal_redirects = os.environ.get("MOSAIC_PORTAL_LOCALHOST_REDIRECT_URIS", "")
+    portal_redirect_values = [
+        *DEFAULT_PORTAL_LOCALHOST_REDIRECTS,
+        *(value for value in extra_portal_redirects.split(",") if value),
+    ]
     return EntraContext(
         environment_name=environment_name,
         tenant_id=account["tenantId"],
@@ -399,6 +527,7 @@ def build_context(runner: CliRunner, environment_name_override: str | None) -> E
         deployer_display_name=me.get("displayName") or deployer_email,
         deployer_email=deployer_email,
         localhost_redirects=tuple(normalize_redirect_uris(redirect_values)),
+        portal_localhost_redirects=tuple(normalize_redirect_uris(portal_redirect_values)),
     )
 
 

@@ -85,7 +85,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 owns_client=False,
             )
         authenticator = (
-            LocalAuthenticator(app_settings.tenant_id)
+            LocalAuthenticator(app_settings.tenant_id, app_settings.local_roles)
             if app_settings.auth_mode is AuthMode.LOCAL
             else EntraAuthenticator(app_settings)
         )
