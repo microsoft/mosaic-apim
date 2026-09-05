@@ -30,6 +30,9 @@ param apiServicePrincipalObjectId string
 @description('The MOSAIC SPA application (client) ID.')
 param spaAppClientId string
 
+@description('The MOSAIC portal application (client) ID.')
+param portalAppClientId string
+
 @description('The exposed application ID URI for the MOSAIC API.')
 param apiApplicationIdUri string
 
@@ -54,11 +57,17 @@ param apiPlaceholderImage string = 'mcr.microsoft.com/azuredocs/aci-helloworld:l
 @description('Placeholder image used before azd deploy publishes the web container image.')
 param webPlaceholderImage string = 'mcr.microsoft.com/appsvc/staticsite:latest'
 
+@description('Placeholder image used before azd deploy publishes the portal container image.')
+param portalPlaceholderImage string = 'mcr.microsoft.com/appsvc/staticsite:latest'
+
 @description('The API container port.')
 param apiContainerPort int = 8000
 
 @description('The web container port.')
 param webContainerPort int = 8080
+
+@description('The portal container port.')
+param portalContainerPort int = 8080
 
 var normalizedEnv = toLower(replace(replace(environmentName, '_', '-'), '.', '-'))
 var envLabel = startsWith(normalizedEnv, 'mosaic-') ? substring(normalizedEnv, 7) : normalizedEnv
@@ -74,6 +83,7 @@ var planName = take('asp-mosaic-${envLabel}-${suffix}', 40)
 var acrName = toLower(take('mosaic${envToken}${suffix}acr', 50))
 var apiWebAppName = take('mosaic-${envLabel}-api-${suffix}', 60)
 var webWebAppName = take('mosaic-${envLabel}-web-${suffix}', 60)
+var portalWebAppName = take('mosaic-${envLabel}-portal-${suffix}', 60)
 var cosmosName = take('cosmos-mosaic-${envLabel}-${suffix}', 44)
 var keyVaultName = toLower(take('kvmosaic${envToken}${suffix}', 24))
 var logAnalyticsName = take('log-mosaic-${envLabel}-${suffix}', 63)
@@ -84,10 +94,12 @@ var apimSkuTier = apimSkuParts[0]
 var apimSkuCapacity = int(apimSkuParts[1])
 var apiUrl = 'https://${apiWebAppName}.azurewebsites.net'
 var webUrl = 'https://${webWebAppName}.azurewebsites.net'
+var portalUrl = 'https://${portalWebAppName}.azurewebsites.net'
 var apimGatewayUrl = 'https://${apimName}.azure-api.net'
 var authorityUrl = uri(environment().authentication.loginEndpoint, tenantId)
 var apiCorsAllowedOrigins = concat(localhostOrigins, [
   webUrl
+  portalUrl
 ])
 var apiAppSettings = [
   {
@@ -189,6 +201,28 @@ var webAppSettings = [
     value: monitoring.outputs.connectionString
   }
 ]
+var portalAppSettings = [
+  {
+    name: 'MOSAIC_API_BASE_URL'
+    value: apiUrl
+  }
+  {
+    name: 'MOSAIC_ENTRA_TENANT_ID'
+    value: tenantId
+  }
+  {
+    name: 'MOSAIC_ENTRA_CLIENT_ID'
+    value: portalAppClientId
+  }
+  {
+    name: 'MOSAIC_ENTRA_API_SCOPE'
+    value: apiScope
+  }
+  {
+    name: 'MOSAIC_APPLICATIONINSIGHTS_CONNECTION_STRING'
+    value: monitoring.outputs.connectionString
+  }
+]
 
 module monitoring './modules/monitoring.bicep' = {
   name: 'monitoring'
@@ -270,6 +304,22 @@ module webApp './modules/web-app.bicep' = {
   }
 }
 
+module portalApp './modules/web-app.bicep' = {
+  name: 'portalApp'
+  params: {
+    appSettings: portalAppSettings
+    azdServiceName: 'portal'
+    containerImage: portalPlaceholderImage
+    containerPort: portalContainerPort
+    corsAllowedOrigins: []
+    healthCheckPath: webHealthCheckPath
+    location: location
+    name: portalWebAppName
+    serverFarmId: plan.outputs.id
+    tags: sharedTags
+  }
+}
+
 module apim './modules/apim.bicep' = {
   name: 'apim'
   params: {
@@ -295,6 +345,10 @@ resource apiSiteResource 'Microsoft.Web/sites@2023-12-01' existing = {
 
 resource webSiteResource 'Microsoft.Web/sites@2023-12-01' existing = {
   name: webWebAppName
+}
+
+resource portalSiteResource 'Microsoft.Web/sites@2023-12-01' existing = {
+  name: portalWebAppName
 }
 
 resource cosmosAccount 'Microsoft.DocumentDB/databaseAccounts@2024-05-15' existing = {
@@ -335,6 +389,19 @@ resource webAcrPull 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   scope: acrResource
   properties: {
     principalId: webApp.outputs.principalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '7f951dda-4ed3-4680-a7ca-43fe172d538d')
+  }
+  dependsOn: [
+    acr
+  ]
+}
+
+resource portalAcrPull 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(acrName, portalWebAppName, 'AcrPull')
+  scope: acrResource
+  properties: {
+    principalId: portalApp.outputs.principalId
     principalType: 'ServicePrincipal'
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '7f951dda-4ed3-4680-a7ca-43fe172d538d')
   }
@@ -559,12 +626,39 @@ resource webSiteDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-pr
   ]
 }
 
+resource portalSiteDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = {
+  name: 'to-log-analytics'
+  scope: portalSiteResource
+  properties: {
+    logAnalyticsDestinationType: 'Dedicated'
+    logs: [
+      {
+        categoryGroup: 'allLogs'
+        enabled: true
+      }
+    ]
+    metrics: [
+      {
+        category: 'AllMetrics'
+        enabled: true
+      }
+    ]
+    workspaceId: monitoring.outputs.workspaceId
+  }
+  dependsOn: [
+    portalApp
+  ]
+}
+
 output API_APP_NAME string = apiApp.outputs.name
 output API_APP_URL string = apiUrl
 output API_APP_PRINCIPAL_ID string = apiApp.outputs.principalId
 output WEB_APP_NAME string = webApp.outputs.name
 output WEB_APP_URL string = webUrl
 output WEB_APP_PRINCIPAL_ID string = webApp.outputs.principalId
+output PORTAL_APP_NAME string = portalApp.outputs.name
+output PORTAL_APP_URL string = portalUrl
+output PORTAL_APP_PRINCIPAL_ID string = portalApp.outputs.principalId
 output APIM_NAME string = apim.outputs.name
 output APIM_GATEWAY_URL string = apimGatewayUrl
 output APIM_RESOURCE_ID string = apim.outputs.id
@@ -583,4 +677,5 @@ output MOSAIC_TENANT_ID string = tenantId
 output MOSAIC_API_CLIENT_ID string = apiAppClientId
 output MOSAIC_API_SCOPE string = apiScope
 output MOSAIC_SPA_CLIENT_ID string = spaAppClientId
+output MOSAIC_PORTAL_CLIENT_ID string = portalAppClientId
 output MOSAIC_API_SERVICE_PRINCIPAL_OBJECT_ID string = apiServicePrincipalObjectId

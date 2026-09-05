@@ -2,11 +2,14 @@ from typing import Annotated, cast
 
 from fastapi import APIRouter, Depends, Query, Request, Response, status
 
-from mosaic_api.auth import AuthContext, require_admin
+from mosaic_api.auth import AuthContext, require_admin, require_portal_user
+from mosaic_api.config import Settings
 from mosaic_api.domain import (
     AccessRequest,
+    AccessRequestCreate,
     AccessRequestDecision,
     AccessRequestState,
+    CatalogEntry,
     CatalogEntryUpdate,
     Entitlement,
     EntitlementCreate,
@@ -37,6 +40,7 @@ from mosaic_api.domain import (
     ModelEndpointUpdate,
     PolicyPreview,
     PolicyPreviewRequest,
+    PortalProfile,
     Principal,
     PrincipalCreate,
     PrincipalUpdate,
@@ -71,11 +75,13 @@ from mosaic_api.services import (
     GatewayService,
     McpEndpointService,
     ModelEndpointService,
+    PortalService,
     PublishingService,
 )
 from mosaic_api.services.directory import Actor
 
 Admin = Annotated[AuthContext, Depends(require_admin)]
+PortalUser = Annotated[AuthContext, Depends(require_portal_user)]
 
 
 def _service(request: Request) -> DirectoryService:
@@ -96,6 +102,10 @@ def _entitlements(request: Request) -> EntitlementService:
 
 def _publishing(request: Request) -> PublishingService:
     return cast(PublishingService, request.app.state.publishing_service)
+
+
+def _portal(request: Request) -> PortalService:
+    return cast(PortalService, request.app.state.portal_service)
 
 
 def _mcp_endpoints(request: Request) -> McpEndpointService:
@@ -750,3 +760,59 @@ async def get_publish_run(
 @router.get("/publish-plans/{plan_id}", response_model=PublishPlan)
 async def get_publish_plan(request: Request, auth: Admin, plan_id: str) -> PublishPlan:
     return await _publishing(request).get_plan(_actor(auth), plan_id)
+
+
+# --- End-user portal -------------------------------------------------------------------------
+# Every route below is scoped to the caller's own token. None of them accept a subject or requester
+# parameter, because the only thing separating one portal user from another's grants is that these
+# handlers never ask who to look up.
+
+
+@router.get("/portal/me", response_model=PortalProfile, tags=["portal"])
+async def portal_profile(request: Request, auth: PortalUser) -> PortalProfile:
+    settings: Settings = request.app.state.settings
+    return await _portal(request).profile(
+        _actor(auth),
+        roles=list(auth.roles),
+        is_admin=settings.required_role in auth.roles,
+    )
+
+
+@router.get("/portal/entitlements", response_model=list[ResolvedEntitlement], tags=["portal"])
+async def portal_entitlements(
+    request: Request, auth: PortalUser
+) -> list[ResolvedEntitlement]:
+    return await _portal(request).my_entitlements(_actor(auth))
+
+
+@router.get("/portal/catalog", response_model=list[CatalogEntry], tags=["portal"])
+async def portal_catalog(request: Request, auth: PortalUser) -> list[CatalogEntry]:
+    return await _portal(request).catalog(_actor(auth))
+
+
+@router.get("/portal/access-requests", response_model=list[AccessRequest], tags=["portal"])
+async def portal_access_requests(request: Request, auth: PortalUser) -> list[AccessRequest]:
+    return await _portal(request).my_access_requests(_actor(auth))
+
+
+@router.post(
+    "/portal/access-requests",
+    response_model=AccessRequest,
+    status_code=status.HTTP_201_CREATED,
+    tags=["portal"],
+)
+async def create_portal_access_request(
+    request: Request, auth: PortalUser, payload: AccessRequestCreate
+) -> AccessRequest:
+    return await _portal(request).create_access_request(_actor(auth), payload)
+
+
+@router.post(
+    "/portal/access-requests/{request_id}/withdraw",
+    response_model=AccessRequest,
+    tags=["portal"],
+)
+async def withdraw_portal_access_request(
+    request: Request, auth: PortalUser, request_id: str
+) -> AccessRequest:
+    return await _portal(request).withdraw_access_request(_actor(auth), request_id)

@@ -42,6 +42,7 @@ from mosaic_api.services import (
     GatewayService,
     McpEndpointService,
     ModelEndpointService,
+    PortalService,
     PublishingService,
 )
 from mosaic_api.services.mcp_endpoints import build_mcp_client_factory
@@ -172,11 +173,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.model_endpoint_service = model_endpoint_service
         app.state.publishing_service = publishing_service
         app.state.mcp_endpoint_service = mcp_endpoint_service
-        app.state.entitlement_service = EntitlementService(
+        entitlement_service = EntitlementService(
             entitlement_repository,
             directory_repository=repository,
             gateway_repository=gateway_repository,
             endpoint_repository=endpoint_repository,
+        )
+        app.state.entitlement_service = entitlement_service
+        app.state.portal_service = PortalService(
+            entitlement_service,
+            directory_repository=repository,
+            gateway_repository=gateway_repository,
         )
         app.state.authenticator = authenticator
         try:

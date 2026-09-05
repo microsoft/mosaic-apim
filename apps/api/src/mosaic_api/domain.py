@@ -1025,6 +1025,46 @@ class AccessRequestDecision(MosaicModel):
     note: str | None = None
 
 
+class CatalogEntryKind(StrEnum):
+    MODEL_API = "modelApi"
+    MCP_SERVER = "mcpServer"
+
+
+class CatalogEntry(MosaicModel):
+    """One governed resource as an end user sees it.
+
+    Deliberately narrower than the administrator's view of the same record: a portal user has no
+    business seeing gateway internals, policy state, or how the resource was detected.
+    """
+
+    kind: CatalogEntryKind
+    id: str
+    display_name: str
+    summary: str | None = None
+    gateway_id: str
+    gateway_name: str | None = None
+    entitled: bool = False
+    request_state: AccessRequestState | None = None
+
+
+class PortalProfile(MosaicModel):
+    """Who the caller is, as the portal understands them.
+
+    ``principal_id`` is null when MOSAIC has never recorded this person as a ``Principal``. That is
+    a real state rather than an error: they authenticated and hold the role, but nothing has been
+    granted to them, so the portal says so instead of failing.
+    """
+
+    object_id: str
+    tenant_id: str
+    roles: list[str] = Field(default_factory=list)
+    is_admin: bool = False
+    principal_id: str | None = None
+    display_label: str | None = None
+    entitlement_count: int = 0
+    pending_request_count: int = 0
+
+
 MOSAIC_RESOURCE_PREFIX = "mosaic-"
 _SLUG_PATTERN = re.compile(r"[^a-z0-9]+")
 

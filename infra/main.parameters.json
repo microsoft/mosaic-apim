@@ -26,6 +26,9 @@
     "spaAppClientId": {
       "value": "${MOSAIC_SPA_CLIENT_ID}"
     },
+    "portalAppClientId": {
+      "value": "${MOSAIC_PORTAL_CLIENT_ID}"
+    },
     "apiApplicationIdUri": {
       "value": "${MOSAIC_API_APPLICATION_ID_URI}"
     },
