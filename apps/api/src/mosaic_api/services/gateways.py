@@ -8,6 +8,7 @@ this service gates by refusing to move a gateway into ``manage`` mode on unverif
 
 import asyncio
 from collections.abc import Awaitable, Callable
+from contextlib import AsyncExitStack
 from datetime import datetime
 from typing import Any
 
@@ -36,6 +37,7 @@ from mosaic_api.domain import (
     ModelApi,
     ModelApiCandidate,
     ModelApiCandidateList,
+    PublicationStatus,
     deterministic_id,
     mcp_server_id,
     model_api_id,
@@ -64,6 +66,7 @@ from mosaic_api.observed import (
 )
 from mosaic_api.repositories import GatewayRepository
 from mosaic_api.services.directory import Actor
+from mosaic_api.services.model_access import gateway_mutation_scope, publication_lock
 
 logger = structlog.get_logger()
 
@@ -179,6 +182,21 @@ class GatewayService:
         )
 
     async def update(self, actor: Actor, gateway_id: str, request: GatewayUpdate) -> Gateway:
+        async with AsyncExitStack() as stack:
+            await stack.enter_async_context(
+                publication_lock(
+                    self._repository, actor.tenant_id, gateway_mutation_scope(gateway_id)
+                )
+            )
+            for publication in await self._repository.list_publications(
+                actor.tenant_id, gateway_id=gateway_id
+            ):
+                await stack.enter_async_context(
+                    publication_lock(self._repository, actor.tenant_id, publication.id)
+                )
+            return await self._update(actor, gateway_id, request)
+
+    async def _update(self, actor: Actor, gateway_id: str, request: GatewayUpdate) -> Gateway:
         gateway = await self.get_gateway(actor, gateway_id)
         changes = request.model_dump(exclude_unset=True, by_alias=False)
         mode = changes.get("management_mode")
@@ -209,6 +227,21 @@ class GatewayService:
         )
 
     async def delete(self, actor: Actor, gateway_id: str) -> None:
+        async with AsyncExitStack() as stack:
+            await stack.enter_async_context(
+                publication_lock(
+                    self._repository, actor.tenant_id, gateway_mutation_scope(gateway_id)
+                )
+            )
+            for publication in await self._repository.list_publications(
+                actor.tenant_id, gateway_id=gateway_id
+            ):
+                await stack.enter_async_context(
+                    publication_lock(self._repository, actor.tenant_id, publication.id)
+                )
+            await self._delete(actor, gateway_id)
+
+    async def _delete(self, actor: Actor, gateway_id: str) -> None:
         gateway = await self.get_gateway(actor, gateway_id)
         # Forgetting a gateway MOSAIC published into would strand real API Management resources
         # with nothing left that knows it owns them. Removing them is a decision an administrator
@@ -219,6 +252,8 @@ class GatewayService:
                 actor.tenant_id, gateway_id=gateway_id
             )
             if item.created_resources()
+            or item.status == PublicationStatus.APPLYING
+            or item.access_state in {"applying", "unknown"}
         ]
         if published:
             raise ConflictError(
@@ -713,6 +748,22 @@ class GatewayService:
     async def import_model_apis(
         self, actor: Actor, gateway_id: str, request: ImportRequest
     ) -> list[ModelApi]:
+        async with AsyncExitStack() as stack:
+            # Publication linking and import both upsert the same deterministic catalog record.
+            # Serialize them so an import cannot replace newly materialized provenance.
+            publications = await self._repository.list_publications(
+                actor.tenant_id, gateway_id=gateway_id
+            )
+            for publication in sorted(publications, key=lambda item: item.id):
+                if publication.api_name in request.api_names:
+                    await stack.enter_async_context(
+                        publication_lock(self._repository, actor.tenant_id, publication.id)
+                    )
+            return await self._import_model_apis(actor, gateway_id, request)
+
+    async def _import_model_apis(
+        self, actor: Actor, gateway_id: str, request: ImportRequest
+    ) -> list[ModelApi]:
         await self._synced_gateway(actor, gateway_id)
         observed = await self._repository.list_observed(
             ObservedApi, actor.tenant_id, gateway_id, "observedApi"
@@ -741,6 +792,8 @@ class GatewayService:
                 product_names=api.product_names,
                 visibility=existing.visibility if existing else CatalogVisibility.CATALOG,
                 summary=existing.summary if existing else None,
+                publication_id=existing.publication_id if existing else None,
+                created_at=existing.created_at if existing else utc_now(),
                 selection=(
                     ImportSelection.DETECTED
                     if api.ai_kind != AiBackendKind.NONE
@@ -833,6 +886,27 @@ class GatewayService:
         record = await self._repository.get_model_api(actor.tenant_id, model_api_record_id)
         if not record:
             raise NotFoundError("Model API was not found", details={"id": model_api_record_id})
+        if record.publication_id:
+            async with publication_lock(
+                self._repository, actor.tenant_id, record.publication_id
+            ):
+                publication = await self._repository.get_publication(
+                    actor.tenant_id, record.publication_id
+                )
+                if publication and (
+                    publication.created_resources()
+                    or publication.status == PublicationStatus.APPLYING
+                    or publication.access_state in {"applying", "unknown"}
+                ):
+                    raise ConflictError(
+                        "This model belongs to a managed publication. Unpublish before deletion.",
+                        details={"publicationId": publication.id},
+                    )
+                await self._repository.delete_model_api(
+                    record,
+                    self._audit(actor, "modelApi.removed", record.id, resource_type="modelApi"),
+                )
+            return
         await self._repository.delete_model_api(
             record,
             self._audit(actor, "modelApi.removed", record.id, resource_type="modelApi"),
@@ -848,6 +922,17 @@ class GatewayService:
         )
 
     async def update_model_api_catalog(
+        self, actor: Actor, model_api_record_id: str, request: CatalogEntryUpdate
+    ) -> ModelApi:
+        record = await self._repository.get_model_api(actor.tenant_id, model_api_record_id)
+        async with AsyncExitStack() as stack:
+            if record and record.publication_id:
+                await stack.enter_async_context(
+                    publication_lock(self._repository, actor.tenant_id, record.publication_id)
+                )
+            return await self._update_model_api_catalog(actor, model_api_record_id, request)
+
+    async def _update_model_api_catalog(
         self, actor: Actor, model_api_record_id: str, request: CatalogEntryUpdate
     ) -> ModelApi:
         record = await self._repository.get_model_api(actor.tenant_id, model_api_record_id)

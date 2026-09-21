@@ -175,6 +175,21 @@
   gap: 16px;
 }
 
+.accessPanel {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.secretValue {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  user-select: text;
+  border: 1px solid var(--mosaic-border);
+  background: var(--mosaic-surface-subtle);
+  padding: 12px;
+}
+
 .dialogGrid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

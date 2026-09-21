@@ -7,17 +7,17 @@ Management's AI gateway capabilities. It stores desired governance state, plans 
 should map to APIM, and presents telemetry from Azure Monitor. It does **not** proxy model traffic
 or replace APIM.
 
-This release adds model publishing on top of gateway, model endpoint, and MCP server onboarding:
-administrators register Entra principals and MOSAIC access groups, bring an existing API Management
-service under MOSAIC, register the Azure OpenAI and Azure AI Foundry endpoints it fronts, see the
-models deployed on them — along with whether the gateway can actually call each one — register MCP
-servers directly to record the tools they declare, and then expose a chosen model through a gateway,
-all without reading policy XML or opening the Azure portal.
+This release connects direct model access grants to API Management enforcement. Administrators
+publish a model, grant an existing user or application access, review and apply the changes, and
+later revoke access. Governed models accept a dedicated APIM subscription key or an Entra access
+token, with independently configurable methods and shared per-grant limits. Authorized callers
+can retrieve their current subscription key on demand; MOSAIC does not store a duplicate.
 
-Publishing is the first thing MOSAIC writes to API Management. It writes only through a reviewed,
+Publishing and governed access write only through a reviewed,
 deterministic plan and an explicit apply, only to a gateway an administrator has switched to
-`manage`, and it rolls back exactly what it created if a step fails. See
-[ADR 0010](docs/adr/0010-publishing-models-into-apim.md), which records what that cost.
+`manage`. Existing publications remain unchanged until explicitly opted into governed access.
+See [ADR 0010](docs/adr/0010-publishing-models-into-apim.md) and
+[ADR 0011](docs/adr/0011-governed-model-access.md) for the write and credential-disclosure boundaries.
 
 ## Architecture and trust boundaries
 
@@ -40,7 +40,8 @@ flowchart LR
 | Governance intent | Cosmos DB | Store tenant-scoped desired state and audit mutations |
 | Runtime traffic and enforcement | APIM | Observe and explain; write only through a reviewed plan and an explicit apply |
 | Identity objects and authentication | Microsoft Entra ID | Store object IDs only; validate tokens and app roles |
-| Credentials | Key Vault | Store secret URIs only, never secret values |
+| Backend credential references | Key Vault | Store secret URIs only, never secret values |
+| APIM subscription keys | APIM | Retrieve only for an explicitly authorized reveal; never persist or cache a copy |
 | Foundry deployments | Existing Azure AI/Foundry resources | Enumerate deployed models read-only; report, never grant, the gateway's runtime access |
 | Traffic/token telemetry | Azure Monitor stack | Emit application telemetry; query/chargeback is deferred |
 
@@ -62,6 +63,11 @@ explicit local/test modes and application startup rejects them when `MOSAIC_ENVI
   server, product, or model deployment; token and request limits; catalog visibility; access
   requests; and effective-access resolution that reports whether a grant arrived directly or
   through a group
+- Governed access for direct user/application grants to MOSAIC-published model APIs: reviewed
+  APIM deployment, key or Entra authentication, shared token/request limits, revocation, and
+  distinct desired versus applied state
+- Portal-ready current-user entitlement and connection APIs, plus audited on-demand key retrieval;
+  end-user portal screens are not included
 - Model endpoint onboarding: register Azure OpenAI and Azure AI Foundry resources, verify MOSAIC's
   control-plane access, discover the deployments and available models on them, and report — per
   registered gateway — whether that gateway's managed identity can actually call them
@@ -185,11 +191,13 @@ azd env set MOSAIC_PYTHON_INDEX_URL "https://pypi.org/simple"
 azd up
 ```
 
-The preprovision hook idempotently creates three single-tenant Entra registrations:
+The preprovision hook idempotently creates separate single-tenant Entra registrations:
 
 - `mosaic-dev-api`: `access_as_user` delegated scope, plus an `Admin` and a `User` app role
 - `mosaic-dev-spa`: administrator console SPA redirects and delegated permission to the API
 - `mosaic-dev-portal`: end-user portal SPA redirects and delegated permission to the API
+- `mosaic-dev-model-runtime`: the separate audience for APIM model calls, with the
+  `Models.Invoke` delegated scope and application permission
 
 It assigns the deploying user the initial `Admin` role. The postprovision hook adds the deployed
 web redirect, and the deployed portal redirect once a portal web app exists. A directory
@@ -198,6 +206,13 @@ never skipped.
 
 Assign the `User` app role — normally to an Entra group — to everyone who should reach the portal.
 Tenant membership alone does not grant it.
+
+Clients using Entra model access also need permission/consent for the model-runtime registration.
+Delegated user clients request `api://<model-runtime-client-id>/Models.Invoke`; applications use
+the `Models.Invoke` application permission and request `api://<model-runtime-client-id>/.default`.
+Assign these permissions through normal Entra administration. A MOSAIC grant does not silently
+consent a client, create an identity, or grant Microsoft Graph permissions. Bootstrap exposes
+`MOSAIC_MODEL_RUNTIME_CLIENT_ID`; this must not be the MOSAIC control-plane API's client ID.
 
 APIM Developer is the dominant cost (currently roughly USD 51/month at continuous use) and can take
 30–60 minutes or longer to provision. The shared B1 Linux plan is roughly USD 13–15/month; Basic ACR
@@ -276,10 +291,14 @@ measured scale, not speculation.
   assignment, and a gateway an administrator explicitly moved to `manage`. MOSAIC refuses that
   switch until preflight has confirmed write access, and every write runs against a reviewed plan
   whose digest still matches the intent it was produced from.
-- The contributor role carries `subscriptions/listSecrets`. MOSAIC never calls it, so it does not
-  read API Management subscription keys — but that is a product policy rather than a permission
-  boundary, unlike the model-endpoint case below. [ADR 0010](docs/adr/0010-publishing-models-into-apim.md)
-  records the trade rather than presenting the two as equivalent.
+- The contributor role carries `subscriptions/listSecrets`. Only an explicit credential-reveal
+  operation uses it, after checking caller ownership and a trusted, applied grant. Inventory and
+  publishing do not read keys. Reveals are audited without their secret values; responses are
+  non-cacheable, and neither Cosmos nor Key Vault stores a copy. See
+  [ADR 0011](docs/adr/0011-governed-model-access.md).
+- Model-runtime Entra tokens have a different audience from MOSAIC control-plane tokens. APIM
+  validates the runtime token and authorizes its tenant/object ID against an applied direct grant;
+  being signed into MOSAIC or holding its `Admin` role does not itself grant model access.
 - On model endpoints MOSAIC asks only for `Reader`. It deliberately holds no data-plane inference
   right and no `listKeys` permission on any Azure AI resource, so it cannot call a model or read an
   account key even where it can enumerate deployments.
@@ -313,10 +332,11 @@ conditions: the contributor role above, and an administrator switching the gatew
 `manage`. MOSAIC refuses the switch until preflight has actually confirmed write access, and refuses
 every write to a gateway left in `observe` mode however the role is assigned.
 
-The contributor role also grants `subscriptions/listSecrets`, so MOSAIC *could* read API Management
-subscription keys. It never calls that action — a published subscription is created and named, and
-the operator retrieves its key from Azure. That is a product policy rather than a permission
-boundary, and [ADR 0010](docs/adr/0010-publishing-models-into-apim.md) says so plainly.
+The contributor role also grants `subscriptions/listSecrets`. MOSAIC uses that capability only
+for an authorized, explicitly requested reveal of an applied, owned grant's key. A custom role
+that permits writes but excludes that action cannot reveal keys; the API reports the missing
+key-read action separately. This is a product authorization boundary, not a claim that MOSAIC's
+managed identity is technically unable to read secrets.
 
 Synchronisation collects APIs and their operations, MCP servers and their tools, products,
 subscriptions, gateway users and groups, backends, named value metadata, and policies at the
@@ -503,6 +523,108 @@ Unpublishing runs the same machinery over the tracked resources in reverse. A pu
 owns API Management resources cannot be deleted, and a gateway with published models cannot be
 removed, so intent is never dropped while the resources it created keep running.
 
+## Governed model access
+
+Use **Entitlements** to link a previously published model if necessary, opt it into governed
+access, and choose its key/Entra methods. Create a direct user or application grant, then review
+and apply the **model-wide** plan. The review includes every grant/settings change it will deploy.
+Saving a grant is not an APIM write, and a pending revocation is not yet a runtime revocation.
+Use the person's Entra object ID or the application's **service-principal object ID**, not its
+application/client ID. Prefer the subscription-key header over putting credentials in URLs.
+
+Opting in deliberately stops the publication's former generic/bootstrap key from authorizing
+requests. Each direct grant gets its own API-scoped subscription. Both primary and secondary keys
+and the subject's Entra token share that grant's counters. A key is still a transferable bearer
+credential, not proof that the named person is using it. Disabling both authentication methods
+denies everyone; it never makes the API anonymous.
+
+The reviewed policy explicitly translates the earlier subscription ID/key counter defaults into
+shared grant counters, so previously saved grants can be opted in without silently rewriting their
+desired state. Other custom counter expressions are rejected instead of weakening enforcement.
+
+Token-governed model access is constrained by APIM's supported chat-completions/response schemas.
+Unsupported image, audio, or embedding operations must not be mistaken for metered calls.
+For responses and AI Services chat routes that do not include a deployment in their path, the
+request body's `model` must exactly match the deployment name shown in connection information.
+Publication limits remain safeguards even when a grant has no additional limits. Native rate and
+quota enforcement is distributed and gateway-scoped, not an exact global accounting ledger.
+
+Administrators can explicitly reveal/copy an applied grant's key. Portal clients with the MOSAIC
+`User` role can use:
+
+| Method | Route under `/api/v1` | Result |
+| --- | --- | --- |
+| GET | `/me/entitlements` | The caller's own direct grants and deployment state; no keys |
+| GET | `/me/entitlements/{id}/connection` | Endpoint, operations, runtime audience/scope, and limits |
+| POST | `/me/entitlements/{id}/keys/reveal` | The requested key; body `{"slot":"primary"}` or `{"slot":"secondary"}` |
+
+The administrator equivalents omit `/me` and require `Admin`. Knowing another entitlement or
+application ID does not authorize a reveal. Application-owner delegation and portal screens are
+future work. A current-user route always uses the token's identity, never a caller-supplied user ID.
+
+### Recovering an interrupted operation
+
+Write locks do not expire automatically: a timeout or a new API instance does not prove an old
+worker or its submitted ARM operations have stopped. **Check recovery status** performs diagnostics
+only. It first reads `GET /api/v1/publications/{id}/lock`, so it also works for a retained metadata
+mutation without a publish-run record. A missing lock does not itself prove runtime access.
+
+An administrator can diagnose the exact returned `ownerId` using:
+
+```text
+POST /api/v1/publications/{id}/recover
+{"runId":"<exact-owner-id>","confirmQuiesced":false}
+```
+
+Before submitting `confirmQuiesced:true`, the operator must stop the original worker and confirm
+that **every ARM operation it submitted has reached a terminal state**. Do not infer this from a
+restart, elapsed time, or an `interrupted` status. Confirmed recovery establishes denial where
+needed, preserves ownership, and releases the lock only after durable recovery results. Refetch
+the publication afterward and review a fresh plan; failure to establish safe state remains
+unknown/locked. This is not an automatic retry, and the UI never sends that confirmation.
+
+### Verifying a real gateway
+
+Automated unit tests and policy snapshots do not prove that a real gateway accepts a caller's
+token or can reach its model. `scripts\verify_model_access.py` is an opt-in verification client:
+it calls the actual APIM endpoint and does not proxy through MOSAIC, provision resources, change
+grants, or save credentials.
+
+Deploy the feature and bootstrap its runtime registration, then prepare an isolated non-production
+published chat model with an applied user grant and an applied application grant. Obtain tokens
+using authorized clients and place them in these process environment variables, not source files:
+
+- `MOSAIC_SMOKE_USER_CONTROL_TOKEN`: the entitled user's token for the MOSAIC API, with `User`.
+- `MOSAIC_SMOKE_ADMIN_CONTROL_TOKEN`: an administrator's MOSAIC API token for application-key handoff.
+- `MOSAIC_SMOKE_USER_RUNTIME_TOKEN`: that user's delegated model-runtime token.
+- `MOSAIC_SMOKE_APPLICATION_RUNTIME_TOKEN`: the granted application's model-runtime token.
+
+```powershell
+python scripts\verify_model_access.py `
+  --api-base-url https://<mosaic-api-host> `
+  --gateway-origin https://<approved-apim-host> `
+  --user-entitlement <user-grant-id> `
+  --application-entitlement <application-grant-id> `
+  --api-version <model-api-version> `
+  --send-model-requests
+```
+
+The explicit flag acknowledges actual inference requests and their consumption. The script
+verifies each subject with key-only and token-only calls, rejects anonymous/invalid/mismatched
+audience calls, checks cross-subject key denial, and refuses redirects or an unexpected gateway
+origin. It prints neither keys, tokens, nor model output. Set `MOSAIC_SMOKE_PAYLOAD` to a bounded
+chat request JSON object if the deployment needs a different token-limit parameter.
+
+For the shared-counter check, use fresh isolated grants configured for **2 requests per 300
+seconds**, with no other callers, and add `--prove-shared-budget`. Two successful calls using the
+primary key and Entra token must exhaust the budget for the secondary key too.
+
+Separately exercise method toggles and revocation through reviewed plans, allowing APIM to
+propagate each change before checking both paths. Verify rotation by changing a test subscription
+key directly in APIM and revealing it again: no MOSAIC synchronization should be needed. Do not
+report these live scenarios as passed when deployment, consent, credentials, or a test gateway
+are unavailable.
+
 ## Reconciliation boundary
 
 The API contains a deterministic policy preview using current documented policies:
@@ -511,6 +633,8 @@ The API contains a deterministic policy preview using current documented policie
 - `set-backend-service`
 - `llm-token-limit`
 - `llm-emit-token-metric`
+- `validate-azure-ad-token`, explicit grant authorization, `rate-limit-by-key`, and `quota-by-key`
+  for opted-in governed access
 
 The preview and the publish plan both return the same plain-language facets used for observed
 policy, plus a content digest. Generated XML stays in process and is never serialised to a caller,
@@ -531,17 +655,16 @@ already acknowledged for imported records.
    register Azure OpenAI and Foundry endpoints to enumerate their deployed models and verify each
    gateway's runtime access to them, and register MCP servers directly to record the tools they
    declare.
-4. **Model publishing (this release):** expose an observed deployment through a gateway by writing
+4. **Model publishing:** expose an observed deployment through a gateway by writing
    its policy fragment, backend, API, operations, product and subscription, through a deterministic
    plan, an explicit apply, per-step results, and rollback that removes only what it created. This
    is the orchestration [ADR 0009](docs/adr/0009-entitlement-subjects-resources-and-apim-binding.md)
    defers to, for models.
-5. **Entitlements and enrollment (in progress):** entitlements granted to a user, group, or
-   application over a model API, MCP server, product, or deployment; the APIM product/subscription
-   binding that realizes each grant; catalog visibility and access requests; orchestrating that
-   binding from a publication so `EntitlementBinding.source` becomes `orchestrated`; drift and
-   failure UX. The `User` app role and the `mosaic-<env>-portal` registration that gate the
-   end-user experience ship here first; see
+5. **Governed model access (this release):** direct user/application grants become APIM
+   subscriptions and Entra authorization, with shared limits, explicit apply/revoke, trusted
+   `orchestrated` bindings, and on-demand key retrieval. Group/MCP orchestration, access-request
+   automation, and end-user portal screens remain future work. The `User` app role and the
+   `mosaic-<env>-portal` registration already gate the portal-ready API; see
    [ADR 0008](docs/adr/0008-portal-identity-and-role-separation.md).
 6. **Insights and chargeback:** Azure Monitor queries over `ApiManagementGatewayLogs` and
    `ApiManagementGatewayLlmLog`, consumption measured against each entitlement's own enforcement

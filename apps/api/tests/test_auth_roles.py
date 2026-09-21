@@ -184,7 +184,7 @@ def _admin_routes(app: FastAPI) -> list[tuple[str, str]]:
 
     calls: list[tuple[str, str]] = []
     for path, operations in app.openapi()["paths"].items():
-        if not path.startswith("/api/v1"):
+        if not path.startswith("/api/v1") or path.startswith("/api/v1/me/"):
             continue
         concrete = path
         while "{" in concrete:

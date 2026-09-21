@@ -9,7 +9,7 @@ Every method here is idempotent: a plan step may be re-applied after a partial f
 delete of something already gone is a no-op rather than an error that masks the real one.
 """
 
-from typing import Any
+from typing import Any, Literal
 
 from mosaic_api.domain import APIM_API_VERSION, ApimResourceId
 from mosaic_api.integrations.apim.client import ArmClient, JsonObject
@@ -18,6 +18,10 @@ from mosaic_api.integrations.apim.client import ArmClient, JsonObject
 # ETag: rollback must remove what this apply created even if something touched it since, and
 # refusing to clean up after itself would be the worse failure.
 DELETE_IF_MATCH = "*"
+DEFAULT_SUBSCRIPTION_KEY_NAMES = {
+    "header": "Ocp-Apim-Subscription-Key",
+    "query": "subscription-key",
+}
 
 
 class ApimWriter:
@@ -74,6 +78,7 @@ class ApimWriter:
         path: str,
         subscription_required: bool,
         description: str,
+        use_default_subscription_key_names: bool = False,
     ) -> JsonObject | None:
         """Create the API with no ``serviceUrl``.
 
@@ -82,18 +87,16 @@ class ApimWriter:
         removed, which is a governance control that fails open. This one fails closed.
         """
 
-        return await self._put(
-            f"apis/{name}",
-            {
-                "properties": {
-                    "displayName": display_name,
-                    "description": description,
-                    "path": path,
-                    "protocols": ["https"],
-                    "subscriptionRequired": subscription_required,
-                }
-            },
-        )
+        properties: JsonObject = {
+            "displayName": display_name,
+            "description": description,
+            "path": path,
+            "protocols": ["https"],
+            "subscriptionRequired": subscription_required,
+        }
+        if use_default_subscription_key_names:
+            properties["subscriptionKeyParameterNames"] = dict(DEFAULT_SUBSCRIPTION_KEY_NAMES)
+        return await self._put(f"apis/{name}", {"properties": properties})
 
     async def delete_api(self, name: str) -> bool:
         return await self._delete(f"apis/{name}")
@@ -163,15 +166,14 @@ class ApimWriter:
         return await self._delete(f"products/{product_name}/apis/{api_name}")
 
     async def put_subscription(
-        self, name: str, *, display_name: str, product_name: str
+        self,
+        name: str,
+        *,
+        display_name: str,
+        product_name: str,
+        state: Literal["active", "suspended"] = "active",
     ) -> JsonObject | None:
-        """Create a subscription without ever reading its keys.
-
-        ``API Management Service Contributor`` grants ``subscriptions/listSecrets/action``, so
-        MOSAIC could read the primary key here. It does not: the operator retrieves it from Azure.
-        See ADR 0010 — this is a product policy, not a permission boundary, and it is worth being
-        precise about which of the two it is.
-        """
+        """Upsert a legacy product subscription without reading or rotating its keys."""
 
         return await self._put(
             f"subscriptions/{name}",
@@ -179,7 +181,29 @@ class ApimWriter:
                 "properties": {
                     "displayName": display_name,
                     "scope": self.resource_id(f"products/{product_name}"),
-                    "state": "active",
+                    "state": state,
+                    "allowTracing": False,
+                }
+            },
+        )
+
+    async def put_api_subscription(
+        self,
+        name: str,
+        *,
+        display_name: str,
+        api_name: str,
+        state: Literal["active", "suspended"] = "suspended",
+    ) -> JsonObject | None:
+        """Upsert a grant's API-scoped subscription, preserving existing primary/secondary keys."""
+
+        return await self._put(
+            f"subscriptions/{name}",
+            {
+                "properties": {
+                    "displayName": display_name,
+                    "scope": self.resource_id(f"apis/{api_name}"),
+                    "state": state,
                     "allowTracing": False,
                 }
             },

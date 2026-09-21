@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event'
 import { MemoryRouter, useLocation } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ModelsPage } from './ModelsPage'
+import { accessPlan, modelPublication } from '../test/model-access'
 import type {
   Gateway,
   GatewayRuntimeAccess,
@@ -98,6 +99,7 @@ const modelApi: ModelApi = {
 
 
 const publication: Publication = {
+  accessState: 'pending',
   id: 'pub_1',
   tenantId: 'tenant-test',
   entityType: 'publication',
@@ -363,6 +365,28 @@ describe('ModelsPage', () => {
       expect(api.applyPublishPlan).toHaveBeenCalledWith('pub_1', 'plan_1')
     })
     expect(api.createPublishPlan).not.toHaveBeenCalled()
+  })
+
+  it('always reviews the complete governed-access snapshot before applying an existing plan', async () => {
+    const user = userEvent.setup()
+    api.listPublications.mockResolvedValue([modelPublication])
+    api.createPublishPlan.mockResolvedValue(accessPlan)
+    renderPage()
+    const table = await screen.findByRole('table', { name: 'Published models' })
+    await user.click(within(table).getByRole('button', { name: 'Apply' }))
+    expect(await screen.findByRole('table', { name: 'All target model grants' })).toBeVisible()
+    expect(api.applyPublishPlan).not.toHaveBeenCalled()
+  })
+
+  it('does not describe an interrupted apply as still running or successful', async () => {
+    const user = userEvent.setup()
+    api.listPublications.mockResolvedValue([publication])
+    api.applyPublishPlan.mockResolvedValue({ id: 'interrupted-run', status: 'interrupted', errors: [] })
+    renderPage()
+    const table = await screen.findByRole('table', { name: 'Published models' })
+    await user.click(within(table).getByRole('button', { name: 'Apply' }))
+    expect(await screen.findByText(/Apply interrupted — runtime state unknown/)).toBeVisible()
+    expect(screen.queryByText(/Run started/)).not.toBeInTheDocument()
   })
 
   it('routes a stale direct apply back to fresh plan review', async () => {

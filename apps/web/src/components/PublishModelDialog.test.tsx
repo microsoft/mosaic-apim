@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { PublishModelDialog } from './PublishModelDialog'
 import type { Gateway, Publication, PublishableModel, PublishPlan, PublishRun } from '../types'
+import { accessPlan, accessSnapshot, modelPublication } from '../test/model-access'
 
 function gateway(overrides: Partial<Gateway> = {}): Gateway {
   return {
@@ -44,6 +45,7 @@ const publishableModel: PublishableModel = {
 }
 
 const publication: Publication = {
+  accessState: 'pending',
   id: 'pub_1', tenantId: 'tenant-test', entityType: 'publication', gatewayId: 'gateway_1', modelEndpointId: 'endpoint_1', deploymentName: 'gpt-4o-prod', provider: 'azureOpenAi', displayName: 'GPT-4o', apiName: 'gpt-4o-api', apiPath: 'models/gpt-4o', backendName: 'backend', fragmentName: 'fragment', productName: 'product', subscriptionName: 'subscription', subscriptionRequired: true, enforcement: { counterKeyExpression: '@(context.Subscription.Id)', tokensPerMinute: 12000, estimatePromptTokens: true }, shapeVersion: '1', status: 'planned', resources: [], lastPlanId: 'plan_1', lastPlanDigest: 'digest', lastRunId: null, lastAppliedAt: null, lastError: null, createdAt: '2026-09-01T12:00:00Z', updatedAt: '2026-09-01T12:00:00Z',
 }
 
@@ -72,11 +74,11 @@ const api = {
 
 vi.mock('../api', () => ({ useMosaicApi: () => api }))
 
-function renderDialog() {
+function renderDialog(initialReview?: { publication: Publication; plan: PublishPlan }, onPublished = vi.fn()) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={queryClient}>
-      <PublishModelDialog open onClose={vi.fn()} onPublished={vi.fn()} />
+      <PublishModelDialog open initialReview={initialReview} onClose={vi.fn()} onPublished={onPublished} />
     </QueryClientProvider>,
   )
 }
@@ -173,5 +175,97 @@ describe('PublishModelDialog', () => {
 
     expect(await screen.findByText(/Resources left behind in API Management/)).toBeVisible()
     expect(screen.getByText(/orphan-api/)).toBeVisible()
+  })
+
+  it('reviews every target grant, both method switches, inherited limits and bootstrap retirement', async () => {
+    const snapshot = {
+      ...accessSnapshot,
+      settings: { keysEnabled: false, entraEnabled: false },
+      grants: [...accessSnapshot.grants, {
+        ...accessSnapshot.grants[0],
+        entitlementId: 'application-grant', objectId: 'service-principal-object-id',
+        displayName: 'Batch application', subject: { kind: 'application' as const, id: 'app_1' },
+        enabled: false, subscriptionName: 'app-subscription',
+      }],
+    }
+    renderDialog({ publication: modelPublication, plan: { ...accessPlan, accessSnapshot: snapshot } })
+    const table = await screen.findByRole('table', { name: 'All target model grants' })
+    expect(within(table).getByText('Ada Lovelace')).toBeVisible()
+    expect(within(table).getByText('Batch application')).toBeVisible()
+    expect(within(table).getByText('Disabled — revoke both methods')).toBeVisible()
+    expect(screen.getByText('Target methods: Deny all — both methods disabled')).toBeVisible()
+    expect(screen.getByText('Keys: disabled · Entra: disabled')).toBeVisible()
+    expect(screen.getByText('Limits usage to 12,000 tokens per minute.')).toBeVisible()
+    expect(screen.getByText(/retires this model's generic bootstrap subscription/)).toBeVisible()
+    expect(api.applyPublishPlan).not.toHaveBeenCalled()
+    expect(api.listPublishableModels).not.toHaveBeenCalled()
+  })
+
+  it('renders repeated subscription steps with their distinct stages in the plan and result', async () => {
+    const user = userEvent.setup()
+    const stagedPlan: PublishPlan = {
+      ...accessPlan,
+      steps: [
+        { ...plan.steps[0], kind: 'subscription', name: 'dedicated-sub', stage: 'prepare', subscriptionState: 'suspended', entitlementId: 'direct_grant' },
+        { ...plan.steps[0], kind: 'subscription', name: 'dedicated-sub', stage: 'activate', subscriptionState: 'active', entitlementId: 'direct_grant' },
+      ],
+    }
+    const stagedRun = run({
+      steps: stagedPlan.steps.map((step) => ({ ...step, status: 'succeeded', createdByMosaic: true, error: null })),
+    })
+    api.applyPublishPlan.mockResolvedValue(stagedRun)
+    api.getPublishRun.mockResolvedValue(stagedRun)
+    renderDialog({ publication: modelPublication, plan: stagedPlan })
+    const reviewTable = await screen.findByRole('table', { name: 'Publish plan steps' })
+    expect(within(reviewTable).getAllByRole('row')).toHaveLength(3)
+    expect(within(reviewTable).getByText('Stage: prepare')).toBeVisible()
+    expect(within(reviewTable).getByText('Stage: activate')).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Apply plan' }))
+    const resultTable = await screen.findByRole('table', { name: 'Publish run steps' })
+    expect(within(resultTable).getAllByRole('row')).toHaveLength(3)
+    expect(within(resultTable).getByText('Stage: prepare')).toBeVisible()
+    expect(within(resultTable).getByText('Stage: activate')).toBeVisible()
+  })
+
+  it('reports interrupted apply as unknown rather than successful and stops polling', async () => {
+    const user = userEvent.setup()
+    const interrupted = run({ status: 'interrupted', errors: ['Worker stopped after policy install.'] })
+    api.applyPublishPlan.mockResolvedValue(interrupted)
+    api.getPublishRun.mockResolvedValue(interrupted)
+    const onPublished = vi.fn()
+    renderDialog({ publication: modelPublication, plan: accessPlan }, onPublished)
+    await user.click(await screen.findByRole('button', { name: 'Apply plan' }))
+    expect(await screen.findByText('Apply interrupted — runtime state unknown')).toBeVisible()
+    expect(screen.getByText('Worker stopped after policy install.')).toBeVisible()
+    await waitFor(() => expect(api.getPublishRun).toHaveBeenCalledTimes(1))
+    await new Promise((resolve) => setTimeout(resolve, 1100))
+    expect(api.getPublishRun).toHaveBeenCalledTimes(1)
+    expect(onPublished).not.toHaveBeenCalled()
+  })
+
+  it('does not present local development completion as verified APIM apply', async () => {
+    const user = userEvent.setup()
+    const onPublished = vi.fn()
+    renderDialog({ publication: modelPublication, plan: accessPlan }, onPublished)
+    await user.click(await screen.findByRole('button', { name: 'Apply plan' }))
+    expect(await screen.findByText('Local development service reported completion; live APIM apply is not verified.')).toBeVisible()
+    await waitFor(() => expect(onPublished).toHaveBeenCalledWith('Local development service reported completion. Live APIM apply is not verified.'))
+  })
+
+  it('refuses a governed apply when the service omits the access snapshot', async () => {
+    renderDialog({ publication: modelPublication, plan: { ...accessPlan, accessSnapshot: null } })
+    expect(await screen.findByText(/The governed-access snapshot is missing/)).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Apply plan' })).toBeDisabled()
+    expect(api.applyPublishPlan).not.toHaveBeenCalled()
+  })
+
+  it('shows a stale-plan refresh failure and does not allow reapplying the rejected plan', async () => {
+    const user = userEvent.setup()
+    api.applyPublishPlan.mockRejectedValue(Object.assign(new Error('Plan is stale.'), { status: 409 }))
+    api.createPublishPlan.mockRejectedValue(new Error('Cannot refresh the model plan.'))
+    renderDialog({ publication: modelPublication, plan: accessPlan })
+    await user.click(await screen.findByRole('button', { name: 'Apply plan' }))
+    expect(await screen.findByText('Cannot refresh the model plan.')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Apply plan' })).toBeDisabled()
   })
 })

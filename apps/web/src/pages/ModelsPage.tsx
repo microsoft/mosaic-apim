@@ -35,6 +35,7 @@ import { ImportFromGatewayDialog } from '../components/ImportFromGatewayDialog'
 import { PublishModelDialog } from '../components/PublishModelDialog'
 import { PageHeader } from '../components/PageHeader'
 import { AI_KIND_LABELS } from '../labels'
+import { runtimeConfig } from '../runtime-config'
 import type {
   CatalogVisibility,
   Gateway,
@@ -104,6 +105,7 @@ function PublicationStatusBadge({ status }: { status: PublicationStatus }) {
 function PublishedModels({ onMessage }: { onMessage: (message: string) => void }) {
   const api = useMosaicApi()
   const queryClient = useQueryClient()
+  const [runIssue, setRunIssue] = useState<Error | null>(null)
   const [review, setReview] = useState<{
     publication: Publication
     plan: PublishPlan
@@ -128,6 +130,23 @@ function PublishedModels({ onMessage }: { onMessage: (message: string) => void }
   async function refresh() {
     await queryClient.invalidateQueries({ queryKey: ['publications'] })
     await queryClient.invalidateQueries({ queryKey: ['publishable-models'] })
+    await queryClient.invalidateQueries({ queryKey: ['entitlements'] })
+    await queryClient.invalidateQueries({ queryKey: ['model-apis'] })
+    await queryClient.invalidateQueries({ queryKey: ['entitlement-connection'] })
+  }
+
+  function reportRun(run: PublishRun) {
+    if (run.status === 'running') {
+      onMessage('Run started. Refresh this page to see the latest status.')
+    } else if (run.status === 'succeeded') {
+      onMessage(runtimeConfig.authMode === 'local'
+        ? 'Local development service reported completion. Live APIM changes are not verified.'
+        : 'The service reports the operation completed. Allow for APIM propagation; live invocation is not verified.')
+    } else {
+      setRunIssue(new Error(run.status === 'interrupted'
+        ? 'Apply interrupted — runtime state unknown. The apply lock may still be retained. An operator must stop the original worker and verify that all submitted ARM operations are terminal before confirming recovery; follow README. This UI never confirms quiescence. Access, revocation, and lock release are not confirmed.'
+        : `The service reports ${run.status ?? 'unknown'} runtime state. Access and revocation are not confirmed. ${(run.errors ?? []).join(' ')}`))
+    }
   }
 
   const replan = useMutation({
@@ -147,17 +166,14 @@ function PublishedModels({ onMessage }: { onMessage: (message: string) => void }
     },
   })
   const apply = useMutation({
+    onMutate: () => setRunIssue(null),
     mutationFn: async (publication: Publication): Promise<PublishRun> => {
       if (!publication.lastPlanId) throw new Error('Review the publish plan before applying it.')
       return await api.applyPublishPlan(publication.id, publication.lastPlanId)
     },
     onSuccess: async (run) => {
       await refresh()
-      onMessage(
-        run.status === 'succeeded'
-          ? 'Published model to API Management.'
-          : 'Publish run started. Refresh this page to see the latest status.',
-      )
+      reportRun(run)
     },
     onError: async (error, publication) => {
       if (!(error instanceof ApiError) || error.status !== 409) return
@@ -181,10 +197,11 @@ function PublishedModels({ onMessage }: { onMessage: (message: string) => void }
       ? apply.error
       : null
   const unpublish = useMutation({
+    onMutate: () => setRunIssue(null),
     mutationFn: (publicationId: string) => api.unpublishPublication(publicationId),
-    onSuccess: async () => {
+    onSuccess: async (run) => {
       await refresh()
-      onMessage('Started unpublishing resources from API Management.')
+      reportRun(run)
     },
   })
   const remove = useMutation({
@@ -204,8 +221,8 @@ function PublishedModels({ onMessage }: { onMessage: (message: string) => void }
           <Text>Model deployments MOSAIC has planned or published into API Management.</Text>
         </div>
       </div>
-      {(replan.isError || reviewPlan.isError || applyError || unpublish.isError || remove.isError) && (
-        <ErrorState error={replan.error ?? reviewPlan.error ?? applyError ?? unpublish.error ?? remove.error} />
+      {(replan.isError || reviewPlan.isError || applyError || unpublish.isError || remove.isError || runIssue) && (
+        <ErrorState error={replan.error ?? reviewPlan.error ?? applyError ?? unpublish.error ?? remove.error ?? runIssue} />
       )}
       {publications.isPending && <Loading label="Loading published models" />}
       {publications.isError && <ErrorState error={publications.error} />}
@@ -236,7 +253,12 @@ function PublishedModels({ onMessage }: { onMessage: (message: string) => void }
                         <span className={styles.secondaryCell}>{publication.deploymentName}</span>
                       </div>
                     </TableCell>
-                    <TableCell><PublicationStatusBadge status={publication.status} /></TableCell>
+                    <TableCell>
+                      <PublicationStatusBadge status={publication.status} />
+                      {publication.accessState === 'unknown' && (
+                        <Text block size={200}>Runtime unknown — retained apply lock. Use the recovery instructions in Entitlements before retrying.</Text>
+                      )}
+                    </TableCell>
                     <TableCell>
                       <Link to={`/gateways/${publication.gatewayId}`}>
                         {gatewaysById.get(publication.gatewayId)?.name ?? publication.gatewayId}
@@ -249,8 +271,10 @@ function PublishedModels({ onMessage }: { onMessage: (message: string) => void }
                         <Button appearance="secondary" disabled={replan.isPending} onClick={() => replan.mutate(publication.id)}>Re-plan</Button>
                         <Button
                           appearance="secondary"
-                          disabled={reviewPlan.isPending || apply.isPending}
-                          onClick={() => publication.lastPlanId ? apply.mutate(publication) : reviewPlan.mutate(publication)}
+                          disabled={reviewPlan.isPending || apply.isPending || publication.status === 'applying' || publication.accessState === 'applying' || publication.accessState === 'unknown'}
+                          onClick={() => publication.lastPlanId && !publication.governedAccess && !publication.appliedAccess
+                            ? apply.mutate(publication)
+                            : reviewPlan.mutate(publication)}
                         >
                           Apply
                         </Button>

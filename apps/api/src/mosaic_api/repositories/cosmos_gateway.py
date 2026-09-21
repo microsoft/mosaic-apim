@@ -1,6 +1,7 @@
 from typing import Any
 
 import structlog
+from azure.core import MatchConditions
 from azure.cosmos import exceptions
 from azure.cosmos.aio import ContainerProxy, CosmosClient
 
@@ -15,7 +16,10 @@ from mosaic_api.domain import (
     PublishPlan,
     PublishRun,
     PublishRunStatus,
+    deterministic_id,
+    utc_now,
 )
+from mosaic_api.errors import ConflictError
 from mosaic_api.observed import ObservedEntity
 from mosaic_api.repositories.cosmos import CosmosRepositoryBase
 
@@ -415,3 +419,63 @@ class CosmosGatewayRepository(CosmosRepositoryBase):
             " AND c.status = @status",
             [{"name": "@status", "value": PublishRunStatus.RUNNING.value}],
         )
+
+    async def acquire_publication_lock(
+        self, tenant_id: str, publication_id: str, owner_id: str
+    ) -> None:
+        # No TTL: ARM operations can outlive a process, and APIM has no fencing-token facility.
+        # Expiring this document would let an unfenced old writer resume over a newer apply.
+        try:
+            await self._desired.create_item(
+                {
+                    "id": deterministic_id("publicationLock", tenant_id, publication_id),
+                    "tenantId": tenant_id,
+                    "entityType": "publicationLock",
+                    "publicationId": publication_id,
+                    "ownerId": owner_id,
+                    "createdAt": utc_now().isoformat(),
+                    "ttl": -1,
+                }
+            )
+        except exceptions.CosmosResourceExistsError as error:
+            owner = await self.get_publication_lock(tenant_id, publication_id)
+            raise ConflictError(
+                "An apply or mutation is already running for this publication. "
+                "Interrupted runs require explicit recovery.",
+                details={"id": publication_id, "lockOwner": owner},
+            ) from error
+
+    async def get_publication_lock(self, tenant_id: str, publication_id: str) -> str | None:
+        try:
+            item = await self._desired.read_item(
+                item=deterministic_id("publicationLock", tenant_id, publication_id),
+                partition_key=tenant_id,
+            )
+        except exceptions.CosmosResourceNotFoundError:
+            return None
+        owner = item.get("ownerId")
+        if item.get("tenantId") != tenant_id or not isinstance(owner, str):
+            raise ConflictError("The publication lock is invalid; operator recovery is required")
+        return owner
+
+    async def release_publication_lock(
+        self, tenant_id: str, publication_id: str, owner_id: str
+    ) -> None:
+        lock_id = deterministic_id("publicationLock", tenant_id, publication_id)
+        try:
+            item = await self._desired.read_item(item=lock_id, partition_key=tenant_id)
+            if item.get("ownerId") != owner_id or item.get("tenantId") != tenant_id:
+                raise ConflictError("The publication lock is no longer owned by this operation")
+            await self._desired.delete_item(
+                item=lock_id,
+                partition_key=tenant_id,
+                etag=item["_etag"],
+                match_condition=MatchConditions.IfNotModified,
+            )
+        except (
+            exceptions.CosmosResourceNotFoundError,
+            exceptions.CosmosAccessConditionFailedError,
+        ) as error:
+            raise ConflictError(
+                "The publication lock changed; operator recovery is required"
+            ) from error

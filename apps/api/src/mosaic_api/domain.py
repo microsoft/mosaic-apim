@@ -592,9 +592,16 @@ class ModelApi(Entity):
     visibility: CatalogVisibility = CatalogVisibility.CATALOG
     summary: str | None = None
     selection: ImportSelection = ImportSelection.DETECTED
-    imported_from_snapshot_id: str
+    imported_from_snapshot_id: str | None = None
+    publication_id: str | None = None
     imported_at: datetime = Field(default_factory=utc_now)
     imported_by: str | None = None
+
+    @model_validator(mode="after")
+    def validate_provenance(self) -> Self:
+        if self.imported_from_snapshot_id is None and self.publication_id is None:
+            raise ValueError("A model API needs an observed snapshot or a publication")
+        return self
 
 
 class McpServer(Entity):
@@ -911,17 +918,27 @@ class BindingSource(StrEnum):
     ORCHESTRATED = "orchestrated"
 
 
+class ModelAccessSettings(MosaicModel):
+    keys_enabled: bool = True
+    entra_enabled: bool = True
+
+
+class EntitlementRuntime(MosaicModel):
+    publication_id: str
+    status: Literal[
+        "pending", "applying", "applied", "revocationPending", "revoked", "failed", "unknown"
+    ]
+    applied_methods: ModelAccessSettings | None = None
+    subscription_name: str | None = None
+    applied_at: datetime | None = None
+    error: str | None = None
+
+
 class EntitlementBinding(MosaicModel):
     """The API Management object that realizes an entitlement at runtime.
 
-    MOSAIC does not write to API Management (ADR 0001), so this records the product or subscription
-    that an administrator identified or that MOSAIC inferred from observed state. It exists because
-    gateway telemetry is keyed on the subscription: ``ApimSubscriptionId`` in
-    ``ApiManagementGatewayLogs`` and ``ApiManagementGatewayLlmLog`` is the subscription's resource
-    name, and without this binding a Cosmos entitlement cannot be joined to a usage row.
-
-    When MOSAIC begins orchestrating the assignment it will populate the same field with
-    ``source`` of ``orchestrated``; nothing downstream has to change.
+    An orchestrated binding is a server-produced projection of an applied publication snapshot.
+    Manual and inferred bindings remain useful metadata, but are never credential-read authority.
     """
 
     gateway_id: str
@@ -946,6 +963,13 @@ class Entitlement(Entity):
     enforcement: EntitlementEnforcement | None = None
     binding: EntitlementBinding | None = None
     notes: str | None = None
+    runtime: EntitlementRuntime | None = None
+
+
+def _writable_binding(binding: EntitlementBinding | None) -> EntitlementBinding | None:
+    if binding is not None and binding.source == BindingSource.ORCHESTRATED:
+        raise ValueError("Orchestrated bindings are produced only by an applied publication")
+    return binding
 
 
 class EntitlementCreate(MosaicModel):
@@ -956,12 +980,16 @@ class EntitlementCreate(MosaicModel):
     binding: EntitlementBinding | None = None
     notes: str | None = None
 
+    _validate_binding = field_validator("binding")(_writable_binding)
+
 
 class EntitlementUpdate(MosaicModel):
     enabled: bool | None = None
     enforcement: EntitlementEnforcement | None = None
     binding: EntitlementBinding | None = None
     notes: str | None = None
+
+    _validate_binding = field_validator("binding")(_writable_binding)
 
 
 def entitlement_id(
@@ -1088,6 +1116,39 @@ class PublishedResource(MosaicModel):
     applied_at: datetime = Field(default_factory=utc_now)
 
 
+class ModelAccessGrant(MosaicModel):
+    entitlement_id: str
+    subject: EntitlementSubject
+    object_id: str
+    display_name: str
+    subscription_name: str
+    enabled: bool
+    enforcement: EntitlementEnforcement | None = None
+    intent_digest: str
+
+    @model_validator(mode="after")
+    def direct_subject_only(self) -> Self:
+        if self.subject.kind == EntitlementSubjectKind.GROUP:
+            raise ValueError("Runtime model access currently supports direct subjects only")
+        return self
+
+
+class ModelAccessSnapshot(MosaicModel):
+    version: int = Field(ge=1)
+    settings: ModelAccessSettings
+    audience: str | None = None
+    publication_enforcement: TokenEnforcement
+    grants: list[ModelAccessGrant] = Field(default_factory=list)
+
+
+def model_access_subscription_name(
+    tenant_id: str, publication_ref: str, entitlement_ref: str
+) -> str:
+    return deterministic_id(
+        "mosaic-grant", tenant_id, publication_ref, entitlement_ref
+    ).replace("_", "-")
+
+
 class Publication(Entity):
     """An administrator's intent to expose one model deployment through one gateway.
 
@@ -1117,6 +1178,10 @@ class Publication(Entity):
     last_run_id: str | None = None
     last_applied_at: datetime | None = None
     last_error: str | None = None
+    model_api_id: str | None = None
+    governed_access: ModelAccessSettings | None = None
+    applied_access: ModelAccessSnapshot | None = None
+    access_state: Literal["pending", "applying", "applied", "failed", "unknown"] = "pending"
 
     def created_resources(self) -> list[PublishedResource]:
         """The subset rollback and unpublish are allowed to delete."""
@@ -1545,6 +1610,7 @@ class PublishRunStatus(StrEnum):
     FAILED = "failed"
     ROLLED_BACK = "rolledBack"
     ROLLBACK_FAILED = "rollbackFailed"
+    INTERRUPTED = "interrupted"
 
 
 class PublishPlanStep(MosaicModel):
@@ -1560,6 +1626,9 @@ class PublishPlanStep(MosaicModel):
     reason: str
     resource_id: str
     existed: bool = False
+    entitlement_id: str | None = None
+    subscription_state: Literal["active", "suspended"] | None = None
+    stage: Literal["prepare", "policy", "activate"] | None = None
 
 
 class PublishPlan(Entity):
@@ -1578,6 +1647,8 @@ class PublishPlan(Entity):
     policy_content_sha256: str | None = None
     warnings: list[str] = Field(default_factory=list)
     actor_object_id: str | None = None
+    access_snapshot: ModelAccessSnapshot | None = None
+    previous_access_version: int | None = None
 
 
 class PublishStepResult(MosaicModel):
@@ -1588,6 +1659,7 @@ class PublishStepResult(MosaicModel):
     resource_id: str
     created_by_mosaic: bool = False
     error: str | None = None
+    stage: Literal["prepare", "policy", "activate"] | None = None
 
 
 class PublishRun(Entity):
@@ -1607,6 +1679,7 @@ class PublishRun(Entity):
     orphaned_resources: list[PublishedResource] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
     actor_object_id: str | None = None
+    access_snapshot: ModelAccessSnapshot | None = None
 
 
 class PublicationCreate(MosaicModel):
@@ -1619,6 +1692,7 @@ class PublicationCreate(MosaicModel):
     product_name: str | None = Field(default=None, min_length=1, max_length=80)
     subscription_required: bool = True
     enforcement: TokenEnforcement
+    governed_access: ModelAccessSettings | None = None
 
     @field_validator("api_name", "product_name")
     @classmethod
@@ -1650,6 +1724,51 @@ class PublicationUpdate(MosaicModel):
     display_name: str | None = Field(default=None, min_length=1, max_length=200)
     subscription_required: bool | None = None
     enforcement: TokenEnforcement | None = None
+    governed_access: ModelAccessSettings | None = None
+
+
+class ConnectionOperation(MosaicModel):
+    name: str
+    method: str
+    path: str
+
+
+class ModelConnection(MosaicModel):
+    entitlement_id: str
+    publication_id: str
+    gateway_id: str
+    endpoint: str
+    deployment_name: str
+    tenant_id: str
+    runtime: EntitlementRuntime | None = None
+    applied_methods: ModelAccessSettings | None = None
+    entra_audience: str | None = None
+    entra_scope: str | None = None
+    subscription_header: str = "Ocp-Apim-Subscription-Key"
+    operations: list[ConnectionOperation] = Field(default_factory=list)
+    publication_limits: TokenEnforcement
+    grant_limits: EntitlementEnforcement | None = None
+
+
+class KeyRevealRequest(MosaicModel):
+    slot: Literal["primary", "secondary"] = "primary"
+
+
+class KeyRevealResult(MosaicModel):
+    entitlement_id: str
+    subscription_name: str
+    slot: Literal["primary", "secondary"]
+    key: str = Field(repr=False)
+
+
+class PublishRecoveryRequest(MosaicModel):
+    run_id: str = Field(min_length=1, max_length=128)
+    confirm_quiesced: bool = False
+
+
+class PublicationLockInfo(MosaicModel):
+    publication_id: str
+    owner_id: str | None = None
 
 
 class PublishableModel(MosaicModel):

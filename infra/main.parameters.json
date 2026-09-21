@@ -20,6 +20,9 @@
     "apiAppClientId": {
       "value": "${MOSAIC_API_CLIENT_ID}"
     },
+    "modelRuntimeClientId": {
+      "value": "${MOSAIC_MODEL_RUNTIME_CLIENT_ID}"
+    },
     "apiServicePrincipalObjectId": {
       "value": "${MOSAIC_API_SERVICE_PRINCIPAL_OBJECT_ID}"
     },

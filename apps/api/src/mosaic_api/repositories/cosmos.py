@@ -99,6 +99,19 @@ class CosmosRepositoryBase:
         except exceptions.CosmosResourceNotFoundError:
             pass
 
+    async def record_audit(self, event: AuditEvent) -> None:
+        # The outbox write must succeed before the caller may disclose a credential. Projection
+        # is independent: an unavailable audit container must not lose an already durable event.
+        await self._desired.create_item(self._document(event))
+        try:
+            await self._project_audit_event(event)
+        except exceptions.CosmosHttpResponseError:
+            logger.exception(
+                "audit_projection_deferred",
+                audit_event_id=event.id,
+                tenant_id=event.tenant_id,
+            )
+
     async def _flush_audit_outbox(self) -> None:
         items = self._desired.query_items(
             query=(

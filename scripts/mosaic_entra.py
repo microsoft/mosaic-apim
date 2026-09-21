@@ -25,6 +25,8 @@ DEFAULT_PORTAL_LOCALHOST_REDIRECTS = (
 API_SCOPE_VALUE = "access_as_user"
 APP_ROLE_VALUE = "Admin"
 PORTAL_ROLE_VALUE = "User"
+MODEL_RUNTIME_SCOPE_VALUE = "Models.Invoke"
+MODEL_RUNTIME_ROLE_VALUE = "Models.Invoke"
 PORTAL_APP_NOTES = "MOSAIC end-user portal application registration managed by azd hooks."
 DIRECTORY_DENIAL_MARKERS = (
     "Authorization_RequestDenied",
@@ -75,6 +77,10 @@ class EntraContext:
         return f"mosaic-{self.environment_label}-portal"
 
     @property
+    def model_runtime_display_name(self) -> str:
+        return f"mosaic-{self.environment_label}-model-runtime"
+
+    @property
     def app_tags(self) -> list[str]:
         return [
             "product:MOSAIC",
@@ -110,6 +116,11 @@ def application_redirect_uris(application: dict[str, Any]) -> list[str]:
     return [uri for uri in redirect_uris if isinstance(uri, str)]
 
 
+def application_api_settings(application: dict[str, Any]) -> dict[str, Any]:
+    api = application.get("api")
+    return api if isinstance(api, dict) else {}
+
+
 def api_scope_id() -> str:
     return deterministic_guid("entra/api/scope/access-as-user")
 
@@ -122,19 +133,39 @@ def portal_role_id() -> str:
     return deterministic_guid("entra/api/role/user")
 
 
+def model_runtime_scope_id() -> str:
+    return deterministic_guid("entra/model-runtime/scope/models-invoke")
+
+
+def model_runtime_role_id() -> str:
+    return deterministic_guid("entra/model-runtime/role/models-invoke")
+
+
 def build_api_app_payload(
     display_name: str,
     identifier_uri: str,
     tags: list[str],
     preauthorized_client_ids: Iterable[str] | None = None,
+    existing_api: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     preauthorized_applications = [
         {
-            "appId": client_id,
-            "delegatedPermissionIds": [api_scope_id()],
+            **application,
+            "delegatedPermissionIds": list(application.get("delegatedPermissionIds", [])),
         }
-        for client_id in normalize_client_ids(preauthorized_client_ids)
+        for application in (existing_api or {}).get("preAuthorizedApplications", [])
     ]
+    for client_id in normalize_client_ids(preauthorized_client_ids):
+        existing = next(
+            (item for item in preauthorized_applications if item["appId"] == client_id),
+            None,
+        )
+        if existing is None:
+            preauthorized_applications.append(
+                {"appId": client_id, "delegatedPermissionIds": [api_scope_id()]}
+            )
+        elif api_scope_id() not in existing["delegatedPermissionIds"]:
+            existing["delegatedPermissionIds"].append(api_scope_id())
     return {
         "displayName": display_name,
         "identifierUris": [identifier_uri],
@@ -142,6 +173,7 @@ def build_api_app_payload(
         "signInAudience": "AzureADMyOrg",
         "tags": tags,
         "api": {
+            **(existing_api or {}),
             "requestedAccessTokenVersion": 2,
             "preAuthorizedApplications": preauthorized_applications,
             "oauth2PermissionScopes": [
@@ -186,6 +218,53 @@ def build_api_app_payload(
     }
 
 
+def build_model_runtime_app_payload(
+    display_name: str,
+    identifier_uri: str,
+    tags: list[str],
+    existing_api: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return {
+        "displayName": display_name,
+        "identifierUris": [identifier_uri],
+        "notes": "MOSAIC model-runtime API application registration managed by azd hooks.",
+        "signInAudience": "AzureADMyOrg",
+        "tags": tags,
+        "api": {
+            # Client consent and preauthorization are maintained by the tenant operator.
+            **(existing_api or {}),
+            "requestedAccessTokenVersion": 2,
+            "oauth2PermissionScopes": [
+                {
+                    "adminConsentDescription": (
+                        "Allow the application to invoke MOSAIC-published models on behalf of "
+                        "the signed-in user, subject to model access grants."
+                    ),
+                    "adminConsentDisplayName": "Invoke MOSAIC-published models",
+                    "id": model_runtime_scope_id(),
+                    "isEnabled": True,
+                    "type": "Admin",
+                    "value": MODEL_RUNTIME_SCOPE_VALUE,
+                }
+            ],
+        },
+        "appRoles": [
+            {
+                "allowedMemberTypes": ["Application"],
+                "description": (
+                    "Invoke MOSAIC-published models as an application, subject to model "
+                    "access grants."
+                ),
+                "displayName": MODEL_RUNTIME_ROLE_VALUE,
+                "id": model_runtime_role_id(),
+                "isEnabled": True,
+                "origin": "Application",
+                "value": MODEL_RUNTIME_ROLE_VALUE,
+            }
+        ],
+    }
+
+
 def normalize_client_ids(client_ids: Iterable[str] | None) -> list[str]:
     normalized: list[str] = []
     for client_id in client_ids or ():
@@ -201,22 +280,32 @@ def build_spa_app_payload(
     redirect_uris: list[str],
     tags: list[str],
     notes: str = "MOSAIC SPA application registration managed by azd hooks.",
+    existing_required_resource_access: Iterable[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
+    required_resource_access = [
+        {**resource, "resourceAccess": list(resource.get("resourceAccess", []))}
+        for resource in existing_required_resource_access or ()
+    ]
+    api_access = next(
+        (
+            resource
+            for resource in required_resource_access
+            if resource["resourceAppId"] == api_application_client_id
+        ),
+        None,
+    )
+    scope = {"id": api_scope_id(), "type": "Scope"}
+    if api_access is None:
+        required_resource_access.append(
+            {"resourceAppId": api_application_client_id, "resourceAccess": [scope]}
+        )
+    elif scope not in api_access["resourceAccess"]:
+        api_access["resourceAccess"].append(scope)
     return {
         "displayName": display_name,
         "isFallbackPublicClient": False,
         "notes": notes,
-        "requiredResourceAccess": [
-            {
-                "resourceAppId": api_application_client_id,
-                "resourceAccess": [
-                    {
-                        "id": api_scope_id(),
-                        "type": "Scope",
-                    }
-                ],
-            }
-        ],
+        "requiredResourceAccess": required_resource_access,
         "signInAudience": "AzureADMyOrg",
         "spa": {
             "redirectUris": redirect_uris,
@@ -266,6 +355,7 @@ def preprovision(runner: CliRunner, environment_name_override: str | None) -> No
             display_name=context.api_display_name,
             identifier_uri=f"api://{existing['appId']}",
             tags=context.app_tags,
+            existing_api=application_api_settings(existing),
         ),
         operation_name="create-or-update API application registration",
     )
@@ -284,16 +374,17 @@ def preprovision(runner: CliRunner, environment_name_override: str | None) -> No
             "signInAudience": "AzureADMyOrg",
             "tags": context.app_tags,
         },
-        patch_builder=lambda _: build_spa_app_payload(
+        patch_builder=lambda existing: build_spa_app_payload(
             display_name=context.spa_display_name,
             api_application_client_id=api_app["appId"],
             redirect_uris=normalize_redirect_uris(
                 [
                     *context.localhost_redirects,
-                    *application_redirect_uris(_),
+                    *application_redirect_uris(existing),
                 ]
             ),
             tags=context.app_tags,
+            existing_required_resource_access=existing.get("requiredResourceAccess"),
         ),
         operation_name="create-or-update SPA application registration",
     )
@@ -323,6 +414,7 @@ def preprovision(runner: CliRunner, environment_name_override: str | None) -> No
             ),
             tags=context.app_tags,
             notes=PORTAL_APP_NOTES,
+            existing_required_resource_access=existing.get("requiredResourceAccess"),
         ),
         operation_name="create-or-update portal application registration",
     )
@@ -342,8 +434,32 @@ def preprovision(runner: CliRunner, environment_name_override: str | None) -> No
             identifier_uri=f"api://{api_app['appId']}",
             tags=context.app_tags,
             preauthorized_client_ids=[spa_app["appId"], portal_app["appId"]],
+            existing_api=application_api_settings(api_app),
         ),
         operation_name="pre-authorize SPA and portal delegated access to API",
+    )
+
+    model_runtime_app = ensure_application(
+        runner=runner,
+        display_name=context.model_runtime_display_name,
+        create_payload={
+            "displayName": context.model_runtime_display_name,
+            "signInAudience": "AzureADMyOrg",
+            "tags": context.app_tags,
+        },
+        patch_builder=lambda existing: build_model_runtime_app_payload(
+            display_name=context.model_runtime_display_name,
+            identifier_uri=f"api://{existing['appId']}",
+            tags=context.app_tags,
+            existing_api=application_api_settings(existing),
+        ),
+        operation_name="create-or-update model-runtime API application registration",
+    )
+    model_runtime_sp = ensure_service_principal(
+        runner,
+        app_id=model_runtime_app["appId"],
+        tags=context.app_tags,
+        operation_name="create-or-update model-runtime API service principal",
     )
 
     ensure_user_admin_role_assignment(
@@ -375,6 +491,19 @@ def preprovision(runner: CliRunner, environment_name_override: str | None) -> No
         "MOSAIC_PORTAL_LOCALHOST_REDIRECT_URIS",
         ",".join(context.portal_localhost_redirects),
     )
+    set_azd_env(runner, "MOSAIC_MODEL_RUNTIME_APP_OBJECT_ID", model_runtime_app["id"])
+    set_azd_env(runner, "MOSAIC_MODEL_RUNTIME_CLIENT_ID", model_runtime_app["appId"])
+    set_azd_env(runner, "MOSAIC_MODEL_RUNTIME_SERVICE_PRINCIPAL_OBJECT_ID", model_runtime_sp["id"])
+    set_azd_env(
+        runner, "MOSAIC_MODEL_RUNTIME_APPLICATION_ID_URI", f"api://{model_runtime_app['appId']}"
+    )
+    set_azd_env(
+        runner,
+        "MOSAIC_MODEL_RUNTIME_SCOPE",
+        f"api://{model_runtime_app['appId']}/{MODEL_RUNTIME_SCOPE_VALUE}",
+    )
+    set_azd_env(runner, "MOSAIC_MODEL_RUNTIME_SCOPE_ID", model_runtime_scope_id())
+    set_azd_env(runner, "MOSAIC_MODEL_RUNTIME_ROLE_ID", model_runtime_role_id())
     set_azd_env(runner, "MOSAIC_DEPLOYER_OBJECT_ID", context.deployer_object_id)
     set_azd_env(runner, "MOSAIC_APIM_PUBLISHER_NAME", context.deployer_display_name)
     set_azd_env(runner, "MOSAIC_APIM_PUBLISHER_EMAIL", context.deployer_email)
@@ -386,6 +515,8 @@ def postprovision(
     deployed_web_url_override: str | None,
 ) -> None:
     context = build_context(runner, environment_name_override)
+    if runner.dry_run:
+        runner.seed_dry_run_applications(context)
     deployed_web_url = deployed_web_url_override or os.environ.get("WEB_APP_URL")
     if not deployed_web_url:
         raise OperationFailed(
@@ -465,6 +596,7 @@ def patch_deployed_redirect(
         api_application_client_id=read_env_value("MOSAIC_API_CLIENT_ID", required=True),
         redirect_uris=redirect_uris,
         tags=context.app_tags,
+        existing_required_resource_access=application.get("requiredResourceAccess"),
         **payload_kwargs,
     )
     graph_request(
@@ -563,7 +695,7 @@ def ensure_application(
     result = graph_request(
         runner,
         "GET",
-        f"/applications/{app['id']}?$select=id,appId,displayName,tags,spa",
+        f"/applications/{app['id']}?$select=id,appId,displayName,tags,spa,api,requiredResourceAccess",
         operation_name=f"read back {display_name}",
     )
     if not isinstance(result, dict):
@@ -646,7 +778,7 @@ def find_application(
     query = urllib.parse.urlencode(
         {
             "$filter": f"displayName eq '{odata_quote(display_name)}'",
-            "$select": "id,appId,displayName,tags,spa",
+            "$select": "id,appId,displayName,tags,spa,api,requiredResourceAccess",
         }
     )
     response = graph_request(
@@ -770,6 +902,11 @@ def read_env_value(key: str, required: bool = False) -> str:
 class CliRunner:
     def __init__(self, dry_run: bool = False) -> None:
         self.dry_run = dry_run
+        self._dry_run_objects: dict[str, dict[str, dict[str, Any]]] = {
+            "applications": {},
+            "servicePrincipals": {},
+        }
+        self._dry_run_role_assignments: dict[str, list[dict[str, Any]]] = {}
 
     def az_json(self, args: list[str], operation_name: str) -> Any:
         if self.dry_run:
@@ -782,68 +919,64 @@ class CliRunner:
                     ),
                     "user": {"type": "user"},
                 }
-            if "graph.microsoft.com" in command_text:
-                if "/me" in command_text:
-                    return {
-                        "id": "00000000-0000-0000-0000-000000000001",
-                        "displayName": "MOSAIC Dry Run",
-                        "userPrincipalName": "mosaic@example.com",
-                    }
-                if "/applications" in command_text:
-                    if "--method POST" in command_text or "--method PATCH" in command_text:
-                        return {
-                            "id": "11111111-1111-1111-1111-111111111111",
-                            "appId": "22222222-2222-2222-2222-222222222222",
-                            "displayName": "mosaic-dryrun-api",
-                            "tags": ["product:MOSAIC"],
-                        }
-                    if "/applications/" in command_text:
-                        return {
-                            "id": "11111111-1111-1111-1111-111111111111",
-                            "appId": "22222222-2222-2222-2222-222222222222",
-                            "displayName": "mosaic-dryrun-api",
-                            "tags": ["product:MOSAIC"],
-                        }
-                    return {
-                        "value": [
-                            {
-                                "id": "11111111-1111-1111-1111-111111111111",
-                                "appId": "22222222-2222-2222-2222-222222222222",
-                                "displayName": "mosaic-dryrun-api",
-                                "tags": ["product:MOSAIC", "managed-by:azd", "azd-env:mosaic-dev"],
-                            }
-                        ]
-                    }
-                if "/servicePrincipals" in command_text:
-                    if "--method POST" in command_text or "--method PATCH" in command_text:
-                        return {
-                            "id": "33333333-3333-3333-3333-333333333333",
-                            "appId": "22222222-2222-2222-2222-222222222222",
-                            "displayName": "mosaic-dryrun-api",
-                            "tags": ["product:MOSAIC"],
-                        }
-                    if "/servicePrincipals/" in command_text:
-                        return {
-                            "id": "33333333-3333-3333-3333-333333333333",
-                            "appId": "22222222-2222-2222-2222-222222222222",
-                            "displayName": "mosaic-dryrun-api",
-                            "tags": ["product:MOSAIC"],
-                        }
-                    return {
-                        "value": [
-                            {
-                                "id": "33333333-3333-3333-3333-333333333333",
-                                "appId": "22222222-2222-2222-2222-222222222222",
-                                "displayName": "mosaic-dryrun-api",
-                                "tags": ["product:MOSAIC", "managed-by:azd", "azd-env:mosaic-dev"],
-                            }
-                        ]
-                    }
-                if "/appRoleAssignments" in command_text:
-                    return {"value": []}
-                return {}
+            if args and args[0] == "rest":
+                return self._dry_run_graph_request(args)
             return {}
         return run_json_command(["az", *args], operation_name)
+
+    def _dry_run_create_object(self, collection: str, body: dict[str, Any]) -> dict[str, Any]:
+        key = body["displayName"] if collection == "applications" else body["appId"]
+        object_id = deterministic_guid(f"dry-run/{collection}/{key}")
+        item = {"id": object_id, **body}
+        if collection == "applications":
+            item["appId"] = deterministic_guid(f"dry-run/client/{key}")
+        return self._dry_run_objects[collection].setdefault(object_id, item)
+
+    def seed_dry_run_applications(self, context: EntraContext) -> None:
+        # Postprovision can be previewed independently of preprovision's in-memory state.
+        for display_name in (
+            context.api_display_name,
+            context.spa_display_name,
+            context.portal_display_name,
+            context.model_runtime_display_name,
+        ):
+            self._dry_run_create_object(
+                "applications",
+                {"displayName": display_name, "tags": context.app_tags},
+            )
+
+    def _dry_run_graph_request(self, args: list[str]) -> Any:
+        method = args[args.index("--method") + 1]
+        url = urllib.parse.urlparse(args[args.index("--url") + 1])
+        path = url.path.removeprefix("/v1.0/")
+        body = json.loads(args[args.index("--body") + 1]) if "--body" in args else {}
+        if path == "me":
+            return {
+                "id": "00000000-0000-0000-0000-000000000001",
+                "displayName": "MOSAIC Dry Run",
+                "userPrincipalName": "mosaic@example.com",
+            }
+        if path.endswith("/appRoleAssignments"):
+            assignments = self._dry_run_role_assignments.setdefault(path, [])
+            if method == "POST":
+                assignments.append(body)
+                return body
+            return {"value": assignments}
+        collection, _, object_id = path.partition("/")
+        if collection not in self._dry_run_objects:
+            return {}
+        objects = self._dry_run_objects[collection]
+        if object_id:
+            item = objects[object_id]
+            if method == "PATCH":
+                item.update(body)
+            return item
+        if method == "POST":
+            return self._dry_run_create_object(collection, body)
+        query = urllib.parse.parse_qs(url.query)
+        field, _, value = query["$filter"][0].partition(" eq ")
+        expected = value[1:-1].replace("''", "'")
+        return {"value": [item for item in objects.values() if item.get(field) == expected]}
 
     def azd(self, args: list[str], operation_name: str) -> Any:
         if self.dry_run:

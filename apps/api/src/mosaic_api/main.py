@@ -10,13 +10,14 @@ from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from mosaic_api.api import router
+from mosaic_api.api import portal_router, router
 from mosaic_api.auth import EntraAuthenticator, LocalAuthenticator
 from mosaic_api.config import AuthMode, Environment, RepositoryBackend, Settings, get_settings
 from mosaic_api.errors import DomainError, domain_error_handler
 from mosaic_api.integrations.aoai import CognitiveServicesClient
 from mosaic_api.integrations.aoai.client import SubscriptionScanner
 from mosaic_api.integrations.apim import ApimClient, ApimWriter, ArmClient
+from mosaic_api.integrations.apim.credentials import ApimCredentialClient
 from mosaic_api.integrations.mcp import EntraTokenProvider, KeyVaultSecretReader
 from mosaic_api.observability import configure_logging, configure_telemetry
 from mosaic_api.repositories import (
@@ -45,6 +46,7 @@ from mosaic_api.services import (
     PublishingService,
 )
 from mosaic_api.services.mcp_endpoints import build_mcp_client_factory
+from mosaic_api.services.portal_access import PortalAccessService
 
 logger = structlog.get_logger()
 
@@ -146,6 +148,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             endpoint_repository=endpoint_repository,
             client_factory=lambda resource: ApimClient(arm_client, resource),
             writer_factory=lambda resource: ApimWriter(arm_client, resource),
+            directory_repository=repository,
+            entitlement_repository=entitlement_repository,
+            model_runtime_client_id=app_settings.model_runtime_client_id,
         )
         # A dedicated client for outbound MCP calls: redirects are refused per request, and the
         # connection pool for operator-supplied hosts is kept away from the ARM one.
@@ -167,7 +172,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.model_endpoint_repository = endpoint_repository
         app.state.entitlement_repository = entitlement_repository
         app.state.mcp_endpoint_repository = mcp_repository
-        app.state.directory_service = DirectoryService(repository)
+        app.state.directory_service = DirectoryService(
+            repository,
+            gateway_repository=gateway_repository,
+            entitlement_repository=entitlement_repository,
+        )
         app.state.gateway_service = gateway_service
         app.state.model_endpoint_service = model_endpoint_service
         app.state.publishing_service = publishing_service
@@ -177,6 +186,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             directory_repository=repository,
             gateway_repository=gateway_repository,
             endpoint_repository=endpoint_repository,
+        )
+        app.state.portal_access_service = PortalAccessService(
+            app.state.entitlement_service,
+            repository=entitlement_repository,
+            directory_repository=repository,
+            gateway_repository=gateway_repository,
+            credential_factory=lambda resource: ApimCredentialClient(arm_client, resource),
+            model_runtime_client_id=app_settings.model_runtime_client_id,
         )
         app.state.authenticator = authenticator
         try:
@@ -246,6 +263,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def correlation_id(request: Request, call_next: Any) -> Any:
         correlation = request.headers.get("X-Correlation-ID")
         response = await call_next(request)
+        if request.url.path.startswith("/api/v1/"):
+            response.headers["Cache-Control"] = "no-store, private"
+        if request.url.path.endswith("/keys/reveal"):
+            response.headers["Pragma"] = "no-cache"
         if correlation:
             response.headers["X-Correlation-ID"] = correlation
         return response
@@ -279,4 +300,5 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
 
     app.include_router(router)
+    app.include_router(portal_router)
     return app

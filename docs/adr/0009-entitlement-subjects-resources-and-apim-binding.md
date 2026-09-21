@@ -2,6 +2,11 @@
 
 **Status:** Accepted
 
+**Update:** [ADR 0011](0011-governed-model-access.md) implements the runtime binding for direct
+user/application grants to MOSAIC-published models. Other resource/subject combinations retain
+the desired-state-only behavior described here. A trusted `orchestrated` binding is now
+server-produced, never evidence a client may supply to obtain a key.
+
 ## Context
 
 `Entitlement` existed in the domain but had no routes, no service, and no repository. Nothing ever

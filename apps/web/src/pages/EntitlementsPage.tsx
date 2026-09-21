@@ -29,14 +29,22 @@ import { type FormEvent, useMemo, useState } from 'react'
 import { useMosaicApi } from '../api'
 import { EmptyState, ErrorState, Loading } from '../components/AsyncState'
 import { PageHeader } from '../components/PageHeader'
-import { DEFAULT_COUNTER_KEY, QUOTA_PERIODS, callRateError, describeLimits } from '../entitlement-limits'
+import { EntitlementAccessState } from '../components/EntitlementAccessState'
+import { EntitlementConnectionDialog } from '../components/EntitlementConnectionDialog'
+import { ModelAccessSettingsPanel } from '../components/ModelAccessSettingsPanel'
+import { PublishModelDialog } from '../components/PublishModelDialog'
+import { DEFAULT_COUNTER_KEY, GOVERNED_COUNTER_KEY, QUOTA_PERIODS, callRateError, describeLimits } from '../entitlement-limits'
+import { runtimeConfig } from '../runtime-config'
 import type {
+  Entitlement,
   EntitlementEnforcement,
   EntitlementResource,
   EntitlementResourceKind,
   EntitlementSubject,
   EntitlementSubjectKind,
   QuotaPeriod,
+  Publication,
+  PublishPlan,
 } from '../types'
 import styles from './EntitlementsPage.module.css'
 
@@ -74,16 +82,17 @@ const emptyForm: GrantForm = {
   notes: '',
 }
 
-function buildEnforcement(form: GrantForm): EntitlementEnforcement | null {
+function buildEnforcement(form: GrantForm, governed: boolean): EntitlementEnforcement | null {
   const tokensPerMinute = Number(form.tokensPerMinute) || undefined
   const tokenQuota = Number(form.tokenQuota) || undefined
   const calls = Number(form.calls) || undefined
   const renewalPeriodSeconds = Number(form.renewalPeriodSeconds) || undefined
+  const counterKeyExpression = governed ? GOVERNED_COUNTER_KEY : DEFAULT_COUNTER_KEY
 
   const enforcement: EntitlementEnforcement = {}
   if (tokensPerMinute || tokenQuota) {
     enforcement.tokens = {
-      counterKeyExpression: DEFAULT_COUNTER_KEY,
+      counterKeyExpression,
       estimatePromptTokens: true,
       ...(tokensPerMinute ? { tokensPerMinute } : {}),
       ...(tokenQuota ? { tokenQuota, tokenQuotaPeriod: form.tokenQuotaPeriod } : {}),
@@ -91,7 +100,7 @@ function buildEnforcement(form: GrantForm): EntitlementEnforcement | null {
   }
   if (calls && renewalPeriodSeconds) {
     enforcement.requests = {
-      counterKeyExpression: DEFAULT_COUNTER_KEY,
+      counterKeyExpression,
       calls,
       renewalPeriodSeconds,
     }
@@ -106,6 +115,10 @@ export function EntitlementsPage() {
   const [banner, setBanner] = useState<string | null>(null)
   const [inspectedPrincipal, setInspectedPrincipal] = useState('')
   const [form, setForm] = useState<GrantForm>(emptyForm)
+  const [selectedPublicationId, setSelectedPublicationId] = useState('')
+  const [directModelId, setDirectModelId] = useState<string | null>(null)
+  const [connectionGrantId, setConnectionGrantId] = useState<string | null>(null)
+  const [review, setReview] = useState<{ publication: Publication; plan: PublishPlan } | null>(null)
 
   const entitlements = useQuery({
     queryKey: ['entitlements'],
@@ -115,6 +128,7 @@ export function EntitlementsPage() {
   const groups = useQuery({ queryKey: ['groups'], queryFn: () => api.listGroups() })
   const modelApis = useQuery({ queryKey: ['model-apis'], queryFn: () => api.listModelApis() })
   const mcpServers = useQuery({ queryKey: ['mcp-servers'], queryFn: () => api.listMcpServers() })
+  const publications = useQuery({ queryKey: ['publications'], queryFn: () => api.listPublications() })
   const accessRequests = useQuery({
     queryKey: ['access-requests', 'pending'],
     queryFn: () => api.listAccessRequests('pending'),
@@ -179,41 +193,100 @@ export function EntitlementsPage() {
       await queryClient.invalidateQueries({ queryKey: ['entitlements'] })
       setDialogOpen(false)
       setForm(emptyForm)
-      setBanner('Granted access. MOSAIC recorded the grant; API Management is unchanged.')
+      setDirectModelId(null)
+      await queryClient.invalidateQueries({ queryKey: ['publications'] })
+      setBanner('Saved grant intent. API Management is unchanged; review and apply the model plan to activate a supported direct grant.')
     },
   })
 
   const toggleMutation = useMutation({
     mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) =>
       api.updateEntitlement(id, { enabled }),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['entitlements'] }),
+    onSuccess: async (_, variables) => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['entitlements'] }),
+        queryClient.invalidateQueries({ queryKey: ['publications'] }),
+        queryClient.invalidateQueries({ queryKey: ['entitlement-connection'] }),
+      ])
+      setBanner(variables.enabled
+        ? 'Saved enabled intent. Runtime access changes only after a supported model plan is reviewed and applied.'
+        : 'Saved disabled intent. Managed revocation is pending until the model plan is reviewed, applied, and propagated; API Management is unchanged by this save.')
+    },
   })
 
   const revokeMutation = useMutation({
     mutationFn: (id: string) => api.deleteEntitlement(id),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['entitlements'] })
-      setBanner('Revoked that grant.')
+      setBanner('Removed the desired-state grant. API Management is unchanged.')
     },
   })
 
   const decideMutation = useMutation({
     mutationFn: ({ id, approve }: { id: string; approve: boolean }) =>
       approve ? api.approveAccessRequest(id) : api.denyAccessRequest(id),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['access-requests'] }),
+    onSuccess: async (_, variables) => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['access-requests'] }),
+        queryClient.invalidateQueries({ queryKey: ['entitlements'] }),
+        queryClient.invalidateQueries({ queryKey: ['publications'] }),
+      ])
+      setBanner(variables.approve
+        ? 'Approved the request and saved grant intent. This does not activate APIM access; supported model changes still need review and apply.'
+        : 'Denied the access request.')
+    },
   })
+
+  const reviewMutation = useMutation({
+    mutationFn: async (publicationId: string) => {
+      const plan = await api.createPublishPlan(publicationId)
+      const publication = await api.getPublication(publicationId)
+      if (!plan.accessSnapshot) throw new Error('The service did not return a governed-access snapshot. No model access changes can be applied from this review.')
+      return { publication, plan }
+    },
+    onSuccess: (result) => setReview(result),
+  })
+
+  const publishedModels = (publications.data ?? []).filter(
+    (publication) => publication.status === 'published' || Boolean(publication.lastAppliedAt),
+  )
+  const selectedPublication = publishedModels.find((publication) => publication.id === selectedPublicationId)
+
+  function publicationFor(entitlement: Pick<Entitlement, 'resource'>) {
+    if (entitlement.resource.kind !== 'modelApi') return undefined
+    const modelApi = modelApis.data?.find((model) => model.id === entitlement.resource.id)
+    return publications.data?.find(
+      (publication) => publication.modelApiId === entitlement.resource.id || publication.id === modelApi?.publicationId,
+    )
+  }
+
+  function managedGrant(entitlement: Pick<Entitlement, 'resource' | 'subject' | 'runtime'>) {
+    const publication = publicationFor(entitlement)
+    return entitlement.resource.kind === 'modelApi' && entitlement.subject.kind !== 'group'
+      && Boolean(entitlement.runtime || publication?.governedAccess || publication?.appliedAccess)
+  }
+
+  function addDirectGrant(modelApiId: string) {
+    setDirectModelId(modelApiId)
+    setForm({ ...emptyForm, resource: modelApiId })
+    createMutation.reset()
+    setDialogOpen(true)
+  }
 
   function submit(event: FormEvent) {
     event.preventDefault()
     const subject = subjectOptions.find((option) => option.id === form.subject)
     const resource = resourceOptions.find((option) => option.id === form.resource)
-    if (!subject || !resource || callRateError(form)) {
+    if (!subject || !resource || callRateError(form) || (directModelId && subject.kind === 'group')) {
       return
     }
-    createMutation.mutate({
+    const target = {
       subject: { kind: subject.kind, id: subject.id },
       resource: { kind: resource.kind, id: resource.id },
-      enforcement: buildEnforcement(form),
+    }
+    createMutation.mutate({
+      ...target,
+      enforcement: buildEnforcement(form, managedGrant(target)),
       notes: form.notes.trim() || null,
     })
   }
@@ -221,19 +294,25 @@ export function EntitlementsPage() {
   const rows = entitlements.data ?? []
   const unbound = rows.filter((item) => !item.binding).length
   const rateError = callRateError(form)
+  const connectionGrant = rows.find((entitlement) => entitlement.id === connectionGrantId)
 
   return (
     <section className={styles.page}>
       <PageHeader
         title="Entitlements"
-        description="Who may use a governed model API or MCP server, and the limits that apply. MOSAIC stores this intent; it does not write to API Management."
+        description="Save desired grants and limits, then review and explicitly apply model-wide changes for MOSAIC-published models. Saving alone never changes API Management. Group, MCP, and imported-only grants remain desired state."
         source="live"
         actions={
           <Button
             appearance="primary"
             icon={<AddRegular />}
             disabled={subjectOptions.length === 0 || resourceOptions.length === 0}
-            onClick={() => setDialogOpen(true)}
+            onClick={() => {
+              setDirectModelId(null)
+              setForm(emptyForm)
+              createMutation.reset()
+              setDialogOpen(true)
+            }}
           >
             Add entitlement
           </Button>
@@ -247,6 +326,52 @@ export function EntitlementsPage() {
       )}
       {revokeMutation.isError && <ErrorState error={revokeMutation.error} />}
       {toggleMutation.isError && <ErrorState error={toggleMutation.error} />}
+      {decideMutation.isError && <ErrorState error={decideMutation.error} />}
+      {principals.isError && <ErrorState error={principals.error} />}
+      {groups.isError && <ErrorState error={groups.error} />}
+      {modelApis.isError && <ErrorState error={modelApis.error} />}
+      {mcpServers.isError && <ErrorState error={mcpServers.error} />}
+      {runtimeConfig.authMode === 'local' && (
+        <MessageBar intent="warning">
+          <MessageBarBody>Local development mode: service responses may be simulated and do not verify live APIM enforcement.</MessageBarBody>
+        </MessageBar>
+      )}
+
+      <Card className={styles.detailCard}>
+        <Title3 as="h2">Governed model access</Title3>
+        <Text>Choose a successfully published MOSAIC model. Direct users and applications are supported; groups, MCP servers, and imported-only APIs are not orchestrated.</Text>
+        {publications.isPending && <Loading label="Loading published models..." />}
+        {publications.isError && <ErrorState error={publications.error} />}
+        <Field label="Published model">
+          <Select
+            value={selectedPublicationId}
+            onChange={(_, data) => {
+              setSelectedPublicationId(data.value)
+              reviewMutation.reset()
+              setConnectionGrantId(null)
+            }}
+          >
+            <option value="">Select a published model</option>
+            {publishedModels.map((publication) => (
+              <option key={publication.id} value={publication.id}>
+                {publication.displayName} · {publication.deploymentName} · {publication.gatewayId}
+              </option>
+            ))}
+          </Select>
+        </Field>
+        {publications.isSuccess && publishedModels.length === 0 && <Text>No successfully published models are available. Publish a model before configuring runtime grants.</Text>}
+        {selectedPublication && (
+          <ModelAccessSettingsPanel
+            key={`${selectedPublication.id}:${JSON.stringify(selectedPublication.governedAccess)}`}
+            publication={selectedPublication}
+            reviewing={reviewMutation.isPending}
+            onReview={() => reviewMutation.mutate(selectedPublication.id)}
+            onAddGrant={addDirectGrant}
+            onMessage={setBanner}
+          />
+        )}
+        {reviewMutation.isError && <ErrorState error={reviewMutation.error} />}
+      </Card>
 
       <div className={styles.summaryGrid}>
         <Card className={styles.summaryCard}>
@@ -254,7 +379,7 @@ export function EntitlementsPage() {
           <strong>{rows.length}</strong>
         </Card>
         <Card className={styles.summaryCard}>
-          <Text size={200}>Enabled</Text>
+          <Text size={200}>Desired enabled</Text>
           <strong>{rows.filter((item) => item.enabled).length}</strong>
         </Card>
         <Card className={styles.summaryCard}>
@@ -273,8 +398,8 @@ export function EntitlementsPage() {
           <div>
             <Title3 as="h2">Grants</Title3>
             <Text size={200}>
-              A grant reaches a person directly or through a group. Limits are shown as sentences,
-              never as policy markup.
+              Desired intent and last recorded runtime state are separate. Model-wide review above
+              includes every saved change for that model. Applied metadata is not a live invocation test.
             </Text>
           </div>
         </div>
@@ -294,13 +419,20 @@ export function EntitlementsPage() {
                     <TableHeaderCell>Subject</TableHeaderCell>
                     <TableHeaderCell>Resource</TableHeaderCell>
                     <TableHeaderCell>Limits</TableHeaderCell>
+                    <TableHeaderCell>Desired / applied</TableHeaderCell>
                     <TableHeaderCell>Binding</TableHeaderCell>
                     <TableHeaderCell>Actions</TableHeaderCell>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {rows.map((entitlement) => (
-                    <TableRow key={entitlement.id}>
+                  {rows.map((entitlement) => {
+                    const relatedPublication = publicationFor(entitlement)
+                    const appliedGrant = relatedPublication?.appliedAccess?.grants.find(
+                      (grant) => grant.entitlementId === entitlement.id,
+                    )
+                    const managed = managedGrant(entitlement)
+                    return (
+                      <TableRow key={entitlement.id}>
                       <TableCell>
                         <div className={styles.cellStack}>
                           <Text className={styles.primaryCell}>
@@ -319,13 +451,23 @@ export function EntitlementsPage() {
                       </TableCell>
                       <TableCell>
                         <div className={styles.cellStack}>
-                          {describeLimits(entitlement).map((sentence) => (
+                          <Text size={200} weight="semibold">Desired limits</Text>
+                          {describeLimits(entitlement, relatedPublication?.enforcement).map((sentence) => (
                             <Text key={sentence} className={styles.secondaryCell}>
                               {sentence}
                             </Text>
                           ))}
+                          {appliedGrant && (
+                            <>
+                              <Text size={200} weight="semibold">Last applied limits {appliedGrant.enabled ? '' : '(grant disabled)'}</Text>
+                              {describeLimits(appliedGrant, relatedPublication?.appliedAccess?.publicationEnforcement).map((sentence) => (
+                                <Text key={`applied:${sentence}`} className={styles.secondaryCell}>{sentence}</Text>
+                              ))}
+                            </>
+                          )}
                         </div>
                       </TableCell>
+                      <TableCell><EntitlementAccessState entitlement={entitlement} /></TableCell>
                       <TableCell>
                         {entitlement.binding ? (
                           <Badge appearance="tint" className={styles.statusReady}>
@@ -340,7 +482,7 @@ export function EntitlementsPage() {
                       </TableCell>
                       <TableCell>
                         <div className={styles.rowActions}>
-                          <Switch
+                          {!managed && <Switch
                             checked={entitlement.enabled}
                             label={entitlement.enabled ? 'Enabled' : 'Disabled'}
                             disabled={toggleMutation.isPending}
@@ -350,18 +492,34 @@ export function EntitlementsPage() {
                                 enabled: data.checked,
                               })
                             }
-                          />
+                          />}
+                          {managed && !entitlement.enabled && (
+                            <Button disabled={toggleMutation.isPending} onClick={() => toggleMutation.mutate({ id: entitlement.id, enabled: true })}>
+                              Re-enable
+                            </Button>
+                          )}
                           <Button
                             appearance="subtle"
-                            disabled={revokeMutation.isPending}
-                            onClick={() => revokeMutation.mutate(entitlement.id)}
+                            disabled={revokeMutation.isPending || toggleMutation.isPending || (managed && !entitlement.enabled)}
+                            onClick={() => {
+                              setConnectionGrantId(null)
+                              if (managed) toggleMutation.mutate({ id: entitlement.id, enabled: false })
+                              else revokeMutation.mutate(entitlement.id)
+                            }}
                           >
                             Revoke
                           </Button>
+                          {managed && relatedPublication && (
+                            <Button appearance="subtle" onClick={() => setSelectedPublicationId(relatedPublication.id)}>Manage model</Button>
+                          )}
+                          {managed && entitlement.runtime && (
+                            <Button onClick={() => setConnectionGrantId(entitlement.id)}>Connection info</Button>
+                          )}
                         </div>
                       </TableCell>
-                    </TableRow>
-                  ))}
+                      </TableRow>
+                    )
+                  })}
                 </TableBody>
               </Table>
             ))}
@@ -445,10 +603,11 @@ export function EntitlementsPage() {
 
         <Card className={styles.detailCard}>
           <div className={styles.detailHeader}>
-            <Title3 as="h2">Effective access</Title3>
+            <Title3 as="h2">Resolved desired access</Title3>
           </div>
           <Text size={200}>
-            What one person can actually use, including everything a group grant contributes.
+            Recorded direct and group intent for a principal. This is not proof of active gateway
+            access; group grants remain desired state only.
           </Text>
           <Field label="Principal">
             <Select
@@ -493,13 +652,14 @@ export function EntitlementsPage() {
               <DialogTitle>Add entitlement</DialogTitle>
               <DialogContent className={styles.dialogForm}>
                 {createMutation.isError && <ErrorState error={createMutation.error} />}
+                {directModelId && <Text>Direct model grant: saving does not activate access. Review and apply the complete model plan afterward.</Text>}
                 <Field label="Subject" required>
                   <Select
                     value={form.subject}
                     onChange={(_, data) => setForm({ ...form, subject: data.value })}
                   >
                     <option value="">Select a user, group, or application</option>
-                    {subjectOptions.map((option) => (
+                    {subjectOptions.filter((option) => !directModelId || option.kind !== 'group').map((option) => (
                       <option key={option.id} value={option.id}>
                         {option.label}
                       </option>
@@ -509,6 +669,7 @@ export function EntitlementsPage() {
                 <Field label="Resource" required>
                   <Select
                     value={form.resource}
+                    disabled={Boolean(directModelId)}
                     onChange={(_, data) => setForm({ ...form, resource: data.value })}
                   >
                     <option value="">Select a model API or MCP server</option>
@@ -520,8 +681,8 @@ export function EntitlementsPage() {
                   </Select>
                 </Field>
                 <Text size={200}>
-                  Leave every limit empty to grant unrestricted access. MOSAIC reports that
-                  honestly rather than showing a limit of zero.
+                  Leave a limit empty to add no grant-specific restriction. Inherited publication
+                  safeguards still apply; this does not mean unrestricted gateway access.
                 </Text>
                 <div className={styles.dialogGrid}>
                   <Field label="Tokens per minute">
@@ -603,6 +764,19 @@ export function EntitlementsPage() {
           </form>
         </DialogSurface>
       </Dialog>
+      <PublishModelDialog
+        open={review !== null}
+        initialReview={review}
+        onClose={() => setReview(null)}
+        onPublished={setBanner}
+      />
+      {connectionGrant && (
+        <EntitlementConnectionDialog
+          open
+          entitlement={connectionGrant}
+          onClose={() => setConnectionGrantId(null)}
+        />
+      )}
     </section>
   )
 }

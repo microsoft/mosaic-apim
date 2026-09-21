@@ -26,6 +26,7 @@ class InMemoryGatewayRepository:
         self.publications: dict[str, Publication] = {}
         self.publish_plans: dict[str, PublishPlan] = {}
         self.publish_runs: dict[str, PublishRun] = {}
+        self.publication_locks: dict[tuple[str, str], str] = {}
         self.audit_events: dict[str, AuditEvent] = {}
 
     async def ready(self) -> bool:
@@ -259,7 +260,7 @@ class InMemoryGatewayRepository:
         self.audit_events[audit_event.id] = audit_event
 
     async def save_publish_plan(self, plan: PublishPlan) -> PublishPlan:
-        self.publish_plans[plan.id] = plan
+        self.publish_plans[plan.id] = plan.model_copy(deep=True)
         return plan
 
     async def get_publish_plan(self, tenant_id: str, plan_id: str) -> PublishPlan | None:
@@ -267,7 +268,7 @@ class InMemoryGatewayRepository:
         return plan if plan and plan.tenant_id == tenant_id else None
 
     async def save_publish_run(self, run: PublishRun) -> PublishRun:
-        self.publish_runs[run.id] = run
+        self.publish_runs[run.id] = run.model_copy(deep=True)
         return run
 
     async def get_publish_run(self, tenant_id: str, run_id: str) -> PublishRun | None:
@@ -291,3 +292,26 @@ class InMemoryGatewayRepository:
             for run in self.publish_runs.values()
             if run.tenant_id == tenant_id and run.status == PublishRunStatus.RUNNING
         ]
+
+    async def acquire_publication_lock(
+        self, tenant_id: str, publication_id: str, owner_id: str
+    ) -> None:
+        key = (tenant_id, publication_id)
+        if key in self.publication_locks:
+            raise ConflictError(
+                "An apply or mutation is already running for this publication. "
+                "Interrupted runs require explicit recovery.",
+                details={"id": publication_id, "lockOwner": self.publication_locks[key]},
+            )
+        self.publication_locks[key] = owner_id
+
+    async def get_publication_lock(self, tenant_id: str, publication_id: str) -> str | None:
+        return self.publication_locks.get((tenant_id, publication_id))
+
+    async def release_publication_lock(
+        self, tenant_id: str, publication_id: str, owner_id: str
+    ) -> None:
+        key = (tenant_id, publication_id)
+        if self.publication_locks.get(key) != owner_id:
+            raise ConflictError("The publication lock is no longer owned by this operation")
+        del self.publication_locks[key]

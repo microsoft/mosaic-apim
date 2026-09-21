@@ -17,6 +17,8 @@ import type {
   GatewaySyncRun,
   Group,
   GroupMembership,
+  KeyRevealResult,
+  KeySlot,
   McpAuthMode,
   McpEndpoint,
   McpEndpointSyncRun,
@@ -24,6 +26,8 @@ import type {
   McpServerCandidateList,
   ModelApi,
   ModelApiCandidateList,
+  ModelAccessSettings,
+  ModelConnection,
   ModelEndpoint,
   ModelEndpointSuggestionView,
   ModelEndpointSyncRun,
@@ -40,6 +44,7 @@ import type {
   ObservedProduct,
   ObservedSubscription,
   Publication,
+  PublicationLockInfo,
   PublishableModel,
   PublishPlan,
   PublishRun,
@@ -68,6 +73,8 @@ export class ApiError extends Error {
 interface RequestOptions {
   method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
   body?: unknown
+  cache?: RequestCache
+  signal?: AbortSignal
 }
 
 export interface MosaicApi {
@@ -121,18 +128,27 @@ export interface MosaicApi {
     productName?: string
     subscriptionRequired: boolean
     enforcement: TokenEnforcement
+    governedAccess?: ModelAccessSettings | null
   }): Promise<Publication>
   getPublication(publicationId: string): Promise<Publication>
+  getPublicationLock(publicationId: string): Promise<PublicationLockInfo>
   updatePublication(
     publicationId: string,
-    payload: { displayName?: string; subscriptionRequired?: boolean; enforcement?: TokenEnforcement },
+    payload: {
+      displayName?: string
+      subscriptionRequired?: boolean
+      enforcement?: TokenEnforcement
+      governedAccess?: ModelAccessSettings | null
+    },
   ): Promise<Publication>
+  linkPublicationModelApi(publicationId: string): Promise<ModelApi>
   deletePublication(publicationId: string): Promise<void>
   createPublishPlan(publicationId: string): Promise<PublishPlan>
   applyPublishPlan(publicationId: string, planId: string): Promise<PublishRun>
   unpublishPublication(publicationId: string): Promise<PublishRun>
   listPublishRuns(publicationId: string): Promise<PublishRun[]>
   getPublishRun(publicationId: string, runId: string): Promise<PublishRun>
+  diagnosePublicationRecovery(publicationId: string, runId: string): Promise<PublishRun>
   listGatewayApis(gatewayId: string): Promise<ObservedApi[]>
   listGatewayOperations(gatewayId: string, apiName?: string): Promise<ObservedOperation[]>
   listGatewayProducts(gatewayId: string): Promise<ObservedProduct[]>
@@ -178,6 +194,11 @@ export interface MosaicApi {
     },
   ): Promise<Entitlement>
   deleteEntitlement(entitlementId: string): Promise<void>
+  getEntitlementConnection(entitlementId: string): Promise<ModelConnection>
+  revealEntitlementKey(entitlementId: string, slot: KeySlot, signal?: AbortSignal): Promise<KeyRevealResult>
+  listMyEntitlements(): Promise<Entitlement[]>
+  getMyEntitlementConnection(entitlementId: string): Promise<ModelConnection>
+  revealMyEntitlementKey(entitlementId: string, slot: KeySlot, signal?: AbortSignal): Promise<KeyRevealResult>
   resolveEntitlements(principalId: string): Promise<ResolvedEntitlement[]>
   listAccessRequests(state?: string): Promise<AccessRequest[]>
   approveAccessRequest(requestId: string, note?: string): Promise<AccessRequest>
@@ -261,6 +282,8 @@ export function useMosaicApi(): MosaicApi {
         method: options.method ?? 'GET',
         body: options.body === undefined ? undefined : JSON.stringify(options.body),
         headers,
+        cache: options.cache,
+        signal: options.signal,
       })
       if (!response.ok) {
         let body: ApiErrorBody | undefined
@@ -333,8 +356,12 @@ export function useMosaicApi(): MosaicApi {
       createPublication: (payload) =>
         request<Publication>('/api/v1/publications', { method: 'POST', body: payload }),
       getPublication: (id) => request<Publication>(`/api/v1/publications/${id}`),
+      getPublicationLock: (id) =>
+        request<PublicationLockInfo>(`/api/v1/publications/${encodeURIComponent(id)}/lock`),
       updatePublication: (id, payload) =>
         request<Publication>(`/api/v1/publications/${id}`, { method: 'PATCH', body: payload }),
+      linkPublicationModelApi: (id) =>
+        request<ModelApi>(`/api/v1/publications/${id}/model-api`, { method: 'POST' }),
       deletePublication: (id) =>
         request<void>(`/api/v1/publications/${id}`, { method: 'DELETE' }),
       createPublishPlan: (id) =>
@@ -348,6 +375,11 @@ export function useMosaicApi(): MosaicApi {
       listPublishRuns: (id) => request<PublishRun[]>(`/api/v1/publications/${id}/runs`),
       getPublishRun: (id, runId) =>
         request<PublishRun>(`/api/v1/publications/${id}/runs/${runId}`),
+      diagnosePublicationRecovery: (id, runId) =>
+        request<PublishRun>(`/api/v1/publications/${id}/recover`, {
+          method: 'POST',
+          body: { runId, confirmQuiesced: false },
+        }),
       listGatewayApis: (id) => request<ObservedApi[]>(`/api/v1/gateways/${id}/apis`),
       listGatewayOperations: (id, apiName) =>
         request<ObservedOperation[]>(
@@ -415,6 +447,19 @@ export function useMosaicApi(): MosaicApi {
         request<Entitlement>(`/api/v1/entitlements/${id}`, { method: 'PATCH', body: payload }),
       deleteEntitlement: (id) =>
         request<void>(`/api/v1/entitlements/${id}`, { method: 'DELETE' }),
+      getEntitlementConnection: (id) =>
+        request<ModelConnection>(`/api/v1/entitlements/${id}/connection`),
+      revealEntitlementKey: (id, slot, signal) =>
+        request<KeyRevealResult>(`/api/v1/entitlements/${id}/keys/reveal`, {
+          method: 'POST', body: { slot }, cache: 'no-store', signal,
+        }),
+      listMyEntitlements: () => request<Entitlement[]>('/api/v1/me/entitlements'),
+      getMyEntitlementConnection: (id) =>
+        request<ModelConnection>(`/api/v1/me/entitlements/${id}/connection`),
+      revealMyEntitlementKey: (id, slot, signal) =>
+        request<KeyRevealResult>(`/api/v1/me/entitlements/${id}/keys/reveal`, {
+          method: 'POST', body: { slot }, cache: 'no-store', signal,
+        }),
       resolveEntitlements: (principalId) =>
         request<ResolvedEntitlement[]>(
           `/api/v1/entitlements/resolve?principalId=${encodeURIComponent(principalId)}`,

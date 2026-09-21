@@ -6,6 +6,8 @@ product or subscription that realizes a grant, because gateway telemetry is keye
 subscription and a grant with no binding cannot be joined to a usage row.
 """
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
 import structlog
@@ -44,6 +46,12 @@ from mosaic_api.repositories import (
     ModelEndpointRepository,
 )
 from mosaic_api.services.directory import Actor
+from mosaic_api.services.model_access import (
+    decorate_entitlement,
+    entitlement_publication,
+    managed_grant_needs_retention,
+    publication_lock,
+)
 
 logger = structlog.get_logger()
 
@@ -242,6 +250,30 @@ class EntitlementService:
 
     # ------------------------------------------------------------------ CRUD
 
+    async def _decorate(self, entitlement: Entitlement) -> Entitlement:
+        publication = await entitlement_publication(self._gateways, entitlement)
+        principal = (
+            await self._directory.get_principal(entitlement.tenant_id, entitlement.subject.id)
+            if entitlement.subject.kind != "group"
+            else None
+        )
+        locked = bool(
+            publication
+            and await self._gateways.get_publication_lock(
+                entitlement.tenant_id, publication.id
+            )
+        )
+        return decorate_entitlement(entitlement, publication, principal, locked=locked)
+
+    @asynccontextmanager
+    async def _mutation(self, entitlement: Entitlement) -> AsyncIterator[None]:
+        publication = await entitlement_publication(self._gateways, entitlement)
+        if publication is None:
+            yield
+        else:
+            async with publication_lock(self._gateways, entitlement.tenant_id, publication.id):
+                yield
+
     async def list_entitlements(
         self,
         actor: Actor,
@@ -249,17 +281,20 @@ class EntitlementService:
         subject_id: str | None = None,
         resource_id: str | None = None,
     ) -> list[Entitlement]:
-        return await self._repository.list_entitlements(
+        records = await self._repository.list_entitlements(
             actor.tenant_id, subject_id=subject_id, resource_id=resource_id
         )
+        return [await self._decorate(record) for record in records]
 
     async def get_entitlement(self, actor: Actor, entitlement_ref: str) -> Entitlement:
         entitlement = await self._repository.get_entitlement(actor.tenant_id, entitlement_ref)
         if not entitlement:
             raise NotFoundError("Entitlement was not found", details={"id": entitlement_ref})
-        return entitlement
+        return await self._decorate(entitlement)
 
     async def create_entitlement(self, actor: Actor, request: EntitlementCreate) -> Entitlement:
+        if request.binding and request.binding.source == BindingSource.ORCHESTRATED:
+            raise ValidationError("Orchestrated bindings are server-managed")
         await self._validate_subject(actor, request.subject)
         descriptor = await self._describe_resource(actor, request.resource)
         binding = request.binding
@@ -275,10 +310,12 @@ class EntitlementService:
             binding=binding,
             notes=request.notes,
         )
-        saved = await self._repository.create_entitlement(
-            record,
-            self._audit(actor, "entitlement.created", "entitlement", record.id),
-        )
+        async with self._mutation(record):
+            await self._validate_subject(actor, request.subject)
+            saved = await self._repository.create_entitlement(
+                record,
+                self._audit(actor, "entitlement.created", "entitlement", record.id),
+            )
         logger.info(
             "entitlement_created",
             entitlement_id=record.id,
@@ -287,13 +324,33 @@ class EntitlementService:
             bound=binding is not None,
             tenant_id=actor.tenant_id,
         )
-        return saved
+        return await self._decorate(saved)
 
     async def update_entitlement(
         self, actor: Actor, entitlement_ref: str, request: EntitlementUpdate
     ) -> Entitlement:
         entitlement = await self.get_entitlement(actor, entitlement_ref)
+        async with self._mutation(entitlement):
+            saved = await self._update_entitlement(actor, entitlement_ref, request)
+        return await self._decorate(saved)
+
+    async def _update_entitlement(
+        self, actor: Actor, entitlement_ref: str, request: EntitlementUpdate
+    ) -> Entitlement:
+        entitlement = await self.get_entitlement(actor, entitlement_ref)
         changes = request.model_dump(exclude_unset=True)
+        publication = await entitlement_publication(self._gateways, entitlement)
+        if "binding" in changes and (
+            (entitlement.binding and entitlement.binding.source == BindingSource.ORCHESTRATED)
+            or (
+                publication is not None
+                and managed_grant_needs_retention(publication, entitlement.id)
+            )
+            or (request.binding and request.binding.source == BindingSource.ORCHESTRATED)
+        ):
+            raise ConflictError(
+                "This grant's runtime binding is server-managed and cannot be cleared or replaced"
+            )
         # ``enabled`` is not nullable on the stored record, so an explicit null means "leave it
         # alone" rather than a validation crash. ``enforcement``, ``binding``, and ``notes`` are
         # nullable and keep their clear-on-null behaviour.
@@ -305,6 +362,7 @@ class EntitlementService:
                 **changes,
                 "etag": entitlement.etag,
                 "updated_at": utc_now(),
+                "runtime": None,
             }
         )
         return await self._repository.save_entitlement(
@@ -314,10 +372,20 @@ class EntitlementService:
 
     async def delete_entitlement(self, actor: Actor, entitlement_ref: str) -> None:
         entitlement = await self.get_entitlement(actor, entitlement_ref)
-        await self._repository.delete_entitlement(
-            entitlement,
-            self._audit(actor, "entitlement.deleted", "entitlement", entitlement_ref),
-        )
+        async with self._mutation(entitlement):
+            entitlement = await self.get_entitlement(actor, entitlement_ref)
+            publication = await entitlement_publication(self._gateways, entitlement)
+            if publication and managed_grant_needs_retention(publication, entitlement.id):
+                raise ConflictError(
+                    "This grant still has managed or uncertain runtime access. Disable and apply "
+                    "it to revoke access; retain the disabled grant until its publication is "
+                    "unpublished so its subscription is not orphaned.",
+                    details={"publicationId": publication.id},
+                )
+            await self._repository.delete_entitlement(
+                entitlement,
+                self._audit(actor, "entitlement.deleted", "entitlement", entitlement_ref),
+            )
 
     # ------------------------------------------------------------------ resolution
 
@@ -347,7 +415,7 @@ class EntitlementService:
         ):
             if entitlement.subject.kind != "group" and entitlement.enabled:
                 resolved[_resource_key(entitlement.resource)] = ResolvedEntitlement(
-                    entitlement=entitlement, via=GrantPath.DIRECT
+                    entitlement=await self._decorate(entitlement), via=GrantPath.DIRECT
                 )
 
         memberships = await self._directory.list_memberships(

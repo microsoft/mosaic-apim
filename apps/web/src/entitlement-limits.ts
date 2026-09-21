@@ -1,6 +1,7 @@
-import type { Entitlement, QuotaPeriod } from './types'
+import type { Entitlement, ModelAccessSettings, QuotaPeriod, TokenEnforcement } from './types'
 
 export const DEFAULT_COUNTER_KEY = '@(context.Subscription?.Key)'
+export const GOVERNED_COUNTER_KEY = '@(context.Subscription.Id)'
 
 export const QUOTA_PERIODS: QuotaPeriod[] = [
   'Hourly',
@@ -44,18 +45,13 @@ export function callRateError(form: {
   return null
 }
 
-/**
- * Render an entitlement's limits as sentences, matching how MOSAIC already explains observed
- * policy. An entitlement with no enforcement is genuinely unrestricted and says so, rather than
- * implying a limit of zero.
- */
-export function describeLimits(entitlement: Entitlement): string[] {
+export function describeLimits(
+  entitlement: Pick<Entitlement, 'enforcement'>,
+  publicationLimits?: TokenEnforcement | null,
+): string[] {
   const enforcement = entitlement.enforcement
-  if (!enforcement || (!enforcement.tokens && !enforcement.requests)) {
-    return ['No limit is configured. This grant is unrestricted.']
-  }
   const sentences: string[] = []
-  const tokens = enforcement.tokens
+  const tokens = enforcement?.tokens
   if (tokens?.tokensPerMinute) {
     sentences.push(`Limits usage to ${tokens.tokensPerMinute.toLocaleString()} tokens per minute.`)
   }
@@ -65,7 +61,7 @@ export function describeLimits(entitlement: Entitlement): string[] {
         `${periodPhrase(tokens.tokenQuotaPeriod)}.`,
     )
   }
-  const requests = enforcement.requests
+  const requests = enforcement?.requests
   if (requests?.calls && requests.renewalPeriodSeconds) {
     const per =
       requests.renewalPeriodSeconds === 60
@@ -81,5 +77,26 @@ export function describeLimits(entitlement: Entitlement): string[] {
         `${periodPhrase(requests.callQuotaPeriod)}.`,
     )
   }
+  if (sentences.length === 0) {
+    sentences.push('No grant-specific limit is configured.')
+  }
+  if (publicationLimits) {
+    sentences.push(...describePublicationLimits(publicationLimits).map((limit) => `Publication: ${limit}`))
+  }
   return sentences
+}
+
+export function describePublicationLimits(enforcement: TokenEnforcement): string[] {
+  if (!enforcement.tokensPerMinute && !enforcement.tokenQuota) {
+    return ['No publication token limit is configured.']
+  }
+  return describeLimits({ enforcement: { tokens: enforcement } })
+}
+
+export function describeAccessMethods(settings?: ModelAccessSettings | null): string {
+  if (!settings) return 'Not applied'
+  if (settings.keysEnabled && settings.entraEnabled) return 'Subscription key OR Entra token'
+  if (settings.keysEnabled) return 'Subscription key only'
+  if (settings.entraEnabled) return 'Entra token only'
+  return 'Deny all — both methods disabled'
 }
