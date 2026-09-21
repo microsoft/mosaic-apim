@@ -3,6 +3,7 @@ import type {
   CatalogEntry,
   Entitlement,
   EntitlementResource,
+  EntitlementRuntime,
   QuotaPeriod,
   ResolvedEntitlement,
 } from './types'
@@ -27,6 +28,21 @@ const stateLabels: Record<AccessRequest['state'], string> = {
   approved: 'Approved',
   denied: 'Denied',
   withdrawn: 'Withdrawn',
+}
+
+const runtimeLabels: Record<EntitlementRuntime['status'], string> = {
+  pending: 'APIM changes pending',
+  applying: 'Applying to APIM',
+  applied: 'Applied to APIM',
+  revocationPending: 'APIM revocation pending',
+  revoked: 'Runtime access revoked',
+  failed: 'APIM apply failed',
+  unknown: 'Runtime status unknown',
+}
+
+export function describeRuntime(entitlement: Entitlement) {
+  if (entitlement.runtime) return runtimeLabels[entitlement.runtime.status]
+  return entitlement.enabled ? 'Recorded grant' : 'Disabled grant'
 }
 
 export function resourceKindLabel(kind: EntitlementResource['kind'] | CatalogEntry['kind']) {
@@ -58,8 +74,8 @@ export function describeBinding(entitlement: Entitlement) {
     return 'No usage attribution is configured yet.'
   }
   const pieces = [
-    entitlement.binding.productName ? `Product ${entitlement.binding.productName}` : null,
-    entitlement.binding.subscriptionName ? `Subscription ${entitlement.binding.subscriptionName}` : null,
+    entitlement.binding.apimProductName ? `Product ${entitlement.binding.apimProductName}` : null,
+    entitlement.binding.apimSubscriptionName ? `Subscription ${entitlement.binding.apimSubscriptionName}` : null,
     entitlement.binding.gatewayId ? `Gateway ${entitlement.binding.gatewayId}` : null,
   ].filter(Boolean)
   return pieces.length > 0 ? pieces.join(' · ') : 'Usage attribution is configured.'
@@ -68,7 +84,7 @@ export function describeBinding(entitlement: Entitlement) {
 export function describeLimits(entitlement: Entitlement) {
   const enforcement = entitlement.enforcement
   if (!enforcement) {
-    return ['No limits applied']
+    return ['No additional grant limits configured']
   }
   const limits: string[] = []
   if (enforcement.tokens?.tokensPerMinute != null) {
@@ -92,7 +108,7 @@ export function describeLimits(entitlement: Entitlement) {
       `${formatNumber(enforcement.requests.callQuota)} calls per ${periodLabels[enforcement.requests.callQuotaPeriod]}`,
     )
   }
-  return limits.length > 0 ? limits : ['No limits applied']
+  return limits.length > 0 ? limits : ['No additional grant limits configured']
 }
 
 export function sameResource(a: EntitlementResource, b: EntitlementResource) {

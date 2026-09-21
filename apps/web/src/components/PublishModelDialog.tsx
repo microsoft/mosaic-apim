@@ -28,6 +28,7 @@ import {
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMosaicApi } from '../api'
+import { runtimeConfig } from '../runtime-config'
 import type {
   Gateway,
   PublishedResourceKind,
@@ -42,6 +43,8 @@ import type {
 } from '../types'
 import { ErrorState, Loading } from './AsyncState'
 import { PolicyFacetItem } from './PolicyFacets'
+import { ModelAccessReview } from './ModelAccessReview'
+import { ModelAccessRecovery } from './ModelAccessRecovery'
 import styles from './ImportFromGatewayDialog.module.css'
 
 type Step = 'choose' | 'configure' | 'review' | 'apply'
@@ -94,6 +97,7 @@ const terminalRunStatuses: PublishRunStatus[] = [
   'failed',
   'rolledBack',
   'rollbackFailed',
+  'interrupted',
 ]
 
 function parsePositiveInteger(value: string): number | undefined {
@@ -154,8 +158,9 @@ function RuntimeAccessNote({ model }: { model: PublishableModel }) {
   return (
     <MessageBar intent="success">
       <MessageBarBody>
-        <MessageBarTitle>Runtime access observed</MessageBarTitle>
-        {access.message ?? 'MOSAIC observed that the gateway can call this model.'}
+        <MessageBarTitle>Runtime permissions observed</MessageBarTitle>
+        {access.message ?? 'MOSAIC observed runtime permissions for this gateway.'}
+        {' '}Permission metadata is not a successful live model invocation.
       </MessageBarBody>
     </MessageBar>
   )
@@ -165,11 +170,37 @@ function RunResult({ run }: { run: PublishRun }) {
   const orphans = run.orphanedResources ?? []
   return (
     <div className={styles.nameCell}>
+      {run.status === 'interrupted' && (
+        <MessageBar intent="warning">
+          <MessageBarBody>
+            <MessageBarTitle>Apply interrupted — runtime state unknown</MessageBarTitle>
+            Some changes may have reached API Management. Access and revocation are not confirmed.
+            Reconcile this run before attempting another apply.
+          </MessageBarBody>
+        </MessageBar>
+      )}
+      {run.status === 'interrupted' && <ModelAccessRecovery publicationId={run.publicationId} runId={run.id} />}
+      {run.status === 'failed' && (
+        <MessageBar intent="error">
+          <MessageBarBody>Apply failed. Do not assume the target access or revocation is active.</MessageBarBody>
+        </MessageBar>
+      )}
+      {run.status === 'succeeded' && (
+        <MessageBar intent={runtimeConfig.authMode === 'local' ? 'warning' : 'success'}>
+          <MessageBarBody>
+            {runtimeConfig.authMode === 'local'
+              ? 'Local development service reported completion; live APIM apply is not verified.'
+              : 'The service reports the plan applied. Allow for gateway propagation; a live model invocation has not been verified.'}
+          </MessageBarBody>
+        </MessageBar>
+      )}
       {run.rolledBack && (
         <MessageBar intent="warning">
           <MessageBarBody>
             <MessageBarTitle>Rolled back</MessageBarTitle>
-            MOSAIC undid what it created during this publish run.
+            {run.accessSnapshot
+              ? 'Created resources were rolled back where possible. Restrictive policy changes may remain; consult the recorded runtime state before retrying.'
+              : 'MOSAIC undid what it created during this publish run.'}
           </MessageBarBody>
         </MessageBar>
       )}
@@ -197,12 +228,13 @@ function RunResult({ run }: { run: PublishRun }) {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {run.steps.map((step) => (
-              <TableRow key={`${step.kind}-${step.name}`}>
+            {run.steps.map((step, index) => (
+              <TableRow key={`${step.kind}-${step.name}-${step.stage ?? 'default'}-${index}`}>
                 <TableCell>
                   <div className={styles.nameCell}>
                     <Text weight="semibold">{kindLabels[step.kind]}</Text>
                     <Text size={200}>{step.name}</Text>
+                    {step.stage && <Text size={200}>Stage: {step.stage}</Text>}
                   </div>
                 </TableCell>
                 <TableCell>{actionLabels[step.action]}</TableCell>
@@ -244,19 +276,22 @@ export function PublishModelDialog({
   const [plan, setPlan] = useState<PublishPlan | null>(null)
   const [reviewMessage, setReviewMessage] = useState('')
   const [runId, setRunId] = useState('')
+  const [refreshError, setRefreshError] = useState<Error | null>(null)
+  const [invalidPlan, setInvalidPlan] = useState(false)
   const appliedGatewayRef = useRef(false)
+  const notifiedRunRef = useRef('')
   const reviewingExistingPlan = Boolean(initialReview)
 
   const gateways = useQuery({
     queryKey: ['gateways'],
     queryFn: () => api.listGateways(),
-    enabled: open,
+    enabled: open && !reviewingExistingPlan,
   })
 
   const gatewayOptions: Gateway[] = useMemo(() => gateways.data ?? [], [gateways.data])
 
   useEffect(() => {
-    if (!open) {
+    if (!open || reviewingExistingPlan) {
       appliedGatewayRef.current = false
       return
     }
@@ -264,12 +299,12 @@ export function PublishModelDialog({
       appliedGatewayRef.current = true
       setGatewayId(gatewayOptions.find((gateway) => gateway.managementMode === 'manage')?.id ?? '')
     }
-  }, [open, gatewayOptions])
+  }, [open, gatewayOptions, reviewingExistingPlan])
 
   const publishable = useQuery({
     queryKey: ['publishable-models', gatewayId],
     queryFn: () => api.listPublishableModels(gatewayId),
-    enabled: open && gatewayId !== '',
+    enabled: open && !reviewingExistingPlan && gatewayId !== '',
   })
 
   const models = publishable.data ?? []
@@ -283,6 +318,8 @@ export function PublishModelDialog({
     setPlan(initialReview.plan)
     setReviewMessage(initialReview.message ?? '')
     setRunId('')
+    setInvalidPlan(false)
+    setRefreshError(null)
     setGatewayId(initialReview.publication.gatewayId)
     setStep('review')
   }, [open, initialReview])
@@ -331,10 +368,18 @@ export function PublishModelDialog({
     },
     onError: async (error) => {
       if (!publication || (error as { status?: number }).status !== 409) return
-      const freshPlan = await api.createPublishPlan(publication.id)
-      setPlan(freshPlan)
-      setReviewMessage(error instanceof Error ? error.message : 'The publish plan is stale. Review the fresh plan before applying.')
-      setStep('review')
+      setInvalidPlan(true)
+      setRefreshError(null)
+      setReviewMessage(error instanceof Error ? error.message : 'The publish plan is stale.')
+      try {
+        const freshPlan = await api.createPublishPlan(publication.id)
+        setPlan(freshPlan)
+        setInvalidPlan(false)
+        setReviewMessage('The earlier plan was rejected. Review the entire refreshed model plan before applying again.')
+        setStep('review')
+      } catch (refreshFailure) {
+        setRefreshError(refreshFailure instanceof Error ? refreshFailure : new Error('Unable to refresh this plan. Close and review again.'))
+      }
       void queryClient.invalidateQueries({ queryKey: ['publications'] })
     },
   })
@@ -352,10 +397,16 @@ export function PublishModelDialog({
   const currentRun = run.data ?? apply.data ?? null
 
   useEffect(() => {
-    if (currentRun && terminalRunStatuses.includes(currentRun.status)) {
+    if (currentRun && terminalRunStatuses.includes(currentRun.status) && notifiedRunRef.current !== currentRun.id) {
+      notifiedRunRef.current = currentRun.id
       void queryClient.invalidateQueries({ queryKey: ['publications'] })
+      void queryClient.invalidateQueries({ queryKey: ['entitlements'] })
+      void queryClient.invalidateQueries({ queryKey: ['model-apis'] })
+      void queryClient.invalidateQueries({ queryKey: ['entitlement-connection'] })
       if (currentRun.status === 'succeeded') {
-        onPublished('Published model to API Management.')
+        onPublished(runtimeConfig.authMode === 'local'
+          ? 'Local development service reported completion. Live APIM apply is not verified.'
+          : 'The service reports the model plan applied. Allow for APIM propagation; live invocation is not verified.')
       }
     }
   }, [currentRun, onPublished, queryClient])
@@ -369,20 +420,29 @@ export function PublishModelDialog({
     setPlan(null)
     setReviewMessage('')
     setRunId('')
+    setRefreshError(null)
+    setInvalidPlan(false)
+    notifiedRunRef.current = ''
+    apply.reset()
+    createAndPlan.reset()
     onClose()
   }
 
   const canConfigure = Boolean(gatewayId && selectedModel)
   const canReview = Boolean(form.apiName.trim() && form.apiPath.trim() && form.counterKeyExpression.trim())
+  const missingAccessReview = Boolean(publication?.governedAccess && !plan?.accessSnapshot)
 
   return (
     <Dialog open={open} onOpenChange={(_, data) => !data.open && resetAndClose()}>
       <DialogSurface>
         <DialogBody>
-          <DialogTitle>Publish a model</DialogTitle>
+          <DialogTitle>{initialReview?.plan.accessSnapshot ? 'Review model access' : 'Publish a model'}</DialogTitle>
           <DialogContent>
             <div className={styles.intro}>
               <Text>Plan the API Management resources first, then explicitly apply the plan.</Text>
+              {runtimeConfig.authMode === 'local' && (
+                <Text>Local development mode: responses may be simulated and do not prove a live APIM change.</Text>
+              )}
               <Text size={200}>Step {['choose', 'configure', 'review', 'apply'].indexOf(step) + 1} of 4</Text>
             </div>
 
@@ -518,6 +578,12 @@ export function PublishModelDialog({
                     <MessageBarBody><MessageBarTitle>Plan warning</MessageBarTitle>{warning}</MessageBarBody>
                   </MessageBar>
                 ))}
+                <ModelAccessReview plan={plan} />
+                {missingAccessReview && (
+                  <MessageBar intent="error">
+                    <MessageBarBody>The governed-access snapshot is missing. Close and request a fresh model plan; access changes cannot be applied without reviewing all target grants.</MessageBarBody>
+                  </MessageBar>
+                )}
                 <Title3 as="h3">Plan steps</Title3>
                 <div className={styles.tableScroll}>
                   <Table size="small" aria-label="Publish plan steps">
@@ -529,9 +595,14 @@ export function PublishModelDialog({
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {plan.steps.map((planStep) => (
-                        <TableRow key={`${planStep.kind}-${planStep.name}`}>
-                          <TableCell>{kindLabels[planStep.kind]} · {planStep.name}</TableCell>
+                      {plan.steps.map((planStep, index) => (
+                        <TableRow key={`${planStep.kind}-${planStep.name}-${planStep.stage ?? 'default'}-${index}`}>
+                          <TableCell>
+                            {kindLabels[planStep.kind]} · {planStep.name}
+                            {planStep.stage && <Text block size={200}>Stage: {planStep.stage}</Text>}
+                            {planStep.entitlementId && <Text block size={200}>Grant: {planStep.entitlementId}</Text>}
+                            {planStep.subscriptionState && <Text block size={200}>Subscription state: {planStep.subscriptionState}</Text>}
+                          </TableCell>
                           <TableCell><Badge appearance="tint">{actionLabels[planStep.action]}</Badge></TableCell>
                           <TableCell>{planStep.reason}</TableCell>
                         </TableRow>
@@ -550,6 +621,7 @@ export function PublishModelDialog({
                   </>
                 )}
                 {applyError && <ErrorState error={applyError} />}
+                {refreshError && <ErrorState error={refreshError} />}
               </div>
             )}
 
@@ -574,7 +646,7 @@ export function PublishModelDialog({
               </Button>
             )}
             {step === 'review' && (
-              <Button appearance="primary" disabled={apply.isPending} onClick={() => apply.mutate()}>
+              <Button appearance="primary" disabled={apply.isPending || invalidPlan || missingAccessReview} onClick={() => apply.mutate()}>
                 {apply.isPending ? 'Applying…' : 'Apply plan'}
               </Button>
             )}

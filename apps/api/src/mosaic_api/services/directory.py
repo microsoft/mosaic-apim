@@ -1,3 +1,5 @@
+from collections.abc import AsyncIterator
+from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 
 from mosaic_api.domain import (
@@ -14,7 +16,8 @@ from mosaic_api.domain import (
     utc_now,
 )
 from mosaic_api.errors import ConflictError, NotFoundError
-from mosaic_api.repositories import DirectoryRepository
+from mosaic_api.repositories import DirectoryRepository, EntitlementRepository, GatewayRepository
+from mosaic_api.services.model_access import entitlement_publication, publication_lock
 
 
 @dataclass(frozen=True)
@@ -24,8 +27,40 @@ class Actor:
 
 
 class DirectoryService:
-    def __init__(self, repository: DirectoryRepository) -> None:
+    def __init__(
+        self,
+        repository: DirectoryRepository,
+        *,
+        gateway_repository: GatewayRepository | None = None,
+        entitlement_repository: EntitlementRepository | None = None,
+    ) -> None:
         self._repository = repository
+        self._gateways = gateway_repository
+        self._entitlements = entitlement_repository
+
+    @asynccontextmanager
+    async def _principal_mutation(self, actor: Actor, principal_id: str) -> AsyncIterator[None]:
+        publications: set[str] = set()
+        if self._gateways:
+            if self._entitlements:
+                for grant in await self._entitlements.list_entitlements(
+                    actor.tenant_id, subject_id=principal_id
+                ):
+                    publication = await entitlement_publication(self._gateways, grant)
+                    if publication:
+                        publications.add(publication.id)
+            for publication in await self._gateways.list_publications(actor.tenant_id):
+                if publication.applied_access and any(
+                    grant.subject.id == principal_id for grant in publication.applied_access.grants
+                ):
+                    publications.add(publication.id)
+        async with AsyncExitStack() as stack:
+            if self._gateways:
+                for publication_id in sorted(publications):
+                    await stack.enter_async_context(
+                        publication_lock(self._gateways, actor.tenant_id, publication_id)
+                    )
+            yield
 
     @staticmethod
     def _audit_event(actor: Actor, action: str, resource_type: str, resource_id: str) -> AuditEvent:
@@ -70,8 +105,16 @@ class DirectoryService:
     async def update_principal(
         self, actor: Actor, principal_id: str, request: PrincipalUpdate
     ) -> Principal:
+        async with self._principal_mutation(actor, principal_id):
+            return await self._update_principal(actor, principal_id, request)
+
+    async def _update_principal(
+        self, actor: Actor, principal_id: str, request: PrincipalUpdate
+    ) -> Principal:
         principal = await self.get_principal(actor, principal_id)
         changes = request.model_dump(exclude_unset=True)
+        if changes.get("kind") not in {None, principal.kind}:
+            await self._require_no_grants(actor, principal_id, active_only=True)
         updated = Principal.model_validate(
             {
                 **principal.model_dump(by_alias=False),
@@ -87,7 +130,40 @@ class DirectoryService:
         return saved
 
     async def delete_principal(self, actor: Actor, principal_id: str) -> None:
+        async with self._principal_mutation(actor, principal_id):
+            await self._delete_principal(actor, principal_id)
+
+    async def _require_no_grants(
+        self, actor: Actor, principal_id: str, *, active_only: bool = False
+    ) -> None:
+        if self._entitlements:
+            grants = await self._entitlements.list_entitlements(
+                actor.tenant_id, subject_id=principal_id
+            )
+            if any(grant.enabled or not active_only for grant in grants):
+                raise ConflictError(
+                    "Remove this principal's grants before deleting it or changing its kind",
+                    details={"principalId": principal_id},
+                )
+        if self._gateways:
+            for publication in await self._gateways.list_publications(actor.tenant_id):
+                if publication.applied_access and any(
+                    grant.subject.id == principal_id
+                    and (
+                        grant.enabled
+                        or publication.created_resources()
+                        or publication.access_state in {"applying", "unknown"}
+                    )
+                    for grant in publication.applied_access.grants
+                ):
+                    raise ConflictError(
+                        "This principal has managed runtime access; unpublish its model first",
+                        details={"publicationId": publication.id},
+                    )
+
+    async def _delete_principal(self, actor: Actor, principal_id: str) -> None:
         principal = await self.get_principal(actor, principal_id)
+        await self._require_no_grants(actor, principal_id)
         memberships = await self._repository.list_memberships(
             actor.tenant_id, principal_id=principal_id
         )

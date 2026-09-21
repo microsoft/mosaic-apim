@@ -172,6 +172,7 @@ class ArmClient:
         json: JsonObject | None = None,
         if_match: str | None = None,
         allow_not_found: bool = False,
+        sensitive: bool = False,
     ) -> httpx.Response | None:
         target = url if url.startswith("http") else f"{self._base_url}{url}"
         last_error: str = "unknown error"
@@ -187,34 +188,53 @@ class ArmClient:
                     method, target, params=params, json=json, headers=headers
                 )
             except httpx.HTTPError as error:
-                last_error = str(error)
+                last_error = "Credential request transport failure" if sensitive else str(error)
                 if attempt == MAX_ATTEMPTS - 1:
-                    raise UpstreamError(
+                    failure = UpstreamError(
                         "MOSAIC could not reach Azure Resource Manager",
                         details={"url": target, "reason": last_error},
-                    ) from error
+                    )
+                    if sensitive:
+                        raise failure from None
+                    raise failure from error
                 await self._sleep(min(2.0**attempt, MAX_RETRY_DELAY_SECONDS))
                 continue
 
             if response.status_code in {401, 403}:
                 raise UpstreamAuthorizationError(
                     "MOSAIC's identity is not authorized for this Azure resource",
-                    details={"url": target, "reason": self._upstream_detail(response)},
+                    details={
+                        "url": target,
+                        "reason": "Access denied" if sensitive else self._upstream_detail(response),
+                    },
                 )
             if response.status_code == 404:
                 if allow_not_found:
                     return None
                 raise UpstreamNotFoundError(
                     "The Azure resource was not found",
-                    details={"url": target, "reason": self._upstream_detail(response)},
+                    details={
+                        "url": target,
+                        "reason": (
+                            "Resource not found" if sensitive else self._upstream_detail(response)
+                        ),
+                    },
                 )
             if response.status_code == 412:
                 raise UpstreamConflictError(
                     "The Azure resource changed since MOSAIC last read it",
-                    details={"url": target, "reason": self._upstream_detail(response)},
+                    details={
+                        "url": target,
+                        "reason": (
+                            "Resource changed" if sensitive else self._upstream_detail(response)
+                        ),
+                    },
                 )
             if response.status_code == 429 or response.status_code >= 500:
-                last_error = self._upstream_detail(response)
+                last_error = (
+                    f"Credential request returned HTTP {response.status_code}"
+                    if sensitive else self._upstream_detail(response)
+                )
                 if attempt == MAX_ATTEMPTS - 1:
                     break
                 delay = self._retry_delay(response, attempt)
@@ -233,8 +253,11 @@ class ArmClient:
                     details={
                         "url": target,
                         "statusCode": response.status_code,
-                        "code": self._upstream_code(response),
-                        "reason": self._upstream_detail(response),
+                        "code": None if sensitive else self._upstream_code(response),
+                        "reason": (
+                            "Credential request rejected"
+                            if sensitive else self._upstream_detail(response)
+                        ),
                     },
                 )
             return response
@@ -243,6 +266,22 @@ class ArmClient:
             "Azure Resource Manager did not return a usable response",
             details={"url": target, "reason": last_error},
         )
+
+    async def post_sensitive(
+        self, url: str, *, params: dict[str, str]
+    ) -> JsonObject:
+        """Read ARM credentials without reflecting response content in errors or diagnostics."""
+
+        response = await self._send("POST", url, params=params, sensitive=True)
+        if response is None:
+            raise UpstreamError("Azure did not return the requested credentials")
+        try:
+            payload = response.json()
+        except ValueError:
+            raise UpstreamError("Azure returned an invalid credential response") from None
+        if not isinstance(payload, dict):
+            raise UpstreamError("Azure returned an invalid credential response")
+        return payload
 
     async def get(
         self,

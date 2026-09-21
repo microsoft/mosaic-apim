@@ -76,10 +76,19 @@ export interface EntitlementEnforcement {
 }
 
 export interface EntitlementBinding {
-  gatewayId: string | null
-  productName: string | null
-  subscriptionName: string | null
+  gatewayId: string
+  apimProductName: string | null
+  apimSubscriptionName: string | null
   source: 'inferred' | 'manual' | 'orchestrated' | null
+}
+
+export interface EntitlementRuntime {
+  publicationId: string
+  status: 'pending' | 'applying' | 'applied' | 'revocationPending' | 'revoked' | 'failed' | 'unknown'
+  appliedMethods: { keysEnabled: boolean; entraEnabled: boolean } | null
+  subscriptionName: string | null
+  appliedAt: string | null
+  error: string | null
 }
 
 export interface Entitlement {
@@ -91,6 +100,7 @@ export interface Entitlement {
   enabled: boolean
   enforcement: EntitlementEnforcement | null
   binding: EntitlementBinding | null
+  runtime?: EntitlementRuntime | null
   notes: string | null
   createdAt: string
   updatedAt: string

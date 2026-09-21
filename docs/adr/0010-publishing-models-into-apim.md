@@ -2,6 +2,11 @@
 
 **Status:** Accepted
 
+**Update:** [ADR 0011](0011-governed-model-access.md) joins opted-in publications to direct
+entitlements and supersedes this record's "never calls listSecrets" product policy with
+authorized, audited, on-demand key reveal. The historical tradeoffs below describe the initial
+publishing release; legacy publications retain their behavior until explicitly opted in.
+
 ## Context
 
 ADR 0001 made APIM the runtime plane and MOSAIC the control plane, but deliberately stopped

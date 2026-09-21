@@ -74,9 +74,10 @@ describe('MyAccessPage', () => {
     expect(screen.getByText('600 calls per 60 seconds')).toBeVisible()
     expect(screen.getByText('100,000 calls per month')).toBeVisible()
     expect(screen.getByText('No usage attribution is configured yet.')).toBeVisible()
+    expect(screen.getByText('Recorded grant')).toBeVisible()
   })
 
-  it('renders unrestricted entitlements as unrestricted rather than zero', async () => {
+  it('distinguishes absent grant limits from inherited publication limits', async () => {
     renderPage([
       {
         entitlement: { ...baseEntitlement, enforcement: null },
@@ -86,7 +87,46 @@ describe('MyAccessPage', () => {
       },
     ])
 
-    expect(await screen.findByText('No limits applied')).toBeVisible()
+    expect(await screen.findByText('No additional grant limits configured')).toBeVisible()
+    expect(screen.getByText(/Publication and gateway limits may also apply/)).toBeVisible()
     expect(screen.queryByText(/0/)).not.toBeInTheDocument()
+  })
+
+  it.each([
+    ['pending', 'APIM changes pending'],
+    ['applying', 'Applying to APIM'],
+    ['applied', 'Applied to APIM'],
+    ['revocationPending', 'APIM revocation pending'],
+    ['revoked', 'Runtime access revoked'],
+    ['failed', 'APIM apply failed'],
+    ['unknown', 'Runtime status unknown'],
+  ] as const)('renders %s runtime state separately from saved intent', async (status, label) => {
+    renderPage([{
+      entitlement: {
+        ...baseEntitlement,
+        subject: { kind: 'user', id: 'user-1' },
+        binding: {
+          gatewayId: 'gateway-1',
+          apimProductName: 'model-product',
+          apimSubscriptionName: 'grant-subscription',
+          source: 'orchestrated',
+        },
+        runtime: {
+          publicationId: 'publication-1',
+          status,
+          appliedMethods: { keysEnabled: true, entraEnabled: true },
+          subscriptionName: 'grant-subscription',
+          appliedAt: null,
+          error: null,
+        },
+      },
+      via: 'direct',
+      viaGroupId: null,
+      viaGroupName: null,
+    }])
+    expect(await screen.findByText(label)).toBeVisible()
+    expect(screen.getByText(/Product model-product/)).toBeVisible()
+    expect(screen.getByText(/Subscription grant-subscription/)).toBeVisible()
+    expect(screen.queryByText('Enabled')).not.toBeInTheDocument()
   })
 })

@@ -26,7 +26,7 @@ from mosaic_api.config import AuthMode, Environment, RepositoryBackend, Settings
 from mosaic_api.main import create_app
 
 KEY_ID = "test-key"
-PORTAL_PREFIX = "/api/v1/portal"
+PORTAL_PREFIXES = ("/api/v1/portal/", "/api/v1/me/")
 
 Admin = Annotated[AuthContext, Depends(require_admin)]
 PortalUser = Annotated[AuthContext, Depends(require_portal_user)]
@@ -182,14 +182,13 @@ def _admin_routes(app: FastAPI) -> list[tuple[str, str]]:
     Read from the schema rather than ``app.routes`` so the check keeps covering every route as
     FastAPI changes how included routers are represented internally.
 
-    ``/api/v1/portal`` is excluded because it is deliberately reachable by a portal user; it has
-    its own coverage in ``test_portal_api.py``. The prefix is the only exemption, so a new admin
-    route added anywhere else is still caught by this test rather than quietly ungated.
+    The portal read model and current-user credential APIs have their own authorization coverage.
+    Only their explicit prefixes are exempt, so a new admin route elsewhere is still checked.
     """
 
     calls: list[tuple[str, str]] = []
     for path, operations in app.openapi()["paths"].items():
-        if not path.startswith("/api/v1") or path.startswith(PORTAL_PREFIX):
+        if not path.startswith("/api/v1") or path.startswith(PORTAL_PREFIXES):
             continue
         concrete = path
         while "{" in concrete:
@@ -238,7 +237,7 @@ def test_every_admin_route_refuses_a_portal_only_caller(portal_only_client: Test
 def _portal_routes(app: FastAPI) -> list[tuple[str, str]]:
     calls: list[tuple[str, str]] = []
     for path, operations in app.openapi()["paths"].items():
-        if not path.startswith(PORTAL_PREFIX):
+        if not path.startswith(PORTAL_PREFIXES):
             continue
         concrete = path
         while "{" in concrete:
@@ -264,6 +263,10 @@ def test_every_portal_route_admits_a_portal_only_caller(
 
     routes = _portal_routes(portal_only_client.app)
     assert routes, "expected the portal surface to be published"
+    assert ("GET", "/api/v1/portal/me") in routes
+    assert ("GET", "/api/v1/portal/entitlements") in routes
+    assert ("GET", "/api/v1/me/entitlements") in routes
+    assert ("POST", "/api/v1/me/entitlements/placeholder/keys/reveal") in routes
     forbidden = []
     for method, path in routes:
         response = portal_only_client.request(

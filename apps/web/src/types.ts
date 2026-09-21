@@ -83,6 +83,20 @@ export interface EntitlementBinding {
   boundAt?: string | null
 }
 
+export interface ModelAccessSettings {
+  keysEnabled: boolean
+  entraEnabled: boolean
+}
+
+export interface EntitlementRuntime {
+  publicationId: string
+  status: 'pending' | 'applying' | 'applied' | 'revocationPending' | 'revoked' | 'failed' | 'unknown'
+  appliedMethods?: ModelAccessSettings | null
+  subscriptionName?: string | null
+  appliedAt?: string | null
+  error?: string | null
+}
+
 export interface Entitlement {
   id: string
   tenantId: string
@@ -92,6 +106,7 @@ export interface Entitlement {
   enforcement?: EntitlementEnforcement | null
   binding?: EntitlementBinding | null
   notes?: string | null
+  runtime?: EntitlementRuntime | null
   createdAt: string
   updatedAt: string
 }
@@ -334,7 +349,7 @@ export interface ObservedMcpServer {
   productNames: string[]
 }
 
-export interface ModelApi {
+interface ModelApiDetails {
   id: string
   tenantId: string
   gatewayId: string
@@ -351,12 +366,16 @@ export interface ModelApi {
   visibility: CatalogVisibility
   summary?: string | null
   selection: ImportSelection
-  importedFromSnapshotId: string
   importedAt: string
   importedBy?: string | null
   createdAt: string
   updatedAt: string
 }
+
+export type ModelApi = ModelApiDetails & (
+  | { importedFromSnapshotId: string; publicationId?: string | null }
+  | { importedFromSnapshotId: null; publicationId: string }
+)
 
 export interface McpServer {
   id: string
@@ -628,7 +647,8 @@ export type PublishStepStatus =
   | 'skipped'
   | 'rolledBack'
   | 'rollbackFailed'
-export type PublishRunStatus = 'running' | 'succeeded' | 'failed' | 'rolledBack' | 'rollbackFailed'
+export type PublishRunStatus = 'running' | 'succeeded' | 'failed' | 'rolledBack' | 'rollbackFailed' | 'interrupted'
+export type PublishStage = 'prepare' | 'policy' | 'activate'
 export type PublishedResourceKind =
   | 'policyFragment'
   | 'backend'
@@ -661,6 +681,30 @@ export interface PublishableModel {
   runtimeAccess: GatewayRuntimeAccess | null
 }
 
+export interface ModelAccessGrant {
+  entitlementId: string
+  subject: EntitlementSubject
+  objectId: string
+  displayName: string
+  subscriptionName: string
+  enabled: boolean
+  enforcement?: EntitlementEnforcement | null
+  intentDigest: string
+}
+
+export interface ModelAccessSnapshot {
+  version: number
+  settings: ModelAccessSettings
+  audience?: string | null
+  publicationEnforcement: TokenEnforcement
+  grants: ModelAccessGrant[]
+}
+
+export interface PublicationLockInfo {
+  publicationId: string
+  ownerId: string | null
+}
+
 export interface Publication {
   id: string
   tenantId: string
@@ -686,6 +730,10 @@ export interface Publication {
   lastRunId: string | null
   lastAppliedAt: string | null
   lastError: string | null
+  modelApiId?: string | null
+  governedAccess?: ModelAccessSettings | null
+  appliedAccess?: ModelAccessSnapshot | null
+  accessState: 'pending' | 'applying' | 'applied' | 'failed' | 'unknown'
   createdAt: string
   updatedAt: string
 }
@@ -697,6 +745,9 @@ export interface PublishPlanStep {
   reason: string
   resourceId: string
   existed: boolean
+  entitlementId?: string | null
+  subscriptionState?: 'active' | 'suspended' | null
+  stage?: PublishStage | null
 }
 
 export interface PublishPlan {
@@ -710,6 +761,8 @@ export interface PublishPlan {
   facets: PolicyFacet[]
   policyContentSha256: string | null
   warnings: string[]
+  accessSnapshot?: ModelAccessSnapshot | null
+  previousAccessVersion?: number | null
   createdAt: string
   updatedAt: string
 }
@@ -722,6 +775,7 @@ export interface PublishStepResult {
   resourceId: string
   createdByMosaic: boolean
   error: string | null
+  stage?: PublishStage | null
 }
 
 export interface PublishRun {
@@ -740,8 +794,35 @@ export interface PublishRun {
   rolledBack: boolean
   orphanedResources: PublishedResource[]
   errors: string[]
+  accessSnapshot?: ModelAccessSnapshot | null
   createdAt: string
   updatedAt: string
+}
+
+export interface ModelConnection {
+  entitlementId: string
+  publicationId: string
+  gatewayId: string
+  endpoint: string
+  deploymentName: string
+  tenantId: string
+  runtime?: EntitlementRuntime | null
+  appliedMethods?: ModelAccessSettings | null
+  entraAudience?: string | null
+  entraScope?: string | null
+  subscriptionHeader: 'Ocp-Apim-Subscription-Key'
+  operations: { name: string; method: string; path: string }[]
+  publicationLimits: TokenEnforcement
+  grantLimits?: EntitlementEnforcement | null
+}
+
+export type KeySlot = 'primary' | 'secondary'
+
+export interface KeyRevealResult {
+  entitlementId: string
+  subscriptionName: string
+  slot: KeySlot
+  key: string
 }
 
 export interface ModelEndpointSyncRun {

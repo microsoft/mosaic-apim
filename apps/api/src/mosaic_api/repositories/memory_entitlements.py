@@ -14,6 +14,9 @@ class InMemoryEntitlementRepository:
     async def close(self) -> None:
         return None
 
+    async def record_audit(self, event: AuditEvent) -> None:
+        self.audit_events[event.id] = event
+
     async def list_entitlements(
         self,
         tenant_id: str,

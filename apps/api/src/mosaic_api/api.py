@@ -25,6 +25,8 @@ from mosaic_api.domain import (
     GroupMembership,
     GroupUpdate,
     ImportRequest,
+    KeyRevealRequest,
+    KeyRevealResult,
     McpEndpoint,
     McpEndpointCreate,
     McpEndpointSyncRun,
@@ -33,6 +35,7 @@ from mosaic_api.domain import (
     McpServerCandidateList,
     ModelApi,
     ModelApiCandidateList,
+    ModelConnection,
     ModelEndpoint,
     ModelEndpointCreate,
     ModelEndpointSuggestionView,
@@ -46,9 +49,11 @@ from mosaic_api.domain import (
     PrincipalUpdate,
     Publication,
     PublicationCreate,
+    PublicationLockInfo,
     PublicationUpdate,
     PublishableModel,
     PublishPlan,
+    PublishRecoveryRequest,
     PublishRun,
     ResolvedEntitlement,
 )
@@ -79,6 +84,7 @@ from mosaic_api.services import (
     PublishingService,
 )
 from mosaic_api.services.directory import Actor
+from mosaic_api.services.portal_access import PortalAccessService
 
 Admin = Annotated[AuthContext, Depends(require_admin)]
 PortalUser = Annotated[AuthContext, Depends(require_portal_user)]
@@ -104,6 +110,10 @@ def _publishing(request: Request) -> PublishingService:
     return cast(PublishingService, request.app.state.publishing_service)
 
 
+def _portal_access(request: Request) -> PortalAccessService:
+    return cast(PortalAccessService, request.app.state.portal_access_service)
+
+
 def _portal(request: Request) -> PortalService:
     return cast(PortalService, request.app.state.portal_service)
 
@@ -117,6 +127,73 @@ def _actor(auth: AuthContext) -> Actor:
 
 
 router = APIRouter(prefix="/api/v1", tags=["admin"])
+portal_router = APIRouter(prefix="/api/v1/me", tags=["portal"])
+
+
+@portal_router.get("/entitlements", response_model=list[Entitlement])
+async def my_entitlements(request: Request, auth: PortalUser) -> list[Entitlement]:
+    return await _portal_access(request).list_for_caller(_actor(auth))
+
+
+@portal_router.get("/entitlements/{entitlement_id}/connection", response_model=ModelConnection)
+async def my_model_connection(
+    request: Request, auth: PortalUser, entitlement_id: str
+) -> ModelConnection:
+    return await _portal_access(request).connection(_actor(auth), entitlement_id)
+
+
+@portal_router.post("/entitlements/{entitlement_id}/keys/reveal", response_model=KeyRevealResult)
+async def reveal_my_key(
+    request: Request, auth: PortalUser, entitlement_id: str, payload: KeyRevealRequest
+) -> KeyRevealResult:
+    return await _portal_access(request).reveal_key(_actor(auth), entitlement_id, payload.slot)
+
+
+@router.get("/entitlements/{entitlement_id}/connection", response_model=ModelConnection)
+async def model_connection(
+    request: Request, auth: Admin, entitlement_id: str
+) -> ModelConnection:
+    return await _portal_access(request).connection(
+        _actor(auth), entitlement_id, administrator=True
+    )
+
+
+@router.post("/entitlements/{entitlement_id}/keys/reveal", response_model=KeyRevealResult)
+async def reveal_grant_key(
+    request: Request, auth: Admin, entitlement_id: str, payload: KeyRevealRequest
+) -> KeyRevealResult:
+    return await _portal_access(request).reveal_key(
+        _actor(auth), entitlement_id, payload.slot, administrator=True
+    )
+
+
+@router.post("/publications/{publication_id}/model-api", response_model=ModelApi)
+async def link_published_model(
+    request: Request, auth: Admin, publication_id: str
+) -> ModelApi:
+    return await _publishing(request).link_model_api(_actor(auth), publication_id)
+
+
+@router.post("/publications/{publication_id}/recover", response_model=PublishRun)
+async def recover_model_access(
+    request: Request, auth: Admin, publication_id: str, payload: PublishRecoveryRequest
+) -> PublishRun:
+    return await _publishing(request).recover_interrupted(
+        _actor(auth),
+        publication_id,
+        run_id=payload.run_id,
+        confirm_quiesced=payload.confirm_quiesced,
+    )
+
+
+@router.get("/publications/{publication_id}/lock", response_model=PublicationLockInfo)
+async def publication_lock_info(
+    request: Request, auth: Admin, publication_id: str
+) -> PublicationLockInfo:
+    return PublicationLockInfo(
+        publication_id=publication_id,
+        owner_id=await _publishing(request).get_lock_owner(_actor(auth), publication_id),
+    )
 
 
 @router.get("/principals", response_model=list[Principal])

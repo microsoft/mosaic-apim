@@ -7,6 +7,7 @@ import {
   describeAttribution,
   describeBinding,
   describeLimits,
+  describeRuntime,
   resourceLabel,
 } from '../entitlement-format'
 
@@ -21,7 +22,7 @@ export function MyAccessPage() {
     <>
       <PageHeader
         title="My access"
-        description="Resources you can use through MOSAIC and the limits that apply to each grant."
+        description="Your recorded grants and their last reported APIM deployment state. Applied configuration is not proof of a successful model call."
       />
       {entitlements.isLoading && <Loading label="Loading your access" />}
       {entitlements.isError && <ErrorState error={entitlements.error} />}
@@ -39,16 +40,20 @@ export function MyAccessPage() {
                 description={
                   <Text>{describeAttribution(resolved)}</Text>
                 }
-                action={<Badge appearance={resolved.entitlement.enabled ? 'filled' : 'tint'}>{resolved.entitlement.enabled ? 'Enabled' : 'Disabled'}</Badge>}
+                action={<Badge appearance={resolved.entitlement.runtime?.status === 'applied' ? 'filled' : 'tint'}>{describeRuntime(resolved.entitlement)}</Badge>}
               />
               <div className="access-card-grid">
                 <section>
-                  <h3>Limits</h3>
+                  <h3>Configured grant limits</h3>
                   <ul className="plain-list">
                     {describeLimits(resolved.entitlement).map((limit) => (
                       <li key={limit}>{limit}</li>
                     ))}
                   </ul>
+                  <Text size={200}>
+                    Publication and gateway limits may also apply. Pending changes are not yet
+                    enforced by APIM.
+                  </Text>
                 </section>
                 <section>
                   <h3>Usage attribution</h3>

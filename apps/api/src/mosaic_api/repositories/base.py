@@ -197,6 +197,22 @@ class GatewayRepository(Protocol):
 
     async def list_unfinished_publish_runs(self, tenant_id: str) -> list[PublishRun]: ...
 
+    async def acquire_publication_lock(
+        self, tenant_id: str, publication_id: str, owner_id: str
+    ) -> None:
+        """Conditionally acquire a durable, non-expiring publication write lock."""
+        ...
+
+    async def get_publication_lock(
+        self, tenant_id: str, publication_id: str
+    ) -> str | None: ...
+
+    async def release_publication_lock(
+        self, tenant_id: str, publication_id: str, owner_id: str
+    ) -> None:
+        """Release only the named owner's lock, with a storage precondition."""
+        ...
+
 
 class EndpointStateRepository(Protocol):
     """The endpoint-scoped observed store, shared by model endpoints and MCP endpoints.
@@ -354,6 +370,10 @@ class EntitlementRepository(Protocol):
     async def ready(self) -> bool: ...
 
     async def close(self) -> None: ...
+
+    async def record_audit(self, event: AuditEvent) -> None:
+        """Durably record an audit event without mutating any grant."""
+        ...
 
     async def list_entitlements(
         self,
