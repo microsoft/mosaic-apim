@@ -88,6 +88,7 @@ class MosaicEntraTests(unittest.TestCase):
         self.assertEqual(roles["User"]["id"], mosaic_entra.portal_role_id())
         self.assertIn("User", roles["User"]["allowedMemberTypes"])
         self.assertEqual(payload["identifierUris"], ["api://example"])
+        self.assertTrue(all("origin" not in role for role in payload["appRoles"]))
 
     def test_api_payload_pre_authorizes_spa_and_portal(self) -> None:
         payload = mosaic_entra.build_api_app_payload(
@@ -214,7 +215,9 @@ class MosaicEntraTests(unittest.TestCase):
         self.assertEqual(len(payload["appRoles"]), 1)
         role = payload["appRoles"][0]
         self.assertEqual(role["id"], mosaic_entra.model_runtime_role_id())
-        self.assertEqual(role["value"], "Models.Invoke")
+        self.assertEqual(role["value"], "Models.Invoke.Application")
+        self.assertNotEqual(role["value"].casefold(), scope["value"].casefold())
+        self.assertNotIn("origin", role)
         self.assertEqual(role["allowedMemberTypes"], ["Application"])
         self.assertTrue(role["isEnabled"])
         self.assertNotIn("preAuthorizedApplications", payload["api"])
