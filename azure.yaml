@@ -41,3 +41,11 @@ services:
       context: .
       path: ./apps/web/Dockerfile
       remoteBuild: true
+  portal:
+    project: .
+    host: appservice
+    language: docker
+    docker:
+      context: .
+      path: ./apps/portal/Dockerfile
+      remoteBuild: true

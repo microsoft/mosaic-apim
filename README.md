@@ -24,7 +24,9 @@ See [ADR 0010](docs/adr/0010-publishing-models-into-apim.md) and
 ```mermaid
 flowchart LR
     Admin[Administrator browser] -->|Entra token with Admin role| Web[MOSAIC web]
+    User[End-user browser] -->|Entra token with User role| Portal[MOSAIC portal]
     Web -->|Bearer token| API[MOSAIC API]
+    Portal -->|Bearer token| API
     API -->|Managed identity| Cosmos[(Cosmos DB desired and observed state)]
     API -->|Secret URI only| KV[Key Vault]
     API -. read-only ARM .-> Foundry[Registered Azure AI model endpoints]
@@ -33,7 +35,14 @@ flowchart LR
     APIM --> Monitor[Azure Monitor / App Insights / Log Analytics]
     API --> Monitor
     Web --> Monitor
+    Portal --> Monitor
 ```
+
+The administrator console and the end-user portal are separate applications with separate
+Entra registrations and separate app roles, so they are independently governable. The portal
+reaches only `/api/v1/portal/*`, and every route there is scoped to the caller's own token —
+none of them accept a subject or requester parameter. See
+[ADR 0008](docs/adr/0008-portal-identity-and-role-separation.md).
 
 | Concern | Source of truth | MOSAIC responsibility |
 | --- | --- | --- |
@@ -66,8 +75,8 @@ explicit local/test modes and application startup rejects them when `MOSAIC_ENVI
 - Governed access for direct user/application grants to MOSAIC-published model APIs: reviewed
   APIM deployment, key or Entra authentication, shared token/request limits, revocation, and
   distinct desired versus applied state
-- Portal-ready current-user entitlement and connection APIs, plus audited on-demand key retrieval;
-  end-user portal screens are not included
+- Current-user entitlement and connection APIs, plus audited on-demand key retrieval; the
+  portal's catalog/access-request screens are available, while portal key controls remain deferred
 - Model endpoint onboarding: register Azure OpenAI and Azure AI Foundry resources, verify MOSAIC's
   control-plane access, discover the deployments and available models on them, and report — per
   registered gateway — whether that gateway's managed identity can actually call them
@@ -93,14 +102,18 @@ explicit local/test modes and application startup rejects them when `MOSAIC_ENVI
 - Typed APIM read and write boundaries kept in separate classes, plus Foundry import and
   deterministic policy authoring that never returns markup
 - Separate non-root frontend/backend containers
-- ACR remote builds for both images, so deployment does not depend on a local Docker daemon
-- `azd` and modular Bicep for two Linux Web Apps on one plan, ACR, Cosmos, Key Vault, APIM,
+- End-user portal: a separate SPA on its own Entra registration and the `User` app role, where
+  a non-administrator sees what they are entitled to, how each grant reached them, the catalog
+  of governed resources, and can request access to something they cannot yet use
+- ACR remote builds for every image, so deployment does not depend on a local Docker daemon
+- `azd` and modular Bicep for three Linux Web Apps on one plan, ACR, Cosmos, Key Vault, APIM,
   Log Analytics, Application Insights, diagnostics, managed identities, and narrow RBAC
 - Idempotent Entra application/service-principal setup through `azd` hooks
 
 The Gateways workspace, the Identity workspace, the Models and MCPs workspaces, the Entitlements
-workspace, model publishing, and the deterministic policy preview use live API contracts. Analytics,
-policy metadata, and other future operational experiences are interactive frontend previews labeled
+workspace, model publishing, the end-user portal, and the deterministic policy preview use live
+API contracts. Analytics, policy metadata, and other future operational experiences are
+interactive frontend previews labeled
 **Sample data** or **Local preview**. They never claim to mutate Azure, query Azure Monitor, or
 substitute sample data for a failed API request.
 
@@ -200,9 +213,9 @@ The preprovision hook idempotently creates separate single-tenant Entra registra
   `Models.Invoke` delegated scope and application permission
 
 It assigns the deploying user the initial `Admin` role. The postprovision hook adds the deployed
-web redirect, and the deployed portal redirect once a portal web app exists. A directory
-authorization failure stops deployment and identifies the failed operation; identity setup is
-never skipped.
+web redirect and the deployed portal redirect, the latter from the `PORTAL_APP_URL` output of
+the portal App Service. A directory authorization failure stops deployment and identifies the
+failed operation; identity setup is never skipped.
 
 Assign the `User` app role — normally to an Entra group — to everyone who should reach the portal.
 Tenant membership alone does not grant it.
@@ -559,8 +572,9 @@ Administrators can explicitly reveal/copy an applied grant's key. Portal clients
 | POST | `/me/entitlements/{id}/keys/reveal` | The requested key; body `{"slot":"primary"}` or `{"slot":"secondary"}` |
 
 The administrator equivalents omit `/me` and require `Admin`. Knowing another entitlement or
-application ID does not authorize a reveal. Application-owner delegation and portal screens are
-future work. A current-user route always uses the token's identity, never a caller-supplied user ID.
+application ID does not authorize a reveal. Application-owner delegation and portal key/connection
+controls remain future work; the portal already includes My access, catalog, and access-request
+screens. A current-user route always uses the token's identity, never a caller-supplied user ID.
 
 ### Recovering an interrupted operation
 
@@ -663,12 +677,13 @@ already acknowledged for imported records.
 5. **Governed model access (this release):** direct user/application grants become APIM
    subscriptions and Entra authorization, with shared limits, explicit apply/revoke, trusted
    `orchestrated` bindings, and on-demand key retrieval. Group/MCP orchestration, access-request
-   automation, and end-user portal screens remain future work. The `User` app role and the
-   `mosaic-<env>-portal` registration already gate the portal-ready API; see
+   automation, and portal key/connection controls remain future work. The end-user portal now
+   provides My access, catalog, and access-request screens, gated by the `User` app role and
+   the `mosaic-<env>-portal` registration; see
    [ADR 0008](docs/adr/0008-portal-identity-and-role-separation.md).
 6. **Insights and chargeback:** Azure Monitor queries over `ApiManagementGatewayLogs` and
    `ApiManagementGatewayLlmLog`, consumption measured against each entitlement's own enforcement
-   window, per-user attribution, token/traffic/cost allocation, budgets, and the end-user portal
+   window, per-user attribution, token/traffic/cost allocation, budgets, and portal usage views
    alongside administrator dashboards.
 7. **Catalog ecosystem:** API Center experiences, MCP tool-level governance, broader self-service
    workflows.

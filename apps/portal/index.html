@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>MOSAIC | End-user portal</title>
+    <script>
+      (() => {
+        const preference = localStorage.getItem('mosaic-theme') || 'system'
+        const theme =
+          preference === 'system'
+            ? matchMedia('(prefers-color-scheme: dark)').matches
+              ? 'dark'
+              : 'light'
+            : preference
+        document.documentElement.dataset.theme = theme
+      })()
+    </script>
+  </head>
+  <body>
+    <!--
+      THESIS: The portal is a personal access ledger, not a governance console; it refuses admin dashboards and control-heavy layouts.
+      OWN-WORLD: Restrained MOSAIC system colors, ledger-like lists, plain status badges, and direct actions in Fluent UI controls.
+      STORY: A signed-in user understands what they can use, what limits apply, and how to request or withdraw access.
+      FIRST VIEWPORT: A narrow left rail, identity header, and one task page with access facts and actions visible immediately.
+      FORM: Established admin-console convention adapted for end-user operations; no random seed used because the brief pins the incumbent system.
+    -->
+    <div id="root"></div>
+    <script src="/config.js"></script>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

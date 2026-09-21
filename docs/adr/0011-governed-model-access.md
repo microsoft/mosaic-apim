@@ -99,7 +99,8 @@ Azure RBAC inability to read secrets.
   synchronization job. Already-revealed bearer keys cannot be recalled from a user's memory.
 - Turning off a method or revoking a grant takes effect as APIM propagates the configuration,
   not when desired state is saved.
-- The portal-ready APIs ship now; the end-user portal UI, group/application-owner delegation,
-  live analytics, and automatic background drift repair do not.
+- The current-user APIs coexist with the portal's My access, catalog, and access-request screens.
+  Portal key/connection controls, group/application-owner delegation, live analytics, and automatic
+  background drift repair remain deferred.
 - Mocked policy and API checks cannot establish live Entra/APIM interoperability. The opt-in
   live verifier and actual gateway checks must report unavailable prerequisites honestly.

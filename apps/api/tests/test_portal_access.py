@@ -417,3 +417,50 @@ def test_admin_can_discover_a_retained_mutation_owner_without_a_publish_run(
     assert client.portal.call(repository.get_publication_lock, TENANT, "publication") == (
         "mutation_unfinished"
     )
+
+
+async def test_portal_and_credential_routes_share_the_live_entitlement_service(
+    client: TestClient,
+) -> None:
+    repository = client.app.state.gateway_repository
+    audit = AuditEvent(
+        id=new_id("audit"), tenant_id=TENANT, action="fixture", resource_type="modelApi",
+        resource_id="imported-model", actor_object_id="local-admin",
+    )
+    await repository.create_gateway(
+        Gateway(
+            id="gateway", tenant_id=TENANT, name="Gateway", azure_resource_id=RESOURCE_ID,
+            subscription_id=SUBSCRIPTION_ID, resource_group=RESOURCE_GROUP,
+            service_name=SERVICE_NAME,
+        ),
+        audit,
+    )
+    await repository.save_model_api(
+        ModelApi(
+            id="imported-model", tenant_id=TENANT, gateway_id="gateway", api_name="model",
+            display_name="Model", path="model", imported_from_snapshot_id="snapshot",
+        ),
+        audit.model_copy(update={"id": new_id("audit")}),
+    )
+    principal = client.post(
+        "/api/v1/principals", json={"objectId": "local-admin", "kind": "user"}
+    )
+    assert principal.status_code == 201
+    grant = client.post(
+        "/api/v1/entitlements",
+        json={
+            "subject": {"kind": "user", "id": principal.json()["id"]},
+            "resource": {"kind": "modelApi", "id": "imported-model"},
+        },
+    )
+    assert grant.status_code == 201
+
+    client.app.state.authenticator = Caller("local-admin")
+    portal = client.get("/api/v1/portal/entitlements")
+    current_user = client.get("/api/v1/me/entitlements")
+    assert portal.status_code == current_user.status_code == 200
+    assert portal.json()[0]["entitlement"]["id"] == grant.json()["id"]
+    assert current_user.json()[0]["id"] == grant.json()["id"]
+    assert client.get("/api/v1/portal/me").json()["entitlementCount"] == 1
+    assert client.get("/api/v1/portal/catalog").json()[0]["entitled"] is True
+    assert client.get("/api/v1/entitlements").status_code == 403
