@@ -2,6 +2,14 @@
 
 **Status:** Accepted
 
+**Update:** The portal's My access page now uses the current-user APIs. Each model grant's
+**Connection details** panel loads the connection only when opened. For an applied direct grant,
+it reveals one key on explicit request, holds it only in transient component state (never a
+query cache, browser storage, the URL, or logs), and hides it after 60 seconds, on unmount, and
+on navigation. Code samples use placeholders, never a revealed key. When the connection includes
+the model client ID, the panel shows it with a device code token sample. Group grants still receive
+no credentials.
+
 ## Context
 
 ADR 0009 made an entitlement durable governance intent, but did not enforce it. ADR 0010
@@ -142,9 +150,9 @@ Azure RBAC inability to read secrets.
   synchronization job. Already-revealed bearer keys cannot be recalled from a user's memory.
 - Turning off a method or revoking a grant takes effect as APIM propagates the configuration,
   not when desired state is saved.
-- The current-user APIs coexist with the portal's My access, catalog, and access-request screens.
-  Portal key/connection controls, group/application-owner delegation, live analytics, and automatic
-  background drift repair remain deferred.
+- The current-user APIs back the portal's My access connection details and key reveal, alongside
+  its catalog and access-request screens. Group/application-owner delegation, live analytics, and
+  automatic background drift repair remain deferred.
 - Approving an access request creates the requester's direct grant intent (ADR 0009) but never
   applies it. The grant joins the model's next reviewed plan like any other saved change.
 - Mocked policy and API checks cannot establish live Entra/APIM interoperability. The opt-in

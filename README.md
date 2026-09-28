@@ -40,8 +40,8 @@ flowchart LR
 
 The administrator console and the end-user portal are separate applications with separate
 Entra registrations and separate app roles, so they are independently governable. The portal
-reaches only `/api/v1/portal/*`, and every route there is scoped to the caller's own token —
-none of them accept a subject or requester parameter. See
+reaches only `/api/v1/portal/*` and the current-user `/api/v1/me/*` routes. Every one of them is
+scoped to the caller's own token, and none accepts a subject or requester parameter. See
 [ADR 0008](docs/adr/0008-portal-identity-and-role-separation.md).
 
 | Concern | Source of truth | MOSAIC responsibility |
@@ -75,8 +75,9 @@ explicit local/test modes and application startup rejects them when `MOSAIC_ENVI
 - Governed access for direct user/application grants to MOSAIC-published model APIs: reviewed
   APIM deployment, key or Entra authentication, shared token/request limits, revocation, and
   distinct desired versus applied state
-- Current-user entitlement and connection APIs, plus audited on-demand key retrieval; the
-  portal's catalog/access-request screens are available, while portal key controls remain deferred
+- Current-user entitlement and connection APIs, plus audited on-demand key retrieval, which the
+  portal's My access page uses to show connection details and reveal keys for applied direct
+  model grants
 - Model endpoint onboarding: register Azure OpenAI and Azure AI Foundry resources, verify MOSAIC's
   control-plane access, discover the deployments and available models on them, and report — per
   registered gateway — whether that gateway's managed identity can actually call them
@@ -104,7 +105,9 @@ explicit local/test modes and application startup rejects them when `MOSAIC_ENVI
 - Separate non-root frontend/backend containers
 - End-user portal: a separate SPA on its own Entra registration and the `User` app role, where
   a non-administrator sees what they are entitled to, how each grant reached them, the catalog
-  of governed resources, and can request access to something they cannot yet use
+  of governed resources, and can request access to something they cannot yet use. For an applied
+  direct model grant, the portal also shows the endpoint, operations, accepted credentials, limits,
+  and placeholder code samples, and reveals a key on request
 - ACR remote builds for every image, so deployment does not depend on a local Docker daemon
 - `azd` and modular Bicep for three Linux Web Apps on one plan, ACR, Cosmos, Key Vault, APIM,
   Log Analytics, Application Insights, diagnostics, managed identities, and narrow RBAC
@@ -616,9 +619,21 @@ registration, because that is the only one the model client is consented for. Ap
 sign in as themselves.
 
 The administrator equivalents omit `/me` and require `Admin`. Knowing another entitlement or
-application ID does not authorize a reveal. Application-owner delegation and portal key/connection
-controls remain future work; the portal already includes My access, catalog, and access-request
-screens. A current-user route always uses the token's identity, never a caller-supplied user ID.
+application ID does not authorize a reveal. Application-owner delegation remains future work.
+A current-user route always uses the token's identity, never a caller-supplied user ID.
+
+In the portal, each model grant on **My access** has a **Connection details** button. The
+connection loads only when it is expanded, and it shows the endpoint, full operation URLs,
+deployment, key header, accepted methods, Entra tenant, client ID, scope and audience, limits, and
+whether the grant is applied to APIM. When the connection has an `entraClientId`, a **Get a token
+(Python)** sample signs the person in with the model client using a device code. Without one, the
+panel asks them to get the client ID from an administrator. **Show primary key** and **Show
+secondary key** reveal one key for 60 seconds. The key is also hidden by **Hide key**, when the
+panel closes, and when the user navigates or leaves the page. The key is held only in component
+state, never in the query cache, browser storage, the URL, or logs. Code samples use
+`$MOSAIC_API_KEY` or `$MOSAIC_ACCESS_TOKEN` placeholders and never include a revealed key. A grant
+that arrives through a group shows a notice instead, because credentials are issued for direct
+grants only.
 
 ### Recovering an interrupted operation
 
@@ -723,10 +738,10 @@ already acknowledged for imported records.
 5. **Governed model access (this release):** direct user/application grants become APIM
    subscriptions and Entra authorization, with shared limits, explicit apply/revoke, trusted
    `orchestrated` bindings, and on-demand key retrieval. Approving an access request creates the
-   requester's grant intent but does not apply it. Group/MCP orchestration and portal
-   key/connection controls remain future work. The end-user portal now
-   provides My access, catalog, and access-request screens, gated by the `User` app role and
-   the `mosaic-<env>-portal` registration; see
+   requester's grant intent but does not apply it. Group/MCP orchestration remains future work.
+   The end-user portal now provides My access (including connection details and on-demand key
+   reveal for applied direct model grants), catalog, and access-request screens, gated by the
+   `User` app role and the `mosaic-<env>-portal` registration; see
    [ADR 0008](docs/adr/0008-portal-identity-and-role-separation.md).
 6. **Insights and chargeback:** Azure Monitor queries over `ApiManagementGatewayLogs` and
    `ApiManagementGatewayLlmLog`, consumption measured against each entitlement's own enforcement
