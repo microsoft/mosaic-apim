@@ -279,56 +279,57 @@ function RunResult({ run }: { run: PublishRun }) {
   )
 }
 
-export function PublishModelDialog({
-  open,
-  onClose,
-  onPublished,
-  initialReview,
-}: {
+type ModelReview = {
+  publication: Publication
+  plan: PublishPlan
+  message?: string
+}
+
+type PublishModelDialogProps = {
   open: boolean
   onClose: () => void
   onPublished: (message: string) => void
-  initialReview?: {
-    publication: Publication
-    plan: PublishPlan
-    message?: string
-  } | null
-}) {
+  initialReview?: ModelReview | null
+}
+
+// Every opening starts a new session, so the first frame the dialog commits is already the step it opens on,
+// and Fluent moves focus into that step. Closing keeps the session, with the review it opened, until the
+// dialog next opens, so nothing in it changes while Fluent animates the dialog out.
+export function PublishModelDialog({ open, onClose, onPublished, initialReview }: PublishModelDialogProps) {
+  const review = initialReview ?? null
+  const [session, setSession] = useState({ open, review, key: 0 })
+  if (open && (!session.open || review !== session.review)) {
+    setSession({ open, review, key: session.key + 1 })
+  } else if (!open && session.open) {
+    setSession({ ...session, open })
+  }
+  return (
+    <PublishModelSession
+      key={session.key}
+      open={open}
+      initialReview={session.review}
+      onClose={onClose}
+      onPublished={onPublished}
+    />
+  )
+}
+
+function PublishModelSession({ open, onClose, onPublished, initialReview }: PublishModelDialogProps) {
   const api = useMosaicApi()
   const queryClient = useQueryClient()
-  const [step, setStep] = useState<Step>('choose')
-  const [gatewayId, setGatewayId] = useState('')
+  const [step, setStep] = useState<Step>(initialReview ? 'review' : 'choose')
+  const [gatewayId, setGatewayId] = useState(initialReview?.publication.gatewayId ?? '')
   const [modelKey, setModelKey] = useState('')
   const [form, setForm] = useState<FormState>(() => initialForm(null))
-  const [publication, setPublication] = useState<Publication | null>(null)
-  const [plan, setPlan] = useState<PublishPlan | null>(null)
-  const [reviewMessage, setReviewMessage] = useState('')
+  const [publication, setPublication] = useState<Publication | null>(initialReview?.publication ?? null)
+  const [plan, setPlan] = useState<PublishPlan | null>(initialReview?.plan ?? null)
+  const [reviewMessage, setReviewMessage] = useState(initialReview?.message ?? '')
   const [runId, setRunId] = useState('')
   const [refreshError, setRefreshError] = useState<Error | null>(null)
   const [invalidPlan, setInvalidPlan] = useState(false)
-  const [appliedReview, setAppliedReview] = useState<typeof initialReview>(null)
   const appliedGatewayRef = useRef(false)
   const notifiedRunRef = useRef('')
   const reviewingExistingPlan = Boolean(initialReview)
-
-  // Apply the review the dialog opens with while rendering rather than in an effect, so the first frame it
-  // commits is already the review step. Fluent focuses the dialog's first control as it opens, and a
-  // control from a step the review then replaced would take focus with it, to the page body. Closing
-  // forgets the review, so reopening applies it again even when it's the same one.
-  const openedReview = open ? initialReview ?? null : null
-  if (openedReview !== appliedReview) {
-    setAppliedReview(openedReview)
-    if (openedReview) {
-      setPublication(openedReview.publication)
-      setPlan(openedReview.plan)
-      setReviewMessage(openedReview.message ?? '')
-      setRunId('')
-      setInvalidPlan(false)
-      setRefreshError(null)
-      setGatewayId(openedReview.publication.gatewayId)
-      setStep('review')
-    }
-  }
 
   const gateways = useQuery({
     queryKey: ['gateways'],
@@ -433,6 +434,9 @@ export function PublishModelDialog({
   const currentRun = run.data ?? apply.data ?? null
 
   useEffect(() => {
+    // A closed session stays mounted until the dialog next opens. Don't announce an apply that finishes
+    // after the dialog closed.
+    if (!open) return
     if (currentRun && terminalRunStatuses.includes(currentRun.status) && notifiedRunRef.current !== currentRun.id) {
       notifiedRunRef.current = currentRun.id
       void queryClient.invalidateQueries({ queryKey: ['publications'] })
@@ -445,25 +449,7 @@ export function PublishModelDialog({
           : 'The service reports the model plan applied. Allow for APIM propagation; live invocation is not verified.')
       }
     }
-  }, [currentRun, onPublished, queryClient])
-
-  function resetAndClose() {
-    setStep('choose')
-    setGatewayId('')
-    setModelKey('')
-    setForm(initialForm(null))
-    setPublication(null)
-    setPlan(null)
-    setReviewMessage('')
-    setRunId('')
-    setRefreshError(null)
-    setInvalidPlan(false)
-    setAppliedReview(null)
-    notifiedRunRef.current = ''
-    apply.reset()
-    createAndPlan.reset()
-    onClose()
-  }
+  }, [currentRun, onPublished, open, queryClient])
 
   const canConfigure = Boolean(gatewayId && selectedModel && isPublishable(selectedModel))
   const tokenLimits = supportsTokenLimits(selectedModel)
@@ -473,7 +459,7 @@ export function PublishModelDialog({
   const missingAccessReview = Boolean(publication?.governedAccess && !plan?.accessSnapshot)
 
   return (
-    <Dialog open={open} onOpenChange={(_, data) => !data.open && resetAndClose()}>
+    <Dialog open={open} onOpenChange={(_, data) => !data.open && onClose()}>
       <DialogSurface>
         <DialogBody>
           <DialogTitle>{initialReview?.plan.accessSnapshot ? 'Review model access' : 'Publish a model'}</DialogTitle>
@@ -701,7 +687,7 @@ export function PublishModelDialog({
             )}
           </DialogContent>
           <DialogActions>
-            <Button appearance="secondary" onClick={resetAndClose}>Close</Button>
+            <Button appearance="secondary" onClick={onClose}>Close</Button>
             {step === 'configure' && <Button appearance="secondary" onClick={() => setStep('choose')}>Back</Button>}
             {step === 'review' && !reviewingExistingPlan && <Button appearance="secondary" onClick={() => setStep('configure')}>Back</Button>}
             {step === 'choose' && (

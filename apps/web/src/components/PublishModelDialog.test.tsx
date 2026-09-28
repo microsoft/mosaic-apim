@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { Profiler, useState } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -92,8 +92,8 @@ async function advanceToReview(user: ReturnType<typeof userEvent.setup>) {
 
 type Review = { publication: Publication; plan: PublishPlan; message?: string }
 
-// What the open dialog showed when React committed a render.
-type Frame = { step?: string; choosing: boolean; text: string }
+// What the dialog showed when React committed a render.
+type Frame = { title?: string; step?: string; choosing: boolean; text: string }
 
 // Profiler calls onRender as React commits, after it updates the DOM but before useEffect callbacks run,
 // so this records even a frame that an effect replaces straight away, which no query after the render
@@ -103,43 +103,52 @@ function recordFrame(frames: Frame[]) {
   if (!dialog) return
   const text = dialog.textContent ?? ''
   frames.push({
+    title: dialog.querySelector('h2')?.textContent ?? undefined,
     step: text.match(/Step \d of 4/)?.[0],
     choosing: dialog.querySelector('select[aria-label="Gateway"], [aria-label="Publishable models"]') !== null,
     text,
   })
 }
 
-function ignorePublished() {}
-
-// Opens reviews the way EntitlementsPage and ModelsPage do: the dialog stays mounted while closed, opens
-// when the parent sets a review, and closing clears the review.
-function ReviewingParent({ reviews, frames }: { reviews: Review[]; frames: Frame[] }) {
-  const [review, setReview] = useState<Review | null>(null)
+// Opens the dialog the way its parents do. The dialog stays mounted while closed. It opens when the parent
+// sets a review, as EntitlementsPage and ModelsPage do, or to publish a model, as the Models page's publish
+// button does. Closing clears it.
+function DialogParent({
+  reviews,
+  frames,
+  onPublished,
+}: {
+  reviews: Review[]
+  frames: Frame[]
+  onPublished: (message: string) => void
+}) {
+  const [opened, setOpened] = useState<{ review: Review | null } | null>(null)
   return (
     <>
-      {reviews.map((candidate, index) => (
-        <button key={index} type="button" onClick={() => setReview(candidate)}>
+      <button type="button" onClick={() => setOpened({ review: null })}>Start publishing</button>
+      {reviews.map((review, index) => (
+        <button key={index} type="button" onClick={() => setOpened({ review })}>
           Open review {index + 1}
         </button>
       ))}
       <Profiler id="publish-model-dialog" onRender={() => recordFrame(frames)}>
         <PublishModelDialog
-          open={review !== null}
-          initialReview={review}
-          onClose={() => setReview(null)}
-          onPublished={ignorePublished}
+          open={opened !== null}
+          initialReview={opened?.review}
+          onClose={() => setOpened(null)}
+          onPublished={onPublished}
         />
       </Profiler>
     </>
   )
 }
 
-function renderReviewingParent(reviews: Review[]) {
+function renderDialogParent(reviews: Review[] = [], onPublished = vi.fn()) {
   const frames: Frame[] = []
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   render(
     <QueryClientProvider client={queryClient}>
-      <ReviewingParent reviews={reviews} frames={frames} />
+      <DialogParent reviews={reviews} frames={frames} onPublished={onPublished} />
     </QueryClientProvider>,
   )
   return frames
@@ -482,7 +491,7 @@ describe('PublishModelDialog', () => {
 
   it('opens a review on its review step, without first rendering the gateway and model chooser', async () => {
     const user = userEvent.setup()
-    const frames = renderReviewingParent([{ publication: modelPublication, plan: accessPlan }])
+    const frames = renderDialogParent([{ publication: modelPublication, plan: accessPlan }])
 
     await user.click(screen.getByRole('button', { name: 'Open review 1' }))
 
@@ -499,7 +508,7 @@ describe('PublishModelDialog', () => {
 
   it('moves focus into the review as it opens', async () => {
     const user = userEvent.setup()
-    renderReviewingParent([{ publication: modelPublication, plan: accessPlan }])
+    renderDialogParent([{ publication: modelPublication, plan: accessPlan }])
 
     await user.click(screen.getByRole('button', { name: 'Open review 1' }))
 
@@ -509,7 +518,7 @@ describe('PublishModelDialog', () => {
 
   it('shows the next review from its first frame after closing and reopening', async () => {
     const user = userEvent.setup()
-    const frames = renderReviewingParent([{ publication: modelPublication, plan: accessPlan }, secondReview])
+    const frames = renderDialogParent([{ publication: modelPublication, plan: accessPlan }, secondReview])
 
     await user.click(screen.getByRole('button', { name: 'Open review 1' }))
     expect(within(screen.getByRole('table', { name: 'All target model grants' })).getByText('Ada Lovelace')).toBeVisible()
@@ -536,5 +545,81 @@ describe('PublishModelDialog', () => {
     expect(new Set(frames.map((frame) => frame.step))).toEqual(new Set(['Step 3 of 4']))
     expect(frames[0].text).toContain('Grace Hopper')
     expect(screen.getByRole('dialog')).toContainElement(document.activeElement as HTMLElement)
+  })
+
+  it('keeps showing the review, as it was, while it closes', async () => {
+    const user = userEvent.setup()
+    api.applyPublishPlan.mockRejectedValue(new Error('API Management refused the change.'))
+    const frames = renderDialogParent([{ publication: modelPublication, plan: accessPlan }])
+
+    await user.click(screen.getByRole('button', { name: 'Open review 1' }))
+    await user.click(screen.getByRole('button', { name: 'Apply plan' }))
+    expect(await screen.findByText('API Management refused the change.')).toBeVisible()
+    frames.length = 0
+    await user.click(screen.getByRole('button', { name: 'Close' }))
+
+    await screen.findByRole('button', { name: 'Open review 1' })
+    expect(screen.queryByRole('dialog', { hidden: true })).not.toBeInTheDocument()
+    // Every frame React committed while Fluent animated the dialog out.
+    expect(frames.length).toBeGreaterThan(0)
+    expect(new Set(frames.map((frame) => `${frame.title} · ${frame.step}`))).toEqual(
+      new Set(['Review model access · Step 3 of 4']),
+    )
+    expect(frames.filter((frame) => frame.choosing)).toEqual([])
+    expect(frames.filter((frame) => !frame.text.includes('API Management refused the change.'))).toEqual([])
+  })
+
+  it('keeps showing the publish step it was on while it closes, and starts over when opened again', async () => {
+    const user = userEvent.setup()
+    const frames = renderDialogParent()
+
+    await user.click(screen.getByRole('button', { name: 'Start publishing' }))
+    await advanceToReview(user)
+    expect(await screen.findByText('Step 3 of 4')).toBeVisible()
+    frames.length = 0
+    await user.click(screen.getByRole('button', { name: 'Close' }))
+
+    const startAgain = await screen.findByRole('button', { name: 'Start publishing' })
+    expect(screen.queryByRole('dialog', { hidden: true })).not.toBeInTheDocument()
+    expect(frames.length).toBeGreaterThan(0)
+    expect(new Set(frames.map((frame) => `${frame.title} · ${frame.step}`))).toEqual(
+      new Set(['Publish a model · Step 3 of 4']),
+    )
+    expect(frames.filter((frame) => frame.choosing)).toEqual([])
+
+    frames.length = 0
+    await user.click(startAgain)
+
+    expect(new Set(frames.map((frame) => frame.step))).toEqual(new Set(['Step 1 of 4']))
+    expect(await screen.findByRole('checkbox', { name: 'Publish gpt-4o-prod' })).not.toBeChecked()
+    expect(screen.getByRole('dialog')).toContainElement(document.activeElement as HTMLElement)
+  })
+
+  it('does not announce an apply that finishes after closing, or carry it into the next opening', async () => {
+    const user = userEvent.setup()
+    let finishApply: (value: PublishRun) => void = () => {}
+    api.applyPublishPlan.mockReturnValue(new Promise<PublishRun>((resolve) => { finishApply = resolve }))
+    const onPublished = vi.fn()
+    const frames = renderDialogParent([{ publication: modelPublication, plan: accessPlan }], onPublished)
+
+    await user.click(screen.getByRole('button', { name: 'Open review 1' }))
+    await user.click(screen.getByRole('button', { name: 'Apply plan' }))
+    expect(await screen.findByRole('button', { name: 'Applying…' })).toBeDisabled()
+    await user.click(screen.getByRole('button', { name: 'Close' }))
+    const startPublishing = await screen.findByRole('button', { name: 'Start publishing' })
+
+    // TanStack Query reports the result on a timer, so wait inside act for everything it sets off.
+    await act(async () => {
+      finishApply(run())
+      await new Promise((resolve) => setTimeout(resolve, 50))
+    })
+    expect(onPublished).not.toHaveBeenCalled()
+
+    frames.length = 0
+    await user.click(startPublishing)
+
+    expect(new Set(frames.map((frame) => frame.step))).toEqual(new Set(['Step 1 of 4']))
+    expect(screen.getByRole('combobox', { name: 'Gateway' })).toBeVisible()
+    expect(onPublished).not.toHaveBeenCalled()
   })
 })
