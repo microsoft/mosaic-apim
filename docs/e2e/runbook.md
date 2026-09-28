@@ -137,6 +137,24 @@ open persona page and, for MOSAIC pages, a redacted accessibility snapshot. It a
 test's errors before Playwright writes them to `error-context.md` and the console. Playwright's
 own page snapshot is turned off (`PLAYWRIGHT_NO_COPY_PROMPT`), because it isn't redacted.
 
+## Verify runtime access
+
+Phase 8 calls the gateway directly with `scripts\verify_model_access.py`, outside the browser.
+[Verifying a real gateway](../../README.md#verifying-a-real-gateway) lists its flags and
+variables. With the personas:
+
+- Grant IDs appear in the console's model access review, as `Grant: <id>` on each row.
+- With `--user-token-source device-code`, the verifier prints a code on stderr. Open the sign-in
+  page in the `user` persona's browser and enter it there. `--check-ungranted-user` asks for a
+  second sign-in; use a persona that has no grant for the models in the run.
+- Sign-in failures print only their `AADSTS` codes. The
+  [troubleshooting table](../call-models-with-entra-tokens.md#troubleshooting) explains them.
+- Proofs need fresh grants with no other callers. Create them for the run in the console, with
+  the limits the README names for each proof.
+- For `--watch-revocation`, leave the verifier running. In the `admin` persona, revoke the grant
+  (this disables it; don't delete it), then review and apply its model's access plan. If a token
+  the watch uses won't last until the timeout, the verifier stops before waiting and names it.
+
 ## Secret hygiene
 
 - Never commit `targets.local.json`, profiles, artifacts or reports. `e2e/.gitignore` covers them.
@@ -152,7 +170,8 @@ own page snapshot is turned off (`PLAYWRIGHT_NO_COPY_PROMPT`), because it isn't 
   - OAuth `code`, `state` and `sig` parameters, and URL fragments.
   - Connection-string keys, Entra client secrets, and anything that looks like an APIM or
     Cognitive Services key.
-- Runtime verification keeps keys and tokens in process memory and prints only status codes.
+- The runtime verifier keeps keys and tokens in process memory. It prints pass, skip and failure
+  lines, never credentials or model output.
 - To reset a persona, stop the driver and delete `profiles\<persona>`.
 
 ## Troubleshooting

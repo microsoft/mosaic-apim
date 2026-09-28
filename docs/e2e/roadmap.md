@@ -80,13 +80,13 @@ tests and README or ADR updates wherever a decision changes.
 | --- | --- | --- | --- |
 | Entra fix | `main` reused one value for the runtime app role and the delegated scope. Entra rejects that, so a fresh `azd up` can't bootstrap the runtime registration | Give the application role and the delegated scope distinct values ([#15](https://github.com/microsoft/mosaic-apim/pull/15)) | ✅ merged |
 | G1 | The console has no control to switch a gateway into `manage` mode, which publishing requires | Add a "Management mode" control with an explicit confirmation ([#18](https://github.com/microsoft/mosaic-apim/pull/18)) | ✅ merged |
-| G2 | Approving an access request creates no grant, even though the banner says it saved grant intent | Approve opens a short dialog with limits prefilled; the server creates and links the grant intent in one step ([#20](https://github.com/microsoft/mosaic-apim/pull/20)) | ⏳ review |
-| G3 | The portal can't show connection details or reveal keys, so an end user can't get a credential | Add portal connection details and masked, transient key reveal ([#21](https://github.com/microsoft/mosaic-apim/pull/21)) | ⏳ review |
+| G2 | Approving an access request creates no grant, even though the banner says it saved grant intent | Approve opens a short dialog with limits prefilled; the server creates and links the grant intent in one step ([#20](https://github.com/microsoft/mosaic-apim/pull/20)) | ✅ merged |
+| G3 | The portal can't show connection details or reveal keys, so an end user can't get a credential | Add portal connection details and masked, transient key reveal ([#21](https://github.com/microsoft/mosaic-apim/pull/21)) | ✅ merged |
 | G4 | No client registration lets an end user get a `Models.Invoke` token | Optional public client registration with a tenant-wide grant for `Models.Invoke`, and its client ID in connection details. Builds on the Entra fix ([#19](https://github.com/microsoft/mosaic-apim/pull/19)) | ✅ merged |
-| G5 | Anthropic deployments get the chat-completions API shape, but Claude needs the Messages API. `llm-token-limit` supports Anthropic only on APIM v2 tiers | Publish Anthropic with the Messages shape, and decide how to limit tokens on classic tiers | 🔄 |
+| G5 | Anthropic deployments get the chat-completions API shape, but Claude needs the Messages API. `llm-token-limit` supports Anthropic only on APIM v2 tiers | Publish each deployment by format: Claude gets the Anthropic Messages shape. On classic tiers, Claude publications apply no token limits, and grants use call limits instead ([#22](https://github.com/microsoft/mosaic-apim/pull/22)) | ✅ merged |
 | G6 | Only if Grok or Llama fail on `/models/chat/completions` through APIM | Add OpenAI v1 routes | ⬜ conditional |
 | G7 | When MOSAIC's identity can see no subscriptions, discovery shows nothing at all: no suggestions, no unreadable subscriptions and no hint. Found live in Phase 3 | Say how many subscriptions were scanned. When there are none, or the list fails, show the Reader command for the subscriptions MOSAIC already knows about ([#17](https://github.com/microsoft/mosaic-apim/pull/17)) | ✅ merged |
-| G8 | Gateway runtime readiness can disagree with what the gateway can actually call. It accepts exactly one role, so a sufficient role such as the Cognitive Services User role it recommends before it can read the account is later reported as missing. It also checks a project-registered endpoint at the project scope, although published APIs call the parent resource, where a project-scoped grant doesn't apply | Evaluate at the resource scope the published API calls, accept any role whose data actions are sufficient, and recommend only roles the check will accept. Also account for network reachability: the console never shows an endpoint's "public network access is disabled" note, and a private endpoint shows "can invoke" as soon as the role exists | 🔄 |
+| G8 | Gateway runtime readiness can disagree with what the gateway can actually call. It accepts exactly one role, so a sufficient role such as the Cognitive Services User role it recommends before it can read the account is later reported as missing. It also checks a project-registered endpoint at the project scope, although published APIs call the parent resource, where a project-scoped grant doesn't apply | Judge readiness at the account the published API calls, and accept any role whose data actions cover the published operations. Recommend only roles the check accepts: Cognitive Services OpenAI User for Azure OpenAI, and Foundry User otherwise. A deny assignment, or disabled public access with no virtual network on the gateway, means "cannot invoke". Conditions MOSAIC can't evaluate mean "not confirmed". The endpoint's Access card shows its network, firewall and key settings. Readiness covers every API MOSAIC can publish from the endpoint, including Anthropic Messages on AI Services accounts ([#23](https://github.com/microsoft/mosaic-apim/pull/23)) | ✅ merged |
 
 ## Phases
 
@@ -130,12 +130,16 @@ Each batch runs only after approval and is recorded in the change ledger.
 - Synced deployments must match the `az` inventory.
 - Gateway runtime readiness starts at "cannot invoke" with a command. Assign the APIM identity's
   role from that command, and readiness moves to "can invoke". The private endpoint stays at
-  "cannot invoke" because the gateway has no private path to it. Before G8, readiness checks only
-  roles, so this expectation needs G8.
-  - Until G8 is deployed, assign gateway roles only after MOSAIC can read the account, so the
-    recommendation reflects the account kind.
-  - For the Foundry project target, assign the role on the parent resource rather than the project.
-    Readiness reports that grant as inherited, and runtime calls need it.
+  "cannot invoke" because the gateway has no private path to it. This needs G8
+  ([#23](https://github.com/microsoft/mosaic-apim/pull/23)), which also checks the network path. The
+  older build checks only roles.
+  - Assign gateway roles after the redeploy that ships G8, and after MOSAIC can read the account,
+    so the recommendation reflects the account kind. That's Cognitive Services OpenAI User for Azure
+    OpenAI, and Foundry User for AIServices accounts.
+  - For the Foundry project target, assign Foundry User on the parent resource, not the project.
+    G8 checks that resource, and the row says "Checked at {account}, the resource the published
+    API calls." A project-scoped grant is reported as narrower than the published API needs, and
+    doesn't count.
 - **Exit:** every target is registered, readable and invocable, except the negative case.
 
 Progress, before any role was granted:
@@ -154,12 +158,12 @@ Progress, before any role was granted:
   subscription.
 - ⏳ Next: apply the remediation commands, then run A4 and A6 again, followed by A5 and A2.
 
-### Phase 4: Close product gaps ⏳ review and merge
+### Phase 4: Close product gaps ⏳ redeploy approval
 
-- Every gap PR is reviewed and merged. The Entra fix, G1, G4 and G7 are on `main`. G2
-  ([#20](https://github.com/microsoft/mosaic-apim/pull/20)) and G3
-  ([#21](https://github.com/microsoft/mosaic-apim/pull/21)) are in review, and G5 and G8 are in
-  progress.
+- ✅ Every gap PR is reviewed and merged: the Entra fix, G1, G2, G3, G4, G5, G7 and G8
+  ([#23](https://github.com/microsoft/mosaic-apim/pull/23)) are on `main`. G8 requires every
+  published operation to declare its data action. G5 merged first, so G8 added them for G5's
+  Anthropic Messages operations.
 - Merge `main` into the e2e branch and rebuild the azd environment from live values. Run
   `azd provision --preview`, and after approval run `azd up`, because G4 changes the Entra hook.
   Then re-run the smoke specs.
@@ -172,7 +176,8 @@ Progress, before any role was granted:
   - What-if can't see app settings. Before approving, check that every live app setting name is
     still in the template, because provisioning replaces the whole list.
   - ✅ Done so far: the environment is rebuilt, and a preview plus a full what-if against `main`
-    show no creates or deletes. Waiting for approval and the remaining gap PRs.
+    show no creates or deletes. That preview predates G8, so it runs again on the final `main`
+    before approval.
 - **Exit:** the deployed build contains G1 to G5, G7 and G8, and the smoke specs pass.
 
 ### Phase 5: Live, admin publishes (A7 to A9) ⬜
@@ -216,16 +221,29 @@ Progress:
   shows "Admin allowed", and My access, Catalog and My requests show their empty states without
   errors.
 
-### Phase 8: Runtime verification (R1 to R8, A14) ⬜
+### Phase 8: Runtime verification (R1 to R8, A14) 🔄 verifier ready
 
-- Extend `scripts/verify_model_access.py` in the e2e PR:
-  - Acquire tokens with MSAL: user tokens through the G4 client, workload tokens with client
-    credentials.
-  - Add the Anthropic Messages payload.
-  - Add per-provider targets.
-  - Add a tokens-per-minute 429 check.
-- Call every provider by key and by token, check that every denial case is denied, prove the
-  shared budget, and verify that revocation and method toggles take effect.
+`scripts/verify_model_access.py` now covers this phase, with unit tests against a fake gateway
+that applies the governed policy. It reads each grant's connection details from MOSAIC, calls the
+operation its publication exposes, and can sign callers in itself. The live run waits for the
+tenant batches, the redeploy and Phases 5 to 7.
+
+| Journey | How the verifier covers it |
+| --- | --- |
+| R1 | One `--user-entitlement` per model; the verifier calls whichever operation the publication exposes. Azure OpenAI deployments use `/openai/` routes with `--api-version`. Foundry deployments, such as Grok and Llama, use `/models/chat/completions` with `--models-api-version`. Claude uses `/anthropic/v1/messages` (G5) |
+| R2 | `--user-token-source device-code` signs the user in through the G4 model client. `--check-ungranted-user` signs in a second person, whose token the grant lookup must refuse with 403. Every run also sends a MOSAIC control-plane token, the wrong audience, which token validation must refuse with 401 |
+| R3 | `--application-entitlement` with `--application-token-source client-credentials`. The admin's control token hands off the workload's key |
+| R4 | Every run: an anonymous call, an invalid key, an invalid token with a valid key, and the other subject's token with the grant's key. The end user also can't reveal an application's key |
+| R5 | `--prove-shared-budget`, on fresh grants limited to 2 calls per 300 seconds. The secondary key's 429 must come from the gateway's call limit, not the deployment |
+| R6 | `--prove-token-limit`, on fresh grants limited to at most 100 tokens per minute, on a model whose own limit for each grant is higher. The 429 must come from the gateway's token limit. Not Claude on the classic tier, which can't limit Anthropic tokens (G5) |
+| R7 | `--watch-revocation <grant-id>` waits while the admin revokes the grant, which disables it, and applies the plan (A14). Rejections count only once MOSAIC reports the grant revoked, and must repeat |
+| R8 | Manual: find the calls in Application Insights and Log Analytics |
+
+Method toggles (A14) are checked by rerunning the verifier after each reviewed plan.
+
+Still to build: a harness command that reads the `user` and `admin` personas' MOSAIC API tokens
+from their signed-in browsers and starts the verifier with them in its environment, so nobody
+copies a token by hand.
 
 ### Phase 9: Codify, document, clean up ⬜
 
@@ -316,8 +334,10 @@ before.
 ## Risks
 
 - **Anthropic token limits on classic APIM.** A Developer-tier gateway can't run `llm-token-limit`
-  for Anthropic. G5 decides between request-rate limits only and adding a v2-tier gateway, which
-  costs more.
+  or `llm-emit-token-metric` for Anthropic. G5 decided: on classic tiers, a Claude publication
+  applies no token limits, and its grants use call limits instead. So R6 (the tokens-per-minute
+  429) can't cover Claude here, and analytics show no token metrics for it. A v2-tier gateway would
+  lift this, at extra cost.
 - **Model availability and terms.** Claude needs an eligible subscription and region, available
   quota and accepted marketplace terms. Accepting terms may need someone in the Azure portal.
 - **Network reach.** A Developer-tier gateway without a virtual network can't reach private
