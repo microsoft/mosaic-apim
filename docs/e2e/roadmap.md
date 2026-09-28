@@ -241,9 +241,11 @@ tenant batches, the redeploy and Phases 5 to 7.
 
 Method toggles (A14) are checked by rerunning the verifier after each reviewed plan.
 
-Still to build: a harness command that reads the `user` and `admin` personas' MOSAIC API tokens
-from their signed-in browsers and starts the verifier with them in its environment, so nobody
-copies a token by hand.
+The live driver's `verify` command runs the verifier for the personas. It signs the `user`
+persona, and the `admin` persona for application grants, in to MOSAIC again, and passes their
+MOSAIC API tokens to the verifier without anyone copying them. It enters the verifier's device
+codes in the right persona's browser, leaving a person to confirm the sign-in and complete MFA.
+The [runbook](runbook.md#verify-runtime-access) shows how to run it.
 
 ### Phase 9: Codify, document, clean up ⬜
 

@@ -2,9 +2,11 @@ import { existsSync, readFileSync } from 'node:fs'
 import { request } from 'node:http'
 import { parseArgs } from 'node:util'
 import { liveSessionFile } from '../src/paths.ts'
+import { forwardedEnvironment, forwardedVariables } from '../src/verify.ts'
 
 const usage = `Usage: node tools/drive.ts <persona> <action> [arguments] [options]
        node tools/drive.ts status | shutdown | dialogs <accept|dismiss>
+       node tools/drive.ts verify [--user <persona>] [--admin <persona>] [--stranger <persona>] -- <verifier flags>
 
 Actions
   open <web|portal> [path]          Launch the persona's browser (if needed) and navigate
@@ -25,7 +27,19 @@ Actions
 Targets: role:<role>[:<name>] | label:<text> | text:<text> | placeholder:<text> | testid:<id> | css:<selector>
          Names and text may be /regular expressions/flags.
 Options: --in <target>  --row <text>  --has <text>  --nth <n|last>  --exact  --timeout <ms>  --max <chars>  --state <state>
-         --nth counts from 0. For the last match use "--nth last" or "--nth=-1".`
+         --nth counts from 0. For the last match use "--nth last" or "--nth=-1".
+
+Verify
+  verify -- <verifier flags>        Run scripts/verify_model_access.py against the manifest's API and gateway. The
+                                    driver signs the personas in, passes their MOSAIC API tokens to it, and enters
+                                    its device codes in the right browser. Everything after "--" goes to the
+                                    verifier, for example: verify -- --user-entitlement <id> --send-model-requests
+  --user <persona>                  Holds the user grants (default: the manifest's roles.user)
+  --admin <persona>                 Hands off application keys, with --application-entitlement (default: roles.admin)
+  --stranger <persona>              Holds no grant, for --check-ungranted-user with device-code sign-in
+                                    (default: roles.outsider, then roles.noRole)
+  Passes ${forwardedVariables.join(', ')}
+  from this shell to the verifier when they're set.`
 
 function fail(message: string): never {
   process.stderr.write(`${message}\n`)
@@ -48,6 +62,9 @@ function parseCommandLine() {
         target: { type: 'string' },
         full: { type: 'boolean' },
         clear: { type: 'boolean' },
+        user: { type: 'string' },
+        admin: { type: 'string' },
+        stranger: { type: 'string' },
         help: { type: 'boolean', short: 'h' },
       },
     })
@@ -72,11 +89,14 @@ if (values.help || positionals.length === 0) {
   process.exit(values.help ? 0 : 2)
 }
 
-const globalActions = new Set(['status', 'shutdown', 'dialogs'])
+const globalActions = new Set(['status', 'shutdown', 'dialogs', 'verify'])
 const [first, ...rest] = positionals
 const personaKey = globalActions.has(first) ? undefined : first
 const [rawAction, ...params] = personaKey ? rest : [first, ...rest]
 if (!rawAction) fail(usage)
+if (rawAction !== 'verify' && [values.user, values.admin, values.stranger].some((value) => value !== undefined)) {
+  fail('--user, --admin and --stranger only apply to "verify"')
+}
 
 const common = {
   within: values.in,
@@ -107,6 +127,16 @@ switch (rawAction) {
     break
   case 'dialogs':
     args = { mode: need(0, 'accept|dismiss') }
+    break
+  case 'verify':
+    if (personaKey) fail(`"verify" takes no persona before it. Choose people with --user, --admin and --stranger.`)
+    args = {
+      verifierArgs: params,
+      user: values.user,
+      admin: values.admin,
+      stranger: values.stranger,
+      env: forwardedEnvironment(process.env),
+    }
     break
   case 'open':
   case 'signin':
@@ -195,7 +225,8 @@ function rpc(body: string, timeoutMs: number): Promise<{ status: number; text: s
   })
 }
 
-const waitMs = typeof args.timeout === 'number' ? args.timeout : action === 'signin' ? 600_000 : 30_000
+const waitMs =
+  typeof args.timeout === 'number' ? args.timeout : action === 'verify' ? 3 * 3_600_000 : action === 'signin' ? 600_000 : 30_000
 let reply: { status: number; text: string }
 try {
   reply = await rpc(JSON.stringify({ action, persona: personaKey, args }), waitMs + 60_000)
@@ -210,5 +241,15 @@ try {
   fail(`The live driver returned HTTP ${reply.status} without a JSON body`)
 }
 if (!payload.ok) fail(`Error: ${payload.error ?? `HTTP ${reply.status}`}`)
-const output = typeof payload.result === 'string' ? payload.result : JSON.stringify(payload.result, null, 2)
-process.stdout.write(`${output}\n`)
+if (action === 'verify') {
+  const run = payload.result as { exitCode: number | null; timedOut: boolean; lines: string[]; personas: Record<string, string> }
+  const people = Object.entries(run.personas).map(([part, key]) => `${part} ${key}`)
+  process.stdout.write(`Personas: ${people.join(', ')}\n${run.lines.join('\n')}\n`)
+  if (run.exitCode !== 0) {
+    process.stderr.write(run.timedOut ? 'The verifier timed out.\n' : `The verifier exited with code ${run.exitCode ?? 'none'}.\n`)
+  }
+  process.exitCode = run.exitCode ?? 1
+} else {
+  const output = typeof payload.result === 'string' ? payload.result : JSON.stringify(payload.result, null, 2)
+  process.stdout.write(`${output}\n`)
+}

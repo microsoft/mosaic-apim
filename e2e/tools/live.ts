@@ -1,8 +1,10 @@
 import { chromium, type BrowserContext, type Locator, type Page } from '@playwright/test'
+import { type ChildProcess, spawn } from 'node:child_process'
 import { randomBytes, timingSafeEqual } from 'node:crypto'
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { join } from 'node:path'
+import { createInterface } from 'node:readline'
 import { type AppName, type Targets, flags, loadTargets, persona, resolveTargetRef } from '../src/config.ts'
 import { type LocatorOptions, describeLocator, locate } from '../src/locators.ts'
 import { ensureDir, artifactsDir, liveSessionFile, stateDir } from '../src/paths.ts'
@@ -17,6 +19,23 @@ import {
   signInErrorCode,
 } from '../src/personas.ts'
 import { maskedSelectors, pageSecrets, redact, redactUrl, truncate } from '../src/redact.ts'
+import {
+  type SignInPrompt,
+  type VerifyPersonas,
+  type VerifyPlan,
+  bearerToken,
+  checkForwarded,
+  controlTokenProblem,
+  isDeviceLoginUrl,
+  parseSignInPrompt,
+  planVerification,
+  publicLine,
+  repoRoot,
+  verifierLaunch,
+  verifierScript,
+  verifierTimeoutMs,
+  verifyPersonas,
+} from '../src/verify.ts'
 
 /**
  * Local control daemon for human-in-the-loop UI journeys. It owns one persistent browser profile per
@@ -24,6 +43,8 @@ import { maskedSelectors, pageSecrets, redact, redactUrl, truncate } from '../sr
  * There is deliberately no arbitrary script evaluation and no way to read tokens or revealed keys.
  * Navigation stays on the MOSAIC origins. Snapshots and text reads run only on MOSAIC pages, because
  * accessibility snapshots include input values, such as a password typed on a Microsoft sign-in page.
+ * The one exception to "no tokens" is "verify": it hands the personas' MOSAIC API tokens straight to
+ * scripts/verify_model_access.py in its environment, and never returns or prints them.
  */
 
 interface LogEntry {
@@ -39,16 +60,24 @@ interface PersonaSession {
 }
 
 type Args = Record<string, unknown>
+type Handler = (personaKey: string | undefined, args: Args, signal: AbortSignal) => Promise<unknown>
+
+interface Verification {
+  child?: ChildProcess
+}
 
 class RpcError extends Error {}
 
 const maxLogEntries = 80
+const maxVerifyLines = 500
+const signInTimeoutMs = 600_000
 const targets: Targets = loadTargets()
 const sessions = new Map<string, PersonaSession>()
 const signingIn = new Set<string>()
 const token = randomBytes(32).toString('hex')
 const allowedOrigins = new Set([targets.origins.web, targets.origins.portal])
 let dialogMode: 'accept' | 'dismiss' = 'dismiss'
+let activeVerification: Verification | undefined
 
 function log(session: PersonaSession, kind: LogEntry['kind'], message: string) {
   session.logs.push({ at: new Date().toISOString(), kind, message: truncate(redact(message), 800) })
@@ -186,7 +215,259 @@ function appUrl(app: string, path: string | undefined): string {
 
 const timeout = (args: Args, fallback = 15_000) => num(args, 'timeout', fallback, 900_000)
 
-const handlers: Record<string, (personaKey: string | undefined, args: Args) => Promise<unknown>> = {
+function errorText(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error)
+  return truncate(redact(message.split('\n')[0]), 300)
+}
+
+async function within<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const expired = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new RpcError(message)), ms)
+  })
+  try {
+    return await Promise.race([promise, expired])
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+/**
+ * Signs a persona in to MOSAIC in a new tab and takes the MOSAIC API token from the first API call the app
+ * makes. A new tab starts with empty session storage, where MSAL keeps its cache, so the app signs in again
+ * and the token has its full lifetime. The token goes only to the verifier.
+ */
+async function captureApiToken(personaKey: string, plan: VerifyPlan, signal: AbortSignal): Promise<string> {
+  const { upn, objectId, expectedRole } = persona(targets, personaKey)
+  if (signingIn.has(personaKey)) {
+    throw new RpcError(`${personaKey} is already signing in. Wait for that to finish, then run "verify" again.`)
+  }
+  signingIn.add(personaKey)
+  let session: PersonaSession | undefined
+  let previous: Page | undefined
+  let page: Page | undefined
+  const closePage = () => void page?.close().catch(() => undefined)
+  signal.addEventListener('abort', closePage, { once: true })
+  try {
+    session = await openSession(personaKey)
+    previous = session.current
+    page = await session.context.newPage()
+    signal.throwIfAborted()
+    const app: AppName = expectedRole === 'Admin' ? 'web' : 'portal'
+    const apiCall = page.waitForRequest(
+      async (request) =>
+        request.url().startsWith(`${targets.origins.api}/api/`) &&
+        bearerToken(await request.headerValue('authorization').catch(() => null)) !== undefined,
+      { timeout: 0 },
+    )
+    apiCall.catch(() => undefined)
+    process.stdout.write(`[verify] Signing ${personaKey} in to the ${app} app for a MOSAIC API token.\n`)
+    await page.bringToFront()
+    await ensureSignedIn(page, targets, personaKey, app, { interactive: true, timeoutMs: signInTimeoutMs })
+    const request = await within(apiCall, 60_000, `${personaKey} signed in, but the ${app} app didn't call the MOSAIC API within a minute.`)
+    const apiToken = bearerToken(await request.headerValue('authorization'))
+    if (!apiToken) throw new RpcError(`${personaKey}'s browser sent no MOSAIC API token.`)
+    const holder = { personaKey, upn, objectId, tenantId: targets.tenantId }
+    const problem = controlTokenProblem(apiToken, holder, Date.now() / 1_000, plan)
+    if (problem) throw new RpcError(problem)
+    return apiToken
+  } finally {
+    signal.removeEventListener('abort', closePage)
+    await page?.close().catch(() => undefined)
+    if (session && previous) session.current = previous
+    signingIn.delete(personaKey)
+  }
+}
+
+interface DeviceSignInState {
+  done: boolean
+  session?: PersonaSession
+  previous?: Page
+  page?: Page
+}
+
+interface DeviceSignIn {
+  startedAt: number
+  finish(): void
+}
+
+// The verifier waits at least a second before its first poll, so output within this window of a prompt was
+// written before it, on the other stream, and doesn't mean the sign-in is over.
+const deviceSignInGraceMs = 750
+
+/**
+ * Enters a device code in the right persona's browser and picks the persona's account if Entra asks. The
+ * person at the keyboard confirms the sign-in and completes MFA, as with every other sign-in.
+ */
+async function enterDeviceCode(
+  personaKey: string,
+  prompt: SignInPrompt,
+  state: DeviceSignInState,
+  emit: (line: string) => void,
+): Promise<void> {
+  const { upn } = persona(targets, personaKey)
+  const session = await openSession(personaKey)
+  if (state.done) return
+  state.session = session
+  state.previous = session.current
+  const page = await session.context.newPage()
+  state.page = page
+  if (state.done) {
+    await page.close().catch(() => undefined)
+    return
+  }
+  await page.bringToFront()
+  await page.goto(prompt.uri)
+  const box = page.locator('input[name="otc"]').first()
+  await box.waitFor({ state: 'visible', timeout: 30_000 })
+  await box.fill(prompt.code)
+  await page.locator('input[type="submit"]').first().click()
+  emit(`Entered the code in ${personaKey}'s browser. If it asks, confirm the sign-in there and complete MFA.`)
+  const tile = page.locator(`[data-test-id="${upn.replace(/["\\]/g, '')}" i]`).first()
+  // The device page shows a rejected or expired code here, with no AADSTS code.
+  const alert = page.locator('#error[role="alert"]').first()
+  let reported: string | undefined
+  let alerted: string | undefined
+  while (!state.done && !page.isClosed()) {
+    if (isLoginHost(page.url())) {
+      const code = await signInErrorCode(page)
+      if (code && code !== reported) {
+        reported = code
+        emit(`${personaKey}'s sign-in page shows ${code}.`)
+      }
+      const message = (await alert.isVisible().catch(() => false))
+        ? (await alert.innerText({ timeout: 1_000 }).catch(() => '')).trim()
+        : ''
+      if (message && message !== alerted) {
+        alerted = message
+        emit(`${personaKey}'s sign-in page says: ${truncate(redact(message), 200)}`)
+      }
+      if (await tile.isVisible().catch(() => false)) await tile.click().catch(() => undefined)
+    }
+    await page.waitForTimeout(750).catch(() => undefined)
+  }
+}
+
+function startDeviceSignIn(
+  prompt: SignInPrompt,
+  people: VerifyPersonas,
+  emit: (line: string) => void,
+): DeviceSignIn | undefined {
+  const personaKey = prompt.subject === 'user' ? people.user : prompt.subject === 'stranger' ? people.stranger : undefined
+  const yourself = `Enter the code yourself at that address, signed in as ${prompt.who}.`
+  if (!isDeviceLoginUrl(prompt.uri)) {
+    emit('That address is not a Microsoft sign-in page, so the driver did not open it. Check it before you use it.')
+    return undefined
+  }
+  if (personaKey === undefined) {
+    emit(`The driver has no persona to sign in as ${prompt.who}. ${yourself}`)
+    return undefined
+  }
+  if (signingIn.has(personaKey)) {
+    emit(`${personaKey} is already signing in, so the driver did not open the page. ${yourself}`)
+    return undefined
+  }
+  signingIn.add(personaKey)
+  const state: DeviceSignInState = { done: false }
+  void enterDeviceCode(personaKey, prompt, state, emit).catch((error: unknown) => {
+    if (!state.done) emit(`The driver could not enter the code in ${personaKey}'s browser: ${errorText(error)}. ${yourself}`)
+  })
+  return {
+    startedAt: Date.now(),
+    finish() {
+      if (state.done) return
+      state.done = true
+      void state.page?.close().catch(() => undefined)
+      if (state.session && state.previous) state.session.current = state.previous
+      signingIn.delete(personaKey)
+    },
+  }
+}
+
+interface VerifierOutcome {
+  exitCode: number | null
+  timedOut: boolean
+  lines: string[]
+}
+
+/**
+ * Runs the verifier and collects its redacted output. Device-code prompts are entered in the persona's
+ * browser; the next line of output means that sign-in ended, so its tab closes.
+ */
+function runVerifier(
+  plan: VerifyPlan,
+  people: VerifyPersonas,
+  env: Record<string, string>,
+  secrets: string[],
+  signal: AbortSignal,
+  verification: Verification,
+): Promise<VerifierOutcome> {
+  return new Promise((resolve) => {
+    const lines: string[] = []
+    const limitMs = verifierTimeoutMs(plan)
+    const python = process.env.MOSAIC_E2E_PYTHON || 'python'
+    let dropped = 0
+    let timedOut = false
+    let settled = false
+    let signIn: DeviceSignIn | undefined
+    let timer: ReturnType<typeof setTimeout> | undefined
+
+    const emit = (line: string) => {
+      lines.push(line)
+      if (lines.length > maxVerifyLines) dropped += lines.splice(0, lines.length - maxVerifyLines).length
+      process.stdout.write(`[verify] ${line}\n`)
+    }
+    const endSignIn = () => {
+      signIn?.finish()
+      signIn = undefined
+    }
+    const child = spawn(python, [verifierScript, ...plan.argv], {
+      cwd: repoRoot,
+      env,
+      shell: false,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+    })
+    verification.child = child
+    const onAbort = () => {
+      emit('drive.ts disconnected, so the driver stopped the verifier.')
+      child.kill()
+    }
+    const finish = (exitCode: number | null) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      signal.removeEventListener('abort', onAbort)
+      endSignIn()
+      if (dropped > 0) lines.unshift(`… ${dropped} earlier lines are in the live driver's terminal.`)
+      resolve({ exitCode, timedOut, lines })
+    }
+    const onLine = (raw: string) => {
+      if (signIn && Date.now() - signIn.startedAt >= deviceSignInGraceMs) endSignIn()
+      emit(publicLine(raw, secrets))
+      const prompt = parseSignInPrompt(raw)
+      if (prompt) {
+        endSignIn()
+        signIn = startDeviceSignIn(prompt, people, emit)
+      }
+    }
+    createInterface({ input: child.stdout, crlfDelay: Infinity }).on('line', onLine)
+    createInterface({ input: child.stderr, crlfDelay: Infinity }).on('line', onLine)
+    signal.addEventListener('abort', onAbort, { once: true })
+    timer = setTimeout(() => {
+      timedOut = true
+      emit(`The verifier ran for ${Math.round(limitMs / 60_000)} minutes, so the driver stopped it.`)
+      child.kill()
+    }, limitMs)
+    child.on('error', (error) => {
+      emit(`Could not run the verifier with "${python}": ${errorText(error)}. Set MOSAIC_E2E_PYTHON to a Python that has httpx.`)
+      if (child.pid === undefined) finish(null)
+    })
+    child.on('close', (code) => finish(code))
+  })
+}
+
+const handlers: Record<string, Handler> = {
   async status() {
     const personas = await Promise.all(
       [...sessions.entries()].map(async ([key, session]) => ({
@@ -404,6 +685,38 @@ const handlers: Record<string, (personaKey: string | undefined, args: Args) => P
     return { dialogMode }
   },
 
+  async verify(_personaKey, args, signal) {
+    if (activeVerification) throw new RpcError('A verification is already running. Wait for it to finish, or stop its drive.ts.')
+    const verifierArgs = args.verifierArgs
+    if (!Array.isArray(verifierArgs) || !verifierArgs.every((item): item is string => typeof item === 'string')) {
+      throw new RpcError('"verifierArgs" must be an array of strings')
+    }
+    const forwarded = checkForwarded(args.env)
+    const plan = planVerification(targets, verifierArgs)
+    const people = verifyPersonas(targets, plan, {
+      admin: str(args, 'admin', false),
+      user: str(args, 'user', false),
+      stranger: str(args, 'stranger', false),
+    })
+    const busy = [people.user, people.admin, people.stranger].find((key) => key !== undefined && signingIn.has(key))
+    if (busy) throw new RpcError(`${busy} is signing in. Wait for that to finish, then run "verify" again.`)
+    const verification: Verification = {}
+    activeVerification = verification
+    try {
+      const user = await captureApiToken(people.user, plan, signal)
+      const admin = people.admin === undefined ? undefined : await captureApiToken(people.admin, plan, signal)
+      signal.throwIfAborted()
+      const { env, secrets } = verifierLaunch(process.env, forwarded, { user, admin })
+      const outcome = await runVerifier(plan, people, env, secrets, signal, verification)
+      return { ...outcome, personas: people }
+    } catch (error) {
+      if (signal.aborted) process.stdout.write('[verify] drive.ts disconnected before the verifier started, so the driver stopped the run.\n')
+      throw error
+    } finally {
+      if (activeVerification === verification) activeVerification = undefined
+    }
+  },
+
   async close(personaKey) {
     const key = personaKey as string
     const session = sessions.get(key)
@@ -418,7 +731,7 @@ const handlers: Record<string, (personaKey: string | undefined, args: Args) => P
   },
 }
 
-const globalActions = new Set(['status', 'shutdown', 'dialogs'])
+const globalActions = new Set(['status', 'shutdown', 'dialogs', 'verify'])
 
 function authorized(request: IncomingMessage, port: number): boolean {
   if (request.headers.host !== `127.0.0.1:${port}`) return false
@@ -451,6 +764,11 @@ let serverPort = 0
 const server = createServer(async (request, response) => {
   if (!authorized(request, serverPort)) return send(response, 401, { ok: false, error: 'unauthorized' })
   if (request.method !== 'POST' || request.url !== '/rpc') return send(response, 404, { ok: false, error: 'not found' })
+  // drive.ts waits for the reply, so a connection that closes first means it stopped. Long actions end early.
+  const abort = new AbortController()
+  response.on('close', () => {
+    if (!response.writableFinished) abort.abort()
+  })
   try {
     const body = await readBody(request)
     const action = str(body, 'action') as string
@@ -458,7 +776,7 @@ const server = createServer(async (request, response) => {
     if (!handler) throw new RpcError(`Unknown action "${action}"`)
     const personaKey = globalActions.has(action) ? undefined : str(body, 'persona')
     const args = (typeof body.args === 'object' && body.args !== null ? body.args : {}) as Args
-    const result = await handler(personaKey, args)
+    const result = await handler(personaKey, args, abort.signal)
     send(response, 200, { ok: true, result })
   } catch (error) {
     const message = error instanceof Error ? error.message.split('\n=========================== logs')[0] : String(error)
@@ -476,6 +794,7 @@ function processAlive(pid: number): boolean {
 }
 
 async function stop(code: number) {
+  activeVerification?.child?.kill()
   await Promise.all(
     [...sessions.entries()].map(async ([personaKey, session]) => {
       if (!(await closePersona(session.context))) process.stderr.write(browserStillExiting(personaKey))

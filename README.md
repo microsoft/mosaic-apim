@@ -836,7 +836,9 @@ accounts, and the harness drives the web console and portal to:
 - Check that each end user or workload can call its model, and that others are denied.
 
 The [roadmap](docs/e2e/roadmap.md) tracks the phases and the journey matrix. The
-[runbook](docs/e2e/runbook.md) covers setup, personas, flags and secret hygiene.
+[runbook](docs/e2e/runbook.md) covers setup, personas, flags and secret hygiene. Its `verify`
+command runs `scripts\verify_model_access.py` with the personas' own MOSAIC API tokens, and
+enters its device codes in their browsers.
 
 ## Reconciliation boundary
 

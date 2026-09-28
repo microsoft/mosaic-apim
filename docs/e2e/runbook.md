@@ -130,6 +130,7 @@ $env:MOSAIC_E2E_ALLOW_WRITES = '1'; npm test
 | `MOSAIC_E2E_BROWSER_CHANNEL` | Default browser channel for personas that don't set one |
 | `MOSAIC_E2E_TARGETS` | Path to a manifest other than `targets.local.json` |
 | `MOSAIC_E2E_STATE_DIR`, `MOSAIC_E2E_ARTIFACTS_DIR` | Move profiles, driver state or artifacts |
+| `MOSAIC_E2E_PYTHON` | The Python that the live driver's `verify` runs the verifier with. Defaults to `python`, which needs `httpx` |
 
 Specs run serially with a single worker, because journeys build on each other and share
 profiles. Traces and video are off. On failure, the suite attaches a masked screenshot of each
@@ -140,20 +141,63 @@ own page snapshot is turned off (`PLAYWRIGHT_NO_COPY_PROMPT`), because it isn't 
 ## Verify runtime access
 
 Phase 8 calls the gateway directly with `scripts\verify_model_access.py`, outside the browser.
-[Verifying a real gateway](../../README.md#verifying-a-real-gateway) lists its flags and
-variables. With the personas:
+[Verifying a real gateway](../../README.md#verifying-a-real-gateway) explains its checks, flags
+and variables. The live driver's `verify` command runs it for the personas, so nobody copies a
+token by hand:
 
-- Grant IDs appear in the console's model access review, as `Grant: <id>` on each row.
-- With `--user-token-source device-code`, the verifier prints a code on stderr. Open the sign-in
-  page in the `user` persona's browser and enter it there. `--check-ungranted-user` asks for a
-  second sign-in; use a persona that has no grant for the models in the run.
-- Sign-in failures print only their `AADSTS` codes. The
-  [troubleshooting table](../call-models-with-entra-tokens.md#troubleshooting) explains them.
-- Proofs need fresh grants with no other callers. Create them for the run in the console, with
-  the limits the README names for each proof.
-- For `--watch-revocation`, leave the verifier running. In the `admin` persona, revoke the grant
-  (this disables it; don't delete it), then review and apply its model's access plan. If a token
-  the watch uses won't last until the timeout, the verifier stops before waiting and names it.
+```powershell
+node tools/drive.ts verify -- --user-entitlement <grant-id> --send-model-requests
+node tools/drive.ts verify --user user-a -- `
+  --user-entitlement <grant-id> --user-entitlement <another-grant-id> `
+  --api-version <azure-openai-api-version> --models-api-version <foundry-models-api-version> `
+  --user-token-source device-code --check-ungranted-user --send-model-requests
+```
+
+Everything after `--` goes to the verifier. The driver adds `--api-base-url` and
+`--gateway-origin` from the manifest's `api` and `gateway` origins, so it refuses them after `--`.
+It also refuses unknown or abbreviated flags, and checks the flags the way the verifier does
+before anyone signs in.
+
+- **People:**
+  - `--user` holds the user grants. It defaults to `roles.user`.
+  - `--admin` hands off application keys. It's only used with `--application-entitlement`,
+    defaults to `roles.admin`, and must be a different account from the user.
+  - `--stranger` holds no grant for the models in the run. It's only used with
+    `--check-ungranted-user` and `--user-token-source device-code`, and defaults to
+    `roles.outsider`, then `roles.noRole`.
+- **MOSAIC API tokens:** the driver signs the user in to MOSAIC again in a new tab, and the admin
+  too when the run needs one. It uses the web console for a persona whose expected role is
+  `Admin`, and the portal otherwise. It takes the token from the app's first API call and checks
+  that it belongs to that persona, comes from the manifest's tenant, and lasts the run. Then it
+  closes the tab and passes the token to the verifier in its environment. If a profile's Entra
+  session has expired, the driver waits for a person to sign in, as `signin` does.
+- **Device codes:** when the verifier prints a code, the driver opens the Microsoft sign-in page
+  in the right persona's browser: the user's, or the stranger's for `--check-ungranted-user`. It
+  enters the code and picks that persona's account. A person confirms the sign-in and completes
+  MFA there; the driver never confirms it. If the driver can't enter the code, it says so, and you
+  enter it yourself at the address the verifier printed.
+- **Workloads and other variables:** when `MOSAIC_SMOKE_APPLICATION_CLIENT_ID`,
+  `MOSAIC_SMOKE_APPLICATION_CLIENT_SECRET`, `MOSAIC_SMOKE_PAYLOAD` or one of the three
+  `MOSAIC_SMOKE_*_RUNTIME_TOKEN` variables is set in drive.ts's shell, drive.ts passes it to that
+  run only. Use a short-lived client secret and delete it afterward. The two control-token
+  variables are never passed on: those tokens always come from the personas' browsers.
+- **Output:** the verifier's lines appear in the live driver's terminal as they happen, prefixed
+  `[verify]`. drive.ts prints them when the run ends, and exits with the verifier's exit code.
+  The tokens and secrets the driver passed on are redacted by value, as well as by pattern.
+- **Limits:** one run at a time. The driver stops the verifier after 45 minutes, plus the
+  revocation watch's timeout and interval, and stopping drive.ts (Ctrl+C) stops it too.
+  `MOSAIC_E2E_PYTHON` picks the Python to run it with (`python` by default); it needs `httpx`.
+
+Grant IDs appear in the console's model access review, as `Grant: <id>` on each row. Proofs need
+fresh grants with no other callers. Create them for the run in the console, with the limits the
+README names for each proof. Sign-in failures print only their `AADSTS` codes. The
+[troubleshooting table](../call-models-with-entra-tokens.md#troubleshooting) explains them.
+
+For `--watch-revocation <grant-id>`, leave `verify` running and drive the admin from another
+terminal. Revoke the grant (this disables it; don't delete it), then review and apply its model's
+access plan. The driver serves other actions while a verification runs. If a token the watch uses
+won't last until the timeout, the run stops before waiting and names the token, and a shorter
+`--revocation-timeout` fixes it.
 
 ## Secret hygiene
 
@@ -186,6 +230,9 @@ variables. With the personas:
 | `Could not reach the live driver` | The driver stopped without cleaning up. Delete the stale `live.json` and restart it |
 | `the browser hadn't finished exiting, so the harness moved on` | Nothing to fix. On a busy Windows machine a browser can take a minute or more to leave the process table after it has saved its profile. The live driver and `login` wait up to 20 seconds and then continue, and the profile can be reopened straight away |
 | `Worker teardown timeout of 180000ms exceeded` after the tests finished | Playwright waits for every browser it launched to exit before a worker stops, and on a busy machine that can outlast the timeout. The test results reported before it still stand. Rerun when the machine is less loaded if you need a clean exit code |
+| `Could not run the verifier with "python"` | Install `httpx` for that Python, or set `MOSAIC_E2E_PYTHON` to one that has it |
+| `The MOSAIC API token <persona>'s browser sent is for a different account` | That profile is signed in as someone else. Delete its profile and sign in again as the right account |
+| `The MOSAIC API token … expires in N seconds` | Entra issues the token when the driver signs the persona in again, so this comes from a short token lifetime policy or a long revocation watch. Lower `--revocation-timeout` |
 
 ## Quality checks
 
