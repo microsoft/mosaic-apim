@@ -739,6 +739,8 @@ describe('ModelsPage model endpoints', () => {
     ).toBeVisible()
     expect(screen.queryByText('Role assignments MOSAIC found')).not.toBeInTheDocument()
     expect(screen.queryByText(/Recommended: grant/)).not.toBeInTheDocument()
+    // Registered at the account, so the scope checked is the scope registered.
+    expect(screen.queryByText(/Checked at/)).not.toBeInTheDocument()
   })
 
   it('reports a grant inherited from a broader scope as inherited', async () => {

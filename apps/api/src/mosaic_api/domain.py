@@ -542,8 +542,8 @@ class GatewayRuntimeAccess(MosaicModel):
         default=None,
         description=(
             "The role MOSAIC recommends granting. Any role whose data actions cover "
-            "``required_data_actions`` is accepted; this is the least-privileged built-in that "
-            "does."
+            "``required_data_actions`` is accepted: Cognitive Services OpenAI User for an Azure "
+            "OpenAI resource, and Foundry User, as Microsoft's Foundry guidance advises, otherwise."
         ),
     )
     required_role_definition_id: str | None = None

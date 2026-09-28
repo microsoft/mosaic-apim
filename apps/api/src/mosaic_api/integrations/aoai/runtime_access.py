@@ -124,13 +124,15 @@ def required_runtime_data_actions(
 
 
 def recommended_runtime_role(kind: str | None) -> tuple[str, str]:
-    """The least-privileged built-in MOSAIC recommends, as ``(role name, role definition ID)``.
+    """The built-in MOSAIC recommends, as ``(role name, role definition ID)``.
 
-    Cognitive Services OpenAI User for an Azure OpenAI resource. Foundry User for anything else,
-    including an endpoint registered by Foundry project: Microsoft's Foundry RBAC guidance names
-    Foundry User on the Foundry resource as the minimum for calling its models. Foundry User is
-    also the answer while the kind is unknown, because it covers both shapes, and whatever MOSAIC
-    recommends the check must later accept.
+    Cognitive Services OpenAI User for an Azure OpenAI resource: its data actions are limited to
+    the OpenAI surface. Foundry User for anything else, including an endpoint registered by Foundry
+    project, because Microsoft's Foundry RBAC guidance names Foundry User on the Foundry resource
+    as the minimum for calling its models. Its data actions are the same as Cognitive Services
+    User's, which the check also accepts. Foundry User is also the answer while the kind is
+    unknown, because it covers both shapes, and whatever MOSAIC recommends the check must later
+    accept.
 
     Roles are compared by definition ID rather than name. The Foundry roles were renamed in 2026
     ("Azure AI User" became "Foundry User") and the GUIDs were not.
@@ -679,7 +681,7 @@ def _role_message(
 def _unknown_kind_note(role_name: str) -> str:
     return (
         "MOSAIC cannot read this resource yet, so it does not know whether it is Azure OpenAI or "
-        "Foundry, and the least-privileged role differs between them. Grant MOSAIC Reader on the "
+        "Foundry, and an Azure OpenAI resource can use a narrower role. Grant MOSAIC Reader on the "
         f"resource and it will recommend the exact role. Meanwhile, {role_name} is accepted for "
         "either kind."
     )

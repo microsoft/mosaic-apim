@@ -656,12 +656,14 @@ function RuntimeAccessRow({
           </Text>
         )
       )}
-      {access.evaluatedScope && !sameScope(access.evaluatedScope, registeredScope) && (
-        <Text size={200} className={styles.muted}>
-          Checked at <ScopeName scope={access.evaluatedScope} />, the resource the published API
-          calls. A Foundry project&apos;s models are deployed on its parent resource.
-        </Text>
-      )}
+      {registeredScope &&
+        access.evaluatedScope &&
+        !sameScope(access.evaluatedScope, registeredScope) && (
+          <Text size={200} className={styles.muted}>
+            Checked at <ScopeName scope={access.evaluatedScope} />, the resource the published API
+            calls. A Foundry project&apos;s models are deployed on its parent resource.
+          </Text>
+        )}
       {findings.length > 0 && (
         <div className={styles.findings}>
           <Text size={200} weight="semibold">

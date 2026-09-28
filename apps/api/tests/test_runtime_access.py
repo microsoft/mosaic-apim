@@ -528,7 +528,7 @@ class TestRecommendation:
             (None, FOUNDRY_USER_ROLE_ID),
         ],
     )
-    def test_least_privileged_role_for_the_kind(self, kind: str | None, role_id: str) -> None:
+    def test_recommended_role_for_the_kind(self, kind: str | None, role_id: str) -> None:
         role_name, recommended = recommended_runtime_role(kind)
 
         assert recommended == role_id
