@@ -1,4 +1,18 @@
-export const maskedSelectors = ['[data-secret]', 'input[type="password"]', '[data-sensitive]']
+import type { Page } from '@playwright/test'
+
+/**
+ * Elements whose content is secret. Screenshots mask them, text reads refuse them, and their values are
+ * redacted from snapshots and errors.
+ */
+export const maskedSelectors = [
+  '[data-secret]',
+  '[data-sensitive]',
+  'input[type="password"]',
+  'input[autocomplete="one-time-code"]',
+  'input[name="otc"]',
+  // The console's key reveal (EntitlementConnectionDialog) labels the value but has no data-secret marker.
+  '[aria-label^="Revealed "][aria-label$=" key"]',
+]
 
 const secretHeaderNames = [
   'authorization',
@@ -53,10 +67,20 @@ const rules: Rule[] = [
   { pattern: /\b[0-9a-f]{32}\b/gi, replace: '[redacted-key]' },
 ]
 
+const substringSecretLength = 8
+
+/**
+ * Removes known secrets, then anything that looks like a credential. Secrets of 8 or more characters are
+ * removed wherever they appear. Shorter ones, such as a partly typed code, are removed only as whole
+ * tokens, so they don't wipe out every matching letter in the text.
+ */
 export function redact(text: string, knownSecrets: Iterable<string> = []): string {
   let result = text
-  for (const secret of knownSecrets) {
-    if (secret.length >= 8) result = result.split(secret).join('[redacted-secret]')
+  const secrets = [...new Set(knownSecrets)].filter((secret) => secret !== '').sort((a, b) => b.length - a.length)
+  for (const secret of secrets) {
+    result = secret.length >= substringSecretLength
+      ? result.split(secret).join('[redacted-secret]')
+      : result.replace(new RegExp(`(?<![A-Za-z0-9])${escape(secret)}(?![A-Za-z0-9])`, 'g'), '[redacted-secret]')
   }
   for (const rule of rules) {
     result = result.replace(rule.pattern, rule.replace)
@@ -64,11 +88,54 @@ export function redact(text: string, knownSecrets: Iterable<string> = []): strin
   return result
 }
 
+/** Values currently shown in secret elements, so they can be redacted wherever else they appear. */
+export async function pageSecrets(page: Page): Promise<string[]> {
+  return page
+    .locator(maskedSelectors.join(', '))
+    .evaluateAll((elements) =>
+      elements
+        .map((element) => ((element as HTMLInputElement).value || element.textContent || '').trim())
+        .filter((value) => value !== ''),
+    )
+    .catch(() => [])
+}
+
+export interface RedactableError {
+  message?: string
+  stack?: string
+  value?: string
+  errorContext?: string
+  cause?: RedactableError
+}
+
+const errorTextFields = ['message', 'stack', 'value', 'errorContext'] as const
+
+/**
+ * Redacts Playwright test errors in place. A failed matcher's message can quote the received text, and its
+ * errorContext holds an accessibility snapshot, input values included. Playwright writes both to
+ * error-context.md and the reports after fixtures tear down.
+ */
+export function redactErrors(errors: Iterable<RedactableError>, knownSecrets: Iterable<string> = []): void {
+  const secrets = [...knownSecrets]
+  const visit = (error: RedactableError | undefined, depth: number) => {
+    if (!error || depth > 8) return
+    for (const field of errorTextFields) {
+      const value = error[field]
+      if (typeof value === 'string') error[field] = redact(value, secrets)
+    }
+    visit(error.cause, depth + 1)
+  }
+  for (const error of errors) visit(error, 0)
+}
+
 export function redactUrl(value: string): string {
   try {
     const url = new URL(value)
+    if (url.protocol === 'data:' || url.protocol === 'blob:') return `${url.protocol}[redacted]`
     const fragment = url.hash.length > 1 ? '#[redacted]' : ''
-    return redact(`${url.origin}${url.pathname}${url.search}`) + fragment
+    // Pages such as about:blank and chrome-error:// have an opaque origin, which the URL API reports as "null".
+    const base = url.origin === 'null' ? `${url.protocol}${url.host ? `//${url.host}` : ''}` : url.origin
+    return redact(`${base}${url.pathname}${url.search}`) + fragment
   } catch {
     return redact(value)
   }

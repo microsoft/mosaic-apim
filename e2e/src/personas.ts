@@ -41,7 +41,34 @@ export async function launchPersona(
   })
 }
 
-function isLoginHost(url: string): boolean {
+const closeWaitMs = 20_000
+
+/**
+ * Closes a persona's browser, waiting at most `waitMs`. On a busy Windows machine an exited browser can
+ * stay in the process table for a minute or more after it has saved the profile, and close() waits for
+ * that. Returns false if it stopped waiting; the browser finishes exiting on its own.
+ */
+export async function closePersona(context: Pick<BrowserContext, 'close'>, waitMs = closeWaitMs): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const gaveUp = new Promise<false>((resolve) => {
+    timer = setTimeout(() => resolve(false), waitMs)
+  })
+  const closed = context.close().then(
+    () => true,
+    () => true,
+  )
+  try {
+    return await Promise.race([closed, gaveUp])
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+export function browserStillExiting(personaKey: string): string {
+  return `${personaKey}: the browser hadn't finished exiting, so the harness moved on. It finishes on its own.\n`
+}
+
+export function isLoginHost(url: string): boolean {
   try {
     return loginHosts.includes(new URL(url).hostname)
   } catch {
@@ -57,11 +84,32 @@ function onOrigin(url: string, origin: string): boolean {
   }
 }
 
+/** True when the URL is on the MOSAIC web console or portal. */
+export function isAppUrl(targets: Targets, url: string): boolean {
+  return onOrigin(url, targets.origins.web) || onOrigin(url, targets.origins.portal)
+}
+
+/**
+ * Resolves a landing path against the app's origin. Absolute, scheme-relative, javascript: and file: values
+ * resolve somewhere else, so they're refused.
+ */
+export function appDestination(targets: Targets, app: AppName, path = '/'): URL {
+  const origin = targets.origins[app]
+  let destination: URL
+  try {
+    destination = new URL(path, origin)
+  } catch {
+    throw new SignInError(`"${path}" is not a valid path on the ${app} app`)
+  }
+  if (destination.origin !== origin) throw new SignInError(`Paths must stay on the ${app} app (${origin})`)
+  return destination
+}
+
 async function visible(page: Page, selector: string): Promise<boolean> {
   return page.locator(selector).first().isVisible().catch(() => false)
 }
 
-async function signInErrorCode(page: Page): Promise<string | undefined> {
+export async function signInErrorCode(page: Page): Promise<string | undefined> {
   const text = await page.locator('body').innerText({ timeout: 1_000 }).catch(() => '')
   return /AADSTS\d{5,}/.exec(text)?.[0]
 }
@@ -143,9 +191,10 @@ export async function ensureSignedIn(
   options: SignInOptions,
 ): Promise<void> {
   const origin = targets.origins[app]
+  const destination = appDestination(targets, app, options.path)
   const { upn } = persona(targets, personaKey)
   if (!onOrigin(page.url(), origin)) {
-    await page.goto(new URL(options.path ?? '/', origin).href)
+    await page.goto(destination.href)
   }
   const shell = page.getByRole(primaryNavigation.role, { name: primaryNavigation.name })
   const landed = shell.or(page.getByText(noPortalAccessTitle))
@@ -165,8 +214,8 @@ export async function ensureSignedIn(
       `${app} is signed in as ${usernames.join(', ') || 'an unknown account'}, not persona ${personaKey}. Sign out of that profile and retry.`,
     )
   }
-  if (options.path && new URL(page.url()).pathname !== new URL(options.path, origin).pathname) {
-    await page.goto(new URL(options.path, origin).href)
+  if (options.path && new URL(page.url()).pathname !== destination.pathname) {
+    await page.goto(destination.href)
     await landed.first().waitFor({ state: 'visible', timeout: 45_000 })
   }
 }

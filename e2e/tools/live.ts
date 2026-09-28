@@ -6,13 +6,24 @@ import { join } from 'node:path'
 import { type AppName, type Targets, flags, loadTargets, persona, resolveTargetRef } from '../src/config.ts'
 import { type LocatorOptions, describeLocator, locate } from '../src/locators.ts'
 import { ensureDir, artifactsDir, liveSessionFile, stateDir } from '../src/paths.ts'
-import { ensureSignedIn, launchPersona } from '../src/personas.ts'
-import { redact, maskedSelectors, redactUrl, truncate } from '../src/redact.ts'
+import {
+  appDestination,
+  browserStillExiting,
+  closePersona,
+  ensureSignedIn,
+  isAppUrl,
+  isLoginHost,
+  launchPersona,
+  signInErrorCode,
+} from '../src/personas.ts'
+import { maskedSelectors, pageSecrets, redact, redactUrl, truncate } from '../src/redact.ts'
 
 /**
  * Local control daemon for human-in-the-loop UI journeys. It owns one persistent browser profile per
  * persona and exposes a narrow, token-protected RPC surface on 127.0.0.1 for tools/drive.ts.
  * There is deliberately no arbitrary script evaluation and no way to read tokens or revealed keys.
+ * Navigation stays on the MOSAIC origins. Snapshots and text reads run only on MOSAIC pages, because
+ * accessibility snapshots include input values, such as a password typed on a Microsoft sign-in page.
  */
 
 interface LogEntry {
@@ -108,13 +119,20 @@ function str(args: Args, key: string, required = true): string | undefined {
 function num(args: Args, key: string, fallback: number, max: number): number {
   const value = args[key]
   if (value === undefined) return fallback
-  const parsed = typeof value === 'number' ? value : Number(value)
-  if (!Number.isFinite(parsed) || parsed < 0) throw new RpcError(`"${key}" must be a non-negative number`)
-  return Math.min(parsed, max)
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
+    throw new RpcError(`"${key}" must be a whole number of 0 or more`)
+  }
+  return Math.min(value, max)
 }
 
 function locatorOptions(args: Args): LocatorOptions {
-  const nth = args.nth === undefined ? undefined : Number(args.nth)
+  let nth: number | undefined
+  if (args.nth !== undefined) {
+    if (typeof args.nth !== 'number' || !Number.isInteger(args.nth) || args.nth < -1) {
+      throw new RpcError('"nth" must be a whole number of 0 or more, or -1 for the last match')
+    }
+    nth = args.nth
+  }
   return {
     exact: args.exact === true,
     nth,
@@ -124,23 +142,38 @@ function locatorOptions(args: Args): LocatorOptions {
   }
 }
 
-function target(session: PersonaSession, args: Args, key = 'target'): { locator: Locator; label: string } {
+function target(page: Page, args: Args, key = 'target'): { locator: Locator; label: string } {
   const spec = str(args, key) as string
   const options = locatorOptions(args)
-  return { locator: locate(session.current, spec, options), label: describeLocator(spec, options) }
-}
-
-async function knownSecrets(page: Page): Promise<string[]> {
-  return page
-    .locator('[data-secret]')
-    .evaluateAll((elements) =>
-      elements.map((element) => ((element as HTMLInputElement).value || element.textContent || '').trim()),
-    )
-    .catch(() => [])
+  return { locator: locate(page, spec, options), label: describeLocator(spec, options) }
 }
 
 async function pageState(page: Page) {
   return { url: redactUrl(page.url()), title: redact(await page.title().catch(() => '')) }
+}
+
+async function readablePage(personaKey: string, session: PersonaSession): Promise<Page> {
+  const page = session.current
+  if (signingIn.has(personaKey)) {
+    throw new RpcError(
+      `${personaKey} is signing in, so snapshots and text reads are paused until "signin" returns. Use "url" or "logs" to follow along.`,
+    )
+  }
+  if (!isAppUrl(targets, page.url())) {
+    const { url, title } = await pageState(page)
+    const code = isLoginHost(page.url()) ? await signInErrorCode(page) : undefined
+    throw new RpcError(
+      `Snapshots and text reads only work on MOSAIC web and portal pages. ${personaKey} is on ${url} ("${title}")` +
+        `${code ? ` showing ${code}` : ''}. Use "url", "shot" or "logs" instead.`,
+    )
+  }
+  return page
+}
+
+function confirmStillReadable(personaKey: string, page: Page) {
+  if (signingIn.has(personaKey) || !isAppUrl(targets, page.url())) {
+    throw new RpcError(`${personaKey} left MOSAIC while the page was being read, so the result was discarded.`)
+  }
 }
 
 function appUrl(app: string, path: string | undefined): string {
@@ -180,14 +213,16 @@ const handlers: Record<string, (personaKey: string | undefined, args: Args) => P
     }
     signingIn.add(key)
     try {
-      const session = await openSession(key)
-      if (session.current.isClosed()) session.current = await session.context.newPage()
       const app = str(args, 'app') as AppName
       appUrl(app, '/')
+      const requested = str(args, 'path', false)
+      const destination = requested === undefined ? undefined : appDestination(targets, app, requested)
+      const session = await openSession(key)
+      if (session.current.isClosed()) session.current = await session.context.newPage()
       await session.current.bringToFront()
       await ensureSignedIn(session.current, targets, key, app, {
         interactive: true,
-        path: str(args, 'path', false),
+        path: destination && `${destination.pathname}${destination.search}`,
         timeoutMs: timeout(args, 600_000),
       })
       return pageState(session.current)
@@ -213,30 +248,32 @@ const handlers: Record<string, (personaKey: string | undefined, args: Args) => P
   },
 
   async snapshot(personaKey, args) {
-    const session = existingSession(personaKey as string)
-    const root = args.target ? target(session, args).locator : session.current.locator('body')
+    const key = personaKey as string
+    const page = await readablePage(key, existingSession(key))
+    const root = args.target ? target(page, args).locator : page.locator('body')
     const snapshot = await root.ariaSnapshot({ timeout: timeout(args) })
-    const secrets = await knownSecrets(session.current)
+    const secrets = await pageSecrets(page)
+    confirmStillReadable(key, page)
     return truncate(redact(snapshot, secrets), num(args, 'max', 12_000, 80_000))
   },
 
   async click(personaKey, args) {
     const session = existingSession(personaKey as string)
-    const { locator, label } = target(session, args)
+    const { locator, label } = target(session.current, args)
     await locator.click({ timeout: timeout(args) })
     return { clicked: label, ...(await pageState(session.current)) }
   },
 
   async hover(personaKey, args) {
     const session = existingSession(personaKey as string)
-    const { locator, label } = target(session, args)
+    const { locator, label } = target(session.current, args)
     await locator.hover({ timeout: timeout(args) })
     return { hovered: label }
   },
 
   async fill(personaKey, args) {
     const session = existingSession(personaKey as string)
-    const { locator, label } = target(session, args)
+    const { locator, label } = target(session.current, args)
     const value = resolveTargetRef(targets, str(args, 'value') ?? '')
     await locator.fill(value, { timeout: timeout(args) })
     return { filled: label, characters: value.length }
@@ -244,14 +281,14 @@ const handlers: Record<string, (personaKey: string | undefined, args: Args) => P
 
   async clear(personaKey, args) {
     const session = existingSession(personaKey as string)
-    const { locator, label } = target(session, args)
+    const { locator, label } = target(session.current, args)
     await locator.clear({ timeout: timeout(args) })
     return { cleared: label }
   },
 
   async choose(personaKey, args) {
     const session = existingSession(personaKey as string)
-    const { locator, label } = target(session, args)
+    const { locator, label } = target(session.current, args)
     const option = resolveTargetRef(targets, str(args, 'option') as string)
     await locator.click({ timeout: timeout(args) })
     await session.current.getByRole('option', { name: option, exact: args.exact === true }).first().click({ timeout: timeout(args) })
@@ -260,7 +297,7 @@ const handlers: Record<string, (personaKey: string | undefined, args: Args) => P
 
   async select(personaKey, args) {
     const session = existingSession(personaKey as string)
-    const { locator, label } = target(session, args)
+    const { locator, label } = target(session.current, args)
     const value = resolveTargetRef(targets, str(args, 'value') as string)
     const selected = await locator.selectOption(value, { timeout: timeout(args) })
     return { selected, in: label }
@@ -268,7 +305,7 @@ const handlers: Record<string, (personaKey: string | undefined, args: Args) => P
 
   async check(personaKey, args) {
     const session = existingSession(personaKey as string)
-    const { locator, label } = target(session, args)
+    const { locator, label } = target(session.current, args)
     await locator.setChecked(args.checked !== false, { timeout: timeout(args) })
     return { [args.checked === false ? 'unchecked' : 'checked']: label }
   },
@@ -277,7 +314,7 @@ const handlers: Record<string, (personaKey: string | undefined, args: Args) => P
     const session = existingSession(personaKey as string)
     const key = str(args, 'key') as string
     if (args.target) {
-      const { locator, label } = target(session, args)
+      const { locator, label } = target(session.current, args)
       await locator.press(key, { timeout: timeout(args) })
       return { pressed: key, on: label }
     }
@@ -287,7 +324,7 @@ const handlers: Record<string, (personaKey: string | undefined, args: Args) => P
 
   async wait(personaKey, args) {
     const session = existingSession(personaKey as string)
-    const { locator, label } = target(session, args)
+    const { locator, label } = target(session.current, args)
     const state = (str(args, 'state', false) ?? 'visible') as 'visible' | 'hidden' | 'attached' | 'detached'
     if (!['visible', 'hidden', 'attached', 'detached'].includes(state)) throw new RpcError('Invalid wait state')
     const started = Date.now()
@@ -303,17 +340,22 @@ const handlers: Record<string, (personaKey: string | undefined, args: Args) => P
   },
 
   async text(personaKey, args) {
-    const session = existingSession(personaKey as string)
-    const { locator, label } = target(session, args)
-    const secret = await locator.first().evaluate((element) => element.closest('[data-secret]') !== null)
+    const key = personaKey as string
+    const page = await readablePage(key, existingSession(key))
+    const { locator, label } = target(page, args)
+    const secret = await locator
+      .first()
+      .evaluate((element, selector) => element.closest(selector) !== null, maskedSelectors.join(', '), { timeout: timeout(args) })
     if (secret) return { target: label, text: '[redacted-secret]' }
     const text = await locator.first().innerText({ timeout: timeout(args) })
-    return { target: label, text: redact(text, await knownSecrets(session.current)) }
+    const secrets = await pageSecrets(page)
+    confirmStillReadable(key, page)
+    return { target: label, text: redact(text, secrets) }
   },
 
   async count(personaKey, args) {
     const session = existingSession(personaKey as string)
-    const { locator, label } = target(session, args)
+    const { locator, label } = target(session.current, args)
     return { target: label, count: await locator.count() }
   },
 
@@ -363,10 +405,11 @@ const handlers: Record<string, (personaKey: string | undefined, args: Args) => P
   },
 
   async close(personaKey) {
-    const session = sessions.get(personaKey as string)
-    if (session) await session.context.close()
-    sessions.delete(personaKey as string)
-    return { closed: personaKey }
+    const key = personaKey as string
+    const session = sessions.get(key)
+    const exited = session ? await closePersona(session.context) : true
+    sessions.delete(key)
+    return exited ? { closed: key } : { closed: key, stillExiting: true }
   },
 
   async shutdown() {
@@ -433,7 +476,11 @@ function processAlive(pid: number): boolean {
 }
 
 async function stop(code: number) {
-  await Promise.allSettled([...sessions.values()].map((session) => session.context.close()))
+  await Promise.all(
+    [...sessions.entries()].map(async ([personaKey, session]) => {
+      if (!(await closePersona(session.context))) process.stderr.write(browserStillExiting(personaKey))
+    }),
+  )
   sessions.clear()
   try {
     const current = JSON.parse(readFileSync(liveSessionFile(), 'utf8')) as { pid?: number }

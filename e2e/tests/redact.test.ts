@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { redact, redactUrl, truncate } from '../src/redact.ts'
+import { redact, redactErrors, redactUrl, truncate } from '../src/redact.ts'
 
 const jwt = 'eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4ifQ.c2lnbmF0dXJlLXZhbHVlLWhlcmU'
 const apimKey = '0123456789abcdef0123456789abcdef'
@@ -41,7 +41,39 @@ test('keeps GUIDs and resource IDs readable', () => {
 
 test('replaces known secrets captured from the page', () => {
   assert.equal(redact('value is s3cr3t-value!', ['s3cr3t-value!']), 'value is [redacted-secret]')
-  assert.equal(redact('short abc', ['abc']), 'short abc')
+  assert.equal(
+    redact('- textbox "Enter the password for a@contoso.example": Hunter2-Summer!2026', ['Hunter2-Summer!2026']),
+    '- textbox "Enter the password for a@contoso.example": [redacted-secret]',
+  )
+})
+
+test('replaces short known secrets only as whole tokens', () => {
+  assert.equal(redact('- textbox "Code": "493817"', ['493817']), '- textbox "Code": "[redacted-secret]"')
+  assert.equal(redact('short abc and abcdef', ['abc']), 'short [redacted-secret] and abcdef')
+})
+
+test('replaces the longest known secret first', () => {
+  assert.equal(redact('key 1234567890-abcdef', ['1234567890', '1234567890-abcdef']), 'key [redacted-secret]')
+})
+
+test('redacts test errors in place, including matcher snapshots and causes', () => {
+  const errors = [
+    {
+      message: `Expected "ok"\nReceived: "${apimKey}"`,
+      stack: `Error: token ${jwt}`,
+      errorContext: '- textbox "Code": "493817"',
+      cause: { message: 'value s3cr3t-value!' },
+    },
+  ]
+  redactErrors(errors, ['493817', 's3cr3t-value!'])
+  assert.deepEqual(errors, [
+    {
+      message: 'Expected "ok"\nReceived: "[redacted-key]"',
+      stack: 'Error: token [redacted-jwt]',
+      errorContext: '- textbox "Code": "[redacted-secret]"',
+      cause: { message: 'value [redacted-secret]' },
+    },
+  ])
 })
 
 test('redacts authorization codes and URL fragments', () => {
@@ -50,6 +82,13 @@ test('redacts authorization codes and URL fragments', () => {
     'https://web.example/#[redacted]',
   )
   assert.equal(redactUrl('https://login.example/authorize?client_id=x&code=abc123'), 'https://login.example/authorize?client_id=x&code=[redacted]')
+})
+
+test('keeps browser page URLs readable and hides inline content', () => {
+  assert.equal(redactUrl('about:blank'), 'about:blank')
+  assert.equal(redactUrl('chrome-error://chromewebdata/'), 'chrome-error://chromewebdata/')
+  assert.equal(redactUrl('data:text/html,<p>key 0123456789abcdef</p>'), 'data:[redacted]')
+  assert.equal(redactUrl('blob:https://web.example/5f0c1d2e'), 'blob:[redacted]')
 })
 
 test('truncates long output with a marker', () => {

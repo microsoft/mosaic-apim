@@ -1,7 +1,7 @@
 import { test as base, type BrowserContext, type BrowserType, type Page } from '@playwright/test'
 import { type AppName, type Targets, flags, loadTargets } from './config.ts'
-import { ensureSignedIn, launchPersona } from './personas.ts'
-import { maskedSelectors } from './redact.ts'
+import { browserStillExiting, closePersona, ensureSignedIn, isAppUrl, launchPersona } from './personas.ts'
+import { maskedSelectors, pageSecrets, redact, redactErrors } from './redact.ts'
 
 interface OpenPage {
   label: string
@@ -49,8 +49,13 @@ export class PersonaPool {
 
   async closeAll(): Promise<void> {
     await this.closePages()
-    await Promise.allSettled([...this.#contexts.values()].map((context) => context.close()))
+    const contexts = [...this.#contexts.entries()]
     this.#contexts.clear()
+    await Promise.all(
+      contexts.map(async ([personaKey, context]) => {
+        if (!(await closePersona(context))) process.stderr.write(browserStillExiting(personaKey))
+      }),
+    )
   }
 }
 
@@ -80,16 +85,24 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
     { scope: 'worker' },
   ],
   personaPages: [
-    async ({ personas }, use, testInfo) => {
+    async ({ personas, targets }, use, testInfo) => {
       await use()
+      const pages = personas.openPages()
+      const secrets = (await Promise.all(pages.map(({ page }) => pageSecrets(page)))).flat()
       if (testInfo.status !== testInfo.expectedStatus) {
-        for (const { label, page } of personas.openPages()) {
+        for (const { label, page } of pages) {
           const body = await page
             .screenshot({ mask: maskedSelectors.map((selector) => page.locator(selector)), animations: 'disabled' })
             .catch(() => undefined)
           if (body) await testInfo.attach(`${label}.png`, { body, contentType: 'image/png' })
+          // Sign-in pages are skipped because snapshots include what a person has typed.
+          if (!isAppUrl(targets, page.url())) continue
+          const snapshot = await page.locator('body').ariaSnapshot({ timeout: 5_000 }).catch(() => undefined)
+          if (snapshot) await testInfo.attach(`${label}.aria.yml`, { body: redact(snapshot, secrets), contentType: 'text/yaml' })
         }
       }
+      // Playwright writes these errors to error-context.md and the reports after this teardown.
+      redactErrors(testInfo.errors, secrets)
       await personas.closePages()
     },
     { auto: true },

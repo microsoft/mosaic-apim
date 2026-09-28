@@ -101,7 +101,9 @@ export function locate(root: Root, spec: string, options: LocatorOptions = {}): 
   let locator = resolveParsed(scope, parseSpec(spec), options.exact)
   if (options.hasText) locator = locator.filter({ hasText: toMatcher(options.hasText) })
   if (options.nth !== undefined) {
-    if (!Number.isInteger(options.nth)) throw new LocatorSpecError('nth must be an integer')
+    if (!Number.isInteger(options.nth) || options.nth < -1) {
+      throw new LocatorSpecError('nth must be a whole number of 0 or more, or -1 for the last match')
+    }
     locator = options.nth === -1 ? locator.last() : locator.nth(options.nth)
   }
   return locator

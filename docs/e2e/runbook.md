@@ -92,13 +92,19 @@ node tools/drive.ts shutdown
     `/regular expression/flags`.
   - `testid:` and `css:` are literal.
   - Scope a target with `--in <target>` or `--row <text>`, narrow it with `--has <text>`, pick a
-    match with `--nth <n>` (`-1` is the last), and add `--exact` for an exact name.
+    match with `--nth <n>` (counting from 0) or `--nth last`, and add `--exact` for an exact name.
+    Negative numbers need an equals sign (`--nth=-1`), because the argument parser reads
+    `--nth -1` as two options.
 - **Values:** `@target:<dot.path>` reads a value from the manifest, so identifiers don't end up in
   shell history. `fill` never echoes the value.
 - **Sign-in:** `signin` waits for a person to finish MFA; the default timeout is 10 minutes.
 - **Logs:** `logs` returns redacted console errors, page errors, dialogs, API responses at 400 or
   above, and failed requests. Dialogs are dismissed unless you run `dialogs accept`.
-- **Navigation:** the driver only goes to the web and portal origins in the manifest.
+- **Navigation:** the driver only goes to the web and portal origins in the manifest. `signin`
+  also refuses a path that would leave that app's own origin.
+- **Reading pages:** `snapshot` and `text` work only on MOSAIC web and portal pages, and not while
+  `signin` is waiting for a person. On a sign-in page or any other site they refuse and report the
+  URL, the title and any `AADSTS` code instead. Use `url`, `shot` or `logs` there.
 
 The driver listens on `127.0.0.1` on a random port. It requires the per-run token from `live.json`
 and rejects any request that carries browser `Origin` or `Sec-Fetch-Site` headers, so web pages
@@ -112,7 +118,6 @@ Stop the live driver first (`node tools/drive.ts shutdown`) so the suite can ope
 npm test                                   # every spec; journeys that write or call models skip themselves
 npm test -- --grep "@smoke"                # or pick journeys by title
 $env:MOSAIC_E2E_ALLOW_WRITES = '1'; npm test
-npx playwright show-report                 # open the HTML report afterwards
 ```
 
 | Variable | Effect |
@@ -121,19 +126,27 @@ npx playwright show-report                 # open the HTML report afterwards
 | `MOSAIC_E2E_ALLOW_WRITES=1` | Run journeys that change MOSAIC or Azure state. Otherwise they're skipped |
 | `MOSAIC_E2E_SEND_MODEL_REQUESTS=1` | Run runtime journeys that send billable model requests |
 | `MOSAIC_E2E_HEADLESS=1` | Run headless. This only works once every profile is already signed in |
+| `MOSAIC_E2E_HTML_REPORT=1` | Also write an HTML report to `playwright-report\` (open it with `npx playwright show-report`). It records step titles and step errors before the harness can redact them, so use it only for runs that don't reveal keys, and delete it afterwards |
 | `MOSAIC_E2E_BROWSER_CHANNEL` | Default browser channel for personas that don't set one |
 | `MOSAIC_E2E_TARGETS` | Path to a manifest other than `targets.local.json` |
 | `MOSAIC_E2E_STATE_DIR`, `MOSAIC_E2E_ARTIFACTS_DIR` | Move profiles, driver state or artifacts |
 
 Specs run serially with a single worker, because journeys build on each other and share
-profiles. Traces and video are off. On failure, the suite attaches a screenshot with secrets
-masked.
+profiles. Traces and video are off. On failure, the suite attaches a masked screenshot of each
+open persona page and, for MOSAIC pages, a redacted accessibility snapshot. It also redacts the
+test's errors before Playwright writes them to `error-context.md` and the console. Playwright's
+own page snapshot is turned off (`PLAYWRIGHT_NO_COPY_PROMPT`), because it isn't redacted.
 
 ## Secret hygiene
 
 - Never commit `targets.local.json`, profiles, artifacts or reports. `e2e/.gitignore` covers them.
 - Key reveal UIs must mark revealed values with `data-secret`, which keeps them out of snapshots,
-  text reads and screenshots.
+  text reads, screenshots and failure messages. The console's reveal dialog doesn't yet, so the
+  harness also treats elements labelled `Revealed … key` as secret, along with password and
+  one-time-code fields.
+- Don't point text or value assertions (`toHaveText`, `toHaveValue`) at a secret element. Failure
+  messages are redacted using the values still on the page when the test ends, and a transient
+  reveal may be gone by then.
 - Redaction removes:
   - JWTs, `Bearer` values, subscription and API key headers, and cookies.
   - OAuth `code`, `state` and `sig` parameters, and URL fragments.
@@ -152,6 +165,8 @@ masked.
 | `<app> is signed in as X, not persona Y` | Delete that persona's profile and sign in again as the right account |
 | `The live driver is not running` | Run `npm run live` |
 | `Could not reach the live driver` | The driver stopped without cleaning up. Delete the stale `live.json` and restart it |
+| `the browser hadn't finished exiting, so the harness moved on` | Nothing to fix. On a busy Windows machine a browser can take a minute or more to leave the process table after it has saved its profile. The live driver and `login` wait up to 20 seconds and then continue, and the profile can be reopened straight away |
+| `Worker teardown timeout of 180000ms exceeded` after the tests finished | Playwright waits for every browser it launched to exit before a worker stops, and on a busy machine that can outlast the timeout. The test results reported before it still stand. Rerun when the machine is less loaded if you need a clean exit code |
 
 ## Quality checks
 

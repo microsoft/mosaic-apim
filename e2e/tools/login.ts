@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { parseArgs } from 'node:util'
 import { type AppName, loadTargets, persona } from '../src/config.ts'
 import { liveSessionFile } from '../src/paths.ts'
-import { ensureSignedIn, launchPersona } from '../src/personas.ts'
+import { browserStillExiting, closePersona, ensureSignedIn, launchPersona } from '../src/personas.ts'
 
 /**
  * Opens each persona's persistent browser profile so a human can complete Microsoft Entra sign-in
@@ -62,7 +62,7 @@ for (const personaKey of positionals) {
     failures += 1
     process.stderr.write(`${personaKey}: ${(error as Error).message}\n`)
   } finally {
-    await context.close()
+    if (!(await closePersona(context))) process.stderr.write(browserStillExiting(personaKey))
   }
 }
 process.exit(failures === 0 ? 0 : 1)

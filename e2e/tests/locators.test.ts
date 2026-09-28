@@ -64,6 +64,15 @@ test('resolves scoped locators in order', () => {
   ])
 })
 
+test('rejects nth values other than -1 or a whole number', () => {
+  for (const nth of [-2, 1.5, Number.NaN]) {
+    assert.throws(() => locate(fakeRoot([]), 'role:button', { nth }), LocatorSpecError, String(nth))
+  }
+  const calls: Call[] = []
+  locate(fakeRoot(calls), 'role:button', { nth: 0 })
+  assert.deepEqual(calls, [['getByRole', 'button'], ['nth', 0]])
+})
+
 test('describes locators for logs', () => {
   assert.equal(
     describeLocator('role:button:Save', { within: 'role:dialog', row: 'x', nth: 1, exact: true }),

@@ -24,30 +24,48 @@ Actions
 
 Targets: role:<role>[:<name>] | label:<text> | text:<text> | placeholder:<text> | testid:<id> | css:<selector>
          Names and text may be /regular expressions/flags.
-Options: --in <target>  --row <text>  --has <text>  --nth <n|-1>  --exact  --timeout <ms>  --max <chars>  --state <state>`
-
-const { values, positionals } = parseArgs({
-  allowPositionals: true,
-  options: {
-    in: { type: 'string' },
-    row: { type: 'string' },
-    has: { type: 'string' },
-    nth: { type: 'string' },
-    exact: { type: 'boolean' },
-    timeout: { type: 'string' },
-    max: { type: 'string' },
-    state: { type: 'string' },
-    target: { type: 'string' },
-    full: { type: 'boolean' },
-    clear: { type: 'boolean' },
-    help: { type: 'boolean', short: 'h' },
-  },
-})
+Options: --in <target>  --row <text>  --has <text>  --nth <n|last>  --exact  --timeout <ms>  --max <chars>  --state <state>
+         --nth counts from 0. For the last match use "--nth last" or "--nth=-1".`
 
 function fail(message: string): never {
   process.stderr.write(`${message}\n`)
   process.exit(2)
 }
+
+function parseCommandLine() {
+  try {
+    return parseArgs({
+      allowPositionals: true,
+      options: {
+        in: { type: 'string' },
+        row: { type: 'string' },
+        has: { type: 'string' },
+        nth: { type: 'string' },
+        exact: { type: 'boolean' },
+        timeout: { type: 'string' },
+        max: { type: 'string' },
+        state: { type: 'string' },
+        target: { type: 'string' },
+        full: { type: 'boolean' },
+        clear: { type: 'boolean' },
+        help: { type: 'boolean', short: 'h' },
+      },
+    })
+  } catch (error) {
+    fail(`${(error as Error).message}\n\n${usage}`)
+  }
+}
+
+/** Parses a whole number. Number('last') is NaN, which JSON sends as null, so reject anything else here. */
+function wholeNumber(name: string, raw: string | undefined, min: number): number | undefined {
+  if (raw === undefined) return undefined
+  if (!/^-?\d+$/.test(raw)) fail(`${name} must be a whole number, not "${raw}"`)
+  const value = Number(raw)
+  if (value < min) fail(`${name} must be ${min} or more`)
+  return value
+}
+
+const { values, positionals } = parseCommandLine()
 
 if (values.help || positionals.length === 0) {
   process.stdout.write(`${usage}\n`)
@@ -64,9 +82,9 @@ const common = {
   within: values.in,
   row: values.row,
   has: values.has,
-  nth: values.nth === undefined ? undefined : Number(values.nth),
+  nth: values.nth === 'last' ? -1 : wholeNumber('--nth', values.nth, -1),
   exact: values.exact === true ? true : undefined,
-  timeout: values.timeout === undefined ? undefined : Number(values.timeout),
+  timeout: wholeNumber('--timeout', values.timeout, 0),
 }
 
 function need(index: number, name: string): string {
@@ -95,7 +113,7 @@ switch (rawAction) {
     args = { app: need(0, 'web|portal'), path: params[1], timeout: common.timeout }
     break
   case 'snapshot':
-    args = { ...common, target: params[0], max: values.max === undefined ? undefined : Number(values.max) }
+    args = { ...common, target: params[0], max: wholeNumber('--max', values.max, 1) }
     break
   case 'click':
   case 'hover':
@@ -129,7 +147,7 @@ switch (rawAction) {
     args = { contains: need(0, 'fragment'), timeout: common.timeout }
     break
   case 'tab':
-    args = { index: Number(need(0, 'index')) }
+    args = { index: wholeNumber('<index>', need(0, 'index'), 0) }
     break
   case 'logs':
     args = { clear: values.clear === true }

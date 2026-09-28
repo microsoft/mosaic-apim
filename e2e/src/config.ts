@@ -273,4 +273,5 @@ export const flags = {
   allowWrites: () => flag('MOSAIC_E2E_ALLOW_WRITES'),
   sendModelRequests: () => flag('MOSAIC_E2E_SEND_MODEL_REQUESTS'),
   headless: () => flag('MOSAIC_E2E_HEADLESS'),
+  htmlReport: () => flag('MOSAIC_E2E_HTML_REPORT'),
 }

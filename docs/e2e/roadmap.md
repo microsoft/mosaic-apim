@@ -27,9 +27,13 @@ change can be approved on its own. How to run the harness is in the [runbook](ru
   deployments happen in batches the environment owner approves. Each change goes into a local
   change ledger with its rollback command.
 - **Secrets stay out of artifacts.**
-  - Snapshots, logs and errors are redacted.
-  - Screenshots mask `[data-secret]` elements and password fields.
-  - Playwright traces and video are off.
+  - Snapshots, logs and failure messages are redacted.
+  - Snapshots and text reads work only on MOSAIC pages, never on a sign-in page or while a person
+    is signing in.
+  - Screenshots mask `[data-secret]` elements, revealed keys, and password and one-time-code
+    fields.
+  - Playwright traces, video and its own failure snapshot are off. The HTML report is opt-in,
+    because it records steps before the harness can redact them.
   - Runtime credentials stay in process memory.
 - **Cost is opt-in.** Flags gate writes (`MOSAIC_E2E_ALLOW_WRITES`) and inference
   (`MOSAIC_E2E_SEND_MODEL_REQUESTS`), and request payloads are small and bounded.
@@ -75,13 +79,13 @@ tests and README or ADR updates wherever a decision changes.
 | ID | Gap | Fix | Status |
 | --- | --- | --- | --- |
 | Entra fix | `main` reused one value for the runtime app role and the delegated scope. Entra rejects that, so a fresh `azd up` can't bootstrap the runtime registration | Give the application role and the delegated scope distinct values ([#15](https://github.com/microsoft/mosaic-apim/pull/15)) | ✅ merged |
-| G1 | The console has no control to switch a gateway into `manage` mode, which publishing requires | Add a "Management mode" control with an explicit confirmation | 🔄 |
+| G1 | The console has no control to switch a gateway into `manage` mode, which publishing requires | Add a "Management mode" control with an explicit confirmation ([#18](https://github.com/microsoft/mosaic-apim/pull/18)) | ⏳ review |
 | G2 | Approving an access request creates no grant, even though the banner says it saved grant intent | Approve opens a short dialog with limits prefilled; the server creates and links the grant intent in one step | 🔄 |
 | G3 | The portal can't show connection details or reveal keys, so an end user can't get a credential | Add portal connection details and masked, transient key reveal | 🔄 |
-| G4 | No client registration lets an end user get a `Models.Invoke` token | Optional public client registration with consent, and its client ID in connection details. Builds on the Entra fix | 🔄 |
+| G4 | No client registration lets an end user get a `Models.Invoke` token | Optional public client registration with a tenant-wide grant for `Models.Invoke`, and its client ID in connection details. Builds on the Entra fix ([#19](https://github.com/microsoft/mosaic-apim/pull/19)) | ⏳ review |
 | G5 | Anthropic deployments get the chat-completions API shape, but Claude needs the Messages API. `llm-token-limit` supports Anthropic only on APIM v2 tiers | Publish Anthropic with the Messages shape, and decide how to limit tokens on classic tiers | 🔄 |
 | G6 | Only if Grok or Llama fail on `/models/chat/completions` through APIM | Add OpenAI v1 routes | ⬜ conditional |
-| G7 | When MOSAIC's identity can see no subscriptions, discovery shows nothing at all: no suggestions, no unreadable subscriptions and no hint. Found live in Phase 3 | Say how many subscriptions were scanned, and when it's none, show the Reader command for the subscriptions MOSAIC already knows about | 🔄 |
+| G7 | When MOSAIC's identity can see no subscriptions, discovery shows nothing at all: no suggestions, no unreadable subscriptions and no hint. Found live in Phase 3 | Say how many subscriptions were scanned. When there are none, or the list fails, show the Reader command for the subscriptions MOSAIC already knows about ([#17](https://github.com/microsoft/mosaic-apim/pull/17)) | ⏳ review |
 | G8 | Gateway runtime readiness can disagree with what the gateway can actually call. It accepts exactly one role, so a sufficient role such as the Cognitive Services User role it recommends before it can read the account is later reported as missing. It also checks a project-registered endpoint at the project scope, although published APIs call the parent resource, where a project-scoped grant doesn't apply | Evaluate at the resource scope the published API calls, accept any role whose data actions are sufficient, and recommend only roles the check will accept. Also account for network reachability: the console never shows an endpoint's "public network access is disabled" note, and a private endpoint shows "can invoke" as soon as the role exists | 🔄 |
 
 ## Phases
@@ -145,7 +149,9 @@ Progress, before any role was granted:
   grants the APIM identity an invoke role.
 - ✅ A3, duplicates: registering the same ID again, even in lowercase, is rejected with "This
   Azure AI resource is already registered with MOSAIC".
-- ⚠️ A2: with no role anywhere, discovery showed nothing at all (G7).
+- ⚠️ A2: with no role anywhere, discovery showed nothing at all (G7). After G7 deploys, the Models
+  page should show "MOSAIC can't see any subscriptions" with a Reader command for the deployment
+  subscription.
 - ⏳ Next: apply the remediation commands, then run A4 and A6 again, followed by A5 and A2.
 
 ### Phase 4: Close product gaps ⏳ review and merge
@@ -288,6 +294,7 @@ the journeys that exercise them have run.
 | --- | --- | --- |
 | O1 | Before MOSAIC can read an account, it records a placeholder endpoint (`https://<account>.cognitiveservices.azure.com`) and the provider "Azure AI Foundry", even for an Azure OpenAI account. The UI shows these as fact | After Reader is granted, confirm that **Check access** corrects the provider and endpoint. If it does, label the values as unconfirmed until the first successful read |
 | O2 | A rejected duplicate registration appears under the generic title "Unable to load data". The Identity page gets this right with "Unable to add principal" | Use a title that fits a failed registration |
+| O3 | The console's key reveal (`EntitlementConnectionDialog`) shows the key in an element labelled "Revealed primary key" or "Revealed secondary key", with no `data-secret` marker. The harness masks it by that label | Add `data-secret` to the revealed value when the component is next changed, so any tooling can find it |
 
 The Phase 3 check on whether the gateway role recommendation narrows once the account kind is
 known led to G8: it does narrow, and the check then rejects the broader role it recommended
