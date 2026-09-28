@@ -1,6 +1,6 @@
 """HTTP contract for model endpoint onboarding."""
 
-from aoai_double import AI_RESOURCE_ID, PARTIAL_PERMISSIONS
+from aoai_double import AI_RESOURCE_ID, PARTIAL_PERMISSIONS, FakeCognitiveServices
 from fastapi.testclient import TestClient
 from mosaic_api.domain import READER_ROLE_ID
 
@@ -98,10 +98,32 @@ class TestModelEndpointApi:
         assert response.status_code == 200
         body = response.json()
         assert body["subscriptionsScanned"] == 1
+        assert body["scanStatus"] == "scanned"
+        assert body["scanRemediation"] == []
         assert any(
             item["source"] == "subscriptionScan" and item["accountName"] == "contoso-aoai"
             for item in body["suggestions"]
         )
+
+    def test_suggestions_explain_when_no_subscription_is_visible(
+        self, endpoint_client: TestClient, fake_aoai: FakeCognitiveServices
+    ) -> None:
+        fake_aoai.subscriptions = []
+
+        response = endpoint_client.get("/api/v1/model-endpoints/suggested")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["scanStatus"] == "noVisibleSubscriptions"
+        assert body["subscriptionsScanned"] == 0
+        assert body["scanIssues"] == []
+        assert body["scanMessage"] is None
+        [remediation] = body["scanRemediation"]
+        assert remediation["roleName"] == "Reader"
+        assert remediation["roleDefinitionId"] == READER_ROLE_ID
+        assert remediation["scope"] == "/subscriptions/<subscription-id>"
+        assert remediation["command"].startswith("az role assignment create")
+        assert remediation["command"].endswith('--scope "/subscriptions/<subscription-id>"')
 
     def test_runtime_access_endpoint(self, endpoint_client: TestClient) -> None:
         created = _register(endpoint_client)

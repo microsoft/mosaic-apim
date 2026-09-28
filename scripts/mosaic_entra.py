@@ -6,6 +6,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 import urllib.parse
 import uuid
 from collections.abc import Iterable
@@ -13,6 +14,9 @@ from dataclasses import dataclass
 from typing import Any
 
 GRAPH_ROOT = "https://graph.microsoft.com/v1.0"
+APPLICATION_SELECT = (
+    "id,appId,displayName,tags,spa,publicClient,isFallbackPublicClient,api,requiredResourceAccess"
+)
 DEFAULT_LOCATION = "eastus2"
 DEFAULT_LOCALHOST_REDIRECTS = (
     "http://localhost:3000",
@@ -28,6 +32,20 @@ PORTAL_ROLE_VALUE = "User"
 MODEL_RUNTIME_SCOPE_VALUE = "Models.Invoke"
 MODEL_RUNTIME_ROLE_VALUE = "Models.Invoke.Application"
 PORTAL_APP_NOTES = "MOSAIC end-user portal application registration managed by azd hooks."
+MODEL_CLIENT_NOTES = (
+    "MOSAIC public client application registration managed by azd hooks. People sign in with "
+    "it to get delegated model-runtime tokens."
+)
+MODEL_CLIENT_TOGGLE = "MOSAIC_ENTRA_MODEL_CLIENT"
+# Loopback redirect; Entra accepts any port for http://localhost on public clients.
+MODEL_CLIENT_REDIRECT_URI = "http://localhost"
+CONSENT_RETRY_DELAYS_SECONDS = (2, 4, 8, 16)
+REPLICATION_LAG_MARKERS = (
+    "Request_ResourceNotFound",
+    "does not exist",
+    "Invalid value specified for property 'clientId'",
+    "Invalid value specified for property 'resourceId'",
+)
 DIRECTORY_DENIAL_MARKERS = (
     "Authorization_RequestDenied",
     "Insufficient privileges",
@@ -81,6 +99,10 @@ class EntraContext:
         return f"mosaic-{self.environment_label}-model-runtime"
 
     @property
+    def model_client_display_name(self) -> str:
+        return f"mosaic-{self.environment_label}-model-client"
+
+    @property
     def app_tags(self) -> list[str]:
         return [
             "product:MOSAIC",
@@ -106,11 +128,11 @@ def normalize_redirect_uris(redirect_uris: Iterable[str]) -> list[str]:
     return normalized
 
 
-def application_redirect_uris(application: dict[str, Any]) -> list[str]:
-    spa = application.get("spa")
-    if not isinstance(spa, dict):
+def application_redirect_uris(application: dict[str, Any], platform: str = "spa") -> list[str]:
+    settings = application.get(platform)
+    if not isinstance(settings, dict):
         return []
-    redirect_uris = spa.get("redirectUris")
+    redirect_uris = settings.get("redirectUris")
     if not isinstance(redirect_uris, list):
         return []
     return [uri for uri in redirect_uris if isinstance(uri, str)]
@@ -229,7 +251,8 @@ def build_model_runtime_app_payload(
         "signInAudience": "AzureADMyOrg",
         "tags": tags,
         "api": {
-            # Client consent and preauthorization are maintained by the tenant operator.
+            # Pre-authorization stays operator-maintained. The optional model client gets a
+            # separate, revocable tenant-wide grant instead (see ensure_model_client_consent).
             **(existing_api or {}),
             "requestedAccessTokenVersion": 2,
             "oauth2PermissionScopes": [
@@ -271,6 +294,33 @@ def normalize_client_ids(client_ids: Iterable[str] | None) -> list[str]:
     return normalized
 
 
+def merge_required_scope(
+    existing_required_resource_access: Iterable[dict[str, Any]] | None,
+    resource_app_id: str,
+    scope_id: str,
+) -> list[dict[str, Any]]:
+    required_resource_access = [
+        {**resource, "resourceAccess": list(resource.get("resourceAccess", []))}
+        for resource in existing_required_resource_access or ()
+    ]
+    resource_access = next(
+        (
+            resource
+            for resource in required_resource_access
+            if resource["resourceAppId"] == resource_app_id
+        ),
+        None,
+    )
+    scope = {"id": scope_id, "type": "Scope"}
+    if resource_access is None:
+        required_resource_access.append(
+            {"resourceAppId": resource_app_id, "resourceAccess": [scope]}
+        )
+    elif scope not in resource_access["resourceAccess"]:
+        resource_access["resourceAccess"].append(scope)
+    return required_resource_access
+
+
 def build_spa_app_payload(
     display_name: str,
     api_application_client_id: str,
@@ -279,36 +329,64 @@ def build_spa_app_payload(
     notes: str = "MOSAIC SPA application registration managed by azd hooks.",
     existing_required_resource_access: Iterable[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    required_resource_access = [
-        {**resource, "resourceAccess": list(resource.get("resourceAccess", []))}
-        for resource in existing_required_resource_access or ()
-    ]
-    api_access = next(
-        (
-            resource
-            for resource in required_resource_access
-            if resource["resourceAppId"] == api_application_client_id
-        ),
-        None,
-    )
-    scope = {"id": api_scope_id(), "type": "Scope"}
-    if api_access is None:
-        required_resource_access.append(
-            {"resourceAppId": api_application_client_id, "resourceAccess": [scope]}
-        )
-    elif scope not in api_access["resourceAccess"]:
-        api_access["resourceAccess"].append(scope)
     return {
         "displayName": display_name,
         "isFallbackPublicClient": False,
         "notes": notes,
-        "requiredResourceAccess": required_resource_access,
+        "requiredResourceAccess": merge_required_scope(
+            existing_required_resource_access,
+            resource_app_id=api_application_client_id,
+            scope_id=api_scope_id(),
+        ),
         "signInAudience": "AzureADMyOrg",
         "spa": {
             "redirectUris": redirect_uris,
         },
         "tags": tags,
     }
+
+
+def build_model_client_app_payload(
+    display_name: str,
+    model_runtime_client_id: str,
+    tags: list[str],
+    existing_redirect_uris: Iterable[str] | None = None,
+    existing_required_resource_access: Iterable[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    # A public client: no secrets, certificates, app roles or exposed API. Operator-added
+    # redirects and permissions are kept, as for the SPA registrations.
+    return {
+        "displayName": display_name,
+        "isFallbackPublicClient": True,
+        "notes": MODEL_CLIENT_NOTES,
+        "publicClient": {
+            "redirectUris": normalize_redirect_uris(
+                [MODEL_CLIENT_REDIRECT_URI, *(existing_redirect_uris or ())]
+            ),
+        },
+        "requiredResourceAccess": merge_required_scope(
+            existing_required_resource_access,
+            resource_app_id=model_runtime_client_id,
+            scope_id=model_runtime_scope_id(),
+        ),
+        "signInAudience": "AzureADMyOrg",
+        "tags": tags,
+    }
+
+
+def model_client_enabled() -> bool:
+    raw_value = os.environ.get(MODEL_CLIENT_TOGGLE, "")
+    value = raw_value.strip().casefold()
+    if value in ("", "true"):
+        return True
+    if value == "false":
+        return False
+    raise OperationFailed(
+        f"Operation read {MODEL_CLIENT_TOGGLE} failed: expected true or false but got "
+        f"'{raw_value}'. Remediation: run `azd env set {MODEL_CLIENT_TOGGLE} true` to manage "
+        f"the MOSAIC model client registration (the default), or `azd env set "
+        f"{MODEL_CLIENT_TOGGLE} false` to skip it, then rerun."
+    )
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -337,6 +415,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def preprovision(runner: CliRunner, environment_name_override: str | None) -> None:
+    manage_model_client = model_client_enabled()
     ensure_location_seeded(runner)
     context = build_context(runner, environment_name_override)
 
@@ -459,12 +538,57 @@ def preprovision(runner: CliRunner, environment_name_override: str | None) -> No
         operation_name="create-or-update model-runtime API service principal",
     )
 
+    model_client_app: dict[str, Any] | None = None
+    model_client_sp: dict[str, Any] | None = None
+    if manage_model_client:
+        model_client_app = ensure_application(
+            runner=runner,
+            display_name=context.model_client_display_name,
+            create_payload={
+                "displayName": context.model_client_display_name,
+                "signInAudience": "AzureADMyOrg",
+                "tags": context.app_tags,
+            },
+            patch_builder=lambda existing: build_model_client_app_payload(
+                display_name=context.model_client_display_name,
+                model_runtime_client_id=model_runtime_app["appId"],
+                tags=context.app_tags,
+                existing_redirect_uris=application_redirect_uris(existing, "publicClient"),
+                existing_required_resource_access=existing.get("requiredResourceAccess"),
+            ),
+            operation_name="create-or-update model client application registration",
+        )
+        model_client_sp = ensure_service_principal(
+            runner,
+            app_id=model_client_app["appId"],
+            tags=context.app_tags,
+            operation_name="create-or-update model client service principal",
+        )
+    else:
+        configured_client_id = os.environ.get("MOSAIC_MODEL_CLIENT_ID") or "not set"
+        print(
+            f"{MODEL_CLIENT_TOGGLE} is false; skipping the {context.model_client_display_name} "
+            "registration and its consent. Existing registrations, grants and "
+            f"MOSAIC_MODEL_CLIENT_ID ({configured_client_id}) are left unchanged.",
+            file=sys.stderr,
+        )
+
     ensure_user_admin_role_assignment(
         runner=runner,
         user_object_id=context.deployer_object_id,
         api_service_principal_object_id=api_sp["id"],
         operation_name="assign deploying user Admin app role",
     )
+
+    if model_client_app is not None and model_client_sp is not None:
+        ensure_model_client_consent(
+            runner,
+            client_display_name=context.model_client_display_name,
+            client_app_id=model_client_app["appId"],
+            client_service_principal_id=model_client_sp["id"],
+            runtime_app_id=model_runtime_app["appId"],
+            runtime_service_principal_id=model_runtime_sp["id"],
+        )
 
     set_azd_env(runner, "AZURE_LOCATION", context.location)
     set_azd_env(runner, "MOSAIC_TENANT_ID", context.tenant_id)
@@ -501,6 +625,12 @@ def preprovision(runner: CliRunner, environment_name_override: str | None) -> No
     )
     set_azd_env(runner, "MOSAIC_MODEL_RUNTIME_SCOPE_ID", model_runtime_scope_id())
     set_azd_env(runner, "MOSAIC_MODEL_RUNTIME_ROLE_ID", model_runtime_role_id())
+    if model_client_app is not None and model_client_sp is not None:
+        set_azd_env(runner, "MOSAIC_MODEL_CLIENT_APP_OBJECT_ID", model_client_app["id"])
+        set_azd_env(runner, "MOSAIC_MODEL_CLIENT_ID", model_client_app["appId"])
+        set_azd_env(
+            runner, "MOSAIC_MODEL_CLIENT_SERVICE_PRINCIPAL_OBJECT_ID", model_client_sp["id"]
+        )
     set_azd_env(runner, "MOSAIC_DEPLOYER_OBJECT_ID", context.deployer_object_id)
     set_azd_env(runner, "MOSAIC_APIM_PUBLISHER_NAME", context.deployer_display_name)
     set_azd_env(runner, "MOSAIC_APIM_PUBLISHER_EMAIL", context.deployer_email)
@@ -692,7 +822,7 @@ def ensure_application(
     result = graph_request(
         runner,
         "GET",
-        f"/applications/{app['id']}?$select=id,appId,displayName,tags,spa,api,requiredResourceAccess",
+        f"/applications/{app['id']}?$select={APPLICATION_SELECT}",
         operation_name=f"read back {display_name}",
     )
     if not isinstance(result, dict):
@@ -766,6 +896,130 @@ def ensure_user_admin_role_assignment(
     )
 
 
+def ensure_model_client_consent(
+    runner: CliRunner,
+    *,
+    client_display_name: str,
+    client_app_id: str,
+    client_service_principal_id: str,
+    runtime_app_id: str,
+    runtime_service_principal_id: str,
+) -> bool:
+    # A deploying user who can't grant consent gets the admin command instead of a failed hook.
+    operation_name = (
+        f"grant tenant-wide consent for {client_display_name} to request "
+        f"{MODEL_RUNTIME_SCOPE_VALUE}"
+    )
+    retry_delays = iter(CONSENT_RETRY_DELAYS_SECONDS)
+    while True:
+        try:
+            change = ensure_all_principals_scope_grant(
+                runner,
+                client_service_principal_id=client_service_principal_id,
+                resource_service_principal_id=runtime_service_principal_id,
+                scope=MODEL_RUNTIME_SCOPE_VALUE,
+                operation_name=operation_name,
+            )
+        except DirectoryPermissionDenied:
+            print(
+                model_client_consent_warning(client_display_name, client_app_id, runtime_app_id),
+                file=sys.stderr,
+            )
+            return False
+        except OperationFailed as exc:
+            delay = next(retry_delays, None)
+            if delay is None or not any(marker in str(exc) for marker in REPLICATION_LAG_MARKERS):
+                raise
+            # New service principals can take a few seconds to replicate across the directory.
+            print(
+                "Microsoft Entra has not replicated the new service principals yet; retrying "
+                f"consent for {client_display_name} in {delay} seconds.",
+                file=sys.stderr,
+            )
+            time.sleep(delay)
+            continue
+        if change is not None:
+            print(
+                f"{change} tenant-wide admin consent for {client_display_name} to request "
+                f"{MODEL_RUNTIME_SCOPE_VALUE} from the model runtime.",
+                file=sys.stderr,
+            )
+        return True
+
+
+def ensure_all_principals_scope_grant(
+    runner: CliRunner,
+    *,
+    client_service_principal_id: str,
+    resource_service_principal_id: str,
+    scope: str,
+    operation_name: str,
+) -> str | None:
+    grants = graph_items(
+        graph_request(
+            runner,
+            "GET",
+            f"/servicePrincipals/{client_service_principal_id}/oauth2PermissionGrants",
+            operation_name=operation_name,
+        ),
+        operation_name,
+    )
+    tenant_grant = next(
+        (
+            grant
+            for grant in grants
+            if grant.get("clientId") == client_service_principal_id
+            and grant.get("resourceId") == resource_service_principal_id
+            and grant.get("consentType") == "AllPrincipals"
+        ),
+        None,
+    )
+    if tenant_grant is None:
+        graph_request(
+            runner,
+            "POST",
+            "/oauth2PermissionGrants",
+            body={
+                "clientId": client_service_principal_id,
+                "consentType": "AllPrincipals",
+                "resourceId": resource_service_principal_id,
+                "scope": scope,
+            },
+            operation_name=operation_name,
+        )
+        return "Granted"
+    scopes = str(tenant_grant.get("scope") or "").split()
+    if scope in scopes:
+        return None
+    # PATCH replaces the scope list, so keep the scopes an administrator already granted.
+    graph_request(
+        runner,
+        "PATCH",
+        f"/oauth2PermissionGrants/{tenant_grant['id']}",
+        body={"scope": " ".join([*scopes, scope])},
+        operation_name=operation_name,
+    )
+    return "Extended"
+
+
+def model_client_consent_warning(
+    client_display_name: str, client_app_id: str, runtime_app_id: str
+) -> str:
+    return (
+        f"WARNING: Microsoft Graph denied the tenant-wide consent for {client_display_name} to "
+        f"request {MODEL_RUNTIME_SCOPE_VALUE}. The registration exists, but people can't get "
+        "model-runtime tokens with it until an administrator grants consent. Deployment "
+        "continues.\n"
+        "Remediation: a Privileged Role Administrator, Cloud Application Administrator or "
+        "Application Administrator can run:\n"
+        f"  az ad app permission grant --id {client_app_id} --api {runtime_app_id} "
+        f"--scope {MODEL_RUNTIME_SCOPE_VALUE}\n"
+        "or open Microsoft Entra admin center > App registrations > "
+        f"{client_display_name} > API permissions > Grant admin consent. Rerunning "
+        "`azd provision` as one of those roles also grants it."
+    )
+
+
 def find_application(
     runner: CliRunner,
     display_name: str,
@@ -775,7 +1029,7 @@ def find_application(
     query = urllib.parse.urlencode(
         {
             "$filter": f"displayName eq '{odata_quote(display_name)}'",
-            "$select": "id,appId,displayName,tags,spa,api,requiredResourceAccess",
+            "$select": APPLICATION_SELECT,
         }
     )
     response = graph_request(
@@ -902,6 +1156,7 @@ class CliRunner:
         self._dry_run_objects: dict[str, dict[str, dict[str, Any]]] = {
             "applications": {},
             "servicePrincipals": {},
+            "oauth2PermissionGrants": {},
         }
         self._dry_run_role_assignments: dict[str, list[dict[str, Any]]] = {}
 
@@ -922,7 +1177,12 @@ class CliRunner:
         return run_json_command(["az", *args], operation_name)
 
     def _dry_run_create_object(self, collection: str, body: dict[str, Any]) -> dict[str, Any]:
-        key = body["displayName"] if collection == "applications" else body["appId"]
+        if collection == "applications":
+            key = body["displayName"]
+        elif collection == "oauth2PermissionGrants":
+            key = f"{body['clientId']}/{body['consentType']}/{body['resourceId']}"
+        else:
+            key = body["appId"]
         object_id = deterministic_guid(f"dry-run/{collection}/{key}")
         item = {"id": object_id, **body}
         if collection == "applications":
@@ -959,6 +1219,10 @@ class CliRunner:
                 assignments.append(body)
                 return body
             return {"value": assignments}
+        if path.startswith("servicePrincipals/") and path.endswith("/oauth2PermissionGrants"):
+            client_id = path.split("/")[1]
+            grants = self._dry_run_objects["oauth2PermissionGrants"].values()
+            return {"value": [grant for grant in grants if grant.get("clientId") == client_id]}
         collection, _, object_id = path.partition("/")
         if collection not in self._dry_run_objects:
             return {}
