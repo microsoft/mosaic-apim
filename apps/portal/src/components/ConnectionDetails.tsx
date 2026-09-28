@@ -316,9 +316,35 @@ function SamplesSection({ connection }: { connection: ModelConnection }) {
             ) : (
               <>Set <code>MOSAIC_ACCESS_TOKEN</code> to an access token for the scope above</>
             )}
-            {' '}and <code>MOSAIC_API_VERSION</code> to an API version your deployment supports.
-            Samples use placeholders and never include your key.
+            {samples.kind === 'messages' ? (
+              '.'
+            ) : (
+              <>
+                {' '}and <code>MOSAIC_API_VERSION</code> to an API version your deployment supports.
+              </>
+            )}
+            {' '}Samples use placeholders and never include your key.
           </Text>
+          {samples.kind === 'messages' && (
+            <Text as="p" size={200} className="connection-note">
+              This model uses the Anthropic Messages API, which takes no API version. The gateway
+              adds the <code>anthropic-version</code> header when a request omits it. With an
+              Anthropic SDK, use <code>{operationUrl(connection.endpoint, 'anthropic')}</code> as the
+              base URL
+              {methods?.keysEnabled && (
+                <>
+                  . The gateway removes <code>x-api-key</code>, so send a key in the{' '}
+                  <code>{connection.subscriptionHeader}</code> header
+                </>
+              )}
+              {methods?.entraEnabled && (
+                <>
+                  {methods.keysEnabled ? ', or' : ' and'} pass a token as <code>auth_token</code>
+                </>
+              )}
+              .
+            </Text>
+          )}
           {samples.credential === 'key' && methods?.entraEnabled && (
             <Text as="p" size={200} className="connection-note">
               To use a token instead, replace the key header with{' '}
@@ -363,8 +389,10 @@ function LimitsSection({ connection }: { connection: ModelConnection }) {
               <ul className="plain-list">
                 {publicationLimits.map((limit) => <li key={limit}>{limit}</li>)}
               </ul>
-            ) : (
+            ) : connection.publicationLimits ? (
               'No publication token limit configured'
+            ) : (
+              "Token limits are unavailable for this model on this gateway's tier"
             )}
           </dd>
         </div>
@@ -381,7 +409,7 @@ function LimitsSection({ connection }: { connection: ModelConnection }) {
       </dl>
       <Text as="p" size={200} className="connection-note">
         Your primary key, secondary key, and Entra tokens share this grant&apos;s limits.
-        Publication limits apply as well and are counted separately.
+        {connection.publicationLimits && ' Publication limits apply as well and are counted separately.'}
       </Text>
     </section>
   )

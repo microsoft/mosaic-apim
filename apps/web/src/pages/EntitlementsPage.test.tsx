@@ -5,7 +5,7 @@ import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AccessRequest, Entitlement } from '../types'
-import { callRateError, describeLimits } from '../entitlement-limits'
+import { callRateError, describeLimits, describePublicationLimits } from '../entitlement-limits'
 import { EntitlementsPage } from './EntitlementsPage'
 import { includeAriaHiddenInRoleQueries } from '../test/dialogs'
 import { accessPlan, directGrant, modelPublication, publishedModelApi } from '../test/model-access'
@@ -440,6 +440,19 @@ describe('describeLimits', () => {
     expect(describeLimits({ enforcement: null }, modelPublication.enforcement)).toEqual([
       'No grant-specific limit is configured.',
       'Publication: Limits usage to 12,000 tokens per minute.',
+    ])
+  })
+
+  it('says a publication without token enforcement has no token limits, and stays silent when the publication is unknown', () => {
+    expect(describeLimits({ enforcement: null }, null)).toEqual([
+      'No grant-specific limit is configured.',
+      "Publication: Token limits are unavailable for this model on this gateway's tier.",
+    ])
+    expect(describeLimits({ enforcement: null }, undefined)).toEqual([
+      'No grant-specific limit is configured.',
+    ])
+    expect(describePublicationLimits(null)).toEqual([
+      "Token limits are unavailable for this model on this gateway's tier.",
     ])
   })
 

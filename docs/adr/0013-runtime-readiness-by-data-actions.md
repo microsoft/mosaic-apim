@@ -1,4 +1,4 @@
-# ADR 0012: Judge gateway runtime readiness by data actions at the resource the published API calls
+# ADR 0013: Judge gateway runtime readiness by data actions at the resource the published API calls
 
 **Status:** Accepted
 
@@ -63,9 +63,17 @@ the operations MOSAIC publishes, so the check cannot drift from the shape. The a
 | --- | --- |
 | Azure OpenAI (`/openai/...`) | `OpenAI/deployments/chat/completions/action`, `OpenAI/deployments/completions/action`, `OpenAI/deployments/embeddings/action`, `OpenAI/images/generations/action`, `OpenAI/deployments/audio/action` (transcriptions and translations), `OpenAI/responses/write` |
 | Foundry Models (`/models/...`) | `MaaS/chat/completions/action`, `MaaS/embeddings/action`, `MaaS/info/read` |
+| Anthropic Messages (`/anthropic/v1/messages`, `/anthropic/v1/messages/count_tokens`) | `AIServices/providers/action`, for both routes |
 
-The kind decides the shape. When the kind is unknown, both sets are required, because a grant
-judged sufficient now must still be sufficient once the kind is known.
+The kind decides which shapes an endpoint publishes, and readiness requires every data action of
+all of them:
+
+- **Azure OpenAI account (`kind: OpenAI`):** the Azure OpenAI shape.
+- **AI Services or Foundry account:** the Foundry Models shape, and the Anthropic Messages shape
+  that [ADR 0012](0012-format-aware-model-publishing.md) publishes Claude through. Both are
+  required whichever models are deployed today.
+- **Unknown kind:** every shape, because a grant judged sufficient now must still be sufficient
+  once the kind is known.
 
 MOSAIC reads the role definition of every candidate assignment. Reader includes
 `Microsoft.Authorization/*/read`, which covers this. Each action is then evaluated with Azure's
@@ -86,10 +94,15 @@ Azure would refuse.
 The lists were built from the real definitions (`az role definition list --name <id>`), and tests
 pin them against recorded copies:
 
-- **Foundry shape:** Foundry User, Cognitive Services User, Cognitive Services Data Contributor
-  (Preview), Azure AI Developer, Foundry Project Manager, Foundry Owner.
+- **Anthropic Messages shape:** Foundry User, Cognitive Services User, Cognitive Services Data
+  Contributor (Preview), Foundry Project Manager, Foundry Owner. Each grants
+  `Microsoft.CognitiveServices/*` data actions.
+- **Foundry Models shape:** all of the above, plus Azure AI Developer.
 - **Azure OpenAI shape:** all of the above, plus Cognitive Services OpenAI User and Cognitive
   Services OpenAI Contributor.
+
+An endpoint's fallback is the roles on the list of every shape it publishes. For an AI Services
+account, or an unknown kind, that is the Anthropic Messages list.
 
 Owner and Contributor are absent because they carry no data actions. Any other unreadable role is
 reported as unreadable: *not confirmed*, never a denial. If the preview version is retired, every
@@ -155,6 +168,47 @@ The recommended scope is always the account. A test asserts the invariant: for e
 registration shape, the recommended role, granted as recommended, is accepted by the check. That
 holds both when the advice was given before the kind was known and after.
 
+**Claude on an AI Services account is judged like every other shape.**
+[ADR 0012](0012-format-aware-model-publishing.md) publishes Claude through the Anthropic Messages
+API. Four facts decide how readiness treats it.
+
+- **One data action covers both routes.** `az provider operation show --namespace
+  Microsoft.CognitiveServices` lists nothing Anthropic- or Messages-specific. Its only action for
+  a provider's own model routes is `AIServices/providers/action` ("Perform an action on a provider
+  model"), so MOSAIC declares it for `messages` and `count-tokens`.
+  - Microsoft's [Claude guide](https://learn.microsoft.com/azure/foundry/foundry-models/how-to/use-foundry-models-claude)
+    and Anthropic's
+    [Claude in Microsoft Foundry](https://platform.claude.com/docs/en/build-with-claude/claude-in-microsoft-foundry)
+    page name roles rather than actions: Cognitive Services User, or Foundry User. Both grant
+    that action.
+  - MOSAIC never grants roles, so it could not test the mapping with a live call. If Foundry adds
+    a narrower action, the declaration and the fallback lists change together, and tests pin both.
+- **Which built-ins cover it.** Foundry User, Cognitive Services User, Cognitive Services Data
+  Contributor (Preview), Foundry Project Manager, and Foundry Owner cover it. Azure AI Developer
+  doesn't, because its data actions stop at OpenAI, Speech, Content Safety, and MaaS. Nor do
+  Cognitive Services OpenAI User and Cognitive Services OpenAI Contributor.
+- **The scope doesn't change.** The backend host is `https://<subdomain>.services.ai.azure.com`
+  rather than the account's `cognitiveservices.azure.com` endpoint. It is still the same account,
+  under the same custom subdomain. MOSAIC takes the scope from the ARM resource ID, not the host,
+  so nothing needs mapping back.
+- **The token audience doesn't change authorization.** The policy requests a managed-identity
+  token for `https://ai.azure.com` rather than `https://cognitiveservices.azure.com`. The audience
+  decides which endpoints accept the token. The role assignments on the account still decide what
+  it may do.
+
+**An AI Services account needs both of its shapes, whichever models it serves today.** One
+account can host Llama through Foundry Models and Claude through Anthropic Messages. A Claude
+deployment added later is published without a new access check. Deriving the requirement from
+today's deployments would let a "can invoke" recorded before Claude arrived precede a 401 from the
+first Claude call. So a role that covers one shape and not the other is reported as missing, and
+the message names the API that needs the missing action:
+
+> It holds Azure AI Developer there, which does not grant
+> Microsoft.CognitiveServices/accounts/AIServices/providers/action. The Anthropic Messages API
+> that MOSAIC publishes for Claude models needs that action.
+
+The recommendation is unchanged, because Foundry User covers every shape.
+
 **What each verdict means.** `reason` says what the check found. `evaluation` stays
 `roleAssignments` for definite answers, and becomes `notEvaluated` for anything MOSAIC cannot
 confirm. A consumer keyed on `evaluation` alone therefore never presents an open question as a
@@ -190,10 +244,16 @@ is absent.
 - A private endpoint behind a gateway with no virtual network is reported as unreachable before
   anyone publishes to it.
 - A new curated shape must declare a data action for every operation (`OperationSpec.data_action`
-  is required), and must extend the fallback lists from real definitions. This applies to the
-  Anthropic Messages shape that roadmap gap G5 is adding.
+  is required), and must extend the fallback lists from real definitions. The Anthropic Messages
+  shape from ADR 0012 (roadmap gap G5) was the first to do so.
 
 Known limitations:
+
+- An AI Services account's readiness includes the Anthropic Messages action even when no Claude
+  model is deployed. A gateway that holds only Azure AI Developer, or a custom role without that
+  action, is reported as unable to invoke. Its Llama or Grok calls would succeed. Publishing such
+  a model shows the verdict as a warning, not a refusal. Foundry User or Cognitive Services User
+  clears it.
 
 - `principalId eq` returns only assignments made to the gateway's identity itself. A role reaching
   it through a group is missed and reported as "cannot invoke": a false negative, which is the safe

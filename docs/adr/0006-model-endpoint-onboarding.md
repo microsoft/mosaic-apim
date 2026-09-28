@@ -1,9 +1,9 @@
 # ADR 0006: Model endpoints have two access relationships, not one
 
 **Status:** Accepted, partially superseded by
-[ADR 0012](0012-runtime-readiness-by-data-actions.md)
+[ADR 0013](0013-runtime-readiness-by-data-actions.md)
 
-**Update:** ADR 0012 replaces how the runtime relationship is verified.
+**Update:** ADR 0013 replaces how the runtime relationship is verified.
 
 - The gateway's access is evaluated at the account the published API calls, never at a Foundry
   project. A project-scoped grant is reported as narrower than what is needed.

@@ -5,7 +5,7 @@ This is the second of the two access relationships a model endpoint has. Gateway
 itself. Runtime readiness asks "can *that* principal call what MOSAIC publishes?", which is a
 role-assignment read against a different principal.
 
-ADR 0012 fixed how the answer is reached:
+ADR 0013 fixed how the answer is reached:
 
 - The scope evaluated is the account the published API calls, including for an endpoint registered
   by Foundry project. Models are deployed on the parent resource, and a grant on the project does
@@ -41,6 +41,7 @@ from mosaic_api.domain import (
     FOUNDRY_USER_ROLE_ID,
     FOUNDRY_USER_ROLE_NAME,
     AccessRemediation,
+    ApiShape,
     CognitiveServicesResourceId,
     Gateway,
     GatewayRuntimeAccess,
@@ -58,10 +59,14 @@ from mosaic_api.integrations.apim.client import JsonObject
 from mosaic_api.integrations.apim.model_apis import required_data_actions
 from mosaic_api.integrations.rbac import condition_may_hold, condition_permits, grants_data_action
 
-_CURATED_PROVIDERS: tuple[ModelProvider, ...] = (
-    ModelProvider.AZURE_OPENAI,
-    ModelProvider.AZURE_AI_FOUNDRY,
+_ALL_SHAPES: tuple[ApiShape, ...] = (
+    ApiShape.AZURE_OPENAI,
+    ApiShape.FOUNDRY_MODELS,
+    ApiShape.ANTHROPIC_MESSAGES,
 )
+# An AI Services (Foundry) account can host Foundry Models deployments and Claude side by side.
+# MOSAIC publishes each through its own shape, so readiness needs both.
+_FOUNDRY_SHAPES: tuple[ApiShape, ...] = (ApiShape.FOUNDRY_MODELS, ApiShape.ANTHROPIC_MESSAGES)
 
 # Built-ins that cover every data action of a curated shape, taken from their real definitions
 # (``az role definition list --name <id>``) and pinned against them by tests. They are consulted
@@ -69,21 +74,38 @@ _CURATED_PROVIDERS: tuple[ModelProvider, ...] = (
 # Foundry Owner and Foundry Project Manager carry an ABAC condition, but it constrains only which
 # roles they may assign, so it holds for every inference call. Owner and Contributor are absent
 # on purpose: they carry no data actions and cannot call a model.
-_FOUNDRY_SUFFICIENT_ROLES: dict[str, str] = {
+#
+# These grant ``Microsoft.CognitiveServices/*`` data actions, so they cover every shape.
+_SERVICE_WIDE_ROLES: dict[str, str] = {
     FOUNDRY_USER_ROLE_ID: FOUNDRY_USER_ROLE_NAME,
     COGNITIVE_SERVICES_USER_ROLE_ID: COGNITIVE_SERVICES_USER_ROLE_NAME,
     COGNITIVE_SERVICES_DATA_CONTRIBUTOR_ROLE_ID: COGNITIVE_SERVICES_DATA_CONTRIBUTOR_ROLE_NAME,
-    AZURE_AI_DEVELOPER_ROLE_ID: AZURE_AI_DEVELOPER_ROLE_NAME,
     FOUNDRY_PROJECT_MANAGER_ROLE_ID: FOUNDRY_PROJECT_MANAGER_ROLE_NAME,
     FOUNDRY_OWNER_ROLE_ID: FOUNDRY_OWNER_ROLE_NAME,
 }
-KNOWN_SUFFICIENT_ROLES: dict[ModelProvider, dict[str, str]] = {
-    ModelProvider.AZURE_OPENAI: {
+KNOWN_SUFFICIENT_ROLES: dict[ApiShape, dict[str, str]] = {
+    ApiShape.AZURE_OPENAI: {
         AZURE_OPENAI_USER_ROLE_ID: AZURE_OPENAI_USER_ROLE_NAME,
         AZURE_OPENAI_CONTRIBUTOR_ROLE_ID: AZURE_OPENAI_CONTRIBUTOR_ROLE_NAME,
-        **_FOUNDRY_SUFFICIENT_ROLES,
+        AZURE_AI_DEVELOPER_ROLE_ID: AZURE_AI_DEVELOPER_ROLE_NAME,
+        **_SERVICE_WIDE_ROLES,
     },
-    ModelProvider.AZURE_AI_FOUNDRY: dict(_FOUNDRY_SUFFICIENT_ROLES),
+    ApiShape.FOUNDRY_MODELS: {
+        AZURE_AI_DEVELOPER_ROLE_ID: AZURE_AI_DEVELOPER_ROLE_NAME,
+        **_SERVICE_WIDE_ROLES,
+    },
+    # Azure AI Developer grants the OpenAI and MaaS data actions but not the provider-model action
+    # the Anthropic routes need.
+    ApiShape.ANTHROPIC_MESSAGES: dict(_SERVICE_WIDE_ROLES),
+}
+
+# How a message names the published API that needs a missing data action.
+_SHAPE_LABELS: dict[ApiShape, str] = {
+    ApiShape.AZURE_OPENAI: "the Azure OpenAI API",
+    ApiShape.FOUNDRY_MODELS: "the Foundry Models API",
+    ApiShape.ANTHROPIC_MESSAGES: (
+        "the Anthropic Messages API that MOSAIC publishes for Claude models"
+    ),
 }
 
 # The "All Principals" entry Azure uses in a deny assignment's ``principals``.
@@ -92,24 +114,33 @@ _MANAGEMENT_GROUP_PREFIX = "/providers/microsoft.management/managementgroups/"
 _MAX_FINDINGS = 20
 
 
-def published_providers(
+def published_shapes(
     kind: str | None, provider: ModelProvider | None = None
-) -> tuple[ModelProvider, ...]:
+) -> tuple[ApiShape, ...]:
     """The curated API shapes a gateway may be asked to call on this endpoint.
 
-    The resource's kind decides the shape MOSAIC publishes. Until MOSAIC can read the resource it
-    does not know the kind, so both shapes are required: a grant judged sufficient now must still
-    be sufficient once the kind is known, or MOSAIC would contradict itself.
+    The resource's kind decides what MOSAIC publishes. An Azure OpenAI resource gets the Azure
+    OpenAI shape. An AI Services (Foundry) resource gets the Foundry Models shape, and the
+    Anthropic Messages shape for Claude deployments. Both are required whichever models are
+    deployed today, so a Claude deployment added later does not turn a "can invoke" into a failed
+    call. Until MOSAIC can read the resource it does not know the kind, so every shape is
+    required: a grant judged sufficient now must still be sufficient once the kind is known, or
+    MOSAIC would contradict itself.
     """
 
     normalized = (kind or "").casefold()
     if not normalized:
-        return _CURATED_PROVIDERS
-    if normalized == "openai":
-        return (ModelProvider.AZURE_OPENAI,)
-    if provider is not None and provider in _CURATED_PROVIDERS:
-        return (ModelProvider(provider),)
-    return (ModelProvider.AZURE_AI_FOUNDRY,)
+        return _ALL_SHAPES
+    if normalized == "openai" or provider == ModelProvider.AZURE_OPENAI:
+        return (ApiShape.AZURE_OPENAI,)
+    return _FOUNDRY_SHAPES
+
+
+def _shape_data_actions(shapes: tuple[ApiShape, ...]) -> tuple[str, ...]:
+    actions: dict[str, None] = {}
+    for shape in shapes:
+        actions.update(dict.fromkeys(required_data_actions(shape)))
+    return tuple(actions)
 
 
 def required_runtime_data_actions(
@@ -117,10 +148,7 @@ def required_runtime_data_actions(
 ) -> tuple[str, ...]:
     """Every data action the gateway needs for the operations MOSAIC would publish here."""
 
-    actions: dict[str, None] = {}
-    for shape in published_providers(kind, provider):
-        actions.update(dict.fromkeys(required_data_actions(shape)))
-    return tuple(actions)
+    return _shape_data_actions(published_shapes(kind, provider))
 
 
 def recommended_runtime_role(kind: str | None) -> tuple[str, str]:
@@ -130,8 +158,9 @@ def recommended_runtime_role(kind: str | None) -> tuple[str, str]:
     the OpenAI surface. Foundry User for anything else, including an endpoint registered by Foundry
     project, because Microsoft's Foundry RBAC guidance names Foundry User on the Foundry resource
     as the minimum for calling its models. Its data actions are the same as Cognitive Services
-    User's, which the check also accepts. Foundry User is also the answer while the kind is
-    unknown, because it covers both shapes, and whatever MOSAIC recommends the check must later
+    User's, which the check also accepts, and they cover every shape, the Anthropic Messages
+    routes included. Azure AI Developer does not cover those routes. Foundry User is also the
+    answer while the kind is unknown, because whatever MOSAIC recommends the check must later
     accept.
 
     Roles are compared by definition ID rather than name. The Foundry roles were renamed in 2026
@@ -148,7 +177,7 @@ def known_sufficient_roles(
 ) -> dict[str, str]:
     """Built-ins that cover every shape this endpoint might publish, keyed by lowercase GUID."""
 
-    tables = [KNOWN_SUFFICIENT_ROLES[shape] for shape in published_providers(kind, provider)]
+    tables = [KNOWN_SUFFICIENT_ROLES[shape] for shape in published_shapes(kind, provider)]
     first, rest = tables[0], tables[1:]
     return {
         guid.casefold(): name
@@ -616,12 +645,36 @@ def _labels(findings: list[RuntimeRoleFinding], limit: int = 3) -> str:
     return f"{', '.join(shown[:-1])} and {shown[-1]}"
 
 
+def _needed_by(action: str, shapes: tuple[ApiShape, ...]) -> str | None:
+    """Which published API needs a missing action, when this endpoint publishes more than one.
+
+    An AI Services account publishes a shape per model family, so a role can cover one and not
+    another. Naming the API tells an administrator why a role that serves their chat models is
+    still not enough.
+    """
+
+    if len(shapes) < 2:
+        return None
+    wanted = action.casefold()
+    needing = [
+        _SHAPE_LABELS[shape]
+        for shape in shapes
+        if wanted in {needed.casefold() for needed in required_data_actions(shape)}
+    ]
+    if not needing or len(needing) == len(shapes):
+        return None
+    names = " and ".join(needing)
+    verb = "needs" if len(needing) == 1 else "need"
+    return f"{names[0].upper()}{names[1:]} {verb} that action."
+
+
 def _role_message(
     reason: RuntimeAccessReason,
     assessed: list[_Assessed],
     *,
     resource: CognitiveServicesResourceId,
     role_name: str,
+    shapes: tuple[ApiShape, ...],
 ) -> str:
     subject = _subject(resource)
     findings = [item.finding for item in assessed]
@@ -675,6 +728,9 @@ def _role_message(
             f" It holds {_labels(insufficient)} there, which does not grant "
             f"{missing[0] if missing else 'every data action it needs'}."
         )
+        needed_by = _needed_by(missing[0], shapes) if missing else None
+        if needed_by:
+            message += f" {needed_by}"
     return message
 
 
@@ -760,7 +816,8 @@ async def verify_gateway_runtime_access(
     resource = client.resource
     scope = resource.account_scope
     role_name, role_definition_id = recommended_runtime_role(kind)
-    actions = required_runtime_data_actions(kind, provider)
+    shapes = published_shapes(kind, provider)
+    actions = _shape_data_actions(shapes)
     network = evaluate_network_path(capabilities, gateway)
     context = _Context(gateway, scope, role_name, role_definition_id, actions, network)
     kind_note = None if kind else _unknown_kind_note(role_name)
@@ -837,7 +894,9 @@ async def verify_gateway_runtime_access(
         recommended_role_id=role_definition_id,
     )
     role_reason = _role_reason(assessed)
-    role_message = _role_message(role_reason, assessed, resource=resource, role_name=role_name)
+    role_message = _role_message(
+        role_reason, assessed, resource=resource, role_name=role_name, shapes=shapes
+    )
 
     if role_reason != RuntimeAccessReason.GRANTED:
         return _result(

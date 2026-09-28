@@ -515,7 +515,7 @@ role whose data actions cover the operations the published API calls:
 | --- | --- | --- |
 | MOSAIC enumerating models | Reader | `acdd72a7-3385-48ef-bd42-f606fba81ae7` |
 | Gateway calling an Azure OpenAI resource (`kind: OpenAI`) | Cognitive Services OpenAI User | `5e0bd9bd-7b93-4f28-af87-19fc36ad61bd` |
-| Gateway calling an AI Services or Foundry resource, including one registered by Foundry project | Foundry User | `53ca6127-db72-4b80-b1b0-d745d6d5456d` |
+| Gateway calling an AI Services or Foundry resource, including one registered by Foundry project, and its Claude models | Foundry User | `53ca6127-db72-4b80-b1b0-d745d6d5456d` |
 | Gateway calling a resource MOSAIC cannot read yet | Foundry User, which is accepted for either kind | `53ca6127-db72-4b80-b1b0-d745d6d5456d` |
 
 How the gateway's access is judged:
@@ -528,6 +528,14 @@ How the gateway's access is judged:
   `notDataActions` against the exact data actions of the operations it publishes. So Cognitive
   Services User, Cognitive Services OpenAI Contributor, or a custom role counts wherever it covers
   them.
+- **An AI Services account must cover every API MOSAIC publishes from it.** That includes the
+  Anthropic Messages API for Claude, even before a Claude model is deployed. Both of its routes need
+  `Microsoft.CognitiveServices/accounts/AIServices/providers/action`.
+  - Foundry User and Cognitive Services User grant it.
+  - Azure AI Developer doesn't. MOSAIC reports it as missing and names the API that needs the
+    action.
+  - The `services.ai.azure.com` host and the `https://ai.azure.com` token audience that API uses
+    don't change the scope or the roles: it's the same account.
 - **Unreadable definitions fall back to a list.** When MOSAIC cannot read a role definition, only
   built-ins already known to be sufficient are trusted.
 - **Conditions and deny assignments stop short of "can invoke".** A role assigned under an ABAC
@@ -540,7 +548,7 @@ How the gateway's access is judged:
 - **Advice matches the check.** Whatever MOSAIC recommends, the check accepts. When the kind is not
   known yet, MOSAIC says so, and granting it `Reader` first lets it recommend the exact role.
 
-[ADR 0012](docs/adr/0012-runtime-readiness-by-data-actions.md) records these rules.
+[ADR 0013](docs/adr/0013-runtime-readiness-by-data-actions.md) records these rules.
 
 On the Models page, select an endpoint to open its **Access** card.
 
@@ -591,21 +599,35 @@ Applying creates, in dependency order:
 
 | Order | Resource | Purpose |
 | --- | --- | --- |
-| 1 | `mosaic-*` policy fragment | Managed-identity authentication, backend routing, token limit, token metric |
+| 1 | `mosaic-*` policy fragment | Managed-identity authentication, backend routing, and, where the gateway's tier supports them, token limit and token metric |
 | 2 | Backend | The model endpoint origin, with query and fragment stripped |
 | 3 | API | The route, created with no `serviceUrl` so removing the fragment fails closed |
-| 4 | Operations | A curated, versioned set per provider |
+| 4 | Operations | A curated, versioned set per API shape |
 | 5 | API policy | A thin `<include-fragment>` of the MOSAIC fragment |
 | 6 | Product | Carries the API |
 | 7 | Product/API link | |
 | 8 | Subscription | Only when the publication requires one |
 
 Operation sets are shipped and versioned by MOSAIC rather than fetched from the provider, so a plan
-is deterministic and does not couple an APIM write to a third-party document being reachable. Azure
-OpenAI publishes chat completions, completions, embeddings, image generations, audio transcriptions
-and translations, and responses. Azure AI Services publishes the Foundry Models inference routes. A
-publication records the shape version that produced it, and OpenAI-compatible endpoints have no
-curated shape and are refused rather than guessed at.
+is deterministic and does not couple an APIM write to a third-party document being reachable. Each
+publication records the API shape it was created with, chosen from the deployment's model format
+and capability ([ADR 0012](docs/adr/0012-format-aware-model-publishing.md)):
+
+| Shape | Deployments | Operations |
+| --- | --- | --- |
+| Azure OpenAI | Azure OpenAI chat, responses, completion, embeddings, image and transcription models | Chat completions, completions, embeddings, image generations, audio transcriptions and translations, and responses |
+| Foundry Models | Foundry (AI Services) chat and embeddings models | The Foundry Models inference routes under `/models` |
+| Anthropic Messages | Claude models on Foundry | `/anthropic/v1/messages` and `/anthropic/v1/messages/count_tokens`, served from the resource's `services.ai.azure.com` host |
+
+Deployments no shape can serve, such as realtime, video and text-to-speech models, are listed as not
+publishable with a reason, and creating a publication for one is refused. A publication also records
+the shape version that produced it. OpenAI-compatible endpoints have no curated shape, and are
+refused rather than guessed at.
+
+API Management meters the Anthropic Messages API with `llm-token-limit` and `llm-emit-token-metric`
+only on v2 tiers. On a classic tier such as Developer, the publish wizard explains this, and a Claude
+publication applies no token limits or token metrics. Governed grants on it can use call limits
+instead.
 
 Every step records whether it created the resource or found one already there. If a step fails,
 MOSAIC reverses the completed steps and deletes **only** resources that run created — ownership is
@@ -639,8 +661,9 @@ desired state. Other custom counter expressions are rejected instead of weakenin
 
 Token-governed model access is constrained by APIM's supported chat-completions/response schemas.
 Unsupported image, audio, or embedding operations must not be mistaken for metered calls.
-For responses and AI Services chat routes that do not include a deployment in their path, the
-request body's `model` must exactly match the deployment name shown in connection information.
+For responses, AI Services chat and Anthropic Messages routes that do not include a deployment in
+their path, the request body's `model` must exactly match the deployment name shown in connection
+information. On an Anthropic publication, governed access permits only the Messages operation.
 Publication limits remain safeguards even when a grant has no additional limits. Native rate and
 quota enforcement is distributed and gateway-scoped, not an exact global accounting ledger.
 
@@ -672,9 +695,10 @@ panel asks them to get the client ID from an administrator. **Show primary key**
 secondary key** reveal one key for 60 seconds. The key is also hidden by **Hide key**, when the
 panel closes, and when the user navigates or leaves the page. The key is held only in component
 state, never in the query cache, browser storage, the URL, or logs. Code samples use
-`$MOSAIC_API_KEY` or `$MOSAIC_ACCESS_TOKEN` placeholders and never include a revealed key. A grant
-that arrives through a group shows a notice instead, because credentials are issued for direct
-grants only.
+`$MOSAIC_API_KEY` or `$MOSAIC_ACCESS_TOKEN` placeholders and never include a revealed key. For a
+Claude model, the samples call `/anthropic/v1/messages` without an `api-version`, and the panel
+gives the Anthropic SDK base URL. A grant that arrives through a group shows a notice instead,
+because credentials are issued for direct grants only.
 
 ### Recovering an interrupted operation
 

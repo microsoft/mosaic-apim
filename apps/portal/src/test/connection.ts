@@ -95,6 +95,29 @@ export const connection: ModelConnection = {
   grantLimits: directGrant.enforcement,
 }
 
+export const claudeEndpoint = 'https://gateway.example.test/models/claude'
+export const messagesUrl = `${claudeEndpoint}/anthropic/v1/messages`
+
+/** A Claude model on a classic-tier gateway, which can't apply token limits to it. */
+export const claudeConnection: ModelConnection = {
+  ...connection,
+  endpoint: claudeEndpoint,
+  deploymentName: 'claude-sonnet-4-5',
+  apiShape: 'anthropicMessages',
+  operations: [{ name: 'messages', method: 'POST', path: '/anthropic/v1/messages' }],
+  publicationLimits: null,
+  grantLimits: {
+    tokens: null,
+    requests: {
+      counterKeyExpression: '@(context.Subscription?.Key)',
+      calls: 60,
+      renewalPeriodSeconds: 60,
+      callQuota: null,
+      callQuotaPeriod: null,
+    },
+  },
+}
+
 export const revealedPrimary: KeyRevealResult = {
   entitlementId: directGrant.id,
   subscriptionName: 'grant-subscription',

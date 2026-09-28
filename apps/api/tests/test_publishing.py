@@ -10,6 +10,8 @@ from aoai_double import AI_RESOURCE_ID, FakeCognitiveServices
 from apim_double import CONTRIBUTOR_PERMISSIONS, RESOURCE_ID, FakeApim
 from conftest import build_endpoint_service, build_gateway_service, build_publishing_service
 from mosaic_api.domain import (
+    ApiShape,
+    DeploymentCapability,
     GatewayUpdate,
     ManagementMode,
     ModelEndpoint,
@@ -56,9 +58,9 @@ def enforcement(**kwargs: object) -> TokenEnforcement:
 class Harness:
     """A gateway in manage mode and an endpoint whose deployments have been observed."""
 
-    def __init__(self) -> None:
-        self.apim = FakeApim(permissions=CONTRIBUTOR_PERMISSIONS)
-        self.aoai = FakeCognitiveServices()
+    def __init__(self, *, ai_kind: str = "OpenAI", apim_sku: str | None = "Developer") -> None:
+        self.apim = FakeApim(permissions=CONTRIBUTOR_PERMISSIONS, sku_name=apim_sku)
+        self.aoai = FakeCognitiveServices(kind=ai_kind)
         self.gateway_repository = InMemoryGatewayRepository()
         self.endpoint_repository = InMemoryModelEndpointRepository()
         self.gateways = build_gateway_service(self.apim, self.gateway_repository)
@@ -606,3 +608,181 @@ async def test_a_plan_warns_when_the_gateway_cannot_be_shown_to_reach_the_model(
     plan = await harness.service.plan(ACTOR, publication_id)
 
     assert plan.warnings
+
+
+async def test_azure_openai_capabilities_keep_their_curated_shape(harness: Harness) -> None:
+    candidates = {
+        item.deployment_name: item
+        for item in await harness.service.publishable_models(ACTOR, harness.gateway_id)
+    }
+
+    chat = candidates[DEPLOYMENT]
+    embeddings = candidates["text-embedding-3-large"]
+    assert chat.capability == DeploymentCapability.CHAT
+    assert embeddings.capability == DeploymentCapability.EMBEDDINGS
+    for item in (chat, embeddings):
+        assert item.api_shape == ApiShape.AZURE_OPENAI
+        assert item.publishable is True
+        assert item.unpublishable_reason is None
+        assert item.token_limits_supported is True
+        assert item.token_limits_note is None
+
+
+CLAUDE = "claude-sonnet-4-5"
+FOUNDRY_ORIGIN = "https://contoso-aoai.services.ai.azure.com"
+
+
+def foundry_deployment(name: str, model_format: str, **capabilities: str) -> dict[str, object]:
+    return {
+        "name": name,
+        "sku": {"name": "GlobalStandard", "capacity": 1},
+        "properties": {
+            "model": {"format": model_format, "name": name, "version": "1"},
+            "provisioningState": "Succeeded",
+            "capabilities": capabilities,
+        },
+    }
+
+
+async def foundry(*, apim_sku: str | None = "Developer") -> Harness:
+    """A Foundry (AI Services) account serving an Anthropic model, a partner model, and models
+    MOSAIC has no curated shape for."""
+
+    built = Harness(ai_kind="AIServices", apim_sku=apim_sku)
+    built.aoai.deployments = [
+        foundry_deployment(CLAUDE, "Anthropic", chatCompletion="true"),
+        foundry_deployment("grok-4.3", "xAI", chatCompletion="true"),
+        foundry_deployment("gpt-realtime", "OpenAI", realtime="true"),
+        foundry_deployment("sora-2", "OpenAI"),
+        foundry_deployment("dall-e-3", "OpenAI", imageGenerations="true"),
+    ]
+    await built.setup()
+    return built
+
+
+async def test_publishable_models_list_every_deployment_with_its_shape_or_reason() -> None:
+    built = await foundry()
+
+    candidates = {
+        item.deployment_name: item
+        for item in await built.service.publishable_models(ACTOR, built.gateway_id)
+    }
+
+    # Nothing is hidden: a deployment MOSAIC can't publish is listed with the reason.
+    assert set(candidates) == {CLAUDE, "grok-4.3", "gpt-realtime", "sora-2", "dall-e-3"}
+    claude = candidates[CLAUDE]
+    assert claude.model_format == "Anthropic"
+    assert claude.capability == DeploymentCapability.CHAT
+    assert claude.api_shape == ApiShape.ANTHROPIC_MESSAGES
+    assert claude.publishable is True
+    assert claude.token_limits_supported is False
+    assert "Developer tier" in (claude.token_limits_note or "")
+    grok = candidates["grok-4.3"]
+    assert grok.model_format == "xAI"
+    assert grok.api_shape == ApiShape.FOUNDRY_MODELS
+    assert grok.publishable is True
+    assert grok.token_limits_supported is True
+    assert grok.token_limits_note is None
+    for name, capability, reason in (
+        ("gpt-realtime", DeploymentCapability.REALTIME, "WebSocket"),
+        ("sora-2", DeploymentCapability.VIDEO, "asynchronous jobs API"),
+        ("dall-e-3", DeploymentCapability.IMAGE, "images API"),
+    ):
+        item = candidates[name]
+        assert item.capability == capability
+        assert item.publishable is False
+        assert item.api_shape is None
+        assert reason in (item.unpublishable_reason or "")
+
+
+async def test_a_deployment_without_a_curated_shape_is_refused_with_its_reason() -> None:
+    built = await foundry()
+
+    with pytest.raises(ValidationError) as error:
+        await built.publish(deployment_name="gpt-realtime")
+
+    assert "WebSocket" in error.value.message
+    assert error.value.details["capability"] == "realtime"
+    assert not built.apim.writes
+
+
+async def test_claude_publishes_the_messages_shape_unmetered_on_a_classic_tier() -> None:
+    built = await foundry()
+    publication_id = await built.publish(deployment_name=CLAUDE, enforcement=None)
+    publication = await built.service.get_publication(ACTOR, publication_id)
+
+    plan = await built.service.plan(ACTOR, publication_id)
+    run = await built.apply(publication_id)
+
+    assert publication.api_shape == ApiShape.ANTHROPIC_MESSAGES
+    assert publication.enforcement is None
+    assert [step.kind for step in plan.steps].count(PublishedResourceKind.API_OPERATION) == 2
+    assert not any(facet.kind == "tokenLimit" for facet in plan.facets)
+    assert any("classic tier" in warning for warning in plan.warnings)
+    assert run.status == PublishRunStatus.SUCCEEDED
+    written = built.apim.written
+    assert written[f"backends/{publication.backend_name}"]["properties"]["url"] == FOUNDRY_ORIGIN
+    operations = {
+        path.rsplit("/", 1)[-1]: body["properties"]["urlTemplate"]
+        for path, body in written.items()
+        if path.startswith(f"apis/{publication.api_name}/operations/")
+    }
+    assert operations == {
+        "messages": "/anthropic/v1/messages",
+        "count-tokens": "/anthropic/v1/messages/count_tokens",
+    }
+    fragment = written[f"policyFragments/{publication.fragment_name}"]["properties"]["value"]
+    assert 'resource="https://ai.azure.com"' in fragment
+    assert 'name="anthropic-version"' in fragment
+    assert 'name="x-api-key"' in fragment
+    assert "llm-token-limit" not in fragment
+    assert "llm-emit-token-metric" not in fragment
+
+
+async def test_claude_refuses_token_limits_on_a_classic_tier() -> None:
+    built = await foundry()
+
+    with pytest.raises(ValidationError) as create_error:
+        await built.publish(deployment_name=CLAUDE)
+    publication_id = await built.publish(deployment_name=CLAUDE, enforcement=None)
+    with pytest.raises(ValidationError) as update_error:
+        await built.service.update(
+            ACTOR, publication_id, PublicationUpdate(enforcement=enforcement())
+        )
+
+    for error in (create_error, update_error):
+        assert "only on v2 tiers" in error.value.message
+
+
+async def test_claude_on_a_v2_tier_requires_and_applies_token_limits() -> None:
+    built = await foundry(apim_sku="StandardV2")
+
+    with pytest.raises(ValidationError) as error:
+        await built.publish(deployment_name=CLAUDE, enforcement=None)
+    publication_id = await built.publish(deployment_name=CLAUDE)
+    plan = await built.service.plan(ACTOR, publication_id)
+    candidates = await built.service.publishable_models(ACTOR, built.gateway_id)
+
+    assert "Token enforcement is required" in error.value.message
+    assert any(facet.kind == "tokenLimit" for facet in plan.facets)
+    assert not any("v2 tiers" in warning for warning in plan.warnings)
+    claude = next(item for item in candidates if item.deployment_name == CLAUDE)
+    assert claude.token_limits_supported is True
+    assert claude.token_limits_note is None
+
+
+async def test_claude_is_not_publishable_until_the_gateway_tier_is_known() -> None:
+    built = await foundry(apim_sku=None)
+
+    candidates = {
+        item.deployment_name: item
+        for item in await built.service.publishable_models(ACTOR, built.gateway_id)
+    }
+    with pytest.raises(ValidationError) as error:
+        await built.publish(deployment_name=CLAUDE, enforcement=None)
+
+    assert candidates[CLAUDE].publishable is False
+    assert "pricing tier" in (candidates[CLAUDE].unpublishable_reason or "")
+    assert "pricing tier" in error.value.message
+    # Only the Anthropic decision depends on the tier.
+    assert candidates["grok-4.3"].publishable is True

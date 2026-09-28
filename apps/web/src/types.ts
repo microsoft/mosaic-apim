@@ -725,6 +725,25 @@ export interface PublishedResource {
   appliedAt: string
 }
 
+/**
+ * The curated operation set, backend host, and runtime auth a published model API uses. A Foundry
+ * resource serves Anthropic models through the Anthropic Messages API (ADR 0012).
+ */
+export type ApiShape = 'azureOpenAi' | 'foundryModels' | 'anthropicMessages'
+
+export type DeploymentCapability =
+  | 'chat'
+  | 'responses'
+  | 'completion'
+  | 'embeddings'
+  | 'image'
+  | 'transcription'
+  | 'speech'
+  | 'realtime'
+  | 'video'
+  | 'rerank'
+  | 'unknown'
+
 export interface PublishableModel {
   modelEndpointId: string
   endpointName: string
@@ -732,6 +751,16 @@ export interface PublishableModel {
   deploymentName: string
   modelName: string | null
   modelVersion: string | null
+  modelFormat?: string | null
+  modelPublisher?: string | null
+  capability?: DeploymentCapability
+  apiShape?: ApiShape | null
+  /** False when MOSAIC has no curated shape for this deployment; the reason says why. */
+  publishable?: boolean
+  unpublishableReason?: string | null
+  /** False when the gateway's tier can't meter this shape; the note says why. */
+  tokenLimitsSupported?: boolean
+  tokenLimitsNote?: string | null
   publicationId: string | null
   publicationStatus: PublicationStatus | null
   suggestedApiName: string
@@ -754,7 +783,8 @@ export interface ModelAccessSnapshot {
   version: number
   settings: ModelAccessSettings
   audience?: string | null
-  publicationEnforcement: TokenEnforcement
+  /** Null when the publication's shape can't be token-metered on its gateway's tier. */
+  publicationEnforcement: TokenEnforcement | null
   grants: ModelAccessGrant[]
 }
 
@@ -779,8 +809,10 @@ export interface Publication {
   productName: string
   subscriptionName: string
   subscriptionRequired: boolean
-  enforcement: TokenEnforcement
+  /** Null when the publication's shape can't be token-metered on its gateway's tier. */
+  enforcement: TokenEnforcement | null
   shapeVersion: string
+  apiShape?: ApiShape | null
   status: PublicationStatus
   resources: PublishedResource[]
   lastPlanId: string | null
@@ -869,8 +901,9 @@ export interface ModelConnection {
   entraAudience?: string | null
   entraScope?: string | null
   subscriptionHeader: 'Ocp-Apim-Subscription-Key'
+  apiShape?: ApiShape | null
   operations: { name: string; method: string; path: string }[]
-  publicationLimits: TokenEnforcement
+  publicationLimits: TokenEnforcement | null
   grantLimits?: EntitlementEnforcement | null
 }
 

@@ -7,6 +7,7 @@ import xml.etree.ElementTree as ET
 
 import pytest
 from mosaic_api.domain import (
+    ApiShape,
     EntitlementEnforcement,
     EntitlementSubject,
     EntitlementSubjectKind,
@@ -825,9 +826,98 @@ def test_nondeployment_routes_reject_missing_malformed_and_different_model_bodie
 def test_provider_without_a_curated_supported_operation_is_rejected(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(access_policy, "curated_operations", lambda *_: ())
+    monkeypatch.setattr(access_policy, "operations_for", lambda *_: ())
     with pytest.raises(ValidationError, match="no operations supported"):
         render_governed_policy(_publication(), _snapshot())
+
+
+def _anthropic(**overrides: object) -> Publication:
+    values: dict[str, object] = {
+        "deployment_name": "claude-sonnet-4-5",
+        "provider": ModelProvider.AZURE_AI_FOUNDRY,
+        "api_shape": ApiShape.ANTHROPIC_MESSAGES,
+        "enforcement": None,
+    }
+    values.update(overrides)
+    return _publication(**values)
+
+
+def _unmetered(**overrides: object) -> ModelAccessSnapshot:
+    values: dict[str, object] = {
+        "publication_enforcement": None,
+        "grants": [_grant(enforcement=EntitlementEnforcement(requests=_requests()))],
+    }
+    values.update(overrides)
+    return _snapshot(**values)
+
+
+def test_anthropic_governed_access_permits_only_messages_and_pins_the_model() -> None:
+    result = render_governed_policy(_anthropic(), _unmetered())
+    fragment = ET.fromstring(result.fragment_xml)
+
+    guard = next(
+        condition for condition in _conditions(fragment) if "context.Operation == null" in condition
+    )
+    assert re.findall(r'context.Operation.Id == "([^"]+)"', guard) == ["messages"]
+    assert "count-tokens" not in result.fragment_xml
+    assert "This operation is not available through governed access." in result.fragment_xml
+    pin = next(
+        condition for condition in _conditions(fragment) if "preserveContent: true" in condition
+    )
+    assert 'if (!(context.Operation.Id == "messages")) return false;' in pin
+    assert '!String.Equals((string)model, "claude-sonnet-4-5", StringComparison.Ordinal)' in pin
+    facet = next(facet for facet in result.facets if "allowed-operations" in facet.attributes)
+    assert facet.attributes["allowed-operations"] == "messages"
+    assert facet.summary == "Governed access permits only the Anthropic Messages operation."
+    assert "All other operations, including token counting, are denied." in facet.details
+
+
+def test_anthropic_governed_access_uses_foundry_audience_and_messages_headers() -> None:
+    fragment = _fragment(_unmetered(), _anthropic())
+    flat = list(fragment.iter())
+    identity = fragment.find("authentication-managed-identity")
+    assert identity is not None
+    assert identity.attrib == {"resource": "https://ai.azure.com"}
+    credentials = fragment.find("set-header[@name='Authorization']")
+    api_key = fragment.find("set-header[@name='x-api-key']")
+    version = fragment.find("set-header[@name='anthropic-version']")
+    assert credentials is not None and api_key is not None and version is not None
+    assert api_key.attrib["exists-action"] == "delete"
+    assert version.attrib["exists-action"] == "skip"
+    assert [value.text for value in version.findall("value")] == ["2023-06-01"]
+    assert flat.index(credentials) < flat.index(api_key) < flat.index(identity)
+    assert flat.index(version) < flat.index(identity)
+
+
+def test_an_unmetered_publication_renders_no_token_policies_but_keeps_call_limits() -> None:
+    result = render_governed_policy(_anthropic(), _unmetered())
+    fragment = ET.fromstring(result.fragment_xml)
+
+    assert fragment.find(".//llm-token-limit") is None
+    assert fragment.find(".//llm-emit-token-metric") is None
+    assert fragment.find(".//rate-limit-by-key") is not None
+    assert not any(facet.kind == "tokenLimit" for facet in result.facets)
+
+
+def test_anthropic_governed_access_on_a_v2_gateway_keeps_token_policies() -> None:
+    fragment = _fragment(
+        _snapshot(grants=[_grant(enforcement=_full_enforcement())]),
+        _anthropic(enforcement=_tokens(tokens_per_minute=9000)),
+    )
+
+    assert fragment.findall(".//llm-token-limit")
+    assert fragment.find("llm-emit-token-metric") is not None
+
+
+def test_token_grants_are_refused_when_the_publication_cannot_be_token_metered() -> None:
+    tokens = EntitlementEnforcement(tokens=_tokens())
+    with pytest.raises(ValidationError, match="can't be token-metered"):
+        render_governed_policy(_anthropic(), _unmetered(grants=[_grant(enforcement=tokens)]))
+
+    # A disabled grant is never rendered, so it can't block revoking access.
+    render_governed_policy(
+        _anthropic(), _unmetered(grants=[_grant(), _grant(2, enabled=False, enforcement=tokens)])
+    )
 
 
 @pytest.mark.parametrize(

@@ -42,7 +42,7 @@ READER_ROLE_NAME = "Reader"
 READER_ROLE_ID = "acdd72a7-3385-48ef-bd42-f606fba81ae7"
 
 # Runtime roles are reported for the gateway's managed identity and never granted by MOSAIC. The
-# runtime check accepts any role whose data actions cover the published API (ADR 0012); these are
+# runtime check accepts any role whose data actions cover the published API (ADR 0013); these are
 # the built-ins it recommends and the ones it falls back to when it cannot read a role definition.
 # They are keyed by role definition ID rather than name: the Foundry roles were renamed in 2026
 # ("Azure AI User" became "Foundry User") and Microsoft advises binding to the GUID while the
@@ -367,6 +367,38 @@ class GatewayCapabilities(MosaicModel):
     notes: list[str] = Field(default_factory=list)
 
 
+class GatewayTier(StrEnum):
+    """The API Management tier family, which decides which AI gateway policies a gateway runs.
+
+    Some policies differ by family rather than by SKU. For example, ``llm-token-limit`` meters the
+    Anthropic Messages API only on the v2 tiers.
+    """
+
+    V2 = "v2"
+    CLASSIC = "classic"
+    CONSUMPTION = "consumption"
+    UNKNOWN = "unknown"
+
+
+_TIER_BY_SKU: dict[str, GatewayTier] = {
+    "basicv2": GatewayTier.V2,
+    "standardv2": GatewayTier.V2,
+    "premiumv2": GatewayTier.V2,
+    "developer": GatewayTier.CLASSIC,
+    "basic": GatewayTier.CLASSIC,
+    "standard": GatewayTier.CLASSIC,
+    "premium": GatewayTier.CLASSIC,
+    "isolated": GatewayTier.CLASSIC,
+    "consumption": GatewayTier.CONSUMPTION,
+}
+
+
+def gateway_tier(sku_name: str | None) -> GatewayTier:
+    """Classify an ARM ``sku.name``. An unread or unrecognized SKU is unknown, never assumed."""
+
+    return _TIER_BY_SKU.get((sku_name or "").strip().casefold(), GatewayTier.UNKNOWN)
+
+
 class GatewayInventorySummary(MosaicModel):
     apis: int = 0
     ai_apis: int = 0
@@ -427,6 +459,28 @@ class ModelProvider(StrEnum):
     AZURE_OPENAI = "azureOpenAi"
     AZURE_AI_FOUNDRY = "azureAiFoundry"
     OPENAI_COMPATIBLE = "openAiCompatible"
+
+
+class ApiShape(StrEnum):
+    """The curated operation set, backend host, and runtime auth a published model API uses.
+
+    The provider alone doesn't decide this: a Foundry resource serves Anthropic models through the
+    Anthropic Messages API, not the model inference API its other deployments use.
+    """
+
+    AZURE_OPENAI = "azureOpenAi"
+    FOUNDRY_MODELS = "foundryModels"
+    ANTHROPIC_MESSAGES = "anthropicMessages"
+
+
+def default_api_shape(provider: str) -> ApiShape | None:
+    """The shape a provider's deployments used before shapes were chosen per model format."""
+
+    if provider == ModelProvider.AZURE_OPENAI:
+        return ApiShape.AZURE_OPENAI
+    if provider == ModelProvider.AZURE_AI_FOUNDRY:
+        return ApiShape.FOUNDRY_MODELS
+    return None
 
 
 class EndpointAuthMode(StrEnum):
@@ -1322,7 +1376,9 @@ class ModelAccessSnapshot(MosaicModel):
     version: int = Field(ge=1)
     settings: ModelAccessSettings
     audience: str | None = None
-    publication_enforcement: TokenEnforcement
+    # None when the publication's API shape can't be token-metered on its gateway's tier. Such a
+    # snapshot carries no token policies at all, so none of its grants may carry token limits.
+    publication_enforcement: TokenEnforcement | None = None
     grants: list[ModelAccessGrant] = Field(default_factory=list)
 
 
@@ -1354,8 +1410,13 @@ class Publication(Entity):
     product_name: str
     subscription_name: str
     subscription_required: bool = True
-    enforcement: TokenEnforcement
+    # None only when the API shape can't be token-metered on the gateway's tier (Anthropic Messages
+    # on a classic tier). Publishing validates that rule; renderers simply omit token policies.
+    enforcement: TokenEnforcement | None = None
     shape_version: str
+    # Recorded when the publication is created. Records that predate shapes are filled from the
+    # provider, which is exactly the shape they were published with.
+    api_shape: ApiShape | None = None
     status: PublicationStatus = PublicationStatus.DRAFT
     resources: list[PublishedResource] = Field(default_factory=list)
     last_plan_id: str | None = None
@@ -1367,6 +1428,12 @@ class Publication(Entity):
     governed_access: ModelAccessSettings | None = None
     applied_access: ModelAccessSnapshot | None = None
     access_state: Literal["pending", "applying", "applied", "failed", "unknown"] = "pending"
+
+    @model_validator(mode="after")
+    def fill_legacy_shape(self) -> Self:
+        if self.api_shape is None:
+            self.api_shape = default_api_shape(self.provider)
+        return self
 
     def created_resources(self) -> list[PublishedResource]:
         """The subset rollback and unpublish are allowed to delete."""
@@ -1903,7 +1970,9 @@ class PublicationCreate(MosaicModel):
     api_path: str | None = Field(default=None, min_length=1, max_length=200)
     product_name: str | None = Field(default=None, min_length=1, max_length=80)
     subscription_required: bool = True
-    enforcement: TokenEnforcement
+    # Required unless the deployment's API shape can't be token-metered on the gateway's tier, in
+    # which case it must be omitted. The publishable-models listing reports which applies.
+    enforcement: TokenEnforcement | None = None
     governed_access: ModelAccessSettings | None = None
 
     @field_validator("api_name", "product_name")
@@ -1958,8 +2027,9 @@ class ModelConnection(MosaicModel):
     entra_scope: str | None = None
     entra_client_id: str | None = None
     subscription_header: str = "Ocp-Apim-Subscription-Key"
+    api_shape: ApiShape | None = None
     operations: list[ConnectionOperation] = Field(default_factory=list)
-    publication_limits: TokenEnforcement
+    publication_limits: TokenEnforcement | None = None
     grant_limits: EntitlementEnforcement | None = None
 
 
@@ -1984,12 +2054,35 @@ class PublicationLockInfo(MosaicModel):
     owner_id: str | None = None
 
 
+class DeploymentCapability(StrEnum):
+    """What a deployment does, as far as MOSAIC can tell from its ARM model and capability flags.
+
+    Only a positively identified capability is ever used to refuse publishing. ``UNKNOWN`` covers
+    deployments whose flags say nothing, which partner models often do, and stays publishable.
+    """
+
+    CHAT = "chat"
+    RESPONSES = "responses"
+    COMPLETION = "completion"
+    EMBEDDINGS = "embeddings"
+    IMAGE = "image"
+    TRANSCRIPTION = "transcription"
+    SPEECH = "speech"
+    REALTIME = "realtime"
+    VIDEO = "video"
+    RERANK = "rerank"
+    UNKNOWN = "unknown"
+
+
 class PublishableModel(MosaicModel):
     """A deployment on a registered endpoint that could be published through a given gateway.
 
     ``runtime_access`` is carried through unchanged rather than collapsed into a boolean, because
     ADR 0006's distinction between "the gateway cannot call this" and "MOSAIC could not evaluate
     whether the gateway can call this" has to survive into the publish experience.
+
+    Every observed deployment is listed. One MOSAIC has no curated shape for is reported with
+    ``publishable`` false and a reason rather than hidden, so an administrator can see why.
     """
 
     model_endpoint_id: str
@@ -1998,6 +2091,14 @@ class PublishableModel(MosaicModel):
     deployment_name: str
     model_name: str | None = None
     model_version: str | None = None
+    model_format: str | None = None
+    model_publisher: str | None = None
+    capability: DeploymentCapability = DeploymentCapability.UNKNOWN
+    api_shape: ApiShape | None = None
+    publishable: bool = True
+    unpublishable_reason: str | None = None
+    token_limits_supported: bool = True
+    token_limits_note: str | None = None
     publication_id: str | None = None
     publication_status: PublicationStatus | None = None
     suggested_api_name: str = ""

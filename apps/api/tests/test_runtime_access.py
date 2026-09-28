@@ -1,6 +1,6 @@
 """Gateway runtime readiness: which grants let a gateway call what MOSAIC publishes.
 
-ADR 0012. The check evaluates the account the published API calls, accepts any role whose data
+ADR 0013. The check evaluates the account the published API calls, accepts any role whose data
 actions cover the curated operations, and never claims "can invoke" on a grant it cannot prove.
 Real built-in role definitions are evaluated throughout, never approximations of them.
 """
@@ -26,6 +26,7 @@ from mosaic_api.domain import (
     COGNITIVE_SERVICES_USER_ROLE_ID,
     FOUNDRY_USER_ROLE_ID,
     READER_ROLE_ID,
+    ApiShape,
     CognitiveServicesResourceId,
     Gateway,
     GatewayCapabilities,
@@ -44,12 +45,17 @@ from mosaic_api.integrations.aoai import (
     RuntimeAccessCheck,
     evaluate_network_path,
     known_sufficient_roles,
+    published_shapes,
     recommended_runtime_role,
     required_runtime_data_actions,
     verify_gateway_runtime_access,
 )
 from mosaic_api.integrations.aoai.runtime_access import judge_role
-from mosaic_api.integrations.apim.model_apis import required_data_actions
+from mosaic_api.integrations.apim.model_apis import (
+    assess_deployment,
+    required_data_actions,
+    shape_operations,
+)
 from mosaic_api.integrations.rbac import condition_may_hold, condition_permits, grants_data_action
 from mosaic_api.services.model_endpoints import provider_for
 from role_definitions import (
@@ -62,12 +68,17 @@ from role_definitions import (
     FOUNDRY_PROJECT_MANAGER_ROLE_ID,
 )
 
-AOAI_ACTIONS = required_data_actions(ModelProvider.AZURE_OPENAI)
-FOUNDRY_ACTIONS = required_data_actions(ModelProvider.AZURE_AI_FOUNDRY)
+AOAI_ACTIONS = required_data_actions(ApiShape.AZURE_OPENAI)
+FOUNDRY_MODELS_ACTIONS = required_data_actions(ApiShape.FOUNDRY_MODELS)
+MESSAGES_ACTIONS = required_data_actions(ApiShape.ANTHROPIC_MESSAGES)
+# What an AI Services account needs: it can serve Foundry Models deployments and Claude alike.
+FOUNDRY_ACTIONS = (*FOUNDRY_MODELS_ACTIONS, *MESSAGES_ACTIONS)
 CHAT = "Microsoft.CognitiveServices/accounts/OpenAI/deployments/chat/completions/action"
 IMAGES = "Microsoft.CognitiveServices/accounts/OpenAI/images/generations/action"
 RESPONSES = "Microsoft.CognitiveServices/accounts/OpenAI/responses/write"
 MAAS_CHAT = "Microsoft.CognitiveServices/accounts/MaaS/chat/completions/action"
+PROVIDER_MODEL = "Microsoft.CognitiveServices/accounts/AIServices/providers/action"
+FOUNDRY_ENDPOINT = "https://contoso-ai.cognitiveservices.azure.com/"
 
 CUSTOM_ROLE_ID = "0f0f0f0f-0000-4000-8000-000000000001"
 GROUP_ID = "44444444-4444-4444-4444-444444444444"
@@ -162,13 +173,83 @@ class TestRequiredDataActions:
         assert required_runtime_data_actions("OpenAI") == AOAI_ACTIONS
         assert not any("/MaaS/" in action for action in AOAI_ACTIONS)
 
-    def test_foundry_needs_only_the_models_routes(self) -> None:
+    def test_foundry_needs_the_models_and_the_messages_routes(self) -> None:
+        # One AI Services account can host Llama and Claude side by side, and MOSAIC publishes
+        # them through different APIs, so readiness needs the data actions of both.
         actions = required_runtime_data_actions("AIServices", ModelProvider.AZURE_AI_FOUNDRY)
+
         assert actions == FOUNDRY_ACTIONS
+        assert PROVIDER_MODEL in actions
+        assert not any("/OpenAI/" in action for action in actions)
+
+    def test_both_messages_routes_need_only_the_provider_model_action(self) -> None:
+        assert MESSAGES_ACTIONS == (PROVIDER_MODEL,)
 
     def test_unknown_kind_needs_every_curated_shape(self) -> None:
         # Whatever MOSAIC accepts before it can read the resource must still hold once it can.
         assert set(required_runtime_data_actions(None)) == {*AOAI_ACTIONS, *FOUNDRY_ACTIONS}
+        assert published_shapes(None) == tuple(ApiShape)
+
+    @pytest.mark.parametrize(
+        ("kind", "provider", "shapes"),
+        [
+            ("OpenAI", ModelProvider.AZURE_OPENAI, (ApiShape.AZURE_OPENAI,)),
+            (
+                "AIServices",
+                ModelProvider.AZURE_AI_FOUNDRY,
+                (ApiShape.FOUNDRY_MODELS, ApiShape.ANTHROPIC_MESSAGES),
+            ),
+            (
+                "CognitiveServices",
+                ModelProvider.AZURE_AI_FOUNDRY,
+                (ApiShape.FOUNDRY_MODELS, ApiShape.ANTHROPIC_MESSAGES),
+            ),
+        ],
+    )
+    def test_published_shapes_follow_the_kind(
+        self, kind: str, provider: ModelProvider, shapes: tuple[ApiShape, ...]
+    ) -> None:
+        assert published_shapes(kind, provider) == shapes
+        assert published_shapes(kind, provider_for(kind, None)) == shapes
+
+    @pytest.mark.parametrize(
+        ("kind", "model_name", "model_format", "capabilities"),
+        [
+            ("OpenAI", "gpt-4o", "OpenAI", {"chatCompletion": "true"}),
+            ("OpenAI", "text-embedding-3-large", "OpenAI", {"embeddings": "true"}),
+            ("AIServices", "Llama-3.3-70B-Instruct", "Meta", {"chatCompletion": "true"}),
+            ("AIServices", "grok-4.3", "xAI", {}),
+            ("AIServices", "text-embedding-3-small", "OpenAI", {"embeddings": "true"}),
+            ("AIServices", "claude-sonnet-4-5", "Anthropic", {}),
+            ("AIServices", "claude-opus-4-1", None, {}),
+        ],
+    )
+    def test_readiness_covers_every_shape_a_deployment_is_published_under(
+        self,
+        kind: str,
+        model_name: str,
+        model_format: str | None,
+        capabilities: dict[str, str],
+    ) -> None:
+        # The publish flow picks the shape per deployment. Whichever it picks, the runtime check
+        # for that endpoint must already require its data actions, or "can invoke" could precede
+        # a 401 from the first call.
+        provider = provider_for(kind, None)
+        fit = assess_deployment(
+            provider,
+            model_name=model_name,
+            model_format=model_format,
+            capabilities=capabilities,
+            endpoint=FOUNDRY_ENDPOINT,
+            gateway_sku="StandardV2",
+        )
+        assert fit.api_shape is not None, fit.unpublishable_reason
+
+        needed = {
+            operation.data_action for operation in shape_operations(fit.api_shape, model_name)
+        }
+        assert fit.api_shape in published_shapes(kind, provider)
+        assert needed <= set(required_runtime_data_actions(kind, provider))
 
 
 class TestDataActionSemantics:
@@ -220,34 +301,42 @@ class TestDataActionSemantics:
 
 class TestBuiltInRoles:
     @pytest.mark.parametrize(
-        ("role_id", "covers_openai", "covers_foundry"),
+        ("role_id", "covers_openai", "covers_foundry_models", "covers_messages"),
         [
-            (AZURE_OPENAI_USER_ROLE_ID, True, False),
-            (AZURE_OPENAI_CONTRIBUTOR_ROLE_ID, True, False),
-            (COGNITIVE_SERVICES_USER_ROLE_ID, True, True),
-            (FOUNDRY_USER_ROLE_ID, True, True),
-            (AZURE_AI_DEVELOPER_ROLE_ID, True, True),
-            (COGNITIVE_SERVICES_DATA_CONTRIBUTOR_ROLE_ID, True, True),
-            (FOUNDRY_OWNER_ROLE_ID, True, True),
-            (FOUNDRY_PROJECT_MANAGER_ROLE_ID, True, True),
-            (READER_ROLE_ID, False, False),
-            (COGNITIVE_SERVICES_CONTRIBUTOR_ROLE_ID, False, False),
-            (COGNITIVE_SERVICES_DATA_READER_ROLE_ID, False, False),
+            (AZURE_OPENAI_USER_ROLE_ID, True, False, False),
+            (AZURE_OPENAI_CONTRIBUTOR_ROLE_ID, True, False, False),
+            (COGNITIVE_SERVICES_USER_ROLE_ID, True, True, True),
+            (FOUNDRY_USER_ROLE_ID, True, True, True),
+            # Its data actions stop at OpenAI, Speech, Content Safety and MaaS: enough for the
+            # Foundry Models routes, not for the provider-model action behind /anthropic/*.
+            (AZURE_AI_DEVELOPER_ROLE_ID, True, True, False),
+            (COGNITIVE_SERVICES_DATA_CONTRIBUTOR_ROLE_ID, True, True, True),
+            (FOUNDRY_OWNER_ROLE_ID, True, True, True),
+            (FOUNDRY_PROJECT_MANAGER_ROLE_ID, True, True, True),
+            (READER_ROLE_ID, False, False, False),
+            (COGNITIVE_SERVICES_CONTRIBUTOR_ROLE_ID, False, False, False),
+            (COGNITIVE_SERVICES_DATA_READER_ROLE_ID, False, False, False),
         ],
     )
     def test_real_definitions(
-        self, role_id: str, covers_openai: bool, covers_foundry: bool
+        self,
+        role_id: str,
+        covers_openai: bool,
+        covers_foundry_models: bool,
+        covers_messages: bool,
     ) -> None:
         permissions = _permissions(role_id)
 
-        openai = judge_role(permissions, AOAI_ACTIONS).kind
-        foundry = judge_role(permissions, FOUNDRY_ACTIONS).kind
+        def covers(actions: tuple[str, ...]) -> bool:
+            return judge_role(permissions, actions).kind == RuntimeRoleFindingKind.SUFFICIENT
 
-        assert (openai == RuntimeRoleFindingKind.SUFFICIENT) is covers_openai
-        assert (foundry == RuntimeRoleFindingKind.SUFFICIENT) is covers_foundry
+        assert covers(AOAI_ACTIONS) is covers_openai
+        assert covers(FOUNDRY_MODELS_ACTIONS) is covers_foundry_models
+        assert covers(MESSAGES_ACTIONS) is covers_messages
+        assert covers(FOUNDRY_ACTIONS) is (covers_foundry_models and covers_messages)
 
-    @pytest.mark.parametrize("shape", [ModelProvider.AZURE_OPENAI, ModelProvider.AZURE_AI_FOUNDRY])
-    def test_fallback_list_is_exactly_the_sufficient_built_ins(self, shape: ModelProvider) -> None:
+    @pytest.mark.parametrize("shape", list(ApiShape))
+    def test_fallback_list_is_exactly_the_sufficient_built_ins(self, shape: ApiShape) -> None:
         # The list is only consulted when a definition cannot be read, so it must say exactly what
         # reading the definition would have said.
         actions = required_data_actions(shape)
@@ -261,12 +350,21 @@ class TestBuiltInRoles:
         for role_id, role_name in KNOWN_SUFFICIENT_ROLES[shape].items():
             assert BUILT_IN_ROLE_DEFINITIONS[role_id][0] == role_name
 
-    def test_unknown_kind_falls_back_only_to_roles_covering_both_shapes(self) -> None:
-        both = known_sufficient_roles(None)
+    def test_ai_services_falls_back_only_to_roles_covering_models_and_messages(self) -> None:
+        foundry = known_sufficient_roles("AIServices", ModelProvider.AZURE_AI_FOUNDRY)
 
-        assert AZURE_OPENAI_USER_ROLE_ID not in both
-        assert FOUNDRY_USER_ROLE_ID in both
-        assert set(both) == set(KNOWN_SUFFICIENT_ROLES[ModelProvider.AZURE_AI_FOUNDRY])
+        assert AZURE_AI_DEVELOPER_ROLE_ID not in foundry
+        assert {FOUNDRY_USER_ROLE_ID, COGNITIVE_SERVICES_USER_ROLE_ID} <= set(foundry)
+        assert set(foundry) == set(KNOWN_SUFFICIENT_ROLES[ApiShape.ANTHROPIC_MESSAGES])
+        assert AZURE_AI_DEVELOPER_ROLE_ID in known_sufficient_roles("OpenAI")
+
+    def test_unknown_kind_falls_back_only_to_roles_covering_every_shape(self) -> None:
+        every = known_sufficient_roles(None)
+
+        assert AZURE_OPENAI_USER_ROLE_ID not in every
+        assert AZURE_AI_DEVELOPER_ROLE_ID not in every
+        assert FOUNDRY_USER_ROLE_ID in every
+        assert set(every) == set(KNOWN_SUFFICIENT_ROLES[ApiShape.ANTHROPIC_MESSAGES])
 
     @pytest.mark.parametrize("role_id", [FOUNDRY_OWNER_ROLE_ID, FOUNDRY_PROJECT_MANAGER_ROLE_ID])
     def test_delegation_conditions_hold_for_every_model_call(self, role_id: str) -> None:
@@ -483,6 +581,8 @@ class TestAnySufficientRole:
         assert finding.missing_data_actions == [IMAGES, RESPONSES]
         assert "Contoso deployments only" in _message(access)
         assert IMAGES in _message(access)
+        # An Azure OpenAI resource publishes one API, so there is nothing to disambiguate.
+        assert "needs that action" not in _message(access)
         assert access.remediation is not None
         assert access.remediation.role_definition_id == AZURE_OPENAI_USER_ROLE_ID
 
@@ -516,6 +616,161 @@ class TestAnySufficientRole:
         # Nothing outlives a check: a role an administrator edits is read afresh next time.
         await _check(fake, client=client)
         assert fake.role_definition_reads() == 2
+
+
+def _claude_fit_actions(model_name: str = "claude-sonnet-4-5") -> set[str]:
+    """The data actions of the API MOSAIC publishes for a Claude deployment on AI Services."""
+
+    fit = assess_deployment(
+        ModelProvider.AZURE_AI_FOUNDRY,
+        model_name=model_name,
+        model_format="Anthropic",
+        capabilities={},
+        endpoint=FOUNDRY_ENDPOINT,
+        gateway_sku="Developer",
+    )
+    assert fit.api_shape == ApiShape.ANTHROPIC_MESSAGES
+    return {operation.data_action for operation in shape_operations(fit.api_shape, model_name)}
+
+
+class TestAnthropicMessages:
+    """Claude on an AI Services account, published through the Anthropic Messages API.
+
+    The backend host (services.ai.azure.com) and the token audience (ai.azure.com) differ from the
+    other shapes, but the account, and so the scope and its role assignments, are the same.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("readable", [True, False])
+    @pytest.mark.parametrize("resource_id", [AI_RESOURCE_ID, AI_PROJECT_ID])
+    @pytest.mark.parametrize("role_id", [FOUNDRY_USER_ROLE_ID, COGNITIVE_SERVICES_USER_ROLE_ID])
+    async def test_foundry_user_and_cognitive_services_user_cover_a_claude_publication(
+        self, role_id: str, resource_id: str, readable: bool
+    ) -> None:
+        fake = FakeCognitiveServices(
+            kind="AIServices", role_definitions_status=200 if readable else 403
+        )
+        _grant(fake, role_id)
+
+        access = await _check(fake, kind="AIServices", resource_id=resource_id)
+
+        assert access.can_invoke is True, access.message
+        assert access.reason == RuntimeAccessReason.GRANTED
+        assert access.granted_role_definition_id == role_id
+        assert access.evaluated_scope == AI_RESOURCE_ID
+        assert _claude_fit_actions() <= set(access.required_data_actions)
+        assert set(FOUNDRY_MODELS_ACTIONS) <= set(access.required_data_actions)
+
+    @pytest.mark.asyncio
+    async def test_a_role_covering_chat_but_not_messages_is_reported_missing(self) -> None:
+        # Azure AI Developer serves Llama, Grok and DeepSeek on this account, but Foundry refuses
+        # its token on /anthropic/*. Reporting "can invoke" would precede a 401 from Claude.
+        fake = FakeCognitiveServices(kind="AIServices")
+        _grant(fake, AZURE_AI_DEVELOPER_ROLE_ID)
+
+        access = await _check(fake, kind="AIServices")
+
+        assert access.can_invoke is False
+        assert access.evaluation == RuntimeAccessEvaluation.ROLE_ASSIGNMENTS
+        assert access.reason == RuntimeAccessReason.MISSING_ROLE
+        finding = access.role_findings[0]
+        assert finding.kind == RuntimeRoleFindingKind.INSUFFICIENT
+        assert finding.role_name == "Azure AI Developer"
+        assert finding.missing_data_actions == [PROVIDER_MODEL]
+        message = _message(access)
+        assert (
+            f"It holds Azure AI Developer there, which does not grant {PROVIDER_MODEL}. "
+            "The Anthropic Messages API that MOSAIC publishes for Claude models needs that action."
+        ) in message
+        assert access.remediation is not None
+        assert access.remediation.role_definition_id == FOUNDRY_USER_ROLE_ID
+        assert access.remediation.scope == AI_RESOURCE_ID
+
+    @pytest.mark.asyncio
+    async def test_a_custom_role_for_chat_alone_names_the_messages_action(self) -> None:
+        fake = FakeCognitiveServices(kind="AIServices")
+        fake.add_custom_role(
+            CUSTOM_ROLE_ID,
+            "Contoso chat callers",
+            [
+                {
+                    "dataActions": [
+                        "Microsoft.CognitiveServices/accounts/OpenAI/*",
+                        "Microsoft.CognitiveServices/accounts/MaaS/*",
+                    ]
+                }
+            ],
+        )
+        _grant(fake, CUSTOM_ROLE_ID)
+
+        access = await _check(fake, kind="AIServices")
+
+        assert access.can_invoke is False
+        assert access.role_findings[0].missing_data_actions == [PROVIDER_MODEL]
+        assert "Contoso chat callers" in _message(access)
+        assert "Anthropic Messages API" in _message(access)
+
+    @pytest.mark.asyncio
+    async def test_a_custom_role_granting_the_provider_model_action_is_accepted(self) -> None:
+        fake = FakeCognitiveServices(kind="AIServices")
+        fake.add_custom_role(
+            CUSTOM_ROLE_ID,
+            "Contoso model callers",
+            [
+                {
+                    "dataActions": [
+                        "Microsoft.CognitiveServices/accounts/MaaS/*",
+                        "Microsoft.CognitiveServices/accounts/AIServices/providers/*",
+                    ]
+                }
+            ],
+        )
+        _grant(fake, CUSTOM_ROLE_ID)
+
+        access = await _check(fake, kind="AIServices")
+
+        assert access.can_invoke is True, access.message
+        assert access.granted_role_name == "Contoso model callers"
+
+    @pytest.mark.asyncio
+    async def test_a_messages_role_missing_a_models_route_names_that_api(self) -> None:
+        fake = FakeCognitiveServices(kind="AIServices")
+        fake.add_custom_role(
+            CUSTOM_ROLE_ID,
+            "Contoso Claude callers",
+            [{"dataActions": [PROVIDER_MODEL]}],
+        )
+        _grant(fake, CUSTOM_ROLE_ID)
+
+        access = await _check(fake, kind="AIServices")
+
+        assert access.can_invoke is False
+        assert access.role_findings[0].missing_data_actions == list(FOUNDRY_MODELS_ACTIONS)
+        assert "The Foundry Models API needs that action." in _message(access)
+
+    @pytest.mark.asyncio
+    async def test_azure_ai_developer_is_not_trusted_unread_for_ai_services(self) -> None:
+        # Its definition, when readable, lacks the Messages action. Standing it in unread would
+        # claim what reading it would refute.
+        fake = FakeCognitiveServices(kind="AIServices", role_definitions_status=403)
+        _grant(fake, AZURE_AI_DEVELOPER_ROLE_ID)
+
+        access = await _check(fake, kind="AIServices")
+
+        assert access.can_invoke is False
+        assert access.evaluation == RuntimeAccessEvaluation.NOT_EVALUATED
+        assert access.reason == RuntimeAccessReason.ROLE_UNREADABLE
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("readable", [True, False])
+    async def test_azure_ai_developer_still_covers_azure_openai(self, readable: bool) -> None:
+        fake = FakeCognitiveServices(role_definitions_status=200 if readable else 403)
+        _grant(fake, AZURE_AI_DEVELOPER_ROLE_ID)
+
+        access = await _check(fake, kind="OpenAI")
+
+        assert access.can_invoke is True, access.message
+        assert PROVIDER_MODEL not in access.required_data_actions
 
 
 class TestRecommendation:

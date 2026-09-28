@@ -16,6 +16,7 @@ from aoai_double import (
 from apim_double import APIM_PRINCIPAL_ID, APIM_PUBLIC_IP, RESOURCE_ID, SERVICE_NAME
 from conftest import build_endpoint_service
 from mosaic_api.domain import (
+    AZURE_AI_DEVELOPER_ROLE_ID,
     FOUNDRY_USER_ROLE_NAME,
     READER_ROLE_ID,
     READER_ROLE_NAME,
@@ -600,6 +601,63 @@ class TestGatewayRuntimeAccess:
         assert access.granted_role_name == "Cognitive Services User"
         assert access.required_role_definition_id != COGNITIVE_SERVICES_USER_ROLE_ID
         assert access.assignment_scope == AI_RESOURCE_ID
+
+    @pytest.mark.asyncio
+    async def test_readiness_covers_claude_alongside_other_models_on_ai_services(
+        self, gateway_repository: InMemoryGatewayRepository
+    ) -> None:
+        # One AI Services account serves Llama through the Foundry Models API and Claude through
+        # the Anthropic Messages API. Azure AI Developer covers the first and not the second, so
+        # "can invoke" would precede a 401 on the first Claude call.
+        await gateway_repository.record_gateway_state(_gateway())
+        fake = FakeCognitiveServices(kind="AIServices")
+        fake.deployments = [
+            {
+                "name": "llama-prod",
+                "sku": {"name": "GlobalStandard", "capacity": 1},
+                "properties": {
+                    "model": {"format": "Meta", "name": "Llama-3.3-70B-Instruct", "version": "1"},
+                    "provisioningState": "Succeeded",
+                    "capabilities": {"chatCompletion": "true"},
+                },
+            },
+            {
+                "name": "claude-prod",
+                "sku": {"name": "GlobalStandard", "capacity": 1},
+                "properties": {
+                    "model": {"format": "Anthropic", "name": "claude-sonnet-4-5", "version": "1"},
+                    "provisioningState": "Succeeded",
+                    "capabilities": {"chatCompletion": "true"},
+                },
+            },
+        ]
+        fake.role_assignments = [
+            role_assignment(AZURE_AI_DEVELOPER_ROLE_ID, AI_RESOURCE_ID, APIM_PRINCIPAL_ID)
+        ]
+        service = build_endpoint_service(fake, gateway_repository=gateway_repository)
+
+        endpoint = await service.register(ACTOR, _create())
+        access = endpoint.runtime_access[0]
+
+        provider_model = "Microsoft.CognitiveServices/accounts/AIServices/providers/action"
+        assert endpoint.provider == ModelProvider.AZURE_AI_FOUNDRY
+        assert provider_model in access.required_data_actions
+        assert access.can_invoke is False
+        assert access.reason == RuntimeAccessReason.MISSING_ROLE
+        assert access.role_findings[0].missing_data_actions == [provider_model]
+        assert "Anthropic Messages API" in (access.message or "")
+        assert access.remediation is not None
+        assert access.remediation.role_definition_id == FOUNDRY_USER_ROLE_ID
+
+        # The administrator runs the recommended command.
+        fake.role_assignments.append(
+            role_assignment(FOUNDRY_USER_ROLE_ID, AI_RESOURCE_ID, APIM_PRINCIPAL_ID)
+        )
+        granted = (await service.runtime_access(ACTOR, endpoint.id))[0]
+
+        assert granted.can_invoke is True
+        assert granted.granted_role_definition_id == FOUNDRY_USER_ROLE_ID
+        assert granted.remediation is None
 
     @pytest.mark.asyncio
     async def test_advice_given_before_the_kind_is_known_is_accepted_once_it_is(

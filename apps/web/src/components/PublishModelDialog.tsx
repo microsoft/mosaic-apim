@@ -31,6 +31,7 @@ import { useMosaicApi } from '../api'
 import { CANNOT_INVOKE, NOT_CONFIRMED, runtimeVerdict } from '../runtime-access'
 import { runtimeConfig } from '../runtime-config'
 import type {
+  ApiShape,
   Gateway,
   PublishedResourceKind,
   Publication,
@@ -82,6 +83,21 @@ const kindLabels: Record<PublishedResourceKind, string> = {
   product: 'Product',
   productApi: 'Product link',
   subscription: 'Subscription',
+}
+
+const shapeLabels: Record<ApiShape, string> = {
+  azureOpenAi: 'Azure OpenAI API',
+  foundryModels: 'Foundry Models API',
+  anthropicMessages: 'Anthropic Messages API',
+}
+
+// Older services omit these fields; they then meant "publishable, with token limits".
+function isPublishable(model: PublishableModel): boolean {
+  return model.publishable !== false
+}
+
+function supportsTokenLimits(model: PublishableModel | null): boolean {
+  return model?.tokenLimitsSupported !== false
 }
 
 const stepStatusLabels: Record<PublishStepStatus, string> = {
@@ -353,7 +369,7 @@ export function PublishModelDialog({
         apiPath: form.apiPath.trim() || undefined,
         productName: form.productName.trim() || undefined,
         subscriptionRequired: form.subscriptionRequired,
-        enforcement: buildEnforcement(form),
+        enforcement: supportsTokenLimits(selectedModel) ? buildEnforcement(form) : null,
       })
       const createdPlan = await api.createPublishPlan(created.id)
       return { created, createdPlan }
@@ -440,8 +456,11 @@ export function PublishModelDialog({
     onClose()
   }
 
-  const canConfigure = Boolean(gatewayId && selectedModel)
-  const canReview = Boolean(form.apiName.trim() && form.apiPath.trim() && form.counterKeyExpression.trim())
+  const canConfigure = Boolean(gatewayId && selectedModel && isPublishable(selectedModel))
+  const tokenLimits = supportsTokenLimits(selectedModel)
+  const canReview = Boolean(
+    form.apiName.trim() && form.apiPath.trim() && (!tokenLimits || form.counterKeyExpression.trim()),
+  )
   const missingAccessReview = Boolean(publication?.governedAccess && !plan?.accessSnapshot)
 
   return (
@@ -501,21 +520,35 @@ export function PublishModelDialog({
                       <TableBody>
                         {models.map((model) => {
                           const key = `${model.modelEndpointId}:${model.deploymentName}`
+                          const publishableRow = isPublishable(model)
                           return (
                             <TableRow key={key}>
                               <TableCell>
                                 <Checkbox
                                   aria-label={`Publish ${model.deploymentName}`}
                                   checked={modelKey === key}
+                                  disabled={!publishableRow}
                                   onChange={(_, data) => setModelKey(data.checked ? key : '')}
                                 />
                               </TableCell>
                               <TableCell>
                                 <div className={styles.nameCell}>
                                   <Text weight="semibold">{model.deploymentName}</Text>
-                                  <Text size={200}>{model.modelName ?? 'Unknown model'}</Text>
+                                  <Text size={200}>
+                                    {model.modelName ?? 'Unknown model'}
+                                    {model.modelFormat ? ` · ${model.modelFormat}` : ''}
+                                  </Text>
                                   <Text size={200}>/{model.suggestedApiPath}</Text>
+                                  {model.apiShape && <Badge appearance="outline">{shapeLabels[model.apiShape]}</Badge>}
                                   {model.publicationStatus && <Badge appearance="tint">{model.publicationStatus}</Badge>}
+                                  {!publishableRow && (
+                                    <>
+                                      <Badge appearance="tint" color="warning">Not publishable</Badge>
+                                      <Text size={200}>
+                                        {model.unpublishableReason ?? "MOSAIC can't publish this deployment yet."}
+                                      </Text>
+                                    </>
+                                  )}
                                 </div>
                               </TableCell>
                               <TableCell><RuntimeAccessNote model={model} /></TableCell>
@@ -548,32 +581,45 @@ export function PublishModelDialog({
                   label="Subscription required"
                   onChange={(_, data) => setForm({ ...form, subscriptionRequired: Boolean(data.checked) })}
                 />
-                <Field label="Counter key expression" required>
-                  <Textarea
-                    resize="vertical"
-                    value={form.counterKeyExpression}
-                    onChange={(_, data) => setForm({ ...form, counterKeyExpression: data.value })}
-                  />
-                </Field>
-                <div className={styles.controls}>
-                  <Field label="Tokens per minute" className={styles.gatewayField}>
-                    <Input type="number" min={1} value={form.tokensPerMinute} onChange={(_, data) => setForm({ ...form, tokensPerMinute: data.value })} />
-                  </Field>
-                  <Field label="Token quota" className={styles.gatewayField}>
-                    <Input type="number" min={1} value={form.tokenQuota} onChange={(_, data) => setForm({ ...form, tokenQuota: data.value })} />
-                  </Field>
-                  <Field label="Quota period" className={styles.gatewayField}>
-                    <Select value={form.tokenQuotaPeriod} onChange={(event) => setForm({ ...form, tokenQuotaPeriod: event.target.value as FormState['tokenQuotaPeriod'] })}>
-                      <option value="">None</option>
-                      {quotaPeriods.map((period) => <option key={period} value={period}>{period}</option>)}
-                    </Select>
-                  </Field>
-                </div>
-                <Switch
-                  checked={form.estimatePromptTokens}
-                  label="Estimate prompt tokens"
-                  onChange={(_, data) => setForm({ ...form, estimatePromptTokens: Boolean(data.checked) })}
-                />
+                {!tokenLimits && (
+                  <MessageBar intent="warning">
+                    <MessageBarBody>
+                      <MessageBarTitle>Token limits unavailable</MessageBarTitle>
+                      {selectedModel?.tokenLimitsNote
+                        ?? "This gateway can't apply token limits to this model, so this publication applies none."}
+                    </MessageBarBody>
+                  </MessageBar>
+                )}
+                {tokenLimits && (
+                  <>
+                    <Field label="Counter key expression" required>
+                      <Textarea
+                        resize="vertical"
+                        value={form.counterKeyExpression}
+                        onChange={(_, data) => setForm({ ...form, counterKeyExpression: data.value })}
+                      />
+                    </Field>
+                    <div className={styles.controls}>
+                      <Field label="Tokens per minute" className={styles.gatewayField}>
+                        <Input type="number" min={1} value={form.tokensPerMinute} onChange={(_, data) => setForm({ ...form, tokensPerMinute: data.value })} />
+                      </Field>
+                      <Field label="Token quota" className={styles.gatewayField}>
+                        <Input type="number" min={1} value={form.tokenQuota} onChange={(_, data) => setForm({ ...form, tokenQuota: data.value })} />
+                      </Field>
+                      <Field label="Quota period" className={styles.gatewayField}>
+                        <Select value={form.tokenQuotaPeriod} onChange={(event) => setForm({ ...form, tokenQuotaPeriod: event.target.value as FormState['tokenQuotaPeriod'] })}>
+                          <option value="">None</option>
+                          {quotaPeriods.map((period) => <option key={period} value={period}>{period}</option>)}
+                        </Select>
+                      </Field>
+                    </div>
+                    <Switch
+                      checked={form.estimatePromptTokens}
+                      label="Estimate prompt tokens"
+                      onChange={(_, data) => setForm({ ...form, estimatePromptTokens: Boolean(data.checked) })}
+                    />
+                  </>
+                )}
                 {createAndPlan.isError && <ErrorState error={createAndPlan.error} />}
               </div>
             )}
