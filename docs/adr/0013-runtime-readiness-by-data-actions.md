@@ -199,8 +199,8 @@ API. Four facts decide how readiness treats it.
 **An AI Services account needs both of its shapes, whichever models it serves today.** One
 account can host Llama through Foundry Models and Claude through Anthropic Messages. A Claude
 deployment added later is published without a new access check. Deriving the requirement from
-today's deployments would let a "can invoke" recorded before Claude arrived precede a 401 from the
-first Claude call. So a role that covers one shape and not the other is reported as missing, and
+today's deployments would let a "can invoke" recorded before Claude arrived precede a 401 or 403 from
+the first Claude call. So a role that covers one shape and not the other is reported as missing, and
 the message names the API that needs the missing action:
 
 > It holds Azure AI Developer there, which does not grant

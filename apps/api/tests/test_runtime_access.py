@@ -663,8 +663,9 @@ class TestAnthropicMessages:
 
     @pytest.mark.asyncio
     async def test_a_role_covering_chat_but_not_messages_is_reported_missing(self) -> None:
-        # Azure AI Developer serves Llama, Grok and DeepSeek on this account, but Foundry refuses
-        # its token on /anthropic/*. Reporting "can invoke" would precede a 401 from Claude.
+        # Azure AI Developer serves Llama, Grok and DeepSeek on this account, but it lacks the
+        # provider-model action /anthropic/* needs. "Can invoke" would precede a 401 or 403 from
+        # Claude.
         fake = FakeCognitiveServices(kind="AIServices")
         _grant(fake, AZURE_AI_DEVELOPER_ROLE_ID)
 

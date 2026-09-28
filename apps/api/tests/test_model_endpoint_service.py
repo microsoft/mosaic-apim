@@ -608,7 +608,7 @@ class TestGatewayRuntimeAccess:
     ) -> None:
         # One AI Services account serves Llama through the Foundry Models API and Claude through
         # the Anthropic Messages API. Azure AI Developer covers the first and not the second, so
-        # "can invoke" would precede a 401 on the first Claude call.
+        # "can invoke" would precede a 401 or 403 on the first Claude call.
         await gateway_repository.record_gateway_state(_gateway())
         fake = FakeCognitiveServices(kind="AIServices")
         fake.deployments = [
