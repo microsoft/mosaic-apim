@@ -646,9 +646,10 @@ panel asks them to get the client ID from an administrator. **Show primary key**
 secondary key** reveal one key for 60 seconds. The key is also hidden by **Hide key**, when the
 panel closes, and when the user navigates or leaves the page. The key is held only in component
 state, never in the query cache, browser storage, the URL, or logs. Code samples use
-`$MOSAIC_API_KEY` or `$MOSAIC_ACCESS_TOKEN` placeholders and never include a revealed key. A grant
-that arrives through a group shows a notice instead, because credentials are issued for direct
-grants only.
+`$MOSAIC_API_KEY` or `$MOSAIC_ACCESS_TOKEN` placeholders and never include a revealed key. For a
+Claude model, the samples call `/anthropic/v1/messages` without an `api-version`, and the panel
+gives the Anthropic SDK base URL. A grant that arrives through a group shows a notice instead,
+because credentials are issued for direct grants only.
 
 ### Recovering an interrupted operation
 

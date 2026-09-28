@@ -6,11 +6,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   apiFailure,
   chatUrl,
+  claudeConnection,
+  claudeEndpoint,
   connection,
   directGrant,
   directResolved,
   endpoint,
   groupResolved,
+  messagesUrl,
   modelClientId,
   persistedText,
   responsesUrl,
@@ -222,7 +225,9 @@ describe('ConnectionDetails', () => {
     expect(fact(limits, 'Publication limits')).toHaveTextContent('20,000 tokens per minute')
     expect(fact(limits, 'Publication limits')).toHaveTextContent('1,000,000 tokens per month')
     expect(fact(limits, 'Grant limits')).toHaveTextContent(/^5,000 tokens per minute$/)
-    expect(within(limits).getByText(/share this grant's limits/)).toBeVisible()
+    expect(within(limits).getByText(/share this grant's limits/)).toHaveTextContent(
+      /Publication limits apply as well and are counted separately\.$/,
+    )
   })
 
   it('says when the grant has no limits of its own', async () => {
@@ -369,6 +374,7 @@ describe('ConnectionDetails', () => {
     expect(python).toContain('headers={"Ocp-Apim-Subscription-Key": os.environ["MOSAIC_API_KEY"]}')
     expect(screen.getByText(/To use a token instead/)).toBeVisible()
     expect(screen.getByText(/Samples use placeholders and never include your key/)).toBeVisible()
+    expect(screen.queryByText(/uses the Anthropic Messages API/)).not.toBeInTheDocument()
   })
 
   it('builds token samples when only Entra ID tokens are accepted', async () => {
@@ -442,6 +448,78 @@ describe('ConnectionDetails', () => {
     expect(curl).toContain(`curl "${responsesUrl}?api-version=$MOSAIC_API_VERSION"`)
     expect(curl).toContain(`-d '{"model": "gpt-4o", "input": "Hello"}'`)
     expect(python).toContain('"input": "Hello"')
+  })
+
+  it('builds Anthropic Messages samples without an API version for a Claude model', async () => {
+    const user = userEvent.setup()
+    renderDetails()
+    await openDetails(user, claudeConnection)
+
+    expect(within(section('Endpoint')).getByRole('listitem')).toHaveTextContent(`POST${messagesUrl}messages`)
+    expect(sampleHeadings()).toEqual(['curl (bash)', 'Python', 'Get a token (Python)'])
+    const [curl, python] = samples()
+    expect(curl).toBe(
+      [
+        `curl "${messagesUrl}" \\`,
+        '  -H "Ocp-Apim-Subscription-Key: $MOSAIC_API_KEY" \\',
+        '  -H "Content-Type: application/json" \\',
+        `  -d '{"model": "claude-sonnet-4-5", "max_tokens": 256, "messages": [{"role": "user", "content": "Hello"}]}'`,
+      ].join('\n'),
+    )
+    expect(python).toContain(JSON.stringify(messagesUrl))
+    expect(python).toContain('        "max_tokens": 256,')
+    expect(python).not.toContain('params=')
+    expect(section('Code samples')).not.toHaveTextContent('MOSAIC_API_VERSION')
+    expect(screen.getByText(/Samples use placeholders/)).toHaveTextContent(
+      'Set MOSAIC_API_KEY to a key shown above. Samples use placeholders and never include your key.',
+    )
+    expect(screen.getByText(/uses the Anthropic Messages API/)).toHaveTextContent(
+      `use ${claudeEndpoint}/anthropic as the base URL. The gateway removes x-api-key, so send a key in the Ocp-Apim-Subscription-Key header, or pass a token as auth_token.`,
+    )
+  })
+
+  it('builds Anthropic Messages token samples without an API version', async () => {
+    const user = userEvent.setup()
+    renderDetails()
+    await openDetails(user, { ...claudeConnection, appliedMethods: { keysEnabled: false, entraEnabled: true } })
+
+    expect(sampleHeadings()).toEqual(['Get a token (Python)', 'curl (bash)', 'Python'])
+    const [, curl, python] = samples()
+    expect(curl).toContain(`curl "${messagesUrl}" \\`)
+    expect(`${curl}\n${python}`).not.toContain('api-version')
+    expect(`${curl}\n${python}`).not.toContain('MOSAIC_API_KEY')
+    expect(screen.getByText(/Samples use placeholders/)).toHaveTextContent(
+      'Set MOSAIC_ACCESS_TOKEN to an access token for the scope above. Samples use placeholders and never include your key.',
+    )
+    expect(screen.getByText(/uses the Anthropic Messages API/)).toHaveTextContent(
+      /use \S+\/anthropic as the base URL and pass a token as auth_token\.$/,
+    )
+    expect(screen.getByText(/uses the Anthropic Messages API/)).not.toHaveTextContent('x-api-key')
+  })
+
+  it('tells key-only Anthropic SDK callers where the key goes', async () => {
+    const user = userEvent.setup()
+    renderDetails()
+    await openDetails(user, { ...claudeConnection, appliedMethods: { keysEnabled: true, entraEnabled: false } })
+
+    expect(screen.getByText(/uses the Anthropic Messages API/)).toHaveTextContent(
+      /The gateway removes x-api-key, so send a key in the Ocp-Apim-Subscription-Key header\.$/,
+    )
+  })
+
+  it("explains that the gateway's tier can't apply token limits to a Claude model", async () => {
+    const user = userEvent.setup()
+    renderDetails()
+    await openDetails(user, claudeConnection)
+
+    const limits = section('Limits')
+    expect(fact(limits, 'Publication limits')).toHaveTextContent(
+      /^Token limits are unavailable for this model on this gateway's tier$/,
+    )
+    expect(fact(limits, 'Grant limits')).toHaveTextContent(/^60 calls per 60 seconds$/)
+    expect(within(limits).getByText(/share this grant's limits/)).toHaveTextContent(
+      /^Your primary key, secondary key, and Entra tokens share this grant's limits\.$/,
+    )
   })
 
   it.each([

@@ -109,11 +109,15 @@ such a grant too, so it can never be applied unmetered.
 
 **Connection information describes the shape.** `ModelConnection` carries `apiShape` and the
 shape's operations, and `publicationLimits` is `null` when the publication applies no token limits.
-The admin console tells Anthropic callers to:
+The admin console and the portal's **Connection details** tell Anthropic callers to:
 
 - use the Messages API, with the request's `model` set to the deployment name;
 - use `<gateway>/<api path>/anthropic` as the Anthropic SDK base URL;
 - send the key in `Ocp-Apim-Subscription-Key`, because the gateway strips `x-api-key`.
+
+The portal's code samples call `/anthropic/v1/messages` with no `api-version`. When
+`publicationLimits` is `null`, both apps say that token limits are unavailable on the gateway's
+tier.
 
 ## Alternatives considered
 
