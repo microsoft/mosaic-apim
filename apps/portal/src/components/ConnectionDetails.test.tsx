@@ -11,6 +11,7 @@ import {
   directResolved,
   endpoint,
   groupResolved,
+  modelClientId,
   persistedText,
   responsesUrl,
   revealedPrimary,
@@ -77,6 +78,12 @@ function fact(container: HTMLElement, term: string) {
 
 function samples() {
   return Array.from(document.querySelectorAll('pre.code-sample'), (element) => element.textContent ?? '')
+}
+
+function sampleHeadings() {
+  return within(section('Code samples'))
+    .getAllByRole('heading', { level: 4 })
+    .map((heading) => heading.textContent)
 }
 
 function deferred<T>() {
@@ -151,19 +158,40 @@ describe('ConnectionDetails', () => {
     expect(fact(authentication, 'Microsoft Entra ID token')).toHaveTextContent(/^Accepted$/)
     expect(within(authentication).getByRole('heading', { name: 'Microsoft Entra ID' })).toBeVisible()
     expect(fact(authentication, 'Tenant ID')).toHaveTextContent(/^tenant-1$/)
-    expect(fact(authentication, 'Audience')).toHaveTextContent(connection.entraAudience!)
+    expect(fact(authentication, 'Client ID')).toHaveTextContent(new RegExp(`^${modelClientId}$`))
     expect(fact(authentication, 'Scope')).toHaveTextContent(connection.entraScope!)
-    expect(within(authentication).queryByText('Client ID')).not.toBeInTheDocument()
+    expect(fact(authentication, 'Audience')).toHaveTextContent(connection.entraAudience!)
+    const entraFacts = authentication.querySelectorAll('dl')[1]
+    expect(Array.from(entraFacts?.querySelectorAll('dt') ?? [], (term) => term.textContent)).toEqual([
+      'Tenant ID',
+      'Client ID',
+      'Scope',
+      'Audience',
+    ])
+    expect(within(authentication).getByText(/^Sign in with the client ID above and request the scope/)).toBeVisible()
+    expect(within(authentication).queryByText(/Ask an administrator/)).not.toBeInTheDocument()
   })
 
-  it('shows the Entra client ID when the API provides one', async () => {
+  it.each([
+    ['null', null],
+    ['omitted by an older API', undefined],
+  ])('asks for an administrator instead of showing a client ID when it is %s', async (_case, entraClientId) => {
     const user = userEvent.setup()
     renderDetails()
-    await openDetails(user, { ...connection, entraClientId: '99999999-8888-7777-6666-555555555555' })
+    await openDetails(user, { ...connection, entraClientId })
 
-    expect(fact(section('Authentication'), 'Client ID')).toHaveTextContent(
-      /^99999999-8888-7777-6666-555555555555$/,
-    )
+    const authentication = section('Authentication')
+    expect(fact(authentication, 'Tenant ID')).toHaveTextContent(/^tenant-1$/)
+    expect(fact(authentication, 'Scope')).toHaveTextContent(connection.entraScope!)
+    expect(within(authentication).queryByText('Client ID')).not.toBeInTheDocument()
+    expect(within(authentication).getByText(/^Request an access token for the scope above\./)).toBeVisible()
+    expect(
+      within(authentication).getByText(
+        "MOSAIC has no client ID for you to sign in with for this grant. Ask an administrator which client ID to use, or to reapply this model's access.",
+      ),
+    ).toBeVisible()
+    expect(screen.queryByRole('heading', { name: 'Get a token (Python)' })).not.toBeInTheDocument()
+    expect(samples()).toHaveLength(2)
   })
 
   it('omits the Entra details when Entra ID tokens are not accepted', async () => {
@@ -172,7 +200,6 @@ describe('ConnectionDetails', () => {
     await openDetails(user, {
       ...connection,
       appliedMethods: { keysEnabled: true, entraEnabled: false },
-      entraClientId: '99999999-8888-7777-6666-555555555555',
     })
 
     const authentication = section('Authentication')
@@ -182,6 +209,8 @@ describe('ConnectionDetails', () => {
     expect(within(authentication).queryByText('Tenant ID')).not.toBeInTheDocument()
     expect(within(authentication).queryByText('Client ID')).not.toBeInTheDocument()
     expect(screen.queryByText(/To use a token instead/)).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Get a token (Python)' })).not.toBeInTheDocument()
+    expect(samples()).toHaveLength(2)
   })
 
   it('shows publication and grant limits', async () => {
@@ -329,7 +358,9 @@ describe('ConnectionDetails', () => {
     renderDetails()
     await openDetails(user)
 
-    const [curl, python] = samples()
+    expect(sampleHeadings()).toEqual(['curl (bash)', 'Python', 'Get a token (Python)'])
+    const [curl, python, token] = samples()
+    expect(token).toContain('msal.PublicClientApplication(')
     expect(curl).toContain(`curl "${chatUrl}?api-version=$MOSAIC_API_VERSION"`)
     expect(curl).toContain('-H "Ocp-Apim-Subscription-Key: $MOSAIC_API_KEY"')
     expect(curl).toContain(`-d '{"model": "gpt-4o", "messages": [{"role": "user", "content": "Hello"}]}'`)
@@ -345,10 +376,55 @@ describe('ConnectionDetails', () => {
     renderDetails()
     await openDetails(user, { ...connection, appliedMethods: { keysEnabled: false, entraEnabled: true } })
 
-    const [curl, python] = samples()
+    expect(sampleHeadings()).toEqual(['Get a token (Python)', 'curl (bash)', 'Python'])
+    const [token, curl, python] = samples()
+    expect(token).toContain('msal.PublicClientApplication(')
     expect(curl).toContain('-H "Authorization: Bearer $MOSAIC_ACCESS_TOKEN"')
     expect(python).toContain('headers={"Authorization": "Bearer " + os.environ["MOSAIC_ACCESS_TOKEN"]}')
-    expect(`${curl}\n${python}`).not.toContain('MOSAIC_API_KEY')
+    expect(`${token}\n${curl}\n${python}`).not.toContain('MOSAIC_API_KEY')
+  })
+
+  it('builds a device code sign-in sample from the non-secret sign-in IDs', async () => {
+    const user = userEvent.setup()
+    renderDetails()
+    await openDetails(user)
+
+    expect(samples()[2]).toBe(
+      [
+        'import sys',
+        '',
+        'import msal',
+        '',
+        'app = msal.PublicClientApplication(',
+        `    "${modelClientId}",`,
+        '    authority="https://login.microsoftonline.com/tenant-1",',
+        ')',
+        'flow = app.initiate_device_flow(scopes=["api://11111111-2222-3333-4444-555555555555/Models.Invoke"])',
+        'if "user_code" not in flow:',
+        '    sys.exit(flow.get("error_description", "Device code sign-in could not start"))',
+        'print(flow["message"], file=sys.stderr)',
+        'result = app.acquire_token_by_device_flow(flow)',
+        'if "access_token" not in result:',
+        `    sys.exit(f"{result.get('error')}: {result.get('error_description')}")`,
+        'print(result["access_token"])',
+      ].join('\n'),
+    )
+    expect(screen.getByText(/Signs you in with a device code and prints an access token/)).toHaveTextContent(
+      'export MOSAIC_ACCESS_TOKEN="$(python get_token.py)"',
+    )
+  })
+
+  it('still shows how to get a token when no operation has a call sample', async () => {
+    const user = userEvent.setup()
+    renderDetails()
+    await openDetails(user, {
+      ...connection,
+      operations: [{ name: 'embeddings', method: 'POST', path: '/openai/deployments/gpt-4o/embeddings' }],
+    })
+
+    expect(screen.getByText('No sample is available for these operations.')).toBeVisible()
+    expect(sampleHeadings()).toEqual(['Get a token (Python)'])
+    expect(samples()).toHaveLength(1)
   })
 
   it('uses the Responses API when chat completions are not published', async () => {
@@ -378,6 +454,7 @@ describe('ConnectionDetails', () => {
       'no published operation has a sample',
       {
         ...connection,
+        entraClientId: null,
         operations: [{ name: 'embeddings', method: 'POST', path: '/openai/deployments/gpt-4o/embeddings' }],
       },
       'No sample is available for these operations.',
@@ -411,6 +488,7 @@ describe('ConnectionDetails', () => {
     expect(await screen.findByText(revealedPrimary.key)).toHaveAttribute('data-secret', 'true')
     expect(document.querySelectorAll('[data-secret]')).toHaveLength(1)
     expect(document.body.innerHTML.split(revealedPrimary.key)).toHaveLength(2)
+    expect(samples()).toHaveLength(3)
     expect(samples().join('\n')).toContain('$MOSAIC_API_KEY')
     expect(samples().join('\n')).not.toContain(revealedPrimary.key)
     expect(persistedText(queryClient)).not.toContain(revealedPrimary.key)

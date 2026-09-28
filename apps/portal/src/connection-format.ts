@@ -320,3 +320,37 @@ export function buildSamples(connection: SampleInput): ConnectionSamples | null 
 
   return { credential, operation: chosen.operation, curl, python }
 }
+
+/** Non-secret sign-in identifiers only; a token sample never sees a key either. */
+export type TokenSampleInput = Pick<
+  ModelConnection,
+  'tenantId' | 'entraClientId' | 'entraScope' | 'appliedMethods'
+>
+
+/**
+ * Device code sign-in with the MOSAIC model client. The prompt goes to stderr and only the
+ * token to stdout, so the output can be captured into MOSAIC_ACCESS_TOKEN.
+ */
+export function buildTokenSample(connection: TokenSampleInput): string | null {
+  const { tenantId, entraClientId, entraScope } = connection
+  if (!connection.appliedMethods?.entraEnabled || !tenantId || !entraClientId || !entraScope) return null
+  const authority = `https://login.microsoftonline.com/${tenantId}`
+  return [
+    'import sys',
+    '',
+    'import msal',
+    '',
+    'app = msal.PublicClientApplication(',
+    `    ${JSON.stringify(entraClientId)},`,
+    `    authority=${JSON.stringify(authority)},`,
+    ')',
+    `flow = app.initiate_device_flow(scopes=[${JSON.stringify(entraScope)}])`,
+    'if "user_code" not in flow:',
+    '    sys.exit(flow.get("error_description", "Device code sign-in could not start"))',
+    'print(flow["message"], file=sys.stderr)',
+    'result = app.acquire_token_by_device_flow(flow)',
+    'if "access_token" not in result:',
+    `    sys.exit(f"{result.get('error')}: {result.get('error_description')}")`,
+    'print(result["access_token"])',
+  ].join('\n')
+}

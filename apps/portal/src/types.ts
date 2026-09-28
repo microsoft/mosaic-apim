@@ -136,7 +136,11 @@ export interface ModelConnection {
   appliedMethods?: ModelAccessSettings | null
   entraAudience?: string | null
   entraScope?: string | null
-  /** Public client that end users sign in with to request model tokens. Older APIs omit it. */
+  /**
+   * Public client ID that people sign in with to request a model token. Null when the deployment
+   * has no MOSAIC model client or the grant was applied for an earlier runtime registration.
+   * Older APIs omit it.
+   */
   entraClientId?: string | null
   subscriptionHeader: string
   operations: ConnectionOperation[]

@@ -16,6 +16,7 @@ import { useLocation } from 'react-router-dom'
 import { usePortalApi } from '../api'
 import {
   buildSamples,
+  buildTokenSample,
   connectionProblem,
   describeConnectionRuntime,
   isClientError,
@@ -254,26 +255,33 @@ function AuthenticationSection({ connection }: { connection: ModelConnection }) 
               <dt>Tenant ID</dt>
               <dd><code>{connection.tenantId}</code></dd>
             </div>
-            <div>
-              <dt>Audience</dt>
-              <dd>{connection.entraAudience ? <code>{connection.entraAudience}</code> : 'Not configured'}</dd>
-            </div>
-            <div>
-              <dt>Scope</dt>
-              <dd>{connection.entraScope ? <code>{connection.entraScope}</code> : 'Not configured'}</dd>
-            </div>
             {connection.entraClientId && (
               <div>
                 <dt>Client ID</dt>
                 <dd><code>{connection.entraClientId}</code></dd>
               </div>
             )}
+            <div>
+              <dt>Scope</dt>
+              <dd>{connection.entraScope ? <code>{connection.entraScope}</code> : 'Not configured'}</dd>
+            </div>
+            <div>
+              <dt>Audience</dt>
+              <dd>{connection.entraAudience ? <code>{connection.entraAudience}</code> : 'Not configured'}</dd>
+            </div>
           </dl>
           <Text as="p" size={200} className="connection-note">
-            Request an access token for this scope and send it as a bearer token. Your portal
-            sign-in is not a model token, and your application may also need an administrator to
-            grant it consent.
+            {connection.entraClientId
+              ? 'Sign in with the client ID above and request the scope to get an access token.'
+              : 'Request an access token for the scope above.'}{' '}
+            Send it as a bearer token; your portal sign-in is not a model token.
           </Text>
+          {!connection.entraClientId && (
+            <Text as="p" size={200} className="connection-note">
+              MOSAIC has no client ID for you to sign in with for this grant. Ask an administrator
+              which client ID to use, or to reapply this model's access.
+            </Text>
+          )}
         </>
       )}
     </section>
@@ -284,6 +292,19 @@ function SamplesSection({ connection }: { connection: ModelConnection }) {
   const headingId = useId()
   const methods = connection.appliedMethods
   const samples = buildSamples(connection)
+  const tokenSample = buildTokenSample(connection)
+  const tokenBlock = tokenSample && (
+    <>
+      <h4>Get a token (Python)</h4>
+      <Text as="p" size={200} className="connection-note">
+        Signs you in with a device code and prints an access token for the scope above. Install{' '}
+        <code>msal</code>, save this as <code>get_token.py</code>, and run{' '}
+        <code>export MOSAIC_ACCESS_TOKEN="$(python get_token.py)"</code>. Tokens expire after
+        about an hour.
+      </Text>
+      <pre className="code-sample"><code>{tokenSample}</code></pre>
+    </>
+  )
   return (
     <section className="connection-section" aria-labelledby={headingId}>
       <h3 id={headingId}>Code samples</h3>
@@ -305,19 +326,24 @@ function SamplesSection({ connection }: { connection: ModelConnection }) {
               request; if you send both, both must be valid.
             </Text>
           )}
+          {samples.credential === 'token' && tokenBlock}
           <h4>curl (bash)</h4>
           <pre className="code-sample"><code>{samples.curl}</code></pre>
           <h4>Python</h4>
           <pre className="code-sample"><code>{samples.python}</code></pre>
+          {samples.credential === 'key' && tokenBlock}
         </>
       ) : (
-        <Text as="p">
-          {!methods
-            ? 'Samples appear after governed access is applied to this model.'
-            : !methods.keysEnabled && !methods.entraEnabled
-              ? 'No sample is shown because APIM denies every call to this model.'
-              : 'No sample is available for these operations.'}
-        </Text>
+        <>
+          <Text as="p">
+            {!methods
+              ? 'Samples appear after governed access is applied to this model.'
+              : !methods.keysEnabled && !methods.entraEnabled
+                ? 'No sample is shown because APIM denies every call to this model.'
+                : 'No sample is available for these operations.'}
+          </Text>
+          {tokenBlock}
+        </>
       )}
     </section>
   )

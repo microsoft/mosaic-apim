@@ -6,7 +6,8 @@
 **Connection details** panel loads the connection only when opened. For an applied direct grant,
 it reveals one key on explicit request, holds it only in transient component state (never a
 query cache, browser storage, the URL, or logs), and hides it after 60 seconds, on unmount, and
-on navigation. Code samples use placeholders, never a revealed key. Group grants still receive
+on navigation. Code samples use placeholders, never a revealed key. When the connection includes
+the model client ID, the panel shows it with a device code token sample. Group grants still receive
 no credentials.
 
 ## Context

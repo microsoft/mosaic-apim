@@ -624,13 +624,16 @@ A current-user route always uses the token's identity, never a caller-supplied u
 
 In the portal, each model grant on **My access** has a **Connection details** button. The
 connection loads only when it is expanded, and it shows the endpoint, full operation URLs,
-deployment, key header, accepted methods, Entra tenant/audience/scope, limits, and whether the
-grant is applied to APIM. **Show primary key** and **Show secondary key** reveal one key for 60
-seconds. The key is also hidden by **Hide key**, when the panel closes, and when the user navigates
-or leaves the page. The key is held only in component state, never in the query cache, browser
-storage, the URL, or logs. Code samples use `$MOSAIC_API_KEY` or `$MOSAIC_ACCESS_TOKEN`
-placeholders and never include a revealed key. A grant that arrives through a group shows a
-notice instead, because credentials are issued for direct grants only.
+deployment, key header, accepted methods, Entra tenant, client ID, scope and audience, limits, and
+whether the grant is applied to APIM. When the connection has an `entraClientId`, a **Get a token
+(Python)** sample signs the person in with the model client using a device code. Without one, the
+panel asks them to get the client ID from an administrator. **Show primary key** and **Show
+secondary key** reveal one key for 60 seconds. The key is also hidden by **Hide key**, when the
+panel closes, and when the user navigates or leaves the page. The key is held only in component
+state, never in the query cache, browser storage, the URL, or logs. Code samples use
+`$MOSAIC_API_KEY` or `$MOSAIC_ACCESS_TOKEN` placeholders and never include a revealed key. A grant
+that arrives through a group shows a notice instead, because credentials are issued for direct
+grants only.
 
 ### Recovering an interrupted operation
 

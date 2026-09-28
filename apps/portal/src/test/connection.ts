@@ -66,6 +66,7 @@ export const groupResolved: ResolvedEntitlement = {
 export const endpoint = 'https://gateway.example.test/models/gpt-4o'
 export const chatUrl = `${endpoint}/openai/deployments/gpt-4o/chat/completions`
 export const responsesUrl = `${endpoint}/openai/responses`
+export const modelClientId = '99999999-8888-7777-6666-555555555555'
 
 export const connection: ModelConnection = {
   entitlementId: directGrant.id,
@@ -78,6 +79,7 @@ export const connection: ModelConnection = {
   appliedMethods: { keysEnabled: true, entraEnabled: true },
   entraAudience: '11111111-2222-3333-4444-555555555555',
   entraScope: 'api://11111111-2222-3333-4444-555555555555/Models.Invoke',
+  entraClientId: modelClientId,
   subscriptionHeader: 'Ocp-Apim-Subscription-Key',
   operations: [
     { name: 'chat-completions', method: 'POST', path: '/openai/deployments/gpt-4o/chat/completions' },
