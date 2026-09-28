@@ -19,6 +19,7 @@ in the portal, or from `GET /api/v1/me/entitlements/{id}/connection`:
 | `entraScope` | The scope to request, `api://<model-runtime-client-id>/Models.Invoke` |
 | `endpoint` and an `operations[].path` | Together, the URL you call |
 | `deploymentName` | The `model` value for routes that don't include a deployment in their path |
+| `apiShape` | The API the model speaks: `azureOpenAi`, `foundryModels` or `anthropicMessages` |
 | `subscriptionHeader` | The header name for your subscription key, if you also send one |
 
 When `entraClientId` is present, the portal's **Get a token (Python)** sample under **Connection
@@ -110,6 +111,29 @@ rejected. Both count against the same grant limits.
 
 For the responses route, and for AI Services routes without a deployment in their path, set the
 request body's `model` to `deploymentName`.
+
+### Claude models
+
+A Claude model's `apiShape` is `anthropicMessages`, and its only operation is
+`/anthropic/v1/messages`. Send an Anthropic Messages request body with `model` set to
+`deploymentName`. The route takes no `api-version`, and the gateway adds the `anthropic-version`
+header when a request omits it. With the Anthropic Python SDK (`python -m pip install anthropic`),
+pass the token as `auth_token`, which the SDK sends as a bearer token:
+
+```python
+import anthropic
+
+client = anthropic.Anthropic(base_url=f"{ENDPOINT.rstrip('/')}/anthropic", auth_token=token)
+message = client.messages.create(
+    model="<deploymentName>",
+    max_tokens=256,
+    messages=[{"role": "user", "content": "Hello"}],
+)
+print(message.content[0].text)
+```
+
+The gateway removes any `x-api-key` header, so a subscription key goes in the `subscriptionHeader`
+header, never in `api_key`.
 
 ## Troubleshooting
 

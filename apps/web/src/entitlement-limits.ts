@@ -144,13 +144,16 @@ export function describeLimits(
   if (sentences.length === 0) {
     sentences.push('No grant-specific limit is configured.')
   }
-  if (publicationLimits) {
+  if (publicationLimits !== undefined) {
     sentences.push(...describePublicationLimits(publicationLimits).map((limit) => `Publication: ${limit}`))
   }
   return sentences
 }
 
-export function describePublicationLimits(enforcement: TokenEnforcement): string[] {
+export function describePublicationLimits(enforcement: TokenEnforcement | null | undefined): string[] {
+  if (!enforcement) {
+    return ["Token limits are unavailable for this model on this gateway's tier."]
+  }
   if (!enforcement.tokensPerMinute && !enforcement.tokenQuota) {
     return ['No publication token limit is configured.']
   }

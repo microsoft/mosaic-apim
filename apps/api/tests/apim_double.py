@@ -93,10 +93,13 @@ class FakeApim:
         service_status: int = 200,
         permissions_status: int = 200,
         supports_mcp: bool = True,
+        sku_name: str | None = "Developer",
     ) -> None:
         self.permissions = READER_PERMISSIONS if permissions is None else permissions
         self.service_status = service_status
         self.permissions_status = permissions_status
+        # None omits the SKU entirely, as if ARM described the service without one.
+        self.sku_name = sku_name
         # Mirrors a service that has not been upgraded to the preview management contract. Such a
         # service rejects the version outright rather than returning an empty list.
         self.supports_mcp = supports_mcp
@@ -327,12 +330,13 @@ class FakeApim:
         service: dict[str, Any] = {
             "name": SERVICE_NAME,
             "location": "eastus2",
-            "sku": {"name": "Developer", "capacity": 1},
             "properties": {
                 "provisioningState": "Succeeded",
                 "gatewayUrl": f"https://{SERVICE_NAME}.azure-api.net",
             },
         }
+        if self.sku_name is not None:
+            service["sku"] = {"name": self.sku_name, "capacity": 1}
         if self.identity is not None:
             service["identity"] = self.identity
         return service

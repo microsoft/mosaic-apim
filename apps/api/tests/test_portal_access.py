@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 from mosaic_api.auth import AuthContext
 from mosaic_api.config import AuthMode, Environment, RepositoryBackend, Settings
 from mosaic_api.domain import (
+    ApiShape,
     AuditEvent,
     BindingSource,
     Entitlement,
@@ -388,6 +389,42 @@ async def test_connection_omits_the_model_client_when_none_is_configured(
     assert connection.entra_scope == f"api://{AUDIENCE}/Models.Invoke"
     assert connection.entra_client_id is None
     assert connection.model_dump(mode="json", by_alias=True)["entraClientId"] is None
+
+
+async def test_connection_describes_the_anthropic_messages_route(harness: Harness) -> None:
+    snapshot = harness.publication.applied_access
+    assert snapshot is not None
+    # A Claude publication on a classic tier: no publication-wide token limits to report.
+    await harness.save_publication(
+        provider=ModelProvider.AZURE_AI_FOUNDRY,
+        api_shape=ApiShape.ANTHROPIC_MESSAGES,
+        enforcement=None,
+        applied_access=snapshot.model_copy(update={"publication_enforcement": None}),
+    )
+
+    connection = await harness.service.connection(ACTOR, "grant")
+
+    assert connection.api_shape == ApiShape.ANTHROPIC_MESSAGES
+    # Governed access serves only the Messages route; count_tokens stays unpublished to callers.
+    assert [(item.name, item.method, item.path) for item in connection.operations] == [
+        ("messages", "POST", "/anthropic/v1/messages")
+    ]
+    assert connection.publication_limits is None
+    # The model client and scope don't depend on the route shape.
+    assert connection.entra_client_id == MODEL_CLIENT
+    body = connection.model_dump(by_alias=True, mode="json")
+    assert body["apiShape"] == "anthropicMessages"
+    assert body["publicationLimits"] is None
+    assert harness.reader.calls == 0
+
+
+async def test_connection_reports_the_shape_of_an_openai_publication(harness: Harness) -> None:
+    connection = await harness.service.connection(ACTOR, "grant")
+
+    assert connection.api_shape == ApiShape.AZURE_OPENAI
+    assert connection.operations
+    assert all(item.path.startswith("/openai/") for item in connection.operations)
+    assert connection.publication_limits is not None
 
 
 async def test_retained_write_lock_blocks_disclosure_even_with_applied_metadata(

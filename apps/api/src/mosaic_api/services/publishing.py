@@ -51,6 +51,7 @@ from mosaic_api.domain import (
     PublishRunStatus,
     PublishStepResult,
     PublishStepStatus,
+    TokenEnforcement,
     model_access_subscription_name,
     model_api_id,
     new_id,
@@ -61,12 +62,15 @@ from mosaic_api.errors import ConflictError, NotFoundError, ValidationError
 from mosaic_api.integrations.apim import ApimClient
 from mosaic_api.integrations.apim.model_apis import (
     CURATED_SHAPE_VERSION,
+    DeploymentFit,
     OperationSpec,
-    backend_url,
-    curated_operations,
+    assess_deployment,
+    backend_origin,
     default_names,
     display_name_for,
+    operations_for,
     suggested_names,
+    token_limits_note,
 )
 from mosaic_api.integrations.apim.writer import DEFAULT_SUBSCRIPTION_KEY_NAMES, ApimWriter
 from mosaic_api.integrations.policy import PublicationPolicy, render_publication_policy
@@ -129,7 +133,7 @@ class _Resource:
 
 
 def _desired_resources(publication: Publication) -> list[_Resource]:
-    operations = curated_operations(publication.provider, publication.deployment_name)
+    operations = operations_for(publication)
     resources = [
         _Resource(
             PublishedResourceKind.POLICY_FRAGMENT,
@@ -382,7 +386,19 @@ class PublishingService:
                 "publish from them yet.",
                 details={"modelEndpointId": endpoint.id, "provider": str(endpoint.provider)},
             )
-        await self._require_known_deployment(actor, endpoint, request.deployment_name)
+        deployment = await self._require_known_deployment(
+            actor, endpoint, request.deployment_name
+        )
+        fit = self._fit(endpoint, deployment, gateway)
+        if not fit.publishable:
+            raise ValidationError(
+                fit.unpublishable_reason or "MOSAIC can't publish this deployment yet.",
+                details={
+                    "deploymentName": request.deployment_name,
+                    "capability": str(fit.capability),
+                },
+            )
+        self._require_enforcement_fit(request.enforcement, fit.token_limits_note)
 
         names = default_names(endpoint.name, request.deployment_name)
         target = publication_id(
@@ -422,15 +438,44 @@ class PublishingService:
             enforcement=request.enforcement,
             governed_access=request.governed_access,
             shape_version=CURATED_SHAPE_VERSION,
+            api_shape=fit.api_shape,
             created_at=existing.created_at if existing else utc_now(),
         )
         return await self._repository.save_publication(
             publication, self._audit(actor, "publication.created", publication.id)
         )
 
+    @staticmethod
+    def _fit(
+        endpoint: ModelEndpoint, deployment: ObservedModelDeployment, gateway: Gateway
+    ) -> DeploymentFit:
+        return assess_deployment(
+            endpoint.provider,
+            model_name=deployment.model_name,
+            model_format=deployment.model_format,
+            capabilities=deployment.capabilities,
+            endpoint=str(endpoint.endpoint),
+            gateway_sku=gateway.capabilities.sku_name,
+        )
+
+    @staticmethod
+    def _require_enforcement_fit(
+        enforcement: TokenEnforcement | None, unsupported_note: str | None
+    ) -> None:
+        """Token enforcement is required exactly when the gateway can apply it.
+
+        Silently dropping limits an administrator asked for would be worse than refusing them, and
+        a publication that could be metered but isn't would be ungoverned by accident.
+        """
+
+        if unsupported_note is not None and enforcement is not None:
+            raise ValidationError(unsupported_note)
+        if unsupported_note is None and enforcement is None:
+            raise ValidationError("Token enforcement is required for this publication.")
+
     async def _require_known_deployment(
         self, actor: Actor, endpoint: ModelEndpoint, deployment_name: str
-    ) -> None:
+    ) -> ObservedModelDeployment:
         deployments = await self._endpoints.list_observed_for_endpoint(
             ObservedModelDeployment,
             actor.tenant_id,
@@ -442,7 +487,10 @@ class PublishingService:
                 "MOSAIC has not read the deployments on this endpoint yet. Sync it first.",
                 details={"modelEndpointId": endpoint.id},
             )
-        if not any(item.deployment_name == deployment_name for item in deployments):
+        match = next(
+            (item for item in deployments if item.deployment_name == deployment_name), None
+        )
+        if match is None:
             raise ValidationError(
                 "MOSAIC has not observed that deployment on this endpoint.",
                 details={
@@ -451,6 +499,7 @@ class PublishingService:
                     "observed": sorted(item.deployment_name for item in deployments),
                 },
             )
+        return match
 
     async def update(
         self, actor: Actor, target_id: str, request: PublicationUpdate
@@ -476,6 +525,11 @@ class PublishingService:
         changes = {key: value for key, value in changes.items() if value is not None}
         if not changes:
             return publication
+        if request.enforcement is not None:
+            gateway = await self._load_gateway(actor, publication.gateway_id)
+            note = token_limits_note(publication.api_shape, gateway.capabilities.sku_name)
+            if note is not None:
+                raise ValidationError(note)
         settings = request.governed_access or publication.governed_access
         if settings:
             changes["subscription_required"] = not settings.entra_enabled
@@ -557,9 +611,7 @@ class PublishingService:
             "path": publication.api_path,
             "protocols": ["https"],
             "subscription_required": publication.subscription_required,
-            "operation_count": len(
-                curated_operations(publication.provider, publication.deployment_name)
-            ),
+            "operation_count": len(operations_for(publication)),
             "product_names": sorted(
                 set(existing.product_names if existing else []) | {publication.product_name}
             ),
@@ -592,7 +644,7 @@ class PublishingService:
         return saved
 
     async def publishable_models(self, actor: Actor, gateway_id: str) -> list[PublishableModel]:
-        await self._load_gateway(actor, gateway_id)
+        gateway = await self._load_gateway(actor, gateway_id)
         endpoints = await self._endpoints.list_endpoints(actor.tenant_id)
         publications = {
             item.model_endpoint_id + "|" + item.deployment_name: item
@@ -616,6 +668,7 @@ class PublishingService:
             for deployment in deployments:
                 existing = publications.get(f"{endpoint.id}|{deployment.deployment_name}")
                 api_name, api_path = suggested_names(endpoint.name, deployment.deployment_name)
+                fit = self._fit(endpoint, deployment, gateway)
                 candidates.append(
                     PublishableModel(
                         model_endpoint_id=endpoint.id,
@@ -624,6 +677,14 @@ class PublishingService:
                         deployment_name=deployment.deployment_name,
                         model_name=deployment.model_name,
                         model_version=deployment.model_version,
+                        model_format=deployment.model_format,
+                        model_publisher=deployment.model_publisher,
+                        capability=fit.capability,
+                        api_shape=fit.api_shape,
+                        publishable=fit.publishable,
+                        unpublishable_reason=fit.unpublishable_reason,
+                        token_limits_supported=fit.token_limits_supported,
+                        token_limits_note=fit.token_limits_note,
                         publication_id=existing.id if existing else None,
                         publication_status=existing.status if existing else None,
                         suggested_api_name=api_name,
@@ -646,7 +707,11 @@ class PublishingService:
         self._require_writable(gateway)
         endpoint = await self._load_endpoint(actor, publication.model_endpoint_id)
 
-        origin = backend_url(str(endpoint.endpoint))
+        self._require_enforcement_fit(
+            publication.enforcement,
+            token_limits_note(publication.api_shape, gateway.capabilities.sku_name),
+        )
+        origin = backend_origin(publication.api_shape, str(endpoint.endpoint))
         snapshot, access_warnings = await self._access_snapshot(publication, gateway)
         policy = self._policy(publication, snapshot)
         resource = ApimResourceId.parse(gateway.azure_resource_id)
@@ -784,6 +849,19 @@ class PublishingService:
                     warnings.append(
                         f"Grant {entitlement.id} is not a supported direct model grant and will "
                         "not be enforced by this apply."
+                    )
+                    continue
+                if (
+                    publication.enforcement is None
+                    and entitlement.enforcement is not None
+                    and entitlement.enforcement.tokens is not None
+                ):
+                    # Granting access without the token limits an administrator set would widen
+                    # it, so the grant stays out until its limits fit what the gateway can apply.
+                    warnings.append(
+                        f"Grant {entitlement.id} sets token limits, which this gateway can't "
+                        "apply to this publication; it is excluded from runtime access. Remove "
+                        "its token limits and use call limits instead."
                     )
                     continue
                 principal = await self._directory.get_principal(
@@ -1030,11 +1108,18 @@ class PublishingService:
                     "endpoint, so published requests may be rejected by the model."
                 )
             )
-        if not publication.subscription_required and publication.governed_access is None:
+        if (
+            not publication.subscription_required
+            and publication.governed_access is None
+            and publication.enforcement is not None
+        ):
             warnings.append(
                 "This API does not require a subscription, so the token limit counts every "
                 "caller together rather than per subscription."
             )
+        note = token_limits_note(publication.api_shape, gateway.capabilities.sku_name)
+        if note is not None and publication.enforcement is None:
+            warnings.append(note)
         if publication.shape_version != CURATED_SHAPE_VERSION:
             warnings.append(
                 f"This publication was authored against operation shape "
@@ -1152,7 +1237,7 @@ class PublishingService:
         if plan is None or plan.publication_id != publication.id:
             raise NotFoundError("Publish plan was not found", details={"id": resolved})
 
-        origin = backend_url(str(endpoint.endpoint))
+        origin = backend_origin(publication.api_shape, str(endpoint.endpoint))
         snapshot, _ = await self._access_snapshot(publication, gateway)
         policy = self._policy(publication, snapshot)
         if publication_digest(publication, policy, origin, snapshot) != plan.digest:

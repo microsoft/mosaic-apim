@@ -490,10 +490,11 @@ def _set_header(element: ET.Element) -> PolicyFacet:
         else []
     )
     verb = "Removes" if action == "delete" else "Sets"
+    condition = " when the request doesn't already carry it" if action == "skip" else ""
     return PolicyFacet(
         kind=PolicyFacetKind.TRANSFORMATION,
         element=element.tag,
-        summary=f"{verb} the {name} request header.",
+        summary=f"{verb} the {name} request header{condition}.",
         details=detail,
         attributes={"name": name, "exists-action": action},
     )

@@ -23,7 +23,7 @@ from mosaic_api.domain import (
 )
 from mosaic_api.errors import ConflictError, DomainError, NotFoundError
 from mosaic_api.integrations.access_policy import governed_operations
-from mosaic_api.integrations.apim.model_apis import curated_operations
+from mosaic_api.integrations.apim.model_apis import operations_for
 from mosaic_api.repositories import (
     DirectoryRepository,
     EntitlementRepository,
@@ -161,7 +161,7 @@ class PortalAccessService:
         operations = (
             governed_operations(publication)
             if publication.governed_access is not None or snapshot is not None
-            else curated_operations(publication.provider, publication.deployment_name)
+            else operations_for(publication)
         )
         return ModelConnection(
             entitlement_id=entitlement_id,
@@ -175,6 +175,7 @@ class PortalAccessService:
             entra_audience=audience,
             entra_scope=f"api://{audience}/{scope_suffix}" if audience else None,
             entra_client_id=client_id,
+            api_shape=publication.api_shape,
             operations=[
                 ConnectionOperation(
                     name=operation.name, method=operation.method, path=operation.url_template

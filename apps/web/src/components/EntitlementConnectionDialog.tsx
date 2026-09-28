@@ -207,6 +207,16 @@ function ConnectionSession({
                     {operation.method} {operation.path} · {operation.name}
                   </Text>
                 ))}
+                {info.apiShape === 'anthropicMessages' && (
+                  <MessageBar intent="info">
+                    <MessageBarBody>
+                      This model uses the Anthropic Messages API. Set the request&apos;s model to{' '}
+                      {info.deploymentName}. The gateway adds anthropic-version when a request omits it.
+                      With an Anthropic SDK, use {info.endpoint}/anthropic as the base URL and send the
+                      key in the {info.subscriptionHeader} header; the gateway removes x-api-key.
+                    </MessageBarBody>
+                  </MessageBar>
+                )}
                 <Text weight="semibold">Last recorded limits</Text>
                 {describeLimits({ enforcement: info.grantLimits }, info.publicationLimits).map((limit) => <Text key={limit}>{limit}</Text>)}
                 <Text>Use one enabled credential. Examples contain placeholders, never your actual key:</Text>

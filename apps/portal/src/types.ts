@@ -125,6 +125,9 @@ export interface ConnectionOperation {
   path: string
 }
 
+/** The API a published model speaks. Claude models use the Anthropic Messages API (ADR 0012). */
+export type ApiShape = 'azureOpenAi' | 'foundryModels' | 'anthropicMessages'
+
 export interface ModelConnection {
   entitlementId: string
   publicationId: string
@@ -143,8 +146,11 @@ export interface ModelConnection {
    */
   entraClientId?: string | null
   subscriptionHeader: string
+  /** Older APIs omit it. */
+  apiShape?: ApiShape | null
   operations: ConnectionOperation[]
-  publicationLimits: TokenEnforcement
+  /** Null when the gateway's tier can't apply token limits to this model's API. */
+  publicationLimits: TokenEnforcement | null
   grantLimits?: EntitlementEnforcement | null
 }
 

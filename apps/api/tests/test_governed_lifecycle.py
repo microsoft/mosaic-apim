@@ -90,8 +90,13 @@ async def no_sleep(_seconds: float) -> None:
     return None
 
 
+PUBLICATION_ENFORCEMENT = TokenEnforcement(
+    counter_key_expression="@(context.Subscription.Id)", tokens_per_minute=10000
+)
+
+
 class Harness:
-    def __init__(self) -> None:
+    def __init__(self, cognitive: FakeCognitiveServices | None = None) -> None:
         self.apim = AccessApim()
         self.gateways = InMemoryGatewayRepository()
         self.directory = InMemoryDirectoryRepository()
@@ -99,7 +104,7 @@ class Harness:
         self.endpoints = InMemoryModelEndpointRepository()
         self.gateway_service = build_gateway_service(self.apim, self.gateways)
         self.endpoint_service = build_endpoint_service(
-            FakeCognitiveServices(),
+            cognitive or FakeCognitiveServices(),
             repository=self.endpoints,
             gateway_repository=self.gateways,
         )
@@ -134,7 +139,12 @@ class Harness:
             model_runtime_client_id=AUDIENCE,
         )
 
-    async def setup(self) -> None:
+    async def setup(
+        self,
+        *,
+        deployment: str = "gpt-4o-prod",
+        enforcement: TokenEnforcement | None = PUBLICATION_ENFORCEMENT,
+    ) -> None:
         gateway = await self.gateway_service.register(
             ACTOR, GatewayCreate(azure_resource_id=RESOURCE_ID)
         )
@@ -151,10 +161,8 @@ class Harness:
             PublicationCreate(
                 gateway_id=gateway.id,
                 model_endpoint_id=endpoint.id,
-                deployment_name="gpt-4o-prod",
-                enforcement=TokenEnforcement(
-                    counter_key_expression="@(context.Subscription.Id)", tokens_per_minute=10000
-                ),
+                deployment_name=deployment,
+                enforcement=enforcement,
             ),
         )
         self.publication_id = publication.id
@@ -857,3 +865,72 @@ async def test_opt_in_reviews_legacy_counter_mapping_without_rewriting_saved_int
     assert stored and stored.enforcement and stored.enforcement.requests
     assert stored.enforcement.requests.counter_key_expression == legacy_counter
     assert await harness.service.get_lock_owner(ACTOR, harness.publication_id) is None
+
+
+async def test_governed_claude_on_a_classic_tier_keeps_call_limits_and_drops_token_grants() -> None:
+    cognitive = FakeCognitiveServices(kind="AIServices")
+    cognitive.deployments = [
+        {
+            "name": "claude-sonnet-4-5",
+            "sku": {"name": "GlobalStandard", "capacity": 1},
+            "properties": {
+                "model": {"format": "Anthropic", "name": "claude-sonnet-4-5", "version": "1"},
+                "provisioningState": "Succeeded",
+                "capabilities": {"chatCompletion": "true"},
+            },
+        }
+    ]
+    harness = Harness(cognitive)
+    try:
+        # The APIM double reports the Developer tier, where Anthropic can't be token-metered.
+        await harness.setup(deployment="claude-sonnet-4-5", enforcement=None)
+        token_limited = await harness.grant()
+        await harness.grants.update_entitlement(
+            ACTOR,
+            token_limited.id,
+            EntitlementUpdate(
+                enforcement=EntitlementEnforcement(
+                    tokens=TokenEnforcement(
+                        counter_key_expression="@(context.Subscription.Id)",
+                        tokens_per_minute=100,
+                    )
+                )
+            ),
+        )
+        call_limited = await harness.grant(APPLICATION, application=True)
+        await harness.grants.update_entitlement(
+            ACTOR,
+            call_limited.id,
+            EntitlementUpdate(
+                enforcement=EntitlementEnforcement(
+                    requests=RequestEnforcement(
+                        counter_key_expression="@(context.Subscription.Id)",
+                        calls=10,
+                        renewal_period_seconds=60,
+                    )
+                )
+            ),
+        )
+        await harness.govern()
+
+        plan = await harness.service.plan(ACTOR, harness.publication_id)
+
+        assert plan.access_snapshot
+        assert plan.access_snapshot.publication_enforcement is None
+        assert [grant.entitlement_id for grant in plan.access_snapshot.grants] == [
+            call_limited.id
+        ]
+        assert any(
+            token_limited.id in warning and "call limits" in warning for warning in plan.warnings
+        )
+        assert (await harness.apply()).status == PublishRunStatus.SUCCEEDED
+        publication = await harness.service.get_publication(ACTOR, harness.publication_id)
+        fragment = harness.apim.written[f"policyFragments/{publication.fragment_name}"][
+            "properties"
+        ]["value"]
+        assert "rate-limit-by-key" in fragment
+        assert "llm-token-limit" not in fragment
+        assert "llm-emit-token-metric" not in fragment
+        assert 'resource="https://ai.azure.com"' in fragment
+    finally:
+        await harness.close()

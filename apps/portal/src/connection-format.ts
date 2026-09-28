@@ -229,18 +229,21 @@ export function keyRevealProblem(error: unknown): Problem {
   }
 }
 
-type SampleOperationKind = 'chat' | 'responses'
+export type SampleOperationKind = 'chat' | 'responses' | 'messages'
 
 function sampleKind(operation: ConnectionOperation): SampleOperationKind | null {
   if (operation.method.toUpperCase() !== 'POST') return null
   const path = operation.path.replace(/\/+$/, '').toLowerCase()
   if (path.endsWith('/chat/completions')) return 'chat'
   if (path.endsWith('/responses')) return 'responses'
+  if (path.endsWith('/anthropic/v1/messages')) return 'messages'
   return null
 }
 
 export interface ConnectionSamples {
   credential: 'key' | 'token'
+  /** `messages` is the Anthropic Messages API, which takes no `api-version`. */
+  kind: SampleOperationKind
   operation: ConnectionOperation
   curl: string
   python: string
@@ -260,6 +263,14 @@ function shellSingleQuoted(text: string) {
   return `'${text.replaceAll("'", `'\\''`)}'`
 }
 
+/** The request body's fields in order, written once for both the curl and Python samples. */
+function sampleFields(kind: SampleOperationKind, model: string) {
+  const messages = '"messages": [{"role": "user", "content": "Hello"}]'
+  if (kind === 'responses') return [`"model": ${model}`, '"input": "Hello"']
+  if (kind === 'messages') return [`"model": ${model}`, '"max_tokens": 256', messages]
+  return [`"model": ${model}`, messages]
+}
+
 export function buildSamples(connection: SampleInput): ConnectionSamples | null {
   const methods = connection.appliedMethods
   const credential = methods?.keysEnabled ? 'key' : methods?.entraEnabled ? 'token' : null
@@ -273,16 +284,12 @@ export function buildSamples(connection: SampleInput): ConnectionSamples | null 
   if (!chosen) return null
 
   const url = operationUrl(connection.endpoint, chosen.operation.path)
-  const separator = url.includes('?') ? '&' : '?'
-  const model = JSON.stringify(connection.deploymentName)
-  const jsonBody =
-    chosen.kind === 'chat'
-      ? `{"model": ${model}, "messages": [{"role": "user", "content": "Hello"}]}`
-      : `{"model": ${model}, "input": "Hello"}`
-  const pythonBody =
-    chosen.kind === 'chat'
-      ? [`        "model": ${model},`, '        "messages": [{"role": "user", "content": "Hello"}],']
-      : [`        "model": ${model},`, '        "input": "Hello",']
+  // The Anthropic Messages API takes no api-version; the gateway adds anthropic-version.
+  const needsApiVersion = chosen.kind !== 'messages'
+  const query = needsApiVersion ? `${url.includes('?') ? '&' : '?'}api-version=$MOSAIC_API_VERSION` : ''
+  const fields = sampleFields(chosen.kind, JSON.stringify(connection.deploymentName))
+  const jsonBody = `{${fields.join(', ')}}`
+  const pythonBody = fields.map((field) => `        ${field},`)
   const header = connection.subscriptionHeader
   const curlCredential =
     credential === 'key'
@@ -294,7 +301,7 @@ export function buildSamples(connection: SampleInput): ConnectionSamples | null 
       : '{"Authorization": "Bearer " + os.environ["MOSAIC_ACCESS_TOKEN"]}'
 
   const curl = [
-    `curl "${shellDoubleQuoted(url)}${separator}api-version=$MOSAIC_API_VERSION" \\`,
+    `curl "${shellDoubleQuoted(url)}${query}" \\`,
     `  -H "${curlCredential}" \\`,
     '  -H "Content-Type: application/json" \\',
     `  -d ${shellSingleQuoted(jsonBody)}`,
@@ -307,7 +314,7 @@ export function buildSamples(connection: SampleInput): ConnectionSamples | null 
     '',
     'response = requests.post(',
     `    ${JSON.stringify(url)},`,
-    '    params={"api-version": os.environ["MOSAIC_API_VERSION"]},',
+    ...(needsApiVersion ? ['    params={"api-version": os.environ["MOSAIC_API_VERSION"]},'] : []),
     `    headers=${pythonCredential},`,
     '    json={',
     ...pythonBody,
@@ -318,7 +325,7 @@ export function buildSamples(connection: SampleInput): ConnectionSamples | null 
     'print(response.json())',
   ].join('\n')
 
-  return { credential, operation: chosen.operation, curl, python }
+  return { credential, kind: chosen.kind, operation: chosen.operation, curl, python }
 }
 
 /** Non-secret sign-in identifiers only; a token sample never sees a key either. */

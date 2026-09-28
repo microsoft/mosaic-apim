@@ -6,6 +6,9 @@
 entitlements and supersedes this record's "never calls listSecrets" product policy with
 authorized, audited, on-demand key reveal. The historical tradeoffs below describe the initial
 publishing release; legacy publications retain their behavior until explicitly opted in.
+[ADR 0012](0012-format-aware-model-publishing.md) chooses the curated operation set from each
+deployment's format and capability instead of from its provider alone. It adds an Anthropic
+Messages shape for Claude on Foundry and lists deployments no shape can serve as not publishable.
 
 ## Context
 
