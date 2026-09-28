@@ -80,8 +80,8 @@ tests and README or ADR updates wherever a decision changes.
 | --- | --- | --- | --- |
 | Entra fix | `main` reused one value for the runtime app role and the delegated scope. Entra rejects that, so a fresh `azd up` can't bootstrap the runtime registration | Give the application role and the delegated scope distinct values ([#15](https://github.com/microsoft/mosaic-apim/pull/15)) | ✅ merged |
 | G1 | The console has no control to switch a gateway into `manage` mode, which publishing requires | Add a "Management mode" control with an explicit confirmation ([#18](https://github.com/microsoft/mosaic-apim/pull/18)) | ✅ merged |
-| G2 | Approving an access request creates no grant, even though the banner says it saved grant intent | Approve opens a short dialog with limits prefilled; the server creates and links the grant intent in one step | 🔄 |
-| G3 | The portal can't show connection details or reveal keys, so an end user can't get a credential | Add portal connection details and masked, transient key reveal | 🔄 |
+| G2 | Approving an access request creates no grant, even though the banner says it saved grant intent | Approve opens a short dialog with limits prefilled; the server creates and links the grant intent in one step ([#20](https://github.com/microsoft/mosaic-apim/pull/20)) | ⏳ review |
+| G3 | The portal can't show connection details or reveal keys, so an end user can't get a credential | Add portal connection details and masked, transient key reveal ([#21](https://github.com/microsoft/mosaic-apim/pull/21)) | ⏳ review |
 | G4 | No client registration lets an end user get a `Models.Invoke` token | Optional public client registration with a tenant-wide grant for `Models.Invoke`, and its client ID in connection details. Builds on the Entra fix ([#19](https://github.com/microsoft/mosaic-apim/pull/19)) | ✅ merged |
 | G5 | Anthropic deployments get the chat-completions API shape, but Claude needs the Messages API. `llm-token-limit` supports Anthropic only on APIM v2 tiers | Publish Anthropic with the Messages shape, and decide how to limit tokens on classic tiers | 🔄 |
 | G6 | Only if Grok or Llama fail on `/models/chat/completions` through APIM | Add OpenAI v1 routes | ⬜ conditional |
@@ -156,11 +156,23 @@ Progress, before any role was granted:
 
 ### Phase 4: Close product gaps ⏳ review and merge
 
-- Every gap PR is reviewed and merged. The Entra fix, G1, G4 and G7 are on `main`; G2, G3, G5
-  and G8 are in progress.
+- Every gap PR is reviewed and merged. The Entra fix, G1, G4 and G7 are on `main`. G2
+  ([#20](https://github.com/microsoft/mosaic-apim/pull/20)) and G3
+  ([#21](https://github.com/microsoft/mosaic-apim/pull/21)) are in review, and G5 and G8 are in
+  progress.
 - Merge `main` into the e2e branch and rebuild the azd environment from live values. Run
   `azd provision --preview`, and after approval run `azd up`, because G4 changes the Entra hook.
   Then re-run the smoke specs.
+  - The preview is safe to run: azd skips project hooks under `--preview`. That also means it
+    can't show the Entra changes the hooks make, such as creating G4's model client and its
+    tenant-wide grant. Those are listed separately for approval.
+  - The template resets each web app to a placeholder image, and `azd deploy` then pushes the
+    real one. Always redeploy with `azd up`. Running `azd provision` on its own leaves the apps
+    on placeholders.
+  - What-if can't see app settings. Before approving, check that every live app setting name is
+    still in the template, because provisioning replaces the whole list.
+  - ✅ Done so far: the environment is rebuilt, and a preview plus a full what-if against `main`
+    show no creates or deletes. Waiting for approval and the remaining gap PRs.
 - **Exit:** the deployed build contains G1 to G5, G7 and G8, and the smoke specs pass.
 
 ### Phase 5: Live, admin publishes (A7 to A9) ⬜
