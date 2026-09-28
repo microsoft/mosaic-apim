@@ -183,6 +183,12 @@ npm run lint
 npm run test
 npm run build
 
+Set-Location ..\..\e2e
+npm run test:unit
+npm run typecheck
+npm run lint
+Set-Location ..
+
 az bicep build --file infra\main.bicep
 python -m unittest scripts.tests.test_mosaic_entra
 ```
@@ -638,6 +644,17 @@ propagate each change before checking both paths. Verify rotation by changing a 
 key directly in APIM and revealing it again: no MOSAIC synchronization should be needed. Do not
 report these live scenarios as passed when deployment, consent, credentials, or a test gateway
 are unavailable.
+
+### End-to-end UI testing
+
+[`e2e/`](e2e) holds a live, human-in-the-loop Playwright harness. People sign in their own test
+accounts, and the harness drives the web console and portal to:
+
+- Import Azure OpenAI and Foundry endpoints, publish their models, and grant them.
+- Check that each end user or workload can call its model, and that others are denied.
+
+The [roadmap](docs/e2e/roadmap.md) tracks the phases and the journey matrix. The
+[runbook](docs/e2e/runbook.md) covers setup, personas, flags and secret hygiene.
 
 ## Reconciliation boundary
 

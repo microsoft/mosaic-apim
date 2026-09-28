@@ -1,0 +1,77 @@
+{
+  "environment": "mosaic-dev",
+  "tenantId": "00000000-0000-0000-0000-000000000000",
+  "origins": {
+    "web": "https://mosaic-dev-web-example.azurewebsites.net",
+    "portal": "https://mosaic-dev-portal-example.azurewebsites.net",
+    "api": "https://mosaic-dev-api-example.azurewebsites.net",
+    "gateway": "https://apim-mosaic-dev-example.azure-api.net"
+  },
+  "roles": {
+    "admin": "admin",
+    "user": "user-a",
+    "guest": "guest",
+    "noRole": "user-b",
+    "outsider": "outsider"
+  },
+  "personas": {
+    "admin": {
+      "upn": "admin@contoso.example",
+      "expectedRole": "Admin",
+      "description": "Holds the MOSAIC Admin role; drives every console journey."
+    },
+    "user-a": {
+      "upn": "user-a@contoso.example",
+      "expectedRole": "User",
+      "description": "Member user who is granted a model and calls it."
+    },
+    "user-b": {
+      "upn": "user-b@contoso.example",
+      "expectedRole": "None",
+      "description": "Starts without a MOSAIC role to prove the portal withholds data, then requests access."
+    },
+    "guest": {
+      "upn": "guest@fabrikam.example",
+      "expectedRole": "User",
+      "guest": true,
+      "description": "B2B guest with the MOSAIC User role."
+    },
+    "outsider": {
+      "upn": "outsider@contoso.example",
+      "expectedRole": "None",
+      "description": "Never granted anything; every runtime call must be denied."
+    }
+  },
+  "workload": {
+    "displayName": "mosaic-dev-e2e-workload"
+  },
+  "endpoints": {
+    "aoai-east": {
+      "kind": "azure-openai",
+      "resourceId": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-aoai/providers/Microsoft.CognitiveServices/accounts/aoai-east",
+      "registerVia": "paste",
+      "publish": ["gpt-4.1-mini", "gpt-4o"]
+    },
+    "aoai-west": {
+      "kind": "azure-openai",
+      "resourceId": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-aoai/providers/Microsoft.CognitiveServices/accounts/aoai-west",
+      "registerVia": "suggestion",
+      "publish": ["o4-mini"]
+    },
+    "foundry-partners": {
+      "kind": "foundry",
+      "resourceId": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-foundry/providers/Microsoft.CognitiveServices/accounts/foundry-partners",
+      "projectResourceId": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-foundry/providers/Microsoft.CognitiveServices/accounts/foundry-partners/projects/partners",
+      "registerVia": "suggestion",
+      "publish": ["grok-4.3", "Llama-3.3-70B-Instruct", "claude-haiku-4-5"],
+      "notes": "Multi-provider target: xAI, Meta, and Anthropic deployments on one Foundry resource."
+    }
+  },
+  "negatives": {
+    "aoai-private": {
+      "kind": "azure-openai",
+      "resourceId": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-private/providers/Microsoft.CognitiveServices/accounts/aoai-private",
+      "reason": "Public network access is disabled, so the gateway cannot reach it."
+    }
+  }
+}
