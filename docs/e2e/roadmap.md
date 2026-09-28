@@ -81,6 +81,7 @@ tests and README or ADR updates wherever a decision changes.
 | G4 | No client registration lets an end user get a `Models.Invoke` token | Optional public client registration with consent, and its client ID in connection details. Stacked on the Entra fix | 🔄 |
 | G5 | Anthropic deployments get the chat-completions API shape, but Claude needs the Messages API. `llm-token-limit` supports Anthropic only on APIM v2 tiers | Publish Anthropic with the Messages shape, and decide how to limit tokens on classic tiers | 🔄 |
 | G6 | Only if Grok or Llama fail on `/models/chat/completions` through APIM | Add OpenAI v1 routes | ⬜ conditional |
+| G7 | When MOSAIC's identity can see no subscriptions, discovery shows nothing at all: no suggestions, no unreadable subscriptions and no hint. Found live in Phase 3 | Say how many subscriptions were scanned, and when it's none, show the Reader command for the subscriptions MOSAIC already knows about | 🔄 |
 
 ## Phases
 
@@ -114,7 +115,7 @@ Each batch runs only after approval and is recorded in the change ledger.
   remediation commands the UI shows.
 - **Exit:** the ledger lists every change and its rollback command.
 
-### Phase 3: Live, admin imports endpoints (A2 to A6) ⬜
+### Phase 3: Live, admin imports endpoints (A2 to A6) 🔄 first half done; remediation ⏳ approval
 
 - Paste AOAI A before MOSAIC can read anything. Record "cannot read" and the exact remediation
   command, run it, and check again. Then run the subscription-scope remediation so discovery
@@ -126,13 +127,27 @@ Each batch runs only after approval and is recorded in the change ledger.
   "cannot invoke".
 - **Exit:** every target is registered, readable and invocable, except the negative case.
 
+Progress, before any role was granted:
+
+- ✅ AOAI A and the Foundry project registered by pasting their resource IDs. Both show
+  **Access needed**, no models, and a disabled **Sync models**.
+- ✅ A4, first half: the endpoint shows "MOSAIC cannot read this endpoint" with a resource-scoped
+  Reader command for MOSAIC's managed identity.
+- ✅ A6, first half: after the gateway's **Check access**, the gateway card explains that MOSAIC
+  can't read role assignments on the endpoint, says this is not a denial, and gives a command that
+  grants the APIM identity an invoke role.
+- ✅ A3, duplicates: registering the same ID again, even in lowercase, is rejected with "This
+  Azure AI resource is already registered with MOSAIC".
+- ⚠️ A2: with no role anywhere, discovery showed nothing at all (G7).
+- ⏳ Next: apply the remediation commands, then run A4 and A6 again, followed by A5 and A2.
+
 ### Phase 4: Close product gaps ⏳ review and merge
 
 - Every gap PR is reviewed and merged. G4 merges after the Entra fix.
 - Merge `main` into the e2e branch and rebuild the azd environment from live values. Run
   `azd provision --preview`, and after approval run `azd up`, because G4 changes the Entra hook.
   Then re-run the smoke specs.
-- **Exit:** the deployed build contains G1 to G5, and the smoke specs pass.
+- **Exit:** the deployed build contains G1 to G5 and G7, and the smoke specs pass.
 
 ### Phase 5: Live, admin publishes (A7 to A9) ⬜
 
@@ -241,6 +256,17 @@ runtime journeys.
 | R6 | The tokens-per-minute limit returns 429 with `Retry-After` | 8 |
 | R7 | After revocation propagates, calls fail | 8 |
 | R8 | Calls show up in Application Insights and Log Analytics (optional) | 8 |
+
+## Findings from live runs
+
+These are smaller than the gaps above. They're recorded so they can be confirmed, or fixed, once
+the journeys that exercise them have run.
+
+| ID | Observation | Next step |
+| --- | --- | --- |
+| O1 | Before MOSAIC can read an account, it records a placeholder endpoint (`https://<account>.cognitiveservices.azure.com`) and the provider "Azure AI Foundry", even for an Azure OpenAI account. The UI shows these as fact | After Reader is granted, confirm that **Check access** corrects the provider and endpoint. If it does, label the values as unconfirmed until the first successful read |
+| O2 | A rejected duplicate registration appears under the generic title "Unable to load data" | Use a title that fits a failed registration |
+| O3 | Before the account kind is known, the gateway card suggests the broad **Cognitive Services User** role | Once MOSAIC can read the account, check whether the suggestion narrows to the OpenAI-specific role |
 
 ## Risks
 
