@@ -47,6 +47,7 @@ import type {
   PublishPlan,
   PublicationStatus,
   PublishRun,
+  SubscriptionScanStatus,
   SuggestionSource,
 } from '../types'
 import styles from './ModelsPage.module.css'
@@ -77,6 +78,12 @@ const sourceLabels: Record<SuggestionSource, string> = {
   bootstrap: 'Deployed with MOSAIC',
   gatewayBackend: 'Used by a gateway',
   subscriptionScan: 'Found in a subscription',
+}
+
+// A scan with nothing to read is explained. One that was never configured has nothing to say.
+const scanVisibilityTitles: Partial<Record<SubscriptionScanStatus, string>> = {
+  noVisibleSubscriptions: "MOSAIC can't see any subscriptions",
+  listFailed: "MOSAIC couldn't list subscriptions",
 }
 
 
@@ -641,6 +648,15 @@ function ModelEndpoints() {
     (item) => !item.alreadyRegistered,
   )
   const scanIssues = suggestions.data?.scanIssues ?? []
+  const scanStatus = suggestions.data?.scanStatus
+  const scanRemediation = suggestions.data?.scanRemediation ?? []
+  const scanVisibilityTitle = scanStatus ? scanVisibilityTitles[scanStatus] : undefined
+  const subscriptionsScanned = suggestions.data?.subscriptionsScanned ?? 0
+  // A count of zero would only restate the subscriptions listed as unscannable below.
+  const scanSummary =
+    scanStatus === 'scanned' && subscriptionsScanned > 0
+      ? `Scanned ${subscriptionsScanned} subscription${subscriptionsScanned === 1 ? '' : 's'}.`
+      : null
 
   // The shell's "Add model endpoint" action lands here with ?register=1, so the button opens the
   // real registration form rather than dropping the administrator on the page with no next step.
@@ -783,9 +799,14 @@ function ModelEndpoints() {
         )}
       </Card>
 
-      {pending.length > 0 && (
+      {(pending.length > 0 || scanSummary) && (
         <Card className={styles.panel}>
           <Title3 as="h2">Endpoints MOSAIC found</Title3>
+          {scanSummary && (
+            <Text size={200} className={styles.muted}>
+              {pending.length > 0 ? scanSummary : `${scanSummary} Nothing new to register.`}
+            </Text>
+          )}
           {pending.map((item) => (
             <div
               key={item.azureResourceId ?? item.endpoint ?? item.reason}
@@ -831,6 +852,24 @@ function ModelEndpoints() {
               </Text>
               {issue.remediation && <CommandBlock command={issue.remediation.command} />}
             </div>
+          ))}
+        </Card>
+      )}
+
+      {scanVisibilityTitle && (
+        <Card className={styles.panel}>
+          <Title3 as="h2">{scanVisibilityTitle}</Title3>
+          {scanStatus === 'listFailed' && suggestions.data?.scanMessage && (
+            <Text size={200} className={styles.muted}>
+              {suggestions.data.scanMessage}
+            </Text>
+          )}
+          <Text>
+            Endpoints can still be registered by pasting a resource ID, and granting{' '}
+            <strong>Reader</strong> at subscription scope lets MOSAIC suggest them.
+          </Text>
+          {scanRemediation.map((remediation) => (
+            <CommandBlock key={remediation.scope} command={remediation.command} />
           ))}
         </Card>
       )}

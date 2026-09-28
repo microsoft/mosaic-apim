@@ -524,7 +524,9 @@ MOSAIC finds endpoints three ways: a pasted resource ID, hosts it already observ
 inside a registered gateway, and an enumeration of Azure AI accounts across visible subscriptions.
 The last needs `Reader` at subscription scope, which MOSAIC does not grant itself — a subscription
 it cannot read is reported with the command that would fix it and skipped, so one missing assignment
-never blanks the list.
+never blanks the list. When MOSAIC can't see any subscription, or couldn't list them, the Models page
+now says so and gives the `Reader` command for the subscription MOSAIC was deployed into and for
+each registered gateway's subscription, instead of showing an empty list.
 
 OpenAI-compatible endpoints are registered with a Key Vault secret identifier the operator created.
 MOSAIC stores the URI only; discovery for those endpoints is not implemented yet.
