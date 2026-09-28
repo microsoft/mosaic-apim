@@ -28,6 +28,7 @@ import {
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMosaicApi } from '../api'
+import { CANNOT_INVOKE, NOT_CONFIRMED, runtimeVerdict } from '../runtime-access'
 import { runtimeConfig } from '../runtime-config'
 import type {
   Gateway,
@@ -135,7 +136,7 @@ function initialForm(model: PublishableModel | null): FormState {
 
 function RuntimeAccessNote({ model }: { model: PublishableModel }) {
   const access = model.runtimeAccess
-  if (!access || access.evaluation === 'notEvaluated') {
+  if (!access) {
     return (
       <MessageBar intent="warning">
         <MessageBarBody>
@@ -145,7 +146,18 @@ function RuntimeAccessNote({ model }: { model: PublishableModel }) {
       </MessageBar>
     )
   }
-  if (!access.canInvoke) {
+  const verdict = runtimeVerdict(access)
+  if (verdict === NOT_CONFIRMED) {
+    return (
+      <MessageBar intent="warning">
+        <MessageBarBody>
+          <MessageBarTitle>Runtime access not confirmed</MessageBarTitle>
+          {access.message ?? 'MOSAIC has not evaluated whether this gateway can call the model.'}
+        </MessageBarBody>
+      </MessageBar>
+    )
+  }
+  if (verdict === CANNOT_INVOKE) {
     return (
       <MessageBar intent="warning">
         <MessageBarBody>

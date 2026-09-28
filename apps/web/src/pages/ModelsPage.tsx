@@ -35,12 +35,14 @@ import { ImportFromGatewayDialog } from '../components/ImportFromGatewayDialog'
 import { PublishModelDialog } from '../components/PublishModelDialog'
 import { PageHeader } from '../components/PageHeader'
 import { AI_KIND_LABELS } from '../labels'
+import { CAN_INVOKE, describeScope, findingSummary, runtimeVerdict } from '../runtime-access'
 import { runtimeConfig } from '../runtime-config'
 import type {
   CatalogVisibility,
   Gateway,
   GatewayRuntimeAccess,
   ModelEndpoint,
+  ModelEndpointCapabilities,
   ModelEndpointStatus,
   ModelProvider,
   Publication,
@@ -518,6 +520,8 @@ function AccessPanel({ endpoint }: { endpoint: ModelEndpoint }) {
         )}
       </section>
 
+      {endpoint.azureResourceId && <EndpointSettings capabilities={endpoint.capabilities} />}
+
       <section className={styles.accessSection}>
         <Text weight="semibold">Gateways calling this endpoint</Text>
         <Text size={200} className={styles.muted}>
@@ -528,7 +532,11 @@ function AccessPanel({ endpoint }: { endpoint: ModelEndpoint }) {
           <Text size={200}>No gateways are registered yet.</Text>
         ) : (
           runtimeAccess.map((entry) => (
-            <RuntimeAccessRow key={entry.gatewayId} access={entry} />
+            <RuntimeAccessRow
+              key={entry.gatewayId}
+              access={entry}
+              registeredScope={endpoint.azureResourceId}
+            />
           ))
         )}
       </section>
@@ -536,29 +544,161 @@ function AccessPanel({ endpoint }: { endpoint: ModelEndpoint }) {
   )
 }
 
-function RuntimeAccessRow({ access }: { access: GatewayRuntimeAccess }) {
-  const intent =
-    access.evaluation === 'notEvaluated'
-      ? 'warning'
-      : access.canInvoke
-        ? 'success'
-        : 'error'
+function plural(count: number, noun: string): string {
+  return `${count} ${noun}${count === 1 ? '' : 's'}`
+}
+
+/**
+ * What MOSAIC read about the resource itself. Network settings decide whether a gateway can reach
+ * the endpoint at all, whatever roles it holds, so they sit beside the gateway verdicts.
+ */
+function EndpointSettings({ capabilities }: { capabilities: ModelEndpointCapabilities }) {
+  const facts: Array<[string, string]> = [
+    ['Resource kind', capabilities.kind ?? 'Not known yet. MOSAIC cannot read this resource.'],
+  ]
+  if (capabilities.publicNetworkAccess) {
+    facts.push(['Public network access', capabilities.publicNetworkAccess])
+  }
+  if (capabilities.networkDefaultAction) {
+    const addressRules = plural(capabilities.networkIpRules?.length ?? 0, 'address rule')
+    const networkRules = plural(
+      capabilities.networkVirtualNetworkRuleCount ?? 0,
+      'virtual network rule',
+    )
+    facts.push([
+      'Firewall',
+      capabilities.networkDefaultAction.toLowerCase() === 'deny'
+        ? `Admits only listed networks (${addressRules}, ${networkRules})`
+        : 'Admits all networks',
+    ])
+  }
+  if (capabilities.localAuthDisabled != null) {
+    facts.push(['Key authentication', capabilities.localAuthDisabled ? 'Disabled' : 'Enabled'])
+  }
+
+  return (
+    <section className={styles.accessSection} aria-label="Endpoint settings">
+      <Text weight="semibold">Endpoint settings</Text>
+      <Text size={200} className={styles.muted}>
+        Read from the Azure resource. Network settings decide whether a gateway can reach it at
+        all, whatever roles it holds.
+      </Text>
+      <dl className={styles.settingsList}>
+        {facts.map(([label, value]) => (
+          <div key={label}>
+            <dt>{label}</dt>
+            <dd>{value}</dd>
+          </div>
+        ))}
+      </dl>
+      {capabilities.notes.map((note) => (
+        <Text key={note} size={200}>
+          {note}
+        </Text>
+      ))}
+    </section>
+  )
+}
+
+function ScopeName({ scope }: { scope: string }) {
+  return <span title={scope}>{describeScope(scope)}</span>
+}
+
+function sameScope(left?: string | null, right?: string | null): boolean {
+  const normalize = (scope?: string | null) => (scope ?? '').replace(/\/+$/, '').toLowerCase()
+  return normalize(left) === normalize(right)
+}
+
+function RuntimeAccessRow({
+  access,
+  registeredScope,
+}: {
+  access: GatewayRuntimeAccess
+  registeredScope?: string | null
+}) {
+  const verdict = runtimeVerdict(access)
+  const grantedRole = access.grantedRoleName ?? access.grantedRoleDefinitionId
+  // Findings explain why nothing satisfied the check, so they are noise once something has.
+  const findings = grantedRole ? [] : (access.roleFindings ?? [])
+  const requiredDataActions = access.requiredDataActions ?? []
 
   return (
     <div className={styles.runtimeRow}>
-      <MessageBar intent={intent}>
+      <MessageBar intent={verdict.intent}>
         <MessageBarBody>
-          <MessageBarTitle>{access.gatewayName}</MessageBarTitle>
+          <MessageBarTitle>
+            {access.gatewayName}: {verdict.label}
+          </MessageBarTitle>
           {access.message}
         </MessageBarBody>
       </MessageBar>
-      {access.inherited && access.assignmentScope && (
+      {grantedRole && access.assignmentScope ? (
+        <Text size={200}>
+          {verdict === CAN_INVOKE ? 'Satisfied by' : 'The role requirement is met by'}{' '}
+          <strong>{grantedRole}</strong>,{' '}
+          {access.inherited ? (
+            <>
+              inherited from <ScopeName scope={access.assignmentScope} />. It works, but it is
+              broader than an assignment made directly on the resource.
+            </>
+          ) : (
+            <>
+              assigned directly on <ScopeName scope={access.assignmentScope} />.
+            </>
+          )}
+        </Text>
+      ) : (
+        access.inherited &&
+        access.assignmentScope && (
+          <Text size={200} className={styles.muted}>
+            Inherited from {access.assignmentScope}. It works, but it is broader than an assignment
+            made directly on this endpoint.
+          </Text>
+        )
+      )}
+      {access.evaluatedScope && !sameScope(access.evaluatedScope, registeredScope) && (
         <Text size={200} className={styles.muted}>
-          Inherited from {access.assignmentScope}. It works, but it is broader than an assignment
-          made directly on this endpoint.
+          Checked at <ScopeName scope={access.evaluatedScope} />, the resource the published API
+          calls. A Foundry project&apos;s models are deployed on its parent resource.
         </Text>
       )}
-      {access.remediation && <CommandBlock command={access.remediation.command} />}
+      {findings.length > 0 && (
+        <div className={styles.findings}>
+          <Text size={200} weight="semibold">
+            Role assignments MOSAIC found
+          </Text>
+          <ul className={styles.findingList}>
+            {findings.map((finding, index) => (
+              <li key={`${finding.roleDefinitionId ?? 'role'}-${finding.scope}-${index}`}>
+                <Text size={200}>{findingSummary(finding)}</Text>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {access.remediation && (
+        <>
+          <Text size={200}>
+            Recommended: grant <strong>{access.remediation.roleName}</strong> on{' '}
+            <ScopeName scope={access.remediation.scope} />. Any role that grants the data actions
+            the published API needs is also accepted. Someone with permission to assign roles
+            must run:
+          </Text>
+          <CommandBlock command={access.remediation.command} />
+          {requiredDataActions.length > 0 && (
+            <details className={styles.dataActions}>
+              <summary>Data actions the published API needs</summary>
+              <ul className={styles.findingList}>
+                {requiredDataActions.map((action) => (
+                  <li key={action}>
+                    <code>{action}</code>
+                  </li>
+                ))}
+              </ul>
+            </details>
+          )}
+        </>
+      )}
     </div>
   )
 }

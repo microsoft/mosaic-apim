@@ -239,6 +239,10 @@ export interface GatewayCapabilities {
   mcpServers: CapabilitySupport
   principalId?: string | null
   identityObserved: boolean
+  /** `None`, `External`, or `Internal`; absent when MOSAIC has not recorded it. */
+  virtualNetworkType?: string | null
+  /** Where the gateway's calls to a public endpoint come from; empty when not deterministic. */
+  egressIpAddresses?: string[]
   notes: string[]
 }
 
@@ -558,13 +562,47 @@ export type ModelEndpointStatus =
  * How MOSAIC established whether a gateway can invoke an endpoint.
  *
  * `notEvaluated` is deliberately distinct from a negative answer: MOSAIC not being able to read
- * role assignments is not the same as the gateway lacking the role.
+ * role assignments is not the same as the gateway lacking the role. It is also used whenever
+ * something MOSAIC cannot evaluate stands in the way, such as an ABAC condition.
  */
 export type RuntimeAccessEvaluation =
   | 'roleAssignments'
   | 'noGatewayIdentity'
   | 'notApplicable'
   | 'notEvaluated'
+
+/** What the runtime check found. Absent on results recorded before it was introduced. */
+export type RuntimeAccessReason =
+  | 'granted'
+  | 'missingRole'
+  | 'narrowerScope'
+  | 'conditional'
+  | 'roleUnreadable'
+  | 'denyAssignment'
+  | 'networkUnreachable'
+  | 'networkUnverified'
+  | 'assignmentsUnreadable'
+  | 'noGatewayIdentity'
+  | 'identityNotObserved'
+
+export type RuntimeRoleFindingKind =
+  | 'sufficient'
+  | 'insufficient'
+  | 'narrowerScope'
+  | 'conditional'
+  | 'unreadable'
+
+/** One of the gateway's role assignments, and what it does for the published API. */
+export interface RuntimeRoleFinding {
+  kind: RuntimeRoleFindingKind
+  roleName?: string | null
+  roleDefinitionId?: string | null
+  scope: string
+  inherited: boolean
+  missingDataActions: string[]
+}
+
+export type NetworkReachability = 'reachable' | 'unreachable' | 'unverified' | 'unknown'
 
 export type SuggestionSource = 'bootstrap' | 'gatewayBackend' | 'subscriptionScan'
 
@@ -585,11 +623,21 @@ export interface GatewayRuntimeAccess {
   apimPrincipalId?: string | null
   canInvoke: boolean
   evaluation: RuntimeAccessEvaluation
+  reason?: RuntimeAccessReason | null
   checkedAt?: string | null
+  /** The role MOSAIC recommends. Any role covering `requiredDataActions` is accepted. */
   requiredRoleName?: string | null
   requiredRoleDefinitionId?: string | null
+  /** The role that satisfied the check, which need not be the recommended one. */
+  grantedRoleName?: string | null
+  grantedRoleDefinitionId?: string | null
   assignmentScope?: string | null
   inherited: boolean
+  /** The scope the published API calls: always the account, even for a Foundry project. */
+  evaluatedScope?: string | null
+  requiredDataActions?: string[]
+  roleFindings?: RuntimeRoleFinding[]
+  networkReachability?: NetworkReachability
   remediation?: AccessRemediation | null
   message?: string | null
 }
@@ -600,6 +648,10 @@ export interface ModelEndpointCapabilities {
   location?: string | null
   provisioningState?: string | null
   publicNetworkAccess?: string | null
+  /** `networkAcls.defaultAction`: `Deny` admits only the listed addresses and networks. */
+  networkDefaultAction?: string | null
+  networkIpRules?: string[]
+  networkVirtualNetworkRuleCount?: number
   localAuthDisabled?: boolean | null
   managementApiVersion: string
   notes: string[]

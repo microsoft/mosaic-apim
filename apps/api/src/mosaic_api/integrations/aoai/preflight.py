@@ -127,6 +127,10 @@ def _network_acls(value: object) -> tuple[str | None, list[str], int]:
     )
 
 
+def _count(count: int, singular: str) -> str:
+    return f"{count} {singular}" if count == 1 else f"{count} {singular}s"
+
+
 def _capabilities(account: JsonObject | None) -> ModelEndpointCapabilities:
     if not account:
         return ModelEndpointCapabilities(
@@ -161,8 +165,9 @@ def _capabilities(account: JsonObject | None) -> ModelEndpointCapabilities:
     elif (default_action or "").casefold() == "deny":
         notes.append(
             "This endpoint's firewall admits only the addresses and virtual networks it lists "
-            f"({len(ip_rules)} address rules, {network_rule_count} virtual network rules). A "
-            "gateway calling from anywhere else is refused."
+            f"({_count(len(ip_rules), 'address rule')}, "
+            f"{_count(network_rule_count, 'virtual network rule')}). A gateway calling from "
+            "anywhere else is refused."
         )
 
     return ModelEndpointCapabilities(

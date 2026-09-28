@@ -106,6 +106,50 @@ describe('PublishModelDialog', () => {
     const table = await screen.findByRole('table', { name: 'Publishable models' })
     expect(within(table).getByText('gpt-4o-prod')).toBeVisible()
     expect(within(table).getByText('gpt-4o')).toBeVisible()
+    expect(within(table).getByText('Runtime permissions observed')).toBeVisible()
+  })
+
+  it('does not present a conditional role assignment as either access or a denial', async () => {
+    api.listPublishableModels.mockResolvedValue([
+      {
+        ...publishableModel,
+        runtimeAccess: {
+          ...publishableModel.runtimeAccess!,
+          canInvoke: false,
+          evaluation: 'notEvaluated',
+          reason: 'conditional',
+          message: 'The role is assigned under an ABAC condition MOSAIC cannot prove holds.',
+        },
+      },
+    ])
+
+    renderDialog()
+
+    const table = await screen.findByRole('table', { name: 'Publishable models' })
+    expect(within(table).getByText('Runtime access not confirmed')).toBeVisible()
+    expect(within(table).getByText(/ABAC condition MOSAIC cannot prove holds/)).toBeVisible()
+    expect(within(table).queryByText('Gateway may not be able to call this model')).not.toBeInTheDocument()
+  })
+
+  it('warns when the gateway has no network path to the endpoint', async () => {
+    api.listPublishableModels.mockResolvedValue([
+      {
+        ...publishableModel,
+        runtimeAccess: {
+          ...publishableModel.runtimeAccess!,
+          canInvoke: false,
+          reason: 'networkUnreachable',
+          networkReachability: 'unreachable',
+          message: 'Public network access to this resource is disabled.',
+        },
+      },
+    ])
+
+    renderDialog()
+
+    const table = await screen.findByRole('table', { name: 'Publishable models' })
+    expect(within(table).getByText('Gateway may not be able to call this model')).toBeVisible()
+    expect(within(table).getByText(/Public network access to this resource is disabled/)).toBeVisible()
   })
 
   it('does not allow choosing a gateway outside manage mode', async () => {

@@ -735,7 +735,11 @@ class TestGatewayRuntimeAccess:
         assert capabilities.network_default_action == "Deny"
         assert capabilities.network_ip_rules == ["203.0.113.0/24"]
         assert capabilities.network_virtual_network_rule_count == 1
-        assert any("firewall admits only" in note for note in capabilities.notes)
+        assert any(
+            "firewall admits only" in note
+            and "(1 address rule, 1 virtual network rule)" in note
+            for note in capabilities.notes
+        )
         # The gateway's published address falls inside the admitted range.
         access = endpoint.runtime_access[0]
         assert access.network_reachability == NetworkReachability.REACHABLE
