@@ -2,6 +2,7 @@ import { Badge, Card, CardHeader, Text } from '@fluentui/react-components'
 import { useQuery } from '@tanstack/react-query'
 import { usePortalApi } from '../api'
 import { EmptyState, ErrorState, Loading } from '../components/AsyncState'
+import { ConnectionDetails } from '../components/ConnectionDetails'
 import { PageHeader } from '../components/PageHeader'
 import {
   describeAttribution,
@@ -60,6 +61,9 @@ export function MyAccessPage() {
                   <Text>{describeBinding(resolved.entitlement)}</Text>
                 </section>
               </div>
+              {resolved.entitlement.resource.kind === 'modelApi' && (
+                <ConnectionDetails resolved={resolved} />
+              )}
             </Card>
           ))}
         </div>

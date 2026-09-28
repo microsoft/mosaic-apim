@@ -82,10 +82,15 @@ export interface EntitlementBinding {
   source: 'inferred' | 'manual' | 'orchestrated' | null
 }
 
+export interface ModelAccessSettings {
+  keysEnabled: boolean
+  entraEnabled: boolean
+}
+
 export interface EntitlementRuntime {
   publicationId: string
   status: 'pending' | 'applying' | 'applied' | 'revocationPending' | 'revoked' | 'failed' | 'unknown'
-  appliedMethods: { keysEnabled: boolean; entraEnabled: boolean } | null
+  appliedMethods: ModelAccessSettings | null
   subscriptionName: string | null
   appliedAt: string | null
   error: string | null
@@ -113,8 +118,45 @@ export interface ResolvedEntitlement {
   viaGroupName: string | null
 }
 
+export interface ConnectionOperation {
+  name: string
+  method: string
+  /** Relative to the connection endpoint. */
+  path: string
+}
+
+export interface ModelConnection {
+  entitlementId: string
+  publicationId: string
+  gatewayId: string
+  endpoint: string
+  deploymentName: string
+  tenantId: string
+  runtime?: EntitlementRuntime | null
+  appliedMethods?: ModelAccessSettings | null
+  entraAudience?: string | null
+  entraScope?: string | null
+  /** Public client that end users sign in with to request model tokens. Older APIs omit it. */
+  entraClientId?: string | null
+  subscriptionHeader: string
+  operations: ConnectionOperation[]
+  publicationLimits: TokenEnforcement
+  grantLimits?: EntitlementEnforcement | null
+}
+
+export type KeySlot = 'primary' | 'secondary'
+
+export interface KeyRevealResult {
+  entitlementId: string
+  subscriptionName: string
+  slot: KeySlot
+  key: string
+}
+
 export interface ApiErrorBody {
   code?: string
   message?: string
+  /** FastAPI's own errors carry a string, or a list for request validation failures. */
+  detail?: unknown
   details?: Record<string, unknown>
 }
