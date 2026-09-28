@@ -76,8 +76,10 @@ and governed alike) removes any caller `x-api-key` header, so caller credentials
 provider. It sets `anthropic-version: 2023-06-01` only when the request doesn't send one, so a
 client can choose a newer version. It authenticates to the backend with API Management's managed
 identity for the `https://ai.azure.com` resource, instead of `https://cognitiveservices.azure.com`.
-The gateway identity needs the same *Cognitive Services User* role that the runtime-access check
-already requires for Foundry accounts. The origin comes from the account's custom subdomain: a
+The gateway identity needs a role that grants
+`Microsoft.CognitiveServices/accounts/AIServices/providers/action` on the account, such as Foundry
+User or Cognitive Services User. [ADR 0013](0013-runtime-readiness-by-data-actions.md) describes
+how the runtime-access check judges it. The origin comes from the account's custom subdomain: a
 single-label subdomain under `cognitiveservices.azure.com`, `openai.azure.com` or
 `services.ai.azure.com` maps to `<subdomain>.services.ai.azure.com`. Any other host, such as a
 regional endpoint, is refused rather than guessed.

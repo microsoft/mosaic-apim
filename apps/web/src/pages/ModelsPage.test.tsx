@@ -573,6 +573,33 @@ const SCAN_EXPLANATION =
   'Endpoints can still be registered by pasting a resource ID, and granting Reader at ' +
   'subscription scope lets MOSAIC suggest them.'
 
+const PROJECT_RESOURCE_ID = `${AI_RESOURCE_ID}/projects/team-a`
+const SUBSCRIPTION_SCOPE = '/subscriptions/00000000-0000-0000-0000-000000000000'
+const FOUNDRY_USER = '53ca6127-db72-4b80-b1b0-d745d6d5456d'
+const OPENAI_USER = '5e0bd9bd-7b93-4f28-af87-19fc36ad61bd'
+const CHAT_ACTION = 'Microsoft.CognitiveServices/accounts/OpenAI/deployments/chat/completions/action'
+const EMBEDDINGS_ACTION =
+  'Microsoft.CognitiveServices/accounts/OpenAI/deployments/embeddings/action'
+
+/** Matches the innermost element whose text, across child elements, is exactly `text`. */
+function sentence(text: string) {
+  return (_content: string, element: Element | null) =>
+    element?.textContent === text &&
+    Array.from(element.children).every((child) => child.textContent !== text)
+}
+
+function grantAt(scope: string, roleName: string, roleDefinitionId: string): AccessRemediation {
+  return {
+    roleName,
+    roleDefinitionId,
+    scope,
+    principalId: '11111111-1111-1111-1111-111111111111',
+    command:
+      'az role assignment create --assignee-object-id "11111111-1111-1111-1111-111111111111"' +
+      ` --assignee-principal-type ServicePrincipal --role "${roleName}" --scope "${scope}"`,
+  }
+}
+
 describe('ModelsPage model endpoints', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -668,6 +695,326 @@ describe('ModelsPage model endpoints', () => {
     renderPage()
 
     expect(await screen.findByText(/cannot confirm/i)).toBeVisible()
+  })
+
+  it('names the role that satisfied the check and where it is assigned', async () => {
+    api.listModelEndpoints.mockResolvedValue([
+      modelEndpoint({
+        runtimeAccess: [
+          runtimeAccess({
+            canInvoke: true,
+            reason: 'granted',
+            // Any sufficient role counts, not only the recommended one.
+            grantedRoleName: 'Cognitive Services User',
+            grantedRoleDefinitionId: 'a97b65f3-24c7-4388-baec-2e87135dc908',
+            assignmentScope: AI_RESOURCE_ID,
+            evaluatedScope: AI_RESOURCE_ID,
+            requiredDataActions: [CHAT_ACTION],
+            roleFindings: [
+              {
+                kind: 'sufficient',
+                roleName: 'Cognitive Services User',
+                roleDefinitionId: 'a97b65f3-24c7-4388-baec-2e87135dc908',
+                scope: AI_RESOURCE_ID,
+                inherited: false,
+                missingDataActions: [],
+              },
+            ],
+            remediation: null,
+            message:
+              "The gateway's managed identity holds Cognitive Services User on this resource, " +
+              'which covers every operation MOSAIC publishes from it.',
+          }),
+        ],
+      }),
+    ])
+
+    renderPage()
+
+    expect(await screen.findByText('Development gateway: can invoke')).toBeVisible()
+    expect(
+      screen.getByText(
+        sentence('Satisfied by Cognitive Services User, assigned directly on contoso-aoai.'),
+      ),
+    ).toBeVisible()
+    expect(screen.queryByText('Role assignments MOSAIC found')).not.toBeInTheDocument()
+    expect(screen.queryByText(/Recommended: grant/)).not.toBeInTheDocument()
+    // Registered at the account, so the scope checked is the scope registered.
+    expect(screen.queryByText(/Checked at/)).not.toBeInTheDocument()
+  })
+
+  it('reports a grant inherited from a broader scope as inherited', async () => {
+    api.listModelEndpoints.mockResolvedValue([
+      modelEndpoint({
+        runtimeAccess: [
+          runtimeAccess({
+            canInvoke: true,
+            reason: 'granted',
+            grantedRoleName: 'Cognitive Services OpenAI User',
+            grantedRoleDefinitionId: OPENAI_USER,
+            assignmentScope: SUBSCRIPTION_SCOPE,
+            inherited: true,
+            evaluatedScope: AI_RESOURCE_ID,
+            remediation: null,
+            message: 'Holds the role through an inherited assignment.',
+          }),
+        ],
+      }),
+    ])
+
+    renderPage()
+
+    expect(
+      await screen.findByText(
+        sentence(
+          'Satisfied by Cognitive Services OpenAI User, inherited from subscription ' +
+            '00000000-0000-0000-0000-000000000000. It works, but it is broader than an ' +
+            'assignment made directly on the resource.',
+        ),
+      ),
+    ).toBeVisible()
+    // The short name is for reading; the full scope stays available.
+    expect(screen.getByTitle(SUBSCRIPTION_SCOPE)).toHaveTextContent(
+      'subscription 00000000-0000-0000-0000-000000000000',
+    )
+  })
+
+  it('explains that a project-scoped grant does not reach the parent resource', async () => {
+    api.listModelEndpoints.mockResolvedValue([
+      modelEndpoint({
+        provider: 'azureAiFoundry',
+        azureResourceId: PROJECT_RESOURCE_ID,
+        projectName: 'team-a',
+        capabilities: {
+          ...modelEndpoint().capabilities,
+          kind: 'AIServices',
+        },
+        runtimeAccess: [
+          runtimeAccess({
+            reason: 'narrowerScope',
+            requiredRoleName: 'Foundry User',
+            requiredRoleDefinitionId: FOUNDRY_USER,
+            evaluatedScope: AI_RESOURCE_ID,
+            requiredDataActions: [
+              'Microsoft.CognitiveServices/accounts/MaaS/chat/completions/action',
+              CHAT_ACTION,
+            ],
+            roleFindings: [
+              {
+                kind: 'narrowerScope',
+                roleName: 'Foundry User',
+                roleDefinitionId: FOUNDRY_USER,
+                scope: PROJECT_RESOURCE_ID,
+                inherited: false,
+                missingDataActions: [],
+              },
+            ],
+            remediation: grantAt(AI_RESOURCE_ID, 'Foundry User', FOUNDRY_USER),
+            message:
+              "The gateway's managed identity holds Foundry User at the project, which is " +
+              'narrower than what the published API needs.',
+          }),
+        ],
+      }),
+    ])
+
+    renderPage()
+
+    expect(await screen.findByText('Development gateway: cannot invoke')).toBeVisible()
+    expect(
+      screen.getByText(
+        sentence(
+          'Checked at contoso-aoai, the resource the published API calls. ' +
+            "A Foundry project's models are deployed on its parent resource.",
+        ),
+      ),
+    ).toBeVisible()
+    expect(
+      screen.getByText(
+        'Foundry User at project team-a is assigned below the resource the published API ' +
+          'calls, so it does not apply there.',
+      ),
+    ).toBeVisible()
+    expect(
+      screen.getByText(
+        sentence(
+          'Recommended: grant Foundry User on contoso-aoai. Any role that grants the data ' +
+            'actions the published API needs is also accepted. Someone with permission to ' +
+            'assign roles must run:',
+        ),
+      ),
+    ).toBeVisible()
+    expect(screen.getByText(/--scope "[^"]*\/accounts\/contoso-aoai"$/)).toBeInTheDocument()
+    expect(screen.getByText('Data actions the published API needs')).toBeVisible()
+  })
+
+  it('names the data actions a held role does not grant', async () => {
+    api.listModelEndpoints.mockResolvedValue([
+      modelEndpoint({
+        runtimeAccess: [
+          runtimeAccess({
+            reason: 'missingRole',
+            evaluatedScope: AI_RESOURCE_ID,
+            requiredDataActions: [CHAT_ACTION, EMBEDDINGS_ACTION],
+            roleFindings: [
+              {
+                kind: 'insufficient',
+                roleName: 'Reader',
+                roleDefinitionId: 'acdd72a7-3385-48ef-bd42-f606fba81ae7',
+                scope: AI_RESOURCE_ID,
+                inherited: false,
+                missingDataActions: [CHAT_ACTION, EMBEDDINGS_ACTION],
+              },
+            ],
+            remediation: grantAt(AI_RESOURCE_ID, 'Cognitive Services OpenAI User', OPENAI_USER),
+          }),
+        ],
+      }),
+    ])
+
+    renderPage()
+
+    expect(await screen.findByText('Development gateway: cannot invoke')).toBeVisible()
+    expect(screen.getByText('Role assignments MOSAIC found')).toBeVisible()
+    expect(
+      screen.getByText(`Reader at contoso-aoai does not grant ${CHAT_ACTION} and 1 more.`),
+    ).toBeVisible()
+  })
+
+  it('does not count a conditional assignment as access, nor report it as a denial', async () => {
+    api.listModelEndpoints.mockResolvedValue([
+      modelEndpoint({
+        runtimeAccess: [
+          runtimeAccess({
+            evaluation: 'notEvaluated',
+            reason: 'conditional',
+            evaluatedScope: AI_RESOURCE_ID,
+            roleFindings: [
+              {
+                kind: 'conditional',
+                roleName: 'Cognitive Services OpenAI User',
+                roleDefinitionId: OPENAI_USER,
+                scope: AI_RESOURCE_ID,
+                inherited: false,
+                missingDataActions: [],
+              },
+            ],
+            remediation: grantAt(AI_RESOURCE_ID, 'Cognitive Services OpenAI User', OPENAI_USER),
+            message: 'Holds the role only under an ABAC condition MOSAIC cannot prove holds.',
+          }),
+        ],
+      }),
+    ])
+
+    renderPage()
+
+    expect(await screen.findByText('Development gateway: not confirmed')).toBeVisible()
+    expect(screen.queryByText(/can invoke|cannot invoke/)).not.toBeInTheDocument()
+    expect(
+      screen.getByText(
+        'Cognitive Services OpenAI User at contoso-aoai is assigned under an ABAC condition ' +
+          'MOSAIC cannot prove holds for these calls, so it is not counted as access.',
+      ),
+    ).toBeVisible()
+  })
+
+  it('reports a gateway with no network path as unable to invoke, whatever its role', async () => {
+    api.listModelEndpoints.mockResolvedValue([
+      modelEndpoint({
+        capabilities: {
+          ...modelEndpoint().capabilities,
+          publicNetworkAccess: 'Disabled',
+        },
+        runtimeAccess: [
+          runtimeAccess({
+            reason: 'networkUnreachable',
+            grantedRoleName: 'Cognitive Services OpenAI User',
+            grantedRoleDefinitionId: OPENAI_USER,
+            assignmentScope: AI_RESOURCE_ID,
+            evaluatedScope: AI_RESOURCE_ID,
+            networkReachability: 'unreachable',
+            roleFindings: [
+              {
+                kind: 'sufficient',
+                roleName: 'Cognitive Services OpenAI User',
+                roleDefinitionId: OPENAI_USER,
+                scope: AI_RESOURCE_ID,
+                inherited: false,
+                missingDataActions: [],
+              },
+            ],
+            remediation: null,
+            message:
+              'Public network access to this resource is disabled, and Development gateway is ' +
+              'not connected to a virtual network, so it has no network path to the resource ' +
+              'whatever roles it holds.',
+          }),
+        ],
+      }),
+    ])
+
+    renderPage()
+
+    expect(await screen.findByText('Development gateway: cannot invoke')).toBeVisible()
+    expect(screen.getByText(/has no network path to the resource/)).toBeVisible()
+    // The role is not what is missing, so MOSAIC neither lists findings nor recommends one.
+    expect(
+      screen.getByText(
+        sentence(
+          'The role requirement is met by Cognitive Services OpenAI User, assigned directly on ' +
+            'contoso-aoai.',
+        ),
+      ),
+    ).toBeVisible()
+    expect(screen.queryByText('Role assignments MOSAIC found')).not.toBeInTheDocument()
+    expect(screen.queryByText(/Recommended: grant/)).not.toBeInTheDocument()
+  })
+
+  it('shows the endpoint settings that decide whether a gateway can reach it', async () => {
+    const keyNote =
+      'Key authentication is enabled on this endpoint. Disabling it forces callers, including ' +
+      'the gateway, onto managed identity.'
+    api.listModelEndpoints.mockResolvedValue([
+      modelEndpoint({
+        capabilities: {
+          ...modelEndpoint().capabilities,
+          networkDefaultAction: 'Deny',
+          networkIpRules: ['203.0.113.0/24'],
+          networkVirtualNetworkRuleCount: 2,
+          notes: [keyNote],
+        },
+      }),
+    ])
+
+    renderPage()
+
+    const settings = await screen.findByRole('region', { name: 'Endpoint settings' })
+    const fact = (label: string) => within(settings).getByText(label).nextElementSibling
+    expect(fact('Resource kind')).toHaveTextContent('OpenAI')
+    expect(fact('Public network access')).toHaveTextContent('Enabled')
+    expect(fact('Key authentication')).toHaveTextContent('Enabled')
+    expect(fact('Firewall')).toHaveTextContent(
+      'Admits only listed networks (1 address rule, 2 virtual network rules)',
+    )
+    expect(within(settings).getByText(keyNote)).toBeVisible()
+  })
+
+  it('says when the resource kind is not known yet', async () => {
+    api.listModelEndpoints.mockResolvedValue([
+      modelEndpoint({
+        capabilities: {
+          managementApiVersion: '2024-10-01',
+          notes: [],
+        },
+      }),
+    ])
+
+    renderPage()
+
+    const settings = await screen.findByRole('region', { name: 'Endpoint settings' })
+    expect(
+      within(settings).getByText('Not known yet. MOSAIC cannot read this resource.'),
+    ).toBeVisible()
   })
 
   it('renders discovered deployments', async () => {

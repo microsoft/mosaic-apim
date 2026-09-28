@@ -15,6 +15,8 @@ SUBSCRIPTION_ID = "00000000-0000-0000-0000-000000000000"
 RESOURCE_GROUP = "rg-contoso-dev"
 SERVICE_NAME = "apim-contoso-dev"
 APIM_PRINCIPAL_ID = "11111111-1111-1111-1111-111111111111"
+# A documentation address (RFC 5737), so no test ever names a real gateway's egress.
+APIM_PUBLIC_IP = "203.0.113.10"
 RESOURCE_ID = (
     f"/subscriptions/{SUBSCRIPTION_ID}"
     f"/resourceGroups/{RESOURCE_GROUP}"
@@ -121,6 +123,13 @@ class FakeApim:
             "type": "SystemAssigned",
             "principalId": APIM_PRINCIPAL_ID,
         }
+        # No virtual network, as the live dev gateway has none. Tests override these to cover
+        # private and firewalled model endpoints.
+        self.virtual_network_type: str | None = "None"
+        self.public_ip_addresses: list[str] = [APIM_PUBLIC_IP]
+        # Set when a NAT gateway carries the service's outbound calls instead.
+        self.outbound_public_ip_addresses: list[str] = []
+        self.additional_locations: list[dict[str, Any]] = []
 
     def fail_once(self, path_suffix: str, status_code: int) -> None:
         self.failures[path_suffix] = status_code
@@ -327,13 +336,21 @@ class FakeApim:
         return httpx.Response(200, json={"properties": {"value": xml, "format": "rawxml"}})
 
     def _service(self) -> dict[str, Any]:
+        properties: dict[str, Any] = {
+            "provisioningState": "Succeeded",
+            "gatewayUrl": f"https://{SERVICE_NAME}.azure-api.net",
+            "publicIPAddresses": list(self.public_ip_addresses),
+        }
+        if self.virtual_network_type is not None:
+            properties["virtualNetworkType"] = self.virtual_network_type
+        if self.outbound_public_ip_addresses:
+            properties["outboundPublicIPAddresses"] = list(self.outbound_public_ip_addresses)
+        if self.additional_locations:
+            properties["additionalLocations"] = list(self.additional_locations)
         service: dict[str, Any] = {
             "name": SERVICE_NAME,
             "location": "eastus2",
-            "properties": {
-                "provisioningState": "Succeeded",
-                "gatewayUrl": f"https://{SERVICE_NAME}.azure-api.net",
-            },
+            "properties": properties,
         }
         if self.sku_name is not None:
             service["sku"] = {"name": self.sku_name, "capacity": 1}

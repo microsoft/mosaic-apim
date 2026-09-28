@@ -105,6 +105,32 @@ def build_endpoint_remediation(
     )
 
 
+def _network_acls(value: object) -> tuple[str | None, list[str], int]:
+    """``networkAcls`` as ``(defaultAction, admitted addresses, virtual network rule count)``.
+
+    Azure returns ``null`` for an empty rule list as readily as ``[]``, so both read as none.
+    """
+
+    if not isinstance(value, dict):
+        return None, [], 0
+    default_action = value.get("defaultAction")
+    ip_rules = value.get("ipRules")
+    network_rules = value.get("virtualNetworkRules")
+    return (
+        default_action if isinstance(default_action, str) else None,
+        [
+            rule["value"]
+            for rule in (ip_rules if isinstance(ip_rules, list) else [])
+            if isinstance(rule, dict) and isinstance(rule.get("value"), str)
+        ],
+        len(network_rules) if isinstance(network_rules, list) else 0,
+    )
+
+
+def _count(count: int, singular: str) -> str:
+    return f"{count} {singular}" if count == 1 else f"{count} {singular}s"
+
+
 def _capabilities(account: JsonObject | None) -> ModelEndpointCapabilities:
     if not account:
         return ModelEndpointCapabilities(
@@ -118,6 +144,12 @@ def _capabilities(account: JsonObject | None) -> ModelEndpointCapabilities:
     provisioning_state = properties.get("provisioningState") if properties else None
     public_network_access = properties.get("publicNetworkAccess") if properties else None
     disable_local_auth = properties.get("disableLocalAuth") if properties else None
+    default_action, ip_rules, network_rule_count = _network_acls(
+        properties.get("networkAcls") if properties else None
+    )
+    public_disabled = (
+        isinstance(public_network_access, str) and public_network_access.casefold() == "disabled"
+    )
 
     notes: list[str] = []
     if disable_local_auth is False:
@@ -125,10 +157,17 @@ def _capabilities(account: JsonObject | None) -> ModelEndpointCapabilities:
             "Key authentication is enabled on this endpoint. Disabling it forces callers, "
             "including the gateway, onto managed identity."
         )
-    if isinstance(public_network_access, str) and public_network_access.casefold() == "disabled":
+    if public_disabled:
         notes.append(
             "Public network access is disabled. A gateway can only reach this endpoint over a "
             "private connection."
+        )
+    elif (default_action or "").casefold() == "deny":
+        notes.append(
+            "This endpoint's firewall admits only the addresses and virtual networks it lists "
+            f"({_count(len(ip_rules), 'address rule')}, "
+            f"{_count(network_rule_count, 'virtual network rule')}). A gateway calling from "
+            "anywhere else is refused."
         )
 
     return ModelEndpointCapabilities(
@@ -141,6 +180,9 @@ def _capabilities(account: JsonObject | None) -> ModelEndpointCapabilities:
         public_network_access=(
             public_network_access if isinstance(public_network_access, str) else None
         ),
+        network_default_action=default_action,
+        network_ip_rules=ip_rules,
+        network_virtual_network_rule_count=network_rule_count,
         local_auth_disabled=(
             disable_local_auth if isinstance(disable_local_auth, bool) else None
         ),

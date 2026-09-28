@@ -199,11 +199,12 @@ describe('EntitlementsPage', () => {
     await screen.findByRole('option', { name: /Published chat/ })
     fireEvent.change(screen.getByLabelText('Published model'), { target: { value: modelPublication.id } })
     await user.click(await screen.findByRole('button', { name: 'Add direct grant' }))
-    const dialog = await screen.findByRole('dialog')
-    expect(within(dialog).queryByRole('option', { name: 'Engineering (group)' })).not.toBeInTheDocument()
-    expect(within(dialog).getByRole('combobox', { name: 'Resource' })).toBeDisabled()
-    fireEvent.change(within(dialog).getByRole('combobox', { name: 'Subject' }), { target: { value: 'principal_1' } })
-    await user.click(within(dialog).getByRole('button', { name: 'Grant access' }))
+    // Tabster can mark the open dialog aria-hidden in happy-dom; see includeAriaHiddenInRoleQueries.
+    const dialog = await screen.findByRole('dialog', { hidden: true })
+    expect(within(dialog).queryByRole('option', { name: 'Engineering (group)', hidden: true })).not.toBeInTheDocument()
+    expect(within(dialog).getByRole('combobox', { name: 'Resource', hidden: true })).toBeDisabled()
+    fireEvent.change(within(dialog).getByRole('combobox', { name: 'Subject', hidden: true }), { target: { value: 'principal_1' } })
+    await user.click(within(dialog).getByRole('button', { name: 'Grant access', hidden: true }))
     await waitFor(() => expect(api.createEntitlement).toHaveBeenCalledWith({
       subject: { kind: 'user', id: 'principal_1' },
       resource: { kind: 'modelApi', id: publishedModelApi.id },

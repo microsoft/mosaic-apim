@@ -48,6 +48,7 @@ from mosaic_api.errors import ConflictError, DomainError, NotFoundError, Validat
 from mosaic_api.integrations.aoai import (
     CognitiveServicesClient,
     ModelInventoryCollector,
+    RuntimeAccessCheck,
     SubscriptionScanner,
     run_endpoint_preflight,
     verify_gateway_runtime_access,
@@ -348,13 +349,16 @@ class ModelEndpointService:
         result = await run_endpoint_preflight(
             client, principal_id=await self._resolve_principal_id()
         )
-        runtime = await self._runtime_access(client, endpoint.tenant_id, result.capabilities.kind)
+        provider = provider_for(result.capabilities.kind, result.endpoint_url)
+        runtime = await self._runtime_access(
+            client, endpoint.tenant_id, result.capabilities, provider
+        )
         update: dict[str, object] = {
             "access": result.access,
             "capabilities": result.capabilities,
             "runtime_access": runtime,
             "status": result.status,
-            "provider": provider_for(result.capabilities.kind, result.endpoint_url),
+            "provider": provider,
             "updated_at": utc_now(),
         }
         if result.endpoint_url:
@@ -364,21 +368,33 @@ class ModelEndpointService:
         return endpoint.model_copy(update=update)
 
     async def _runtime_access(
-        self, client: CognitiveServicesClient, tenant_id: str, kind: str | None
+        self,
+        client: CognitiveServicesClient,
+        tenant_id: str,
+        capabilities: ModelEndpointCapabilities,
+        provider: ModelProvider,
     ) -> list[GatewayRuntimeAccess]:
         """Report, for every registered gateway, whether it could call this endpoint.
 
         A failure here degrades one gateway's row rather than the whole preflight: not knowing
         whether a gateway can call an endpoint is a much smaller problem than losing the endpoint's
-        access result entirely.
+        access result entirely. Gateways share one check, so each role definition is read once.
         """
 
         gateways: list[Gateway] = await self._gateways.list_gateways(tenant_id)
+        check = RuntimeAccessCheck(client)
         results: list[GatewayRuntimeAccess] = []
         for gateway in gateways:
             try:
                 results.append(
-                    await verify_gateway_runtime_access(client, gateway, kind=kind)
+                    await verify_gateway_runtime_access(
+                        client,
+                        gateway,
+                        kind=capabilities.kind,
+                        provider=provider,
+                        capabilities=capabilities,
+                        check=check,
+                    )
                 )
             except Exception:
                 logger.warning(
@@ -605,7 +621,7 @@ class ModelEndpointService:
         resource = CognitiveServicesResourceId.parse(endpoint.azure_resource_id)
         client = self._client_factory(resource)
         results = await self._runtime_access(
-            client, actor.tenant_id, endpoint.capabilities.kind
+            client, actor.tenant_id, endpoint.capabilities, endpoint.provider
         )
         await self._repository.record_endpoint_state(
             endpoint.model_copy(update={"runtime_access": results, "updated_at": utc_now()})

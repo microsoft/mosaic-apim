@@ -1,6 +1,21 @@
 # ADR 0006: Model endpoints have two access relationships, not one
 
-**Status:** Accepted
+**Status:** Accepted, partially superseded by
+[ADR 0013](0013-runtime-readiness-by-data-actions.md)
+
+**Update:** ADR 0013 replaces how the runtime relationship is verified.
+
+- The gateway's access is evaluated at the account the published API calls, never at a Foundry
+  project. A project-scoped grant is reported as narrower than what is needed.
+- Any role whose data actions cover the published operations is accepted, rather than one role
+  definition ID chosen by shape.
+- MOSAIC recommends Foundry User, not Cognitive Services User, for AI Services and Foundry
+  resources, and for resources whose kind it does not know yet.
+- The network path now forms part of the verdict.
+
+The runtime-role table and the "matched by GUID" and "filtered by ancestry" decisions below
+describe the initial release. The two-relationship model, `Reader` for MOSAIC, and "not evaluated
+is never a denial" stand.
 
 ## Context
 

@@ -31,6 +31,7 @@ from mosaic_api.integrations.apim.model_apis import (
     curated_operations,
     default_names,
     operations_for,
+    required_data_actions,
     shape_operations,
     token_limits_note,
     token_limits_supported,
@@ -96,6 +97,66 @@ def test_an_openai_compatible_endpoint_has_no_curated_shape() -> None:
         curated_operations(ModelProvider.OPENAI_COMPATIBLE, "anything")
 
     assert "no curated API shape" in str(error.value.message)
+
+
+_ACCOUNTS = "Microsoft.CognitiveServices/accounts"
+
+
+def test_each_operation_declares_the_data_action_its_route_requires() -> None:
+    # As ``az provider operation show --namespace Microsoft.CognitiveServices`` lists them. The
+    # gateway runtime check is derived from these, so a wrong one is a wrong readiness answer.
+    assert {
+        item.name: item.data_action
+        for item in curated_operations(ModelProvider.AZURE_OPENAI, "gpt-4o-prod")
+    } == {
+        "chat-completions": f"{_ACCOUNTS}/OpenAI/deployments/chat/completions/action",
+        "completions": f"{_ACCOUNTS}/OpenAI/deployments/completions/action",
+        "embeddings": f"{_ACCOUNTS}/OpenAI/deployments/embeddings/action",
+        "images-generations": f"{_ACCOUNTS}/OpenAI/images/generations/action",
+        "audio-transcriptions": f"{_ACCOUNTS}/OpenAI/deployments/audio/action",
+        "audio-translations": f"{_ACCOUNTS}/OpenAI/deployments/audio/action",
+        "responses": f"{_ACCOUNTS}/OpenAI/responses/write",
+    }
+    assert {
+        item.name: item.data_action
+        for item in curated_operations(ModelProvider.AZURE_AI_FOUNDRY, "llama-3")
+    } == {
+        "chat-completions": f"{_ACCOUNTS}/MaaS/chat/completions/action",
+        "embeddings": f"{_ACCOUNTS}/MaaS/embeddings/action",
+        "model-info": f"{_ACCOUNTS}/MaaS/info/read",
+    }
+    # Foundry authorizes its provider-native routes, /anthropic/* among them, with the one
+    # provider-model action; the operation list has nothing Anthropic- or Messages-specific.
+    assert {
+        item.name: item.data_action
+        for item in shape_operations(ApiShape.ANTHROPIC_MESSAGES, "claude-sonnet-4-5")
+    } == {
+        "messages": f"{_ACCOUNTS}/AIServices/providers/action",
+        "count-tokens": f"{_ACCOUNTS}/AIServices/providers/action",
+    }
+
+
+def test_required_data_actions_are_the_distinct_actions_of_a_shape() -> None:
+    # Both audio routes share one data action, so it is required once; so do both Messages routes.
+    assert len(required_data_actions(ApiShape.AZURE_OPENAI)) == 6
+    assert required_data_actions(ApiShape.FOUNDRY_MODELS) == (
+        f"{_ACCOUNTS}/MaaS/chat/completions/action",
+        f"{_ACCOUNTS}/MaaS/embeddings/action",
+        f"{_ACCOUNTS}/MaaS/info/read",
+    )
+    assert required_data_actions(ApiShape.ANTHROPIC_MESSAGES) == (
+        f"{_ACCOUNTS}/AIServices/providers/action",
+    )
+
+
+@pytest.mark.parametrize("shape", list(ApiShape))
+def test_every_shape_declares_data_actions_in_the_cognitive_services_namespace(
+    shape: ApiShape,
+) -> None:
+    actions = required_data_actions(shape)
+
+    assert actions
+    assert all(action.startswith(f"{_ACCOUNTS}/") for action in actions)
 
 
 def test_names_are_deterministic_and_prefixed_for_ownership() -> None:

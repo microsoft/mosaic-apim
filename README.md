@@ -80,7 +80,9 @@ explicit local/test modes and application startup rejects them when `MOSAIC_ENVI
   model grants
 - Model endpoint onboarding: register Azure OpenAI and Azure AI Foundry resources, verify MOSAIC's
   control-plane access, discover the deployments and available models on them, and report — per
-  registered gateway — whether that gateway's managed identity can actually call them
+  registered gateway — whether that gateway's managed identity can actually call them, judged by
+  the data actions its roles grant on the resource the published API calls and by whether the
+  gateway has a network path to it
 - MCP server registration: register a Model Context Protocol server by URL, connect to it as a
   read-only client, and record the tools it declares — including the input schemas, output schemas,
   and behaviour annotations that API Management's management plane does not expose
@@ -506,22 +508,69 @@ Every endpoint has **two** access relationships, held by two different identitie
 They are reported separately, because an endpoint MOSAIC reads perfectly well can still be
 uncallable through a gateway.
 
-MOSAIC asks only for `Reader`:
+MOSAIC asks only for `Reader`. For the gateway it recommends a built-in role, but it accepts **any**
+role whose data actions cover the operations the published API calls:
 
-| Purpose | Role | Role definition ID |
+| Purpose | Recommended role | Role definition ID |
 | --- | --- | --- |
 | MOSAIC enumerating models | Reader | `acdd72a7-3385-48ef-bd42-f606fba81ae7` |
-| Gateway calling an Azure OpenAI resource | Cognitive Services OpenAI User | `5e0bd9bd-7b93-4f28-af87-19fc36ad61bd` |
-| Gateway calling an AI Services resource | Cognitive Services User | `a97b65f3-24c7-4388-baec-2e87135dc908` |
-| Gateway calling a Foundry project | Foundry User | `53ca6127-db72-4b80-b1b0-d745d6d5456d` |
+| Gateway calling an Azure OpenAI resource (`kind: OpenAI`) | Cognitive Services OpenAI User | `5e0bd9bd-7b93-4f28-af87-19fc36ad61bd` |
+| Gateway calling an AI Services or Foundry resource, including one registered by Foundry project, and its Claude models | Foundry User | `53ca6127-db72-4b80-b1b0-d745d6d5456d` |
+| Gateway calling a resource MOSAIC cannot read yet | Foundry User, which is accepted for either kind | `53ca6127-db72-4b80-b1b0-d745d6d5456d` |
+
+How the gateway's access is judged:
+
+- **The scope is the account the published API calls.** This holds even for an endpoint registered
+  by Foundry project, because models are deployed on the parent resource. A grant on the project
+  does not reach the account, so it is reported as narrower than what is needed and is not
+  counted. Grants on the resource group or subscription do count, and are labelled as inherited.
+- **MOSAIC reads each assignment's role definition.** It checks `dataActions` minus
+  `notDataActions` against the exact data actions of the operations it publishes. So Cognitive
+  Services User, Cognitive Services OpenAI Contributor, or a custom role counts wherever it covers
+  them.
+- **An AI Services account must cover every API MOSAIC publishes from it.** That includes the
+  Anthropic Messages API for Claude, even before a Claude model is deployed. Both of its routes need
+  `Microsoft.CognitiveServices/accounts/AIServices/providers/action`.
+  - Foundry User and Cognitive Services User grant it.
+  - Azure AI Developer doesn't. MOSAIC reports it as missing and names the API that needs the
+    action.
+  - The `services.ai.azure.com` host and the `https://ai.azure.com` token audience that API uses
+    don't change the scope or the roles: it's the same account.
+- **Unreadable definitions fall back to a list.** When MOSAIC cannot read a role definition, only
+  built-ins already known to be sufficient are trusted.
+- **Conditions and deny assignments stop short of "can invoke".** A role assigned under an ABAC
+  condition MOSAIC cannot prove holds for those calls is reported as *not confirmed*, never as
+  access. A deny assignment covering those calls overrides the role.
+- **The network path is part of the verdict.** If public network access is disabled and the gateway
+  is not connected to a virtual network, the gateway cannot invoke, whatever roles it holds.
+  Private endpoints and firewalls MOSAIC cannot fully evaluate are reported as *not confirmed*, not
+  as a denial.
+- **Advice matches the check.** Whatever MOSAIC recommends, the check accepts. When the kind is not
+  known yet, MOSAIC says so, and granting it `Reader` first lets it recommend the exact role.
+
+[ADR 0013](docs/adr/0013-runtime-readiness-by-data-actions.md) records these rules.
+
+On the Models page, select an endpoint to open its **Access** card.
+
+- **Gateways calling this endpoint** gives each gateway a verdict: *can invoke*, *cannot invoke*,
+  or *not confirmed*.
+  - When a role satisfies the check, it names the role and the scope where it is assigned.
+  - When no role does, it gives the reason for each role the gateway holds: missing data actions, a
+    narrower scope, or a condition.
+  - When a role is missing, it shows the recommended role and the `az role assignment create`
+    command. MOSAIC never runs the command itself.
+- **Endpoint settings**, above the gateway verdicts, shows the resource kind, public network access,
+  firewall, and key authentication. Those settings decide whether a gateway can reach the endpoint
+  at all.
 
 Every role whose name begins `Cognitive Services` or `Foundry` that grants control-plane deployment
 read also grants data-plane inference, and most also grant `listKeys`. `Reader` is the only built-in
-that grants the read alone, and it additionally covers the role-assignment read the runtime check
-needs. MOSAIC also emits a narrower custom role definition for operators who want one; that role
-omits the role-assignment read, so runtime access then reports as *not evaluated* rather than
-guessing. The runtime roles are matched by GUID rather than name because Microsoft renamed the
-Foundry roles in 2026 (`Azure AI User` became `Foundry User`) without changing their IDs.
+that grants the read alone. It also covers the role-assignment, role-definition, and
+deny-assignment reads that the runtime check needs. MOSAIC also emits a narrower custom role
+definition for operators who want one. That role omits the role-assignment read, so runtime access
+then reports as *not confirmed* rather than guessing. Roles are compared by GUID rather than name,
+because Microsoft renamed the Foundry roles in 2026 (`Azure AI User` became `Foundry User`) without
+changing their IDs.
 
 MOSAIC finds endpoints three ways: a pasted resource ID, hosts it already observed as AI backends
 inside a registered gateway, and an enumeration of Azure AI accounts across visible subscriptions.
