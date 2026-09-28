@@ -1784,6 +1784,7 @@ class ModelConnection(MosaicModel):
     applied_methods: ModelAccessSettings | None = None
     entra_audience: str | None = None
     entra_scope: str | None = None
+    entra_client_id: str | None = None
     subscription_header: str = "Ocp-Apim-Subscription-Key"
     operations: list[ConnectionOperation] = Field(default_factory=list)
     publication_limits: TokenEnforcement

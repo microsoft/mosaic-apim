@@ -6,6 +6,7 @@ from pydantic import ValidationError
 
 CONTROL_PLANE_CLIENT_ID = "11111111-1111-1111-1111-111111111111"
 MODEL_RUNTIME_CLIENT_ID = "abcdefff-2222-3333-4444-555555555555"
+MODEL_CLIENT_ID = "fedcba98-7654-3210-fedc-ba9876543210"
 
 
 def local_settings(**overrides: Any) -> Settings:
@@ -152,3 +153,74 @@ def test_runtime_audience_does_not_replace_required_control_plane_audience() -> 
             api_client_id=None,
             model_runtime_client_id=MODEL_RUNTIME_CLIENT_ID,
         )
+
+
+@pytest.mark.parametrize("client_id", [None, "", "   "])
+def test_model_client_id_is_optional(client_id: str | None) -> None:
+    assert local_settings(model_client_id=client_id).model_client_id is None
+
+
+@pytest.mark.parametrize(
+    "client_id",
+    [
+        MODEL_CLIENT_ID,
+        MODEL_CLIENT_ID.upper(),
+        f"  {MODEL_CLIENT_ID}  ",
+        f"{{{MODEL_CLIENT_ID}}}",
+    ],
+)
+def test_model_client_id_is_a_canonical_guid(client_id: str) -> None:
+    settings = local_settings(
+        api_client_id=CONTROL_PLANE_CLIENT_ID,
+        model_runtime_client_id=MODEL_RUNTIME_CLIENT_ID,
+        model_client_id=client_id,
+    )
+    assert settings.model_client_id == MODEL_CLIENT_ID
+    assert settings.model_runtime_client_id == MODEL_RUNTIME_CLIENT_ID
+
+
+@pytest.mark.parametrize(
+    "client_id",
+    [
+        "not-a-client-id",
+        f"api://{MODEL_CLIENT_ID}",
+        f"{MODEL_CLIENT_ID},another-client",
+    ],
+)
+def test_model_client_id_rejects_non_guids(client_id: str) -> None:
+    with pytest.raises(ValidationError, match="MOSAIC_MODEL_CLIENT_ID must be a valid GUID"):
+        local_settings(model_client_id=client_id)
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        (
+            {"api_client_id": MODEL_CLIENT_ID.upper()},
+            "MOSAIC_MODEL_CLIENT_ID must be different from MOSAIC_API_CLIENT_ID",
+        ),
+        (
+            {"api_client_id": MODEL_CLIENT_ID.replace("-", "")},
+            "MOSAIC_MODEL_CLIENT_ID must be different from MOSAIC_API_CLIENT_ID",
+        ),
+        (
+            {
+                "api_client_id": CONTROL_PLANE_CLIENT_ID,
+                "model_runtime_client_id": MODEL_CLIENT_ID.upper(),
+            },
+            "MOSAIC_MODEL_CLIENT_ID must be different from MOSAIC_MODEL_RUNTIME_CLIENT_ID",
+        ),
+    ],
+)
+def test_model_client_id_must_differ_from_api_and_runtime_ids(
+    overrides: dict[str, str], message: str
+) -> None:
+    with pytest.raises(ValidationError, match=message):
+        local_settings(model_client_id=MODEL_CLIENT_ID, **overrides)
+
+
+def test_model_client_id_environment_wiring(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("MOSAIC_MODEL_CLIENT_ID", MODEL_CLIENT_ID.upper())
+    assert local_settings().model_client_id == MODEL_CLIENT_ID
+    monkeypatch.setenv("MOSAIC_MODEL_CLIENT_ID", "")
+    assert local_settings().model_client_id is None
