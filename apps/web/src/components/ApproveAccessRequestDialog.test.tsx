@@ -3,7 +3,6 @@ import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { ComponentProps } from 'react'
 import { describe, expect, it, vi } from 'vitest'
-import { includeAriaHiddenInRoleQueries } from '../test/dialogs'
 import { modelPublication } from '../test/model-access'
 import type { AccessRequest } from '../types'
 import { ApproveAccessRequestDialog } from './ApproveAccessRequestDialog'
@@ -46,8 +45,6 @@ function renderDialog(props: Partial<DialogProps> = {}) {
 }
 
 describe('ApproveAccessRequestDialog', () => {
-  includeAriaHiddenInRoleQueries()
-
   it('shows who asked for what and why, with limits prefilled from the publication', async () => {
     renderDialog()
 

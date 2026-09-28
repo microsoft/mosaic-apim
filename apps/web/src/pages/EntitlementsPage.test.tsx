@@ -7,7 +7,6 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AccessRequest, Entitlement } from '../types'
 import { callRateError, describeLimits, describePublicationLimits } from '../entitlement-limits'
 import { EntitlementsPage } from './EntitlementsPage'
-import { includeAriaHiddenInRoleQueries } from '../test/dialogs'
 import { accessPlan, directGrant, modelPublication, publishedModelApi } from '../test/model-access'
 
 const entitlement: Entitlement = {
@@ -199,12 +198,11 @@ describe('EntitlementsPage', () => {
     await screen.findByRole('option', { name: /Published chat/ })
     fireEvent.change(screen.getByLabelText('Published model'), { target: { value: modelPublication.id } })
     await user.click(await screen.findByRole('button', { name: 'Add direct grant' }))
-    // Tabster can mark the open dialog aria-hidden in happy-dom; see includeAriaHiddenInRoleQueries.
-    const dialog = await screen.findByRole('dialog', { hidden: true })
-    expect(within(dialog).queryByRole('option', { name: 'Engineering (group)', hidden: true })).not.toBeInTheDocument()
-    expect(within(dialog).getByRole('combobox', { name: 'Resource', hidden: true })).toBeDisabled()
-    fireEvent.change(within(dialog).getByRole('combobox', { name: 'Subject', hidden: true }), { target: { value: 'principal_1' } })
-    await user.click(within(dialog).getByRole('button', { name: 'Grant access', hidden: true }))
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).queryByRole('option', { name: 'Engineering (group)' })).not.toBeInTheDocument()
+    expect(within(dialog).getByRole('combobox', { name: 'Resource' })).toBeDisabled()
+    fireEvent.change(within(dialog).getByRole('combobox', { name: 'Subject' }), { target: { value: 'principal_1' } })
+    await user.click(within(dialog).getByRole('button', { name: 'Grant access' }))
     await waitFor(() => expect(api.createEntitlement).toHaveBeenCalledWith({
       subject: { kind: 'user', id: 'principal_1' },
       resource: { kind: 'modelApi', id: publishedModelApi.id },
@@ -293,8 +291,6 @@ describe('EntitlementsPage', () => {
   })
 
   describe('access requests', () => {
-    includeAriaHiddenInRoleQueries()
-
     it('approves through the limits dialog, creating linked grant intent that still needs review and apply', async () => {
       const user = userEvent.setup()
       api.listPublications.mockResolvedValue([modelPublication])
@@ -336,7 +332,9 @@ describe('EntitlementsPage', () => {
       expect(await screen.findByText('No pending requests')).toBeVisible()
       expect(api.createEntitlement).not.toHaveBeenCalled()
 
-      await user.click(screen.getByRole('link', { name: 'Go to review and apply for Published chat' }))
+      // The rest of the page stays hidden from assistive technology for a moment after the modal
+      // dialog is gone, so the first role query outside it has to wait.
+      await user.click(await screen.findByRole('link', { name: 'Go to review and apply for Published chat' }))
       const publishedModel = screen.getByRole('combobox', { name: 'Published model' })
       expect(publishedModel).toHaveValue(modelPublication.id)
       expect(publishedModel).toHaveFocus()
@@ -371,7 +369,9 @@ describe('EntitlementsPage', () => {
       expect(await screen.findByText(
         'Approved the request, registered new-object-1 as a user principal, and created their grant intent. The grant is desired state only; MOSAIC does not apply grants for this resource to API Management.',
       )).toBeVisible()
-      expect(screen.queryByRole('link', { name: /Go to review and apply/ })).not.toBeInTheDocument()
+      // Include hidden elements: the page stays aria-hidden for a moment after the modal dialog
+      // closes, so a plain role query would pass even if the link were there.
+      expect(screen.queryByRole('link', { name: /Go to review and apply/, hidden: true })).not.toBeInTheDocument()
     })
 
     it('keeps a failed approval open in the dialog with the reason', async () => {
