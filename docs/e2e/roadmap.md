@@ -100,7 +100,8 @@ tests and README or ADR updates wherever a decision changes.
 ### Phase 1: Playwright harness ✅
 
 - `e2e/` package: a persona profile per account, a local live driver for human-in-the-loop
-  sessions, a sign-in helper, redaction, and read-only smoke specs (S1, A0, A1, P0, P1).
+  sessions, a sign-in helper, redaction, and read-only smoke specs (S1, S2, A0, A1, P0, P1). S2
+  checks that the admin and portal APIs reject anonymous and malformed-token requests.
 - **Exit:** unit tests, typecheck and lint pass, and the live driver can open every persona.
 
 ### Phase 2: Tenant prerequisites ⏳ approval

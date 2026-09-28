@@ -16,6 +16,17 @@ test.describe('00 smoke', { tag: '@smoke' }, () => {
     expect(await ready.json()).toMatchObject({ status: 'ready' })
   })
 
+  test('S2 API rejects anonymous and malformed-token requests', async ({ request, targets }) => {
+    const protectedPaths = ['/api/v1/model-endpoints', '/api/v1/principals', '/api/v1/gateways', '/api/v1/me/entitlements']
+    for (const path of protectedPaths) {
+      const url = new URL(path, targets.origins.api).href
+      const anonymous = await request.get(url)
+      expect(anonymous.status(), `anonymous GET ${path}`).toBe(401)
+      const malformed = await request.get(url, { headers: { Authorization: 'Bearer not-a-token' } })
+      expect(malformed.status(), `malformed-token GET ${path}`).toBe(401)
+    }
+  })
+
   test('A0 admin reaches the MOSAIC console', async ({ personas, targets }) => {
     const page = await personas.page(targets.roles.admin, 'web', '/models')
     await expect(page.getByRole(primaryNavigation.role, { name: primaryNavigation.name })).toBeVisible()
