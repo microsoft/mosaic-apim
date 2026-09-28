@@ -176,8 +176,8 @@ Progress, before any role was granted:
   - What-if can't see app settings. Before approving, check that every live app setting name is
     still in the template, because provisioning replaces the whole list.
   - ✅ Done so far: the environment is rebuilt, and a preview plus a full what-if against `main`
-    show no creates or deletes. That preview predates G8, so it runs again on the final `main`
-    before approval.
+    show no creates or deletes. The preview ran again on the final `main`, after G8 merged, with
+    the same result. The redeploy now waits only for approval.
 - **Exit:** the deployed build contains G1 to G5, G7 and G8, and the smoke specs pass.
 
 ### Phase 5: Live, admin publishes (A7 to A9) ⬜
@@ -318,16 +318,17 @@ runtime journeys. **Status** is the result of the latest live run; 🔄 means pa
 | R7 | After revocation propagates, calls fail | 8 | ⬜ |
 | R8 | Calls show up in Application Insights and Log Analytics (optional) | 8 | ⬜ |
 
-## Findings from live runs
+## Findings
 
-These are smaller than the gaps above. They're recorded so they can be confirmed, or fixed, once
-the journeys that exercise them have run.
+These are smaller than the gaps above, and most came from live runs. They're recorded so they can
+be confirmed, or fixed, once the journeys that exercise them have run.
 
 | ID | Observation | Next step |
 | --- | --- | --- |
 | O1 | Before MOSAIC can read an account, it records a placeholder endpoint (`https://<account>.cognitiveservices.azure.com`) and the provider "Azure AI Foundry", even for an Azure OpenAI account. The UI shows these as fact | After Reader is granted, confirm that **Check access** corrects the provider and endpoint. If it does, label the values as unconfirmed until the first successful read |
 | O2 | A rejected duplicate registration appears under the generic title "Unable to load data". The Identity page gets this right with "Unable to add principal" | Use a title that fits a failed registration |
 | O3 | The console's key reveal (`EntitlementConnectionDialog`) shows the key in an element labelled "Revealed primary key" or "Revealed secondary key", with no `data-secret` marker. The harness masks it by that label | Add `data-secret` to the revealed value when the component is next changed, so any tooling can find it |
+| O4 | Opening **Review model access** from the Models or Entitlements page left keyboard focus on the page, not in the dialog. The dialog first rendered its opening step and then switched to the review in an effect, which removed the control that had focus. Found while stabilizing the web tests ([#24](https://github.com/microsoft/mosaic-apim/pull/24)), not in a live run | Fixed in [#25](https://github.com/microsoft/mosaic-apim/pull/25). Once it's deployed, A11, A13 and A14 confirm that focus starts in the review |
 
 The Phase 3 check on whether the gateway role recommendation narrows once the account kind is
 known led to G8: it does narrow, and the check then rejects the broader role it recommended
