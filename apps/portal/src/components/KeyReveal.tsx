@@ -20,6 +20,7 @@ import {
   keyRevealProblem,
   type KeyAvailability,
 } from '../connection-format'
+import { useFocusHandoff, type FocusHandoff } from '../focus-handoff'
 import type { KeySlot, ModelConnection } from '../types'
 
 interface RevealVariables {
@@ -43,16 +44,19 @@ const slotLabels: Record<KeySlot, string> = {
  * Reveals one APIM subscription key on explicit request. The key lives only in this
  * component's state: never in a query or mutation cache, browser storage, the URL, or logs.
  * Parents remount this component (via `key`) whenever the account, route, grant, or applied
- * state changes, which discards any key on screen.
+ * state changes, which discards any key on screen. If keyboard focus was inside when that
+ * happens, `focusHandoff` moves it to the new instance's explanation or heading.
  */
 export function KeyReveal({
   entitlementId,
   connection,
   onConflict,
+  focusHandoff,
 }: {
   entitlementId: string
   connection: ModelConnection
   onConflict: () => void
+  focusHandoff?: FocusHandoff
 }) {
   const api = usePortalApi()
   const headingId = useId()
@@ -74,6 +78,10 @@ export function KeyReveal({
     primary: null,
     secondary: null,
   })
+  const section = useRef<HTMLElement | null>(null)
+  const heading = useRef<HTMLHeadingElement | null>(null)
+  const reasonText = useRef<HTMLElement | null>(null)
+  useFocusHandoff(focusHandoff, section, reasonText, heading)
 
   const reveal = useMutation<RevealOutcome, Error, RevealVariables>({
     gcTime: 0,
@@ -176,8 +184,10 @@ export function KeyReveal({
   const problem = reveal.isError ? keyRevealProblem(reveal.error) : null
 
   return (
-    <section className="connection-section" aria-labelledby={headingId}>
-      <h3 id={headingId}>Subscription key</h3>
+    <section className="connection-section" aria-labelledby={headingId} ref={section}>
+      <h3 id={headingId} ref={heading} tabIndex={-1}>
+        Subscription key
+      </h3>
       <Text as="p" size={200} className="connection-note">
         APIM holds your keys. MOSAIC reads the current key only when you ask, shows it for 60
         seconds, and never saves it in this browser. Anyone with the key can use this grant, so do
@@ -233,7 +243,7 @@ export function KeyReveal({
         </Button>
       </div>
       {!availability.available && (
-        <Text as="p" className="connection-note">
+        <Text as="p" className="connection-note" ref={reasonText} tabIndex={-1}>
           {availability.reason}
         </Text>
       )}

@@ -295,6 +295,8 @@ describe('ConnectionDetails', () => {
     await user.click(screen.getByRole('button', { name: 'Try again' }))
 
     expect(await screen.findByText(endpoint)).toBeVisible()
+    expect(document.activeElement).toHaveClass('connection-status')
+    expect(document.activeElement).toHaveTextContent('Applied to APIM')
   })
 
   it('explains when MOSAIC cannot be reached', async () => {
@@ -479,6 +481,14 @@ describe('ConnectionDetails', () => {
       expect(await screen.findByText(endpoint)).toBeVisible()
       expect(screen.queryByText(revealedPrimary.key)).not.toBeInTheDocument()
       expect(api.revealMyEntitlementKey).toHaveBeenCalledOnce()
+      // Focus that was outside the panel stays put; focus inside it is never dropped to the page.
+      if (change === 'navigation') {
+        expect(screen.getByRole('button', { name: 'Navigate within the portal' })).toHaveFocus()
+      } else if (change === 'account') {
+        expect(document.activeElement).toHaveClass('connection-status')
+      } else {
+        expect(screen.getByRole('heading', { name: 'Subscription key' })).toHaveFocus()
+      }
     },
   )
 
@@ -496,10 +506,28 @@ describe('ConnectionDetails', () => {
 
     await user.click(screen.getByRole('button', { name: 'Show primary key' }))
 
-    expect(
-      await screen.findByText('Keys are available only while this grant is applied to APIM. Current status: APIM changes pending.'),
-    ).toBeVisible()
+    const reason =
+      'Keys are available only while this grant is applied to APIM. Current status: APIM changes pending.'
+    expect(await screen.findByText(reason)).toBeVisible()
     expect(api.getMyEntitlementConnection).toHaveBeenCalledTimes(2)
     expect(screen.getByRole('button', { name: 'Show primary key' })).toBeDisabled()
+    expect(screen.getByText(reason)).toHaveFocus()
+  })
+
+  it('keeps keyboard focus in the panel when the reload after a conflict fails', async () => {
+    const user = userEvent.setup()
+    api.revealMyEntitlementKey.mockRejectedValue(
+      apiFailure(409, 'Apply the pending changes to this grant before revealing its key', 'conflict'),
+    )
+    renderDetails()
+    await openDetails(user)
+    api.getMyEntitlementConnection.mockRejectedValue(apiFailure(404, 'Entitlement was not found'))
+
+    await user.click(screen.getByRole('button', { name: 'Show primary key' }))
+
+    expect(
+      await screen.findByRole('group', { name: 'This grant is not available for your account' }),
+    ).toHaveFocus()
+    expect(screen.queryByRole('button', { name: 'Show primary key' })).not.toBeInTheDocument()
   })
 })

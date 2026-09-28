@@ -11,7 +11,7 @@ import {
 } from '@fluentui/react-components'
 import { ChevronDownRegular, ChevronUpRegular } from '@fluentui/react-icons'
 import { useQuery } from '@tanstack/react-query'
-import { useId, useState } from 'react'
+import { useId, useRef, useState } from 'react'
 import { useLocation } from 'react-router-dom'
 import { usePortalApi } from '../api'
 import {
@@ -22,6 +22,7 @@ import {
   operationUrl,
 } from '../connection-format'
 import { describeEnforcementLimits, describeTokenLimits } from '../entitlement-format'
+import { useFocusHandoff, useFocusHandoffSource, type FocusHandoff } from '../focus-handoff'
 import { runtimeConfig } from '../runtime-config'
 import type { Entitlement, ModelConnection, ResolvedEntitlement } from '../types'
 import { KeyReveal } from './KeyReveal'
@@ -77,24 +78,19 @@ function DirectGrantConnection({ entitlement }: { entitlement: Entitlement }) {
     // A 4xx answer describes the grant's state; asking again will not change it.
     retry: (failureCount, error) => !isClientError(error) && failureCount < 1,
   })
+  // Keeps keyboard focus in the panel when a reload replaces the part of it that held focus.
+  const focusHandoff = useFocusHandoffSource()
 
   if (connection.isPending) {
     return <Spinner size="small" label="Loading connection details" />
   }
   if (connection.isError) {
-    const problem = connectionProblem(connection.error)
     return (
-      <MessageBar intent="error">
-        <MessageBarBody>
-          <MessageBarTitle>{problem.title}</MessageBarTitle>
-          {problem.message}
-        </MessageBarBody>
-        {!isClientError(connection.error) && (
-          <MessageBarActions>
-            <Button onClick={() => void connection.refetch()}>Try again</Button>
-          </MessageBarActions>
-        )}
-      </MessageBar>
+      <ConnectionError
+        error={connection.error}
+        onRetry={() => void connection.refetch()}
+        focusHandoff={focusHandoff}
+      />
     )
   }
 
@@ -115,7 +111,7 @@ function DirectGrantConnection({ entitlement }: { entitlement: Entitlement }) {
 
   return (
     <>
-      <RuntimeSummary connection={info} />
+      <RuntimeSummary connection={info} focusHandoff={focusHandoff} />
       <EndpointSection connection={info} />
       <AuthenticationSection connection={info} />
       <KeyReveal
@@ -123,6 +119,7 @@ function DirectGrantConnection({ entitlement }: { entitlement: Entitlement }) {
         entitlementId={entitlement.id}
         connection={info}
         onConflict={() => void connection.refetch()}
+        focusHandoff={focusHandoff}
       />
       <SamplesSection connection={info} />
       <LimitsSection connection={info} />
@@ -130,10 +127,48 @@ function DirectGrantConnection({ entitlement }: { entitlement: Entitlement }) {
   )
 }
 
-function RuntimeSummary({ connection }: { connection: ModelConnection }) {
+function ConnectionError({
+  error,
+  onRetry,
+  focusHandoff,
+}: {
+  error: Error
+  onRetry: () => void
+  focusHandoff: FocusHandoff
+}) {
+  const bar = useRef<HTMLDivElement | null>(null)
+  const retry = useRef<HTMLButtonElement | HTMLAnchorElement | null>(null)
+  useFocusHandoff(focusHandoff, bar, retry, bar)
+  const problem = connectionProblem(error)
+  return (
+    <MessageBar intent="error" ref={bar} tabIndex={-1}>
+      <MessageBarBody>
+        <MessageBarTitle>{problem.title}</MessageBarTitle>
+        {problem.message}
+      </MessageBarBody>
+      {!isClientError(error) && (
+        <MessageBarActions>
+          <Button ref={retry} onClick={onRetry}>
+            Try again
+          </Button>
+        </MessageBarActions>
+      )}
+    </MessageBar>
+  )
+}
+
+function RuntimeSummary({
+  connection,
+  focusHandoff,
+}: {
+  connection: ModelConnection
+  focusHandoff: FocusHandoff
+}) {
+  const summary = useRef<HTMLDivElement | null>(null)
+  useFocusHandoff(focusHandoff, summary, summary)
   const runtime = describeConnectionRuntime(connection.runtime)
   return (
-    <div className="connection-status">
+    <div className="connection-status" ref={summary} tabIndex={-1}>
       <Badge appearance={runtime.applied ? 'filled' : 'tint'}>{runtime.label}</Badge>
       <Text>{runtime.explanation}</Text>
       {connection.runtime?.error && (
