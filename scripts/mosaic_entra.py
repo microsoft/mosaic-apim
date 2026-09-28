@@ -26,7 +26,7 @@ API_SCOPE_VALUE = "access_as_user"
 APP_ROLE_VALUE = "Admin"
 PORTAL_ROLE_VALUE = "User"
 MODEL_RUNTIME_SCOPE_VALUE = "Models.Invoke"
-MODEL_RUNTIME_ROLE_VALUE = "Models.Invoke"
+MODEL_RUNTIME_ROLE_VALUE = "Models.Invoke.Application"
 PORTAL_APP_NOTES = "MOSAIC end-user portal application registration managed by azd hooks."
 DIRECTORY_DENIAL_MARKERS = (
     "Authorization_RequestDenied",
@@ -199,7 +199,6 @@ def build_api_app_payload(
                 "displayName": APP_ROLE_VALUE,
                 "id": admin_role_id(),
                 "isEnabled": True,
-                "origin": "Application",
                 "value": APP_ROLE_VALUE,
             },
             {
@@ -211,7 +210,6 @@ def build_api_app_payload(
                 "displayName": PORTAL_ROLE_VALUE,
                 "id": portal_role_id(),
                 "isEnabled": True,
-                "origin": "Application",
                 "value": PORTAL_ROLE_VALUE,
             },
         ],
@@ -258,7 +256,6 @@ def build_model_runtime_app_payload(
                 "displayName": MODEL_RUNTIME_ROLE_VALUE,
                 "id": model_runtime_role_id(),
                 "isEnabled": True,
-                "origin": "Application",
                 "value": MODEL_RUNTIME_ROLE_VALUE,
             }
         ],

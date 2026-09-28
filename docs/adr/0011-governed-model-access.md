@@ -36,6 +36,9 @@ grant authorization.
 
 Entra model tokens use a dedicated single-tenant runtime audience, separate from the MOSAIC
 control-plane API. APIM validates the token, its invocation scope/role, and the direct grant.
+The delegated scope is `Models.Invoke`; the app-only role is `Models.Invoke.Application`.
+Entra rejects duplicate permission values across the scope and app-role collections, so these
+values must remain distinct even though both paths authorize model invocation.
 MOSAIC login, portal access, and model invocation are separate authorizations. APIM's managed
 identity still authenticates the backend model connection.
 

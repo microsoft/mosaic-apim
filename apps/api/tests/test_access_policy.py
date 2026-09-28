@@ -351,7 +351,8 @@ def test_claim_lookup_guards_nulls_and_cardinality_and_distinguishes_token_kinds
     assert '} else if (jwt.Claims.ContainsKey("roles")) {' in lookup
     assert "scopes != null && scopes.Length == 1 && scopes[0] != null" in lookup
     assert "scopes[0].Split(' ').Contains(\"Models.Invoke\")" in lookup
-    assert 'application = roles != null && roles.Contains("Models.Invoke");' in lookup
+    assert 'application = roles != null && roles.Contains("Models.Invoke.Application");' in lookup
+    assert 'roles.Contains("Models.Invoke")' not in lookup
     assert f'if (delegated && String.Equals(oid, "{user.object_id}"' in lookup
     assert f'if (application && String.Equals(oid, "{app.object_id}"' in lookup
     assert f'if (application && String.Equals(oid, "{user.object_id}"' not in lookup
