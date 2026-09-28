@@ -3,6 +3,7 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 
 from mosaic_api.domain import (
+    ApiShape,
     PolicyFacet,
     PolicyPreview,
     PolicyPreviewRequest,
@@ -64,7 +65,38 @@ def render_policy_preview(request: PolicyPreviewRequest) -> PolicyPreview:
 
 
 MANAGED_IDENTITY_RESOURCE = "https://cognitiveservices.azure.com"
+# Foundry's Anthropic endpoint accepts only Entra tokens for this audience; a Cognitive Services
+# token is refused with 401.
+ANTHROPIC_MANAGED_IDENTITY_RESOURCE = "https://ai.azure.com"
+# The Messages API rejects requests without a version. Clients normally send one; the gateway
+# supplies this only when a request doesn't.
+ANTHROPIC_VERSION = "2023-06-01"
 METRIC_NAMESPACE = "mosaic"
+
+
+def managed_identity_resource(shape: str | None) -> str:
+    """The Entra resource the gateway's managed identity requests a backend token for."""
+
+    if shape == ApiShape.ANTHROPIC_MESSAGES:
+        return ANTHROPIC_MANAGED_IDENTITY_RESOURCE
+    return MANAGED_IDENTITY_RESOURCE
+
+
+def add_shape_headers(parent: ET.Element, shape: str | None) -> None:
+    """Request headers a shape needs on the way to its backend, if any.
+
+    An Anthropic client authenticates with ``x-api-key``. Here that header carries a gateway
+    credential, or nothing the backend should see, so it is removed before the gateway's own
+    managed identity token is attached.
+    """
+
+    if shape != ApiShape.ANTHROPIC_MESSAGES:
+        return
+    ET.SubElement(parent, "set-header", {"name": "x-api-key", "exists-action": "delete"})
+    version = ET.SubElement(
+        parent, "set-header", {"name": "anthropic-version", "exists-action": "skip"}
+    )
+    ET.SubElement(version, "value").text = ANTHROPIC_VERSION
 
 
 @dataclass(frozen=True)
@@ -92,14 +124,24 @@ def render_publication_policy(publication: Publication) -> PublicationPolicy:
     """
 
     fragment = ET.Element("fragment")
+    add_shape_headers(fragment, publication.api_shape)
     ET.SubElement(
-        fragment, "authentication-managed-identity", {"resource": MANAGED_IDENTITY_RESOURCE}
+        fragment,
+        "authentication-managed-identity",
+        {"resource": managed_identity_resource(publication.api_shape)},
     )
     ET.SubElement(fragment, "set-backend-service", {"backend-id": publication.backend_name})
-    ET.SubElement(fragment, "llm-token-limit", _token_limit_attributes(publication.enforcement))
-    metric = ET.SubElement(fragment, "llm-emit-token-metric", {"namespace": METRIC_NAMESPACE})
-    ET.SubElement(metric, "dimension", {"name": "Publication", "value": publication.id})
-    ET.SubElement(metric, "dimension", {"name": "Deployment", "value": publication.deployment_name})
+    # Without enforcement the shape can't be token-metered on this gateway's tier, and neither
+    # can it emit token metrics: both policies share the same tier support.
+    if publication.enforcement is not None:
+        ET.SubElement(
+            fragment, "llm-token-limit", _token_limit_attributes(publication.enforcement)
+        )
+        metric = ET.SubElement(fragment, "llm-emit-token-metric", {"namespace": METRIC_NAMESPACE})
+        ET.SubElement(metric, "dimension", {"name": "Publication", "value": publication.id})
+        ET.SubElement(
+            metric, "dimension", {"name": "Deployment", "value": publication.deployment_name}
+        )
     fragment_xml = _serialize(fragment)
 
     policies = ET.Element("policies")

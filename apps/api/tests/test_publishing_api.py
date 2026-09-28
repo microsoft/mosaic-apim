@@ -1,6 +1,7 @@
 """The publishing HTTP surface: contracts, status codes, and refusals."""
 
 import time
+from collections.abc import Iterator
 from typing import Any
 
 import pytest
@@ -14,16 +15,15 @@ from mosaic_api.main import create_app
 from mosaic_api.repositories import InMemoryGatewayRepository, InMemoryModelEndpointRepository
 
 DEPLOYMENT = "gpt-4o-prod"
+CLAUDE = "claude-sonnet-4-5"
 ENFORCEMENT: dict[str, Any] = {
     "counterKeyExpression": "@(context.Subscription.Id)",
     "tokensPerMinute": 10000,
 }
 
 
-@pytest.fixture
-def publishing_client(settings: Settings) -> Any:
+def _serve(settings: Settings, fake_aoai: FakeCognitiveServices) -> Iterator[TestClient]:
     fake_apim = FakeApim(permissions=CONTRIBUTOR_PERMISSIONS)
-    fake_aoai = FakeCognitiveServices()
     gateway_repository = InMemoryGatewayRepository()
     endpoint_repository = InMemoryModelEndpointRepository()
     app: FastAPI = create_app(settings)
@@ -41,6 +41,34 @@ def publishing_client(settings: Settings) -> Any:
         )
         client.fake_apim = fake_apim  # type: ignore[attr-defined]
         yield client
+
+
+@pytest.fixture
+def publishing_client(settings: Settings) -> Any:
+    yield from _serve(settings, FakeCognitiveServices())
+
+
+@pytest.fixture
+def foundry_client(settings: Settings) -> Any:
+    """A Foundry (AI Services) account with an Anthropic model and a realtime model."""
+
+    fake_aoai = FakeCognitiveServices(kind="AIServices")
+    fake_aoai.deployments = [
+        {
+            "name": name,
+            "sku": {"name": "GlobalStandard", "capacity": 1},
+            "properties": {
+                "model": {"format": model_format, "name": name, "version": "1"},
+                "provisioningState": "Succeeded",
+                "capabilities": capabilities,
+            },
+        }
+        for name, model_format, capabilities in (
+            (CLAUDE, "Anthropic", {"chatCompletion": "true"}),
+            ("gpt-realtime", "OpenAI", {"realtime": "true"}),
+        )
+    ]
+    yield from _serve(settings, fake_aoai)
 
 
 def _await_run(client: TestClient, publication_id: str, run_id: str) -> dict[str, Any]:
@@ -114,6 +142,55 @@ def test_publishable_models_are_offered_for_a_gateway(publishing_client: TestCli
     chosen = next(item for item in response.json() if item["deploymentName"] == DEPLOYMENT)
     assert chosen["suggestedApiPath"].startswith("mosaic/")
     assert chosen["publicationId"] is None
+
+
+def test_publishable_models_carry_shape_and_publishability(foundry_client: TestClient) -> None:
+    gateway_id, _ = _onboard(foundry_client)
+
+    response = foundry_client.get(f"/api/v1/gateways/{gateway_id}/publishable-models")
+
+    assert response.status_code == 200
+    items = {item["deploymentName"]: item for item in response.json()}
+    claude = items[CLAUDE]
+    assert claude["modelFormat"] == "Anthropic"
+    assert claude["capability"] == "chat"
+    assert claude["apiShape"] == "anthropicMessages"
+    assert claude["publishable"] is True
+    assert claude["unpublishableReason"] is None
+    assert claude["tokenLimitsSupported"] is False
+    assert "Developer tier" in claude["tokenLimitsNote"]
+    realtime = items["gpt-realtime"]
+    assert realtime["capability"] == "realtime"
+    assert realtime["apiShape"] is None
+    assert realtime["publishable"] is False
+    assert "WebSocket" in realtime["unpublishableReason"]
+
+
+def test_claude_publishes_without_token_limits_on_a_classic_tier(
+    foundry_client: TestClient,
+) -> None:
+    gateway_id, endpoint_id = _onboard(foundry_client)
+    payload = {"gatewayId": gateway_id, "modelEndpointId": endpoint_id, "deploymentName": CLAUDE}
+
+    metered = foundry_client.post(
+        "/api/v1/publications", json={**payload, "enforcement": ENFORCEMENT}
+    )
+    realtime = foundry_client.post(
+        "/api/v1/publications",
+        json={**payload, "deploymentName": "gpt-realtime", "enforcement": ENFORCEMENT},
+    )
+    created = foundry_client.post("/api/v1/publications", json={**payload, "enforcement": None})
+
+    assert metered.status_code == 422
+    assert "only on v2 tiers" in metered.json()["message"]
+    assert realtime.status_code == 422
+    assert "WebSocket" in realtime.json()["message"]
+    assert created.status_code == 201, created.text
+    assert created.json()["apiShape"] == "anthropicMessages"
+    assert created.json()["enforcement"] is None
+    plan = foundry_client.post(f"/api/v1/publications/{created.json()['id']}/plan")
+    assert plan.status_code == 200, plan.text
+    assert any("classic tier" in warning for warning in plan.json()["warnings"])
 
 
 def test_publish_plan_apply_round_trip(publishing_client: TestClient) -> None:

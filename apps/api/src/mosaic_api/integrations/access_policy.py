@@ -4,9 +4,11 @@ Only native APIM subscription validation and a validated Entra JWT establish a g
 compiler deliberately replaces legacy subscription counters with credential-independent grant
 counters. APIM's distributed limits are safeguards, not an exact billing ledger.
 
-Only curated chat-completions and responses operations are forwarded. Routes without a deployment
-in their path require a matching request model. Request quotas use UTC calendar keys; weeks start
-on Monday.
+Only curated operations APIM can meter are forwarded: chat-completions and responses, or the
+Anthropic Messages operation. Routes without a deployment in their path require a matching request
+model. Request quotas use UTC calendar keys; weeks start on Monday. A snapshot without publication
+token enforcement renders no token policies at all, because its API shape can't be token-metered on
+its gateway's tier (ADR 0012).
 """
 
 import hashlib
@@ -15,6 +17,7 @@ import re
 import xml.etree.ElementTree as ET
 
 from mosaic_api.domain import (
+    ApiShape,
     EntitlementSubjectKind,
     ModelAccessGrant,
     ModelAccessSnapshot,
@@ -25,20 +28,23 @@ from mosaic_api.domain import (
     QuotaPeriod,
 )
 from mosaic_api.errors import ValidationError
-from mosaic_api.integrations.apim.model_apis import OperationSpec, curated_operations
+from mosaic_api.integrations.apim.model_apis import OperationSpec, operations_for
 from mosaic_api.integrations.apim.policy_semantics import analyze_policy
 from mosaic_api.integrations.policy import (
-    MANAGED_IDENTITY_RESOURCE,
     METRIC_NAMESPACE,
     PublicationPolicy,
     _serialize,
     _token_limit_attributes,
+    add_shape_headers,
+    managed_identity_resource,
 )
 
 MAX_FRAGMENT_BYTES = 512 * 1024
 _GUID = re.compile(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}")
 _RESOURCE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 _SUPPORTED_OPERATIONS = frozenset({"chat-completions", "responses"})
+# Token counting is left out: it isn't a model call, and nothing meters or needs it at runtime.
+_ANTHROPIC_OPERATIONS = frozenset({"messages"})
 _COUNTER_PREFIX = "mosaic:governed:"
 _SUBSCRIPTION_COUNTERS = frozenset(
     {
@@ -122,7 +128,12 @@ def _validate(publication: Publication, snapshot: ModelAccessSnapshot) -> None:
         "object": set(),
         "subject": set(),
     }
-    counters = [snapshot.publication_enforcement.counter_key_expression]
+    metered = snapshot.publication_enforcement is not None
+    counters = (
+        [snapshot.publication_enforcement.counter_key_expression]
+        if snapshot.publication_enforcement is not None
+        else []
+    )
     for grant in snapshot.grants:
         if grant.subject.kind not in {
             EntitlementSubjectKind.USER,
@@ -152,6 +163,11 @@ def _validate(publication: Publication, snapshot: ModelAccessSnapshot) -> None:
             )
         if grant.enabled and grant.enforcement:
             if grant.enforcement.tokens:
+                if not metered:
+                    raise ValidationError(
+                        "This publication can't be token-metered on its gateway's tier, so its "
+                        "grants can't carry token limits."
+                    )
                 counters.append(grant.enforcement.tokens.counter_key_expression)
             if grant.enforcement.requests:
                 requests = grant.enforcement.requests
@@ -321,7 +337,11 @@ def _operation_guard(
     _reject(
         fragment,
         f'@(context.Operation == null || context.Request.Method != "POST" || !({allowed}))',
-        message="This operation is not available with governed token limits.",
+        message=(
+            "This operation is not available through governed access."
+            if publication.api_shape == ApiShape.ANTHROPIC_MESSAGES
+            else "This operation is not available with governed token limits."
+        ),
     )
     unscoped = [op for op in operations if not op.url_template.startswith("/openai/deployments/")]
     if unscoped:
@@ -408,17 +428,51 @@ def _limits(
                         "counter-key": f"{_COUNTER_PREFIX}grant-tokens:{identity}",
                     },
                 )
-    ET.SubElement(
-        fragment,
-        "llm-token-limit",
-        {
-            **_token_limit_attributes(snapshot.publication_enforcement),
-            "counter-key": f'@("{_COUNTER_PREFIX}publication-tokens:" + {_GRANT})',
-        },
+    if snapshot.publication_enforcement is not None:
+        ET.SubElement(
+            fragment,
+            "llm-token-limit",
+            {
+                **_token_limit_attributes(snapshot.publication_enforcement),
+                "counter-key": f'@("{_COUNTER_PREFIX}publication-tokens:" + {_GRANT})',
+            },
+        )
+
+
+def _operations_facet(
+    publication: Publication, operations: tuple[OperationSpec, ...]
+) -> PolicyFacet:
+    allowed = "Allowed curated operation IDs: " + ", ".join(op.name for op in operations) + "."
+    pinned = (
+        "Routes not scoped to a deployment require the request model to equal this "
+        "publication's deployment; malformed or missing model values are denied "
+        "without forwarding."
+    )
+    if publication.api_shape == ApiShape.ANTHROPIC_MESSAGES:
+        summary = "Governed access permits only the Anthropic Messages operation."
+        denied = "All other operations, including token counting, are denied."
+    else:
+        summary = (
+            "Governed token limits permit only supported chat-completions and responses "
+            "operations."
+        )
+        denied = (
+            "All other operations, including embeddings, image, audio and legacy completions, "
+            "are denied."
+        )
+    return PolicyFacet(
+        kind=PolicyFacetKind.AUTHORIZATION,
+        element="choose",
+        section=PolicySection.INBOUND,
+        summary=summary,
+        details=[allowed, denied, pinned],
+        attributes={"allowed-operations": ",".join(op.name for op in operations)},
+        managed_by_mosaic=True,
     )
 
 
 def _facets(
+    publication: Publication,
     snapshot: ModelAccessSnapshot,
     fragment: ET.Element,
     api: ET.Element,
@@ -462,23 +516,7 @@ def _facets(
             },
             managed_by_mosaic=True,
         ),
-        PolicyFacet(
-            kind=PolicyFacetKind.AUTHORIZATION,
-            element="choose",
-            section=PolicySection.INBOUND,
-            summary="Governed token limits permit only supported chat-completions and "
-            "responses operations.",
-            details=[
-                "Allowed curated operation IDs: " + ", ".join(op.name for op in operations) + ".",
-                "All other operations, including embeddings, image, audio and legacy completions, "
-                "are denied.",
-                "Routes not scoped to a deployment require the request model to equal this "
-                "publication's deployment; malformed or missing model values are denied "
-                "without forwarding.",
-            ],
-            attributes={"allowed-operations": ",".join(op.name for op in operations)},
-            managed_by_mosaic=True,
-        ),
+        _operations_facet(publication, operations),
     ]
     limit_elements = iter(
         element
@@ -552,13 +590,18 @@ def _facets(
 
 
 def governed_operations(publication: Publication) -> tuple[OperationSpec, ...]:
+    supported = (
+        _ANTHROPIC_OPERATIONS
+        if publication.api_shape == ApiShape.ANTHROPIC_MESSAGES
+        else _SUPPORTED_OPERATIONS
+    )
     operations = tuple(
         op
-        for op in curated_operations(publication.provider, publication.deployment_name)
-        if op.name in _SUPPORTED_OPERATIONS and op.method == "POST"
+        for op in operations_for(publication)
+        if op.name in supported and op.method == "POST"
     )
     if not operations:
-        raise ValidationError("This provider has no operations supported by governed token limits.")
+        raise ValidationError("This API shape has no operations supported by governed access.")
     return operations
 
 
@@ -593,20 +636,26 @@ def render_governed_policy(
                 "exists-action": "delete",
             },
         )
+        add_shape_headers(fragment, publication.api_shape)
         ET.SubElement(
             fragment,
             "authentication-managed-identity",
             {
-                "resource": MANAGED_IDENTITY_RESOURCE,
+                "resource": managed_identity_resource(publication.api_shape),
             },
         )
         ET.SubElement(fragment, "set-backend-service", {"backend-id": publication.backend_name})
-        metric = ET.SubElement(fragment, "llm-emit-token-metric", {"namespace": METRIC_NAMESPACE})
-        for name, value in (
-            ("Publication", publication.id),
-            ("Deployment", publication.deployment_name),
-        ):
-            ET.SubElement(metric, "dimension", {"name": name, "value": f"@({_literal(value)})"})
+        if snapshot.publication_enforcement is not None:
+            metric = ET.SubElement(
+                fragment, "llm-emit-token-metric", {"namespace": METRIC_NAMESPACE}
+            )
+            for name, value in (
+                ("Publication", publication.id),
+                ("Deployment", publication.deployment_name),
+            ):
+                ET.SubElement(
+                    metric, "dimension", {"name": name, "value": f"@({_literal(value)})"}
+                )
     fragment_xml = _serialize(fragment)
     if len(fragment_xml.encode("utf-8")) > MAX_FRAGMENT_BYTES:
         raise ValidationError(
@@ -620,7 +669,7 @@ def render_governed_policy(
     for section in ("backend", "outbound", "on-error"):
         ET.SubElement(ET.SubElement(policies, section), "base")
     api_policy_xml = _serialize(policies)
-    facets, unrecognized = _facets(snapshot, fragment, policies, operations)
+    facets, unrecognized = _facets(publication, snapshot, fragment, policies, operations)
     return PublicationPolicy(
         fragment_xml=fragment_xml,
         api_policy_xml=api_policy_xml,

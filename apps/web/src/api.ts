@@ -127,7 +127,8 @@ export interface MosaicApi {
     apiPath?: string
     productName?: string
     subscriptionRequired: boolean
-    enforcement: TokenEnforcement
+    /** Null exactly when the deployment's `tokenLimitsSupported` is false. */
+    enforcement: TokenEnforcement | null
     governedAccess?: ModelAccessSettings | null
   }): Promise<Publication>
   getPublication(publicationId: string): Promise<Publication>

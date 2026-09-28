@@ -54,6 +54,10 @@ documented distributed-counter behavior; they are not an exact global billing le
 Unsupported operation/policy combinations are refused or explicitly denied rather than
 silently left unmetered. In particular, opting into token-governed access is not a promise
 that image, audio, or embedding calls are covered by the chat/response token policy.
+[ADR 0012](0012-format-aware-model-publishing.md) applies this to Anthropic publications.
+Governed access permits only the Messages operation. On classic-tier gateways, which can't
+token-meter the Anthropic Messages API, token-limited grants are excluded, and grants use
+call limits instead.
 
 **Desired state and applied access are different facts.** A publication-scoped plan includes
 all changes it will deploy, the relevant identity/permission inputs, and an applied-state
