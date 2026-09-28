@@ -143,6 +143,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             scanner=SubscriptionScanner(arm_client),
             principal_id=app_settings.managed_identity_principal_id,
             identity_resolver=arm_client.caller_object_id,
+            bootstrap_subscription_id=app_settings.apim_subscription_id,
         )
         publishing_service = PublishingService(
             gateway_repository,

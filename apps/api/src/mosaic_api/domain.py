@@ -1481,10 +1481,37 @@ class SubscriptionScanIssue(MosaicModel):
     remediation: AccessRemediation | None = None
 
 
+class SubscriptionScanStatus(StrEnum):
+    """Whether the subscription scan ran, and if it did not, why it had nothing to read.
+
+    ``noVisibleSubscriptions`` and ``listFailed`` leave no single subscription to blame, so they are
+    remediated on the view itself rather than as a :class:`SubscriptionScanIssue`.
+    """
+
+    NOT_CONFIGURED = "notConfigured"
+    LIST_FAILED = "listFailed"
+    NO_VISIBLE_SUBSCRIPTIONS = "noVisibleSubscriptions"
+    SCANNED = "scanned"
+
+
 class ModelEndpointSuggestionView(MosaicModel):
     suggestions: list[ModelEndpointSuggestion] = Field(default_factory=list)
     scan_issues: list[SubscriptionScanIssue] = Field(default_factory=list)
     subscriptions_scanned: int = 0
+    scan_status: SubscriptionScanStatus
+    scan_message: str | None = Field(
+        default=None,
+        description=(
+            "Why MOSAIC could not list subscriptions. MOSAIC's own wording, never upstream text."
+        ),
+    )
+    scan_remediation: list[AccessRemediation] = Field(
+        default_factory=list,
+        description=(
+            "Reader assignments at subscription scope that would give the scan something to read. "
+            "Offered only when it could see no subscription at all; MOSAIC never assigns them."
+        ),
+    )
 
 
 class ImportRequest(MosaicModel):

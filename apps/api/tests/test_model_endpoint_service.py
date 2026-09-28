@@ -15,6 +15,7 @@ from apim_double import APIM_PRINCIPAL_ID, RESOURCE_ID, SERVICE_NAME
 from conftest import build_endpoint_service
 from mosaic_api.domain import (
     READER_ROLE_ID,
+    READER_ROLE_NAME,
     AccessEvaluation,
     CognitiveServicesResourceId,
     EndpointAuthMode,
@@ -27,16 +28,26 @@ from mosaic_api.domain import (
     ModelEndpointUpdate,
     ModelProvider,
     RuntimeAccessEvaluation,
+    SubscriptionScanStatus,
     SuggestionSource,
     new_id,
     utc_now,
 )
 from mosaic_api.errors import ConflictError, NotFoundError, ValidationError
+from mosaic_api.integrations.aoai.client import SubscriptionScanner
 from mosaic_api.observed import AiBackendKind, ObservedBackend
 from mosaic_api.repositories import InMemoryGatewayRepository, InMemoryModelEndpointRepository
 from mosaic_api.services.directory import Actor
+from mosaic_api.services.model_endpoints import (
+    IDENTITY_PLACEHOLDER,
+    SUBSCRIPTION_PLACEHOLDER,
+    UNEXPECTED_LIST_FAILURE,
+)
 
 ACTOR = Actor(object_id="admin-object-id", tenant_id="tenant-test")
+# Subscriptions that exist only as candidate scopes: MOSAIC cannot list them.
+BOOTSTRAP_SUBSCRIPTION_ID = "11111111-2222-3333-4444-555555555555"
+OTHER_SUBSCRIPTION_ID = "66666666-7777-8888-9999-000000000000"
 
 
 def _create(**kwargs: object) -> ModelEndpointCreate:
@@ -45,18 +56,33 @@ def _create(**kwargs: object) -> ModelEndpointCreate:
     return ModelEndpointCreate.model_validate(payload)
 
 
-def _gateway(*, principal_id: str | None = APIM_PRINCIPAL_ID) -> Gateway:
+def _gateway(
+    *,
+    principal_id: str | None = APIM_PRINCIPAL_ID,
+    subscription_id: str = AI_SUBSCRIPTION_ID,
+    name: str = SERVICE_NAME,
+) -> Gateway:
     return Gateway(
         id=new_id("gateway"),
         tenant_id=ACTOR.tenant_id,
-        name=SERVICE_NAME,
+        name=name,
         azure_resource_id=RESOURCE_ID,
-        subscription_id=AI_SUBSCRIPTION_ID,
+        subscription_id=subscription_id,
         resource_group="rg-contoso-dev",
         service_name=SERVICE_NAME,
         capabilities=GatewayCapabilities(
             principal_id=principal_id, identity_observed=True
         ),
+    )
+
+
+def _reader_command(assignee: str, scope: str) -> str:
+    return (
+        "az role assignment create"
+        f' --assignee-object-id "{assignee}"'
+        " --assignee-principal-type ServicePrincipal"
+        ' --role "Reader"'
+        f' --scope "{scope}"'
     )
 
 
@@ -544,6 +570,9 @@ class TestSuggestions:
         scanned = [s for s in view.suggestions if s.source == SuggestionSource.SUBSCRIPTION_SCAN]
         assert [s.account_name for s in scanned] == ["contoso-aoai"]
         assert view.subscriptions_scanned == 1
+        assert view.scan_status == SubscriptionScanStatus.SCANNED
+        assert view.scan_message is None
+        assert view.scan_remediation == []
 
     @pytest.mark.asyncio
     async def test_forbidden_subscription_degrades_with_remediation(
@@ -554,12 +583,168 @@ class TestSuggestions:
         view = await endpoint_service.suggestions(ACTOR)
 
         assert view.subscriptions_scanned == 0
+        # The subscription was visible, so the fix belongs to it rather than to the whole scan.
+        assert view.scan_status == SubscriptionScanStatus.SCANNED
+        assert view.scan_remediation == []
         assert len(view.scan_issues) == 1
         issue = view.scan_issues[0]
         assert issue.subscription_id == AI_SUBSCRIPTION_ID
         assert issue.remediation is not None
         assert issue.remediation.scope == f"/subscriptions/{AI_SUBSCRIPTION_ID}"
         assert issue.remediation.role_definition_id == READER_ROLE_ID
+        assert issue.remediation.command == _reader_command(
+            "mosaic-managed-identity", f"/subscriptions/{AI_SUBSCRIPTION_ID}"
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "listed",
+        [[], [{"displayName": "Listed without an ID"}]],
+        ids=["empty", "unusable-entry"],
+    )
+    async def test_no_visible_subscription_offers_reader_on_each_candidate_scope(
+        self,
+        fake_aoai: FakeCognitiveServices,
+        gateway_repository: InMemoryGatewayRepository,
+        listed: list[dict[str, object]],
+    ) -> None:
+        fake_aoai.subscriptions = listed
+        for gateway in (
+            # The deployment subscription again, in the lowercase ARM returns it in.
+            _gateway(subscription_id=BOOTSTRAP_SUBSCRIPTION_ID, name="apim-a"),
+            _gateway(subscription_id=OTHER_SUBSCRIPTION_ID, name="apim-b"),
+            _gateway(subscription_id=OTHER_SUBSCRIPTION_ID.upper(), name="apim-c"),
+        ):
+            await gateway_repository.record_gateway_state(gateway)
+        service = build_endpoint_service(
+            fake_aoai,
+            gateway_repository=gateway_repository,
+            bootstrap_subscription_id=BOOTSTRAP_SUBSCRIPTION_ID.upper(),
+        )
+
+        view = await service.suggestions(ACTOR)
+
+        assert view.scan_status == SubscriptionScanStatus.NO_VISIBLE_SUBSCRIPTIONS
+        assert view.subscriptions_scanned == 0
+        assert view.scan_issues == []
+        assert view.scan_message is None
+        # Case-insensitively unique, deployment subscription first, then gateways by name.
+        scopes = [
+            f"/subscriptions/{BOOTSTRAP_SUBSCRIPTION_ID.upper()}",
+            f"/subscriptions/{OTHER_SUBSCRIPTION_ID}",
+        ]
+        assert [item.scope for item in view.scan_remediation] == scopes
+        for item, scope in zip(view.scan_remediation, scopes, strict=True):
+            assert item.role_name == READER_ROLE_NAME
+            assert item.role_definition_id == READER_ROLE_ID
+            assert item.principal_id == "mosaic-managed-identity"
+            assert item.command == _reader_command("mosaic-managed-identity", scope)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "bootstrap_subscription_id",
+        [None, "   ", '0" --role "Owner'],
+        ids=["unset", "blank", "not-a-subscription-id"],
+    )
+    async def test_no_known_subscription_falls_back_to_a_placeholder_scope(
+        self,
+        fake_aoai: FakeCognitiveServices,
+        gateway_repository: InMemoryGatewayRepository,
+        bootstrap_subscription_id: str | None,
+    ) -> None:
+        fake_aoai.subscriptions = []
+        service = build_endpoint_service(
+            fake_aoai,
+            gateway_repository=gateway_repository,
+            principal_id=None,
+            bootstrap_subscription_id=bootstrap_subscription_id,
+        )
+
+        view = await service.suggestions(ACTOR)
+
+        assert view.scan_status == SubscriptionScanStatus.NO_VISIBLE_SUBSCRIPTIONS
+        placeholder_scope = f"/subscriptions/{SUBSCRIPTION_PLACEHOLDER}"
+        assert len(view.scan_remediation) == 1
+        remediation = view.scan_remediation[0]
+        assert remediation.scope == "/subscriptions/<subscription-id>"
+        assert remediation.principal_id is None
+        assert remediation.command == _reader_command(IDENTITY_PLACEHOLDER, placeholder_scope)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("status_code", "message"),
+        [
+            (403, "MOSAIC's identity is not authorized for this Azure resource."),
+            (503, "Azure Resource Manager did not return a usable response."),
+        ],
+    )
+    async def test_list_failure_is_explained_and_other_sources_still_suggest(
+        self,
+        fake_aoai: FakeCognitiveServices,
+        gateway_repository: InMemoryGatewayRepository,
+        status_code: int,
+        message: str,
+    ) -> None:
+        fake_aoai.subscriptions_status = status_code
+        gateway = _gateway()
+        await gateway_repository.record_gateway_state(gateway)
+        await gateway_repository.replace_observed(
+            ACTOR.tenant_id,
+            gateway.id,
+            [
+                ObservedBackend(
+                    id=new_id("obsBackend"),
+                    tenant_id=ACTOR.tenant_id,
+                    gateway_id=gateway.id,
+                    snapshot_id="snap-1",
+                    name="aoai-backend",
+                    url="https://other-account.openai.azure.com/openai",
+                    ai_kind=AiBackendKind.AZURE_OPENAI,
+                )
+            ],
+            "snap-1",
+        )
+        service = build_endpoint_service(
+            fake_aoai,
+            gateway_repository=gateway_repository,
+            bootstrap_subscription_id=BOOTSTRAP_SUBSCRIPTION_ID,
+        )
+
+        view = await service.suggestions(ACTOR)
+
+        assert view.scan_status == SubscriptionScanStatus.LIST_FAILED
+        assert view.scan_message == message
+        # The upstream error body never reaches the response.
+        assert "denied" not in view.model_dump_json()
+        assert view.subscriptions_scanned == 0
+        assert view.scan_issues == []
+        assert [item.scope for item in view.scan_remediation] == [
+            f"/subscriptions/{BOOTSTRAP_SUBSCRIPTION_ID}",
+            f"/subscriptions/{AI_SUBSCRIPTION_ID}",
+        ]
+        assert [s.source for s in view.suggestions] == [SuggestionSource.GATEWAY_BACKEND]
+
+    @pytest.mark.asyncio
+    async def test_unexpected_list_failure_never_returns_exception_text(
+        self,
+        fake_aoai: FakeCognitiveServices,
+        gateway_repository: InMemoryGatewayRepository,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        async def fail(self: SubscriptionScanner) -> list[dict[str, object]]:
+            raise RuntimeError("Authorization: Bearer secret-token")
+
+        monkeypatch.setattr(SubscriptionScanner, "list_subscriptions", fail)
+        service = build_endpoint_service(fake_aoai, gateway_repository=gateway_repository)
+
+        view = await service.suggestions(ACTOR)
+
+        assert view.scan_status == SubscriptionScanStatus.LIST_FAILED
+        assert view.scan_message == UNEXPECTED_LIST_FAILURE
+        assert "secret-token" not in view.model_dump_json()
+        assert [item.scope for item in view.scan_remediation] == [
+            f"/subscriptions/{SUBSCRIPTION_PLACEHOLDER}"
+        ]
 
     @pytest.mark.asyncio
     async def test_registered_endpoints_are_marked(self, endpoint_service) -> None:
@@ -622,6 +807,10 @@ class TestSuggestions:
         view = await service.suggestions(ACTOR)
         assert view.suggestions == []
         assert view.subscriptions_scanned == 0
+        # A deployment that never enabled the scan has nothing to explain or remediate.
+        assert view.scan_status == SubscriptionScanStatus.NOT_CONFIGURED
+        assert view.scan_message is None
+        assert view.scan_remediation == []
 
 
 class TestStaleRuns:
