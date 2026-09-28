@@ -2,10 +2,12 @@ import type {
   AccessRequest,
   CatalogEntry,
   Entitlement,
+  EntitlementEnforcement,
   EntitlementResource,
   EntitlementRuntime,
   QuotaPeriod,
   ResolvedEntitlement,
+  TokenEnforcement,
 } from './types'
 
 const kindLabels: Record<EntitlementResource['kind'], string> = {
@@ -40,8 +42,12 @@ const runtimeLabels: Record<EntitlementRuntime['status'], string> = {
   unknown: 'Runtime status unknown',
 }
 
+export function runtimeStatusLabel(status: EntitlementRuntime['status']) {
+  return runtimeLabels[status]
+}
+
 export function describeRuntime(entitlement: Entitlement) {
-  if (entitlement.runtime) return runtimeLabels[entitlement.runtime.status]
+  if (entitlement.runtime) return runtimeStatusLabel(entitlement.runtime.status)
   return entitlement.enabled ? 'Recorded grant' : 'Disabled grant'
 }
 
@@ -81,20 +87,22 @@ export function describeBinding(entitlement: Entitlement) {
   return pieces.length > 0 ? pieces.join(' · ') : 'Usage attribution is configured.'
 }
 
-export function describeLimits(entitlement: Entitlement) {
-  const enforcement = entitlement.enforcement
+export function describeTokenLimits(tokens: TokenEnforcement | null | undefined) {
+  const limits: string[] = []
+  if (tokens?.tokensPerMinute != null) {
+    limits.push(`${formatNumber(tokens.tokensPerMinute)} tokens per minute`)
+  }
+  if (tokens?.tokenQuota != null && tokens.tokenQuotaPeriod) {
+    limits.push(`${formatNumber(tokens.tokenQuota)} tokens per ${periodLabels[tokens.tokenQuotaPeriod]}`)
+  }
+  return limits
+}
+
+export function describeEnforcementLimits(enforcement: EntitlementEnforcement | null | undefined) {
   if (!enforcement) {
     return ['No additional grant limits configured']
   }
-  const limits: string[] = []
-  if (enforcement.tokens?.tokensPerMinute != null) {
-    limits.push(`${formatNumber(enforcement.tokens.tokensPerMinute)} tokens per minute`)
-  }
-  if (enforcement.tokens?.tokenQuota != null && enforcement.tokens.tokenQuotaPeriod) {
-    limits.push(
-      `${formatNumber(enforcement.tokens.tokenQuota)} tokens per ${periodLabels[enforcement.tokens.tokenQuotaPeriod]}`,
-    )
-  }
+  const limits = describeTokenLimits(enforcement.tokens)
   if (
     enforcement.requests?.calls != null &&
     enforcement.requests.renewalPeriodSeconds != null
@@ -109,6 +117,10 @@ export function describeLimits(entitlement: Entitlement) {
     )
   }
   return limits.length > 0 ? limits : ['No additional grant limits configured']
+}
+
+export function describeLimits(entitlement: Entitlement) {
+  return describeEnforcementLimits(entitlement.enforcement)
 }
 
 export function sameResource(a: EntitlementResource, b: EntitlementResource) {

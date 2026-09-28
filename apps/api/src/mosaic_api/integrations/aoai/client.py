@@ -11,6 +11,7 @@ acquisition, retry, paging, and error mapping behave identically to gateway onbo
 from mosaic_api.domain import (
     AUTHORIZATION_API_VERSION,
     COGNITIVE_SERVICES_API_VERSION,
+    ROLE_DEFINITIONS_API_VERSION,
     SUBSCRIPTIONS_API_VERSION,
     CognitiveServicesResourceId,
 )
@@ -66,15 +67,17 @@ class CognitiveServicesClient:
             return None
 
     async def role_assignments_for_principal(self, principal_id: str) -> list[JsonObject] | None:
-        """Role assignments held by another principal that are visible at this scope.
+        """Role assignments held by another principal that are visible at the account.
 
-        ``$filter=principalId eq`` returns assignments at, **above, and below** the scope, so the
-        caller must inspect ``properties.scope`` before claiming an assignment is direct. Returns
-        ``None`` when MOSAIC lacks ``Microsoft.Authorization/roleAssignments/read``, which must be
-        reported as "not evaluated" rather than as "no access".
+        Read at the account because that is what a published API calls: a Foundry project's
+        models are deployed on its parent resource. ``$filter=principalId eq`` returns assignments
+        at, **above, and below** the scope, so a grant made on a project is still returned and
+        the caller must inspect ``properties.scope`` before claiming an assignment applies.
+        Returns ``None`` when MOSAIC lacks ``Microsoft.Authorization/roleAssignments/read``, which
+        must be reported as "not evaluated" rather than as "no access".
         """
 
-        url = f"{self._resource.canonical}/providers/Microsoft.Authorization/roleAssignments"
+        url = f"{self._account}/providers/Microsoft.Authorization/roleAssignments"
         try:
             return await self._arm.list(
                 url,
@@ -82,6 +85,41 @@ class CognitiveServicesClient:
                     "api-version": AUTHORIZATION_API_VERSION,
                     "$filter": f"principalId eq '{principal_id}'",
                 },
+                allow_not_found=True,
+            )
+        except (UpstreamAuthorizationError, UpstreamError):
+            return None
+
+    async def role_definition(self, role_definition_guid: str) -> JsonObject | None:
+        """One role definition, read at the account so MOSAIC's Reader there suffices.
+
+        Built-in definitions resolve at every scope, and a custom role assigned at or above the
+        account is assignable there. ``None`` means "could not read", never "grants nothing".
+        """
+
+        url = (
+            f"{self._account}/providers/Microsoft.Authorization/roleDefinitions"
+            f"/{role_definition_guid}"
+        )
+        try:
+            return await self._arm.get(
+                url, params={"api-version": ROLE_DEFINITIONS_API_VERSION}, allow_not_found=True
+            )
+        except (UpstreamAuthorizationError, UpstreamError):
+            return None
+
+    async def deny_assignments(self) -> list[JsonObject] | None:
+        """Deny assignments that apply at the account, or ``None`` if they cannot be read.
+
+        ``atScope()`` returns those at the account and above it, which are the only ones that can
+        block a call the gateway makes to the account.
+        """
+
+        url = f"{self._account}/providers/Microsoft.Authorization/denyAssignments"
+        try:
+            return await self._arm.list(
+                url,
+                params={"api-version": AUTHORIZATION_API_VERSION, "$filter": "atScope()"},
                 allow_not_found=True,
             )
         except (UpstreamAuthorizationError, UpstreamError):

@@ -106,6 +106,50 @@ describe('PublishModelDialog', () => {
     const table = await screen.findByRole('table', { name: 'Publishable models' })
     expect(within(table).getByText('gpt-4o-prod')).toBeVisible()
     expect(within(table).getByText('gpt-4o')).toBeVisible()
+    expect(within(table).getByText('Runtime permissions observed')).toBeVisible()
+  })
+
+  it('does not present a conditional role assignment as either access or a denial', async () => {
+    api.listPublishableModels.mockResolvedValue([
+      {
+        ...publishableModel,
+        runtimeAccess: {
+          ...publishableModel.runtimeAccess!,
+          canInvoke: false,
+          evaluation: 'notEvaluated',
+          reason: 'conditional',
+          message: 'The role is assigned under an ABAC condition MOSAIC cannot prove holds.',
+        },
+      },
+    ])
+
+    renderDialog()
+
+    const table = await screen.findByRole('table', { name: 'Publishable models' })
+    expect(within(table).getByText('Runtime access not confirmed')).toBeVisible()
+    expect(within(table).getByText(/ABAC condition MOSAIC cannot prove holds/)).toBeVisible()
+    expect(within(table).queryByText('Gateway may not be able to call this model')).not.toBeInTheDocument()
+  })
+
+  it('warns when the gateway has no network path to the endpoint', async () => {
+    api.listPublishableModels.mockResolvedValue([
+      {
+        ...publishableModel,
+        runtimeAccess: {
+          ...publishableModel.runtimeAccess!,
+          canInvoke: false,
+          reason: 'networkUnreachable',
+          networkReachability: 'unreachable',
+          message: 'Public network access to this resource is disabled.',
+        },
+      },
+    ])
+
+    renderDialog()
+
+    const table = await screen.findByRole('table', { name: 'Publishable models' })
+    expect(within(table).getByText('Gateway may not be able to call this model')).toBeVisible()
+    expect(within(table).getByText(/Public network access to this resource is disabled/)).toBeVisible()
   })
 
   it('does not allow choosing a gateway outside manage mode', async () => {
@@ -257,6 +301,103 @@ describe('PublishModelDialog', () => {
     expect(await screen.findByText(/The governed-access snapshot is missing/)).toBeVisible()
     expect(screen.getByRole('button', { name: 'Apply plan' })).toBeDisabled()
     expect(api.applyPublishPlan).not.toHaveBeenCalled()
+  })
+
+  it('lists a deployment MOSAIC cannot publish with its reason and does not let it be chosen', async () => {
+    const reason = 'Realtime models use WebSocket sessions, which MOSAIC can\'t publish yet.'
+    api.listPublishableModels.mockResolvedValue([
+      publishableModel,
+      {
+        ...publishableModel,
+        deploymentName: 'gpt-realtime',
+        modelName: 'gpt-realtime',
+        modelFormat: 'OpenAI',
+        capability: 'realtime',
+        apiShape: null,
+        publishable: false,
+        unpublishableReason: reason,
+      },
+    ])
+    const user = userEvent.setup()
+    renderDialog()
+
+    const table = await screen.findByRole('table', { name: 'Publishable models' })
+    expect(within(table).getByText('gpt-realtime')).toBeVisible()
+    expect(within(table).getByText('Not publishable')).toBeVisible()
+    expect(within(table).getByText(reason)).toBeVisible()
+    const blocked = within(table).getByRole('checkbox', { name: 'Publish gpt-realtime' })
+    expect(blocked).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Configure' })).toBeDisabled()
+    await user.click(within(table).getByRole('checkbox', { name: 'Publish gpt-4o-prod' }))
+    expect(screen.getByRole('button', { name: 'Configure' })).toBeEnabled()
+  })
+
+  it('explains that a classic tier cannot token-limit Anthropic models and publishes without limits', async () => {
+    const note = 'API Management applies token limits and token metrics to the Anthropic Messages API only on v2 tiers (Basic v2, Standard v2 and Premium v2). This gateway uses the Developer tier, a classic tier, so this publication applies no token limits or token metrics. Per-grant call limits are still available through governed access.'
+    api.listPublishableModels.mockResolvedValue([
+      {
+        ...publishableModel,
+        provider: 'azureAiFoundry',
+        deploymentName: 'claude-sonnet-4-5',
+        modelName: 'claude-sonnet-4-5',
+        modelFormat: 'Anthropic',
+        modelPublisher: 'Anthropic',
+        capability: 'chat',
+        apiShape: 'anthropicMessages',
+        publishable: true,
+        tokenLimitsSupported: false,
+        tokenLimitsNote: note,
+      },
+    ])
+    const user = userEvent.setup()
+    renderDialog()
+
+    const table = await screen.findByRole('table', { name: 'Publishable models' })
+    expect(within(table).getByText('Anthropic Messages API')).toBeVisible()
+    expect(within(table).getByText(/· Anthropic/)).toBeVisible()
+    await user.click(within(table).getByRole('checkbox', { name: 'Publish claude-sonnet-4-5' }))
+    await user.click(screen.getByRole('button', { name: 'Configure' }))
+
+    expect(screen.getByText('Token limits unavailable')).toBeVisible()
+    expect(screen.getByText(note)).toBeVisible()
+    expect(screen.queryByLabelText('Counter key expression')).toBeNull()
+    expect(screen.queryByLabelText('Tokens per minute')).toBeNull()
+    await user.click(screen.getByRole('button', { name: 'Review plan' }))
+
+    await waitFor(() => expect(api.createPublication).toHaveBeenCalledTimes(1))
+    expect(api.createPublication).toHaveBeenCalledWith(
+      expect.objectContaining({ deploymentName: 'claude-sonnet-4-5', enforcement: null }),
+    )
+  })
+
+  it('keeps token limits for Anthropic models when the gateway tier supports them', async () => {
+    api.listPublishableModels.mockResolvedValue([
+      {
+        ...publishableModel,
+        provider: 'azureAiFoundry',
+        deploymentName: 'claude-haiku-4-5',
+        modelName: 'claude-haiku-4-5',
+        modelFormat: 'Anthropic',
+        apiShape: 'anthropicMessages',
+        tokenLimitsSupported: true,
+        tokenLimitsNote: null,
+      },
+    ])
+    const user = userEvent.setup()
+    renderDialog()
+
+    await user.click(await screen.findByRole('checkbox', { name: 'Publish claude-haiku-4-5' }))
+    await user.click(screen.getByRole('button', { name: 'Configure' }))
+
+    expect(screen.queryByText('Token limits unavailable')).toBeNull()
+    expect(screen.getByLabelText('Tokens per minute')).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Review plan' }))
+
+    await waitFor(() => expect(api.createPublication).toHaveBeenCalledTimes(1))
+    expect(api.createPublication.mock.calls[0][0].enforcement).toMatchObject({
+      counterKeyExpression: '@(context.Subscription.Id)',
+      tokensPerMinute: 12000,
+    })
   })
 
   it('shows a stale-plan refresh failure and does not allow reapplying the rejected plan', async () => {

@@ -336,6 +336,51 @@
   gap: 0.5rem;
 }
 
+.settingsList {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.25rem 1rem;
+  margin: 0;
+}
+
+.settingsList div {
+  display: contents;
+}
+
+.settingsList dt {
+  color: var(--colorNeutralForeground3);
+}
+
+.settingsList dd {
+  margin: 0;
+}
+
+.findings {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.findingList {
+  margin: 0;
+  padding-inline-start: 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.findingList code {
+  font-family: var(--fontFamilyMonospace);
+  font-size: 0.8125rem;
+  word-break: break-all;
+}
+
+.dataActions summary {
+  cursor: pointer;
+  color: var(--colorNeutralForeground2);
+  font-size: var(--fontSizeBase200);
+}
+
 .remediation {
   display: flex;
   flex-direction: column;

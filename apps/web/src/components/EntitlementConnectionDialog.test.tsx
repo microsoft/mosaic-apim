@@ -208,4 +208,25 @@ describe('EntitlementConnectionDialog', () => {
     expect(screen.queryByText(revealed.key)).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Copy revealed key' })).not.toBeInTheDocument()
   })
+
+  it('shows the Messages operation and Anthropic client guidance for an Anthropic model', async () => {
+    api.getEntitlementConnection.mockResolvedValue({
+      ...connectionInfo,
+      deploymentName: 'claude-sonnet-4-5',
+      apiShape: 'anthropicMessages',
+      operations: [{ name: 'messages', method: 'POST', path: '/anthropic/v1/messages' }],
+      publicationLimits: null,
+    })
+    renderDialog()
+    expect(await screen.findByText('POST /anthropic/v1/messages · messages')).toBeVisible()
+    expect(screen.getByText(/uses the Anthropic Messages API/)).toBeVisible()
+    expect(screen.getByText(new RegExp(`${connectionInfo.endpoint}/anthropic`))).toBeVisible()
+    expect(screen.getByText('Publication: Token limits are unavailable for this model on this gateway\'s tier.')).toBeVisible()
+  })
+
+  it('does not show Anthropic guidance for other models', async () => {
+    renderDialog()
+    expect(await screen.findByText('POST /chat/completions · chat')).toBeVisible()
+    expect(screen.queryByText(/uses the Anthropic Messages API/)).not.toBeInTheDocument()
+  })
 })

@@ -136,6 +136,12 @@ export interface AccessRequest {
   updatedAt: string
 }
 
+/** Approving creates the requester's grant intent with these limits, never an APIM change. */
+export interface AccessRequestApproval {
+  note?: string | null
+  enforcement?: EntitlementEnforcement | null
+}
+
 export interface PolicyPreview {
   contentSha256: string
   facets: PolicyFacet[]
@@ -239,6 +245,10 @@ export interface GatewayCapabilities {
   mcpServers: CapabilitySupport
   principalId?: string | null
   identityObserved: boolean
+  /** `None`, `External`, or `Internal`; absent when MOSAIC has not recorded it. */
+  virtualNetworkType?: string | null
+  /** Where the gateway's calls to a public endpoint come from; empty when not deterministic. */
+  egressIpAddresses?: string[]
   notes: string[]
 }
 
@@ -558,13 +568,47 @@ export type ModelEndpointStatus =
  * How MOSAIC established whether a gateway can invoke an endpoint.
  *
  * `notEvaluated` is deliberately distinct from a negative answer: MOSAIC not being able to read
- * role assignments is not the same as the gateway lacking the role.
+ * role assignments is not the same as the gateway lacking the role. It is also used whenever
+ * something MOSAIC cannot evaluate stands in the way, such as an ABAC condition.
  */
 export type RuntimeAccessEvaluation =
   | 'roleAssignments'
   | 'noGatewayIdentity'
   | 'notApplicable'
   | 'notEvaluated'
+
+/** What the runtime check found. Absent on results recorded before it was introduced. */
+export type RuntimeAccessReason =
+  | 'granted'
+  | 'missingRole'
+  | 'narrowerScope'
+  | 'conditional'
+  | 'roleUnreadable'
+  | 'denyAssignment'
+  | 'networkUnreachable'
+  | 'networkUnverified'
+  | 'assignmentsUnreadable'
+  | 'noGatewayIdentity'
+  | 'identityNotObserved'
+
+export type RuntimeRoleFindingKind =
+  | 'sufficient'
+  | 'insufficient'
+  | 'narrowerScope'
+  | 'conditional'
+  | 'unreadable'
+
+/** One of the gateway's role assignments, and what it does for the published API. */
+export interface RuntimeRoleFinding {
+  kind: RuntimeRoleFindingKind
+  roleName?: string | null
+  roleDefinitionId?: string | null
+  scope: string
+  inherited: boolean
+  missingDataActions: string[]
+}
+
+export type NetworkReachability = 'reachable' | 'unreachable' | 'unverified' | 'unknown'
 
 export type SuggestionSource = 'bootstrap' | 'gatewayBackend' | 'subscriptionScan'
 
@@ -585,11 +629,21 @@ export interface GatewayRuntimeAccess {
   apimPrincipalId?: string | null
   canInvoke: boolean
   evaluation: RuntimeAccessEvaluation
+  reason?: RuntimeAccessReason | null
   checkedAt?: string | null
+  /** The role MOSAIC recommends. Any role covering `requiredDataActions` is accepted. */
   requiredRoleName?: string | null
   requiredRoleDefinitionId?: string | null
+  /** The role that satisfied the check, which need not be the recommended one. */
+  grantedRoleName?: string | null
+  grantedRoleDefinitionId?: string | null
   assignmentScope?: string | null
   inherited: boolean
+  /** The scope the published API calls: always the account, even for a Foundry project. */
+  evaluatedScope?: string | null
+  requiredDataActions?: string[]
+  roleFindings?: RuntimeRoleFinding[]
+  networkReachability?: NetworkReachability
   remediation?: AccessRemediation | null
   message?: string | null
 }
@@ -600,6 +654,10 @@ export interface ModelEndpointCapabilities {
   location?: string | null
   provisioningState?: string | null
   publicNetworkAccess?: string | null
+  /** `networkAcls.defaultAction`: `Deny` admits only the listed addresses and networks. */
+  networkDefaultAction?: string | null
+  networkIpRules?: string[]
+  networkVirtualNetworkRuleCount?: number
   localAuthDisabled?: boolean | null
   managementApiVersion: string
   notes: string[]
@@ -667,6 +725,25 @@ export interface PublishedResource {
   appliedAt: string
 }
 
+/**
+ * The curated operation set, backend host, and runtime auth a published model API uses. A Foundry
+ * resource serves Anthropic models through the Anthropic Messages API (ADR 0012).
+ */
+export type ApiShape = 'azureOpenAi' | 'foundryModels' | 'anthropicMessages'
+
+export type DeploymentCapability =
+  | 'chat'
+  | 'responses'
+  | 'completion'
+  | 'embeddings'
+  | 'image'
+  | 'transcription'
+  | 'speech'
+  | 'realtime'
+  | 'video'
+  | 'rerank'
+  | 'unknown'
+
 export interface PublishableModel {
   modelEndpointId: string
   endpointName: string
@@ -674,6 +751,16 @@ export interface PublishableModel {
   deploymentName: string
   modelName: string | null
   modelVersion: string | null
+  modelFormat?: string | null
+  modelPublisher?: string | null
+  capability?: DeploymentCapability
+  apiShape?: ApiShape | null
+  /** False when MOSAIC has no curated shape for this deployment; the reason says why. */
+  publishable?: boolean
+  unpublishableReason?: string | null
+  /** False when the gateway's tier can't meter this shape; the note says why. */
+  tokenLimitsSupported?: boolean
+  tokenLimitsNote?: string | null
   publicationId: string | null
   publicationStatus: PublicationStatus | null
   suggestedApiName: string
@@ -696,7 +783,8 @@ export interface ModelAccessSnapshot {
   version: number
   settings: ModelAccessSettings
   audience?: string | null
-  publicationEnforcement: TokenEnforcement
+  /** Null when the publication's shape can't be token-metered on its gateway's tier. */
+  publicationEnforcement: TokenEnforcement | null
   grants: ModelAccessGrant[]
 }
 
@@ -721,8 +809,10 @@ export interface Publication {
   productName: string
   subscriptionName: string
   subscriptionRequired: boolean
-  enforcement: TokenEnforcement
+  /** Null when the publication's shape can't be token-metered on its gateway's tier. */
+  enforcement: TokenEnforcement | null
   shapeVersion: string
+  apiShape?: ApiShape | null
   status: PublicationStatus
   resources: PublishedResource[]
   lastPlanId: string | null
@@ -811,8 +901,9 @@ export interface ModelConnection {
   entraAudience?: string | null
   entraScope?: string | null
   subscriptionHeader: 'Ocp-Apim-Subscription-Key'
+  apiShape?: ApiShape | null
   operations: { name: string; method: string; path: string }[]
-  publicationLimits: TokenEnforcement
+  publicationLimits: TokenEnforcement | null
   grantLimits?: EntitlementEnforcement | null
 }
 

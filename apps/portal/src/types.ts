@@ -82,10 +82,15 @@ export interface EntitlementBinding {
   source: 'inferred' | 'manual' | 'orchestrated' | null
 }
 
+export interface ModelAccessSettings {
+  keysEnabled: boolean
+  entraEnabled: boolean
+}
+
 export interface EntitlementRuntime {
   publicationId: string
   status: 'pending' | 'applying' | 'applied' | 'revocationPending' | 'revoked' | 'failed' | 'unknown'
-  appliedMethods: { keysEnabled: boolean; entraEnabled: boolean } | null
+  appliedMethods: ModelAccessSettings | null
   subscriptionName: string | null
   appliedAt: string | null
   error: string | null
@@ -113,8 +118,55 @@ export interface ResolvedEntitlement {
   viaGroupName: string | null
 }
 
+export interface ConnectionOperation {
+  name: string
+  method: string
+  /** Relative to the connection endpoint. */
+  path: string
+}
+
+/** The API a published model speaks. Claude models use the Anthropic Messages API (ADR 0012). */
+export type ApiShape = 'azureOpenAi' | 'foundryModels' | 'anthropicMessages'
+
+export interface ModelConnection {
+  entitlementId: string
+  publicationId: string
+  gatewayId: string
+  endpoint: string
+  deploymentName: string
+  tenantId: string
+  runtime?: EntitlementRuntime | null
+  appliedMethods?: ModelAccessSettings | null
+  entraAudience?: string | null
+  entraScope?: string | null
+  /**
+   * Public client ID that people sign in with to request a model token. Null when the deployment
+   * has no MOSAIC model client or the grant was applied for an earlier runtime registration.
+   * Older APIs omit it.
+   */
+  entraClientId?: string | null
+  subscriptionHeader: string
+  /** Older APIs omit it. */
+  apiShape?: ApiShape | null
+  operations: ConnectionOperation[]
+  /** Null when the gateway's tier can't apply token limits to this model's API. */
+  publicationLimits: TokenEnforcement | null
+  grantLimits?: EntitlementEnforcement | null
+}
+
+export type KeySlot = 'primary' | 'secondary'
+
+export interface KeyRevealResult {
+  entitlementId: string
+  subscriptionName: string
+  slot: KeySlot
+  key: string
+}
+
 export interface ApiErrorBody {
   code?: string
   message?: string
+  /** FastAPI's own errors carry a string, or a list for request validation failures. */
+  detail?: unknown
   details?: Record<string, unknown>
 }

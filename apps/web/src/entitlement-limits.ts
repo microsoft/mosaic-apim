@@ -1,4 +1,10 @@
-import type { Entitlement, ModelAccessSettings, QuotaPeriod, TokenEnforcement } from './types'
+import type {
+  Entitlement,
+  EntitlementEnforcement,
+  ModelAccessSettings,
+  QuotaPeriod,
+  TokenEnforcement,
+} from './types'
 
 export const DEFAULT_COUNTER_KEY = '@(context.Subscription?.Key)'
 export const GOVERNED_COUNTER_KEY = '@(context.Subscription.Id)'
@@ -10,6 +16,64 @@ export const QUOTA_PERIODS: QuotaPeriod[] = [
   'Monthly',
   'Yearly',
 ]
+
+/** Grant limits as typed. Strings, so an empty field means "no limit" rather than zero. */
+export interface LimitForm {
+  tokensPerMinute: string
+  tokenQuota: string
+  tokenQuotaPeriod: QuotaPeriod
+  calls: string
+  renewalPeriodSeconds: string
+}
+
+export const emptyLimitForm: LimitForm = {
+  tokensPerMinute: '',
+  tokenQuota: '',
+  tokenQuotaPeriod: 'Monthly',
+  calls: '',
+  renewalPeriodSeconds: '60',
+}
+
+/**
+ * Start a grant's limits from its publication's per-grant token limit, the only default a
+ * governed resource records. Nothing else prefills, so an administrator never approves a limit
+ * the resource does not already enforce.
+ */
+export function limitFormFrom(tokens?: TokenEnforcement | null): LimitForm {
+  return {
+    ...emptyLimitForm,
+    tokensPerMinute: tokens?.tokensPerMinute ? String(tokens.tokensPerMinute) : '',
+    tokenQuota: tokens?.tokenQuota ? String(tokens.tokenQuota) : '',
+    tokenQuotaPeriod: tokens?.tokenQuotaPeriod ?? emptyLimitForm.tokenQuotaPeriod,
+  }
+}
+
+/** Governed model grants must count on the subscription ID the managed policy keys on. */
+export function buildEnforcement(form: LimitForm, governed: boolean): EntitlementEnforcement | null {
+  const tokensPerMinute = Number(form.tokensPerMinute) || undefined
+  const tokenQuota = Number(form.tokenQuota) || undefined
+  const calls = Number(form.calls) || undefined
+  const renewalPeriodSeconds = Number(form.renewalPeriodSeconds) || undefined
+  const counterKeyExpression = governed ? GOVERNED_COUNTER_KEY : DEFAULT_COUNTER_KEY
+
+  const enforcement: EntitlementEnforcement = {}
+  if (tokensPerMinute || tokenQuota) {
+    enforcement.tokens = {
+      counterKeyExpression,
+      estimatePromptTokens: true,
+      ...(tokensPerMinute ? { tokensPerMinute } : {}),
+      ...(tokenQuota ? { tokenQuota, tokenQuotaPeriod: form.tokenQuotaPeriod } : {}),
+    }
+  }
+  if (calls && renewalPeriodSeconds) {
+    enforcement.requests = {
+      counterKeyExpression,
+      calls,
+      renewalPeriodSeconds,
+    }
+  }
+  return enforcement.tokens || enforcement.requests ? enforcement : null
+}
 
 function periodPhrase(period: QuotaPeriod): string {
   switch (period) {
@@ -80,13 +144,16 @@ export function describeLimits(
   if (sentences.length === 0) {
     sentences.push('No grant-specific limit is configured.')
   }
-  if (publicationLimits) {
+  if (publicationLimits !== undefined) {
     sentences.push(...describePublicationLimits(publicationLimits).map((limit) => `Publication: ${limit}`))
   }
   return sentences
 }
 
-export function describePublicationLimits(enforcement: TokenEnforcement): string[] {
+export function describePublicationLimits(enforcement: TokenEnforcement | null | undefined): string[] {
+  if (!enforcement) {
+    return ["Token limits are unavailable for this model on this gateway's tier."]
+  }
   if (!enforcement.tokensPerMinute && !enforcement.tokenQuota) {
     return ['No publication token limit is configured.']
   }

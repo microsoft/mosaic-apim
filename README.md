@@ -40,8 +40,8 @@ flowchart LR
 
 The administrator console and the end-user portal are separate applications with separate
 Entra registrations and separate app roles, so they are independently governable. The portal
-reaches only `/api/v1/portal/*`, and every route there is scoped to the caller's own token —
-none of them accept a subject or requester parameter. See
+reaches only `/api/v1/portal/*` and the current-user `/api/v1/me/*` routes. Every one of them is
+scoped to the caller's own token, and none accepts a subject or requester parameter. See
 [ADR 0008](docs/adr/0008-portal-identity-and-role-separation.md).
 
 | Concern | Source of truth | MOSAIC responsibility |
@@ -70,16 +70,19 @@ explicit local/test modes and application startup rejects them when `MOSAIC_ENVI
   named value metadata into Cosmos
 - Entitlements as desired state: grants to a user, group, or application over a model API, MCP
   server, product, or model deployment; token and request limits; catalog visibility; access
-  requests; and effective-access resolution that reports whether a grant arrived directly or
-  through a group
+  requests, whose approval creates and links the requester's grant intent; and effective-access
+  resolution that reports whether a grant arrived directly or through a group
 - Governed access for direct user/application grants to MOSAIC-published model APIs: reviewed
   APIM deployment, key or Entra authentication, shared token/request limits, revocation, and
   distinct desired versus applied state
-- Current-user entitlement and connection APIs, plus audited on-demand key retrieval; the
-  portal's catalog/access-request screens are available, while portal key controls remain deferred
+- Current-user entitlement and connection APIs, plus audited on-demand key retrieval, which the
+  portal's My access page uses to show connection details and reveal keys for applied direct
+  model grants
 - Model endpoint onboarding: register Azure OpenAI and Azure AI Foundry resources, verify MOSAIC's
   control-plane access, discover the deployments and available models on them, and report — per
-  registered gateway — whether that gateway's managed identity can actually call them
+  registered gateway — whether that gateway's managed identity can actually call them, judged by
+  the data actions its roles grant on the resource the published API calls and by whether the
+  gateway has a network path to it
 - MCP server registration: register a Model Context Protocol server by URL, connect to it as a
   read-only client, and record the tools it declares — including the input schemas, output schemas,
   and behaviour annotations that API Management's management plane does not expose
@@ -104,7 +107,9 @@ explicit local/test modes and application startup rejects them when `MOSAIC_ENVI
 - Separate non-root frontend/backend containers
 - End-user portal: a separate SPA on its own Entra registration and the `User` app role, where
   a non-administrator sees what they are entitled to, how each grant reached them, the catalog
-  of governed resources, and can request access to something they cannot yet use
+  of governed resources, and can request access to something they cannot yet use. For an applied
+  direct model grant, the portal also shows the endpoint, operations, accepted credentials, limits,
+  and placeholder code samples, and reveals a key on request
 - ACR remote builds for every image, so deployment does not depend on a local Docker daemon
 - `azd` and modular Bicep for three Linux Web Apps on one plan, ACR, Cosmos, Key Vault, APIM,
   Log Analytics, Application Insights, diagnostics, managed identities, and narrow RBAC
@@ -509,22 +514,69 @@ Every endpoint has **two** access relationships, held by two different identitie
 They are reported separately, because an endpoint MOSAIC reads perfectly well can still be
 uncallable through a gateway.
 
-MOSAIC asks only for `Reader`:
+MOSAIC asks only for `Reader`. For the gateway it recommends a built-in role, but it accepts **any**
+role whose data actions cover the operations the published API calls:
 
-| Purpose | Role | Role definition ID |
+| Purpose | Recommended role | Role definition ID |
 | --- | --- | --- |
 | MOSAIC enumerating models | Reader | `acdd72a7-3385-48ef-bd42-f606fba81ae7` |
-| Gateway calling an Azure OpenAI resource | Cognitive Services OpenAI User | `5e0bd9bd-7b93-4f28-af87-19fc36ad61bd` |
-| Gateway calling an AI Services resource | Cognitive Services User | `a97b65f3-24c7-4388-baec-2e87135dc908` |
-| Gateway calling a Foundry project | Foundry User | `53ca6127-db72-4b80-b1b0-d745d6d5456d` |
+| Gateway calling an Azure OpenAI resource (`kind: OpenAI`) | Cognitive Services OpenAI User | `5e0bd9bd-7b93-4f28-af87-19fc36ad61bd` |
+| Gateway calling an AI Services or Foundry resource, including one registered by Foundry project, and its Claude models | Foundry User | `53ca6127-db72-4b80-b1b0-d745d6d5456d` |
+| Gateway calling a resource MOSAIC cannot read yet | Foundry User, which is accepted for either kind | `53ca6127-db72-4b80-b1b0-d745d6d5456d` |
+
+How the gateway's access is judged:
+
+- **The scope is the account the published API calls.** This holds even for an endpoint registered
+  by Foundry project, because models are deployed on the parent resource. A grant on the project
+  does not reach the account, so it is reported as narrower than what is needed and is not
+  counted. Grants on the resource group or subscription do count, and are labelled as inherited.
+- **MOSAIC reads each assignment's role definition.** It checks `dataActions` minus
+  `notDataActions` against the exact data actions of the operations it publishes. So Cognitive
+  Services User, Cognitive Services OpenAI Contributor, or a custom role counts wherever it covers
+  them.
+- **An AI Services account must cover every API MOSAIC publishes from it.** That includes the
+  Anthropic Messages API for Claude, even before a Claude model is deployed. Both of its routes need
+  `Microsoft.CognitiveServices/accounts/AIServices/providers/action`.
+  - Foundry User and Cognitive Services User grant it.
+  - Azure AI Developer doesn't. MOSAIC reports it as missing and names the API that needs the
+    action.
+  - The `services.ai.azure.com` host and the `https://ai.azure.com` token audience that API uses
+    don't change the scope or the roles: it's the same account.
+- **Unreadable definitions fall back to a list.** When MOSAIC cannot read a role definition, only
+  built-ins already known to be sufficient are trusted.
+- **Conditions and deny assignments stop short of "can invoke".** A role assigned under an ABAC
+  condition MOSAIC cannot prove holds for those calls is reported as *not confirmed*, never as
+  access. A deny assignment covering those calls overrides the role.
+- **The network path is part of the verdict.** If public network access is disabled and the gateway
+  is not connected to a virtual network, the gateway cannot invoke, whatever roles it holds.
+  Private endpoints and firewalls MOSAIC cannot fully evaluate are reported as *not confirmed*, not
+  as a denial.
+- **Advice matches the check.** Whatever MOSAIC recommends, the check accepts. When the kind is not
+  known yet, MOSAIC says so, and granting it `Reader` first lets it recommend the exact role.
+
+[ADR 0013](docs/adr/0013-runtime-readiness-by-data-actions.md) records these rules.
+
+On the Models page, select an endpoint to open its **Access** card.
+
+- **Gateways calling this endpoint** gives each gateway a verdict: *can invoke*, *cannot invoke*,
+  or *not confirmed*.
+  - When a role satisfies the check, it names the role and the scope where it is assigned.
+  - When no role does, it gives the reason for each role the gateway holds: missing data actions, a
+    narrower scope, or a condition.
+  - When a role is missing, it shows the recommended role and the `az role assignment create`
+    command. MOSAIC never runs the command itself.
+- **Endpoint settings**, above the gateway verdicts, shows the resource kind, public network access,
+  firewall, and key authentication. Those settings decide whether a gateway can reach the endpoint
+  at all.
 
 Every role whose name begins `Cognitive Services` or `Foundry` that grants control-plane deployment
 read also grants data-plane inference, and most also grant `listKeys`. `Reader` is the only built-in
-that grants the read alone, and it additionally covers the role-assignment read the runtime check
-needs. MOSAIC also emits a narrower custom role definition for operators who want one; that role
-omits the role-assignment read, so runtime access then reports as *not evaluated* rather than
-guessing. The runtime roles are matched by GUID rather than name because Microsoft renamed the
-Foundry roles in 2026 (`Azure AI User` became `Foundry User`) without changing their IDs.
+that grants the read alone. It also covers the role-assignment, role-definition, and
+deny-assignment reads that the runtime check needs. MOSAIC also emits a narrower custom role
+definition for operators who want one. That role omits the role-assignment read, so runtime access
+then reports as *not confirmed* rather than guessing. Roles are compared by GUID rather than name,
+because Microsoft renamed the Foundry roles in 2026 (`Azure AI User` became `Foundry User`) without
+changing their IDs.
 
 MOSAIC finds endpoints three ways: a pasted resource ID, hosts it already observed as AI backends
 inside a registered gateway, and an enumeration of Azure AI accounts across visible subscriptions.
@@ -553,21 +605,35 @@ Applying creates, in dependency order:
 
 | Order | Resource | Purpose |
 | --- | --- | --- |
-| 1 | `mosaic-*` policy fragment | Managed-identity authentication, backend routing, token limit, token metric |
+| 1 | `mosaic-*` policy fragment | Managed-identity authentication, backend routing, and, where the gateway's tier supports them, token limit and token metric |
 | 2 | Backend | The model endpoint origin, with query and fragment stripped |
 | 3 | API | The route, created with no `serviceUrl` so removing the fragment fails closed |
-| 4 | Operations | A curated, versioned set per provider |
+| 4 | Operations | A curated, versioned set per API shape |
 | 5 | API policy | A thin `<include-fragment>` of the MOSAIC fragment |
 | 6 | Product | Carries the API |
 | 7 | Product/API link | |
 | 8 | Subscription | Only when the publication requires one |
 
 Operation sets are shipped and versioned by MOSAIC rather than fetched from the provider, so a plan
-is deterministic and does not couple an APIM write to a third-party document being reachable. Azure
-OpenAI publishes chat completions, completions, embeddings, image generations, audio transcriptions
-and translations, and responses. Azure AI Services publishes the Foundry Models inference routes. A
-publication records the shape version that produced it, and OpenAI-compatible endpoints have no
-curated shape and are refused rather than guessed at.
+is deterministic and does not couple an APIM write to a third-party document being reachable. Each
+publication records the API shape it was created with, chosen from the deployment's model format
+and capability ([ADR 0012](docs/adr/0012-format-aware-model-publishing.md)):
+
+| Shape | Deployments | Operations |
+| --- | --- | --- |
+| Azure OpenAI | Azure OpenAI chat, responses, completion, embeddings, image and transcription models | Chat completions, completions, embeddings, image generations, audio transcriptions and translations, and responses |
+| Foundry Models | Foundry (AI Services) chat and embeddings models | The Foundry Models inference routes under `/models` |
+| Anthropic Messages | Claude models on Foundry | `/anthropic/v1/messages` and `/anthropic/v1/messages/count_tokens`, served from the resource's `services.ai.azure.com` host |
+
+Deployments no shape can serve, such as realtime, video and text-to-speech models, are listed as not
+publishable with a reason, and creating a publication for one is refused. A publication also records
+the shape version that produced it. OpenAI-compatible endpoints have no curated shape, and are
+refused rather than guessed at.
+
+API Management meters the Anthropic Messages API with `llm-token-limit` and `llm-emit-token-metric`
+only on v2 tiers. On a classic tier such as Developer, the publish wizard explains this, and a Claude
+publication applies no token limits or token metrics. Governed grants on it can use call limits
+instead.
 
 Every step records whether it created the resource or found one already there. If a step fails,
 MOSAIC reverses the completed steps and deletes **only** resources that run created — ownership is
@@ -601,8 +667,9 @@ desired state. Other custom counter expressions are rejected instead of weakenin
 
 Token-governed model access is constrained by APIM's supported chat-completions/response schemas.
 Unsupported image, audio, or embedding operations must not be mistaken for metered calls.
-For responses and AI Services chat routes that do not include a deployment in their path, the
-request body's `model` must exactly match the deployment name shown in connection information.
+For responses, AI Services chat and Anthropic Messages routes that do not include a deployment in
+their path, the request body's `model` must exactly match the deployment name shown in connection
+information. On an Anthropic publication, governed access permits only the Messages operation.
 Publication limits remain safeguards even when a grant has no additional limits. Native rate and
 quota enforcement is distributed and gateway-scoped, not an exact global accounting ledger.
 
@@ -622,9 +689,22 @@ registration, because that is the only one the model client is consented for. Ap
 sign in as themselves.
 
 The administrator equivalents omit `/me` and require `Admin`. Knowing another entitlement or
-application ID does not authorize a reveal. Application-owner delegation and portal key/connection
-controls remain future work; the portal already includes My access, catalog, and access-request
-screens. A current-user route always uses the token's identity, never a caller-supplied user ID.
+application ID does not authorize a reveal. Application-owner delegation remains future work.
+A current-user route always uses the token's identity, never a caller-supplied user ID.
+
+In the portal, each model grant on **My access** has a **Connection details** button. The
+connection loads only when it is expanded, and it shows the endpoint, full operation URLs,
+deployment, key header, accepted methods, Entra tenant, client ID, scope and audience, limits, and
+whether the grant is applied to APIM. When the connection has an `entraClientId`, a **Get a token
+(Python)** sample signs the person in with the model client using a device code. Without one, the
+panel asks them to get the client ID from an administrator. **Show primary key** and **Show
+secondary key** reveal one key for 60 seconds. The key is also hidden by **Hide key**, when the
+panel closes, and when the user navigates or leaves the page. The key is held only in component
+state, never in the query cache, browser storage, the URL, or logs. Code samples use
+`$MOSAIC_API_KEY` or `$MOSAIC_ACCESS_TOKEN` placeholders and never include a revealed key. For a
+Claude model, the samples call `/anthropic/v1/messages` without an `api-version`, and the panel
+gives the Anthropic SDK base URL. A grant that arrives through a group shows a notice instead,
+because credentials are issued for direct grants only.
 
 ### Recovering an interrupted operation
 
@@ -795,10 +875,11 @@ already acknowledged for imported records.
    defers to, for models.
 5. **Governed model access (this release):** direct user/application grants become APIM
    subscriptions and Entra authorization, with shared limits, explicit apply/revoke, trusted
-   `orchestrated` bindings, and on-demand key retrieval. Group/MCP orchestration, access-request
-   automation, and portal key/connection controls remain future work. The end-user portal now
-   provides My access, catalog, and access-request screens, gated by the `User` app role and
-   the `mosaic-<env>-portal` registration; see
+   `orchestrated` bindings, and on-demand key retrieval. Approving an access request creates the
+   requester's grant intent but does not apply it. Group/MCP orchestration remains future work.
+   The end-user portal now provides My access (including connection details and on-demand key
+   reveal for applied direct model grants), catalog, and access-request screens, gated by the
+   `User` app role and the `mosaic-<env>-portal` registration; see
    [ADR 0008](docs/adr/0008-portal-identity-and-role-separation.md).
 6. **Insights and chargeback:** Azure Monitor queries over `ApiManagementGatewayLogs` and
    `ApiManagementGatewayLlmLog`, consumption measured against each entitlement's own enforcement

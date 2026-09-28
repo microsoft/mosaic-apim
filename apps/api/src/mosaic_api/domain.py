@@ -14,6 +14,12 @@ APIM_API_VERSION = "2024-05-01"
 # never the gateway sync that administrators depend on.
 APIM_MCP_API_VERSION = "2025-09-01-preview"
 AUTHORIZATION_API_VERSION = "2022-04-01"
+# Role definitions are read on a preview contract because the stable 2022-04-01 one drops the
+# per-permission ``condition`` Azure evaluates: Foundry Owner's delegation condition, for instance,
+# is simply absent there. Judging a role by permissions with its conditions stripped could claim a
+# grant Azure would refuse. If this version is retired the read fails and the runtime check falls
+# back to its list of known-sufficient built-ins, so it degrades rather than guesses.
+ROLE_DEFINITIONS_API_VERSION = "2022-05-01-preview"
 SUBSCRIPTIONS_API_VERSION = "2022-12-01"
 COGNITIVE_SERVICES_API_VERSION = "2024-10-01"
 APIM_PROVIDER_NAMESPACE = "Microsoft.ApiManagement"
@@ -35,16 +41,28 @@ APIM_CONTRIBUTOR_ROLE_ID = "312a565d-c81f-4fd8-895a-4e21e48d571c"
 READER_ROLE_NAME = "Reader"
 READER_ROLE_ID = "acdd72a7-3385-48ef-bd42-f606fba81ae7"
 
-# Runtime roles are reported for the gateway's managed identity and never granted by MOSAIC. They
-# are keyed by role definition ID rather than name: the Foundry roles were renamed in 2026
+# Runtime roles are reported for the gateway's managed identity and never granted by MOSAIC. The
+# runtime check accepts any role whose data actions cover the published API (ADR 0013); these are
+# the built-ins it recommends and the ones it falls back to when it cannot read a role definition.
+# They are keyed by role definition ID rather than name: the Foundry roles were renamed in 2026
 # ("Azure AI User" became "Foundry User") and Microsoft advises binding to the GUID while the
 # rename rolls out. The GUIDs are unchanged by the rename.
 AZURE_OPENAI_USER_ROLE_NAME = "Cognitive Services OpenAI User"
 AZURE_OPENAI_USER_ROLE_ID = "5e0bd9bd-7b93-4f28-af87-19fc36ad61bd"
+AZURE_OPENAI_CONTRIBUTOR_ROLE_NAME = "Cognitive Services OpenAI Contributor"
+AZURE_OPENAI_CONTRIBUTOR_ROLE_ID = "a001fd3d-188f-4b5d-821b-7da978bf7442"
 COGNITIVE_SERVICES_USER_ROLE_NAME = "Cognitive Services User"
 COGNITIVE_SERVICES_USER_ROLE_ID = "a97b65f3-24c7-4388-baec-2e87135dc908"
+COGNITIVE_SERVICES_DATA_CONTRIBUTOR_ROLE_NAME = "Cognitive Services Data Contributor (Preview)"
+COGNITIVE_SERVICES_DATA_CONTRIBUTOR_ROLE_ID = "19c28022-e58e-450d-a464-0b2a53034789"
 FOUNDRY_USER_ROLE_NAME = "Foundry User"
 FOUNDRY_USER_ROLE_ID = "53ca6127-db72-4b80-b1b0-d745d6d5456d"
+FOUNDRY_OWNER_ROLE_NAME = "Foundry Owner"
+FOUNDRY_OWNER_ROLE_ID = "c883944f-8b7b-4483-af10-35834be79c4a"
+FOUNDRY_PROJECT_MANAGER_ROLE_NAME = "Foundry Project Manager"
+FOUNDRY_PROJECT_MANAGER_ROLE_ID = "eadc314b-1a2d-4efa-be10-5d325db5065e"
+AZURE_AI_DEVELOPER_ROLE_NAME = "Azure AI Developer"
+AZURE_AI_DEVELOPER_ROLE_ID = "64702f94-c441-49e6-a78b-ef80e0188fee"
 
 # MCP protocol revision MOSAIC offers when it connects to a registered MCP server.
 #
@@ -329,7 +347,56 @@ class GatewayCapabilities(MosaicModel):
             "'has no identity', and the two must not be reported the same way."
         ),
     )
+    virtual_network_type: str | None = Field(
+        default=None,
+        description=(
+            "The service's ``virtualNetworkType``: ``None``, ``External``, or ``Internal``. "
+            "``None`` means the gateway has no virtual network and so no private path to a model "
+            "endpoint whose public network access is disabled. A missing value means the gateway "
+            "has not been read since MOSAIC started recording it."
+        ),
+    )
+    egress_ip_addresses: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Where the gateway's outbound calls come from: the NAT gateway prefixes when the "
+            "service has them, otherwise its public IP addresses. Empty when the tier publishes "
+            "no stable addresses. Compared against a model endpoint's firewall rules."
+        ),
+    )
     notes: list[str] = Field(default_factory=list)
+
+
+class GatewayTier(StrEnum):
+    """The API Management tier family, which decides which AI gateway policies a gateway runs.
+
+    Some policies differ by family rather than by SKU. For example, ``llm-token-limit`` meters the
+    Anthropic Messages API only on the v2 tiers.
+    """
+
+    V2 = "v2"
+    CLASSIC = "classic"
+    CONSUMPTION = "consumption"
+    UNKNOWN = "unknown"
+
+
+_TIER_BY_SKU: dict[str, GatewayTier] = {
+    "basicv2": GatewayTier.V2,
+    "standardv2": GatewayTier.V2,
+    "premiumv2": GatewayTier.V2,
+    "developer": GatewayTier.CLASSIC,
+    "basic": GatewayTier.CLASSIC,
+    "standard": GatewayTier.CLASSIC,
+    "premium": GatewayTier.CLASSIC,
+    "isolated": GatewayTier.CLASSIC,
+    "consumption": GatewayTier.CONSUMPTION,
+}
+
+
+def gateway_tier(sku_name: str | None) -> GatewayTier:
+    """Classify an ARM ``sku.name``. An unread or unrecognized SKU is unknown, never assumed."""
+
+    return _TIER_BY_SKU.get((sku_name or "").strip().casefold(), GatewayTier.UNKNOWN)
 
 
 class GatewayInventorySummary(MosaicModel):
@@ -394,6 +461,28 @@ class ModelProvider(StrEnum):
     OPENAI_COMPATIBLE = "openAiCompatible"
 
 
+class ApiShape(StrEnum):
+    """The curated operation set, backend host, and runtime auth a published model API uses.
+
+    The provider alone doesn't decide this: a Foundry resource serves Anthropic models through the
+    Anthropic Messages API, not the model inference API its other deployments use.
+    """
+
+    AZURE_OPENAI = "azureOpenAi"
+    FOUNDRY_MODELS = "foundryModels"
+    ANTHROPIC_MESSAGES = "anthropicMessages"
+
+
+def default_api_shape(provider: str) -> ApiShape | None:
+    """The shape a provider's deployments used before shapes were chosen per model format."""
+
+    if provider == ModelProvider.AZURE_OPENAI:
+        return ApiShape.AZURE_OPENAI
+    if provider == ModelProvider.AZURE_AI_FOUNDRY:
+        return ApiShape.FOUNDRY_MODELS
+    return None
+
+
 class EndpointAuthMode(StrEnum):
     MANAGED_IDENTITY = "managedIdentity"
     API_KEY = "apiKey"
@@ -412,6 +501,67 @@ class RuntimeAccessEvaluation(StrEnum):
     NO_GATEWAY_IDENTITY = "noGatewayIdentity"
     NOT_APPLICABLE = "notApplicable"
     NOT_EVALUATED = "notEvaluated"
+
+
+class RuntimeAccessReason(StrEnum):
+    """Why a gateway runtime check reached its verdict.
+
+    ``evaluation`` says whether MOSAIC reached a definite answer: it is ``notEvaluated`` whenever
+    something MOSAIC cannot read or evaluate stands between it and one, such as an unreadable role
+    definition, an ABAC condition, a deny assignment that depends on a group, or a network path it
+    cannot see. ``reason`` says what it found. The console keys its wording on this so that
+    "MOSAIC could not read X" is never presented as a denial.
+    """
+
+    GRANTED = "granted"
+    MISSING_ROLE = "missingRole"
+    NARROWER_SCOPE = "narrowerScope"
+    CONDITIONAL = "conditional"
+    ROLE_UNREADABLE = "roleUnreadable"
+    DENY_ASSIGNMENT = "denyAssignment"
+    NETWORK_UNREACHABLE = "networkUnreachable"
+    NETWORK_UNVERIFIED = "networkUnverified"
+    ASSIGNMENTS_UNREADABLE = "assignmentsUnreadable"
+    NO_GATEWAY_IDENTITY = "noGatewayIdentity"
+    IDENTITY_NOT_OBSERVED = "identityNotObserved"
+
+
+class RuntimeRoleFindingKind(StrEnum):
+    SUFFICIENT = "sufficient"
+    INSUFFICIENT = "insufficient"
+    NARROWER_SCOPE = "narrowerScope"
+    CONDITIONAL = "conditional"
+    UNREADABLE = "unreadable"
+
+
+class RuntimeRoleFinding(MosaicModel):
+    """One of the gateway's role assignments, and what it does for the published API.
+
+    ``insufficient`` is only recorded for assignments that could matter: covering the evaluated
+    scope, or narrower than it. An assignment on an unrelated resource is not a finding.
+    """
+
+    kind: RuntimeRoleFindingKind
+    role_name: str | None = None
+    role_definition_id: str | None = None
+    scope: str
+    inherited: bool = False
+    missing_data_actions: list[str] = Field(default_factory=list)
+
+
+class NetworkReachability(StrEnum):
+    """Whether the gateway has a network path to the endpoint, as far as MOSAIC can tell.
+
+    ``unreachable`` is only claimed when it is certain: public network access is disabled and the
+    gateway has no virtual network. A private endpoint, private DNS, or a firewall MOSAIC cannot
+    match the gateway's published addresses against is ``unverified``, because MOSAIC cannot see
+    the gateway's routing. ``unknown`` means MOSAIC could not read the endpoint's network settings.
+    """
+
+    REACHABLE = "reachable"
+    UNREACHABLE = "unreachable"
+    UNVERIFIED = "unverified"
+    UNKNOWN = "unknown"
 
 
 class EndpointAccess(MosaicModel):
@@ -437,11 +587,37 @@ class GatewayRuntimeAccess(MosaicModel):
     apim_principal_id: str | None = None
     can_invoke: bool = False
     evaluation: RuntimeAccessEvaluation = RuntimeAccessEvaluation.NOT_EVALUATED
+    reason: RuntimeAccessReason | None = Field(
+        default=None,
+        description="What the check found. Missing on results recorded before it was introduced.",
+    )
     checked_at: datetime | None = None
-    required_role_name: str | None = None
+    required_role_name: str | None = Field(
+        default=None,
+        description=(
+            "The role MOSAIC recommends granting. Any role whose data actions cover "
+            "``required_data_actions`` is accepted: Cognitive Services OpenAI User for an Azure "
+            "OpenAI resource, and Foundry User, as Microsoft's Foundry guidance advises, otherwise."
+        ),
+    )
     required_role_definition_id: str | None = None
+    granted_role_name: str | None = Field(
+        default=None,
+        description="The role that satisfied the check, which need not be the recommended one.",
+    )
+    granted_role_definition_id: str | None = None
     assignment_scope: str | None = None
     inherited: bool = False
+    evaluated_scope: str | None = Field(
+        default=None,
+        description=(
+            "The scope the published API calls, which is always the account: a Foundry project's "
+            "models are deployed on its parent resource."
+        ),
+    )
+    required_data_actions: list[str] = Field(default_factory=list)
+    role_findings: list[RuntimeRoleFinding] = Field(default_factory=list)
+    network_reachability: NetworkReachability = NetworkReachability.UNKNOWN
     remediation: AccessRemediation | None = None
     message: str | None = None
 
@@ -452,6 +628,18 @@ class ModelEndpointCapabilities(MosaicModel):
     location: str | None = None
     provisioning_state: str | None = None
     public_network_access: str | None = None
+    network_default_action: str | None = Field(
+        default=None,
+        description=(
+            "``networkAcls.defaultAction``. ``Deny`` means only the listed addresses and virtual "
+            "networks may reach the endpoint while public network access is enabled."
+        ),
+    )
+    network_ip_rules: list[str] = Field(
+        default_factory=list,
+        description="Addresses and CIDR ranges the endpoint's firewall admits.",
+    )
+    network_virtual_network_rule_count: int = 0
     local_auth_disabled: bool | None = None
     management_api_version: str = COGNITIVE_SERVICES_API_VERSION
     notes: list[str] = Field(default_factory=list)
@@ -1053,6 +1241,17 @@ class AccessRequestDecision(MosaicModel):
     note: str | None = None
 
 
+class AccessRequestApproval(AccessRequestDecision):
+    """Approving a request also creates the requester's grant, with these limits.
+
+    ``enforcement`` is the same type ``EntitlementCreate`` takes, so the limits an administrator
+    confirms here are validated exactly as if they had created the grant directly. Omitting it
+    adds no grant-specific limit; publication safeguards still apply.
+    """
+
+    enforcement: EntitlementEnforcement | None = None
+
+
 class CatalogEntryKind(StrEnum):
     MODEL_API = "modelApi"
     MCP_SERVER = "mcpServer"
@@ -1177,7 +1376,9 @@ class ModelAccessSnapshot(MosaicModel):
     version: int = Field(ge=1)
     settings: ModelAccessSettings
     audience: str | None = None
-    publication_enforcement: TokenEnforcement
+    # None when the publication's API shape can't be token-metered on its gateway's tier. Such a
+    # snapshot carries no token policies at all, so none of its grants may carry token limits.
+    publication_enforcement: TokenEnforcement | None = None
     grants: list[ModelAccessGrant] = Field(default_factory=list)
 
 
@@ -1209,8 +1410,13 @@ class Publication(Entity):
     product_name: str
     subscription_name: str
     subscription_required: bool = True
-    enforcement: TokenEnforcement
+    # None only when the API shape can't be token-metered on the gateway's tier (Anthropic Messages
+    # on a classic tier). Publishing validates that rule; renderers simply omit token policies.
+    enforcement: TokenEnforcement | None = None
     shape_version: str
+    # Recorded when the publication is created. Records that predate shapes are filled from the
+    # provider, which is exactly the shape they were published with.
+    api_shape: ApiShape | None = None
     status: PublicationStatus = PublicationStatus.DRAFT
     resources: list[PublishedResource] = Field(default_factory=list)
     last_plan_id: str | None = None
@@ -1222,6 +1428,12 @@ class Publication(Entity):
     governed_access: ModelAccessSettings | None = None
     applied_access: ModelAccessSnapshot | None = None
     access_state: Literal["pending", "applying", "applied", "failed", "unknown"] = "pending"
+
+    @model_validator(mode="after")
+    def fill_legacy_shape(self) -> Self:
+        if self.api_shape is None:
+            self.api_shape = default_api_shape(self.provider)
+        return self
 
     def created_resources(self) -> list[PublishedResource]:
         """The subset rollback and unpublish are allowed to delete."""
@@ -1758,7 +1970,9 @@ class PublicationCreate(MosaicModel):
     api_path: str | None = Field(default=None, min_length=1, max_length=200)
     product_name: str | None = Field(default=None, min_length=1, max_length=80)
     subscription_required: bool = True
-    enforcement: TokenEnforcement
+    # Required unless the deployment's API shape can't be token-metered on the gateway's tier, in
+    # which case it must be omitted. The publishable-models listing reports which applies.
+    enforcement: TokenEnforcement | None = None
     governed_access: ModelAccessSettings | None = None
 
     @field_validator("api_name", "product_name")
@@ -1813,8 +2027,9 @@ class ModelConnection(MosaicModel):
     entra_scope: str | None = None
     entra_client_id: str | None = None
     subscription_header: str = "Ocp-Apim-Subscription-Key"
+    api_shape: ApiShape | None = None
     operations: list[ConnectionOperation] = Field(default_factory=list)
-    publication_limits: TokenEnforcement
+    publication_limits: TokenEnforcement | None = None
     grant_limits: EntitlementEnforcement | None = None
 
 
@@ -1839,12 +2054,35 @@ class PublicationLockInfo(MosaicModel):
     owner_id: str | None = None
 
 
+class DeploymentCapability(StrEnum):
+    """What a deployment does, as far as MOSAIC can tell from its ARM model and capability flags.
+
+    Only a positively identified capability is ever used to refuse publishing. ``UNKNOWN`` covers
+    deployments whose flags say nothing, which partner models often do, and stays publishable.
+    """
+
+    CHAT = "chat"
+    RESPONSES = "responses"
+    COMPLETION = "completion"
+    EMBEDDINGS = "embeddings"
+    IMAGE = "image"
+    TRANSCRIPTION = "transcription"
+    SPEECH = "speech"
+    REALTIME = "realtime"
+    VIDEO = "video"
+    RERANK = "rerank"
+    UNKNOWN = "unknown"
+
+
 class PublishableModel(MosaicModel):
     """A deployment on a registered endpoint that could be published through a given gateway.
 
     ``runtime_access`` is carried through unchanged rather than collapsed into a boolean, because
     ADR 0006's distinction between "the gateway cannot call this" and "MOSAIC could not evaluate
     whether the gateway can call this" has to survive into the publish experience.
+
+    Every observed deployment is listed. One MOSAIC has no curated shape for is reported with
+    ``publishable`` false and a reason rather than hidden, so an administrator can see why.
     """
 
     model_endpoint_id: str
@@ -1853,6 +2091,14 @@ class PublishableModel(MosaicModel):
     deployment_name: str
     model_name: str | None = None
     model_version: str | None = None
+    model_format: str | None = None
+    model_publisher: str | None = None
+    capability: DeploymentCapability = DeploymentCapability.UNKNOWN
+    api_shape: ApiShape | None = None
+    publishable: bool = True
+    unpublishable_reason: str | None = None
+    token_limits_supported: bool = True
+    token_limits_note: str | None = None
     publication_id: str | None = None
     publication_status: PublicationStatus | None = None
     suggested_api_name: str = ""

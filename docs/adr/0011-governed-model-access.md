@@ -2,6 +2,14 @@
 
 **Status:** Accepted
 
+**Update:** The portal's My access page now uses the current-user APIs. Each model grant's
+**Connection details** panel loads the connection only when opened. For an applied direct grant,
+it reveals one key on explicit request, holds it only in transient component state (never a
+query cache, browser storage, the URL, or logs), and hides it after 60 seconds, on unmount, and
+on navigation. Code samples use placeholders, never a revealed key. When the connection includes
+the model client ID, the panel shows it with a device code token sample. Group grants still receive
+no credentials.
+
 ## Context
 
 ADR 0009 made an entitlement durable governance intent, but did not enforce it. ADR 0010
@@ -87,6 +95,10 @@ documented distributed-counter behavior; they are not an exact global billing le
 Unsupported operation/policy combinations are refused or explicitly denied rather than
 silently left unmetered. In particular, opting into token-governed access is not a promise
 that image, audio, or embedding calls are covered by the chat/response token policy.
+[ADR 0012](0012-format-aware-model-publishing.md) applies this to Anthropic publications.
+Governed access permits only the Messages operation. On classic-tier gateways, which can't
+token-meter the Anthropic Messages API, token-limited grants are excluded, and grants use
+call limits instead.
 
 **Desired state and applied access are different facts.** A publication-scoped plan includes
 all changes it will deploy, the relevant identity/permission inputs, and an applied-state
@@ -142,8 +154,10 @@ Azure RBAC inability to read secrets.
   synchronization job. Already-revealed bearer keys cannot be recalled from a user's memory.
 - Turning off a method or revoking a grant takes effect as APIM propagates the configuration,
   not when desired state is saved.
-- The current-user APIs coexist with the portal's My access, catalog, and access-request screens.
-  Portal key/connection controls, group/application-owner delegation, live analytics, and automatic
-  background drift repair remain deferred.
+- The current-user APIs back the portal's My access connection details and key reveal, alongside
+  its catalog and access-request screens. Group/application-owner delegation, live analytics, and
+  automatic background drift repair remain deferred.
+- Approving an access request creates the requester's direct grant intent (ADR 0009) but never
+  applies it. The grant joins the model's next reviewed plan like any other saved change.
 - Mocked policy and API checks cannot establish live Entra/APIM interoperability. The opt-in
   live verifier and actual gateway checks must report unavailable prerequisites honestly.

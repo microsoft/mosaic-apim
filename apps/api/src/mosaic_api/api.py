@@ -6,6 +6,7 @@ from mosaic_api.auth import AuthContext, require_admin, require_portal_user
 from mosaic_api.config import Settings
 from mosaic_api.domain import (
     AccessRequest,
+    AccessRequestApproval,
     AccessRequestCreate,
     AccessRequestDecision,
     AccessRequestState,
@@ -738,10 +739,16 @@ async def list_access_requests(
 
 @router.post("/access-requests/{request_id}/approve", response_model=AccessRequest)
 async def approve_access_request(
-    request: Request, auth: Admin, request_id: str, payload: AccessRequestDecision
+    request: Request, auth: Admin, request_id: str, payload: AccessRequestApproval
 ) -> AccessRequest:
-    return await _entitlements(request).decide_access_request(
-        _actor(auth), request_id, state=AccessRequestState.APPROVED, note=payload.note
+    """Approve a request and create the requester's grant intent in the same write.
+
+    The grant is desired state. API Management changes only when its model plan is reviewed and
+    applied. Approving an already approved request returns it unchanged.
+    """
+
+    return await _entitlements(request).approve_access_request(
+        _actor(auth), request_id, payload
     )
 
 

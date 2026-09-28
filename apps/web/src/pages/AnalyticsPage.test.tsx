@@ -14,7 +14,8 @@ describe('AnalyticsPage', () => {
     const viewButtons = screen.getAllByRole('button', { name: 'View' })
     await user.click(viewButtons[0])
 
-    expect(screen.getByRole('dialog')).toBeVisible()
+    // Tabster can mark the open dialog aria-hidden in happy-dom; see includeAriaHiddenInRoleQueries.
+    expect(screen.getByRole('dialog', { hidden: true })).toBeVisible()
     expect(screen.getByText('Suggested follow-up')).toBeVisible()
   })
 })
