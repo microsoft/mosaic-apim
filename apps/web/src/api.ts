@@ -3,6 +3,7 @@ import { useMemo } from 'react'
 import { runtimeConfig } from './runtime-config'
 import type {
   AccessRequest,
+  AccessRequestApproval,
   ApiErrorBody,
   CatalogVisibility,
   Entitlement,
@@ -206,7 +207,7 @@ export interface MosaicApi {
   revealMyEntitlementKey(entitlementId: string, slot: KeySlot, signal?: AbortSignal): Promise<KeyRevealResult>
   resolveEntitlements(principalId: string): Promise<ResolvedEntitlement[]>
   listAccessRequests(state?: string): Promise<AccessRequest[]>
-  approveAccessRequest(requestId: string, note?: string): Promise<AccessRequest>
+  approveAccessRequest(requestId: string, approval: AccessRequestApproval): Promise<AccessRequest>
   denyAccessRequest(requestId: string, note?: string): Promise<AccessRequest>
   previewPolicy(payload: {
     enforcement: TokenEnforcement
@@ -473,10 +474,10 @@ export function useMosaicApi(): MosaicApi {
         request<AccessRequest[]>(
           `/api/v1/access-requests${state ? `?state=${encodeURIComponent(state)}` : ''}`,
         ),
-      approveAccessRequest: (id, note) =>
+      approveAccessRequest: (id, approval) =>
         request<AccessRequest>(`/api/v1/access-requests/${id}/approve`, {
           method: 'POST',
-          body: { note },
+          body: approval,
         }),
       denyAccessRequest: (id, note) =>
         request<AccessRequest>(`/api/v1/access-requests/${id}/deny`, {

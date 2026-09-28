@@ -70,8 +70,8 @@ explicit local/test modes and application startup rejects them when `MOSAIC_ENVI
   named value metadata into Cosmos
 - Entitlements as desired state: grants to a user, group, or application over a model API, MCP
   server, product, or model deployment; token and request limits; catalog visibility; access
-  requests; and effective-access resolution that reports whether a grant arrived directly or
-  through a group
+  requests, whose approval creates and links the requester's grant intent; and effective-access
+  resolution that reports whether a grant arrived directly or through a group
 - Governed access for direct user/application grants to MOSAIC-published model APIs: reviewed
   APIM deployment, key or Entra authentication, shared token/request limits, revocation, and
   distinct desired versus applied state
@@ -737,11 +737,11 @@ already acknowledged for imported records.
    defers to, for models.
 5. **Governed model access (this release):** direct user/application grants become APIM
    subscriptions and Entra authorization, with shared limits, explicit apply/revoke, trusted
-   `orchestrated` bindings, and on-demand key retrieval. Group/MCP orchestration and
-   access-request automation remain future work. The end-user portal now provides My access
-   (including connection details and on-demand key reveal for applied direct model grants),
-   catalog, and access-request screens, gated by the `User` app role and
-   the `mosaic-<env>-portal` registration; see
+   `orchestrated` bindings, and on-demand key retrieval. Approving an access request creates the
+   requester's grant intent but does not apply it. Group/MCP orchestration remains future work.
+   The end-user portal now provides My access (including connection details and on-demand key
+   reveal for applied direct model grants), catalog, and access-request screens, gated by the
+   `User` app role and the `mosaic-<env>-portal` registration; see
    [ADR 0008](docs/adr/0008-portal-identity-and-role-separation.md).
 6. **Insights and chargeback:** Azure Monitor queries over `ApiManagementGatewayLogs` and
    `ApiManagementGatewayLlmLog`, consumption measured against each entitlement's own enforcement

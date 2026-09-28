@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 from typing import Protocol
 
 from mosaic_api.domain import (
@@ -414,3 +415,18 @@ class EntitlementRepository(Protocol):
     async def save_access_request(
         self, access_request: AccessRequest, audit_event: AuditEvent
     ) -> AccessRequest: ...
+
+    async def approve_access_request(
+        self,
+        access_request: AccessRequest,
+        entitlement: Entitlement,
+        audit_events: Sequence[AuditEvent],
+    ) -> AccessRequest:
+        """Create a grant and record the approval that links it, atomically.
+
+        Both writes commit or neither does. An approved request therefore always has its grant,
+        and a grant never belongs to a request that is still pending. If the request was decided
+        after it was read, or the grant already exists, this raises ``ConflictError`` and writes
+        nothing.
+        """
+        ...

@@ -9,11 +9,14 @@ subscription and a grant with no binding cannot be joined to a usage row.
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from typing import Any
 
 import structlog
+from pydantic import ValidationError as SchemaValidationError
 
 from mosaic_api.domain import (
     AccessRequest,
+    AccessRequestApproval,
     AccessRequestCreate,
     AccessRequestState,
     AuditEvent,
@@ -23,9 +26,12 @@ from mosaic_api.domain import (
     EntitlementCreate,
     EntitlementResource,
     EntitlementSubject,
+    EntitlementSubjectKind,
     EntitlementUpdate,
     GrantPath,
     Principal,
+    PrincipalCreate,
+    PrincipalKind,
     ResolvedEntitlement,
     deterministic_id,
     entitlement_id,
@@ -45,7 +51,7 @@ from mosaic_api.repositories import (
     GatewayRepository,
     ModelEndpointRepository,
 )
-from mosaic_api.services.directory import Actor
+from mosaic_api.services.directory import Actor, DirectoryService
 from mosaic_api.services.model_access import (
     decorate_entitlement,
     entitlement_publication,
@@ -86,6 +92,32 @@ def _resource_key(resource: EntitlementResource) -> tuple[str, str, str]:
     return (str(resource.kind), resource.id, resource.scope_id or "")
 
 
+def _subject_for(principal: Principal) -> EntitlementSubject:
+    kind = (
+        EntitlementSubjectKind.USER
+        if principal.kind == PrincipalKind.USER
+        else EntitlementSubjectKind.APPLICATION
+    )
+    return EntitlementSubject(kind=kind, id=principal.id)
+
+
+def _approved_with_grant(access_request: AccessRequest) -> bool:
+    return (
+        access_request.state == AccessRequestState.APPROVED
+        and access_request.granted_entitlement_id is not None
+    )
+
+
+def _existing_grant_conflict(existing: Entitlement) -> ConflictError:
+    # Refused rather than linked. The administrator confirmed limits for a new grant, and linking
+    # would silently discard them. Linking could also report a disabled grant as access.
+    return ConflictError(
+        "The requester already has a direct grant for this resource. Deny this request, or "
+        "change the existing grant instead.",
+        details={"entitlementId": existing.id, "enabled": existing.enabled},
+    )
+
+
 class EntitlementService:
     def __init__(
         self,
@@ -101,7 +133,13 @@ class EntitlementService:
         self._endpoints = endpoint_repository
 
     @staticmethod
-    def _audit(actor: Actor, action: str, resource_type: str, resource_id: str) -> AuditEvent:
+    def _audit(
+        actor: Actor,
+        action: str,
+        resource_type: str,
+        resource_id: str,
+        details: dict[str, Any] | None = None,
+    ) -> AuditEvent:
         return AuditEvent(
             id=new_id("audit"),
             tenant_id=actor.tenant_id,
@@ -109,6 +147,7 @@ class EntitlementService:
             resource_type=resource_type,
             resource_id=resource_id,
             actor_object_id=actor.object_id,
+            details=details or {},
         )
 
     # ------------------------------------------------------------------ validation
@@ -292,15 +331,27 @@ class EntitlementService:
             raise NotFoundError("Entitlement was not found", details={"id": entitlement_ref})
         return await self._decorate(entitlement)
 
-    async def create_entitlement(self, actor: Actor, request: EntitlementCreate) -> Entitlement:
+    async def _prepare_entitlement(
+        self,
+        actor: Actor,
+        request: EntitlementCreate,
+        descriptor: ResourceDescriptor | None = None,
+    ) -> Entitlement:
+        """Validate a grant and build its record without writing it.
+
+        Shared by direct creation and by access-request approval, so an approved request's grant
+        passes exactly the same subject, resource, and binding checks as one created directly.
+        """
+
         if request.binding and request.binding.source == BindingSource.ORCHESTRATED:
             raise ValidationError("Orchestrated bindings are server-managed")
         await self._validate_subject(actor, request.subject)
-        descriptor = await self._describe_resource(actor, request.resource)
+        if descriptor is None:
+            descriptor = await self._describe_resource(actor, request.resource)
         binding = request.binding
         if binding is None:
             binding = await self.infer_binding(actor, descriptor, request.subject)
-        record = Entitlement(
+        return Entitlement(
             id=entitlement_id(actor.tenant_id, request.subject, request.resource),
             tenant_id=actor.tenant_id,
             subject=request.subject,
@@ -310,6 +361,9 @@ class EntitlementService:
             binding=binding,
             notes=request.notes,
         )
+
+    async def create_entitlement(self, actor: Actor, request: EntitlementCreate) -> Entitlement:
+        record = await self._prepare_entitlement(actor, request)
         async with self._mutation(record):
             await self._validate_subject(actor, request.subject)
             saved = await self._repository.create_entitlement(
@@ -321,7 +375,7 @@ class EntitlementService:
             entitlement_id=record.id,
             subject_kind=str(request.subject.kind),
             resource_kind=str(request.resource.kind),
-            bound=binding is not None,
+            bound=record.binding is not None,
             tenant_id=actor.tenant_id,
         )
         return await self._decorate(saved)
@@ -504,8 +558,16 @@ class EntitlementService:
         *,
         state: AccessRequestState,
         note: str | None = None,
-        granted_entitlement_id: str | None = None,
     ) -> AccessRequest:
+        """Close a pending request without granting anything: deny or withdraw it.
+
+        Approval goes through :meth:`approve_access_request` instead. That is the only path that
+        writes the grant together with the decision, so an approved request cannot exist
+        without its grant.
+        """
+
+        if state not in {AccessRequestState.DENIED, AccessRequestState.WITHDRAWN}:
+            raise ValueError("Only a denial or withdrawal closes a request without a grant")
         access_request = await self.get_access_request(actor, request_id)
         if access_request.state != AccessRequestState.PENDING:
             raise ConflictError(
@@ -519,7 +581,6 @@ class EntitlementService:
                 "decided_by_object_id": actor.object_id,
                 "decided_at": utc_now(),
                 "decision_note": note,
-                "granted_entitlement_id": granted_entitlement_id,
                 "etag": access_request.etag,
                 "updated_at": utc_now(),
             }
@@ -528,6 +589,156 @@ class EntitlementService:
             updated,
             self._audit(actor, f"accessRequest.{state}", "accessRequest", request_id),
         )
+
+    async def approve_access_request(
+        self, actor: Actor, request_id: str, approval: AccessRequestApproval
+    ) -> AccessRequest:
+        """Approve a pending request by creating the requester's grant and linking it.
+
+        The grant is desired state. API Management is unchanged until its model plan is reviewed
+        and applied. The grant and the decision are written in one atomic repository call, so
+        neither exists without the other. A requester MOSAIC has never registered becomes a
+        ``user`` principal first. That registration is idempotent and grants nothing on its
+        own, so it is safe to leave in place if the approval then fails.
+
+        Approving an already approved request returns it unchanged. That makes a retry after an
+        ambiguous failure safe, and the first decision's limits stand.
+        """
+
+        access_request = await self.get_access_request(actor, request_id)
+        if _approved_with_grant(access_request):
+            return access_request
+        self._require_pending(access_request)
+        descriptor = await self._describe_resource(actor, access_request.resource)
+
+        principal = await self._requester_principal(actor, access_request.requester_object_id)
+        if principal is not None:
+            existing = await self._repository.get_entitlement(
+                actor.tenant_id,
+                entitlement_id(actor.tenant_id, _subject_for(principal), access_request.resource),
+            )
+            if existing is not None:
+                raise _existing_grant_conflict(existing)
+        principal_created = principal is None
+        if principal is None:
+            principal = await self._register_requester(actor, access_request.requester_object_id)
+
+        subject = _subject_for(principal)
+        entitlement = await self._prepare_entitlement(
+            actor,
+            EntitlementCreate(
+                subject=subject,
+                resource=access_request.resource,
+                enforcement=approval.enforcement,
+            ),
+            descriptor,
+        )
+        decided_at = utc_now()
+        approved = AccessRequest.model_validate(
+            {
+                **access_request.model_dump(by_alias=False),
+                "state": AccessRequestState.APPROVED,
+                "requester_principal_id": principal.id,
+                "decided_by_object_id": actor.object_id,
+                "decided_at": decided_at,
+                "decision_note": approval.note,
+                "granted_entitlement_id": entitlement.id,
+                "etag": access_request.etag,
+                "updated_at": decided_at,
+            }
+        )
+        audit_events = [
+            self._audit(
+                actor,
+                "entitlement.created",
+                "entitlement",
+                entitlement.id,
+                {"accessRequestId": request_id},
+            ),
+            self._audit(
+                actor,
+                "accessRequest.approved",
+                "accessRequest",
+                request_id,
+                {
+                    "grantedEntitlementId": entitlement.id,
+                    "principalId": principal.id,
+                    "principalCreated": principal_created,
+                },
+            ),
+        ]
+        try:
+            async with self._mutation(entitlement):
+                await self._validate_subject(actor, subject)
+                saved = await self._repository.approve_access_request(
+                    approved, entitlement, audit_events
+                )
+        except ConflictError:
+            # Nothing was written. Work out why, so a concurrent approval converges on its
+            # result instead of failing, and any other conflict is reported precisely.
+            current = await self.get_access_request(actor, request_id)
+            if _approved_with_grant(current):
+                return current
+            self._require_pending(current)
+            existing = await self._repository.get_entitlement(actor.tenant_id, entitlement.id)
+            if existing is not None:
+                raise _existing_grant_conflict(existing) from None
+            raise
+        logger.info(
+            "access_request_approved",
+            access_request_id=request_id,
+            entitlement_id=entitlement.id,
+            principal_id=principal.id,
+            principal_created=principal_created,
+            resource_kind=str(access_request.resource.kind),
+            limited=approval.enforcement is not None,
+            tenant_id=actor.tenant_id,
+        )
+        return saved
+
+    @staticmethod
+    def _require_pending(access_request: AccessRequest) -> None:
+        if access_request.state == AccessRequestState.PENDING:
+            return
+        if access_request.state == AccessRequestState.APPROVED:
+            raise ConflictError(
+                "This request was approved before approval created grants, so no grant is linked "
+                "to it. Grant access from Entitlements, or ask the requester to submit a new "
+                "request.",
+                details={"id": access_request.id, "state": str(access_request.state)},
+            )
+        raise ConflictError(
+            f"This request was already {access_request.state}",
+            details={"id": access_request.id, "state": str(access_request.state)},
+        )
+
+    async def _requester_principal(self, actor: Actor, object_id: str) -> Principal | None:
+        principal = await self._directory.find_principal_by_object_id(actor.tenant_id, object_id)
+        if principal is None:
+            # Principal IDs derive from the case-folded object ID. That also finds a principal
+            # an administrator registered with different letter case, which would otherwise
+            # collide with the one registration would create.
+            principal = await self._directory.get_principal(
+                actor.tenant_id, deterministic_id("principal", actor.tenant_id, object_id)
+            )
+        return principal
+
+    async def _register_requester(self, actor: Actor, object_id: str) -> Principal:
+        try:
+            request = PrincipalCreate(object_id=object_id, kind=PrincipalKind.USER)
+        except SchemaValidationError as exc:
+            raise ValidationError(
+                "The requester's Entra object ID cannot be registered as a principal",
+                details={"objectId": object_id},
+            ) from exc
+        try:
+            return await DirectoryService(self._directory).create_principal(actor, request)
+        except ConflictError:
+            # A concurrent approval for the same person registered them first.
+            principal = await self._requester_principal(actor, object_id)
+            if principal is None:
+                raise
+            return principal
 
     async def withdraw_access_request(self, actor: Actor, request_id: str) -> AccessRequest:
         access_request = await self.get_access_request(actor, request_id)

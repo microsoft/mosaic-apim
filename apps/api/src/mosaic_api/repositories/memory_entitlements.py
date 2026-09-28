@@ -1,4 +1,6 @@
-from mosaic_api.domain import AccessRequest, AuditEvent, Entitlement
+from collections.abc import Sequence
+
+from mosaic_api.domain import AccessRequest, AccessRequestState, AuditEvent, Entitlement
 from mosaic_api.errors import ConflictError
 
 
@@ -88,4 +90,30 @@ class InMemoryEntitlementRepository:
     ) -> AccessRequest:
         self.access_requests[access_request.id] = access_request
         self.audit_events[audit_event.id] = audit_event
+        return access_request
+
+    async def approve_access_request(
+        self,
+        access_request: AccessRequest,
+        entitlement: Entitlement,
+        audit_events: Sequence[AuditEvent],
+    ) -> AccessRequest:
+        # The checks and writes run with no await between them, which is what makes this
+        # all-or-nothing in a single event loop. It stands in for the Cosmos batch's etag and
+        # create preconditions.
+        stored = self.access_requests.get(access_request.id)
+        if (
+            stored is None
+            or stored.tenant_id != access_request.tenant_id
+            or stored.state != AccessRequestState.PENDING
+            or entitlement.id in self.entitlements
+        ):
+            raise ConflictError(
+                "The access request was decided or its grant already exists; reload it and try "
+                "again"
+            )
+        self.entitlements[entitlement.id] = entitlement
+        self.access_requests[access_request.id] = access_request
+        for event in audit_events:
+            self.audit_events[event.id] = event
         return access_request
