@@ -1,6 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { Profiler, useState } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { PublishModelDialog } from './PublishModelDialog'
 import type { Gateway, Publication, PublishableModel, PublishPlan, PublishRun } from '../types'
@@ -87,6 +88,75 @@ async function advanceToReview(user: ReturnType<typeof userEvent.setup>) {
   await user.click(await screen.findByRole('checkbox', { name: 'Publish gpt-4o-prod' }))
   await user.click(screen.getByRole('button', { name: 'Configure' }))
   await user.click(screen.getByRole('button', { name: 'Review plan' }))
+}
+
+type Review = { publication: Publication; plan: PublishPlan; message?: string }
+
+// What the open dialog showed when React committed a render.
+type Frame = { step?: string; choosing: boolean; text: string }
+
+// Profiler calls onRender as React commits, after it updates the DOM but before useEffect callbacks run,
+// so this records even a frame that an effect replaces straight away, which no query after the render
+// can see.
+function recordFrame(frames: Frame[]) {
+  const dialog = document.querySelector('[role="dialog"]')
+  if (!dialog) return
+  const text = dialog.textContent ?? ''
+  frames.push({
+    step: text.match(/Step \d of 4/)?.[0],
+    choosing: dialog.querySelector('select[aria-label="Gateway"], [aria-label="Publishable models"]') !== null,
+    text,
+  })
+}
+
+function ignorePublished() {}
+
+// Opens reviews the way EntitlementsPage and ModelsPage do: the dialog stays mounted while closed, opens
+// when the parent sets a review, and closing clears the review.
+function ReviewingParent({ reviews, frames }: { reviews: Review[]; frames: Frame[] }) {
+  const [review, setReview] = useState<Review | null>(null)
+  return (
+    <>
+      {reviews.map((candidate, index) => (
+        <button key={index} type="button" onClick={() => setReview(candidate)}>
+          Open review {index + 1}
+        </button>
+      ))}
+      <Profiler id="publish-model-dialog" onRender={() => recordFrame(frames)}>
+        <PublishModelDialog
+          open={review !== null}
+          initialReview={review}
+          onClose={() => setReview(null)}
+          onPublished={ignorePublished}
+        />
+      </Profiler>
+    </>
+  )
+}
+
+function renderReviewingParent(reviews: Review[]) {
+  const frames: Frame[] = []
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  render(
+    <QueryClientProvider client={queryClient}>
+      <ReviewingParent reviews={reviews} frames={frames} />
+    </QueryClientProvider>,
+  )
+  return frames
+}
+
+const secondReview: Review = {
+  publication: { ...modelPublication, id: 'pub_2', displayName: 'Second chat' },
+  plan: {
+    ...accessPlan,
+    id: 'access-plan-2',
+    publicationId: 'pub_2',
+    accessSnapshot: {
+      ...accessSnapshot,
+      grants: [{ ...accessSnapshot.grants[0], entitlementId: 'second_grant', displayName: 'Grace Hopper' }],
+    },
+  },
+  message: 'The earlier plan was rejected. Review the refreshed plan before applying it.',
 }
 
 describe('PublishModelDialog', () => {
@@ -408,5 +478,63 @@ describe('PublishModelDialog', () => {
     await user.click(await screen.findByRole('button', { name: 'Apply plan' }))
     expect(await screen.findByText('Cannot refresh the model plan.')).toBeVisible()
     expect(screen.getByRole('button', { name: 'Apply plan' })).toBeDisabled()
+  })
+
+  it('opens a review on its review step, without first rendering the gateway and model chooser', async () => {
+    const user = userEvent.setup()
+    const frames = renderReviewingParent([{ publication: modelPublication, plan: accessPlan }])
+
+    await user.click(screen.getByRole('button', { name: 'Open review 1' }))
+
+    // Every frame React committed while opening, not just the one left once effects have run.
+    expect(new Set(frames.map((frame) => frame.step))).toEqual(new Set(['Step 3 of 4']))
+    expect(frames.filter((frame) => frame.choosing)).toEqual([])
+    expect(frames[0].text).toContain('Model-wide access changes')
+    expect(screen.getByText('Step 3 of 4')).toBeVisible()
+    expect(screen.getByRole('table', { name: 'All target model grants' })).toBeVisible()
+    expect(screen.queryByRole('combobox', { name: 'Gateway' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Back' })).not.toBeInTheDocument()
+    expect(api.listGateways).not.toHaveBeenCalled()
+  })
+
+  it('moves focus into the review as it opens', async () => {
+    const user = userEvent.setup()
+    renderReviewingParent([{ publication: modelPublication, plan: accessPlan }])
+
+    await user.click(screen.getByRole('button', { name: 'Open review 1' }))
+
+    expect(document.activeElement).not.toBe(document.body)
+    expect(screen.getByRole('dialog')).toContainElement(document.activeElement as HTMLElement)
+  })
+
+  it('shows the next review from its first frame after closing and reopening', async () => {
+    const user = userEvent.setup()
+    const frames = renderReviewingParent([{ publication: modelPublication, plan: accessPlan }, secondReview])
+
+    await user.click(screen.getByRole('button', { name: 'Open review 1' }))
+    expect(within(screen.getByRole('table', { name: 'All target model grants' })).getByText('Ada Lovelace')).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Close' }))
+
+    // The page stays aria-hidden for a moment after a modal closes.
+    const openSecond = await screen.findByRole('button', { name: 'Open review 2' })
+    expect(screen.queryByRole('dialog', { hidden: true })).not.toBeInTheDocument()
+    frames.length = 0
+    await user.click(openSecond)
+
+    expect(new Set(frames.map((frame) => frame.step))).toEqual(new Set(['Step 3 of 4']))
+    expect(frames[0].text).toContain('Grace Hopper')
+    expect(frames[0].text).toContain(secondReview.message)
+    expect(frames.filter((frame) => frame.text.includes('Ada Lovelace'))).toEqual([])
+    expect(screen.getByRole('dialog')).toContainElement(document.activeElement as HTMLElement)
+
+    // Closing forgets the review, so reopening the very same one starts on it again.
+    await user.click(screen.getByRole('button', { name: 'Close' }))
+    const reopenSecond = await screen.findByRole('button', { name: 'Open review 2' })
+    frames.length = 0
+    await user.click(reopenSecond)
+
+    expect(new Set(frames.map((frame) => frame.step))).toEqual(new Set(['Step 3 of 4']))
+    expect(frames[0].text).toContain('Grace Hopper')
+    expect(screen.getByRole('dialog')).toContainElement(document.activeElement as HTMLElement)
   })
 })

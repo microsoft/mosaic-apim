@@ -306,9 +306,29 @@ export function PublishModelDialog({
   const [runId, setRunId] = useState('')
   const [refreshError, setRefreshError] = useState<Error | null>(null)
   const [invalidPlan, setInvalidPlan] = useState(false)
+  const [appliedReview, setAppliedReview] = useState<typeof initialReview>(null)
   const appliedGatewayRef = useRef(false)
   const notifiedRunRef = useRef('')
   const reviewingExistingPlan = Boolean(initialReview)
+
+  // Apply the review the dialog opens with while rendering rather than in an effect, so the first frame it
+  // commits is already the review step. Fluent focuses the dialog's first control as it opens, and a
+  // control from a step the review then replaced would take focus with it, to the page body. Closing
+  // forgets the review, so reopening applies it again even when it's the same one.
+  const openedReview = open ? initialReview ?? null : null
+  if (openedReview !== appliedReview) {
+    setAppliedReview(openedReview)
+    if (openedReview) {
+      setPublication(openedReview.publication)
+      setPlan(openedReview.plan)
+      setReviewMessage(openedReview.message ?? '')
+      setRunId('')
+      setInvalidPlan(false)
+      setRefreshError(null)
+      setGatewayId(openedReview.publication.gatewayId)
+      setStep('review')
+    }
+  }
 
   const gateways = useQuery({
     queryKey: ['gateways'],
@@ -339,18 +359,6 @@ export function PublishModelDialog({
   const selectedModel = models.find(
     (model) => `${model.modelEndpointId}:${model.deploymentName}` === modelKey,
   ) ?? null
-
-  useEffect(() => {
-    if (!open || !initialReview) return
-    setPublication(initialReview.publication)
-    setPlan(initialReview.plan)
-    setReviewMessage(initialReview.message ?? '')
-    setRunId('')
-    setInvalidPlan(false)
-    setRefreshError(null)
-    setGatewayId(initialReview.publication.gatewayId)
-    setStep('review')
-  }, [open, initialReview])
 
   useEffect(() => {
     if (!selectedModel) return
@@ -450,6 +458,7 @@ export function PublishModelDialog({
     setRunId('')
     setRefreshError(null)
     setInvalidPlan(false)
+    setAppliedReview(null)
     notifiedRunRef.current = ''
     apply.reset()
     createAndPlan.reset()
