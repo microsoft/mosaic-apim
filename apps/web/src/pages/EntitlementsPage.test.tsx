@@ -4,9 +4,10 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type { Entitlement } from '../types'
+import type { AccessRequest, Entitlement } from '../types'
 import { callRateError, describeLimits } from '../entitlement-limits'
 import { EntitlementsPage } from './EntitlementsPage'
+import { includeAriaHiddenInRoleQueries } from '../test/dialogs'
 import { accessPlan, directGrant, modelPublication, publishedModelApi } from '../test/model-access'
 
 const entitlement: Entitlement = {
@@ -46,6 +47,29 @@ const api = {
   applyPublishPlan: vi.fn(),
   updatePublication: vi.fn(),
   linkPublicationModelApi: vi.fn(),
+  approveAccessRequest: vi.fn(),
+  denyAccessRequest: vi.fn(),
+}
+
+const pendingRequest: AccessRequest = {
+  id: 'request_1',
+  tenantId: 'tenant',
+  // Entra object IDs are matched to principals without regard to letter case.
+  requesterObjectId: 'USER-OBJECT-1',
+  requesterPrincipalId: null,
+  resource: { kind: 'modelApi', id: 'modelApi_1' },
+  justification: 'Support bot evaluation',
+  state: 'pending',
+  createdAt: '2026-09-01T12:00:00Z',
+  updatedAt: '2026-09-01T12:00:00Z',
+}
+
+async function openApproval(user: ReturnType<typeof userEvent.setup>) {
+  const requests = await screen.findByRole('table', { name: 'Pending access requests' })
+  const approve = within(requests).getByRole('button', { name: 'Approve' })
+  await waitFor(() => expect(approve).toBeEnabled())
+  await user.click(approve)
+  return screen.findByRole('dialog')
 }
 
 vi.mock('../api', () => ({ useMosaicApi: () => api }))
@@ -265,6 +289,143 @@ describe('EntitlementsPage', () => {
     expect(await screen.findByText('This gateway does not support the selected policy.')).toBeVisible()
     expect(screen.queryByRole('button', { name: 'Apply plan' })).not.toBeInTheDocument()
     expect(api.applyPublishPlan).not.toHaveBeenCalled()
+  })
+
+  describe('access requests', () => {
+    includeAriaHiddenInRoleQueries()
+
+    it('approves through the limits dialog, creating linked grant intent that still needs review and apply', async () => {
+      const user = userEvent.setup()
+      api.listPublications.mockResolvedValue([modelPublication])
+      api.listModelApis.mockResolvedValue([publishedModelApi])
+      api.listAccessRequests.mockResolvedValue([pendingRequest])
+      api.approveAccessRequest.mockImplementation(async () => {
+        api.listAccessRequests.mockResolvedValue([])
+        return {
+          ...pendingRequest, state: 'approved', requesterPrincipalId: 'principal_1',
+          grantedEntitlementId: 'granted_1',
+        }
+      })
+      renderPage()
+
+      const dialog = await openApproval(user)
+      expect(api.approveAccessRequest).not.toHaveBeenCalled()
+      expect(within(dialog).getByRole('heading', { name: 'Approve access request' })).toBeVisible()
+      expect(within(dialog).getByText('Ada Lovelace')).toBeVisible()
+      expect(within(dialog).getByText('Chat completions (model API)')).toBeVisible()
+      expect(within(dialog).getByText('Support bot evaluation')).toBeVisible()
+      expect(within(dialog).queryByText(/Not registered in MOSAIC/)).not.toBeInTheDocument()
+      expect(within(dialog).getByRole('spinbutton', { name: 'Tokens per minute' })).toHaveValue(12000)
+      await user.click(within(dialog).getByRole('button', { name: 'Approve and create grant' }))
+
+      await waitFor(() => expect(api.approveAccessRequest).toHaveBeenCalledWith(pendingRequest.id, {
+        note: null,
+        enforcement: {
+          tokens: {
+            counterKeyExpression: '@(context.Subscription.Id)',
+            estimatePromptTokens: true,
+            tokensPerMinute: 12000,
+          },
+        },
+      }))
+      expect(await screen.findByText(
+        'Approved the request and created grant intent for Ada Lovelace. API Management is unchanged; review and apply the Published chat model plan to activate it.',
+      )).toBeVisible()
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+      expect(await screen.findByText('No pending requests')).toBeVisible()
+      expect(api.createEntitlement).not.toHaveBeenCalled()
+
+      await user.click(screen.getByRole('link', { name: 'Go to review and apply for Published chat' }))
+      const publishedModel = screen.getByRole('combobox', { name: 'Published model' })
+      expect(publishedModel).toHaveValue(modelPublication.id)
+      expect(publishedModel).toHaveFocus()
+      expect(await screen.findByRole('button', { name: 'Review model changes' })).toBeVisible()
+      expect(api.createPublishPlan).not.toHaveBeenCalled()
+      expect(api.applyPublishPlan).not.toHaveBeenCalled()
+    })
+
+    it('says approval registers a requester MOSAIC does not know yet', async () => {
+      const user = userEvent.setup()
+      api.listAccessRequests.mockResolvedValue([
+        { ...pendingRequest, requesterObjectId: 'new-object-1', justification: null },
+      ])
+      api.approveAccessRequest.mockResolvedValue({
+        ...pendingRequest, requesterObjectId: 'new-object-1', state: 'approved',
+        requesterPrincipalId: 'principal_new', grantedEntitlementId: 'granted_1',
+      })
+      renderPage()
+
+      const dialog = await openApproval(user)
+      expect(within(dialog).getByText(
+        'Not registered in MOSAIC yet. Approving registers them as a user principal.',
+      )).toBeVisible()
+      expect(within(dialog).getByText('No justification given')).toBeVisible()
+      await user.click(within(dialog).getByRole('button', { name: 'Approve and create grant' }))
+
+      // The model API is imported-only here, so nothing prefills and the grant stays desired state.
+      await waitFor(() => expect(api.approveAccessRequest).toHaveBeenCalledWith(pendingRequest.id, {
+        note: null,
+        enforcement: null,
+      }))
+      expect(await screen.findByText(
+        'Approved the request, registered new-object-1 as a user principal, and created their grant intent. The grant is desired state only; MOSAIC does not apply grants for this resource to API Management.',
+      )).toBeVisible()
+      expect(screen.queryByRole('link', { name: /Go to review and apply/ })).not.toBeInTheDocument()
+    })
+
+    it('keeps a failed approval open in the dialog with the reason', async () => {
+      const user = userEvent.setup()
+      api.listAccessRequests.mockResolvedValue([pendingRequest])
+      api.approveAccessRequest.mockRejectedValue(
+        new Error('An apply or mutation is already running for this publication.'),
+      )
+      renderPage()
+
+      const dialog = await openApproval(user)
+      await user.click(within(dialog).getByRole('button', { name: 'Approve and create grant' }))
+
+      expect(await within(dialog).findByText(
+        'An apply or mutation is already running for this publication.',
+      )).toBeVisible()
+      expect(screen.getByRole('dialog')).toBeVisible()
+      expect(screen.queryByText(/Approved the request/)).not.toBeInTheDocument()
+    })
+
+    it('warns instead of approving when the requester already holds a direct grant', async () => {
+      const user = userEvent.setup()
+      api.listEntitlements.mockResolvedValue([directGrant])
+      api.listPublications.mockResolvedValue([modelPublication])
+      api.listModelApis.mockResolvedValue([publishedModelApi])
+      api.listAccessRequests.mockResolvedValue([pendingRequest])
+      renderPage()
+
+      const dialog = await openApproval(user)
+      expect(within(dialog).getByText(
+        'Ada Lovelace already has a direct grant for Chat completions (model API). Deny this request, or change the existing grant instead.',
+      )).toBeVisible()
+      expect(within(dialog).getByRole('button', { name: 'Approve and create grant' })).toBeDisabled()
+      expect(api.approveAccessRequest).not.toHaveBeenCalled()
+    })
+
+    it('denies without a dialog, and says no grant was created', async () => {
+      const user = userEvent.setup()
+      api.listAccessRequests.mockResolvedValue([pendingRequest])
+      api.denyAccessRequest.mockImplementation(async () => {
+        api.listAccessRequests.mockResolvedValue([])
+        return { ...pendingRequest, state: 'denied' }
+      })
+      renderPage()
+
+      const requests = await screen.findByRole('table', { name: 'Pending access requests' })
+      await user.click(within(requests).getByRole('button', { name: 'Deny' }))
+
+      await waitFor(() => expect(api.denyAccessRequest).toHaveBeenCalledWith(pendingRequest.id))
+      expect(await screen.findByText(
+        'Denied the access request. No grant was created, and API Management is unchanged.',
+      )).toBeVisible()
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+      expect(api.approveAccessRequest).not.toHaveBeenCalled()
+    })
   })
 })
 

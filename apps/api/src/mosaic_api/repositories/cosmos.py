@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 from typing import Any, TypeVar
 
 import structlog
@@ -146,13 +147,16 @@ class CosmosRepositoryBase:
     async def _execute_batch(
         self,
         batch_operations: list[BatchOperation],
-        audit_event: AuditEvent,
+        audit_event: AuditEvent | Sequence[AuditEvent],
         conflict_message: str | None,
     ) -> None:
+        audit_events = [audit_event] if isinstance(audit_event, AuditEvent) else list(audit_event)
+        if not audit_events:
+            raise ValueError("A transactional batch must carry at least one audit event")
         try:
             await self._desired.execute_item_batch(
                 batch_operations=batch_operations,
-                partition_key=audit_event.tenant_id,
+                partition_key=audit_events[0].tenant_id,
             )
         except exceptions.CosmosBatchOperationError as exc:
             response = exc.operation_responses[exc.error_index]
@@ -160,14 +164,15 @@ class CosmosRepositoryBase:
                 raise ConflictError(conflict_message) from exc
             raise
 
-        try:
-            await self._project_audit_event(audit_event)
-        except exceptions.CosmosHttpResponseError:
-            logger.exception(
-                "audit_projection_deferred",
-                audit_event_id=audit_event.id,
-                tenant_id=audit_event.tenant_id,
-            )
+        for event in audit_events:
+            try:
+                await self._project_audit_event(event)
+            except exceptions.CosmosHttpResponseError:
+                logger.exception(
+                    "audit_projection_deferred",
+                    audit_event_id=event.id,
+                    tenant_id=event.tenant_id,
+                )
 
     async def _mutate(
         self,

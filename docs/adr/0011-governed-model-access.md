@@ -145,5 +145,7 @@ Azure RBAC inability to read secrets.
 - The current-user APIs coexist with the portal's My access, catalog, and access-request screens.
   Portal key/connection controls, group/application-owner delegation, live analytics, and automatic
   background drift repair remain deferred.
+- Approving an access request creates the requester's direct grant intent (ADR 0009) but never
+  applies it. The grant joins the model's next reviewed plan like any other saved change.
 - Mocked policy and API checks cannot establish live Entra/APIM interoperability. The opt-in
   live verifier and actual gateway checks must report unavailable prerequisites honestly.

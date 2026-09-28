@@ -1,9 +1,23 @@
 import { Badge, Button, Card, CardHeader, Text } from '@fluentui/react-components'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { Link } from 'react-router-dom'
 import { usePortalApi } from '../api'
 import { EmptyState, ErrorState, Loading } from '../components/AsyncState'
 import { PageHeader } from '../components/PageHeader'
 import { requestStateLabel, resourceLabel } from '../entitlement-format'
+import type { AccessRequest } from '../types'
+
+function GrantStatus({ request }: { request: AccessRequest }) {
+  if (request.grantedEntitlementId) {
+    return (
+      <>
+        Approval created your grant. It may not work until an administrator applies it.{' '}
+        <Link to="/access">See its status in My access</Link>
+      </>
+    )
+  }
+  return <>Approved before approvals created grants, so no grant is linked to this request.</>
+}
 
 export function MyRequestsPage() {
   const api = usePortalApi()
@@ -51,6 +65,12 @@ export function MyRequestsPage() {
                   <dt>Decision note</dt>
                   <dd>{request.decisionNote || 'No decision note.'}</dd>
                 </div>
+                {request.state === 'approved' && (
+                  <div>
+                    <dt>Grant</dt>
+                    <dd><GrantStatus request={request} /></dd>
+                  </div>
+                )}
               </dl>
               {request.state === 'pending' && (
                 <div className="request-actions">
