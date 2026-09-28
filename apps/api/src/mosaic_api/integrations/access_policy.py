@@ -224,7 +224,7 @@ def _token_lookup(publication: Publication, grants: list[ModelAccessGrant]) -> s
         " && scopes[0].Split(' ').Contains(\"Models.Invoke\");",
         '} else if (jwt.Claims.ContainsKey("roles")) {',
         '    var roles = jwt.Claims["roles"];',
-        '    application = roles != null && roles.Contains("Models.Invoke");',
+        '    application = roles != null && roles.Contains("Models.Invoke.Application");',
         "}",
     ]
     for grant in grants:
@@ -445,8 +445,9 @@ def _facets(
                 "enabled grant.",
                 "Keys in both header and query must be identical; ambiguous or empty credentials "
                 "are denied.",
-                "User tokens require Models.Invoke in scp; application tokens require Models.Invoke"
-                " in roles with no scp claim. Claims are read only after signature, tenant,"
+                "User tokens require Models.Invoke in scp; application tokens require "
+                "Models.Invoke.Application in roles with no scp claim. Claims are read only "
+                "after signature, tenant,"
                 " audience and expiry validation.",
                 "Only enabled direct grants are allowlisted; all-access, bootstrap and unrelated "
                 "subscriptions are denied. No caller identity header or control-plane callback "

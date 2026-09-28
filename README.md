@@ -216,7 +216,7 @@ The preprovision hook idempotently creates separate single-tenant Entra registra
 - `mosaic-dev-spa`: administrator console SPA redirects and delegated permission to the API
 - `mosaic-dev-portal`: end-user portal SPA redirects and delegated permission to the API
 - `mosaic-dev-model-runtime`: the separate audience for APIM model calls, with the
-  `Models.Invoke` delegated scope and application permission
+  `Models.Invoke` delegated scope and `Models.Invoke.Application` application permission
 
 It assigns the deploying user the initial `Admin` role. The postprovision hook adds the deployed
 web redirect and the deployed portal redirect, the latter from the `PORTAL_APP_URL` output of
@@ -228,7 +228,7 @@ Tenant membership alone does not grant it.
 
 Clients using Entra model access also need permission/consent for the model-runtime registration.
 Delegated user clients request `api://<model-runtime-client-id>/Models.Invoke`; applications use
-the `Models.Invoke` application permission and request `api://<model-runtime-client-id>/.default`.
+the `Models.Invoke.Application` permission and request `api://<model-runtime-client-id>/.default`.
 Assign these permissions through normal Entra administration. A MOSAIC grant does not silently
 consent a client, create an identity, or grant Microsoft Graph permissions. Bootstrap exposes
 `MOSAIC_MODEL_RUNTIME_CLIENT_ID`; this must not be the MOSAIC control-plane API's client ID.
