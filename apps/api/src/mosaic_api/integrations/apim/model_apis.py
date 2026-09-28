@@ -27,16 +27,27 @@ CURATED_SHAPE_VERSION = "1.0"
 
 AZURE_OPENAI_HOST_SUFFIXES: tuple[str, ...] = (".openai.azure.com", ".api.cognitive.microsoft.com")
 
+_DATA_ACTIONS = "Microsoft.CognitiveServices/accounts"
+
 
 @dataclass(frozen=True)
 class OperationSpec:
-    """One API Management operation. ``url_template`` is relative to the API path."""
+    """One API Management operation. ``url_template`` is relative to the API path.
+
+    ``data_action`` is the Azure RBAC data action the provider checks when the gateway calls this
+    route with its managed identity, as ``az provider operation show --namespace
+    Microsoft.CognitiveServices`` lists it. It is required rather than defaulted so that a shape
+    gaining a route cannot be published without declaring what the gateway needs to call it; the
+    runtime check in ``integrations/aoai/runtime_access.py`` is derived from these, not maintained
+    beside them. It is not rendered into API Management.
+    """
 
     name: str
     display_name: str
     method: str
     url_template: str
     description: str
+    data_action: str
 
 
 def _azure_openai_operations(deployment: str) -> tuple[OperationSpec, ...]:
@@ -48,6 +59,7 @@ def _azure_openai_operations(deployment: str) -> tuple[OperationSpec, ...]:
             method="POST",
             url_template=f"{base}/chat/completions",
             description=f"Chat completions against the {deployment} deployment.",
+            data_action=f"{_DATA_ACTIONS}/OpenAI/deployments/chat/completions/action",
         ),
         OperationSpec(
             name="completions",
@@ -55,6 +67,7 @@ def _azure_openai_operations(deployment: str) -> tuple[OperationSpec, ...]:
             method="POST",
             url_template=f"{base}/completions",
             description=f"Legacy text completions against the {deployment} deployment.",
+            data_action=f"{_DATA_ACTIONS}/OpenAI/deployments/completions/action",
         ),
         OperationSpec(
             name="embeddings",
@@ -62,6 +75,7 @@ def _azure_openai_operations(deployment: str) -> tuple[OperationSpec, ...]:
             method="POST",
             url_template=f"{base}/embeddings",
             description=f"Embeddings against the {deployment} deployment.",
+            data_action=f"{_DATA_ACTIONS}/OpenAI/deployments/embeddings/action",
         ),
         OperationSpec(
             name="images-generations",
@@ -69,6 +83,8 @@ def _azure_openai_operations(deployment: str) -> tuple[OperationSpec, ...]:
             method="POST",
             url_template=f"{base}/images/generations",
             description=f"Image generation against the {deployment} deployment.",
+            # The provider names this one without a deployments segment, though the route has one.
+            data_action=f"{_DATA_ACTIONS}/OpenAI/images/generations/action",
         ),
         OperationSpec(
             name="audio-transcriptions",
@@ -76,6 +92,7 @@ def _azure_openai_operations(deployment: str) -> tuple[OperationSpec, ...]:
             method="POST",
             url_template=f"{base}/audio/transcriptions",
             description=f"Audio transcription against the {deployment} deployment.",
+            data_action=f"{_DATA_ACTIONS}/OpenAI/deployments/audio/action",
         ),
         OperationSpec(
             name="audio-translations",
@@ -83,6 +100,7 @@ def _azure_openai_operations(deployment: str) -> tuple[OperationSpec, ...]:
             method="POST",
             url_template=f"{base}/audio/translations",
             description=f"Audio translation against the {deployment} deployment.",
+            data_action=f"{_DATA_ACTIONS}/OpenAI/deployments/audio/action",
         ),
         OperationSpec(
             name="responses",
@@ -90,6 +108,7 @@ def _azure_openai_operations(deployment: str) -> tuple[OperationSpec, ...]:
             method="POST",
             url_template="/openai/responses",
             description="Responses API. Not deployment-scoped in the provider contract.",
+            data_action=f"{_DATA_ACTIONS}/OpenAI/responses/write",
         ),
     )
 
@@ -102,6 +121,7 @@ def _ai_services_operations(deployment: str) -> tuple[OperationSpec, ...]:
             method="POST",
             url_template="/models/chat/completions",
             description=f"Foundry Models chat completions routed to {deployment}.",
+            data_action=f"{_DATA_ACTIONS}/MaaS/chat/completions/action",
         ),
         OperationSpec(
             name="embeddings",
@@ -109,6 +129,7 @@ def _ai_services_operations(deployment: str) -> tuple[OperationSpec, ...]:
             method="POST",
             url_template="/models/embeddings",
             description=f"Foundry Models embeddings routed to {deployment}.",
+            data_action=f"{_DATA_ACTIONS}/MaaS/embeddings/action",
         ),
         OperationSpec(
             name="model-info",
@@ -116,6 +137,7 @@ def _ai_services_operations(deployment: str) -> tuple[OperationSpec, ...]:
             method="GET",
             url_template="/models/info",
             description="Describe the model behind this route.",
+            data_action=f"{_DATA_ACTIONS}/MaaS/info/read",
         ),
     )
 
@@ -136,6 +158,18 @@ def curated_operations(provider: ModelProvider, deployment_name: str) -> tuple[O
         "MOSAIC has no curated API shape for this provider, so it cannot publish from it yet.",
         details={"provider": str(provider), "shapeVersion": CURATED_SHAPE_VERSION},
     )
+
+
+def required_data_actions(provider: ModelProvider) -> tuple[str, ...]:
+    """Every data action the gateway needs to call the operations MOSAIC publishes for a provider.
+
+    Derived from the curated operations, so the runtime check cannot drift from what is actually
+    published: a route added to a shape adds its permission here with it. The deployment name is
+    irrelevant because no provider scopes a data action to one deployment.
+    """
+
+    operations = curated_operations(provider, "deployment")
+    return tuple(dict.fromkeys(operation.data_action for operation in operations))
 
 
 def is_azure_openai_host(endpoint: str) -> bool:

@@ -116,6 +116,42 @@ def _identity_principal_id(identity: JsonObject) -> tuple[str | None, int]:
     return None, 0
 
 
+# Tiers whose public IP addresses are exclusive to the instance and are where its calls to public
+# backends come from. Consumption and the v2 tiers run on shared infrastructure with no
+# deterministic address.
+_DEDICATED_ADDRESS_TIERS = frozenset({"developer", "basic", "standard", "premium"})
+
+
+def _addresses(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, str) and item]
+
+
+def _egress_addresses(sku_name: object, properties: JsonObject) -> list[str]:
+    """The addresses the gateway's calls to a public endpoint come from, or none if unknown.
+
+    Each region of a multi-region service calls from its own address, so every region must be
+    accounted for: a partial list cannot prove that an endpoint's firewall admits every call. A
+    NAT gateway's prefixes replace a region's public address when the service has them.
+    """
+
+    dedicated = isinstance(sku_name, str) and sku_name.casefold() in _DEDICATED_ADDRESS_TIERS
+    locations: list[JsonObject] = [properties]
+    additional = properties.get("additionalLocations")
+    if isinstance(additional, list):
+        locations.extend(item for item in additional if isinstance(item, dict))
+    egress: list[str] = []
+    for location in locations:
+        found = _addresses(location.get("outboundPublicIPAddresses")) or (
+            _addresses(location.get("publicIPAddresses")) if dedicated else []
+        )
+        if not found:
+            return []
+        egress.extend(found)
+    return list(dict.fromkeys(egress))
+
+
 def _capabilities(service: JsonObject | None) -> GatewayCapabilities:
     if not service:
         return GatewayCapabilities(
@@ -130,6 +166,7 @@ def _capabilities(service: JsonObject | None) -> GatewayCapabilities:
     provisioning_state = (
         properties.get("provisioningState") if isinstance(properties, dict) else None
     )
+    network_type = properties.get("virtualNetworkType") if isinstance(properties, dict) else None
     # The gateway's own managed identity is the principal that must hold a data-plane role on a
     # model endpoint before the gateway can call it. Capturing it here means the endpoint runtime
     # check never has to re-read the API Management service.
@@ -160,6 +197,10 @@ def _capabilities(service: JsonObject | None) -> GatewayCapabilities:
         ai_gateway_policies=CapabilitySupport.UNKNOWN,
         principal_id=principal_id,
         identity_observed=True,
+        virtual_network_type=network_type if isinstance(network_type, str) else None,
+        egress_ip_addresses=_egress_addresses(
+            sku_name, properties if isinstance(properties, dict) else {}
+        ),
         notes=notes,
     )
 
