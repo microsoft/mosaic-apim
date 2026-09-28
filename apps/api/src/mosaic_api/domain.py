@@ -1187,6 +1187,17 @@ class AccessRequestDecision(MosaicModel):
     note: str | None = None
 
 
+class AccessRequestApproval(AccessRequestDecision):
+    """Approving a request also creates the requester's grant, with these limits.
+
+    ``enforcement`` is the same type ``EntitlementCreate`` takes, so the limits an administrator
+    confirms here are validated exactly as if they had created the grant directly. Omitting it
+    adds no grant-specific limit; publication safeguards still apply.
+    """
+
+    enforcement: EntitlementEnforcement | None = None
+
+
 class CatalogEntryKind(StrEnum):
     MODEL_API = "modelApi"
     MCP_SERVER = "mcpServer"

@@ -295,6 +295,10 @@ async def test_access_request_lifecycle(app_client: TestClient) -> None:
     assert approved.status_code == 200, approved.text
     assert approved.json()["state"] == "approved"
     assert approved.json()["decisionNote"] == "Approved for Q3"
+    # Approval creates the requester's grant intent and links it to the request.
+    grant = app_client.get(f"/api/v1/entitlements/{approved.json()['grantedEntitlementId']}")
+    assert grant.status_code == 200, grant.text
+    assert grant.json()["subject"]["id"] == approved.json()["requesterPrincipalId"]
 
     # A decision is final; deciding twice is a conflict rather than a silent overwrite.
     again = app_client.post(f"/api/v1/access-requests/{created.id}/deny", json={})
