@@ -3,17 +3,20 @@
 import pytest
 from aoai_double import (
     AI_ENDPOINT,
+    AI_PROJECT_ID,
     AI_RESOURCE_ID,
     AI_SUBSCRIPTION_ID,
     AZURE_OPENAI_USER_ROLE_ID,
     COGNITIVE_SERVICES_USER_ROLE_ID,
+    FOUNDRY_USER_ROLE_ID,
     PARTIAL_PERMISSIONS,
     FakeCognitiveServices,
     role_assignment,
 )
-from apim_double import APIM_PRINCIPAL_ID, RESOURCE_ID, SERVICE_NAME
+from apim_double import APIM_PRINCIPAL_ID, APIM_PUBLIC_IP, RESOURCE_ID, SERVICE_NAME
 from conftest import build_endpoint_service
 from mosaic_api.domain import (
+    FOUNDRY_USER_ROLE_NAME,
     READER_ROLE_ID,
     READER_ROLE_NAME,
     AccessEvaluation,
@@ -21,13 +24,17 @@ from mosaic_api.domain import (
     EndpointAuthMode,
     Gateway,
     GatewayCapabilities,
+    GatewayRuntimeAccess,
     GatewaySyncStatus,
     ModelEndpointCreate,
     ModelEndpointStatus,
     ModelEndpointSyncRun,
     ModelEndpointUpdate,
     ModelProvider,
+    NetworkReachability,
     RuntimeAccessEvaluation,
+    RuntimeAccessReason,
+    RuntimeRoleFindingKind,
     SubscriptionScanStatus,
     SuggestionSource,
     new_id,
@@ -61,6 +68,8 @@ def _gateway(
     principal_id: str | None = APIM_PRINCIPAL_ID,
     subscription_id: str = AI_SUBSCRIPTION_ID,
     name: str = SERVICE_NAME,
+    virtual_network_type: str | None = None,
+    egress_ip_addresses: tuple[str, ...] = (),
 ) -> Gateway:
     return Gateway(
         id=new_id("gateway"),
@@ -71,7 +80,10 @@ def _gateway(
         resource_group="rg-contoso-dev",
         service_name=SERVICE_NAME,
         capabilities=GatewayCapabilities(
-            principal_id=principal_id, identity_observed=True
+            principal_id=principal_id,
+            identity_observed=True,
+            virtual_network_type=virtual_network_type,
+            egress_ip_addresses=list(egress_ip_addresses),
         ),
     )
 
@@ -548,7 +560,7 @@ class TestGatewayRuntimeAccess:
         assert "cannot confirm" in (access.message or "")
 
     @pytest.mark.asyncio
-    async def test_ai_services_account_requires_cognitive_services_user(
+    async def test_ai_services_account_recommends_foundry_user(
         self, gateway_repository: InMemoryGatewayRepository
     ) -> None:
         await gateway_repository.record_gateway_state(_gateway())
@@ -558,8 +570,221 @@ class TestGatewayRuntimeAccess:
         endpoint = await service.register(ACTOR, _create())
         access = endpoint.runtime_access[0]
 
-        assert access.required_role_definition_id == COGNITIVE_SERVICES_USER_ROLE_ID
+        # Microsoft's Foundry RBAC guidance: Foundry User on the Foundry resource.
+        assert access.required_role_definition_id == FOUNDRY_USER_ROLE_ID
+        assert access.required_role_name == FOUNDRY_USER_ROLE_NAME
+        assert access.remediation is not None
+        assert access.remediation.scope == AI_RESOURCE_ID
+        assert f'--role "{FOUNDRY_USER_ROLE_NAME}"' in access.remediation.command
         assert endpoint.provider == ModelProvider.AZURE_AI_FOUNDRY
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("kind", ["OpenAI", "AIServices"])
+    async def test_a_sufficient_role_other_than_the_recommended_one_is_accepted(
+        self, kind: str, gateway_repository: InMemoryGatewayRepository
+    ) -> None:
+        # Cognitive Services User is recommended for neither kind, but it grants every data action
+        # MOSAIC publishes. Matching one role definition ID reported this as "cannot invoke".
+        await gateway_repository.record_gateway_state(_gateway())
+        fake = FakeCognitiveServices(kind=kind)
+        fake.role_assignments = [
+            role_assignment(COGNITIVE_SERVICES_USER_ROLE_ID, AI_RESOURCE_ID, APIM_PRINCIPAL_ID)
+        ]
+        service = build_endpoint_service(fake, gateway_repository=gateway_repository)
+
+        access = (await service.register(ACTOR, _create())).runtime_access[0]
+
+        assert access.can_invoke is True
+        assert access.reason == RuntimeAccessReason.GRANTED
+        assert access.granted_role_definition_id == COGNITIVE_SERVICES_USER_ROLE_ID
+        assert access.granted_role_name == "Cognitive Services User"
+        assert access.required_role_definition_id != COGNITIVE_SERVICES_USER_ROLE_ID
+        assert access.assignment_scope == AI_RESOURCE_ID
+
+    @pytest.mark.asyncio
+    async def test_advice_given_before_the_kind_is_known_is_accepted_once_it_is(
+        self, gateway_repository: InMemoryGatewayRepository
+    ) -> None:
+        # Observed live: before MOSAIC could read an Azure OpenAI account it recommended one role,
+        # then rejected that same role once it learned the account's kind.
+        await gateway_repository.record_gateway_state(_gateway())
+        fake = FakeCognitiveServices(account_status=403)
+        service = build_endpoint_service(fake, gateway_repository=gateway_repository)
+
+        endpoint = await service.register(ACTOR, _create())
+        before = endpoint.runtime_access[0]
+
+        assert endpoint.capabilities.kind is None
+        assert before.can_invoke is False
+        assert before.remediation is not None
+        assert before.remediation.role_definition_id == FOUNDRY_USER_ROLE_ID
+        assert "does not know whether it is Azure OpenAI or Foundry" in (before.message or "")
+        assert "Grant MOSAIC Reader" in (before.message or "")
+
+        # The administrator runs the recommended command and grants MOSAIC Reader, so MOSAIC now
+        # learns that the account is Azure OpenAI.
+        fake.role_assignments = [
+            role_assignment(
+                before.remediation.role_definition_id,
+                before.remediation.scope,
+                APIM_PRINCIPAL_ID,
+            )
+        ]
+        fake.account_status = 200
+        checked = await service.preflight(ACTOR, endpoint.id)
+        after = checked.runtime_access[0]
+
+        assert checked.capabilities.kind == "OpenAI"
+        assert after.can_invoke is True
+        assert after.reason == RuntimeAccessReason.GRANTED
+        assert after.granted_role_definition_id == FOUNDRY_USER_ROLE_ID
+        assert after.required_role_definition_id == AZURE_OPENAI_USER_ROLE_ID
+
+    @pytest.mark.asyncio
+    async def test_project_registration_is_evaluated_at_the_parent_account(
+        self, gateway_repository: InMemoryGatewayRepository
+    ) -> None:
+        # The published API calls the account, where the project's models are deployed. A grant on
+        # the project confers nothing there, so reporting it as access would be a false positive.
+        await gateway_repository.record_gateway_state(_gateway())
+        fake = FakeCognitiveServices(kind="AIServices")
+        fake.role_assignments = [
+            role_assignment(FOUNDRY_USER_ROLE_ID, AI_PROJECT_ID, APIM_PRINCIPAL_ID)
+        ]
+        service = build_endpoint_service(fake, gateway_repository=gateway_repository)
+
+        endpoint = await service.register(ACTOR, _create(azure_resource_id=AI_PROJECT_ID))
+        access = endpoint.runtime_access[0]
+
+        assert endpoint.azure_resource_id == AI_PROJECT_ID
+        assert access.can_invoke is False
+        assert access.reason == RuntimeAccessReason.NARROWER_SCOPE
+        assert access.evaluation == RuntimeAccessEvaluation.ROLE_ASSIGNMENTS
+        assert access.evaluated_scope == AI_RESOURCE_ID
+        assert [finding.kind for finding in access.role_findings] == [
+            RuntimeRoleFindingKind.NARROWER_SCOPE
+        ]
+        assert access.role_findings[0].scope == AI_PROJECT_ID
+        assert "Models are deployed on the parent resource" in (access.message or "")
+        assert access.remediation is not None
+        assert access.remediation.scope == AI_RESOURCE_ID
+        assert access.remediation.role_definition_id == FOUNDRY_USER_ROLE_ID
+
+        fake.role_assignments.append(
+            role_assignment(FOUNDRY_USER_ROLE_ID, AI_RESOURCE_ID, APIM_PRINCIPAL_ID)
+        )
+        granted = (await service.runtime_access(ACTOR, endpoint.id))[0]
+
+        assert granted.can_invoke is True
+        assert granted.assignment_scope == AI_RESOURCE_ID
+        assert granted.inherited is False
+        assert "the parent resource" in (granted.message or "")
+
+    @pytest.mark.asyncio
+    async def test_private_account_is_unreachable_from_a_gateway_outside_any_network(
+        self, gateway_repository: InMemoryGatewayRepository
+    ) -> None:
+        # A gateway with no virtual network calling an account with public network access
+        # disabled: the role is right, but no call can arrive, so "can invoke" would be false.
+        await gateway_repository.record_gateway_state(
+            _gateway(virtual_network_type="None", egress_ip_addresses=(APIM_PUBLIC_IP,))
+        )
+        fake = FakeCognitiveServices(public_network_access="Disabled")
+        fake.role_assignments = [
+            role_assignment(AZURE_OPENAI_USER_ROLE_ID, AI_RESOURCE_ID, APIM_PRINCIPAL_ID)
+        ]
+        service = build_endpoint_service(fake, gateway_repository=gateway_repository)
+
+        endpoint = await service.register(ACTOR, _create())
+        access = endpoint.runtime_access[0]
+
+        assert access.can_invoke is False
+        assert access.reason == RuntimeAccessReason.NETWORK_UNREACHABLE
+        assert access.evaluation == RuntimeAccessEvaluation.ROLE_ASSIGNMENTS
+        assert access.network_reachability == NetworkReachability.UNREACHABLE
+        # The role is still reported, so the network is visibly the only thing to fix.
+        assert access.granted_role_definition_id == AZURE_OPENAI_USER_ROLE_ID
+        assert (access.message or "").startswith(
+            "Public network access to this resource is disabled"
+        )
+        assert access.remediation is None
+        assert any("Public network access is disabled" in n for n in endpoint.capabilities.notes)
+
+    @pytest.mark.asyncio
+    async def test_endpoint_firewall_is_recorded(
+        self, gateway_repository: InMemoryGatewayRepository
+    ) -> None:
+        await gateway_repository.record_gateway_state(
+            _gateway(virtual_network_type="None", egress_ip_addresses=(APIM_PUBLIC_IP,))
+        )
+        fake = FakeCognitiveServices(
+            network_acls={
+                "defaultAction": "Deny",
+                "ipRules": [{"value": "203.0.113.0/24"}],
+                "virtualNetworkRules": [{"id": f"{RESOURCE_ID}-vnet/subnets/apim"}],
+            }
+        )
+        fake.role_assignments = [
+            role_assignment(AZURE_OPENAI_USER_ROLE_ID, AI_RESOURCE_ID, APIM_PRINCIPAL_ID)
+        ]
+        service = build_endpoint_service(fake, gateway_repository=gateway_repository)
+
+        endpoint = await service.register(ACTOR, _create())
+
+        capabilities = endpoint.capabilities
+        assert capabilities.network_default_action == "Deny"
+        assert capabilities.network_ip_rules == ["203.0.113.0/24"]
+        assert capabilities.network_virtual_network_rule_count == 1
+        assert any("firewall admits only" in note for note in capabilities.notes)
+        # The gateway's published address falls inside the admitted range.
+        access = endpoint.runtime_access[0]
+        assert access.network_reachability == NetworkReachability.REACHABLE
+        assert access.can_invoke is True
+
+    @pytest.mark.asyncio
+    async def test_role_definitions_are_read_once_per_check(
+        self, gateway_repository: InMemoryGatewayRepository
+    ) -> None:
+        await gateway_repository.record_gateway_state(_gateway(name="apim-east"))
+        await gateway_repository.record_gateway_state(_gateway(name="apim-west"))
+        fake = FakeCognitiveServices()
+        fake.role_assignments = [
+            role_assignment(AZURE_OPENAI_USER_ROLE_ID, AI_RESOURCE_ID, APIM_PRINCIPAL_ID)
+        ]
+        service = build_endpoint_service(fake, gateway_repository=gateway_repository)
+
+        endpoint = await service.register(ACTOR, _create())
+
+        assert [access.can_invoke for access in endpoint.runtime_access] == [True, True]
+        assert fake.role_definition_reads() == 1
+        # Nothing outlives a check: a role an administrator edits is read afresh next time.
+        await service.runtime_access(ACTOR, endpoint.id)
+        assert fake.role_definition_reads() == 2
+
+    @pytest.mark.asyncio
+    async def test_results_recorded_before_the_reason_existed_still_load(self) -> None:
+        # Stored endpoints predate ``reason`` and the other fields this check now reports.
+        legacy = {
+            "gatewayId": "gateway-1",
+            "gatewayName": SERVICE_NAME,
+            "apimPrincipalId": APIM_PRINCIPAL_ID,
+            "canInvoke": False,
+            "evaluation": "roleAssignments",
+            "requiredRoleName": "Cognitive Services OpenAI User",
+            "requiredRoleDefinitionId": AZURE_OPENAI_USER_ROLE_ID,
+            "inherited": False,
+            "message": "The gateway's managed identity does not hold the role.",
+        }
+
+        access = GatewayRuntimeAccess.model_validate(legacy)
+
+        assert access.reason is None
+        assert access.required_role_definition_id == AZURE_OPENAI_USER_ROLE_ID
+        assert access.role_findings == []
+        assert access.network_reachability == NetworkReachability.UNKNOWN
+        serialized = access.model_dump(mode="json")
+        assert serialized["requiredRoleName"] == "Cognitive Services OpenAI User"
+        assert serialized["requiredRoleDefinitionId"] == AZURE_OPENAI_USER_ROLE_ID
 
 
 class TestSuggestions:

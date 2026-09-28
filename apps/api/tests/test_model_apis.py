@@ -19,6 +19,7 @@ from mosaic_api.integrations.apim.model_apis import (
     backend_url,
     curated_operations,
     default_names,
+    required_data_actions,
 )
 from mosaic_api.integrations.policy import render_publication_policy
 
@@ -81,6 +82,46 @@ def test_an_openai_compatible_endpoint_has_no_curated_shape() -> None:
         curated_operations(ModelProvider.OPENAI_COMPATIBLE, "anything")
 
     assert "no curated API shape" in str(error.value.message)
+
+
+_ACCOUNTS = "Microsoft.CognitiveServices/accounts"
+
+
+def test_each_operation_declares_the_data_action_its_route_requires() -> None:
+    # As ``az provider operation show --namespace Microsoft.CognitiveServices`` lists them. The
+    # gateway runtime check is derived from these, so a wrong one is a wrong readiness answer.
+    assert {
+        item.name: item.data_action
+        for item in curated_operations(ModelProvider.AZURE_OPENAI, "gpt-4o-prod")
+    } == {
+        "chat-completions": f"{_ACCOUNTS}/OpenAI/deployments/chat/completions/action",
+        "completions": f"{_ACCOUNTS}/OpenAI/deployments/completions/action",
+        "embeddings": f"{_ACCOUNTS}/OpenAI/deployments/embeddings/action",
+        "images-generations": f"{_ACCOUNTS}/OpenAI/images/generations/action",
+        "audio-transcriptions": f"{_ACCOUNTS}/OpenAI/deployments/audio/action",
+        "audio-translations": f"{_ACCOUNTS}/OpenAI/deployments/audio/action",
+        "responses": f"{_ACCOUNTS}/OpenAI/responses/write",
+    }
+    assert {
+        item.name: item.data_action
+        for item in curated_operations(ModelProvider.AZURE_AI_FOUNDRY, "llama-3")
+    } == {
+        "chat-completions": f"{_ACCOUNTS}/MaaS/chat/completions/action",
+        "embeddings": f"{_ACCOUNTS}/MaaS/embeddings/action",
+        "model-info": f"{_ACCOUNTS}/MaaS/info/read",
+    }
+
+
+def test_required_data_actions_are_the_distinct_actions_of_a_shape() -> None:
+    # Both audio routes share one data action, so it is required once.
+    assert len(required_data_actions(ModelProvider.AZURE_OPENAI)) == 6
+    assert required_data_actions(ModelProvider.AZURE_AI_FOUNDRY) == (
+        f"{_ACCOUNTS}/MaaS/chat/completions/action",
+        f"{_ACCOUNTS}/MaaS/embeddings/action",
+        f"{_ACCOUNTS}/MaaS/info/read",
+    )
+    with pytest.raises(ValidationError):
+        required_data_actions(ModelProvider.OPENAI_COMPATIBLE)
 
 
 def test_names_are_deterministic_and_prefixed_for_ownership() -> None:

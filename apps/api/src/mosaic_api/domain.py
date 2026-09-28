@@ -452,8 +452,11 @@ class RuntimeAccessEvaluation(StrEnum):
 class RuntimeAccessReason(StrEnum):
     """Why a gateway runtime check reached its verdict.
 
-    ``evaluation`` says how MOSAIC looked; ``reason`` says what it found. The console keys its
-    wording on this so that "MOSAIC could not read X" is never presented as a denial.
+    ``evaluation`` says whether MOSAIC reached a definite answer: it is ``notEvaluated`` whenever
+    something MOSAIC cannot read or evaluate stands between it and one, such as an unreadable role
+    definition, an ABAC condition, a deny assignment that depends on a group, or a network path it
+    cannot see. ``reason`` says what it found. The console keys its wording on this so that
+    "MOSAIC could not read X" is never presented as a denial.
     """
 
     GRANTED = "granted"

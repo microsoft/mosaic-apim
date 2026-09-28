@@ -125,6 +125,8 @@ class FakeApim:
         self.sku_name = "Developer"
         self.virtual_network_type: str | None = "None"
         self.public_ip_addresses: list[str] = [APIM_PUBLIC_IP]
+        # Set when a NAT gateway carries the service's outbound calls instead.
+        self.outbound_public_ip_addresses: list[str] = []
         self.additional_locations: list[dict[str, Any]] = []
 
     def fail_once(self, path_suffix: str, status_code: int) -> None:
@@ -339,6 +341,8 @@ class FakeApim:
         }
         if self.virtual_network_type is not None:
             properties["virtualNetworkType"] = self.virtual_network_type
+        if self.outbound_public_ip_addresses:
+            properties["outboundPublicIPAddresses"] = list(self.outbound_public_ip_addresses)
         if self.additional_locations:
             properties["additionalLocations"] = list(self.additional_locations)
         service: dict[str, Any] = {

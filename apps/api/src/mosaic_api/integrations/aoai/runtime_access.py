@@ -391,6 +391,13 @@ def _role_reason(assessed: list[_Assessed]) -> RuntimeAccessReason:
     return RuntimeAccessReason.MISSING_ROLE
 
 
+# Findings that leave the answer open rather than negative. They are reported as not evaluated so
+# that nothing keyed on ``evaluation`` alone can present them as a denial.
+_UNCONFIRMED_ROLE_REASONS = frozenset(
+    {RuntimeAccessReason.ROLE_UNREADABLE, RuntimeAccessReason.CONDITIONAL}
+)
+
+
 @dataclass(frozen=True)
 class _Deny:
     definite: bool
@@ -836,7 +843,7 @@ async def verify_gateway_runtime_access(
             can_invoke=False,
             evaluation=(
                 RuntimeAccessEvaluation.NOT_EVALUATED
-                if role_reason == RuntimeAccessReason.ROLE_UNREADABLE
+                if role_reason in _UNCONFIRMED_ROLE_REASONS
                 else RuntimeAccessEvaluation.ROLE_ASSIGNMENTS
             ),
             reason=RuntimeAccessReason.NETWORK_UNREACHABLE if unreachable else role_reason,
