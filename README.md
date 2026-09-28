@@ -345,6 +345,17 @@ conditions: the contributor role above, and an administrator switching the gatew
 `manage`. MOSAIC refuses the switch until preflight has actually confirmed write access, and refuses
 every write to a gateway left in `observe` mode however the role is assigned.
 
+Administrators switch modes with **Management mode** on the gateway's Overview tab, and confirm each
+direction. The switch itself changes nothing in API Management; it only records the mode in MOSAIC.
+**Manage** stays disabled until the access check confirms write access. Until then, the page shows the
+role, scope and identity to grant, and **Check access** runs the preflight again. In `manage`,
+MOSAIC writes to the gateway only when an administrator applies a reviewed publish plan, unpublishes
+a model, or confirms recovery of an interrupted apply. Switching back to `observe` leaves published
+models in API Management, where they keep serving calls. MOSAIC then refuses to plan, apply or
+unpublish them, so grant and access changes saved in MOSAIC wait until the gateway is managed again.
+Either switch is refused while an apply or unpublish on one of the gateway's publications is still
+running, or is awaiting recovery after an interruption.
+
 The contributor role also grants `subscriptions/listSecrets`. MOSAIC uses that capability only
 for an authorized, explicitly requested reveal of an applied, owned grant's key. A custom role
 that permits writes but excludes that action cannot reveal keys; the API reports the missing
