@@ -82,6 +82,7 @@ tests and README or ADR updates wherever a decision changes.
 | G5 | Anthropic deployments get the chat-completions API shape, but Claude needs the Messages API. `llm-token-limit` supports Anthropic only on APIM v2 tiers | Publish Anthropic with the Messages shape, and decide how to limit tokens on classic tiers | 🔄 |
 | G6 | Only if Grok or Llama fail on `/models/chat/completions` through APIM | Add OpenAI v1 routes | ⬜ conditional |
 | G7 | When MOSAIC's identity can see no subscriptions, discovery shows nothing at all: no suggestions, no unreadable subscriptions and no hint. Found live in Phase 3 | Say how many subscriptions were scanned, and when it's none, show the Reader command for the subscriptions MOSAIC already knows about | 🔄 |
+| G8 | Gateway runtime readiness can disagree with what the gateway can actually call. It accepts exactly one role, so a sufficient role such as the Cognitive Services User role it recommends before it can read the account is later reported as missing. It also checks a project-registered endpoint at the project scope, although published APIs call the parent resource, where a project-scoped grant doesn't apply | Evaluate at the resource scope the published API calls, accept any role whose data actions are sufficient, and recommend only roles the check will accept | 🔄 |
 
 ## Phases
 
@@ -125,6 +126,10 @@ Each batch runs only after approval and is recorded in the change ledger.
 - Gateway runtime readiness starts at "cannot invoke" with a command. Assign the APIM identity's
   role from that command, and readiness moves to "can invoke". The private endpoint stays at
   "cannot invoke".
+  - Until G8 is deployed, assign gateway roles only after MOSAIC can read the account, so the
+    recommendation reflects the account kind.
+  - For the Foundry project target, assign the role on the parent resource rather than the project.
+    Readiness reports that grant as inherited, and runtime calls need it.
 - **Exit:** every target is registered, readable and invocable, except the negative case.
 
 Progress, before any role was granted:
@@ -147,7 +152,7 @@ Progress, before any role was granted:
 - Merge `main` into the e2e branch and rebuild the azd environment from live values. Run
   `azd provision --preview`, and after approval run `azd up`, because G4 changes the Entra hook.
   Then re-run the smoke specs.
-- **Exit:** the deployed build contains G1 to G5 and G7, and the smoke specs pass.
+- **Exit:** the deployed build contains G1 to G5, G7 and G8, and the smoke specs pass.
 
 ### Phase 5: Live, admin publishes (A7 to A9) ⬜
 
@@ -280,8 +285,11 @@ the journeys that exercise them have run.
 | ID | Observation | Next step |
 | --- | --- | --- |
 | O1 | Before MOSAIC can read an account, it records a placeholder endpoint (`https://<account>.cognitiveservices.azure.com`) and the provider "Azure AI Foundry", even for an Azure OpenAI account. The UI shows these as fact | After Reader is granted, confirm that **Check access** corrects the provider and endpoint. If it does, label the values as unconfirmed until the first successful read |
-| O2 | A rejected duplicate registration appears under the generic title "Unable to load data" | Use a title that fits a failed registration |
-| O3 | Before the account kind is known, the gateway card suggests the broad **Cognitive Services User** role | Once MOSAIC can read the account, check whether the suggestion narrows to the OpenAI-specific role |
+| O2 | A rejected duplicate registration appears under the generic title "Unable to load data". The Identity page gets this right with "Unable to add principal" | Use a title that fits a failed registration |
+
+The Phase 3 check on whether the gateway role recommendation narrows once the account kind is
+known led to G8: it does narrow, and the check then rejects the broader role it recommended
+before.
 
 ## Risks
 
