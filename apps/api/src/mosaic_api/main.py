@@ -196,6 +196,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             gateway_repository=gateway_repository,
             credential_factory=lambda resource: ApimCredentialClient(arm_client, resource),
             model_runtime_client_id=app_settings.model_runtime_client_id,
+            model_client_id=app_settings.model_client_id,
         )
         app.state.portal_service = PortalService(
             entitlement_service,
