@@ -82,7 +82,7 @@ tests and README or ADR updates wherever a decision changes.
 | G5 | Anthropic deployments get the chat-completions API shape, but Claude needs the Messages API. `llm-token-limit` supports Anthropic only on APIM v2 tiers | Publish Anthropic with the Messages shape, and decide how to limit tokens on classic tiers | 🔄 |
 | G6 | Only if Grok or Llama fail on `/models/chat/completions` through APIM | Add OpenAI v1 routes | ⬜ conditional |
 | G7 | When MOSAIC's identity can see no subscriptions, discovery shows nothing at all: no suggestions, no unreadable subscriptions and no hint. Found live in Phase 3 | Say how many subscriptions were scanned, and when it's none, show the Reader command for the subscriptions MOSAIC already knows about | 🔄 |
-| G8 | Gateway runtime readiness can disagree with what the gateway can actually call. It accepts exactly one role, so a sufficient role such as the Cognitive Services User role it recommends before it can read the account is later reported as missing. It also checks a project-registered endpoint at the project scope, although published APIs call the parent resource, where a project-scoped grant doesn't apply | Evaluate at the resource scope the published API calls, accept any role whose data actions are sufficient, and recommend only roles the check will accept | 🔄 |
+| G8 | Gateway runtime readiness can disagree with what the gateway can actually call. It accepts exactly one role, so a sufficient role such as the Cognitive Services User role it recommends before it can read the account is later reported as missing. It also checks a project-registered endpoint at the project scope, although published APIs call the parent resource, where a project-scoped grant doesn't apply | Evaluate at the resource scope the published API calls, accept any role whose data actions are sufficient, and recommend only roles the check will accept. Also account for network reachability: the console never shows an endpoint's "public network access is disabled" note, and a private endpoint shows "can invoke" as soon as the role exists | 🔄 |
 
 ## Phases
 
@@ -126,7 +126,8 @@ Each batch runs only after approval and is recorded in the change ledger.
 - Synced deployments must match the `az` inventory.
 - Gateway runtime readiness starts at "cannot invoke" with a command. Assign the APIM identity's
   role from that command, and readiness moves to "can invoke". The private endpoint stays at
-  "cannot invoke".
+  "cannot invoke" because the gateway has no private path to it. Before G8, readiness checks only
+  roles, so this expectation needs G8.
   - Until G8 is deployed, assign gateway roles only after MOSAIC can read the account, so the
     recommendation reflects the account kind.
   - For the Foundry project target, assign the role on the parent resource rather than the project.
