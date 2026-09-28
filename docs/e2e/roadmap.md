@@ -156,15 +156,24 @@ Progress, before any role was granted:
 - Re-planning must be a no-op. Cross-check the APIM APIs, products and policies with `az`.
 - Make the published models visible in the portal catalog.
 
-### Phase 6: Live, admin sets identity and governed access (A10 to A12) ⬜
+### Phase 6: Live, admin sets identity and governed access (A10 to A12) 🔄 started early
 
-- Create identity entries for the `user` and `noRole` personas and the workload service principal.
+- Create identity entries for the `user` persona and the workload service principal. The `noRole`
+  persona is left unregistered on purpose, so Phase 7 shows that approving a request from someone
+  MOSAIC hasn't seen before still produces a grant.
 - Enable key and Entra access with limits, grant the `user` persona and the workload, and run the
   model-wide review and apply.
 - Get the workload's connection details and key handoff from the console. The key never appears
   in logs.
 
-### Phase 7: Live, end-user portal (P1 to P8, A13) ⬜
+Progress:
+
+- ✅ A10, `user` persona: **Add user** stores only the object ID and a local label, and the entry
+  shows as Live. Adding the same object ID again is rejected with "Unable to add principal: A
+  principal with this Entra object ID already exists".
+- ⏳ A10, workload: waiting for the workload app registration (Phase 2).
+
+### Phase 7: Live, end-user portal (P1 to P8, A13) 🔄 P8 done
 
 - The `noRole` persona is denied cleanly. After getting the User role it sees an empty My access
   view and the catalog.
@@ -174,6 +183,12 @@ Progress, before any role was granted:
 - The `user` persona sees its grants, limits and connection details (G3). Primary and secondary
   key reveal is masked, transient and never cached.
 - Users are isolated from each other: another user's entitlement ID returns 403 or 404.
+
+Progress:
+
+- ✅ P8: the admin reaches the portal with single sign-on and no second MFA prompt. The header
+  shows "Admin allowed", and My access, Catalog and My requests show their empty states without
+  errors.
 
 ### Phase 8: Runtime verification (R1 to R8, A14) ⬜
 
@@ -207,55 +222,55 @@ an API key or SigV4. The environment owner writes the secrets and shares only th
 ## Journey matrix
 
 A journey passes only when the stated observable outcome happens in the UI, or at the gateway for
-runtime journeys.
+runtime journeys. **Status** is the result of the latest live run; 🔄 means part of the journey has passed.
 
 ### Admin console
 
-| ID | Journey | Phase |
-| --- | --- | --- |
-| A0 | The admin reaches the console; the model endpoints page loads without errors | 1 |
-| A1 | A User-only account signs in but sees no admin data | 1 |
-| A2 | Discovery suggestions list the target accounts; unreadable subscriptions show a remediation command | 3 |
-| A3 | Register from a suggestion, a pasted account ID and a pasted Foundry project ID; a duplicate is rejected | 3 |
-| A4 | An unreadable endpoint shows "cannot read" and the exact command; after running it, MOSAIC can read it | 3 |
-| A5 | Synced deployments match the Azure inventory | 3 |
-| A6 | Gateway runtime readiness moves from "cannot invoke" with a command to "can invoke" | 3 |
-| A7 | Manage mode is refused without APIM write access and allowed with it (G1) | 5 |
-| A8 | Publish every target deployment; every plan step succeeds, and re-planning is a no-op | 5 |
-| A9 | Catalog visibility makes a published model appear in the portal | 5 |
-| A10 | Identity entries exist for both member personas and the workload | 6 |
-| A11 | Governed access with keys, Entra and limits is reviewed and applied, and the applied state shows | 6 |
-| A12 | Workload connection details and key handoff work, and the key is never logged | 6 |
-| A13 | Approving an access request creates grant intent, which is then reviewed and applied (G2) | 7 |
-| A14 | Disable, revoke and method toggles go through review and apply | 8 |
-| A15 | Unpublishing removes only what MOSAIC created | 9 |
+| ID | Journey | Phase | Status |
+| --- | --- | --- | --- |
+| A0 | The admin reaches the console; the model endpoints page loads without errors | 1 | ✅ |
+| A1 | A User-only account signs in but sees no admin data | 1 | ⬜ |
+| A2 | Discovery suggestions list the target accounts; unreadable subscriptions show a remediation command | 3 | 🔄 |
+| A3 | Register from a suggestion, a pasted account ID and a pasted Foundry project ID; a duplicate is rejected | 3 | 🔄 |
+| A4 | An unreadable endpoint shows "cannot read" and the exact command; after running it, MOSAIC can read it | 3 | 🔄 |
+| A5 | Synced deployments match the Azure inventory | 3 | ⬜ |
+| A6 | Gateway runtime readiness moves from "cannot invoke" with a command to "can invoke" | 3 | 🔄 |
+| A7 | Manage mode is refused without APIM write access and allowed with it (G1) | 5 | ⬜ |
+| A8 | Publish every target deployment; every plan step succeeds, and re-planning is a no-op | 5 | ⬜ |
+| A9 | Catalog visibility makes a published model appear in the portal | 5 | ⬜ |
+| A10 | Identity entries exist for the `user` persona and the workload; a duplicate is rejected | 6 | 🔄 |
+| A11 | Governed access with keys, Entra and limits is reviewed and applied, and the applied state shows | 6 | ⬜ |
+| A12 | Workload connection details and key handoff work, and the key is never logged | 6 | ⬜ |
+| A13 | Approving an access request creates grant intent, which is then reviewed and applied (G2) | 7 | ⬜ |
+| A14 | Disable, revoke and method toggles go through review and apply | 8 | ⬜ |
+| A15 | Unpublishing removes only what MOSAIC created | 9 | ⬜ |
 
 ### Portal
 
-| ID | Journey | Phase |
-| --- | --- | --- |
-| P0 | A User persona reaches My access and the catalog | 1 |
-| P1 | A persona without a MOSAIC role gets a clean denial with a sign-out option | 1, 7 |
-| P2 | With the role but no grants, My access shows its empty state and the catalog is visible | 7 |
-| P3 | My access shows applied grants, limits and attribution | 7 |
-| P4 | A request with a justification can be withdrawn and requested again | 7 |
-| P5 | After approval and apply, the requester sees the grant | 7 |
-| P6 | Connection details appear, and key reveal is masked, transient and uncached (G3) | 7 |
-| P7 | Another user's entitlement ID returns 403 or 404 | 7 |
-| P8 | The admin shows as allowed in the portal | 7 |
+| ID | Journey | Phase | Status |
+| --- | --- | --- | --- |
+| P0 | A User persona reaches My access and the catalog | 1 | ⬜ |
+| P1 | A persona without a MOSAIC role gets a clean denial with a sign-out option | 1, 7 | ⬜ |
+| P2 | With the role but no grants, My access shows its empty state and the catalog is visible | 7 | ⬜ |
+| P3 | My access shows applied grants, limits and attribution | 7 | ⬜ |
+| P4 | A request with a justification can be withdrawn and requested again | 7 | ⬜ |
+| P5 | After approval and apply, the requester sees the grant | 7 | ⬜ |
+| P6 | Connection details appear, and key reveal is masked, transient and uncached (G3) | 7 | ⬜ |
+| P7 | Another user's entitlement ID returns 403 or 404 | 7 | ⬜ |
+| P8 | The admin shows as allowed in the portal | 7 | ✅ |
 
 ### Runtime (real calls through APIM)
 
-| ID | Journey | Phase |
-| --- | --- | --- |
-| R1 | A granted user reaches every provider by key: Azure OpenAI, Foundry OpenAI, Grok, Llama, DeepSeek and Claude (after G5) | 8 |
-| R2 | A granted user's Entra token works (G4); a token without a grant and a wrong-audience token are denied | 8 |
-| R3 | The workload's client-credentials token and its handed-off key both work | 8 |
-| R4 | Anonymous, invalid-key and cross-subject calls are denied | 8 |
-| R5 | A shared budget of 2 calls per 300 seconds, spent by primary key and token, returns 429 for the secondary key | 8 |
-| R6 | The tokens-per-minute limit returns 429 with `Retry-After` | 8 |
-| R7 | After revocation propagates, calls fail | 8 |
-| R8 | Calls show up in Application Insights and Log Analytics (optional) | 8 |
+| ID | Journey | Phase | Status |
+| --- | --- | --- | --- |
+| R1 | A granted user reaches every provider by key: Azure OpenAI, Foundry OpenAI, Grok, Llama, DeepSeek and Claude (after G5) | 8 | ⬜ |
+| R2 | A granted user's Entra token works (G4); a token without a grant and a wrong-audience token are denied | 8 | ⬜ |
+| R3 | The workload's client-credentials token and its handed-off key both work | 8 | ⬜ |
+| R4 | Anonymous, invalid-key and cross-subject calls are denied | 8 | ⬜ |
+| R5 | A shared budget of 2 calls per 300 seconds, spent by primary key and token, returns 429 for the secondary key | 8 | ⬜ |
+| R6 | The tokens-per-minute limit returns 429 with `Retry-After` | 8 | ⬜ |
+| R7 | After revocation propagates, calls fail | 8 | ⬜ |
+| R8 | Calls show up in Application Insights and Log Analytics (optional) | 8 | ⬜ |
 
 ## Findings from live runs
 
