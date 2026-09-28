@@ -6,6 +6,9 @@ import type {
   AccessRequestCreate,
   ApiErrorBody,
   CatalogEntry,
+  KeyRevealResult,
+  KeySlot,
+  ModelConnection,
   PortalProfile,
   ResolvedEntitlement,
 } from './types'
@@ -24,6 +27,18 @@ export class ApiError extends Error {
 interface RequestOptions {
   method?: 'GET' | 'POST'
   body?: unknown
+  cache?: RequestCache
+  signal?: AbortSignal
+}
+
+function errorMessage(body: ApiErrorBody | undefined, status: number) {
+  if (body?.message) return body.message
+  if (typeof body?.detail === 'string' && body.detail) return body.detail
+  return `Request failed with status ${status}`
+}
+
+function entitlementPath(entitlementId: string) {
+  return `/api/v1/me/entitlements/${encodeURIComponent(entitlementId)}`
 }
 
 export interface PortalApi {
@@ -33,6 +48,14 @@ export interface PortalApi {
   listAccessRequests(): Promise<AccessRequest[]>
   createAccessRequest(payload: AccessRequestCreate): Promise<AccessRequest>
   withdrawAccessRequest(requestId: string): Promise<AccessRequest>
+  /** Connection metadata for one of the caller's own direct model grants. Contains no secret. */
+  getMyEntitlementConnection(entitlementId: string): Promise<ModelConnection>
+  /** Reads one current key from APIM. Callers must keep the result out of caches and storage. */
+  revealMyEntitlementKey(
+    entitlementId: string,
+    slot: KeySlot,
+    signal?: AbortSignal,
+  ): Promise<KeyRevealResult>
 }
 
 export function usePortalApi(): PortalApi {
@@ -59,6 +82,8 @@ export function usePortalApi(): PortalApi {
         method: options.method ?? 'GET',
         body: options.body === undefined ? undefined : JSON.stringify(options.body),
         headers,
+        cache: options.cache,
+        signal: options.signal,
       })
       if (!response.ok) {
         let body: ApiErrorBody | undefined
@@ -67,11 +92,7 @@ export function usePortalApi(): PortalApi {
         } catch {
           body = undefined
         }
-        throw new ApiError(
-          body?.message ?? `Request failed with status ${response.status}`,
-          response.status,
-          body,
-        )
+        throw new ApiError(errorMessage(body, response.status), response.status, body)
       }
       return (await response.json()) as T
     }
@@ -86,6 +107,15 @@ export function usePortalApi(): PortalApi {
       withdrawAccessRequest: (requestId) =>
         request<AccessRequest>(`/api/v1/portal/access-requests/${requestId}/withdraw`, {
           method: 'POST',
+        }),
+      getMyEntitlementConnection: (entitlementId) =>
+        request<ModelConnection>(`${entitlementPath(entitlementId)}/connection`),
+      revealMyEntitlementKey: (entitlementId, slot, signal) =>
+        request<KeyRevealResult>(`${entitlementPath(entitlementId)}/keys/reveal`, {
+          method: 'POST',
+          body: { slot },
+          cache: 'no-store',
+          signal,
         }),
     }
   }, [accounts, instance])

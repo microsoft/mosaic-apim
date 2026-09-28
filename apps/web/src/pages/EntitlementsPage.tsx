@@ -10,6 +10,7 @@ import {
   DialogTitle,
   Field,
   Input,
+  Link,
   MessageBar,
   MessageBarBody,
   Select,
@@ -25,17 +26,30 @@ import {
 } from '@fluentui/react-components'
 import { AddRegular } from '@fluentui/react-icons'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { type FormEvent, useMemo, useState } from 'react'
+import { type FormEvent, useCallback, useMemo, useRef, useState } from 'react'
 import { useMosaicApi } from '../api'
+import {
+  ApproveAccessRequestDialog,
+  type ApprovalRequester,
+} from '../components/ApproveAccessRequestDialog'
 import { EmptyState, ErrorState, Loading } from '../components/AsyncState'
 import { PageHeader } from '../components/PageHeader'
 import { EntitlementAccessState } from '../components/EntitlementAccessState'
 import { EntitlementConnectionDialog } from '../components/EntitlementConnectionDialog'
 import { ModelAccessSettingsPanel } from '../components/ModelAccessSettingsPanel'
 import { PublishModelDialog } from '../components/PublishModelDialog'
-import { DEFAULT_COUNTER_KEY, GOVERNED_COUNTER_KEY, QUOTA_PERIODS, callRateError, describeLimits } from '../entitlement-limits'
+import {
+  QUOTA_PERIODS,
+  buildEnforcement,
+  callRateError,
+  describeLimits,
+  emptyLimitForm,
+  type LimitForm,
+} from '../entitlement-limits'
 import { runtimeConfig } from '../runtime-config'
 import type {
+  AccessRequest,
+  AccessRequestApproval,
   Entitlement,
   EntitlementEnforcement,
   EntitlementResource,
@@ -60,65 +74,71 @@ interface ResourceOption {
   label: string
 }
 
-interface GrantForm {
+interface GrantForm extends LimitForm {
   subject: string
   resource: string
-  tokensPerMinute: string
-  tokenQuota: string
-  tokenQuotaPeriod: QuotaPeriod
-  calls: string
-  renewalPeriodSeconds: string
   notes: string
 }
 
 const emptyForm: GrantForm = {
+  ...emptyLimitForm,
   subject: '',
   resource: '',
-  tokensPerMinute: '',
-  tokenQuota: '',
-  tokenQuotaPeriod: 'Monthly',
-  calls: '',
-  renewalPeriodSeconds: '60',
   notes: '',
 }
 
-function buildEnforcement(form: GrantForm, governed: boolean): EntitlementEnforcement | null {
-  const tokensPerMinute = Number(form.tokensPerMinute) || undefined
-  const tokenQuota = Number(form.tokenQuota) || undefined
-  const calls = Number(form.calls) || undefined
-  const renewalPeriodSeconds = Number(form.renewalPeriodSeconds) || undefined
-  const counterKeyExpression = governed ? GOVERNED_COUNTER_KEY : DEFAULT_COUNTER_KEY
+interface Banner {
+  text: string
+  /** A published model whose plan must be reviewed and applied before the change takes effect. */
+  review?: { publicationId: string; displayName: string }
+}
 
-  const enforcement: EntitlementEnforcement = {}
-  if (tokensPerMinute || tokenQuota) {
-    enforcement.tokens = {
-      counterKeyExpression,
-      estimatePromptTokens: true,
-      ...(tokensPerMinute ? { tokensPerMinute } : {}),
-      ...(tokenQuota ? { tokenQuota, tokenQuotaPeriod: form.tokenQuotaPeriod } : {}),
+/** Everything the approval dialog and its outcome banner need, resolved when it opens. */
+interface ApprovalContext {
+  accessRequest: AccessRequest
+  requester: ApprovalRequester
+  resourceLabel: string
+  publication?: Publication
+  reviewable?: Publication
+  governed: boolean
+  existingGrant: boolean
+}
+
+function approvalBanner({ requester, publication, reviewable, governed }: ApprovalContext): Banner {
+  const lead = requester.registered
+    ? `Approved the request and created grant intent for ${requester.label}.`
+    : `Approved the request, registered ${requester.label} as a user principal, and created their grant intent.`
+  if (governed && reviewable) {
+    return {
+      text: `${lead} API Management is unchanged; review and apply the ${reviewable.displayName} model plan to activate it.`,
+      review: { publicationId: reviewable.id, displayName: reviewable.displayName },
     }
   }
-  if (calls && renewalPeriodSeconds) {
-    enforcement.requests = {
-      counterKeyExpression,
-      calls,
-      renewalPeriodSeconds,
+  if (governed) {
+    return {
+      text: `${lead} API Management is unchanged until the ${publication?.displayName ?? 'model'} plan is reviewed and applied.`,
     }
   }
-  return enforcement.tokens || enforcement.requests ? enforcement : null
+  return {
+    text: `${lead} The grant is desired state only; MOSAIC does not apply grants for this resource to API Management.`,
+  }
 }
 
 export function EntitlementsPage() {
   const api = useMosaicApi()
   const queryClient = useQueryClient()
   const [dialogOpen, setDialogOpen] = useState(false)
-  const [banner, setBanner] = useState<string | null>(null)
+  const [banner, setBanner] = useState<Banner | null>(null)
+  const announce = useCallback((text: string) => setBanner({ text }), [])
   const [inspectedPrincipal, setInspectedPrincipal] = useState('')
   const [form, setForm] = useState<GrantForm>(emptyForm)
   const [selectedPublicationId, setSelectedPublicationId] = useState('')
   const [directModelId, setDirectModelId] = useState<string | null>(null)
   const [connectionGrantId, setConnectionGrantId] = useState<string | null>(null)
   const [review, setReview] = useState<{ publication: Publication; plan: PublishPlan } | null>(null)
+  const [approving, setApproving] = useState<ApprovalContext | null>(null)
+  const governedCardRef = useRef<HTMLDivElement>(null)
+  const publishedModelSelectRef = useRef<HTMLSelectElement>(null)
 
   const entitlements = useQuery({
     queryKey: ['entitlements'],
@@ -195,7 +215,7 @@ export function EntitlementsPage() {
       setForm(emptyForm)
       setDirectModelId(null)
       await queryClient.invalidateQueries({ queryKey: ['publications'] })
-      setBanner('Saved grant intent. API Management is unchanged; review and apply the model plan to activate a supported direct grant.')
+      announce('Saved grant intent. API Management is unchanged; review and apply the model plan to activate a supported direct grant.')
     },
   })
 
@@ -208,7 +228,7 @@ export function EntitlementsPage() {
         queryClient.invalidateQueries({ queryKey: ['publications'] }),
         queryClient.invalidateQueries({ queryKey: ['entitlement-connection'] }),
       ])
-      setBanner(variables.enabled
+      announce(variables.enabled
         ? 'Saved enabled intent. Runtime access changes only after a supported model plan is reviewed and applied.'
         : 'Saved disabled intent. Managed revocation is pending until the model plan is reviewed, applied, and propagated; API Management is unchanged by this save.')
     },
@@ -218,22 +238,30 @@ export function EntitlementsPage() {
     mutationFn: (id: string) => api.deleteEntitlement(id),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['entitlements'] })
-      setBanner('Removed the desired-state grant. API Management is unchanged.')
+      announce('Removed the desired-state grant. API Management is unchanged.')
     },
   })
 
-  const decideMutation = useMutation({
-    mutationFn: ({ id, approve }: { id: string; approve: boolean }) =>
-      approve ? api.approveAccessRequest(id) : api.denyAccessRequest(id),
-    onSuccess: async (_, variables) => {
+  const approveMutation = useMutation({
+    mutationFn: ({ context, approval }: { context: ApprovalContext; approval: AccessRequestApproval }) =>
+      api.approveAccessRequest(context.accessRequest.id, approval),
+    onSuccess: async (_, { context }) => {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['access-requests'] }),
         queryClient.invalidateQueries({ queryKey: ['entitlements'] }),
+        queryClient.invalidateQueries({ queryKey: ['principals'] }),
         queryClient.invalidateQueries({ queryKey: ['publications'] }),
       ])
-      setBanner(variables.approve
-        ? 'Approved the request and saved grant intent. This does not activate APIM access; supported model changes still need review and apply.'
-        : 'Denied the access request.')
+      setApproving((current) => (current?.accessRequest.id === context.accessRequest.id ? null : current))
+      setBanner(approvalBanner(context))
+    },
+  })
+
+  const denyMutation = useMutation({
+    mutationFn: (id: string) => api.denyAccessRequest(id),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['access-requests'] })
+      announce('Denied the access request. No grant was created, and API Management is unchanged.')
     },
   })
 
@@ -266,6 +294,45 @@ export function EntitlementsPage() {
       && Boolean(entitlement.runtime || publication?.governedAccess || publication?.appliedAccess)
   }
 
+  function openApproval(accessRequest: AccessRequest) {
+    const objectId = accessRequest.requesterObjectId.toLowerCase()
+    const principal = (principals.data ?? []).find(
+      (item) => item.id === accessRequest.requesterPrincipalId || item.objectId.toLowerCase() === objectId,
+    )
+    const subject: EntitlementSubject = {
+      kind: principal && principal.kind !== 'user' ? 'application' : 'user',
+      id: principal?.id ?? accessRequest.requesterObjectId,
+    }
+    const { resource } = accessRequest
+    const publication = publicationFor(accessRequest)
+    approveMutation.reset()
+    setApproving({
+      accessRequest,
+      requester: {
+        label: principal?.label ?? principal?.objectId ?? accessRequest.requesterObjectId,
+        objectId: accessRequest.requesterObjectId,
+        registered: Boolean(principal),
+      },
+      resourceLabel: labels.get(resource.id) ?? resource.id,
+      publication,
+      reviewable: publishedModels.find((item) => item.id === publication?.id),
+      governed: managedGrant({ resource, subject }),
+      existingGrant: Boolean(principal) && (entitlements.data ?? []).some(
+        (item) => item.subject.kind === subject.kind && item.subject.id === subject.id
+          && item.resource.kind === resource.kind && item.resource.id === resource.id
+          && (item.resource.scopeId ?? '') === (resource.scopeId ?? ''),
+      ),
+    })
+  }
+
+  function openReview(publicationId: string) {
+    setSelectedPublicationId(publicationId)
+    reviewMutation.reset()
+    setConnectionGrantId(null)
+    governedCardRef.current?.scrollIntoView?.({ block: 'start' })
+    publishedModelSelectRef.current?.focus({ preventScroll: true })
+  }
+
   function addDirectGrant(modelApiId: string) {
     setDirectModelId(modelApiId)
     setForm({ ...emptyForm, resource: modelApiId })
@@ -295,6 +362,10 @@ export function EntitlementsPage() {
   const unbound = rows.filter((item) => !item.binding).length
   const rateError = callRateError(form)
   const connectionGrant = rows.find((entitlement) => entitlement.id === connectionGrantId)
+  // The approval dialog reports whether the requester is registered and already holds a grant,
+  // and prefills limits from the publication, so it waits until those are known.
+  const approvalReady = principals.isSuccess && entitlements.isSuccess && !publications.isPending
+    && !modelApis.isPending && !mcpServers.isPending
 
   return (
     <section className={styles.page}>
@@ -321,12 +392,29 @@ export function EntitlementsPage() {
 
       {banner && (
         <MessageBar intent="success">
-          <MessageBarBody>{banner}</MessageBarBody>
+          <MessageBarBody>
+            {banner.text}
+            {banner.review && (
+              <>
+                {' '}
+                <Link
+                  inline
+                  href="#governed-model-access"
+                  onClick={(event) => {
+                    event.preventDefault()
+                    if (banner.review) openReview(banner.review.publicationId)
+                  }}
+                >
+                  Go to review and apply for {banner.review.displayName}
+                </Link>
+              </>
+            )}
+          </MessageBarBody>
         </MessageBar>
       )}
       {revokeMutation.isError && <ErrorState error={revokeMutation.error} />}
       {toggleMutation.isError && <ErrorState error={toggleMutation.error} />}
-      {decideMutation.isError && <ErrorState error={decideMutation.error} />}
+      {denyMutation.isError && <ErrorState error={denyMutation.error} />}
       {principals.isError && <ErrorState error={principals.error} />}
       {groups.isError && <ErrorState error={groups.error} />}
       {modelApis.isError && <ErrorState error={modelApis.error} />}
@@ -337,13 +425,14 @@ export function EntitlementsPage() {
         </MessageBar>
       )}
 
-      <Card className={styles.detailCard}>
+      <Card className={styles.detailCard} id="governed-model-access" ref={governedCardRef}>
         <Title3 as="h2">Governed model access</Title3>
         <Text>Choose a successfully published MOSAIC model. Direct users and applications are supported; groups, MCP servers, and imported-only APIs are not orchestrated.</Text>
         {publications.isPending && <Loading label="Loading published models..." />}
         {publications.isError && <ErrorState error={publications.error} />}
         <Field label="Published model">
           <Select
+            ref={publishedModelSelectRef}
             value={selectedPublicationId}
             onChange={(_, data) => {
               setSelectedPublicationId(data.value)
@@ -367,7 +456,7 @@ export function EntitlementsPage() {
             reviewing={reviewMutation.isPending}
             onReview={() => reviewMutation.mutate(selectedPublication.id)}
             onAddGrant={addDirectGrant}
-            onMessage={setBanner}
+            onMessage={announce}
           />
         )}
         {reviewMutation.isError && <ErrorState error={reviewMutation.error} />}
@@ -532,7 +621,8 @@ export function EntitlementsPage() {
             <div>
               <Title3 as="h2">Access requests</Title3>
               <Text size={200}>
-                What portal users asked for. A request can be decided once; a decision is final.
+                What portal users asked for. Approving creates the requester&apos;s grant intent
+                with the limits you confirm. A request can be decided once; a decision is final.
               </Text>
             </div>
           </div>
@@ -575,19 +665,15 @@ export function EntitlementsPage() {
                           <div className={styles.rowActions}>
                             <Button
                               appearance="primary"
-                              disabled={decideMutation.isPending}
-                              onClick={() =>
-                                decideMutation.mutate({ id: accessRequest.id, approve: true })
-                              }
+                              disabled={!approvalReady || approveMutation.isPending || denyMutation.isPending}
+                              onClick={() => openApproval(accessRequest)}
                             >
                               Approve
                             </Button>
                             <Button
                               appearance="subtle"
-                              disabled={decideMutation.isPending}
-                              onClick={() =>
-                                decideMutation.mutate({ id: accessRequest.id, approve: false })
-                              }
+                              disabled={approveMutation.isPending || denyMutation.isPending}
+                              onClick={() => denyMutation.mutate(accessRequest.id)}
                             >
                               Deny
                             </Button>
@@ -768,8 +854,23 @@ export function EntitlementsPage() {
         open={review !== null}
         initialReview={review}
         onClose={() => setReview(null)}
-        onPublished={setBanner}
+        onPublished={announce}
       />
+      {approving && (
+        <ApproveAccessRequestDialog
+          key={approving.accessRequest.id}
+          accessRequest={approving.accessRequest}
+          requester={approving.requester}
+          resourceLabel={approving.resourceLabel}
+          publication={approving.publication}
+          governed={approving.governed}
+          existingGrant={approving.existingGrant}
+          pending={approveMutation.isPending}
+          error={approveMutation.error}
+          onCancel={() => setApproving(null)}
+          onApprove={(approval) => approveMutation.mutate({ context: approving, approval })}
+        />
+      )}
       {connectionGrant && (
         <EntitlementConnectionDialog
           open

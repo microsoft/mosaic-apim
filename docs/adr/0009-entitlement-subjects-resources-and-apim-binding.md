@@ -5,7 +5,8 @@
 **Update:** [ADR 0011](0011-governed-model-access.md) implements the runtime binding for direct
 user/application grants to MOSAIC-published models. Other resource/subject combinations retain
 the desired-state-only behavior described here. A trusted `orchestrated` binding is now
-server-produced, never evidence a client may supply to obtain a key.
+server-produced, never evidence a client may supply to obtain a key. Approving an access request
+now creates and links the requester's grant; see *Access requests close the loop*.
 
 ## Context
 
@@ -69,6 +70,17 @@ hidden.
 **Access requests close the loop.** An `AccessRequest` records who asked, for what, and why, and
 an administrator approves or denies it once. A decision is final; deciding twice is a conflict
 rather than a silent overwrite.
+
+Approval creates the requester's direct grant, with limits the administrator confirms, and links
+it through `grantedEntitlementId`. A requester MOSAIC has never registered becomes a `user`
+principal first, identified by their Entra object ID. The grant, the decision, and their audit
+events are written in one atomic batch, so an approved request never lacks its grant and a grant
+never belongs to a request that is still pending. Approving an approved request again returns it
+unchanged, which makes a retry after an ambiguous failure safe. If the requester already holds a
+direct grant for the resource, approval is refused as a conflict rather than linked: linking would
+silently discard the limits the administrator just confirmed, and could report a disabled grant as
+access. The grant is desired state like any other; API Management changes only when a supported
+model's plan is reviewed and applied.
 
 ## Consequences
 

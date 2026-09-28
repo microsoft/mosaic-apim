@@ -136,6 +136,12 @@ export interface AccessRequest {
   updatedAt: string
 }
 
+/** Approving creates the requester's grant intent with these limits, never an APIM change. */
+export interface AccessRequestApproval {
+  note?: string | null
+  enforcement?: EntitlementEnforcement | null
+}
+
 export interface PolicyPreview {
   contentSha256: string
   facets: PolicyFacet[]

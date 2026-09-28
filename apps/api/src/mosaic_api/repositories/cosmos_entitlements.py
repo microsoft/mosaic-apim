@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 from typing import Any
 
 from mosaic_api.domain import AccessRequest, AuditEvent, Entitlement
@@ -107,5 +108,29 @@ class CosmosEntitlementRepository(CosmosRepositoryBase):
             audit_event,
             "replace",
             conflict_message="The access request changed; reload it and try again",
+        )
+        return access_request
+
+    async def approve_access_request(
+        self,
+        access_request: AccessRequest,
+        entitlement: Entitlement,
+        audit_events: Sequence[AuditEvent],
+    ) -> AccessRequest:
+        # One transactional batch on the tenant partition: the grant is created and the request
+        # is replaced (conditionally on the etag it was read with) together or not at all.
+        if not access_request.etag:
+            raise ValueError("Approving a request requires the etag it was read with")
+        await self._execute_batch(
+            [
+                ("create", (self._document(entitlement),)),
+                self._replace_operation(access_request),
+                *(("create", (self._document(event),)) for event in audit_events),
+            ],
+            audit_events,
+            conflict_message=(
+                "The access request was decided or its grant already exists; reload it and try "
+                "again"
+            ),
         )
         return access_request

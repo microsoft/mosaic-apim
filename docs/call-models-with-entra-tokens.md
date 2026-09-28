@@ -22,6 +22,9 @@ in the portal, or from `GET /api/v1/me/entitlements/{id}/connection`:
 | `apiShape` | The API the model speaks: `azureOpenAi`, `foundryModels` or `anthropicMessages` |
 | `subscriptionHeader` | The header name for your subscription key, if you also send one |
 
+When `entraClientId` is present, the portal's **Get a token (Python)** sample under **Connection
+details** has the tenant, client ID and scope filled in.
+
 If `entraClientId` is empty, either your deployment doesn't use the MOSAIC model client
 (`MOSAIC_ENTRA_MODEL_CLIENT=false`) or the model's access was applied for an earlier runtime
 registration. Ask an administrator for the client ID to use, or to reapply the model's access plan.
