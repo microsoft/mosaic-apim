@@ -1,4 +1,10 @@
-import type { AiBackendKind } from './types'
+import type { AiBackendKind, ManagementMode } from './types'
+
+/** Names for a gateway's management mode, shared by the gateway header and its mode control. */
+export const MANAGEMENT_MODE_LABELS: Record<ManagementMode, string> = {
+  observe: 'Observe',
+  manage: 'Manage',
+}
 
 /** Display names for model providers, shared by every surface that shows a detection result. */
 export const AI_KIND_LABELS: Record<AiBackendKind, string> = {

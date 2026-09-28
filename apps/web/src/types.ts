@@ -924,10 +924,21 @@ export interface SubscriptionScanIssue {
   remediation?: AccessRemediation | null
 }
 
+export type SubscriptionScanStatus =
+  | 'notConfigured'
+  | 'listFailed'
+  | 'noVisibleSubscriptions'
+  | 'scanned'
+
 export interface ModelEndpointSuggestionView {
   suggestions: ModelEndpointSuggestion[]
   scanIssues: SubscriptionScanIssue[]
   subscriptionsScanned: number
+  scanStatus: SubscriptionScanStatus
+  /** Why MOSAIC could not list subscriptions; set only when `scanStatus` is `listFailed`. */
+  scanMessage?: string | null
+  /** Reader at subscription scope, offered when the scan could see no subscription at all. */
+  scanRemediation: AccessRemediation[]
 }
 
 export type McpAuthMode = 'none' | 'apiKey' | 'managedIdentity'

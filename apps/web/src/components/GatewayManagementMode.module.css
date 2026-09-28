@@ -1,0 +1,59 @@
+.card {
+  padding: 18px;
+  display: grid;
+  gap: 12px;
+  border: 1px solid var(--mosaic-border-soft);
+  background: var(--mosaic-surface);
+  box-shadow: var(--mosaic-shadow);
+}
+
+.header {
+  display: grid;
+  gap: 4px;
+}
+
+.heading {
+  margin: 0;
+}
+
+.muted {
+  color: var(--mosaic-text-muted);
+}
+
+.warning {
+  display: grid;
+  gap: 10px;
+  justify-items: start;
+}
+
+.facts {
+  margin: 0;
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 4px 16px;
+}
+
+.facts dt {
+  font-weight: 600;
+}
+
+.facts dd {
+  margin: 0;
+  min-width: 0;
+}
+
+.scope {
+  word-break: break-all;
+}
+
+.dialogContent {
+  display: grid;
+  gap: 12px;
+}
+
+.list {
+  margin: 0;
+  padding-left: 20px;
+  display: grid;
+  gap: 4px;
+}

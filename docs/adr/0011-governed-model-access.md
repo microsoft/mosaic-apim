@@ -42,6 +42,39 @@ values must remain distinct even though both paths authorize model invocation.
 MOSAIC login, portal access, and model invocation are separate authorizations. APIM's managed
 identity still authenticates the backend model connection.
 
+**People get runtime tokens through a MOSAIC model client.** `Models.Invoke` requires admin
+consent, so a person holding a user grant had no client that could request it without a
+consent prompt, and nothing named a client ID to use. Bootstrap therefore creates
+`mosaic-<env>-model-client`. It is a single-tenant public client with public client flows
+enabled and an `http://localhost` loopback redirect, so both interactive and device code
+sign-in work. Its only required permission is `Models.Invoke`, and it has no secrets,
+certificates or app roles. Bootstrap grants it tenant-wide delegated consent for that scope
+with an `AllPrincipals` `oauth2PermissionGrant`. Connection details show its client ID as
+`entraClientId`.
+
+We chose that grant over pre-authorizing the client on the runtime registration, for three
+reasons:
+
+- An `AllPrincipals` grant is tenant-wide admin consent by definition. The console and portal
+  are pre-authorized on the control-plane API (ADR 0008), but that scope is user-consentable.
+  Microsoft Entra documentation doesn't establish that pre-authorization satisfies an
+  admin-restricted scope such as `Models.Invoke`.
+- The grant appears in the client's enterprise application permissions, where administrators
+  review and revoke consent, and the audit log records it. Pre-authorization creates no grant to
+  review there; it is a setting on the runtime registration.
+- A dedicated client gives administrators one target for Conditional Access and sign-in logs,
+  instead of pre-authorizing first-party tools (ADR 0004).
+
+Consent lets Entra issue a token; it doesn't authorize a model call. APIM still requires an
+applied direct grant for the token's object ID. Bootstrap doesn't fail deployment when it can't
+grant consent. It warns and prints the exact command for an administrator, and re-runs neither
+duplicate nor narrow an existing grant. Because a re-run grants consent again,
+`MOSAIC_ENTRA_MODEL_CLIENT=false` is how an operator opts out or withdraws it. That setting
+leaves existing registrations, grants and a bring-your-own `MOSAIC_MODEL_CLIENT_ID` untouched.
+`entraClientId` is set only for user grants whose applied audience is the current runtime
+registration, because that is the only one the model client is consented for. Application
+grants sign in as themselves and request `/.default`.
+
 If a caller supplies both credentials, both must be valid, enabled, and name the same grant.
 Invalid credentials must not silently fall back to the other method. Authentication and
 authorization precede routing and limit enforcement; caller credentials are not forwarded
@@ -97,8 +130,15 @@ Azure RBAC inability to read secrets.
 ## Consequences
 
 - Administrators can deploy and revoke actual model access without writing policy XML.
-- Entra clients need ordinary resource-API consent/application permission setup in addition
-  to their MOSAIC grant. MOSAIC does not acquire Graph permissions to do this silently.
+- People can sign in with the bootstrap-consented model client. Other delegated clients and
+  applications still need ordinary resource-API consent or application permission setup in
+  addition to their MOSAIC grant. Bootstrap's only consent is the model client's
+  `Models.Invoke` grant, and MOSAIC does not acquire Graph permissions to do this silently.
+- MSAL always requests the OpenID Connect sign-in scopes as well. Microsoft Entra treats
+  `offline_access` as implied by any delegated grant. A tenant that blocks user consent might
+  still need an administrator to consent `openid` and `profile` for the model client. Live
+  verification must establish whether it does. The fix is documented rather than automated, so
+  bootstrap still grants no Microsoft Graph permissions.
 - Switching authentication methods cannot create another grant budget.
 - Changing an existing publication to governed access can intentionally stop clients using
   its former generic key; that impact belongs in the reviewed plan.

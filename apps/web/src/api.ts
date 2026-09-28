@@ -19,6 +19,7 @@ import type {
   GroupMembership,
   KeyRevealResult,
   KeySlot,
+  ManagementMode,
   McpAuthMode,
   McpEndpoint,
   McpEndpointSyncRun,
@@ -108,7 +109,11 @@ export interface MosaicApi {
   getGateway(gatewayId: string): Promise<Gateway>
   updateGateway(
     gatewayId: string,
-    payload: { name?: string; environmentLabel?: string | null },
+    payload: {
+      name?: string
+      environmentLabel?: string | null
+      managementMode?: ManagementMode
+    },
   ): Promise<Gateway>
   deleteGateway(gatewayId: string): Promise<void>
   preflightGateway(gatewayId: string): Promise<Gateway>

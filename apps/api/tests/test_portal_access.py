@@ -50,6 +50,7 @@ TENANT = "tenant-test"
 USER = "11111111-1111-1111-1111-111111111111"
 OTHER_USER = "22222222-2222-2222-2222-222222222222"
 AUDIENCE = "33333333-3333-3333-3333-333333333333"
+MODEL_CLIENT = "44444444-4444-4444-4444-444444444444"
 ACTOR = Actor(object_id=USER, tenant_id=TENANT)
 KEY = "fixture-only-primary-key"
 
@@ -93,14 +94,7 @@ class Harness:
             gateway_repository=self.gateways,
             endpoint_repository=InMemoryModelEndpointRepository(),
         )
-        self.service = PortalAccessService(
-            self.entitlements,
-            repository=self.repository,
-            directory_repository=self.directory,
-            gateway_repository=self.gateways,
-            credential_factory=lambda _resource: self.reader,
-            model_runtime_client_id=AUDIENCE,
-        )
+        self.service = self.build_service()
         self.principal = Principal(
             id="principal", tenant_id=TENANT, object_id=USER, kind=PrincipalKind.USER
         )
@@ -159,6 +153,22 @@ class Harness:
                     created_by_mosaic=True,
                 )
             ],
+        )
+
+    def build_service(
+        self,
+        *,
+        runtime_client_id: str | None = AUDIENCE,
+        model_client_id: str | None = MODEL_CLIENT,
+    ) -> PortalAccessService:
+        return PortalAccessService(
+            self.entitlements,
+            repository=self.repository,
+            directory_repository=self.directory,
+            gateway_repository=self.gateways,
+            credential_factory=lambda _resource: self.reader,
+            model_runtime_client_id=runtime_client_id,
+            model_client_id=model_client_id,
         )
 
     def audit(self) -> AuditEvent:
@@ -320,9 +330,65 @@ async def test_connection_metadata_is_not_a_key_read_or_runtime_probe(harness: H
     assert connection.endpoint == "https://gateway.example/chat"
     assert connection.entra_audience == AUDIENCE
     assert connection.entra_scope == f"api://{AUDIENCE}/Models.Invoke"
+    assert connection.entra_client_id == MODEL_CLIENT
     assert connection.subscription_header == "Ocp-Apim-Subscription-Key"
     assert harness.reader.calls == 0
     assert "key" not in connection.model_dump()
+
+
+async def test_connection_names_the_model_client_as_entra_client_id(harness: Harness) -> None:
+    connection = await harness.service.connection(ACTOR, "grant")
+    payload = connection.model_dump(mode="json", by_alias=True)
+    assert payload["tenantId"] == TENANT
+    assert payload["entraClientId"] == MODEL_CLIENT
+    assert payload["entraScope"] == f"api://{AUDIENCE}/Models.Invoke"
+
+
+async def test_connection_accepts_a_differently_cased_runtime_audience(harness: Harness) -> None:
+    snapshot = harness.publication.applied_access
+    assert snapshot is not None
+    await harness.save_publication(
+        applied_access=snapshot.model_copy(update={"audience": AUDIENCE.upper()})
+    )
+    connection = await harness.service.connection(ACTOR, "grant")
+    assert connection.entra_scope == f"api://{AUDIENCE.upper()}/Models.Invoke"
+    assert connection.entra_client_id == MODEL_CLIENT
+
+
+async def test_connection_omits_the_model_client_for_a_superseded_runtime_audience(
+    harness: Harness,
+) -> None:
+    # The model client is consented for the current runtime registration only, so a token for
+    # the audience this publication was applied with would need consent it does not have.
+    superseded = "55555555-5555-5555-5555-555555555555"
+    snapshot = harness.publication.applied_access
+    assert snapshot is not None
+    await harness.save_publication(
+        applied_access=snapshot.model_copy(update={"audience": superseded})
+    )
+    connection = await harness.service.connection(ACTOR, "grant")
+    assert connection.entra_scope == f"api://{superseded}/Models.Invoke"
+    assert connection.entra_client_id is None
+
+
+async def test_connection_omits_the_model_client_without_an_entra_scope(harness: Harness) -> None:
+    snapshot = harness.publication.applied_access
+    assert snapshot is not None
+    await harness.save_publication(applied_access=snapshot.model_copy(update={"audience": None}))
+    service = harness.build_service(runtime_client_id=None)
+    connection = await service.connection(ACTOR, "grant")
+    assert connection.entra_scope is None
+    assert connection.entra_client_id is None
+
+
+async def test_connection_omits_the_model_client_when_none_is_configured(
+    harness: Harness,
+) -> None:
+    service = harness.build_service(model_client_id=None)
+    connection = await service.connection(ACTOR, "grant")
+    assert connection.entra_scope == f"api://{AUDIENCE}/Models.Invoke"
+    assert connection.entra_client_id is None
+    assert connection.model_dump(mode="json", by_alias=True)["entraClientId"] is None
 
 
 async def test_connection_describes_the_anthropic_messages_route(harness: Harness) -> None:
@@ -344,6 +410,8 @@ async def test_connection_describes_the_anthropic_messages_route(harness: Harnes
         ("messages", "POST", "/anthropic/v1/messages")
     ]
     assert connection.publication_limits is None
+    # The model client and scope don't depend on the route shape.
+    assert connection.entra_client_id == MODEL_CLIENT
     body = connection.model_dump(by_alias=True, mode="json")
     assert body["apiShape"] == "anthropicMessages"
     assert body["publicationLimits"] is None
@@ -420,6 +488,11 @@ async def test_portal_routes_are_self_scoped_and_secret_responses_are_no_store(
         assert listed.status_code == 200
         assert [item["id"] for item in listed.json()] == ["grant"]
         assert harness.reader.calls == 0
+        connection = client.get("/api/v1/me/entitlements/grant/connection")
+        assert connection.status_code == 200
+        assert connection.json()["entraClientId"] == MODEL_CLIENT
+        assert connection.json()["entraScope"] == f"api://{AUDIENCE}/Models.Invoke"
+        assert harness.reader.calls == 0
         secret = client.post("/api/v1/me/entitlements/grant/keys/reveal", json={"slot": "primary"})
         assert secret.status_code == 200
         assert secret.json()["key"] == KEY
@@ -434,6 +507,19 @@ async def test_portal_routes_are_self_scoped_and_secret_responses_are_no_store(
         )
         assert denied.status_code == 404
         assert "no-store" in denied.headers["Cache-Control"]
+
+
+def test_app_hands_the_configured_model_client_to_portal_access() -> None:
+    settings = Settings(
+        environment=Environment.TEST, auth_mode=AuthMode.LOCAL,
+        repository_backend=RepositoryBackend.MEMORY, tenant_id=TENANT,
+        model_runtime_client_id=AUDIENCE, model_client_id=MODEL_CLIENT.upper(),
+    )
+    app = create_app(settings)
+    with TestClient(app):
+        service = app.state.portal_access_service
+        assert service._runtime_client_id == AUDIENCE
+        assert service._model_client_id == MODEL_CLIENT
 
 
 def test_admin_can_discover_a_retained_mutation_owner_without_a_publish_run(

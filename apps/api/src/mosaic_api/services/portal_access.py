@@ -60,6 +60,7 @@ class PortalAccessService:
         gateway_repository: GatewayRepository,
         credential_factory: Callable[[ApimResourceId], CredentialReader],
         model_runtime_client_id: str | None = None,
+        model_client_id: str | None = None,
     ) -> None:
         self._entitlements = entitlements
         self._repository = repository
@@ -67,6 +68,7 @@ class PortalAccessService:
         self._gateways = gateway_repository
         self._credential_factory = credential_factory
         self._runtime_client_id = model_runtime_client_id
+        self._model_client_id = model_client_id
 
     async def list_for_caller(self, actor: Actor) -> list[Entitlement]:
         principal = await self._directory.find_principal_by_object_id(
@@ -145,8 +147,16 @@ class PortalAccessService:
             raise ConflictError("Synchronize the gateway to discover its model API endpoint")
         snapshot = publication.applied_access
         audience = snapshot.audience if snapshot else self._runtime_client_id
-        scope_suffix = (
-            "Models.Invoke" if context.entitlement.subject.kind == "user" else ".default"
+        delegated = context.entitlement.subject.kind == "user"
+        scope_suffix = "Models.Invoke" if delegated else ".default"
+        # The model client is consented for delegated Models.Invoke on the current runtime
+        # registration only; application grants sign in as themselves with /.default.
+        client_id = (
+            self._model_client_id
+            if delegated
+            and audience
+            and audience.casefold() == (self._runtime_client_id or "").casefold()
+            else None
         )
         operations = (
             governed_operations(publication)
@@ -164,6 +174,7 @@ class PortalAccessService:
             applied_methods=snapshot.settings if snapshot else None,
             entra_audience=audience,
             entra_scope=f"api://{audience}/{scope_suffix}" if audience else None,
+            entra_client_id=client_id,
             api_shape=publication.api_shape,
             operations=[
                 ConnectionOperation(
