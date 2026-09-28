@@ -6,10 +6,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ModelsPage } from './ModelsPage'
 import { accessPlan, modelPublication } from '../test/model-access'
 import type {
+  AccessRemediation,
   Gateway,
   GatewayRuntimeAccess,
   ModelApi,
   ModelEndpoint,
+  ModelEndpointSuggestion,
+  ModelEndpointSuggestionView,
   Publication,
   PublishPlan,
 } from '../types'
@@ -221,11 +224,7 @@ describe('ModelsPage', () => {
     api.listModelApis.mockResolvedValue([])
     api.listPublications.mockResolvedValue([])
     api.listModelEndpoints.mockResolvedValue([])
-    api.listSuggestedModelEndpoints.mockResolvedValue({
-      suggestions: [],
-      scanIssues: [],
-      subscriptionsScanned: 0,
-    })
+    api.listSuggestedModelEndpoints.mockResolvedValue(suggestionView())
     api.listModelDeployments.mockResolvedValue([])
     api.listImportableApis.mockResolvedValue({
       gatewayId: gateway.id,
@@ -526,6 +525,54 @@ function runtimeAccess(
   }
 }
 
+function suggestionView(
+  overrides: Partial<ModelEndpointSuggestionView> = {},
+): ModelEndpointSuggestionView {
+  return {
+    suggestions: [],
+    scanIssues: [],
+    subscriptionsScanned: 0,
+    scanStatus: 'notConfigured',
+    scanMessage: null,
+    scanRemediation: [],
+    ...overrides,
+  }
+}
+
+function gatewaySuggestion(): ModelEndpointSuggestion {
+  return {
+    source: 'gatewayBackend',
+    endpoint: 'https://other-account.openai.azure.com/',
+    azureResourceId: null,
+    accountName: null,
+    resourceGroup: null,
+    subscriptionId: null,
+    kind: null,
+    location: null,
+    provider: 'azureOpenAi',
+    alreadyRegistered: false,
+    modelEndpointId: null,
+    reason: 'The gateway apim-contoso-dev routes traffic to this host.',
+  }
+}
+
+function readerAtSubscription(subscriptionId: string): AccessRemediation {
+  const scope = `/subscriptions/${subscriptionId}`
+  return {
+    roleName: 'Reader',
+    roleDefinitionId: 'acdd72a7-3385-48ef-bd42-f606fba81ae7',
+    scope,
+    principalId: 'mosaic-mi',
+    command:
+      'az role assignment create --assignee-object-id "mosaic-mi"' +
+      ` --assignee-principal-type ServicePrincipal --role "Reader" --scope "${scope}"`,
+  }
+}
+
+const SCAN_EXPLANATION =
+  'Endpoints can still be registered by pasting a resource ID, and granting Reader at ' +
+  'subscription scope lets MOSAIC suggest them.'
+
 describe('ModelsPage model endpoints', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -533,11 +580,7 @@ describe('ModelsPage model endpoints', () => {
     api.listModelApis.mockResolvedValue([])
     api.listPublications.mockResolvedValue([])
     api.listModelEndpoints.mockResolvedValue([])
-    api.listSuggestedModelEndpoints.mockResolvedValue({
-      suggestions: [],
-      scanIssues: [],
-      subscriptionsScanned: 0,
-    })
+    api.listSuggestedModelEndpoints.mockResolvedValue(suggestionView())
     api.listModelDeployments.mockResolvedValue([])
   })
 
@@ -684,40 +727,29 @@ describe('ModelsPage model endpoints', () => {
   })
 
   it('surfaces suggestions and labels where each came from', async () => {
-    api.listSuggestedModelEndpoints.mockResolvedValue({
-      suggestions: [
-        {
-          source: 'gatewayBackend',
-          endpoint: 'https://other-account.openai.azure.com/',
-          azureResourceId: null,
-          accountName: null,
-          resourceGroup: null,
-          subscriptionId: null,
-          kind: null,
-          location: null,
-          provider: 'azureOpenAi',
-          alreadyRegistered: false,
-          modelEndpointId: null,
-          reason: 'The gateway apim-contoso-dev routes traffic to this host.',
-        },
-        {
-          source: 'subscriptionScan',
-          endpoint: 'https://contoso-aoai.openai.azure.com/',
-          azureResourceId: AI_RESOURCE_ID,
-          accountName: 'contoso-aoai',
-          resourceGroup: 'rg-contoso-ai',
-          subscriptionId: '00000000-0000-0000-0000-000000000000',
-          kind: 'OpenAI',
-          location: 'eastus2',
-          provider: 'azureOpenAi',
-          alreadyRegistered: false,
-          modelEndpointId: null,
-          reason: 'Found in subscription 00000000-0000-0000-0000-000000000000.',
-        },
-      ],
-      scanIssues: [],
-      subscriptionsScanned: 1,
-    })
+    api.listSuggestedModelEndpoints.mockResolvedValue(
+      suggestionView({
+        suggestions: [
+          gatewaySuggestion(),
+          {
+            source: 'subscriptionScan',
+            endpoint: 'https://contoso-aoai.openai.azure.com/',
+            azureResourceId: AI_RESOURCE_ID,
+            accountName: 'contoso-aoai',
+            resourceGroup: 'rg-contoso-ai',
+            subscriptionId: '00000000-0000-0000-0000-000000000000',
+            kind: 'OpenAI',
+            location: 'eastus2',
+            provider: 'azureOpenAi',
+            alreadyRegistered: false,
+            modelEndpointId: null,
+            reason: 'Found in subscription 00000000-0000-0000-0000-000000000000.',
+          },
+        ],
+        subscriptionsScanned: 1,
+        scanStatus: 'scanned',
+      }),
+    )
 
     renderPage()
 
@@ -725,31 +757,121 @@ describe('ModelsPage model endpoints', () => {
     expect(screen.getByText('Found in a subscription')).toBeVisible()
     // A hostname alone cannot be registered, so no action is offered for it.
     expect(screen.getByText('Needs a resource ID')).toBeVisible()
+    expect(screen.getByText('Scanned 1 subscription.')).toBeVisible()
   })
 
   it('explains a subscription it could not scan instead of hiding it', async () => {
-    api.listSuggestedModelEndpoints.mockResolvedValue({
-      suggestions: [],
-      scanIssues: [
-        {
-          subscriptionId: '00000000-0000-0000-0000-000000000000',
-          displayName: 'Contoso dev',
-          message: 'MOSAIC could not list Azure AI resources in this subscription.',
-          remediation: {
-            roleName: 'Reader',
-            roleDefinitionId: 'acdd72a7-3385-48ef-bd42-f606fba81ae7',
-            scope: '/subscriptions/00000000-0000-0000-0000-000000000000',
-            principalId: 'mosaic-mi',
-            command: 'az role assignment create --role "Reader" --scope "/subscriptions/x"',
+    api.listSuggestedModelEndpoints.mockResolvedValue(
+      suggestionView({
+        scanIssues: [
+          {
+            subscriptionId: '00000000-0000-0000-0000-000000000000',
+            displayName: 'Contoso dev',
+            message: 'MOSAIC could not list Azure AI resources in this subscription.',
+            remediation: {
+              roleName: 'Reader',
+              roleDefinitionId: 'acdd72a7-3385-48ef-bd42-f606fba81ae7',
+              scope: '/subscriptions/00000000-0000-0000-0000-000000000000',
+              principalId: 'mosaic-mi',
+              command: 'az role assignment create --role "Reader" --scope "/subscriptions/x"',
+            },
           },
-        },
-      ],
-      subscriptionsScanned: 0,
-    })
+        ],
+        subscriptionsScanned: 0,
+        scanStatus: 'scanned',
+      }),
+    )
 
     renderPage()
 
     expect(await screen.findByText('Subscriptions MOSAIC could not scan')).toBeVisible()
     expect(screen.getByText(/az role assignment create/)).toBeVisible()
+    // Scanning none of them is already what the card above says, so no count restates it.
+    expect(screen.queryByText('Endpoints MOSAIC found')).not.toBeInTheDocument()
+  })
+
+  it("explains that MOSAIC can't see any subscriptions and offers Reader on each", async () => {
+    api.listSuggestedModelEndpoints.mockResolvedValue(
+      suggestionView({
+        scanStatus: 'noVisibleSubscriptions',
+        scanRemediation: [
+          readerAtSubscription('11111111-2222-3333-4444-555555555555'),
+          readerAtSubscription('66666666-7777-8888-9999-000000000000'),
+        ],
+      }),
+    )
+
+    renderPage()
+
+    const heading = await screen.findByRole('heading', {
+      name: "MOSAIC can't see any subscriptions",
+    })
+    const card = heading.closest('.fui-Card') as HTMLElement
+    expect(card).toHaveTextContent(SCAN_EXPLANATION)
+    expect(
+      within(card)
+        .getAllByText(/az role assignment create/)
+        .map((command) => command.textContent),
+    ).toEqual([
+      readerAtSubscription('11111111-2222-3333-4444-555555555555').command,
+      readerAtSubscription('66666666-7777-8888-9999-000000000000').command,
+    ])
+    expect(within(card).getAllByRole('button', { name: 'Copy command' })).toHaveLength(2)
+    expect(
+      screen.queryByRole('heading', { name: "MOSAIC couldn't list subscriptions" }),
+    ).not.toBeInTheDocument()
+  })
+
+  it("explains why MOSAIC couldn't list subscriptions", async () => {
+    api.listSuggestedModelEndpoints.mockResolvedValue(
+      suggestionView({
+        scanStatus: 'listFailed',
+        scanMessage: "MOSAIC's identity is not authorized for this Azure resource.",
+        scanRemediation: [readerAtSubscription('<subscription-id>')],
+      }),
+    )
+
+    renderPage()
+
+    const heading = await screen.findByRole('heading', {
+      name: "MOSAIC couldn't list subscriptions",
+    })
+    const card = heading.closest('.fui-Card') as HTMLElement
+    expect(
+      within(card).getByText("MOSAIC's identity is not authorized for this Azure resource."),
+    ).toBeVisible()
+    expect(card).toHaveTextContent(SCAN_EXPLANATION)
+    expect(
+      within(card).getByText(/--scope "\/subscriptions\/<subscription-id>"/),
+    ).toBeVisible()
+    expect(
+      screen.queryByRole('heading', { name: "MOSAIC can't see any subscriptions" }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('reports how many subscriptions it scanned even when nothing is new', async () => {
+    api.listSuggestedModelEndpoints.mockResolvedValue(
+      suggestionView({ scanStatus: 'scanned', subscriptionsScanned: 3 }),
+    )
+
+    renderPage()
+
+    expect(
+      await screen.findByText('Scanned 3 subscriptions. Nothing new to register.'),
+    ).toBeVisible()
+    expect(screen.getByRole('heading', { name: 'Endpoints MOSAIC found' })).toBeVisible()
+  })
+
+  it('says nothing about subscriptions when the scan is not configured', async () => {
+    api.listSuggestedModelEndpoints.mockResolvedValue(
+      suggestionView({ suggestions: [gatewaySuggestion()], scanStatus: 'notConfigured' }),
+    )
+
+    renderPage()
+
+    // The gateway suggestion proves the view arrived before asserting what it left out.
+    expect(await screen.findByText('Used by a gateway')).toBeVisible()
+    expect(screen.queryByText(/^Scanned \d+ subscription/)).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: /subscriptions/i })).not.toBeInTheDocument()
   })
 })

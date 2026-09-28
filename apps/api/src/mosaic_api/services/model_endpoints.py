@@ -7,7 +7,9 @@ into Cosmos. It writes nothing to Azure AI and nothing to API Management.
 """
 
 import asyncio
+import re
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
 from datetime import datetime
 from urllib.parse import urlparse
 
@@ -36,6 +38,7 @@ from mosaic_api.domain import (
     ModelInventorySummary,
     ModelProvider,
     SubscriptionScanIssue,
+    SubscriptionScanStatus,
     SuggestionSource,
     deterministic_id,
     new_id,
@@ -67,6 +70,14 @@ IdentityResolver = Callable[[], Awaitable[str | None]]
 
 STALE_RUN_MESSAGE = "The API restarted while this sync was running; its result is unknown."
 
+IDENTITY_PLACEHOLDER = "<mosaic-managed-identity-object-id>"
+SUBSCRIPTION_PLACEHOLDER = "<subscription-id>"
+UNEXPECTED_LIST_FAILURE = "The request failed unexpectedly; the API log has the details."
+
+# The same shape the resource ID parsers accept. A candidate scope is interpolated into a command an
+# operator will run, so anything else is left out rather than quoted into it.
+_SUBSCRIPTION_ID_PATTERN = re.compile(r"[0-9a-fA-F-]{36}")
+
 _PROVIDER_BY_HOST_SUFFIX: tuple[tuple[str, ModelProvider], ...] = (
     (".openai.azure.com", ModelProvider.AZURE_OPENAI),
     (".api.cognitive.microsoft.com", ModelProvider.AZURE_OPENAI),
@@ -90,6 +101,42 @@ def provider_for(kind: str | None, endpoint: str | None) -> ModelProvider:
     return ModelProvider.AZURE_AI_FOUNDRY
 
 
+def _reader_at_subscription(subscription_id: str, principal_id: str | None) -> AccessRemediation:
+    """Reader for MOSAIC's identity at one subscription's scope, which is what the scan needs."""
+
+    scope = f"/subscriptions/{subscription_id}"
+    assignee = principal_id or IDENTITY_PLACEHOLDER
+    return AccessRemediation(
+        role_name=READER_ROLE_NAME,
+        role_definition_id=READER_ROLE_ID,
+        scope=scope,
+        principal_id=principal_id,
+        command=(
+            "az role assignment create"
+            f' --assignee-object-id "{assignee}"'
+            " --assignee-principal-type ServicePrincipal"
+            f' --role "{READER_ROLE_NAME}"'
+            f' --scope "{scope}"'
+        ),
+    )
+
+
+def _list_failure_message(reason: str) -> str:
+    """A :class:`DomainError` message as a sentence. MOSAIC wrote it, so it is safe to return."""
+
+    reason = reason.strip().rstrip(".")
+    return f"{reason}." if reason else UNEXPECTED_LIST_FAILURE
+
+
+@dataclass(frozen=True)
+class _SubscriptionScan:
+    status: SubscriptionScanStatus
+    scanned: int = 0
+    issues: list[SubscriptionScanIssue] = field(default_factory=list)
+    message: str | None = None
+    remediation: list[AccessRemediation] = field(default_factory=list)
+
+
 class ModelEndpointService:
     def __init__(
         self,
@@ -100,6 +147,7 @@ class ModelEndpointService:
         scanner: SubscriptionScanner | None = None,
         principal_id: str | None = None,
         identity_resolver: IdentityResolver | None = None,
+        bootstrap_subscription_id: str | None = None,
     ) -> None:
         self._repository = repository
         self._gateways = gateway_repository
@@ -108,6 +156,7 @@ class ModelEndpointService:
         self._principal_id = principal_id
         self._identity_resolver = identity_resolver
         self._identity_resolved = principal_id is not None
+        self._bootstrap_subscription_id = bootstrap_subscription_id
         self._active: set[str] = set()
         self._tasks: set[asyncio.Task[None]] = set()
 
@@ -596,24 +645,31 @@ class ModelEndpointService:
             seen.add(key)
             suggestions.append(suggestion)
 
-        for suggestion in await self._gateway_backend_suggestions(actor, by_resource, by_host):
+        # Read once: gateways are both a source of suggestions and, when the scan can see nothing,
+        # the subscriptions worth naming in its remediation.
+        gateways = await self._gateways.list_gateways(actor.tenant_id)
+        for suggestion in await self._gateway_backend_suggestions(actor, gateways, by_host):
             add(suggestion)
 
-        scanned = 0
-        scan_issues: list[SubscriptionScanIssue] = []
-        if self._scanner is not None:
-            scanned, scan_issues = await self._scan_subscriptions(by_resource, add)
+        if self._scanner is None:
+            return ModelEndpointSuggestionView(
+                suggestions=suggestions, scan_status=SubscriptionScanStatus.NOT_CONFIGURED
+            )
 
+        scan = await self._scan_subscriptions(by_resource, add, gateways)
         return ModelEndpointSuggestionView(
             suggestions=suggestions,
-            scan_issues=scan_issues,
-            subscriptions_scanned=scanned,
+            scan_issues=scan.issues,
+            subscriptions_scanned=scan.scanned,
+            scan_status=scan.status,
+            scan_message=scan.message,
+            scan_remediation=scan.remediation,
         )
 
     async def _gateway_backend_suggestions(
         self,
         actor: Actor,
-        by_resource: dict[str, ModelEndpoint],
+        gateways: list[Gateway],
         by_host: dict[str, ModelEndpoint],
     ) -> list[ModelEndpointSuggestion]:
         """Offer the AI hosts MOSAIC already saw a registered gateway routing to.
@@ -623,7 +679,6 @@ class ModelEndpointService:
         so the suggestion carries the URL and an administrator completes the identification.
         """
 
-        gateways = await self._gateways.list_gateways(actor.tenant_id)
         found: list[ModelEndpointSuggestion] = []
         for gateway in gateways:
             try:
@@ -665,57 +720,63 @@ class ModelEndpointService:
         self,
         by_resource: dict[str, ModelEndpoint],
         add: Callable[[ModelEndpointSuggestion], None],
-    ) -> tuple[int, list[SubscriptionScanIssue]]:
+        gateways: list[Gateway],
+    ) -> _SubscriptionScan:
         """Enumerate Azure AI accounts across visible subscriptions.
 
         Each subscription is independent: one that MOSAIC cannot read records what to grant and is
-        skipped, so a single missing role assignment never blanks the whole suggestion list.
+        skipped, so a single missing role assignment never blanks the whole suggestion list. A scan
+        with no subscription to read at all says so, rather than returning an empty list that is
+        indistinguishable from a clean result.
         """
 
         assert self._scanner is not None
-        issues: list[SubscriptionScanIssue] = []
         try:
-            subscriptions = await self._scanner.list_subscriptions()
+            listed = await self._scanner.list_subscriptions()
         except DomainError as error:
             logger.warning("endpoint_subscription_list_failed", reason=error.message)
-            return 0, issues
+            return await self._unscanned(
+                SubscriptionScanStatus.LIST_FAILED,
+                gateways,
+                message=_list_failure_message(error.message),
+            )
+        except Exception:
+            # Unlike a DomainError's message, arbitrary exception text can carry upstream or
+            # credential detail, so it is logged and never returned.
+            logger.exception("endpoint_subscription_list_failed")
+            return await self._unscanned(
+                SubscriptionScanStatus.LIST_FAILED, gateways, message=UNEXPECTED_LIST_FAILURE
+            )
 
-        scanned = 0
-        principal_id = await self._resolve_principal_id()
-        for subscription in subscriptions:
+        subscriptions: list[tuple[str, str | None]] = []
+        for subscription in listed:
             subscription_id = subscription.get("subscriptionId")
             if not isinstance(subscription_id, str) or not subscription_id:
                 continue
             display_name = subscription.get("displayName")
+            subscriptions.append(
+                (subscription_id, display_name if isinstance(display_name, str) else None)
+            )
+        if not subscriptions:
+            return await self._unscanned(SubscriptionScanStatus.NO_VISIBLE_SUBSCRIPTIONS, gateways)
+
+        scanned = 0
+        issues: list[SubscriptionScanIssue] = []
+        principal_id = await self._resolve_principal_id()
+        for subscription_id, display_name in subscriptions:
             try:
                 accounts = await self._scanner.list_accounts(subscription_id)
             except DomainError as error:
-                scope = f"/subscriptions/{subscription_id}"
-                assignee = principal_id or "<mosaic-managed-identity-object-id>"
                 issues.append(
                     SubscriptionScanIssue(
                         subscription_id=subscription_id,
-                        display_name=(
-                            display_name if isinstance(display_name, str) else None
-                        ),
+                        display_name=display_name,
                         message=(
                             "MOSAIC could not list Azure AI resources in this subscription, so "
                             "any endpoints it holds are not suggested here. Endpoints can still "
                             f"be registered by resource ID. ({error.message})"
                         ),
-                        remediation=AccessRemediation(
-                            role_name=READER_ROLE_NAME,
-                            role_definition_id=READER_ROLE_ID,
-                            scope=scope,
-                            principal_id=principal_id,
-                            command=(
-                                "az role assignment create"
-                                f' --assignee-object-id "{assignee}"'
-                                " --assignee-principal-type ServicePrincipal"
-                                f' --role "{READER_ROLE_NAME}"'
-                                f' --scope "{scope}"'
-                            ),
-                        ),
+                        remediation=_reader_at_subscription(subscription_id, principal_id),
                     )
                 )
                 continue
@@ -725,7 +786,43 @@ class ModelEndpointService:
                 suggestion = self._account_suggestion(account, by_resource)
                 if suggestion is not None:
                     add(suggestion)
-        return scanned, issues
+        return _SubscriptionScan(
+            status=SubscriptionScanStatus.SCANNED, scanned=scanned, issues=issues
+        )
+
+    async def _unscanned(
+        self,
+        status: SubscriptionScanStatus,
+        gateways: list[Gateway],
+        *,
+        message: str | None = None,
+    ) -> _SubscriptionScan:
+        """A scan with nothing to read, and the Reader assignments that would give it something.
+
+        No single subscription is at fault, so Reader is offered on every subscription MOSAIC has a
+        reason to look in: the one it was deployed into, then each registered gateway's. With none
+        known, a placeholder scope keeps the command's shape for an operator to complete.
+        """
+
+        principal_id = await self._resolve_principal_id()
+        candidates = [
+            self._bootstrap_subscription_id,
+            *(gateway.subscription_id for gateway in gateways),
+        ]
+        remediation: list[AccessRemediation] = []
+        seen: set[str] = set()
+        for candidate in candidates:
+            subscription_id = (candidate or "").strip()
+            if not _SUBSCRIPTION_ID_PATTERN.fullmatch(subscription_id):
+                continue
+            key = subscription_id.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            remediation.append(_reader_at_subscription(subscription_id, principal_id))
+        if not remediation:
+            remediation.append(_reader_at_subscription(SUBSCRIPTION_PLACEHOLDER, principal_id))
+        return _SubscriptionScan(status=status, message=message, remediation=remediation)
 
     @staticmethod
     def _account_suggestion(

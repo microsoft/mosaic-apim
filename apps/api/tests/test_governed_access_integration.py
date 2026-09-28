@@ -13,6 +13,8 @@ from mosaic_api.services.directory import Actor
 from mosaic_api.services.portal_access import PortalAccessService
 from test_governed_lifecycle import ACTOR, APPLICATION, AUDIENCE, TENANT, USER, Harness
 
+MODEL_CLIENT = "44444444-4444-4444-4444-444444444444"
+
 
 async def test_publishing_to_self_service_key_and_revoke_uses_trusted_applied_state(
     monkeypatch: pytest.MonkeyPatch,
@@ -61,6 +63,7 @@ async def test_publishing_to_self_service_key_and_revoke_uses_trusted_applied_st
             gateway_repository=harness.gateways,
             credential_factory=lambda resource: ApimCredentialClient(harness.arm, resource),
             model_runtime_client_id=AUDIENCE,
+            model_client_id=MODEL_CLIENT,
         )
         owner = Actor(USER, TENANT)
         listed = await portal.list_for_caller(owner)
@@ -73,6 +76,7 @@ async def test_publishing_to_self_service_key_and_revoke_uses_trusted_applied_st
             "chat-completions", "responses",
         }
         assert connection.entra_scope == f"api://{AUDIENCE}/Models.Invoke"
+        assert connection.entra_client_id == MODEL_CLIENT
         assert (
             await portal.reveal_key(owner, user.id, "primary")
         ).key == "integration-fixture-primary"
@@ -81,9 +85,9 @@ async def test_publishing_to_self_service_key_and_revoke_uses_trusted_applied_st
             await portal.reveal_key(owner, application.id, "primary")
         assert len(reveals) == 1
         app_owner = Actor(APPLICATION, TENANT)
-        assert (
-            await portal.connection(app_owner, application.id)
-        ).entra_scope == f"api://{AUDIENCE}/.default"
+        app_connection = await portal.connection(app_owner, application.id)
+        assert app_connection.entra_scope == f"api://{AUDIENCE}/.default"
+        assert app_connection.entra_client_id is None
 
         await harness.grants.update_entitlement(ACTOR, user.id, EntitlementUpdate(enabled=False))
         pending = await portal.list_for_caller(owner)

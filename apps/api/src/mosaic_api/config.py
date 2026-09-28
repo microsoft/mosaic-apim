@@ -3,7 +3,7 @@ from functools import lru_cache
 from typing import Annotated
 from uuid import UUID
 
-from pydantic import AnyHttpUrl, Field, field_validator, model_validator
+from pydantic import AnyHttpUrl, Field, ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -37,6 +37,7 @@ class Settings(BaseSettings):
     tenant_id: str
     api_client_id: str | None = None
     model_runtime_client_id: str | None = None
+    model_client_id: str | None = None
     entra_issuer: AnyHttpUrl | None = None
     entra_discovery_url: AnyHttpUrl | None = None
     required_role: str = "Admin"
@@ -66,15 +67,16 @@ class Settings(BaseSettings):
     )
     log_level: str = "INFO"
 
-    @field_validator("model_runtime_client_id")
+    @field_validator("model_runtime_client_id", "model_client_id")
     @classmethod
-    def validate_model_runtime_client_id(cls, value: str | None) -> str | None:
+    def validate_optional_client_id(cls, value: str | None, info: ValidationInfo) -> str | None:
         if value is None or not value.strip():
             return None
         try:
             return str(UUID(value.strip()))
         except ValueError as exc:
-            raise ValueError("MOSAIC_MODEL_RUNTIME_CLIENT_ID must be a valid GUID") from exc
+            setting = f"MOSAIC_{(info.field_name or '').upper()}"
+            raise ValueError(f"{setting} must be a valid GUID") from exc
 
     @model_validator(mode="after")
     def validate_fail_closed_modes(self) -> "Settings":
@@ -100,15 +102,22 @@ class Settings(BaseSettings):
             raise ValueError("In-memory persistence is only valid in local or test environments")
         if self.auth_mode is AuthMode.ENTRA and not self.api_client_id:
             raise ValueError("MOSAIC_API_CLIENT_ID is required for Entra authentication")
-        if self.model_runtime_client_id and self.api_client_id:
+        control_plane_audience: str | None = None
+        if self.api_client_id:
             try:
                 control_plane_audience = str(UUID(self.api_client_id.strip()))
             except ValueError:
                 control_plane_audience = self.api_client_id
-            if self.model_runtime_client_id == control_plane_audience:
-                raise ValueError(
-                    "MOSAIC_MODEL_RUNTIME_CLIENT_ID must be different from MOSAIC_API_CLIENT_ID"
-                )
+        if self.model_runtime_client_id and self.model_runtime_client_id == control_plane_audience:
+            raise ValueError(
+                "MOSAIC_MODEL_RUNTIME_CLIENT_ID must be different from MOSAIC_API_CLIENT_ID"
+            )
+        if self.model_client_id and self.model_client_id == control_plane_audience:
+            raise ValueError("MOSAIC_MODEL_CLIENT_ID must be different from MOSAIC_API_CLIENT_ID")
+        if self.model_client_id and self.model_client_id == self.model_runtime_client_id:
+            raise ValueError(
+                "MOSAIC_MODEL_CLIENT_ID must be different from MOSAIC_MODEL_RUNTIME_CLIENT_ID"
+            )
         if self.repository_backend is RepositoryBackend.COSMOS and not self.cosmos_endpoint:
             raise ValueError("MOSAIC_COSMOS_ENDPOINT is required for Cosmos persistence")
         if not self.required_role.strip() or not self.portal_role.strip():

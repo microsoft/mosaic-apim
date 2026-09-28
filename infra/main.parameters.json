@@ -23,6 +23,9 @@
     "modelRuntimeClientId": {
       "value": "${MOSAIC_MODEL_RUNTIME_CLIENT_ID}"
     },
+    "modelClientId": {
+      "value": "${MOSAIC_MODEL_CLIENT_ID}"
+    },
     "apiServicePrincipalObjectId": {
       "value": "${MOSAIC_API_SERVICE_PRINCIPAL_OBJECT_ID}"
     },
