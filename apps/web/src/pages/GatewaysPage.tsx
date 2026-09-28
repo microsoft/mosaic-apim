@@ -78,7 +78,7 @@ export function AccessPanel({ gateway }: { gateway: Gateway }) {
           Read access: <strong>{access.canRead ? 'granted' : 'missing'}</strong>
         </Text>
         <Text size={200}>
-          Write access, needed later for enrollment:{' '}
+          Write access, needed for manage mode:{' '}
           <strong>{access.canWrite ? 'granted' : 'not granted'}</strong>
         </Text>
       </div>
@@ -166,7 +166,7 @@ export function GatewaysPage() {
     <div className={styles.page}>
       <PageHeader
         title="Gateways"
-        description="Bring an existing Azure API Management service under MOSAIC. MOSAIC reads what is already there and describes it in plain language. It does not change your gateway."
+        description="Bring an existing Azure API Management service under MOSAIC. MOSAIC reads what is already there and describes it in plain language. It does not change your gateway unless an administrator switches it to manage mode and publishes a model."
         source="live"
         actions={
           <Button

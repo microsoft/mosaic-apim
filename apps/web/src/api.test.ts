@@ -105,4 +105,33 @@ describe('useMosaicApi', () => {
       runId: 'run_1', confirmQuiesced: false,
     })
   })
+
+  it('sends only the management mode when switching a gateway, and surfaces a refusal', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: 'gateway_1', managementMode: 'manage' }), {
+        status: 200, headers: { 'Content-Type': 'application/json' },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        code: 'validation_error',
+        message: 'MOSAIC cannot write to this gateway yet, so it cannot be managed.',
+        details: { managementMode: 'manage', missingActions: [] },
+      }), { status: 422, headers: { 'Content-Type': 'application/json' } }))
+    vi.stubGlobal('fetch', fetchMock)
+    const { result } = renderHook(() => useMosaicApi())
+
+    const updated = await result.current.updateGateway('gateway_1', { managementMode: 'manage' })
+
+    expect(updated.managementMode).toBe('manage')
+    const [url, options] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(String(url).replace(/^https?:\/\/[^/]+/, '')).toBe('/api/v1/gateways/gateway_1')
+    expect(options.method).toBe('PATCH')
+    expect(new Headers(options.headers).get('Content-Type')).toBe('application/json')
+    expect(JSON.parse(String(options.body))).toEqual({ managementMode: 'manage' })
+
+    const refusal = result.current.updateGateway('gateway_1', { managementMode: 'manage' })
+    await expect(refusal).rejects.toMatchObject({
+      status: 422,
+      message: 'MOSAIC cannot write to this gateway yet, so it cannot be managed.',
+    })
+  })
 })
