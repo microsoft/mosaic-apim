@@ -137,6 +137,7 @@ def build_endpoint_service(
         client_factory=lambda resource: CognitiveServicesClient(arm, resource),
         scanner=SubscriptionScanner(arm) if scanner else None,
         principal_id=kwargs.pop("principal_id", "mosaic-managed-identity"),
+        bootstrap_subscription_id=kwargs.pop("bootstrap_subscription_id", None),
     )
 
 

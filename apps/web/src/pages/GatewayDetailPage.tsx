@@ -18,7 +18,8 @@ import { useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useMosaicApi } from '../api'
 import { EmptyState, ErrorState, Loading } from '../components/AsyncState'
-import { AI_KIND_LABELS } from '../labels'
+import { GatewayManagementMode } from '../components/GatewayManagementMode'
+import { AI_KIND_LABELS, MANAGEMENT_MODE_LABELS } from '../labels'
 import { PolicyDocumentCard, PolicyFragmentCard } from '../components/PolicyFacets'
 import type { AiBackendKind, Gateway, PublicationStatus } from '../types'
 import { PageHeader } from '../components/PageHeader'
@@ -169,6 +170,7 @@ function Overview({ gateway }: { gateway: Gateway }) {
         ))}
       </Card>
       <AccessPanel gateway={gateway} />
+      <GatewayManagementMode key={gateway.id} gateway={gateway} />
     </>
   )
 }
@@ -628,9 +630,9 @@ export function GatewayDetailPage() {
       </Link>
       <PageHeader
         title={gateway.data.name}
-        description={`${gateway.data.serviceName} · observe only${
-          gateway.data.environmentLabel ? ` · ${gateway.data.environmentLabel}` : ''
-        }`}
+        description={`${gateway.data.serviceName} · ${
+          MANAGEMENT_MODE_LABELS[gateway.data.managementMode]
+        } mode${gateway.data.environmentLabel ? ` · ${gateway.data.environmentLabel}` : ''}`}
         source="live"
         actions={
           <div className={styles.headerActions}>

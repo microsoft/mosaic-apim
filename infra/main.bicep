@@ -27,6 +27,9 @@ param apiAppClientId string
 @description('Optional GUID audience of the separate model-runtime API. Must differ from the MOSAIC control-plane API client ID.')
 param modelRuntimeClientId string = ''
 
+@description('Optional GUID of the public client people sign in with to get delegated model-runtime tokens. Must differ from the API and model-runtime client IDs.')
+param modelClientId string = ''
+
 @description('The MOSAIC API service principal object ID.')
 param apiServicePrincipalObjectId string
 
@@ -132,6 +135,10 @@ var apiAppSettings = [
   {
     name: 'MOSAIC_MODEL_RUNTIME_CLIENT_ID'
     value: modelRuntimeClientId
+  }
+  {
+    name: 'MOSAIC_MODEL_CLIENT_ID'
+    value: modelClientId
   }
   {
     name: 'MOSAIC_SPA_CLIENT_ID'
@@ -683,6 +690,7 @@ output APPLICATION_INSIGHTS_RESOURCE_ID string = monitoring.outputs.appInsightsI
 output MOSAIC_TENANT_ID string = tenantId
 output MOSAIC_API_CLIENT_ID string = apiAppClientId
 output MOSAIC_MODEL_RUNTIME_CLIENT_ID string = modelRuntimeClientId
+output MOSAIC_MODEL_CLIENT_ID string = modelClientId
 output MOSAIC_API_SCOPE string = apiScope
 output MOSAIC_SPA_CLIENT_ID string = spaAppClientId
 output MOSAIC_PORTAL_CLIENT_ID string = portalAppClientId

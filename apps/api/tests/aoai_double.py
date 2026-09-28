@@ -170,6 +170,7 @@ class FakeCognitiveServices:
         self.subscriptions: list[dict[str, Any]] = [
             {"subscriptionId": AI_SUBSCRIPTION_ID, "displayName": "Contoso dev"},
         ]
+        self.subscriptions_status = 200
         self.accounts_by_subscription: dict[str, list[dict[str, Any]]] = {
             AI_SUBSCRIPTION_ID: [
                 {
@@ -211,6 +212,10 @@ class FakeCognitiveServices:
         self.requests.append(path)
 
         if path == "/subscriptions":
+            if self.subscriptions_status != 200:
+                return httpx.Response(
+                    self.subscriptions_status, json={"error": {"message": "denied"}}
+                )
             return _collection(self.subscriptions)
 
         if path.endswith("/providers/Microsoft.CognitiveServices/accounts"):

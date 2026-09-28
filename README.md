@@ -125,7 +125,8 @@ preflight reports the missing write permissions precisely rather than failing du
 
 - Azure subscription where the deployer can create resources and role assignments
 - Microsoft Entra role capable of managing app registrations and service principals (Application
-  Administrator or broader) and assigning the initial app role
+  Administrator or broader), assigning the initial app role, and granting the model client's
+  tenant-wide consent
 - [Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli)
 - [Azure Developer CLI](https://learn.microsoft.com/azure/developer/azure-developer-cli/install-azd)
 - Python 3.12 and [uv](https://docs.astral.sh/uv/)
@@ -211,20 +212,38 @@ The preprovision hook idempotently creates separate single-tenant Entra registra
 - `mosaic-dev-portal`: end-user portal SPA redirects and delegated permission to the API
 - `mosaic-dev-model-runtime`: the separate audience for APIM model calls, with the
   `Models.Invoke` delegated scope and `Models.Invoke.Application` application permission
+- `mosaic-dev-model-client`: a public client people sign in with to get model-runtime tokens. It
+  has no secrets, certificates or app roles, and its only permission is delegated
+  `Models.Invoke`, with tenant-wide admin consent. Interactive (`http://localhost`) and device
+  code sign-in both work.
 
 It assigns the deploying user the initial `Admin` role. The postprovision hook adds the deployed
 web redirect and the deployed portal redirect, the latter from the `PORTAL_APP_URL` output of
 the portal App Service. A directory authorization failure stops deployment and identifies the
-failed operation; identity setup is never skipped.
+failed operation; identity setup is never skipped. The one exception is the model client's
+consent. Granting it needs Cloud Application Administrator, Application Administrator or
+Privileged Role Administrator. Without one of those roles the hook prints a warning with the
+exact `az ad app permission grant` command for an administrator, and deployment continues.
+People can't get tokens with the model client until that consent exists.
+
+To skip the model client, run `azd env set MOSAIC_ENTRA_MODEL_CLIENT false` before provisioning.
+The hook then leaves any existing model client registration and consent alone, and keeps
+`MOSAIC_MODEL_CLIENT_ID` as set. So you can point it at a client you manage yourself, as long as
+that client is consented for `Models.Invoke`. Also set `MOSAIC_ENTRA_MODEL_CLIENT` to `false`
+before you revoke the model client's consent, or the next `azd provision` grants it again.
 
 Assign the `User` app role — normally to an Entra group — to everyone who should reach the portal.
 Tenant membership alone does not grant it.
 
-Clients using Entra model access also need permission/consent for the model-runtime registration.
-Delegated user clients request `api://<model-runtime-client-id>/Models.Invoke`; applications use
-the `Models.Invoke.Application` permission and request `api://<model-runtime-client-id>/.default`.
+People with a user grant sign in with the model client to request
+`api://<model-runtime-client-id>/Models.Invoke`. Bootstrap writes its client ID as
+`MOSAIC_MODEL_CLIENT_ID`, and connection details show it as `entraClientId`. See
+[Call a published model with an Entra token](docs/call-models-with-entra-tokens.md). Any other
+delegated client needs its own consent for that scope. Applications use the
+`Models.Invoke.Application` permission and request `api://<model-runtime-client-id>/.default`.
 Assign these permissions through normal Entra administration. A MOSAIC grant does not silently
-consent a client, create an identity, or grant Microsoft Graph permissions. Bootstrap exposes
+consent a client, create an identity, or grant Microsoft Graph permissions. The only consent
+bootstrap creates is the model client's `Models.Invoke` grant. Bootstrap exposes
 `MOSAIC_MODEL_RUNTIME_CLIENT_ID`; this must not be the MOSAIC control-plane API's client ID.
 
 APIM Developer is the dominant cost (currently roughly USD 51/month at continuous use) and can take
@@ -312,6 +331,12 @@ measured scale, not speculation.
 - Model-runtime Entra tokens have a different audience from MOSAIC control-plane tokens. APIM
   validates the runtime token and authorizes its tenant/object ID against an applied direct grant;
   being signed into MOSAIC or holding its `Admin` role does not itself grant model access.
+- The MOSAIC model client is a public client with no secrets, certificates or app roles. Its
+  tenant-wide consent covers only delegated `Models.Invoke` on the runtime registration. That
+  lets Entra issue a person's token but authorizes no model call by itself: APIM still requires
+  an applied direct grant. Administrators can revoke the consent under the client's enterprise
+  application permissions (after setting `MOSAIC_ENTRA_MODEL_CLIENT=false`, so provisioning
+  doesn't grant it again), and target the client with Conditional Access.
 - On model endpoints MOSAIC asks only for `Reader`. It deliberately holds no data-plane inference
   right and no `listKeys` permission on any Azure AI resource, so it cannot call a model or read an
   account key even where it can enumerate deployments.
@@ -344,6 +369,17 @@ A gateway MOSAIC can only read is fully usable for observation. Writing requires
 conditions: the contributor role above, and an administrator switching the gateway from `observe` to
 `manage`. MOSAIC refuses the switch until preflight has actually confirmed write access, and refuses
 every write to a gateway left in `observe` mode however the role is assigned.
+
+Administrators switch modes with **Management mode** on the gateway's Overview tab, and confirm each
+direction. The switch itself changes nothing in API Management; it only records the mode in MOSAIC.
+**Manage** stays disabled until the access check confirms write access. Until then, the page shows the
+role, scope and identity to grant, and **Check access** runs the preflight again. In `manage`,
+MOSAIC writes to the gateway only when an administrator applies a reviewed publish plan, unpublishes
+a model, or confirms recovery of an interrupted apply. Switching back to `observe` leaves published
+models in API Management, where they keep serving calls. MOSAIC then refuses to plan, apply or
+unpublish them, so grant and access changes saved in MOSAIC wait until the gateway is managed again.
+Either switch is refused while an apply or unpublish on one of the gateway's publications is still
+running, or is awaiting recovery after an interruption.
 
 The contributor role also grants `subscriptions/listSecrets`. MOSAIC uses that capability only
 for an authorized, explicitly requested reveal of an applied, owned grant's key. A custom role
@@ -488,7 +524,9 @@ MOSAIC finds endpoints three ways: a pasted resource ID, hosts it already observ
 inside a registered gateway, and an enumeration of Azure AI accounts across visible subscriptions.
 The last needs `Reader` at subscription scope, which MOSAIC does not grant itself — a subscription
 it cannot read is reported with the command that would fix it and skipped, so one missing assignment
-never blanks the list.
+never blanks the list. When MOSAIC can't see any subscription, or couldn't list them, the Models page
+now says so and gives the `Reader` command for the subscription MOSAIC was deployed into and for
+each registered gateway's subscription, instead of showing an empty list.
 
 OpenAI-compatible endpoints are registered with a Key Vault secret identifier the operator created.
 MOSAIC stores the URI only; discovery for those endpoints is not implemented yet.
@@ -568,8 +606,14 @@ Administrators can explicitly reveal/copy an applied grant's key. Portal clients
 | Method | Route under `/api/v1` | Result |
 | --- | --- | --- |
 | GET | `/me/entitlements` | The caller's own direct grants and deployment state; no keys |
-| GET | `/me/entitlements/{id}/connection` | Endpoint, operations, runtime audience/scope, and limits |
+| GET | `/me/entitlements/{id}/connection` | Endpoint, operations, runtime audience/scope, model client ID, and limits |
 | POST | `/me/entitlements/{id}/keys/reveal` | The requested key; body `{"slot":"primary"}` or `{"slot":"secondary"}` |
+
+People use the connection's `tenantId`, `entraClientId` and `entraScope` to get a runtime token.
+See [Call a published model with an Entra token](docs/call-models-with-entra-tokens.md).
+`entraClientId` is set only for user grants whose applied audience is the current runtime
+registration, because that is the only one the model client is consented for. Applications
+sign in as themselves.
 
 The administrator equivalents omit `/me` and require `Admin`. Knowing another entitlement or
 application ID does not authorize a reveal. Application-owner delegation and portal key/connection
@@ -610,7 +654,9 @@ using authorized clients and place them in these process environment variables, 
 
 - `MOSAIC_SMOKE_USER_CONTROL_TOKEN`: the entitled user's token for the MOSAIC API, with `User`.
 - `MOSAIC_SMOKE_ADMIN_CONTROL_TOKEN`: an administrator's MOSAIC API token for application-key handoff.
-- `MOSAIC_SMOKE_USER_RUNTIME_TOKEN`: that user's delegated model-runtime token.
+- `MOSAIC_SMOKE_USER_RUNTIME_TOKEN`: that user's delegated model-runtime token. The user can get
+  one by signing in with the model client, as in
+  [Call a published model with an Entra token](docs/call-models-with-entra-tokens.md).
 - `MOSAIC_SMOKE_APPLICATION_RUNTIME_TOKEN`: the granted application's model-runtime token.
 
 ```powershell
