@@ -6,6 +6,7 @@ import type {
   EntitlementResource,
   EntitlementRuntime,
   QuotaPeriod,
+  ResourceSummary,
   ResolvedEntitlement,
   TokenEnforcement,
 } from './types'
@@ -59,8 +60,10 @@ export function requestStateLabel(state: AccessRequest['state']) {
   return stateLabels[state]
 }
 
-export function resourceLabel(resource: EntitlementResource) {
-  return `${resourceKindLabel(resource.kind)} ${resource.id}`
+export function resourceLabel(resource: EntitlementResource, summary?: ResourceSummary | null) {
+  if (summary?.displayName) return summary.displayName
+  if (summary?.available === false) return 'Resource no longer available'
+  return `${resourceKindLabel(resource.kind)} resource`
 }
 
 export function formatNumber(value: number) {
@@ -82,9 +85,13 @@ export function describeBinding(entitlement: Entitlement) {
   const pieces = [
     entitlement.binding.apimProductName ? `Product ${entitlement.binding.apimProductName}` : null,
     entitlement.binding.apimSubscriptionName ? `Subscription ${entitlement.binding.apimSubscriptionName}` : null,
-    entitlement.binding.gatewayId ? `Gateway ${entitlement.binding.gatewayId}` : null,
+    entitlement.binding.gatewayId ? 'Gateway attribution configured' : null,
   ].filter(Boolean)
   return pieces.length > 0 ? pieces.join(' · ') : 'Usage attribution is configured.'
+}
+
+export function gatewayLabel(summary: ResourceSummary | null | undefined, fallback?: string | null) {
+  return summary?.gatewayName ?? fallback ?? 'Gateway not available'
 }
 
 export function describeTokenLimits(tokens: TokenEnforcement | null | undefined) {

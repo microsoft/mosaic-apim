@@ -31,6 +31,18 @@ function accessRequest(overrides: Partial<AccessRequest>): AccessRequest {
     decidedAt: null,
     decisionNote: null,
     grantedEntitlementId: null,
+    requestedEnvironment: 'production',
+    resourceSnapshot: { displayName: 'Chat completions', gatewayId: 'gateway-1', gatewayName: 'Production gateway' },
+    resourceSummary: {
+      kind: 'modelApi',
+      id: 'chat-completions',
+      scopeId: null,
+      displayName: 'Chat completions',
+      gatewayId: 'gateway-1',
+      gatewayName: 'Production gateway',
+      environment: 'production',
+      available: true,
+    },
     createdAt: '2026-01-01T00:00:00Z',
     updatedAt: '2026-01-01T00:00:00Z',
     ...overrides,
@@ -40,6 +52,9 @@ function accessRequest(overrides: Partial<AccessRequest>): AccessRequest {
 function renderPage(requests: AccessRequest[]) {
   mocks.api = {
     listAccessRequests: async () => requests,
+    listEnvironments: async () => [
+      { key: 'production', displayName: 'Production', description: null, color: 'danger', production: true, order: 50 },
+    ],
     withdrawAccessRequest: vi.fn(),
   } as unknown as PortalApi
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -67,6 +82,8 @@ describe('MyRequestsPage', () => {
     expect(card).not.toBeNull()
     const request = within(card as HTMLElement)
     expect(request.getByText('Grant')).toBeVisible()
+    expect(request.getByText('Production')).toBeVisible()
+    expect(request.getByText('Production gateway')).toBeVisible()
     expect(
       request.getByText(/Approval created your grant. It may not work until an administrator applies it./),
     ).toBeVisible()
@@ -97,5 +114,44 @@ describe('MyRequestsPage', () => {
     expect(await screen.findByRole('button', { name: 'Withdraw' })).toBeVisible()
     expect(screen.getByText('Not for this project')).toBeVisible()
     expect(screen.queryByText('Grant')).not.toBeInTheDocument()
+  })
+
+  it('uses summaries and snapshots without rendering raw resource IDs', async () => {
+    renderPage([
+      accessRequest({
+        id: 'request-removed-known',
+        resource: { kind: 'modelApi', id: 'modelApi_removed_123', scopeId: null },
+        resourceSummary: {
+          kind: 'modelApi',
+          id: 'modelApi_removed_123',
+          scopeId: null,
+          displayName: 'Retired chat',
+          gatewayId: 'gateway-1',
+          gatewayName: 'Production gateway',
+          environment: 'production',
+          available: false,
+        },
+      }),
+      accessRequest({
+        id: 'request-removed-unknown',
+        resource: { kind: 'modelApi', id: 'modelApi_unknown_456', scopeId: null },
+        resourceSnapshot: null,
+        resourceSummary: {
+          kind: 'modelApi',
+          id: 'modelApi_unknown_456',
+          scopeId: null,
+          displayName: null,
+          gatewayId: null,
+          gatewayName: null,
+          environment: null,
+          available: false,
+        },
+      }),
+    ])
+
+    expect(await screen.findByText('Retired chat')).toBeVisible()
+    expect(screen.getByText('Resource no longer available')).toBeVisible()
+    expect(screen.getAllByText('No longer available')).toHaveLength(2)
+    expect(screen.queryByText(/modelApi_removed_123|modelApi_unknown_456/)).not.toBeInTheDocument()
   })
 })

@@ -47,6 +47,7 @@ describe('App', () => {
         throw Object.assign(new Error('Forbidden'), { status: 403 })
       },
       listEntitlements: async () => [],
+      listEnvironments: async () => [],
     } as unknown as PortalApi
 
     renderApp()

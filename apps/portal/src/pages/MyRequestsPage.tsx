@@ -3,8 +3,10 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { usePortalApi } from '../api'
 import { EmptyState, ErrorState, Loading } from '../components/AsyncState'
+import { EnvironmentBadge } from '../components/EnvironmentBadge'
 import { PageHeader } from '../components/PageHeader'
-import { requestStateLabel, resourceLabel } from '../entitlement-format'
+import { gatewayLabel, requestStateLabel, resourceLabel } from '../entitlement-format'
+import { usePortalEnvironments } from '../environments'
 import type { AccessRequest } from '../types'
 
 function GrantStatus({ request }: { request: AccessRequest }) {
@@ -23,6 +25,7 @@ export function MyRequestsPage() {
   const api = usePortalApi()
   const queryClient = useQueryClient()
   const requests = useQuery({ queryKey: ['portal', 'requests'], queryFn: api.listAccessRequests })
+  const environments = usePortalEnvironments()
   const withdraw = useMutation({
     mutationFn: (requestId: string) => api.withdrawAccessRequest(requestId),
     onSuccess: async () => {
@@ -52,11 +55,43 @@ export function MyRequestsPage() {
           {requests.data.map((request) => (
             <Card key={request.id} className="request-card">
               <CardHeader
-                header={<h2>{resourceLabel(request.resource)}</h2>}
+                header={
+                  <h2>
+                    {resourceLabel(request.resource, request.resourceSummary ?? (
+                      request.resourceSnapshot
+                        ? {
+                            kind: request.resource.kind,
+                            id: request.resource.id,
+                            scopeId: request.resource.scopeId,
+                            displayName: request.resourceSnapshot.displayName,
+                            gatewayId: request.resourceSnapshot.gatewayId,
+                            gatewayName: request.resourceSnapshot.gatewayName,
+                            environment: request.requestedEnvironment,
+                            available: false,
+                          }
+                        : null
+                    ))}
+                    {request.resourceSummary?.available === false && (
+                      <Badge className="inline-status-badge" appearance="outline" color="warning">
+                        No longer available
+                      </Badge>
+                    )}
+                  </h2>
+                }
                 description={`Opened ${new Date(request.createdAt).toLocaleDateString()}`}
                 action={<Badge appearance="tint">{requestStateLabel(request.state)}</Badge>}
               />
+              <div className="badge-row">
+                <EnvironmentBadge
+                  environment={request.resourceSummary?.environment ?? request.requestedEnvironment}
+                  environments={environments.data}
+                />
+              </div>
               <dl className="metadata-list">
+                <div>
+                  <dt>Gateway</dt>
+                  <dd>{gatewayLabel(request.resourceSummary, request.resourceSnapshot?.gatewayName)}</dd>
+                </div>
                 <div>
                   <dt>Justification</dt>
                   <dd>{request.justification || 'No justification provided.'}</dd>

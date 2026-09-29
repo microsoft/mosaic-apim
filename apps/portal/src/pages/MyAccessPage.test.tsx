@@ -1,9 +1,9 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { render, screen } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { describe, expect, it, vi } from 'vitest'
 import type { PortalApi } from '../api'
-import type { Entitlement, ResolvedEntitlement } from '../types'
+import type { Entitlement, ResolvedEntitlement, ResourceSummary } from '../types'
 import { MyAccessPage } from './MyAccessPage'
 
 const mocks = vi.hoisted(() => ({
@@ -48,9 +48,23 @@ const baseEntitlement: Entitlement = {
   updatedAt: '2026-01-01T00:00:00Z',
 }
 
+const baseSummary: ResourceSummary = {
+  kind: 'modelApi',
+  id: 'chat-completions',
+  scopeId: 'gateway-1',
+  displayName: 'Chat completions',
+  gatewayId: 'gateway-1',
+  gatewayName: 'Production gateway',
+  environment: 'production',
+  available: true,
+}
+
 function renderPage(entitlements: ResolvedEntitlement[]) {
   const api = {
     listEntitlements: async () => entitlements,
+    listEnvironments: async () => [
+      { key: 'production', displayName: 'Production', description: null, color: 'danger', production: true, order: 50 },
+    ],
     getMyEntitlementConnection: vi.fn(),
     revealMyEntitlementKey: vi.fn(),
   }
@@ -71,14 +85,17 @@ describe('MyAccessPage', () => {
     renderPage([
       {
         entitlement: baseEntitlement,
+        resourceSummary: baseSummary,
         via: 'group',
         viaGroupId: 'group-1',
         viaGroupName: 'Platform engineering',
       },
     ])
 
-    expect(await screen.findByText('Model API chat-completions')).toBeVisible()
+    expect(await screen.findByText('Chat completions')).toBeVisible()
     expect(screen.getByText('Granted through Platform engineering')).toBeVisible()
+    expect(screen.getByText('Production')).toBeVisible()
+    expect(screen.getByText('Production gateway')).toBeVisible()
     expect(screen.getByText('10,000 tokens per minute')).toBeVisible()
     expect(screen.getByText('600 calls per 60 seconds')).toBeVisible()
     expect(screen.getByText('100,000 calls per month')).toBeVisible()
@@ -90,6 +107,7 @@ describe('MyAccessPage', () => {
     renderPage([
       {
         entitlement: { ...baseEntitlement, enforcement: null },
+        resourceSummary: baseSummary,
         via: 'direct',
         viaGroupId: null,
         viaGroupName: null,
@@ -129,6 +147,7 @@ describe('MyAccessPage', () => {
           error: null,
         },
       },
+      resourceSummary: baseSummary,
       via: 'direct',
       viaGroupId: null,
       viaGroupName: null,
@@ -144,6 +163,7 @@ describe('MyAccessPage', () => {
     const api = renderPage([
       {
         entitlement: { ...baseEntitlement, id: 'model-grant', subject: directUser },
+        resourceSummary: baseSummary,
         via: 'direct',
         viaGroupId: null,
         viaGroupName: null,
@@ -155,18 +175,47 @@ describe('MyAccessPage', () => {
           subject: directUser,
           resource: { kind: 'mcpServer', id: 'docs-mcp', scopeId: 'gateway-1' },
         },
+        resourceSummary: {
+          ...baseSummary,
+          kind: 'mcpServer',
+          id: 'docs-mcp',
+          displayName: 'Docs MCP',
+        },
         via: 'direct',
         viaGroupId: null,
         viaGroupName: null,
       },
     ])
 
-    expect(await screen.findByText('Model API chat-completions')).toBeVisible()
-    expect(screen.getByText('MCP server docs-mcp')).toBeVisible()
+    expect(await screen.findByText('Chat completions')).toBeVisible()
+    expect(screen.getByText('Docs MCP')).toBeVisible()
     const details = screen.getAllByRole('button', { name: 'Connection details' })
     expect(details).toHaveLength(1)
     expect(details[0]).toHaveAttribute('aria-expanded', 'false')
     expect(api.getMyEntitlementConnection).not.toHaveBeenCalled()
     expect(api.revealMyEntitlementKey).not.toHaveBeenCalled()
+  })
+
+  it('uses live summaries for removed resources without rendering raw resource IDs', async () => {
+    renderPage([{
+      entitlement: {
+        ...baseEntitlement,
+        resource: { kind: 'modelApi', id: 'modelApi_removed_123', scopeId: 'gateway-1' },
+      },
+      resourceSummary: {
+        ...baseSummary,
+        id: 'modelApi_removed_123',
+        displayName: 'Retired chat',
+        available: false,
+      },
+      via: 'direct',
+      viaGroupId: null,
+      viaGroupName: null,
+    }])
+
+    const card = (await screen.findByText('Retired chat')).closest('.access-card')
+    expect(card).not.toBeNull()
+    expect(within(card as HTMLElement).getByText('No longer available')).toBeVisible()
+    expect(screen.queryByText(/modelApi_removed_123/)).not.toBeInTheDocument()
   })
 })

@@ -11,6 +11,7 @@ import {
 } from '@fluentui/react-components'
 import {
   BookInformationRegular,
+  DataUsageRegular,
   DismissRegular,
   HomeRegular,
   NavigationRegular,
@@ -27,6 +28,7 @@ import { ErrorState, Loading } from './components/AsyncState'
 import { CatalogPage } from './pages/CatalogPage'
 import { MyAccessPage } from './pages/MyAccessPage'
 import { MyRequestsPage } from './pages/MyRequestsPage'
+import { UsagePage } from './pages/UsagePage'
 import { runtimeConfig } from './runtime-config'
 import { MosaicThemeProvider } from './theme'
 import './index.css'
@@ -39,6 +41,7 @@ interface NavigationItem {
 
 const navigation: NavigationItem[] = [
   { to: '/access', label: 'My access', icon: <HomeRegular /> },
+  { to: '/usage', label: 'Usage & cost', icon: <DataUsageRegular /> },
   { to: '/catalog', label: 'Catalog', icon: <BookInformationRegular /> },
   { to: '/requests', label: 'My requests', icon: <PersonCircleRegular /> },
 ]
@@ -171,6 +174,7 @@ export default function App() {
           <Route element={<PortalShell />}>
             <Route index element={<Navigate to="/access" replace />} />
             <Route path="/access" element={<MyAccessPage />} />
+            <Route path="/usage" element={<UsagePage />} />
             <Route path="/catalog" element={<CatalogPage />} />
             <Route path="/requests" element={<MyRequestsPage />} />
             <Route path="*" element={<Navigate to="/access" replace />} />
