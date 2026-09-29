@@ -15,6 +15,7 @@ import type {
   ModelEndpointSuggestionView,
   Publication,
   PublishPlan,
+  SubscriptionScanIssue,
 } from '../types'
 
 const RESOURCE_ID =
@@ -579,6 +580,7 @@ function suggestionView(
   return {
     suggestions: [],
     scanIssues: [],
+    partialScans: [],
     subscriptionsScanned: 0,
     scanStatus: 'notConfigured',
     scanMessage: null,
@@ -620,6 +622,38 @@ function readerAtSubscription(subscriptionId: string): AccessRemediation {
 const SCAN_EXPLANATION =
   'Endpoints can still be registered by pasting a resource ID, and granting Reader at ' +
   'subscription scope lets MOSAIC suggest them.'
+
+const SCAN_ROLE_DELAY =
+  'Azure can take several minutes, and occasionally longer, to apply a new role. If the scan ' +
+  'still reports this right after the grant, wait a few minutes and refresh this page.'
+
+function partialScan(subscriptionId: string, displayName: string | null): SubscriptionScanIssue {
+  return {
+    subscriptionId,
+    displayName,
+    message:
+      'MOSAIC can read only some resources in this subscription, so any Azure AI resources it ' +
+      'cannot read are not suggested here. Endpoints can still be registered by resource ID.',
+    remediation: readerAtSubscription(subscriptionId),
+  }
+}
+
+function subscriptionSuggestion(): ModelEndpointSuggestion {
+  return {
+    source: 'subscriptionScan',
+    endpoint: 'https://contoso-aoai.openai.azure.com/',
+    azureResourceId: AI_RESOURCE_ID,
+    accountName: 'contoso-aoai',
+    resourceGroup: 'rg-contoso-ai',
+    subscriptionId: '00000000-0000-0000-0000-000000000000',
+    kind: 'OpenAI',
+    location: 'eastus2',
+    provider: 'azureOpenAi',
+    alreadyRegistered: false,
+    modelEndpointId: null,
+    reason: 'Found in subscription 00000000-0000-0000-0000-000000000000.',
+  }
+}
 
 const PROJECT_RESOURCE_ID = `${AI_RESOURCE_ID}/projects/team-a`
 const SUBSCRIPTION_SCOPE = '/subscriptions/00000000-0000-0000-0000-000000000000'
@@ -1260,7 +1294,11 @@ describe('ModelsPage model endpoints', () => {
             command: 'az role assignment create --role "Reader"',
             customRoleDefinition: { properties: { roleName: 'MOSAIC Model Deployment Reader' } },
           },
-          message: 'MOSAIC is missing permissions needed to enumerate models.',
+          message:
+            "MOSAIC's managed identity is missing permissions needed to enumerate models on " +
+            'this endpoint. Grant it the role shown below. Azure can take several minutes, and ' +
+            'occasionally longer, to apply a new role. If Check access still fails right after ' +
+            'the grant, wait a few minutes and try again.',
         },
       }),
     ])
@@ -1268,6 +1306,8 @@ describe('ModelsPage model endpoints', () => {
     renderPage()
 
     expect(await screen.findByText('MOSAIC cannot read this endpoint')).toBeVisible()
+    // The API's message carries the advice to wait, since a new role is rarely applied at once.
+    expect(screen.getByText(/If Check access still fails right after the grant/)).toBeVisible()
     expect(screen.getByText(/without also granting/i)).toBeVisible()
   })
 
@@ -1329,8 +1369,11 @@ describe('ModelsPage model endpoints', () => {
 
     renderPage()
 
-    expect(await screen.findByText('Subscriptions MOSAIC could not scan')).toBeVisible()
+    const heading = await screen.findByText('Subscriptions MOSAIC could not scan')
+    expect(heading).toBeVisible()
     expect(screen.getByText(/az role assignment create/)).toBeVisible()
+    const card = heading.closest('.fui-Card') as HTMLElement
+    expect(within(card).getByText(SCAN_ROLE_DELAY)).toBeVisible()
     // Scanning none of them is already what the card above says, so no count restates it.
     expect(screen.queryByText('Endpoints MOSAIC found')).not.toBeInTheDocument()
   })
@@ -1362,6 +1405,8 @@ describe('ModelsPage model endpoints', () => {
       readerAtSubscription('66666666-7777-8888-9999-000000000000').command,
     ])
     expect(within(card).getAllByRole('button', { name: 'Copy command' })).toHaveLength(2)
+    // Said once for the card, not once per command.
+    expect(within(card).getAllByText(SCAN_ROLE_DELAY)).toHaveLength(1)
     expect(
       screen.queryByRole('heading', { name: "MOSAIC couldn't list subscriptions" }),
     ).not.toBeInTheDocument()
@@ -1389,6 +1434,7 @@ describe('ModelsPage model endpoints', () => {
     expect(
       within(card).getByText(/--scope "\/subscriptions\/<subscription-id>"/),
     ).toBeVisible()
+    expect(within(card).getByText(SCAN_ROLE_DELAY)).toBeVisible()
     expect(
       screen.queryByRole('heading', { name: "MOSAIC can't see any subscriptions" }),
     ).not.toBeInTheDocument()
@@ -1405,7 +1451,101 @@ describe('ModelsPage model endpoints', () => {
       await screen.findByText('Scanned 3 subscriptions. Nothing new to register.'),
     ).toBeVisible()
     expect(screen.getByRole('heading', { name: 'Endpoints MOSAIC found' })).toBeVisible()
+    // Nothing asks for a grant, so there is nothing to wait for.
+    expect(screen.queryByText(SCAN_ROLE_DELAY)).not.toBeInTheDocument()
   })
+
+  it("says MOSAIC can read only part of a subscription instead of 'nothing new'", async () => {
+    // Observed live: ARM answered with no accounts because it had silently left out every account
+    // MOSAIC could not read.
+    const subscriptionId = '00000000-0000-0000-0000-000000000000'
+    api.listSuggestedModelEndpoints.mockResolvedValue(
+      suggestionView({
+        scanStatus: 'scanned',
+        subscriptionsScanned: 1,
+        partialScans: [partialScan(subscriptionId, 'Contoso dev')],
+      }),
+    )
+
+    renderPage()
+
+    expect(
+      await screen.findByText(
+        'Scanned 1 subscription. MOSAIC can read only some resources in it, so any Azure AI ' +
+          "resources it can't read are missing from this list.",
+      ),
+    ).toBeVisible()
+    expect(screen.queryByText(/Nothing new to register/)).not.toBeInTheDocument()
+    const heading = screen.getByRole('heading', {
+      name: 'MOSAIC can read only part of a subscription',
+    })
+    const card = heading.closest('.fui-Card') as HTMLElement
+    expect(card).toHaveTextContent(SCAN_EXPLANATION)
+    expect(within(card).getByText('Contoso dev')).toBeVisible()
+    expect(
+      within(card).getByText(readerAtSubscription(subscriptionId).command),
+    ).toBeVisible()
+    expect(within(card).getAllByRole('button', { name: 'Copy command' })).toHaveLength(1)
+    expect(within(card).getByText(SCAN_ROLE_DELAY)).toBeVisible()
+    // It was listed, so it is not among the subscriptions MOSAIC could not scan.
+    expect(
+      screen.queryByRole('heading', { name: 'Subscriptions MOSAIC could not scan' }),
+    ).not.toBeInTheDocument()
+  })
+
+  it.each([
+    [2, 1, 'in 1 of them'],
+    [3, 2, 'in 2 of them'],
+    [2, 2, 'in each of them'],
+  ])(
+    'counts %i scanned subscriptions with %i readable only in part',
+    async (scanned, partial, where) => {
+      const partialScans = [
+        partialScan('11111111-2222-3333-4444-555555555555', 'Contoso prod'),
+        partialScan('66666666-7777-8888-9999-000000000000', null),
+      ].slice(0, partial)
+      api.listSuggestedModelEndpoints.mockResolvedValue(
+        suggestionView({
+          suggestions: [subscriptionSuggestion()],
+          scanStatus: 'scanned',
+          subscriptionsScanned: scanned,
+          partialScans,
+        }),
+      )
+
+      renderPage()
+
+      expect(
+        await screen.findByText(
+          `Scanned ${scanned} subscriptions. MOSAIC can read only some resources ${where}, so ` +
+            "any Azure AI resources it can't read are missing from this list.",
+        ),
+      ).toBeVisible()
+      // What MOSAIC could read is still offered.
+      expect(screen.getByRole('button', { name: 'Register' })).toBeVisible()
+      const heading = screen.getByRole('heading', {
+        name:
+          partial === 1
+            ? 'MOSAIC can read only part of a subscription'
+            : `MOSAIC can read only part of ${partial} subscriptions`,
+      })
+      const card = heading.closest('.fui-Card') as HTMLElement
+      expect(
+        within(card)
+          .getAllByText(/az role assignment create/)
+          .map((command) => command.textContent),
+      ).toEqual(partialScans.map((scan) => scan.remediation?.command))
+      expect(within(card).getAllByRole('button', { name: 'Copy command' })).toHaveLength(
+        partial,
+      )
+      // Said once for the card, however many subscriptions it lists.
+      expect(within(card).getAllByText(SCAN_ROLE_DELAY)).toHaveLength(1)
+      // A subscription without a display name is named by its ID.
+      if (partial === 2) {
+        expect(within(card).getByText('66666666-7777-8888-9999-000000000000')).toBeVisible()
+      }
+    },
+  )
 
   it('says nothing about subscriptions when the scan is not configured', async () => {
     api.listSuggestedModelEndpoints.mockResolvedValue(
