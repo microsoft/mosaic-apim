@@ -13,6 +13,14 @@ Fluent UI, React Router, TanStack Query, MSAL, and runtime browser configuration
 Sample and local-preview panels are labeled in the UI. They never replace a failed API response or
 claim that Azure resources were changed.
 
+## Access
+
+In Entra mode the console asks the API which MOSAIC role the caller holds, through
+`GET /api/v1/console/me`, before it renders anything. It shows the console only for the `Admin`
+role. A caller with only `User`, or with no MOSAIC role, sees a single page that explains why and
+offers Sign out; if the check fails, the page offers Try again instead of the console. Local mode
+skips the check. Each page keeps its own handling of a 403 response.
+
 ## Local commands
 
 ```powershell

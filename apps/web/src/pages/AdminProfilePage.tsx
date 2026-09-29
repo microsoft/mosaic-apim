@@ -9,6 +9,7 @@ import {
 } from '@fluentui/react-components'
 import { useMemo } from 'react'
 import { PageHeader, PreviewNotice } from '../components/PageHeader'
+import { initialsFor } from '../initials'
 import { runtimeConfig } from '../runtime-config'
 import styles from './AdminProfilePage.module.css'
 
@@ -54,15 +55,6 @@ const sampleRecentActivity = [
     detail: 'Preview-only access metadata validation. No secret was generated.',
   },
 ]
-
-function initialsFor(name: string): string {
-  return name
-    .split(/\s+/)
-    .map((part) => part[0] ?? '')
-    .join('')
-    .slice(0, 2)
-    .toUpperCase()
-}
 
 export function AdminProfilePage() {
   const { instance, accounts } = useMsal()

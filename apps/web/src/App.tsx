@@ -41,6 +41,8 @@ import {
   useNavigate,
 } from 'react-router-dom'
 import { AuthGate } from './auth'
+import { ConsoleAccessGate } from './console-access'
+import { initialsFor } from './initials'
 import { AdminProfilePage } from './pages/AdminProfilePage'
 import { AnalyticsPage } from './pages/AnalyticsPage'
 import { DashboardPage } from './pages/DashboardPage'
@@ -106,16 +108,7 @@ function AdminShell() {
   const [searchQuery, setSearchQuery] = useState('')
   const [searchMessage, setSearchMessage] = useState('')
   const accountName = accounts[0]?.name ?? 'MOSAIC administrator'
-  const initials = useMemo(
-    () =>
-      accountName
-        .split(/\s+/)
-        .map((part) => part[0])
-        .join('')
-        .slice(0, 2)
-        .toUpperCase(),
-    [accountName],
-  )
+  const initials = useMemo(() => initialsFor(accountName), [accountName])
 
   function submitSearch(event: FormEvent) {
     event.preventDefault()
@@ -165,7 +158,8 @@ function AdminShell() {
             <span className="avatar">{initials}</span>
             <span>
               <strong>{accountName}</strong>
-              <small>{runtimeConfig.authMode === 'entra' ? 'Global Admin' : 'Local mode'}</small>
+              {/* In Entra mode ConsoleAccessGate renders the shell only once the API confirms the Admin role. */}
+              <small>{runtimeConfig.authMode === 'entra' ? 'MOSAIC Admin' : 'Local mode'}</small>
             </span>
           </button>
         </nav>
@@ -276,27 +270,29 @@ export default function App() {
   return (
     <MosaicThemeProvider>
       <AuthGate>
-        <Routes>
-          <Route element={<AdminShell />}>
-            <Route index element={<Navigate to="/dashboard" replace />} />
-            <Route path="/dashboard" element={<DashboardPage />} />
-            <Route path="/gateways" element={<GatewaysPage />} />
-            <Route path="/gateways/:gatewayId" element={<GatewayDetailPage />} />
-            <Route path="/models" element={<ModelsPage />} />
-            <Route path="/mcps" element={<McpsPage />} />
-            <Route path="/identity" element={<IdentityPage />} />
-            <Route path="/principals" element={<Navigate to="/identity?tab=users" replace />} />
-            <Route path="/groups" element={<Navigate to="/identity?tab=groups" replace />} />
-            <Route path="/entitlements" element={<EntitlementsPage />} />
-            <Route path="/policies" element={<PoliciesPage />} />
-            <Route path="/analytics" element={<AnalyticsPage />} />
-            <Route path="/usage" element={<Navigate to="/analytics" replace />} />
-            <Route path="/settings" element={<SettingsPage />} />
-            <Route path="/support" element={<SupportPage />} />
-            <Route path="/profile" element={<AdminProfilePage />} />
-            <Route path="*" element={<Navigate to="/dashboard" replace />} />
-          </Route>
-        </Routes>
+        <ConsoleAccessGate>
+          <Routes>
+            <Route element={<AdminShell />}>
+              <Route index element={<Navigate to="/dashboard" replace />} />
+              <Route path="/dashboard" element={<DashboardPage />} />
+              <Route path="/gateways" element={<GatewaysPage />} />
+              <Route path="/gateways/:gatewayId" element={<GatewayDetailPage />} />
+              <Route path="/models" element={<ModelsPage />} />
+              <Route path="/mcps" element={<McpsPage />} />
+              <Route path="/identity" element={<IdentityPage />} />
+              <Route path="/principals" element={<Navigate to="/identity?tab=users" replace />} />
+              <Route path="/groups" element={<Navigate to="/identity?tab=groups" replace />} />
+              <Route path="/entitlements" element={<EntitlementsPage />} />
+              <Route path="/policies" element={<PoliciesPage />} />
+              <Route path="/analytics" element={<AnalyticsPage />} />
+              <Route path="/usage" element={<Navigate to="/analytics" replace />} />
+              <Route path="/settings" element={<SettingsPage />} />
+              <Route path="/support" element={<SupportPage />} />
+              <Route path="/profile" element={<AdminProfilePage />} />
+              <Route path="*" element={<Navigate to="/dashboard" replace />} />
+            </Route>
+          </Routes>
+        </ConsoleAccessGate>
       </AuthGate>
     </MosaicThemeProvider>
   )
