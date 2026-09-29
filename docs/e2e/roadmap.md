@@ -87,6 +87,8 @@ tests and README or ADR updates wherever a decision changes.
 | G6 | Only if Grok or Llama fail on `/models/chat/completions` through APIM | Add OpenAI v1 routes | ⬜ conditional |
 | G7 | When MOSAIC's identity can see no subscriptions, discovery shows nothing at all: no suggestions, no unreadable subscriptions and no hint. Found live in Phase 3 | Say how many subscriptions were scanned. When there are none, or the list fails, show the Reader command for the subscriptions MOSAIC already knows about ([#17](https://github.com/microsoft/mosaic-apim/pull/17)) | ✅ merged |
 | G8 | Gateway runtime readiness can disagree with what the gateway can actually call. It accepts exactly one role, so a sufficient role such as the Cognitive Services User role it recommends before it can read the account is later reported as missing. It also checks a project-registered endpoint at the project scope, although published APIs call the parent resource, where a project-scoped grant doesn't apply | Judge readiness at the account the published API calls, and accept any role whose data actions cover the published operations. Recommend only roles the check accepts: Cognitive Services OpenAI User for Azure OpenAI, and Foundry User otherwise. A deny assignment, or disabled public access with no virtual network on the gateway, means "cannot invoke". Conditions MOSAIC can't evaluate mean "not confirmed". The endpoint's Access card shows its network, firewall and key settings. Readiness covers every API MOSAIC can publish from the endpoint, including Anthropic Messages on AI Services accounts ([#23](https://github.com/microsoft/mosaic-apim/pull/23)) | ✅ merged |
+| G9 | After a redeploy, an open browser kept running the previous console build. Both web apps' nginx serve `index.html`, the SPA routes and `/config.js` with no `Cache-Control`, so browsers cache them heuristically and load the old hashed bundle. Found live in Phase 3 | Revalidate the HTML, the SPA fallback and `/config.js` on every load. Cache the hashed `/assets/` files as immutable, and return 404 for a missing asset instead of the SPA page. Keep the security headers on every response | 🔄 in progress |
+| G10 | Discovery said "Scanned 1 subscription. Nothing new to register." while the subscription held 56 Azure AI accounts MOSAIC couldn't read. MOSAIC's roles were all on single resources, and ARM silently filters a subscription-wide list to what the caller can read, so the scan looked complete. Found live in Phase 3 | Check MOSAIC's own permissions at each scanned subscription. When it can read only part of one, say so and show the subscription Reader command. Also say, wherever MOSAIC asks for a role on its own identity, that Azure can take hours to apply it (O7) | 🔄 in progress |
 
 ## Phases
 
@@ -121,7 +123,7 @@ Each batch runs only after approval and is recorded in the change ledger.
   remediation commands the UI shows.
 - **Exit:** the ledger lists every change and its rollback command.
 
-### Phase 3: Live, admin imports endpoints (A2 to A6) 🔄 first half done; remediation ⏳ approval
+### Phase 3: Live, admin imports endpoints (A2 to A6) 🔄 remediation approved and under way
 
 - Paste AOAI A before MOSAIC can read anything. Record "cannot read" and the exact remediation
   command, run it, and check again. Then run the subscription-scope remediation so discovery
@@ -158,7 +160,21 @@ Progress, before any role was granted:
   subscription.
 - ⏳ Next: apply the remediation commands, then run A4 and A6 again, followed by A5 and A2.
 
-### Phase 4: Close product gaps ⏳ redeploy approval
+Progress on the new build (G7 and G8 deployed):
+
+- ✅ A4 and A6, before: with no role, the endpoint shows "MOSAIC cannot read this endpoint" and the
+  resource-scoped Reader command. The new **Endpoint settings** region reads "Not known yet. MOSAIC
+  cannot read this resource." The gateway row reads "not confirmed", says this is not a denial, and
+  recommends Foundry User on the account, noting that it's accepted for either kind until MOSAIC
+  can read the resource.
+- ⚠️ A2, before: discovery reads "Scanned 1 subscription. Nothing new to register." The
+  subscription holds 56 Azure AI accounts, but MOSAIC could read none of them (G10).
+- ✅ Reader granted to MOSAIC on AOAI A (2a), exactly as the UI's command says, and then on the
+  subscription (2b).
+- ⏳ A4, after: MOSAIC still can't read AOAI A, because the new role hasn't reached ARM for its
+  managed identity (O7). **Check access** runs again periodically until it does.
+
+### Phase 4: Close product gaps ✅
 
 - ✅ Every gap PR is reviewed and merged: the Entra fix, G1, G2, G3, G4, G5, G7 and G8
   ([#23](https://github.com/microsoft/mosaic-apim/pull/23)) are on `main`. G8 requires every
@@ -175,9 +191,22 @@ Progress, before any role was granted:
     on placeholders.
   - What-if can't see app settings. Before approving, check that every live app setting name is
     still in the template, because provisioning replaces the whole list.
-  - ✅ Done so far: the environment is rebuilt, and a preview plus a full what-if against `main`
-    show no creates or deletes. The preview ran again on the final `main`, after G8 merged, with
-    the same result. The redeploy now waits only for approval.
+  - ✅ The environment is rebuilt, and a preview plus a full what-if against `main` show no
+    creates or deletes. The preview ran again on the final `main`, after G8 merged, with the
+    same result.
+  - ✅ Deployed `main` (`ada6210`) with `azd up` after approval. The hooks created G4's model
+    client and its tenant-wide grant, and set its client ID on the API. The API, web and portal
+    images were replaced together, and `/healthz` and `/readyz` pass.
+  - ✅ Smoke specs S1, S2 and A0 pass on the new build. A0 signs in without any prompt through the
+    persona's saved Entra session. A1, P0 and P1 wait for the persona profiles that Phases 6 and 7
+    create.
+  - The build context is the repository root, so `.dockerignore` excludes `e2e/`. Its local
+    manifest and test results hold tenant details that must never reach an image.
+  - An azd environment rebuilt from live values needs `MOSAIC_PYTHON_INDEX_URL` set, as the README
+    says. Left empty, the build argument overrides the Dockerfile's default package index.
+  - Not in this deploy: the dialog fix for O4 ([#25](https://github.com/microsoft/mosaic-apim/pull/25),
+    still open) and G9. Both change only the web and portal apps, so once merged they go out
+    together in a web and portal deploy.
 - **Exit:** the deployed build contains G1 to G5, G7 and G8, and the smoke specs pass.
 
 ### Phase 5: Live, admin publishes (A7 to A9) ⬜
@@ -329,6 +358,9 @@ be confirmed, or fixed, once the journeys that exercise them have run.
 | O2 | A rejected duplicate registration appears under the generic title "Unable to load data". The Identity page gets this right with "Unable to add principal" | Use a title that fits a failed registration |
 | O3 | The console's key reveal (`EntitlementConnectionDialog`) shows the key in an element labelled "Revealed primary key" or "Revealed secondary key", with no `data-secret` marker. The harness masks it by that label | Add `data-secret` to the revealed value when the component is next changed, so any tooling can find it |
 | O4 | Opening **Review model access** from the Models or Entitlements page left keyboard focus on the page, not in the dialog. The dialog first rendered its opening step and then switched to the review in an effect, which removed the control that had focus. The same dialog also showed its first step while it closed, and an apply that finished after it closed made the next **Publish a model** open on "Step 4 of 4". Found while stabilizing the web tests ([#24](https://github.com/microsoft/mosaic-apim/pull/24)), not in a live run | Fixed in [#25](https://github.com/microsoft/mosaic-apim/pull/25). Until that's deployed, let each apply finish before closing the dialog in A8. Once it's deployed, A11, A13 and A14 confirm that focus starts in the review |
+| O5 | After the redeploy, each endpoint kept the readiness verdict the previous build had saved, until someone ran **Check access** again. The Foundry project still recommended Foundry User at the project scope, which G8 reports as too narrow | Run **Check access** on every endpoint after a deploy that changes the readiness rules. The product could record which rules produced a verdict and flag older ones as out of date |
+| O6 | The harness's unattended sign-in gave up while silent single sign-on was still redirecting. It took the first sight of the Entra sign-in page to mean a password, MFA or consent was needed | Fixed in the harness. It gives single sign-on 10 seconds to finish before it asks for a person, and still fails at once on an Entra `AADSTS` error |
+| O7 | After Reader was granted to MOSAIC's managed identity on an account, **Check access** kept failing: ARM returned 403 to MOSAIC's read for more than 15 minutes, and restarting the API didn't help. The assignment was listed at once, and no deny assignment applied. Microsoft documents the cause: ARM sees a role change once the caller's token is refreshed, but a managed identity's token is cached for about 24 hours and can't be refreshed on demand | Grant roles to managed identities well before a run needs them, including the gateway's in A6. Record how long each grant took to apply. G10 adds this caveat to the UI |
 
 The Phase 3 check on whether the gateway role recommendation narrows once the account kind is
 known led to G8: it does narrow, and the check then rejects the broader role it recommended
@@ -348,7 +380,10 @@ before.
 - **Sign-in friction.** Conditional Access and MFA are handled by a person in persistent profiles.
   A guest whose home tenant requires a managed browser can switch that persona to Edge.
 - **Propagation delays.** RBAC, Entra consent and APIM policy all take time to apply, so journeys
-  poll with explicit timeouts instead of fixed sleeps.
+  poll with explicit timeouts instead of fixed sleeps. A role granted to a managed identity can
+  take hours, not minutes (O7): its token is cached for about 24 hours and can't be refreshed on
+  demand, and a restart doesn't help. So the gateway's roles (Batch 2c) go in as soon as the UI
+  shows them, well before Phase 8 needs them.
 - **Secret leakage.** Handled by the redaction and artifact rules above. Browser profiles hold
   refresh tokens, so they live under the user's local app data folder, never in the repository.
 - **Redeploying from a new checkout.** Rebuild the azd environment from live values and confirm
