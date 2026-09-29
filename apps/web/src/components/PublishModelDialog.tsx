@@ -403,7 +403,6 @@ export function PublishModelDialog({
         const freshPlan = await api.createPublishPlan(publication.id)
         setPlan(freshPlan)
         setInvalidPlan(false)
-        setReviewMessage('The earlier plan was rejected. Review the entire refreshed model plan before applying again.')
         setStep('review')
       } catch (refreshFailure) {
         setRefreshError(refreshFailure instanceof Error ? refreshFailure : new Error('Unable to refresh this plan. Close and review again.'))
@@ -462,6 +461,10 @@ export function PublishModelDialog({
     form.apiName.trim() && form.apiPath.trim() && (!tokenLimits || form.counterKeyExpression.trim()),
   )
   const missingAccessReview = Boolean(publication?.governedAccess && !plan?.accessSnapshot)
+  // Applying writes every step, unchanged ones included, so a plan that changes nothing can't be applied.
+  const nothingToApply = Boolean(
+    plan && plan.steps.length > 0 && plan.steps.every((planStep) => planStep.action === 'noChange'),
+  )
 
   return (
     <Dialog open={open} onOpenChange={(_, data) => !data.open && resetAndClose()}>
@@ -628,7 +631,18 @@ export function PublishModelDialog({
               <div className={styles.nameCell}>
                 {reviewMessage && (
                   <MessageBar intent="warning">
-                    <MessageBarBody>{reviewMessage}</MessageBarBody>
+                    <MessageBarBody>
+                      <MessageBarTitle>MOSAIC didn't apply the plan you reviewed</MessageBarTitle>
+                      {reviewMessage}
+                      {!invalidPlan && (
+                        <Text block>MOSAIC has already re-planned. Review the fresh plan below before you apply it.</Text>
+                      )}
+                    </MessageBarBody>
+                  </MessageBar>
+                )}
+                {nothingToApply && (
+                  <MessageBar intent="info">
+                    <MessageBarBody>API Management already matches this publication. Nothing to apply.</MessageBarBody>
                   </MessageBar>
                 )}
                 {plan.warnings.map((warning) => (
@@ -704,7 +718,7 @@ export function PublishModelDialog({
               </Button>
             )}
             {step === 'review' && (
-              <Button appearance="primary" disabled={apply.isPending || invalidPlan || missingAccessReview} onClick={() => apply.mutate()}>
+              <Button appearance="primary" disabled={apply.isPending || invalidPlan || missingAccessReview || nothingToApply} onClick={() => apply.mutate()}>
                 {apply.isPending ? 'Applying…' : 'Apply plan'}
               </Button>
             )}

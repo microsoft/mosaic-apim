@@ -656,6 +656,12 @@ it produces a persisted, deterministic `PublishPlan`; applying runs against that
 rejects one whose digest no longer matches, so an administrator cannot approve one set of changes
 and have another applied. A `PublishRun` records the outcome of every step.
 
+The admin console applies a plan only from its review, which lists the plan's steps and policy
+facets, and for governed access every target grant. In the Published models table, **Re-plan** makes
+a fresh plan and opens that review; it is also how a failed or rolled-back publication is retried.
+If MOSAIC refuses the reviewed plan, for example because the publication changed after it was
+planned, the review says why and shows a fresh plan in its place.
+
 Applying creates, in dependency order:
 
 | Order | Resource | Purpose |
@@ -858,9 +864,13 @@ The preview and the publish plan both return the same plain-language facets used
 policy, plus a content digest. Generated XML stays in process and is never serialised to a caller,
 so MOSAIC-authored markup never reaches a browser any more than customer-authored markup does.
 
-Nothing detects drift in the background yet. Re-planning a publication shows how API Management has
-diverged from it, which is the same gap [ADR 0005](docs/adr/0005-adopting-model-apis-and-mcp-servers.md)
-already acknowledged for imported records.
+Nothing detects drift in the background yet. **Re-plan** on the Models page makes a fresh plan and
+opens it for review, and nothing in API Management changes until the administrator chooses **Apply
+plan**. A plan compares what exists, not what it contains: a resource missing from API Management
+shows as Create, and one someone changed shows as Update, the same as one nobody touched, because
+applying replaces it with what the publication describes. This is the same gap
+[ADR 0005](docs/adr/0005-adopting-model-apis-and-mcp-servers.md) already acknowledged for imported
+records.
 
 ## Roadmap
 
