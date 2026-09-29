@@ -10,6 +10,7 @@ import {
   persistedText,
   revealedPrimary,
   revealedSecondary,
+  securityGroupConnection,
 } from '../test/connection'
 import type { KeyRevealResult, ModelConnection } from '../types'
 import { KeyReveal } from './KeyReveal'
@@ -373,6 +374,19 @@ describe('KeyReveal', () => {
     expect(screen.getByText(reason)).toBeVisible()
     expect(showPrimary()).toBeDisabled()
     expect(showSecondary()).toBeDisabled()
+    expect(api.revealMyEntitlementKey).not.toHaveBeenCalled()
+  })
+
+  it('does not offer key reveal for group grants without keys', () => {
+    renderKeyReveal({ ...securityGroupConnection, entitlementId: directGrant.id })
+
+    expect(
+      screen.getByText(
+        "Access granted to a group uses Microsoft Entra sign-in only, so there's no key. Sign in with your own account to get a token.",
+      ),
+    ).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Show primary key' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Show secondary key' })).not.toBeInTheDocument()
     expect(api.revealMyEntitlementKey).not.toHaveBeenCalled()
   })
 })

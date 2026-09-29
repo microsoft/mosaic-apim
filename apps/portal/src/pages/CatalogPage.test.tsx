@@ -75,4 +75,13 @@ describe('CatalogPage', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: 'Withdraw' })).toBeEnabled())
     expect(screen.queryByRole('button', { name: 'Request access' })).not.toBeInTheDocument()
   })
+
+  it('labels entitled MCP catalog entries as recorded only', async () => {
+    renderPage([{ ...catalogEntry, entitled: true }], [])
+
+    expect(await screen.findByText('Weather tools')).toBeVisible()
+    expect(screen.getByText('Already entitled')).toBeVisible()
+    expect(screen.getByText('Recorded, not yet enforced')).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Request access' })).not.toBeInTheDocument()
+  })
 })

@@ -564,7 +564,7 @@ async def test_portal_and_credential_routes_share_the_live_entitlement_service(
         audit.model_copy(update={"id": new_id("audit")}),
     )
     principal = client.post(
-        "/api/v1/principals", json={"objectId": "local-admin", "kind": "user"}
+        "/api/v1/principals", json={"objectId": USER, "kind": "user"}
     )
     assert principal.status_code == 201
     grant = client.post(
@@ -576,7 +576,7 @@ async def test_portal_and_credential_routes_share_the_live_entitlement_service(
     )
     assert grant.status_code == 201
 
-    client.app.state.authenticator = Caller("local-admin")
+    client.app.state.authenticator = Caller(USER)
     portal = client.get("/api/v1/portal/entitlements")
     current_user = client.get("/api/v1/me/entitlements")
     assert portal.status_code == current_user.status_code == 200

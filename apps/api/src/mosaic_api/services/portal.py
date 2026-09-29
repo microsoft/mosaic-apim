@@ -56,10 +56,13 @@ class PortalService:
             display_label=principal.label if principal else None,
             entitlement_count=len(entitlements),
             pending_request_count=len(pending),
+            groups_overage=actor.groups_overage,
         )
 
     async def my_entitlements(self, actor: Actor) -> list[ResolvedEntitlement]:
-        return await self._entitlements.resolve_for_object_id(actor, actor.object_id)
+        return await self._entitlements.resolve_for_object_id(
+            actor, actor.object_id, group_object_ids=actor.group_ids
+        )
 
     async def my_access_requests(self, actor: Actor) -> list[AccessRequest]:
         # Scoped here rather than trusting a caller-supplied filter: this is the only thing

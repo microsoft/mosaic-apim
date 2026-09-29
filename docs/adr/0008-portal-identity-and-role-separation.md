@@ -92,3 +92,11 @@ reruns converge rather than duplicate.
   available only in local and test environments.
 - The portal's deployed redirect URI is added once the portal web app exists. Until then the
   registration keeps only its localhost redirects; the registration itself is never skipped.
+
+## Amendment 2026-09-29: Portal group-claim awareness
+
+[ADR 0014](0014-agent-identities-and-security-group-grants.md) adds Entra security-group grants.
+The portal resolves the signed-in caller from the validated token only; it still never accepts a
+subject or requester parameter. The current-user APIs read the caller's `groups` claim to show
+access that arrives through an Entra security group, and the portal reports group overage when the
+token says the group list was omitted.

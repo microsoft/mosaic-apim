@@ -84,6 +84,30 @@ class UpstreamConflictError(DomainError):
     code = "gateway_precondition_failed"
 
 
+class DirectoryDisabledError(DomainError):
+    """This deployment turned directory lookup off, so object IDs are entered by hand."""
+
+    status_code = 409
+    code = "directory_disabled"
+
+
+class DirectoryForbiddenError(DomainError):
+    """MOSAIC's identity lacks the Microsoft Graph permission a directory read needs.
+
+    The message names the missing application permission, so an administrator can grant it.
+    """
+
+    status_code = 403
+    code = "directory_forbidden"
+
+
+class DirectoryError(DomainError):
+    """Microsoft Graph failed or couldn't be reached for a reason MOSAIC can't resolve."""
+
+    status_code = 502
+    code = "directory_unavailable"
+
+
 class ErrorBody(BaseModel):
     model_config = ConfigDict(serialize_by_alias=True)
 

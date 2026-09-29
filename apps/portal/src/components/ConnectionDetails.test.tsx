@@ -18,6 +18,8 @@ import {
   persistedText,
   responsesUrl,
   revealedPrimary,
+  securityGroupConnection,
+  securityGroupResolved,
 } from '../test/connection'
 import type { KeyRevealResult, ModelConnection, ResolvedEntitlement } from '../types'
 import { ConnectionDetails } from './ConnectionDetails'
@@ -356,6 +358,41 @@ describe('ConnectionDetails', () => {
     expect(screen.getByText(/You have this access through a group/)).toBeVisible()
     expect(screen.queryByRole('button', { name: 'Show primary key' })).not.toBeInTheDocument()
     expect(api.getMyEntitlementConnection).not.toHaveBeenCalled()
+  })
+
+  it('loads security-group grant connection details with Entra-only authentication', async () => {
+    const user = userEvent.setup()
+    renderDetails(securityGroupResolved)
+    await openDetails(user, securityGroupConnection)
+
+    const authentication = section('Authentication')
+    expect(fact(authentication, 'Subscription key')).toHaveTextContent(/^Not accepted$/)
+    expect(fact(authentication, 'Microsoft Entra ID token')).toHaveTextContent(/^Accepted$/)
+    expect(fact(authentication, 'Client ID')).toHaveTextContent(new RegExp(`^${modelClientId}$`))
+    expect(fact(authentication, 'Scope')).toHaveTextContent(securityGroupConnection.entraScope!)
+    expect(
+      screen.getByText(
+        "Access granted to a group uses Microsoft Entra sign-in only, so there's no key. Sign in with your own account to get a token.",
+      ),
+    ).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Show primary key' })).not.toBeInTheDocument()
+    expect(sampleHeadings()).toEqual(['Get a token (Python)', 'curl (bash)', 'Python'])
+    expect(samples().join('\n')).toContain('MOSAIC_ACCESS_TOKEN')
+    expect(samples().join('\n')).not.toContain('MOSAIC_API_KEY')
+    expect(api.getMyEntitlementConnection).toHaveBeenCalledExactlyOnceWith(securityGroupResolved.entitlement.id)
+    expect(api.revealMyEntitlementKey).not.toHaveBeenCalled()
+  })
+
+  it('shows the collapsed agent and app note for security-group grants', async () => {
+    const user = userEvent.setup()
+    renderDetails(securityGroupResolved)
+    await openDetails(user, securityGroupConnection)
+
+    const note = screen.getByText('Agents and apps in this group')
+    expect(note).toBeVisible()
+    expect(note.closest('details')).not.toHaveAttribute('open')
+    expect(screen.getByText(securityGroupConnection.entraApplicationScope!)).toBeInTheDocument()
+    expect(screen.getByText(securityGroupConnection.requiredAppRole!)).toBeInTheDocument()
   })
 
   it('builds key samples from placeholders', async () => {

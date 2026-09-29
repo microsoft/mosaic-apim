@@ -104,6 +104,38 @@ describe('useMosaicApi', () => {
     expect(JSON.parse(fetchMock.mock.calls[5][1].body)).toEqual({
       runId: 'run_1', confirmQuiesced: false,
     })
+
+  })
+
+  it('calls the directory and overlap endpoints with the contracted query strings', async () => {
+    const fetchMock = vi.fn().mockImplementation(async (url: string) => new Response(
+      url.includes('/directory/status')
+        ? JSON.stringify({ lookupEnabled: true, groupClaimsEnabled: true })
+        : url.includes('/directory/search')
+          ? JSON.stringify([])
+          : url.includes('/directory/objects')
+            ? JSON.stringify({ objectId: 'object-1', kind: 'user' })
+            : url.includes('/members')
+              ? JSON.stringify({ groupObjectId: 'group-object', members: [], truncated: false })
+              : JSON.stringify({ overlaps: [], membershipChecked: true, skipped: [], generatedAt: '2026-09-01T12:00:00Z' }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
+    ))
+    vi.stubGlobal('fetch', fetchMock)
+    const { result } = renderHook(() => useMosaicApi())
+
+    await result.current.getDirectoryStatus()
+    await result.current.searchDirectory('agent', 'Ada Agent', 10)
+    await result.current.getDirectoryObject('object-1')
+    await result.current.listPrincipalMembers('principal-group', 50)
+    await result.current.getGrantOverlaps({ resource: 'modelApi_1' })
+
+    expect(fetchMock.mock.calls.map(([url]) => String(url).replace(/^https?:\/\/[^/]+/, ''))).toEqual([
+      '/api/v1/directory/status',
+      '/api/v1/directory/search?kind=agent&q=Ada%20Agent&limit=10',
+      '/api/v1/directory/objects/object-1',
+      '/api/v1/principals/principal-group/members?limit=50',
+      '/api/v1/entitlements/overlaps?resource=modelApi_1',
+    ])
   })
 
   it('sends only the management mode when switching a gateway, and surfaces a refusal', async () => {

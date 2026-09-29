@@ -7,6 +7,7 @@ script does not provision resources, rotate keys, or change grants/authenticatio
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
 import sys
@@ -35,6 +36,10 @@ def credential(name: str) -> str:
     if not value:
         raise VerificationFailed(f"Set {name} before running live verification")
     return value
+
+
+def bearer(token: str) -> str:
+    return "Bearer " + token
 
 
 def expect(response: httpx.Response, codes: set[int], label: str) -> None:
@@ -71,6 +76,66 @@ def model_url(connection: dict[str, Any], expected_origin: str, api_version: str
                 raise VerificationFailed("The model operation changed the approved gateway origin")
             return str(httpx.URL(url).copy_add_param("api-version", api_version))
     raise VerificationFailed("The publication does not expose a chat-completions operation")
+
+
+def decode_token_payload(token: str) -> dict[str, Any]:
+    parts = token.split(".")
+    if len(parts) < 2:
+        raise VerificationFailed("Runtime token is not a JWT")
+    payload = parts[1] + "=" * (-len(parts[1]) % 4)
+    try:
+        decoded = base64.urlsafe_b64decode(payload.encode("ascii"))
+        parsed = json.loads(decoded)
+    except (ValueError, UnicodeDecodeError):
+        raise VerificationFailed("Runtime token payload could not be decoded") from None
+    if not isinstance(parsed, dict):
+        raise VerificationFailed("Runtime token payload was not an object")
+    return parsed
+
+
+def warn_group_claim_diagnostics(token: str) -> None:
+    payload = decode_token_payload(token)
+    claim_names = payload.get("_claim_names")
+    groups = payload.get("groups")
+    overage = (
+        (isinstance(claim_names, dict) and "groups" in claim_names)
+        or payload.get("hasgroups") is True
+        or "groups:src1" in payload
+    )
+    if not isinstance(groups, list) or not groups:
+        print(
+            "WARN: group member runtime token has no groups claim; "
+            "security-group grants cannot match without it.",
+            file=sys.stderr,
+        )
+    if overage:
+        print(
+            "WARN: group member runtime token signals group overage; "
+            "use a direct grant for this caller.",
+            file=sys.stderr,
+        )
+
+
+def model_payload(connection: dict[str, Any]) -> dict[str, Any]:
+    deployment = connection.get("deploymentName")
+    if not isinstance(deployment, str) or not deployment:
+        raise VerificationFailed("Connection metadata has no model deployment name")
+    payload = {
+        "model": deployment,
+        "messages": [{"role": "user", "content": "Reply with OK."}],
+        "max_completion_tokens": 8,
+        "stream": False,
+    }
+    custom_payload = os.environ.get("MOSAIC_SMOKE_PAYLOAD")
+    if custom_payload:
+        try:
+            parsed_payload = json.loads(custom_payload)
+        except ValueError:
+            raise VerificationFailed("MOSAIC_SMOKE_PAYLOAD must be valid JSON") from None
+        if not isinstance(parsed_payload, dict):
+            raise VerificationFailed("MOSAIC_SMOKE_PAYLOAD must be a JSON object")
+        payload = parsed_payload
+    return payload
 
 
 def reveal(
@@ -176,6 +241,86 @@ def verify_grant(
         print(f"PASS: {label} primary key, Entra, and secondary key share the request budget")
 
 
+def verify_agent_entitlement(
+    client: httpx.Client,
+    *,
+    base: str,
+    entitlement_id: str,
+    control_token: str,
+    runtime_token: str,
+    expected_origin: str,
+    api_version: str,
+) -> None:
+    route = f"entitlements/{entitlement_id}"
+    response = client.get(
+        f"{base}/{route}/connection", headers={"Authorization": bearer(control_token)}
+    )
+    expect(response, {200}, "Agent connection details")
+    connection = object_body(response, "Agent connection details")
+    if connection.get("principalKind") != "agentIdentity":
+        raise VerificationFailed("Agent connection did not report principalKind agentIdentity")
+    scope = connection.get("entraScope")
+    if not isinstance(scope, str) or not scope.endswith("/.default"):
+        raise VerificationFailed("Agent connection did not report a .default runtime scope")
+    if connection.get("requiredAppRole") != "Models.Invoke.Application":
+        raise VerificationFailed("Agent connection did not report the required app role")
+    methods = connection.get("appliedMethods") or {}
+    if not methods.get("entraEnabled"):
+        raise VerificationFailed("Agent grant must have Entra tokens applied")
+    runtime = connection.get("runtime") or {}
+    if runtime.get("status") != "applied":
+        raise VerificationFailed("Agent access must be applied with no pending changes")
+
+    called = client.post(
+        model_url(connection, expected_origin, api_version),
+        headers={"Authorization": bearer(runtime_token)},
+        json=model_payload(connection),
+    )
+    expect(called, {200}, "Agent model call")
+    choices = object_body(called, "Agent model response").get("choices")
+    if not isinstance(choices, list) or not choices:
+        raise VerificationFailed("Agent token did not return a chat-completions response")
+    print("PASS: Agent identity token reached the model")
+
+
+def verify_group_entitlement(
+    client: httpx.Client,
+    *,
+    base: str,
+    entitlement_id: str,
+    control_token: str,
+    runtime_token: str,
+    expected_origin: str,
+    api_version: str,
+) -> None:
+    warn_group_claim_diagnostics(runtime_token)
+    route = f"entitlements/{entitlement_id}"
+    response = client.get(
+        f"{base}/{route}/connection", headers={"Authorization": bearer(control_token)}
+    )
+    expect(response, {200}, "Group connection details")
+    connection = object_body(response, "Group connection details")
+    if connection.get("keysAvailable") is not False:
+        raise VerificationFailed("Group connection must report keysAvailable false")
+    reveal_response = client.post(
+        f"{base}/{route}/keys/reveal",
+        headers={"Authorization": bearer(control_token)},
+        json={"slot": "primary"},
+    )
+    expect(reveal_response, {409}, "Group key reveal refusal")
+
+    called = client.post(
+        model_url(connection, expected_origin, api_version),
+        headers={"Authorization": bearer(runtime_token)},
+        json=model_payload(connection),
+    )
+    expect(called, {200}, "Group member model call")
+    choices = object_body(called, "Group member model response").get("choices")
+    if not isinstance(choices, list) or not choices:
+        raise VerificationFailed("Group member token did not return a chat-completions response")
+    print("PASS: Security-group member token reached the model")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--api-base-url", required=True, help="MOSAIC API origin, without /api/v1")
@@ -184,6 +329,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--user-entitlement", required=True)
     parser.add_argument("--application-entitlement", required=True)
+    parser.add_argument("--agent-entitlement")
+    parser.add_argument("--group-entitlement")
     parser.add_argument(
         "--api-version", required=True, help="A version supported by the deployment"
     )
@@ -201,7 +348,22 @@ def main(argv: list[str] | None = None) -> int:
         admin_token = credential("MOSAIC_SMOKE_ADMIN_CONTROL_TOKEN")
         user_runtime = credential("MOSAIC_SMOKE_USER_RUNTIME_TOKEN")
         app_runtime = credential("MOSAIC_SMOKE_APPLICATION_RUNTIME_TOKEN")
-        for identifier in (args.user_entitlement, args.application_entitlement):
+        agent_runtime = (
+            credential("MOSAIC_SMOKE_AGENT_RUNTIME_TOKEN") if args.agent_entitlement else None
+        )
+        group_member_runtime = (
+            credential("MOSAIC_SMOKE_GROUP_MEMBER_RUNTIME_TOKEN")
+            if args.group_entitlement
+            else None
+        )
+        for identifier in (
+            args.user_entitlement,
+            args.application_entitlement,
+            args.agent_entitlement,
+            args.group_entitlement,
+        ):
+            if identifier is None:
+                continue
             if not identifier or any(char in identifier for char in "/\\?#%"):
                 raise VerificationFailed("Supply an entitlement identifier, not a URL")
         base = f"{args.api_base_url.rstrip('/')}/api/v1"
@@ -225,6 +387,26 @@ def main(argv: list[str] | None = None) -> int:
                 expected_origin=origin, api_version=args.api_version, label="Application",
                 prove_budget=args.prove_shared_budget,
             )
+            if args.agent_entitlement and agent_runtime:
+                verify_agent_entitlement(
+                    client,
+                    base=base,
+                    entitlement_id=args.agent_entitlement,
+                    control_token=admin_token,
+                    runtime_token=agent_runtime,
+                    expected_origin=origin,
+                    api_version=args.api_version,
+                )
+            if args.group_entitlement and group_member_runtime:
+                verify_group_entitlement(
+                    client,
+                    base=base,
+                    entitlement_id=args.group_entitlement,
+                    control_token=admin_token,
+                    runtime_token=group_member_runtime,
+                    expected_origin=origin,
+                    api_version=args.api_version,
+                )
     except (VerificationFailed, httpx.HTTPError) as error:
         # HTTP exceptions can carry request headers or URLs; never print their representation.
         message = str(error) if isinstance(error, VerificationFailed) else "HTTP transport failure"

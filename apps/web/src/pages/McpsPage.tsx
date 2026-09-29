@@ -732,6 +732,14 @@ export function McpsPage() {
         source="live"
       />
 
+      <MessageBar intent="warning">
+        <MessageBarBody>
+          <MessageBarTitle>MCP grants are recorded, not yet enforced</MessageBarTitle>
+          You can record access for people, agents, applications, and security groups now. Gateway
+          enforcement for MCP grants comes in a later phase.
+        </MessageBarBody>
+      </MessageBar>
+
       {banner && (
         <MessageBar intent="success">
           <MessageBarBody>{banner}</MessageBarBody>

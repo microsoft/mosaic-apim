@@ -51,8 +51,8 @@ describe('DashboardPage', () => {
       </QueryClientProvider>,
     )
 
-    expect(await screen.findByText('registered users')).toBeVisible()
-    expect(screen.getByText('workload identities')).toBeVisible()
+    expect(await screen.findByText('people and agent users')).toBeVisible()
+    expect(screen.getByText('apps and agent identities')).toBeVisible()
     expect(screen.getByText('access groups')).toBeVisible()
     expect(screen.getByText('Live data')).toBeVisible()
     expect(screen.getAllByText('Sample data').length).toBeGreaterThan(1)

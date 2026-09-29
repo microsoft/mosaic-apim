@@ -47,6 +47,7 @@ export function runtimeStatusLabel(status: EntitlementRuntime['status']) {
 }
 
 export function describeRuntime(entitlement: Entitlement) {
+  if (entitlement.resource.kind === 'mcpServer') return 'Recorded, not yet enforced'
   if (entitlement.runtime) return runtimeStatusLabel(entitlement.runtime.status)
   return entitlement.enabled ? 'Recorded grant' : 'Disabled grant'
 }
@@ -69,10 +70,19 @@ export function formatNumber(value: number) {
 
 export function describeAttribution(resolved: ResolvedEntitlement) {
   if (resolved.via === 'direct') {
-    return 'Granted directly to you'
+    return null
   }
-  const groupName = resolved.viaGroupName ?? resolved.viaGroupId ?? 'an assigned group'
-  return `Granted through ${groupName}`
+  const groupName =
+    resolved.viaGroupName ??
+    resolved.viaGroupId ??
+    (resolved.entitlement.subject.kind === 'securityGroup' || resolved.entitlement.subject.kind === 'group'
+      ? resolved.entitlement.subject.id
+      : 'an assigned group')
+  return `Through ${groupName}`
+}
+
+export function isSecurityGroupGrant(resolved: ResolvedEntitlement) {
+  return resolved.via === 'securityGroup' || resolved.entitlement.subject.kind === 'securityGroup'
 }
 
 export function describeBinding(entitlement: Entitlement) {

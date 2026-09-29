@@ -17,8 +17,9 @@ import { flushSync } from 'react-dom'
 import { useLocation } from 'react-router-dom'
 import { useMosaicApi } from '../api'
 import { describeAccessMethods, describeLimits } from '../entitlement-limits'
+import { PRINCIPAL_KIND_LABELS } from '../labels'
 import { runtimeConfig } from '../runtime-config'
-import type { Entitlement, KeySlot } from '../types'
+import type { Entitlement, KeySlot, ModelConnection } from '../types'
 import { ErrorState, Loading } from './AsyncState'
 import { ModelAccessRecovery } from './ModelAccessRecovery'
 import styles from '../pages/EntitlementsPage.module.css'
@@ -47,6 +48,52 @@ export function EntitlementConnectionDialog({
   )
 }
 
+function PrincipalConnectionNotice({ info }: { info: ModelConnection }) {
+  if (!info.principalKind) return null
+  if (info.principalKind === 'agentIdentity') {
+    return (
+      <MessageBar intent="info">
+        <MessageBarBody>
+          Agent identity signs in as itself with its blueprint&apos;s credentials. Use client ID{' '}
+          {info.entraClientId ?? 'from the agent identity'} and scope{' '}
+          {info.entraScope ?? '.default'}; assign the{' '}
+          {info.requiredAppRole ?? 'required'} app role.
+        </MessageBarBody>
+      </MessageBar>
+    )
+  }
+  if (info.principalKind === 'agentUser') {
+    return (
+      <MessageBar intent="info">
+        <MessageBarBody>
+          The parent agent identity {info.entraClientId ?? 'client'} requests a delegated token for
+          this agent user with scope {info.entraScope ?? 'Models.Invoke'}.
+        </MessageBarBody>
+      </MessageBar>
+    )
+  }
+  if (info.principalKind === 'securityGroup') {
+    return (
+      <MessageBar intent="warning">
+        <MessageBarBody>
+          Members sign in as themselves. People use delegated scope{' '}
+          {info.entraScope ?? 'Models.Invoke'}; agents and applications use{' '}
+          {info.entraApplicationScope ?? '.default'} and need{' '}
+          {info.requiredAppRole ?? 'the required app role'} assigned to themselves. Keys are not
+          available, and limits apply to each member.
+        </MessageBarBody>
+      </MessageBar>
+    )
+  }
+  return (
+    <MessageBar intent="info">
+      <MessageBarBody>
+        Principal type: {PRINCIPAL_KIND_LABELS[info.principalKind]}.
+      </MessageBarBody>
+    </MessageBar>
+  )
+}
+
 function ConnectionSession({
   identity,
   entitlement,
@@ -71,7 +118,7 @@ function ConnectionSession({
   })
   const info = connection.data
   const eligible = Boolean(
-    !closed && !connection.isError && info
+    !closed && !connection.isError && info && info.keysAvailable !== false
     && entitlement.enabled && entitlement.subject.kind !== 'group'
     && entitlement.resource.kind === 'modelApi' && entitlement.binding?.source === 'orchestrated'
     && entitlement.runtime?.status === 'applied' && entitlement.runtime.appliedMethods?.keysEnabled
@@ -93,7 +140,6 @@ function ConnectionSession({
     function clearBeforePageHide() {
       generation.current += 1
       controller.current?.abort()
-      // Remove the value before a full-page navigation can freeze this document in bfcache.
       flushSync(() => {
         setSecret(null)
         setClosed(true)
@@ -135,7 +181,6 @@ function ConnectionSession({
     setCopyMessage(null)
     setRevealing(true)
     try {
-      // Never place credential material in a query, mutation, shared cache, or persistent store.
       const result = await api.revealEntitlementKey(entitlement.id, slot, abort.signal)
       if (!mounted.current || generation.current !== request) return
       if (result.entitlementId !== entitlement.id || result.slot !== slot || !result.key
@@ -194,7 +239,12 @@ function ConnectionSession({
                   <div><dt>Last applied methods</dt><dd>{describeAccessMethods(info.appliedMethods)}</dd></div>
                   <div><dt>Model-runtime audience</dt><dd>{info.entraAudience ?? 'Not configured'}</dd></div>
                   <div><dt>Model-runtime scope</dt><dd>{info.entraScope ?? 'Not configured'}</dd></div>
+                  {info.entraClientId && <div><dt>Client ID</dt><dd>{info.entraClientId}</dd></div>}
+                  {info.entraApplicationScope && <div><dt>Application scope</dt><dd>{info.entraApplicationScope}</dd></div>}
+                  {info.requiredAppRole && <div><dt>Required app role</dt><dd>{info.requiredAppRole}</dd></div>}
+                  {info.viaGroupName && <div><dt>Security group</dt><dd>{info.viaGroupName}</dd></div>}
                 </dl>
+                <PrincipalConnectionNotice info={info} />
                 <Text size={200}>A MOSAIC control-plane token is not a model-runtime token. Entra consent and application permissions are configured separately.</Text>
                 {info.runtime?.error && (
                   <MessageBar intent="warning"><MessageBarBody>{info.runtime.error}</MessageBarBody></MessageBar>
@@ -219,8 +269,18 @@ function ConnectionSession({
                 )}
                 <Text weight="semibold">Last recorded limits</Text>
                 {describeLimits({ enforcement: info.grantLimits }, info.publicationLimits).map((limit) => <Text key={limit}>{limit}</Text>)}
-                <Text>Use one enabled credential. Examples contain placeholders, never your actual key:</Text>
-                <pre className={styles.secretValue}>{`${info.subscriptionHeader}: <YOUR_APIM_KEY>\n\nOR\n\nAuthorization: Bearer <MODEL_RUNTIME_TOKEN>`}</pre>
+                {info.keysAvailable === false ? (
+                  <MessageBar intent="warning">
+                    <MessageBarBody>
+                      Key authentication is not available for this grant. Use an Entra token.
+                    </MessageBarBody>
+                  </MessageBar>
+                ) : (
+                  <>
+                    <Text>Use one enabled credential. Examples contain placeholders, never your actual key:</Text>
+                    <pre className={styles.secretValue}>{`${info.subscriptionHeader}: <YOUR_APIM_KEY>\n\nEntra access token: <YOUR_ENTRA_TOKEN>`}</pre>
+                  </>
+                )}
               </>
             )}
             <Text>
@@ -229,10 +289,12 @@ function ConnectionSession({
               Sharing a key delegates this grant&apos;s access.
             </Text>
             {!eligible && <Text>Key reveal requires an enabled, applied direct grant with key authentication and a trusted orchestrated binding.</Text>}
-            <div className={styles.rowActions}>
-              <Button disabled={!eligible || revealing} onClick={() => void reveal('primary')}>Reveal primary key</Button>
-              <Button disabled={!eligible || revealing} onClick={() => void reveal('secondary')}>Reveal secondary key</Button>
-            </div>
+            {info?.keysAvailable !== false && (
+              <div className={styles.rowActions}>
+                <Button disabled={!eligible || revealing} onClick={() => void reveal('primary')}>Reveal primary key</Button>
+                <Button disabled={!eligible || revealing} onClick={() => void reveal('secondary')}>Reveal secondary key</Button>
+              </div>
+            )}
             {revealing && <Loading label="Retrieving the current key from APIM" />}
             {secret && eligible && (
               <div className={styles.cellStack}>

@@ -7,6 +7,7 @@ naming something MOSAIC does not govern is refused rather than stored.
 
 from collections.abc import Iterator
 from typing import Any
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 import pytest
 from fastapi import FastAPI
@@ -24,6 +25,13 @@ from mosaic_api.observed import ObservedApimUser, ObservedSubscription
 from mosaic_api.repositories import InMemoryGatewayRepository
 
 TENANT = "tenant-test"
+
+
+def _object_id(value: str) -> str:
+    try:
+        return str(UUID(value))
+    except ValueError:
+        return str(uuid5(NAMESPACE_URL, f"mosaic-test:{value}"))
 
 
 @pytest.fixture
@@ -84,6 +92,7 @@ async def _seed_mcp_server(repository: InMemoryGatewayRepository) -> McpServer:
 
 
 def _principal(client: TestClient, object_id: str, kind: str = "user") -> dict[str, Any]:
+    object_id = _object_id(object_id)
     response = client.post(
         "/api/v1/principals", json={"objectId": object_id, "kind": kind, "label": object_id}
     )
@@ -255,7 +264,10 @@ async def test_resolution_omits_disabled_grants(app_client: TestClient) -> None:
     resolved = app_client.get(
         "/api/v1/entitlements/resolve", params={"principalId": principal["id"]}
     )
-    assert resolved.json() == []
+    body = resolved.json()
+    assert len(body) == 1
+    assert body[0]["effective"] is False
+    assert body[0]["shadowedBy"] is None
 
 
 async def test_catalog_visibility_is_administrator_authored(app_client: TestClient) -> None:
@@ -278,7 +290,7 @@ async def test_access_request_lifecycle(app_client: TestClient) -> None:
     from mosaic_api.domain import AccessRequestCreate, EntitlementResource
     from mosaic_api.services.directory import Actor
 
-    actor = Actor(object_id="user-object-6", tenant_id=TENANT)
+    actor = Actor(object_id=_object_id("user-object-6"), tenant_id=TENANT)
     request = AccessRequestCreate(
         resource=EntitlementResource(kind="modelApi", id="modelApi_seed"),
         justification="Need chat completions for the support bot",
@@ -364,9 +376,13 @@ async def test_a_direct_grant_wins_over_a_group_grant_for_the_same_resource(
         "/api/v1/entitlements/resolve", params={"principalId": principal["id"]}
     ).json()
 
-    assert len(resolved) == 1, resolved
-    assert resolved[0]["via"] == "direct"
-    assert resolved[0]["entitlement"]["enforcement"]["tokens"]["tokensPerMinute"] == 100
+    assert len(resolved) == 2, resolved
+    direct = next(item for item in resolved if item["via"] == "direct")
+    group = next(item for item in resolved if item["via"] == "group")
+    assert direct["effective"] is True
+    assert direct["entitlement"]["enforcement"]["tokens"]["tokensPerMinute"] == 100
+    assert group["effective"] is False
+    assert group["shadowedBy"] == direct["entitlement"]["id"]
 
 
 async def test_binding_is_inferred_from_the_subscription_the_principal_owns(
@@ -389,7 +405,7 @@ async def test_binding_is_inferred_from_the_subscription_the_principal_owns(
                 gateway_id="gateway_seed",
                 snapshot_id=snapshot,
                 name="user-ada",
-                entra_object_id="entra-object-ada",
+                entra_object_id=principal["objectId"],
             ),
             ObservedSubscription(
                 id="observedSubscription_ada",

@@ -229,4 +229,52 @@ describe('EntitlementConnectionDialog', () => {
     expect(await screen.findByText('POST /chat/completions · chat')).toBeVisible()
     expect(screen.queryByText(/uses the Anthropic Messages API/)).not.toBeInTheDocument()
   })
+
+  it('explains agent identity connection requirements', async () => {
+    api.getEntitlementConnection.mockResolvedValue({
+      ...connectionInfo,
+      principalKind: 'agentIdentity',
+      entraClientId: 'agent-client-id',
+      entraScope: 'api://model-runtime/.default',
+      requiredAppRole: 'Models.Invoke.Application',
+    })
+    renderDialog()
+
+    expect(await screen.findByText(/Agent identity signs in as itself/)).toBeVisible()
+    expect(screen.getByText('agent-client-id')).toBeVisible()
+    expect(screen.getByText('api://model-runtime/.default')).toBeVisible()
+    expect(screen.getByText('Models.Invoke.Application')).toBeVisible()
+  })
+
+  it('explains agent user delegated tokens', async () => {
+    api.getEntitlementConnection.mockResolvedValue({
+      ...connectionInfo,
+      principalKind: 'agentUser',
+      entraClientId: 'parent-agent-client',
+      entraScope: 'api://model-runtime/Models.Invoke',
+    })
+    renderDialog()
+
+    expect(await screen.findByText(/parent agent identity parent-agent-client requests a delegated token/)).toBeVisible()
+  })
+
+  it('hides key reveal for security-group grants', async () => {
+    api.getEntitlementConnection.mockResolvedValue({
+      ...connectionInfo,
+      principalKind: 'securityGroup',
+      entraScope: 'api://model-runtime/Models.Invoke',
+      entraApplicationScope: 'api://model-runtime/.default',
+      requiredAppRole: 'Models.Invoke.Application',
+      keysAvailable: false,
+      viaGroupId: 'sg_1',
+      viaGroupName: 'Security readers',
+    })
+    renderDialog({ ...directGrant, subject: { kind: 'securityGroup', id: 'sg_1' } })
+
+    expect(await screen.findByText(/Members sign in as themselves/)).toBeVisible()
+    expect(screen.getByText(/Keys are not available/)).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Reveal primary key' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Reveal secondary key' })).not.toBeInTheDocument()
+    expect(api.revealEntitlementKey).not.toHaveBeenCalled()
+  })
 })

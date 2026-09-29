@@ -22,7 +22,11 @@ import {
   isClientError,
   operationUrl,
 } from '../connection-format'
-import { describeEnforcementLimits, describeTokenLimits } from '../entitlement-format'
+import {
+  describeEnforcementLimits,
+  describeTokenLimits,
+  isSecurityGroupGrant,
+} from '../entitlement-format'
 import { useFocusHandoff, useFocusHandoffSource, type FocusHandoff } from '../focus-handoff'
 import { runtimeConfig } from '../runtime-config'
 import type { Entitlement, ModelConnection, ResolvedEntitlement } from '../types'
@@ -32,7 +36,8 @@ import { KeyReveal } from './KeyReveal'
 export function ConnectionDetails({ resolved }: { resolved: ResolvedEntitlement }) {
   const [expanded, setExpanded] = useState(false)
   const panelId = useId()
-  const viaGroup = resolved.via === 'group' || resolved.entitlement.subject.kind === 'group'
+  const mosaicGroup = resolved.via === 'group' || resolved.entitlement.subject.kind === 'group'
+  const securityGroup = isSecurityGroupGrant(resolved)
 
   return (
     <div className="connection-details">
@@ -48,7 +53,11 @@ export function ConnectionDetails({ resolved }: { resolved: ResolvedEntitlement 
       </Button>
       {expanded && (
         <div id={panelId} className="connection-panel">
-          {viaGroup ? <GroupGrantNotice /> : <DirectGrantConnection entitlement={resolved.entitlement} />}
+          {mosaicGroup && !securityGroup ? (
+            <GroupGrantNotice />
+          ) : (
+            <DirectGrantConnection entitlement={resolved.entitlement} />
+          )}
         </div>
       )}
     </div>
@@ -108,6 +117,7 @@ function DirectGrantConnection({ entitlement }: { entitlement: Entitlement }) {
     info.runtime?.subscriptionName ?? '',
     String(info.appliedMethods?.keysEnabled),
     String(info.runtime?.appliedMethods?.keysEnabled),
+    String(info.keysAvailable),
   ].join('|')
 
   return (
@@ -198,10 +208,12 @@ function EndpointSection({ connection }: { connection: ModelConnection }) {
           <dt>Deployment</dt>
           <dd><code>{connection.deploymentName}</code></dd>
         </div>
-        <div>
-          <dt>Key header</dt>
-          <dd><code>{connection.subscriptionHeader}</code></dd>
-        </div>
+        {connection.keysAvailable !== false && (
+          <div>
+            <dt>Key header</dt>
+            <dd><code>{connection.subscriptionHeader}</code></dd>
+          </div>
+        )}
       </dl>
       <h4>Operations</h4>
       {connection.operations.length > 0 ? (
@@ -224,6 +236,8 @@ function EndpointSection({ connection }: { connection: ModelConnection }) {
 function AuthenticationSection({ connection }: { connection: ModelConnection }) {
   const headingId = useId()
   const methods = connection.appliedMethods
+  const keysAccepted = connection.keysAvailable === false ? false : methods?.keysEnabled
+  const groupGrant = connection.principalKind === 'securityGroup' || connection.keysAvailable === false
   return (
     <section className="connection-section" aria-labelledby={headingId}>
       <h3 id={headingId}>Authentication</h3>
@@ -231,7 +245,7 @@ function AuthenticationSection({ connection }: { connection: ModelConnection }) 
         <dl className="fact-list">
           <div>
             <dt>Subscription key</dt>
-            <dd>{methods.keysEnabled ? 'Accepted' : 'Not accepted'}</dd>
+            <dd>{keysAccepted ? 'Accepted' : 'Not accepted'}</dd>
           </div>
           <div>
             <dt>Microsoft Entra ID token</dt>
@@ -276,6 +290,29 @@ function AuthenticationSection({ connection }: { connection: ModelConnection }) 
               : 'Request an access token for the scope above.'}{' '}
             Send it as a bearer token; your portal sign-in is not a model token.
           </Text>
+          {groupGrant && (connection.entraApplicationScope || connection.requiredAppRole) && (
+            <details className="connection-note">
+              <summary>Agents and apps in this group</summary>
+              <Text as="p" size={200}>
+                Request the application scope
+                {connection.entraApplicationScope ? (
+                  <>
+                    {' '}<code>{connection.entraApplicationScope}</code>
+                  </>
+                ) : (
+                  ' configured for this model'
+                )}
+                {connection.requiredAppRole ? (
+                  <>
+                    {' '}and make sure <code>{connection.requiredAppRole}</code> is assigned to the
+                    agent or app itself.
+                  </>
+                ) : (
+                  ' and make sure the required app role is assigned to the agent or app itself.'
+                )}
+              </Text>
+            </details>
+          )}
           {!connection.entraClientId && (
             <Text as="p" size={200} className="connection-note">
               MOSAIC has no client ID for you to sign in with for this grant. Ask an administrator
@@ -293,6 +330,7 @@ function SamplesSection({ connection }: { connection: ModelConnection }) {
   const methods = connection.appliedMethods
   const samples = buildSamples(connection)
   const tokenSample = buildTokenSample(connection)
+  const keysAccepted = connection.keysAvailable === false ? false : methods?.keysEnabled
   const tokenBlock = tokenSample && (
     <>
       <h4>Get a token (Python)</h4>
@@ -331,7 +369,7 @@ function SamplesSection({ connection }: { connection: ModelConnection }) {
               adds the <code>anthropic-version</code> header when a request omits it. With an
               Anthropic SDK, use <code>{operationUrl(connection.endpoint, 'anthropic')}</code> as the
               base URL
-              {methods?.keysEnabled && (
+              {keysAccepted && (
                 <>
                   . The gateway removes <code>x-api-key</code>, so send a key in the{' '}
                   <code>{connection.subscriptionHeader}</code> header
@@ -339,7 +377,7 @@ function SamplesSection({ connection }: { connection: ModelConnection }) {
               )}
               {methods?.entraEnabled && (
                 <>
-                  {methods.keysEnabled ? ', or' : ' and'} pass a token as <code>auth_token</code>
+                  {keysAccepted ? ', or' : ' and'} pass a token as <code>auth_token</code>
                 </>
               )}
               .
@@ -378,6 +416,7 @@ function SamplesSection({ connection }: { connection: ModelConnection }) {
 function LimitsSection({ connection }: { connection: ModelConnection }) {
   const headingId = useId()
   const publicationLimits = describeTokenLimits(connection.publicationLimits)
+  const keySubject = connection.keysAvailable === false ? 'Entra tokens share' : 'Your primary key, secondary key, and Entra tokens share'
   return (
     <section className="connection-section" aria-labelledby={headingId}>
       <h3 id={headingId}>Limits</h3>
@@ -408,8 +447,9 @@ function LimitsSection({ connection }: { connection: ModelConnection }) {
         </div>
       </dl>
       <Text as="p" size={200} className="connection-note">
-        Your primary key, secondary key, and Entra tokens share this grant&apos;s limits.
+        {keySubject} this grant&apos;s limits.
         {connection.publicationLimits && ' Publication limits apply as well and are counted separately.'}
+        {connection.keysAvailable === false && ' Each person or app that uses this group grant is counted separately.'}
       </Text>
     </section>
   )

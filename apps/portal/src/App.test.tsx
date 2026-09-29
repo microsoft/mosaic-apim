@@ -68,6 +68,7 @@ describe('App', () => {
         displayLabel: 'Name (Team)',
         entitlementCount: 0,
         pendingRequestCount: 0,
+        groupsOverage: false,
       }),
       listEntitlements: async () => [],
     } as unknown as PortalApi

@@ -15,11 +15,14 @@ from mosaic_api.domain import (
     ModelAccessGrant,
     ModelConnection,
     Principal,
+    PrincipalKind,
     Publication,
     PublicationStatus,
     PublishedResourceKind,
+    grant_precedence_key,
     model_access_subscription_name,
     new_id,
+    subject_kind_for,
 )
 from mosaic_api.errors import ConflictError, DomainError, NotFoundError
 from mosaic_api.integrations.access_policy import governed_operations
@@ -34,6 +37,8 @@ from mosaic_api.services.entitlements import EntitlementService
 from mosaic_api.services.model_access import entitlement_intent_digest
 
 logger = structlog.get_logger()
+
+APPLICATION_ROLE = "Models.Invoke.Application"
 
 
 class CredentialReader(Protocol):
@@ -74,6 +79,8 @@ class PortalAccessService:
         principal = await self._directory.find_principal_by_object_id(
             actor.tenant_id, actor.object_id
         )
+        direct: list[Entitlement] = []
+        direct_resource_keys: set[tuple[str, str, str]] = set()
         if principal is None:
             matches = [
                 candidate
@@ -84,17 +91,71 @@ class PortalAccessService:
                 raise ConflictError(
                     "Multiple principals map to this identity; resolve the duplicates"
                 )
-            if not matches:
-                return []
-            principal = matches[0]
-        expected_kind = "user" if principal.kind == "user" else "application"
-        return [
+            if matches:
+                principal = matches[0]
+        if principal is not None:
+            expected_kind = subject_kind_for(principal.kind)
+            direct = [
+                entitlement
+                for entitlement in await self._entitlements.list_entitlements(
+                    actor, subject_id=principal.id
+                )
+                if entitlement.subject.kind == expected_kind
+            ]
+            direct_resource_keys = {
+                (
+                    str(entitlement.resource.kind),
+                    entitlement.resource.id,
+                    entitlement.resource.scope_id or "",
+                )
+                for entitlement in direct
+                if entitlement.enabled
+            }
+        security_groups = {
+            item.id: item
+            for item in await self._directory.list_principals(actor.tenant_id)
+            if item.kind == PrincipalKind.SECURITY_GROUP
+            and item.object_id.casefold() in actor.group_ids
+        }
+        group_candidates = [
             entitlement
-            for entitlement in await self._entitlements.list_entitlements(
-                actor, subject_id=principal.id
+            for entitlement in await self._entitlements.list_entitlements(actor)
+            if entitlement.enabled
+            and entitlement.subject.kind == "securityGroup"
+            and entitlement.subject.id in security_groups
+            and (
+                str(entitlement.resource.kind),
+                entitlement.resource.id,
+                entitlement.resource.scope_id or "",
             )
-            if entitlement.subject.kind == expected_kind
+            not in direct_resource_keys
         ]
+        effective = set[str]()
+        if principal is not None:
+            effective = {
+                item.entitlement.id
+                for item in await self._entitlements.resolve_for_object_id(
+                    actor, actor.object_id, group_object_ids=actor.group_ids
+                )
+            }
+        else:
+            winners: dict[tuple[str, str, str], Entitlement] = {}
+            for entitlement in group_candidates:
+                key = (
+                    str(entitlement.resource.kind),
+                    entitlement.resource.id,
+                    entitlement.resource.scope_id or "",
+                )
+                winner = winners.get(key)
+                if winner is None or grant_precedence_key(
+                    entitlement.enforcement, entitlement.id
+                ) < grant_precedence_key(winner.enforcement, winner.id):
+                    winners[key] = entitlement
+            effective = {item.id for item in winners.values()}
+        return sorted(
+            [*direct, *[item for item in group_candidates if item.id in effective]],
+            key=lambda item: item.id,
+        )
 
     async def _context(
         self, actor: Actor, entitlement_id: str, *, administrator: bool
@@ -108,11 +169,17 @@ class PortalAccessService:
             or entitlement.subject.kind == "group"
             or (
                 not administrator
+                and principal.kind != PrincipalKind.SECURITY_GROUP
                 and principal.object_id.casefold() != actor.object_id.casefold()
+            )
+            or (
+                not administrator
+                and principal.kind == PrincipalKind.SECURITY_GROUP
+                and principal.object_id.casefold() not in actor.group_ids
             )
         ):
             raise NotFoundError("Entitlement was not found")
-        expected_kind = "user" if principal.kind == "user" else "application"
+        expected_kind = subject_kind_for(principal.kind)
         if entitlement.subject.kind != expected_kind:
             raise ConflictError("The grant no longer matches its principal's identity kind")
         if entitlement.resource.kind != "modelApi":
@@ -147,17 +214,34 @@ class PortalAccessService:
             raise ConflictError("Synchronize the gateway to discover its model API endpoint")
         snapshot = publication.applied_access
         audience = snapshot.audience if snapshot else self._runtime_client_id
+        current_audience = bool(
+            audience and audience.casefold() == (self._runtime_client_id or "").casefold()
+        )
         delegated = context.entitlement.subject.kind == "user"
         scope_suffix = "Models.Invoke" if delegated else ".default"
-        # The model client is consented for delegated Models.Invoke on the current runtime
-        # registration only; application grants sign in as themselves with /.default.
-        client_id = (
-            self._model_client_id
-            if delegated
-            and audience
-            and audience.casefold() == (self._runtime_client_id or "").casefold()
-            else None
-        )
+        client_id: str | None = None
+        required_app_role: str | None = None
+        application_scope: str | None = None
+        keys_available = True
+        via_group_id: str | None = None
+        via_group_name: str | None = None
+        if context.principal.kind == PrincipalKind.AGENT_IDENTITY:
+            client_id = context.principal.object_id
+            required_app_role = APPLICATION_ROLE
+        elif context.principal.kind == PrincipalKind.AGENT_USER:
+            client_id = context.principal.identity_parent_id
+        elif context.entitlement.subject.kind == "application":
+            required_app_role = APPLICATION_ROLE
+        elif delegated and current_audience:
+            client_id = self._model_client_id
+        if context.entitlement.subject.kind == "securityGroup":
+            scope_suffix = "Models.Invoke"
+            client_id = self._model_client_id if current_audience else None
+            application_scope = f"api://{audience}/.default" if audience else None
+            required_app_role = APPLICATION_ROLE
+            keys_available = False
+            via_group_id = context.principal.id
+            via_group_name = context.principal.label or context.principal.object_id
         operations = (
             governed_operations(publication)
             if publication.governed_access is not None or snapshot is not None
@@ -186,6 +270,12 @@ class PortalAccessService:
                 snapshot.publication_enforcement if snapshot else publication.enforcement
             ),
             grant_limits=context.entitlement.enforcement,
+            principal_kind=context.principal.kind,
+            required_app_role=required_app_role,
+            entra_application_scope=application_scope,
+            keys_available=keys_available,
+            via_group_id=via_group_id,
+            via_group_name=via_group_name,
         )
 
     @staticmethod
@@ -213,6 +303,11 @@ class PortalAccessService:
         if len(matches) != 1:
             raise ConflictError("This grant has not been applied to API Management")
         grant = matches[0]
+        if grant.is_group_grant or grant.subscription_name is None:
+            raise ConflictError(
+                "Access granted to a security group uses Entra tokens only; there's no key to "
+                "reveal."
+            )
         expected_name = model_access_subscription_name(
             publication.tenant_id, publication.id, entitlement.id
         )
@@ -290,6 +385,11 @@ class PortalAccessService:
                 actor, entitlement_id, administrator=administrator
             )
             subscription_name = grant.subscription_name
+            if subscription_name is None:
+                raise ConflictError(
+                    "Access granted to a security group uses Entra tokens only; there's no key to "
+                    "reveal."
+                )
             reader = self._credential_factory(
                 ApimResourceId.parse(context.gateway.azure_resource_id)
             )

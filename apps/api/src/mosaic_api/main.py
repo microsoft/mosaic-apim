@@ -13,11 +13,13 @@ from fastapi.responses import JSONResponse
 from mosaic_api.api import portal_router, router
 from mosaic_api.auth import EntraAuthenticator, LocalAuthenticator
 from mosaic_api.config import AuthMode, Environment, RepositoryBackend, Settings, get_settings
+from mosaic_api.directory_api import directory_router
 from mosaic_api.errors import DomainError, domain_error_handler
 from mosaic_api.integrations.aoai import CognitiveServicesClient
 from mosaic_api.integrations.aoai.client import SubscriptionScanner
 from mosaic_api.integrations.apim import ApimClient, ApimWriter, ArmClient
 from mosaic_api.integrations.apim.credentials import ApimCredentialClient
+from mosaic_api.integrations.graph import DirectoryLookup, GraphDirectoryLookup
 from mosaic_api.integrations.mcp import EntraTokenProvider, KeyVaultSecretReader
 from mosaic_api.observability import configure_logging, configure_telemetry
 from mosaic_api.repositories import (
@@ -128,6 +130,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if app_settings.auth_mode is AuthMode.LOCAL
             else EntraAuthenticator(app_settings)
         )
+        directory_lookup: DirectoryLookup | None = (
+            GraphDirectoryLookup(credential, endpoint=str(app_settings.graph_endpoint))
+            if app_settings.entra_directory_lookup and app_settings.auth_mode is AuthMode.ENTRA
+            else None
+        )
         arm_client = ArmClient(credential)
         gateway_service = GatewayService(
             gateway_repository,
@@ -153,6 +160,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             directory_repository=repository,
             entitlement_repository=entitlement_repository,
             model_runtime_client_id=app_settings.model_runtime_client_id,
+            security_group_claims=app_settings.entra_group_claims,
         )
         # A dedicated client for outbound MCP calls: redirects are refused per request, and the
         # connection pool for operator-supplied hosts is kept away from the ARM one.
@@ -170,6 +178,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             allow_private_endpoints=app_settings.mcp_allow_private_endpoints,
         )
         app.state.repository = repository
+        app.state.directory_lookup = directory_lookup
         app.state.gateway_repository = gateway_repository
         app.state.model_endpoint_repository = endpoint_repository
         app.state.entitlement_repository = entitlement_repository
@@ -178,6 +187,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             repository,
             gateway_repository=gateway_repository,
             entitlement_repository=entitlement_repository,
+            directory_lookup=directory_lookup,
+            group_claims_enabled=app_settings.entra_group_claims,
         )
         app.state.gateway_service = gateway_service
         app.state.model_endpoint_service = model_endpoint_service
@@ -188,6 +199,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             directory_repository=repository,
             gateway_repository=gateway_repository,
             endpoint_repository=endpoint_repository,
+            directory_lookup=directory_lookup,
         )
         app.state.entitlement_service = entitlement_service
         app.state.portal_access_service = PortalAccessService(
@@ -238,6 +250,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             await model_endpoint_service.aclose()
             await publishing_service.aclose()
             await mcp_endpoint_service.aclose()
+            if directory_lookup:
+                await directory_lookup.close()
             await authenticator.close()
             await arm_client.close()
             await key_vault_reader.close()
@@ -309,5 +323,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
 
     app.include_router(router)
+    app.include_router(directory_router)
     app.include_router(portal_router)
     return app

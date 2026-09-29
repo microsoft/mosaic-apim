@@ -159,3 +159,10 @@ model and MCP repositories.
   behaviour, but the inference is worth an empirical check against a real service.
 - A registered `McpEndpoint` and an adopted `McpServer` can describe the same server. Nothing
   reconciles them yet, which is the same drift ADR 0005 already accepted for `ModelApi`.
+
+## Amendment 2026-09-29: Agent and security-group MCP grants
+
+[ADR 0014](0014-agent-identities-and-security-group-grants.md) lets MCP server grants name users,
+agent identities, agent users and Entra security groups. MOSAIC records those grants and displays
+them as governance intent, but API Management enforcement for MCP is still deferred to the next
+phase.

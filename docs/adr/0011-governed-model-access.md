@@ -161,3 +161,16 @@ Azure RBAC inability to read secrets.
   applies it. The grant joins the model's next reviewed plan like any other saved change.
 - Mocked policy and API checks cannot establish live Entra/APIM interoperability. The opt-in
   live verifier and actual gateway checks must report unavailable prerequisites honestly.
+
+## Amendment 2026-09-29: Security-group branch and agent token handling
+
+[ADR 0014](0014-agent-identities-and-security-group-grants.md) extends governed model access to
+Entra security groups. The APIM policy first honors an enabled direct grant, then checks enabled
+security-group grants against the validated token's `groups` claim and chooses the most generous
+matching group grant. Group grants have no subscription and no key path; subscription keys never
+match them. Their rate and quota counters are keyed by the member's `oid`, while direct-grant
+counter keys remain unchanged.
+
+The policy treats missing, empty and `/` `scp` values on agent app-only tokens as not delegated,
+and authorizes application/agent callers through `roles`. If Entra signals group overage instead of
+emitting `groups`, the policy denies group-grant access and tells the caller to use a direct grant.

@@ -144,10 +144,10 @@ export function DashboardPage() {
                   {principals.isLoading ? (
                     <Spinner size="tiny" label="Loading principals" />
                   ) : (
-                    (principals.data?.filter((principal) => principal.kind === 'user').length ?? 0)
+                    (principals.data?.filter((principal) => principal.kind === 'user' || principal.kind === 'agentUser').length ?? 0)
                   )}
                 </strong>
-                <small>registered users</small>
+                <small>people and agent users</small>
               </span>
             </button>
             <button
@@ -162,10 +162,12 @@ export function DashboardPage() {
                   {principals.isLoading ? (
                     <Spinner size="tiny" label="Loading workload identities" />
                   ) : (
-                    (principals.data?.filter((principal) => principal.kind !== 'user').length ?? 0)
+                    (principals.data?.filter((principal) =>
+                      principal.kind !== 'user' && principal.kind !== 'agentUser' && principal.kind !== 'securityGroup',
+                    ).length ?? 0)
                   )}
                 </strong>
-                <small>workload identities</small>
+                <small>apps and agent identities</small>
               </span>
             </button>
             <button

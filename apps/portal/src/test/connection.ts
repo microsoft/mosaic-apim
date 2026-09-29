@@ -63,6 +63,21 @@ export const groupResolved: ResolvedEntitlement = {
   viaGroupName: 'Platform engineering',
 }
 
+export const securityGroupResolved: ResolvedEntitlement = {
+  entitlement: {
+    ...directGrant,
+    id: 'entitlement_security_group',
+    subject: { kind: 'securityGroup', id: 'principal_group_1' },
+    binding: null,
+    runtime: null,
+  },
+  via: 'securityGroup',
+  viaGroupId: 'principal_group_1',
+  viaGroupName: 'AI builders',
+  effective: true,
+  shadowedBy: null,
+}
+
 export const endpoint = 'https://gateway.example.test/models/gpt-4o'
 export const chatUrl = `${endpoint}/openai/deployments/gpt-4o/chat/completions`
 export const responsesUrl = `${endpoint}/openai/responses`
@@ -93,6 +108,23 @@ export const connection: ModelConnection = {
     estimatePromptTokens: true,
   },
   grantLimits: directGrant.enforcement,
+}
+
+export const securityGroupConnection: ModelConnection = {
+  ...connection,
+  entitlementId: securityGroupResolved.entitlement.id,
+  appliedMethods: { keysEnabled: false, entraEnabled: true },
+  runtime: {
+    ...directGrant.runtime!,
+    subscriptionName: null,
+    appliedMethods: { keysEnabled: false, entraEnabled: true },
+  },
+  principalKind: 'securityGroup',
+  requiredAppRole: 'Models.Invoke.Application',
+  entraApplicationScope: 'api://11111111-2222-3333-4444-555555555555/.default',
+  keysAvailable: false,
+  viaGroupId: 'principal_group_1',
+  viaGroupName: 'AI builders',
 }
 
 export const claudeEndpoint = 'https://gateway.example.test/models/claude'

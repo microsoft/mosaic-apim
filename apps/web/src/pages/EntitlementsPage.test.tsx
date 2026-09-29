@@ -48,6 +48,7 @@ const api = {
   linkPublicationModelApi: vi.fn(),
   approveAccessRequest: vi.fn(),
   denyAccessRequest: vi.fn(),
+  getGrantOverlaps: vi.fn(),
 }
 
 const pendingRequest: AccessRequest = {
@@ -102,6 +103,12 @@ describe('EntitlementsPage', () => {
     api.listAccessRequests.mockResolvedValue([])
     api.listPublications.mockResolvedValue([])
     api.resolveEntitlements.mockResolvedValue([])
+    api.getGrantOverlaps.mockResolvedValue({
+      overlaps: [],
+      membershipChecked: true,
+      skipped: [],
+      generatedAt: '2026-09-01T12:00:00Z',
+    })
     api.createPublishPlan.mockResolvedValue(accessPlan)
     api.getPublication.mockResolvedValue(modelPublication)
   })
@@ -109,7 +116,7 @@ describe('EntitlementsPage', () => {
   it('renders live grants with their subject, resource, and binding state', async () => {
     renderPage()
 
-    expect(await screen.findByText('Engineering (group)')).toBeVisible()
+    expect(await screen.findByText('Engineering (MOSAIC group)')).toBeVisible()
     expect(screen.getByText('Chat completions (model API)')).toBeVisible()
     // A grant with no binding must say so: consumption cannot be attributed without one.
     expect(screen.getByText('Not bound')).toBeVisible()
@@ -199,7 +206,7 @@ describe('EntitlementsPage', () => {
     fireEvent.change(screen.getByLabelText('Published model'), { target: { value: modelPublication.id } })
     await user.click(await screen.findByRole('button', { name: 'Add direct grant' }))
     const dialog = await screen.findByRole('dialog')
-    expect(within(dialog).queryByRole('option', { name: 'Engineering (group)' })).not.toBeInTheDocument()
+    expect(within(dialog).queryByRole('option', { name: 'Engineering (MOSAIC group)' })).not.toBeInTheDocument()
     expect(within(dialog).getByRole('combobox', { name: 'Resource' })).toBeDisabled()
     fireEvent.change(within(dialog).getByRole('combobox', { name: 'Subject' }), { target: { value: 'principal_1' } })
     await user.click(within(dialog).getByRole('button', { name: 'Grant access' }))
@@ -211,6 +218,100 @@ describe('EntitlementsPage', () => {
     }))
     expect(api.applyPublishPlan).not.toHaveBeenCalled()
     expect(await screen.findByText(/Saved grant intent. API Management is unchanged/)).toBeVisible()
+  })
+
+  it('groups subjects by identity kind and sends the mapped subject kind', async () => {
+    const user = userEvent.setup()
+    api.listPrincipals.mockResolvedValue([
+      { id: 'person_1', tenantId: 'tenant', objectId: 'person-object', kind: 'user', label: 'Ada Person', createdAt: '', updatedAt: '' },
+      { id: 'agent_1', tenantId: 'tenant', objectId: 'agent-object', kind: 'agentIdentity', label: 'Agent identity', createdAt: '', updatedAt: '' },
+      { id: 'agent_user_1', tenantId: 'tenant', objectId: 'agent-user-object', kind: 'agentUser', label: 'Agent user', createdAt: '', updatedAt: '' },
+      { id: 'sg_1', tenantId: 'tenant', objectId: 'sg-object', kind: 'securityGroup', label: 'Security readers', createdAt: '', updatedAt: '' },
+      { id: 'app_1', tenantId: 'tenant', objectId: 'app-object', kind: 'servicePrincipal', label: 'Application', createdAt: '', updatedAt: '' },
+    ])
+    api.createEntitlement.mockResolvedValue(directGrant)
+    renderPage()
+
+    await user.click(await screen.findByRole('button', { name: 'Add entitlement' }))
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByRole('group', { name: 'People' })).toBeVisible()
+    expect(within(dialog).getByRole('group', { name: 'Agents' })).toBeVisible()
+    expect(within(dialog).getByRole('group', { name: 'Security groups' })).toBeVisible()
+    expect(within(dialog).getByRole('group', { name: 'Applications' })).toBeVisible()
+    fireEvent.change(within(dialog).getByRole('combobox', { name: 'Subject' }), { target: { value: 'agent_user_1' } })
+    fireEvent.change(within(dialog).getByRole('combobox', { name: 'Resource' }), { target: { value: publishedModelApi.id } })
+    await user.click(within(dialog).getByRole('button', { name: 'Grant access' }))
+
+    await waitFor(() => expect(api.createEntitlement).toHaveBeenCalledWith(expect.objectContaining({
+      subject: { kind: 'user', id: 'agent_user_1' },
+    })))
+
+    api.createEntitlement.mockClear()
+    await user.click(await screen.findByRole('button', { name: 'Add entitlement' }))
+    const second = await screen.findByRole('dialog')
+    fireEvent.change(within(second).getByRole('combobox', { name: 'Subject' }), { target: { value: 'sg_1' } })
+    fireEvent.change(within(second).getByRole('combobox', { name: 'Resource' }), { target: { value: publishedModelApi.id } })
+    await user.click(within(second).getByRole('button', { name: 'Grant access' }))
+    await waitFor(() => expect(api.createEntitlement).toHaveBeenCalledWith(expect.objectContaining({
+      subject: { kind: 'securityGroup', id: 'sg_1' },
+    })))
+  })
+
+  it('shows overlap winners, shadowed grants, membership-unchecked notice, and the empty state', async () => {
+    api.getGrantOverlaps.mockResolvedValueOnce({
+      membershipChecked: false,
+      skipped: ['Graph membership unavailable'],
+      generatedAt: '2026-09-01T12:00:00Z',
+      overlaps: [{
+        kind: 'directAndGroup',
+        resource: { kind: 'modelApi', id: 'modelApi_1' },
+        resourceLabel: 'Chat completions',
+        principalId: 'principal_1',
+        principalLabel: 'Ada Lovelace',
+        winner: { entitlementId: 'direct_grant', subject: { kind: 'user', id: 'principal_1' }, subjectLabel: 'Ada Lovelace', enabled: true },
+        shadowed: [{ entitlementId: 'group_grant', subject: { kind: 'securityGroup', id: 'sg_1' }, subjectLabel: 'Security readers', enabled: true }],
+        reason: 'A direct grant wins over a security-group grant.',
+      }],
+    })
+    renderPage()
+
+    expect(await screen.findByText('Direct grant overrides group grant')).toBeVisible()
+    expect(screen.getByText('Affected principal:')).toBeVisible()
+    expect(screen.getAllByText('Ada Lovelace').length).toBeGreaterThan(0)
+    expect(screen.getByText('Applies')).toBeVisible()
+    expect(screen.getByText("Doesn't apply")).toBeVisible()
+    expect(screen.getByText(/Microsoft Graph membership was not checked/)).toBeVisible()
+    expect(screen.getByText(/Graph membership unavailable/)).toBeVisible()
+  })
+
+  it('shows resolved access paths and whether each grant applies', async () => {
+    api.resolveEntitlements.mockResolvedValue([
+      { entitlement: directGrant, via: 'direct', effective: true, shadowedBy: null },
+      {
+        entitlement: { ...directGrant, id: 'shadowed-grant', enabled: true },
+        via: 'securityGroup',
+        viaGroupId: 'sg_1',
+        viaGroupName: 'Security readers',
+        effective: false,
+        shadowedBy: directGrant.id,
+      },
+      {
+        entitlement: { ...directGrant, id: 'disabled-grant', enabled: false },
+        via: 'group',
+        viaGroupId: 'group_1',
+        viaGroupName: 'Engineering',
+        effective: false,
+        shadowedBy: null,
+      },
+    ])
+    renderPage()
+
+    await screen.findByRole('option', { name: 'Ada Lovelace' })
+    fireEvent.change(screen.getByRole('combobox', { name: 'Principal' }), { target: { value: 'principal_1' } })
+
+    await waitFor(() => expect(screen.getAllByText((_, element) => element?.textContent?.includes('Direct · Applies') ?? false).length).toBeGreaterThan(0))
+    expect(screen.getAllByText((_, element) => element?.textContent?.includes('Security group Security readers · Overridden by direct_grant') ?? false).length).toBeGreaterThan(0)
+    expect(screen.getAllByText((_, element) => element?.textContent?.includes('MOSAIC group Engineering · Disabled') ?? false).length).toBeGreaterThan(0)
   })
 
   it('reviews the full model snapshot, not a row-scoped apply', async () => {

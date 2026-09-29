@@ -26,7 +26,30 @@ vi.mock('../api', () => ({
         createdAt: '2026-01-01T00:00:00Z',
         updatedAt: '2026-01-01T00:00:00Z',
       },
+      {
+        id: 'group-principal',
+        tenantId: 'tenant',
+        objectId: 'security-group-object',
+        kind: 'securityGroup',
+        label: 'Security Readers',
+        directoryVerifiedAt: '2026-01-02T00:00:00Z',
+        createdAt: '2026-01-01T00:00:00Z',
+        updatedAt: '2026-01-01T00:00:00Z',
+      },
     ],
+    getDirectoryStatus: async () => ({ lookupEnabled: true, groupClaimsEnabled: false }),
+    searchDirectory: vi.fn(),
+    listPrincipalMembers: async () => ({
+      groupObjectId: 'security-group-object',
+      truncated: true,
+      members: [{
+        objectId: 'member-object',
+        kind: 'user',
+        displayName: 'Member User',
+        detail: 'member@example.com',
+        principalId: 'user',
+      }],
+    }),
     listGroups: async () => [],
     listMemberships: async () => [],
     createPrincipal: vi.fn(),
@@ -58,9 +81,14 @@ describe('IdentityPage', () => {
     expect(screen.queryByText('Build agent')).not.toBeInTheDocument()
     expect(screen.getByText('Live data')).toBeVisible()
 
-    await user.click(screen.getByRole('tab', { name: 'Workload identities' }))
+    await user.click(screen.getByRole('tab', { name: 'Applications and security groups' }))
 
     expect((await screen.findAllByText('Build agent')).length).toBeGreaterThan(0)
     expect(screen.queryByText('Alex User')).not.toBeInTheDocument()
+    expect(screen.getByText(/Security-group grants are not enforceable yet/)).toBeVisible()
+    await user.click(screen.getByRole('button', { name: /Security Readers/ }))
+    expect(await screen.findByText('Member User')).toBeVisible()
+    expect(screen.getByText('Recorded in MOSAIC')).toBeVisible()
+    expect(screen.getByText(/member list is truncated/)).toBeVisible()
   })
 })

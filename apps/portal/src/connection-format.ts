@@ -56,7 +56,16 @@ export function describeConnectionRuntime(runtime: EntitlementRuntime | null | u
 
 export type KeyAvailability = { available: true } | { available: false; reason: string }
 
+export const GROUP_GRANT_ENTRA_ONLY =
+  "Access granted to a group uses Microsoft Entra sign-in only, so there's no key. Sign in with your own account to get a token."
+
 export function keyAvailability(connection: ModelConnection): KeyAvailability {
+  if (connection.keysAvailable === false) {
+    return {
+      available: false,
+      reason: GROUP_GRANT_ENTRA_ONLY,
+    }
+  }
   const runtime = connection.runtime
   const methods = connection.appliedMethods
   if (!runtime || !methods) {
@@ -252,7 +261,7 @@ export interface ConnectionSamples {
 /** Placeholders only: this deliberately has no way to receive a revealed key. */
 export type SampleInput = Pick<
   ModelConnection,
-  'endpoint' | 'deploymentName' | 'subscriptionHeader' | 'operations' | 'appliedMethods'
+  'endpoint' | 'deploymentName' | 'subscriptionHeader' | 'operations' | 'appliedMethods' | 'keysAvailable'
 >
 
 function shellDoubleQuoted(text: string) {
@@ -273,7 +282,16 @@ function sampleFields(kind: SampleOperationKind, model: string) {
 
 export function buildSamples(connection: SampleInput): ConnectionSamples | null {
   const methods = connection.appliedMethods
-  const credential = methods?.keysEnabled ? 'key' : methods?.entraEnabled ? 'token' : null
+  const credential =
+    connection.keysAvailable === false
+      ? methods?.entraEnabled
+        ? 'token'
+        : null
+      : methods?.keysEnabled
+        ? 'key'
+        : methods?.entraEnabled
+          ? 'token'
+          : null
   if (!credential) return null
   const candidates = connection.operations
     .map((operation) => ({ operation, kind: sampleKind(operation) }))

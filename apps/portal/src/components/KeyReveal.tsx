@@ -12,6 +12,7 @@ import { useEffect, useId, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
 import { usePortalApi } from '../api'
 import {
+  GROUP_GRANT_ENTRA_ONLY,
   KEY_VISIBLE_MS,
   UnexpectedCredentialError,
   isConflict,
@@ -182,6 +183,20 @@ export function KeyReveal({
 
   const visible = availability.available ? secret : null
   const problem = reveal.isError ? keyRevealProblem(reveal.error) : null
+  const entraOnlyGroupGrant = !availability.available && availability.reason === GROUP_GRANT_ENTRA_ONLY
+
+  if (entraOnlyGroupGrant) {
+    return (
+      <section className="connection-section" aria-labelledby={headingId} ref={section}>
+        <h3 id={headingId} ref={heading} tabIndex={-1}>
+          Subscription key
+        </h3>
+        <Text as="p" className="connection-note" ref={reasonText} tabIndex={-1}>
+          {availability.reason}
+        </Text>
+      </section>
+    )
+  }
 
   return (
     <section className="connection-section" aria-labelledby={headingId} ref={section}>

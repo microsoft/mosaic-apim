@@ -7,11 +7,16 @@ import type {
   ApiErrorBody,
   CatalogVisibility,
   ConsoleAccess,
+  DirectoryMemberPage,
+  DirectoryObject,
+  DirectorySearchKind,
+  DirectoryStatus,
   Entitlement,
   EntitlementBinding,
   EntitlementEnforcement,
   EntitlementResource,
   EntitlementSubject,
+  GrantOverlapReport,
   Gateway,
   GatewayPolicyView,
   GatewayRuntimeAccess,
@@ -87,6 +92,7 @@ export interface MosaicApi {
     objectId: string
     kind: PrincipalKind
     label?: string
+    identityParentId?: string
   }): Promise<Principal>
   updatePrincipal(
     principalId: string,
@@ -103,6 +109,10 @@ export interface MosaicApi {
   listMemberships(groupId: string): Promise<GroupMembership[]>
   addMembership(groupId: string, principalId: string): Promise<GroupMembership>
   removeMembership(groupId: string, principalId: string): Promise<void>
+  getDirectoryStatus(): Promise<DirectoryStatus>
+  searchDirectory(kind: DirectorySearchKind, query: string, limit?: number): Promise<DirectoryObject[]>
+  getDirectoryObject(objectId: string): Promise<DirectoryObject>
+  listPrincipalMembers(principalId: string, limit?: number): Promise<DirectoryMemberPage>
   listGateways(): Promise<Gateway[]>
   registerGateway(payload: {
     azureResourceId: string
@@ -209,6 +219,7 @@ export interface MosaicApi {
   getMyEntitlementConnection(entitlementId: string): Promise<ModelConnection>
   revealMyEntitlementKey(entitlementId: string, slot: KeySlot, signal?: AbortSignal): Promise<KeyRevealResult>
   resolveEntitlements(principalId: string): Promise<ResolvedEntitlement[]>
+  getGrantOverlaps(filters?: { resource?: string }): Promise<GrantOverlapReport>
   listAccessRequests(state?: string): Promise<AccessRequest[]>
   approveAccessRequest(requestId: string, approval: AccessRequestApproval): Promise<AccessRequest>
   denyAccessRequest(requestId: string, note?: string): Promise<AccessRequest>
@@ -341,6 +352,17 @@ export function useMosaicApi(): MosaicApi {
         request<void>(`/api/v1/groups/${groupId}/members/${principalId}`, {
           method: 'DELETE',
         }),
+      getDirectoryStatus: () => request<DirectoryStatus>('/api/v1/directory/status'),
+      searchDirectory: (kind, query, limit = 20) =>
+        request<DirectoryObject[]>(
+          `/api/v1/directory/search?kind=${encodeURIComponent(kind)}&q=${encodeURIComponent(query)}&limit=${encodeURIComponent(String(limit))}`,
+        ),
+      getDirectoryObject: (objectId) =>
+        request<DirectoryObject>(`/api/v1/directory/objects/${encodeURIComponent(objectId)}`),
+      listPrincipalMembers: (principalId, limit = 200) =>
+        request<DirectoryMemberPage>(
+          `/api/v1/principals/${encodeURIComponent(principalId)}/members?limit=${encodeURIComponent(String(limit))}`,
+        ),
       listGateways: () => request<Gateway[]>('/api/v1/gateways'),
       registerGateway: (payload) =>
         request<Gateway>('/api/v1/gateways', { method: 'POST', body: payload }),
@@ -473,6 +495,10 @@ export function useMosaicApi(): MosaicApi {
       resolveEntitlements: (principalId) =>
         request<ResolvedEntitlement[]>(
           `/api/v1/entitlements/resolve?principalId=${encodeURIComponent(principalId)}`,
+        ),
+      getGrantOverlaps: (filters) =>
+        request<GrantOverlapReport>(
+          `/api/v1/entitlements/overlaps${filters?.resource ? `?resource=${encodeURIComponent(filters.resource)}` : ''}`,
         ),
       listAccessRequests: (state) =>
         request<AccessRequest[]>(

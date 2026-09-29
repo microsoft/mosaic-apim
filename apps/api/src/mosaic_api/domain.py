@@ -1,3 +1,4 @@
+import math
 import re
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -227,9 +228,20 @@ class Entity(MosaicModel):
 
 
 class PrincipalKind(StrEnum):
+    """What an Entra object is, which decides how it is granted and how it signs in.
+
+    ``agentIdentity`` is a Microsoft Entra Agent ID agent: a service principal that signs in as an
+    application. ``agentUser`` is an agent's user account, which signs in with delegated user
+    tokens. ``securityGroup`` is an Entra security group; granting it grants every member, whether
+    a person or an agent, and the gateway enforces that through the token's ``groups`` claim.
+    """
+
     USER = "user"
     SERVICE_PRINCIPAL = "servicePrincipal"
     MANAGED_IDENTITY = "managedIdentity"
+    AGENT_IDENTITY = "agentIdentity"
+    AGENT_USER = "agentUser"
+    SECURITY_GROUP = "securityGroup"
 
 
 class Principal(Entity):
@@ -237,6 +249,19 @@ class Principal(Entity):
     object_id: str
     kind: PrincipalKind
     label: str | None = None
+    # A secondary identifier read from the directory, such as a user principal name, an agent's
+    # app ID, or a group's mail nickname. Display only; never used to authorize anything.
+    detail: str | None = None
+    # For an agent user: the object ID of the agent identity it belongs to, which is the client
+    # that requests its delegated tokens.
+    identity_parent_id: str | None = None
+    # For an agent identity: the app ID of the blueprint it was created from. Agent identities
+    # inherit an app role from their blueprint only when the resource app is listed in the
+    # blueprint's inheritable permissions and the role is granted to the blueprint's principal.
+    blueprint_id: str | None = None
+    # When Microsoft Graph last confirmed this object exists and is this kind. None for a
+    # principal an administrator entered by hand.
+    directory_verified_at: datetime | None = None
 
 
 class Group(Entity):
@@ -1057,6 +1082,23 @@ class EntitlementSubjectKind(StrEnum):
     USER = "user"
     GROUP = "group"
     APPLICATION = "application"
+    SECURITY_GROUP = "securityGroup"
+
+
+def subject_kind_for(kind: PrincipalKind) -> EntitlementSubjectKind:
+    """The entitlement subject a principal of this kind is granted as.
+
+    People and agent users sign in with delegated user tokens, so both are ``user`` subjects.
+    Service principals, managed identities and agent identities sign in as applications. An Entra
+    security group is its own subject: it is never the caller, only something the caller is a
+    member of. A MOSAIC group (``group``) is not a principal at all, so no kind maps to it.
+    """
+
+    if kind in {PrincipalKind.USER, PrincipalKind.AGENT_USER}:
+        return EntitlementSubjectKind.USER
+    if kind == PrincipalKind.SECURITY_GROUP:
+        return EntitlementSubjectKind.SECURITY_GROUP
+    return EntitlementSubjectKind.APPLICATION
 
 
 class EntitlementResourceKind(StrEnum):
@@ -1069,9 +1111,10 @@ class EntitlementResourceKind(StrEnum):
 class EntitlementSubject(MosaicModel):
     """Who a grant is for.
 
-    ``user`` and ``application`` name a :class:`Principal`; ``group`` names a :class:`Group`. The
-    distinction between a user and an application is the principal's own kind, kept here so a
-    reader of the entitlement does not have to dereference it.
+    ``user``, ``application`` and ``securityGroup`` name a :class:`Principal`; ``group`` names a
+    MOSAIC :class:`Group`. The subject kind is the principal's kind as :func:`subject_kind_for`
+    maps it, kept here so a reader of the entitlement does not have to dereference it. Only
+    MOSAIC groups are desired state alone: the gateway enforces the other three.
     """
 
     kind: EntitlementSubjectKind
@@ -1201,15 +1244,91 @@ def entitlement_id(
 class GrantPath(StrEnum):
     DIRECT = "direct"
     GROUP = "group"
+    SECURITY_GROUP = "securityGroup"
 
 
 class ResolvedEntitlement(MosaicModel):
-    """An entitlement that applies to a principal, and how it reached them."""
+    """An entitlement that applies to a principal, and how it reached them.
+
+    ``effective`` is false for a grant that applies but loses to another grant on the same
+    resource; ``shadowed_by`` then names the entitlement that wins. See :func:`grant_precedence_key`
+    for the rules.
+    """
 
     entitlement: Entitlement
     via: GrantPath
     via_group_id: str | None = None
     via_group_name: str | None = None
+    effective: bool = True
+    shadowed_by: str | None = None
+
+
+_QUOTA_PERIOD_HOURS: dict[str, float] = {
+    "Hourly": 1.0,
+    "Daily": 24.0,
+    "Weekly": 168.0,
+    "Monthly": 730.0,
+    "Yearly": 8760.0,
+}
+
+
+def grant_allowance(
+    enforcement: EntitlementEnforcement | None,
+) -> tuple[float, float, float, float, float]:
+    """How much a grant allows, compared field by field; higher is more generous.
+
+    The fields, in the order they are compared: whether the grant is unlimited, tokens per minute,
+    token quota per hour, calls per minute, and call quota per hour. A limit that is not set allows
+    without bound, so it counts as infinite. Quotas are normalized to an hour so that a daily and a
+    monthly quota can be compared; a month counts as 730 hours.
+    """
+
+    if enforcement is None:
+        return (1.0, math.inf, math.inf, math.inf, math.inf)
+    tokens = enforcement.tokens
+    requests = enforcement.requests
+    tokens_per_minute = (
+        float(tokens.tokens_per_minute)
+        if tokens is not None and tokens.tokens_per_minute is not None
+        else math.inf
+    )
+    token_quota_per_hour = (
+        tokens.token_quota / _QUOTA_PERIOD_HOURS[tokens.token_quota_period]
+        if tokens is not None
+        and tokens.token_quota is not None
+        and tokens.token_quota_period is not None
+        else math.inf
+    )
+    calls_per_minute = (
+        requests.calls * 60.0 / requests.renewal_period_seconds
+        if requests is not None
+        and requests.calls is not None
+        and requests.renewal_period_seconds is not None
+        else math.inf
+    )
+    call_quota_per_hour = (
+        requests.call_quota / _QUOTA_PERIOD_HOURS[requests.call_quota_period]
+        if requests is not None
+        and requests.call_quota is not None
+        and requests.call_quota_period is not None
+        else math.inf
+    )
+    return (0.0, tokens_per_minute, token_quota_per_hour, calls_per_minute, call_quota_per_hour)
+
+
+def grant_precedence_key(
+    enforcement: EntitlementEnforcement | None, entitlement_ref: str
+) -> tuple[float | str, ...]:
+    """Sort key that puts the grant that wins among overlapping group grants first.
+
+    A caller who belongs to several granted security groups gets the most generous of those
+    grants: an unlimited grant beats any limited one, then the higher token allowance wins, then
+    the higher call allowance. Equal allowances fall back to the lower entitlement ID, so the
+    choice never depends on the order records were read. A direct grant to the caller always
+    beats every group grant; that rule is applied before this ordering and is not part of it.
+    """
+
+    return (*(-value for value in grant_allowance(enforcement)), entitlement_ref)
 
 
 class AccessRequestState(StrEnum):
@@ -1290,6 +1409,9 @@ class PortalProfile(MosaicModel):
     display_label: str | None = None
     entitlement_count: int = 0
     pending_request_count: int = 0
+    # True when the caller is in more groups than their sign-in token can list. MOSAIC then can't
+    # tell which security-group grants apply to them, and neither can the gateway.
+    groups_overage: bool = False
 
 
 class ConsoleAccess(MosaicModel):
@@ -1373,18 +1495,33 @@ class PublishedResource(MosaicModel):
 class ModelAccessGrant(MosaicModel):
     entitlement_id: str
     subject: EntitlementSubject
+    # The caller's object ID for a direct grant; the group's object ID for a security-group grant,
+    # which the gateway matches against the caller token's ``groups`` claim.
     object_id: str
     display_name: str
-    subscription_name: str
+    # None exactly when the subject is a security group. A group grant authorizes Entra tokens
+    # only: MOSAIC issues no subscription, so there is no key to reveal and none to rotate.
+    subscription_name: str | None = None
     enabled: bool
     enforcement: EntitlementEnforcement | None = None
     intent_digest: str
 
     @model_validator(mode="after")
-    def direct_subject_only(self) -> Self:
+    def enforceable_subject_only(self) -> Self:
         if self.subject.kind == EntitlementSubjectKind.GROUP:
-            raise ValueError("Runtime model access currently supports direct subjects only")
+            raise ValueError(
+                "MOSAIC groups are not enforced at runtime; grant an Entra security group instead"
+            )
+        if self.subject.kind == EntitlementSubjectKind.SECURITY_GROUP:
+            if self.subscription_name is not None:
+                raise ValueError("A security-group grant has no subscription")
+        elif not self.subscription_name:
+            raise ValueError("A direct grant needs its subscription name")
         return self
+
+    @property
+    def is_group_grant(self) -> bool:
+        return self.subject.kind == EntitlementSubjectKind.SECURITY_GROUP
 
 
 class ModelAccessSnapshot(MosaicModel):
@@ -1517,6 +1654,9 @@ class PrincipalCreate(MosaicModel):
     object_id: str = Field(min_length=1, max_length=128)
     kind: PrincipalKind
     label: str | None = Field(default=None, max_length=200)
+    # Only honoured when directory lookup is off. When it is on, MOSAIC reads this from Microsoft
+    # Graph and ignores what the caller sent.
+    identity_parent_id: str | None = Field(default=None, max_length=128)
 
 
 class PrincipalUpdate(MosaicModel):
@@ -1538,6 +1678,105 @@ class GroupCreate(MosaicModel):
 
 class GroupUpdate(MosaicModel):
     description: str | None = Field(default=None, max_length=1000)
+
+
+class DirectorySearchKind(StrEnum):
+    """What a directory search looks for.
+
+    ``user`` finds people and agent users. ``group`` finds security-enabled groups only, because
+    only those appear in a token's ``groups`` claim. ``agent`` finds agent identities and agent
+    users.
+    """
+
+    USER = "user"
+    GROUP = "group"
+    AGENT = "agent"
+
+
+class DirectoryObject(MosaicModel):
+    """An Entra object read from Microsoft Graph, before or after MOSAIC records it.
+
+    MOSAIC reads the directory with its own identity and never writes to it. ``principal_id`` is
+    set when MOSAIC already records this object, so a picker can say so instead of offering to
+    add it twice.
+    """
+
+    object_id: str
+    kind: PrincipalKind
+    display_name: str | None = None
+    # A user principal name or mail for a user, an app ID for an agent identity, and a mail
+    # nickname or description for a group.
+    detail: str | None = None
+    app_id: str | None = None
+    identity_parent_id: str | None = None
+    blueprint_id: str | None = None
+    principal_id: str | None = None
+
+
+class DirectoryMemberPage(MosaicModel):
+    """The direct and nested members of a security group, as far as MOSAIC read them."""
+
+    group_object_id: str
+    members: list[DirectoryObject] = Field(default_factory=list)
+    truncated: bool = False
+
+
+class DirectoryStatus(MosaicModel):
+    """Whether directory search is available, and whether group grants can be enforced.
+
+    ``lookup_enabled`` is the deployment's choice (``MOSAIC_ENTRA_DIRECTORY_LOOKUP``). When it is
+    false, administrators enter object IDs by hand. ``group_claims_enabled`` records whether the
+    deployment configured Entra to put security-group IDs in tokens
+    (``MOSAIC_ENTRA_GROUP_CLAIMS``); without that, the gateway can't match a group grant.
+    """
+
+    lookup_enabled: bool
+    group_claims_enabled: bool
+    message: str | None = None
+
+
+class GrantOverlapKind(StrEnum):
+    """Why two or more grants on one resource can apply to the same caller.
+
+    ``groups``: two or more security groups are granted the same resource, so anyone in more than
+    one of them gets only the most generous grant. ``directAndGroup``: a principal with a direct
+    grant is also a member of a granted group, so the direct grant applies and the group's
+    limits don't. ``multipleGroups``: a principal MOSAIC records is in more than one granted group.
+    """
+
+    GROUPS = "groups"
+    DIRECT_AND_GROUP = "directAndGroup"
+    MULTIPLE_GROUPS = "multipleGroups"
+
+
+class OverlapGrant(MosaicModel):
+    entitlement_id: str
+    subject: EntitlementSubject
+    subject_label: str
+    enabled: bool = True
+    enforcement: EntitlementEnforcement | None = None
+
+
+class GrantOverlap(MosaicModel):
+    kind: GrantOverlapKind
+    resource: EntitlementResource
+    resource_label: str
+    # The affected principal, for directAndGroup and multipleGroups. None for groups, which is
+    # about every member of both groups rather than one principal.
+    principal_id: str | None = None
+    principal_label: str | None = None
+    winner: OverlapGrant
+    shadowed: list[OverlapGrant] = Field(default_factory=list)
+    reason: str
+
+
+class GrantOverlapReport(MosaicModel):
+    overlaps: list[GrantOverlap] = Field(default_factory=list)
+    # Whether MOSAIC could ask Microsoft Graph who belongs to the granted groups. Without it only
+    # ``groups`` overlaps, which need no membership data, are reported.
+    membership_checked: bool = False
+    skipped: list[str] = Field(default_factory=list)
+    generated_at: datetime = Field(default_factory=utc_now)
 
 
 class GatewayCreate(MosaicModel):
@@ -2075,6 +2314,21 @@ class ModelConnection(MosaicModel):
     operations: list[ConnectionOperation] = Field(default_factory=list)
     publication_limits: TokenEnforcement | None = None
     grant_limits: EntitlementEnforcement | None = None
+    # The kind of principal the grant names. For a security-group grant this is securityGroup and
+    # the caller is any member, a person or an agent.
+    principal_kind: PrincipalKind | None = None
+    # The app role an application or agent caller's token must carry in ``roles``. Entra doesn't
+    # pass app roles through group membership to service principals, so an agent needs this role
+    # assigned to itself, or inherited from its blueprint through the blueprint's inheritable
+    # permissions, even when its access comes from a group.
+    required_app_role: str | None = None
+    # ``api://{audience}/.default``, for agents and applications that reach the model through a
+    # security-group grant. Only set on security-group grants; ``entra_scope`` covers the rest.
+    entra_application_scope: str | None = None
+    # False for a security-group grant, which authorizes Entra tokens only.
+    keys_available: bool = True
+    via_group_id: str | None = None
+    via_group_name: str | None = None
 
 
 class KeyRevealRequest(MosaicModel):

@@ -22,7 +22,11 @@ from mosaic_api.domain import (
 )
 from mosaic_api.errors import ValidationError
 from mosaic_api.integrations import access_policy
-from mosaic_api.integrations.access_policy import grant_counter_identity, render_governed_policy
+from mosaic_api.integrations.access_policy import (
+    governed_counter_key_expression,
+    grant_counter_identity,
+    render_governed_policy,
+)
 from mosaic_api.integrations.apim.model_apis import curated_operations
 from mosaic_api.integrations.policy import PublicationPolicy, _serialize
 
@@ -90,6 +94,19 @@ def _grant(number: int = 1, **overrides: object) -> ModelAccessGrant:
             **overrides,
         }
     )
+
+
+def _group_grant(number: int = 1, **overrides: object) -> ModelAccessGrant:
+    values: dict[str, object] = {
+        "subject": EntitlementSubject(
+            kind=EntitlementSubjectKind.SECURITY_GROUP, id=f"group-principal-{number}"
+        ),
+        "object_id": f"{number:08x}-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        "display_name": f"Group {number}",
+        "subscription_name": None,
+    }
+    values.update(overrides)
+    return _grant(number, **values)
 
 
 def _snapshot(**overrides: object) -> ModelAccessSnapshot:
@@ -280,7 +297,8 @@ def test_presence_includes_empty_query_or_header_and_any_authorization_header() 
 
 
 def test_keys_require_native_validation_and_exact_enabled_allowlist() -> None:
-    fragment = _fragment(_snapshot(grants=[_grant(), _grant(2, enabled=False)]))
+    group = _group_grant(3)
+    fragment = _fragment(_snapshot(grants=[_grant(), _grant(2, enabled=False), group]))
     lookup = _variable_values(fragment, "mosaic-key-grant")[-1]
     assert 'if (context.Subscription == null) return "";' in lookup
     assert "var subscription = context.Subscription.Id;" in lookup
@@ -289,6 +307,8 @@ def test_keys_require_native_validation_and_exact_enabled_allowlist() -> None:
         in lookup
     )
     assert "mosaic-grant-2" not in lookup
+    assert group.object_id not in lookup
+    assert grant_counter_identity(_publication(), group) not in lookup
     assert "mosaic-bootstrap" not in lookup
     assert "master" not in lookup
     assert lookup.endswith('return "";\n}')
@@ -349,9 +369,11 @@ def test_claim_lookup_guards_nulls_and_cardinality_and_distinguishes_token_kinds
         "objects == null || objects.Length != 1 || String.IsNullOrWhiteSpace(objects[0])" in lookup
     )
     assert 'if (jwt.Claims.ContainsKey("scp")) {' in lookup
-    assert '} else if (jwt.Claims.ContainsKey("roles")) {' in lookup
+    assert 'if (!hasRealScopes && jwt.Claims.ContainsKey("roles")) {' in lookup
     assert "scopes != null && scopes.Length == 1 && scopes[0] != null" in lookup
-    assert "scopes[0].Split(' ').Contains(\"Models.Invoke\")" in lookup
+    assert "foreach (var scope in scopes[0].Split(' '))" in lookup
+    assert 'String.IsNullOrWhiteSpace(scope) || scope == "/"' in lookup
+    assert 'String.Equals(scope, "Models.Invoke", StringComparison.Ordinal)' in lookup
     assert 'application = roles != null && roles.Contains("Models.Invoke.Application");' in lookup
     assert 'roles.Contains("Models.Invoke")' not in lookup
     assert f'if (delegated && String.Equals(oid, "{user.object_id}"' in lookup
@@ -361,6 +383,172 @@ def test_claim_lookup_guards_nulls_and_cardinality_and_distinguishes_token_kinds
     assert "context.User" not in lookup
     assert "Headers" not in lookup
     assert lookup.endswith('return "";\n}')
+
+
+@pytest.mark.parametrize("scp_literal", ['""', '"/"'])
+def test_empty_and_slash_scp_take_application_role_path(scp_literal: str) -> None:
+    lookup = _variable_values(_fragment(), "mosaic-token-grant")[-1]
+    scp_index = lookup.index('if (jwt.Claims.ContainsKey("scp"))')
+    roles_index = lookup.index('if (!hasRealScopes && jwt.Claims.ContainsKey("roles"))')
+    assert scp_index < roles_index
+    assert 'scope == "/"' in lookup
+    assert "hasRealScopes = true;" in lookup
+    assert 'roles.Contains("Models.Invoke.Application")' in lookup
+    assert scp_literal.strip('"') in lookup
+
+
+def test_absent_scp_takes_application_path_and_real_scopes_stay_delegated() -> None:
+    lookup = _variable_values(_fragment(), "mosaic-token-grant")[-1]
+    assert 'if (!hasRealScopes && jwt.Claims.ContainsKey("roles"))' in lookup
+    assert 'String.Equals(scope, "Models.Invoke", StringComparison.Ordinal)' in lookup
+    assert "delegated = true;" in lookup
+    assert lookup.index("delegated = true;") < lookup.index("roles.Contains")
+
+
+def test_parameterized_scope_and_role_names_are_emitted() -> None:
+    fragment = _fragment()
+    default_lookup = _variable_values(fragment, "mosaic-token-grant")[-1]
+    custom = ET.fromstring(
+        render_governed_policy(
+            _publication(),
+            _snapshot(),
+            delegated_scope="Mcp.Invoke",
+            application_role="Mcp.Invoke.Application",
+        ).fragment_xml
+    )
+    custom_lookup = _variable_values(custom, "mosaic-token-grant")[-1]
+    assert '"Models.Invoke"' in default_lookup
+    assert '"Models.Invoke.Application"' in default_lookup
+    assert '"Mcp.Invoke"' in custom_lookup
+    assert '"Mcp.Invoke.Application"' in custom_lookup
+    assert '"Models.Invoke"' not in custom_lookup
+
+
+def test_group_token_branch_follows_direct_grants_in_precedence_order() -> None:
+    publication = _publication()
+    direct = _grant(9)
+    limited = _group_grant(
+        2,
+        entitlement_id="z-limited",
+        enforcement=EntitlementEnforcement(tokens=_tokens(tokens_per_minute=10)),
+    )
+    generous = _group_grant(3, entitlement_id="a-unlimited", enforcement=None)
+    fragment = _fragment(_snapshot(grants=[limited, direct, generous]), publication)
+    lookup = _variable_values(fragment, "mosaic-token-grant")[-1]
+
+    direct_return = f'return "{grant_counter_identity(publication, direct)}";'
+    generous_return = f'return "{grant_counter_identity(publication, generous)}";'
+    limited_return = f'return "{grant_counter_identity(publication, limited)}";'
+    assert lookup.index(direct_return) < lookup.index('jwt.Claims.ContainsKey("groups")')
+    assert lookup.index(generous_return) < lookup.index(limited_return)
+
+
+def test_group_matching_uses_lowercase_literals_case_insensitively() -> None:
+    group = _group_grant(1, object_id="ABCDEF12-AAAA-BBBB-CCCC-ABCDEFABCDEF")
+    lookup = _variable_values(_fragment(_snapshot(grants=[group])), "mosaic-token-grant")[-1]
+    assert '"abcdef12-aaaa-bbbb-cccc-abcdefabcdef"' in lookup
+    assert '"ABCDEF12-AAAA-BBBB-CCCC-ABCDEFABCDEF"' not in lookup
+    assert "StringComparison.OrdinalIgnoreCase" in lookup
+    assert 'jwt.Claims.ContainsKey("groups") ? jwt.Claims["groups"] : null' in lookup
+
+
+def test_group_limits_are_counted_per_member_and_direct_keys_stay_exact() -> None:
+    publication = _publication()
+    direct = _grant(1, enforcement=_full_enforcement())
+    group = _group_grant(2, enforcement=_full_enforcement())
+    fragment = _fragment(_snapshot(grants=[direct, group]), publication)
+    direct_id = grant_counter_identity(publication, direct)
+    group_id = grant_counter_identity(publication, group)
+    counters = _counters(fragment)
+
+    assert f"mosaic:governed:grant-request-rate:{direct_id}" in counters
+    assert f"mosaic:governed:grant-tokens:{direct_id}" in counters
+    assert any(
+        f'return "mosaic:governed:grant-request-quota:{direct_id}:Monthly:"'
+        in counter
+        and ' + ":" + (string)context.Variables["mosaic-member"]' not in counter
+        for counter in counters
+    )
+    assert (
+        f'@("mosaic:governed:grant-request-rate:{group_id}:" + {access_policy._MEMBER})'
+        in counters
+    )
+    assert f'@("mosaic:governed:grant-tokens:{group_id}:" + {access_policy._MEMBER})' in counters
+    assert any(
+        f'return "mosaic:governed:grant-request-quota:{group_id}:Monthly:"'
+        in counter
+        and ' + ":" + (string)context.Variables["mosaic-member"]' in counter
+        for counter in counters
+    )
+
+
+def test_publication_counter_appends_member_only_for_group_callers() -> None:
+    fragment = _fragment(_snapshot(grants=[_grant(), _group_grant(2)]))
+    publication_counter = _counters(fragment)[-1]
+    assert publication_counter == (
+        '@("mosaic:governed:publication-tokens:" + (string)context.Variables["mosaic-grant"] + '
+        '(String.IsNullOrEmpty((string)context.Variables["mosaic-member"]) ? "" : ":" + '
+        '(string)context.Variables["mosaic-member"]))'
+    )
+
+
+def test_publication_counter_is_unchanged_without_group_grants() -> None:
+    publication_counter = _counters(_fragment(_snapshot(grants=[_grant()])))[-1]
+    assert publication_counter == (
+        '@("mosaic:governed:publication-tokens:" + (string)context.Variables["mosaic-grant"])'
+    )
+
+
+def test_single_line_expressions_never_nest_multi_statement_blocks() -> None:
+    fragment = _fragment(_snapshot(grants=[_grant(), _group_grant(2)]))
+    for element in fragment.iter():
+        for value in element.attrib.values():
+            if value.startswith("@("):
+                assert "@{" not in value, value
+
+
+def test_governed_counter_key_expression_matches_direct_and_group_publication_keys() -> None:
+    publication = _publication()
+    direct = _grant()
+    group = _group_grant(2)
+    direct_id = grant_counter_identity(publication, direct)
+    group_id = grant_counter_identity(publication, group)
+
+    assert governed_counter_key_expression(publication, direct) == (
+        f'@("mosaic:governed:publication-tokens:{direct_id}")'
+    )
+    assert governed_counter_key_expression(publication, group) == (
+        f'@("mosaic:governed:publication-tokens:{group_id}:" + '
+        '(string)context.Variables["mosaic-member"])'
+    )
+
+
+def test_member_variable_is_set_on_all_authentication_paths() -> None:
+    key_only = _fragment(
+        _snapshot(settings=ModelAccessSettings(entra_enabled=False), audience=None)
+    )
+    assert _variable_values(key_only, "mosaic-member") == [""]
+
+    token_group = _fragment(_snapshot(grants=[_group_grant(2)]))
+    members = _variable_values(token_group, "mosaic-member")
+    assert members[0] == ""
+    assert 'return objects[0].ToLowerInvariant();' in members[-1]
+
+
+def test_group_overage_message_is_emitted_only_when_group_grants_exist() -> None:
+    direct = render_governed_policy(_publication(), _snapshot()).fragment_xml
+    group = render_governed_policy(_publication(), _snapshot(grants=[_group_grant(2)])).fragment_xml
+
+    assert "too many" not in direct
+    assert "too many" in group
+    assert "jwt.Claims.ContainsKey(&quot;hasgroups&quot;)" in group
+    assert "jwt.Claims.ContainsKey(&quot;_claim_names&quot;)" in group
+    overage = next(
+        condition
+        for condition in _conditions(_fragment(_snapshot(grants=[_group_grant(2)])))
+        if "_claim_names" in condition
+    )
+    assert overage.startswith("@{\nif (!String.IsNullOrEmpty(")
 
 
 def test_two_credentials_must_resolve_to_same_grant_with_no_fallback() -> None:
@@ -411,6 +599,28 @@ def test_duplicate_allowlist_identities_are_rejected_even_if_one_grant_is_disabl
     second = _grant(2, enabled=False, **{identity: getattr(first, identity)})
     with pytest.raises(ValidationError, match="unambiguous"):
         render_governed_policy(_publication(), _snapshot(grants=[first, second]))
+
+
+def test_security_group_grants_require_entra_and_guid_object_ids() -> None:
+    with pytest.raises(ValidationError, match="Entra"):
+        render_governed_policy(
+            _publication(),
+            _snapshot(
+                settings=ModelAccessSettings(entra_enabled=False),
+                audience=None,
+                grants=[_group_grant()],
+            ),
+        )
+    with pytest.raises(ValidationError, match="GUID object ID"):
+        render_governed_policy(
+            _publication(),
+            _snapshot(grants=[_group_grant(object_id="not-a-guid")]),
+        )
+
+
+def test_security_group_grant_with_subscription_is_rejected_by_domain_model() -> None:
+    with pytest.raises(ValueError, match="no subscription"):
+        _group_grant(subscription_name="mosaic-group-key")
 
 
 @pytest.mark.parametrize("identity", ["entitlement_id", "subscription_name", "object_id"])
@@ -991,6 +1201,27 @@ def test_facets_are_redacted_semantics_not_markup_claims_or_counter_expressions(
     )
     assert any("Removes the subscription-key" in facet.summary for facet in result.facets)
     assert result.unrecognized_elements == []
+
+
+def test_group_grant_facets_describe_matching_precedence_and_per_member_limits() -> None:
+    result = render_governed_policy(
+        _publication(),
+        _snapshot(grants=[_grant(), _group_grant(2), _group_grant(3, enabled=False)]),
+    )
+    facet = result.facets[0]
+    assert facet.attributes["security-group-grants"] == "1"
+    assert any("1 enabled security-group grant" in detail for detail in facet.details)
+    assert any("groups claim" in detail for detail in facet.details)
+    assert any("Entra tokens only" in detail for detail in facet.details)
+    assert any("separately to each validated member" in detail for detail in facet.details)
+    assert any("direct user or application grant" in detail for detail in facet.details)
+
+
+def test_direct_only_facets_remain_without_group_language() -> None:
+    result = render_governed_policy(_publication(), _snapshot())
+    facet = result.facets[0]
+    assert "security-group-grants" not in facet.attributes
+    assert not any("security-group grant" in detail for detail in facet.details)
 
 
 def test_fragment_size_boundary_is_inclusive(monkeypatch: pytest.MonkeyPatch) -> None:

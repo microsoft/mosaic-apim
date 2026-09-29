@@ -257,6 +257,7 @@ describe('McpsPage', () => {
     renderPage()
 
     expect(await screen.findByText('No MCP servers imported yet')).toBeVisible()
+    expect(screen.getByText(/MCP grants are recorded, not yet enforced/)).toBeVisible()
   })
 
   it('shows the transport and gateway of an imported server', async () => {
@@ -552,4 +553,3 @@ describe('McpsPage', () => {
     })
   })
 })
-

@@ -123,6 +123,7 @@ export const connectionInfo: ModelConnection = {
   operations: [{ name: 'chat', method: 'POST', path: '/chat/completions' }],
   publicationLimits: accessSnapshot.publicationEnforcement,
   grantLimits: null,
+  keysAvailable: true,
 }
 
 export const accessPlan: PublishPlan = {

@@ -14,6 +14,7 @@ from mosaic_api.domain import ApimResourceId
 from mosaic_api.integrations.aoai import CognitiveServicesClient
 from mosaic_api.integrations.aoai.client import SubscriptionScanner
 from mosaic_api.integrations.apim import ApimClient, ApimWriter, ArmClient
+from mosaic_api.integrations.graph import DirectoryLookup
 from mosaic_api.main import create_app
 from mosaic_api.repositories import (
     InMemoryGatewayRepository,
@@ -21,6 +22,7 @@ from mosaic_api.repositories import (
     InMemoryModelEndpointRepository,
 )
 from mosaic_api.services import (
+    DirectoryService,
     GatewayService,
     McpEndpointService,
     ModelEndpointService,
@@ -48,6 +50,26 @@ def settings() -> Settings:
 def client(settings: Settings) -> Iterator[TestClient]:
     with TestClient(create_app(settings)) as test_client:
         yield test_client
+
+
+@pytest.fixture
+def directory_client(settings: Settings) -> Iterator[TestClient]:
+    app: FastAPI = create_app(settings)
+    with TestClient(app) as test_client:
+        yield test_client
+
+
+def install_directory_lookup(app: FastAPI, lookup: DirectoryLookup) -> None:
+    app.state.directory_lookup = lookup
+    app.state.directory_service = DirectoryService(
+        app.state.repository,
+        gateway_repository=app.state.gateway_repository,
+        entitlement_repository=app.state.entitlement_repository,
+        directory_lookup=lookup,
+        group_claims_enabled=app.state.settings.entra_group_claims,
+    )
+    # The portal services hold this same instance, so swap its lookup rather than rebuild it.
+    app.state.entitlement_service._directory_lookup = lookup
 
 
 @pytest.fixture

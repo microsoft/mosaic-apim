@@ -44,6 +44,14 @@ class MosaicEntraTests(unittest.TestCase):
             "eff1a5fa-fabb-5594-8879-78b951ecb47d",
         )
         self.assertEqual(
+            mosaic_entra.mcp_runtime_scope_id(),
+            "071bee3a-4976-5030-bfb4-9885425c8ffd",
+        )
+        self.assertEqual(
+            mosaic_entra.mcp_runtime_role_id(),
+            "3bb39283-dd51-54cb-adb8-fba6d22b873e",
+        )
+        self.assertEqual(
             len(
                 {
                     mosaic_entra.api_scope_id(),
@@ -51,9 +59,11 @@ class MosaicEntraTests(unittest.TestCase):
                     mosaic_entra.portal_role_id(),
                     mosaic_entra.model_runtime_scope_id(),
                     mosaic_entra.model_runtime_role_id(),
+                    mosaic_entra.mcp_runtime_scope_id(),
+                    mosaic_entra.mcp_runtime_role_id(),
                 }
             ),
-            5,
+            7,
         )
 
     def test_redirect_normalization_is_unique(self) -> None:
@@ -98,7 +108,43 @@ class MosaicEntraTests(unittest.TestCase):
         self.assertEqual(roles["User"]["id"], mosaic_entra.portal_role_id())
         self.assertIn("User", roles["User"]["allowedMemberTypes"])
         self.assertEqual(payload["identifierUris"], ["api://example"])
+        self.assertEqual(payload["groupMembershipClaims"], "SecurityGroup")
         self.assertTrue(all("origin" not in role for role in payload["appRoles"]))
+
+    def test_group_claims_are_opt_in_additive_and_warn_on_unsupported_values(self) -> None:
+        with mock.patch.dict(os.environ, {"MOSAIC_ENTRA_GROUP_CLAIMS": "false"}):
+            payload = mosaic_entra.build_api_app_payload(
+                display_name="mosaic-test-api",
+                identifier_uri="api://example",
+                tags=["product:MOSAIC"],
+            )
+        self.assertNotIn("groupMembershipClaims", payload)
+        for existing in (None, "", "None"):
+            payload = mosaic_entra.build_api_app_payload(
+                display_name="mosaic-test-api",
+                identifier_uri="api://example",
+                tags=["product:MOSAIC"],
+                existing_group_membership_claims=existing,
+            )
+            self.assertEqual(payload["groupMembershipClaims"], "SecurityGroup")
+        for existing in ("All", "SecurityGroup", "SecurityGroup,DirectoryRole"):
+            payload = mosaic_entra.build_api_app_payload(
+                display_name="mosaic-test-api",
+                identifier_uri="api://example",
+                tags=["product:MOSAIC"],
+                existing_group_membership_claims=existing,
+            )
+            self.assertEqual(payload["groupMembershipClaims"], existing)
+        output = StringIO()
+        with redirect_stderr(output):
+            payload = mosaic_entra.build_api_app_payload(
+                display_name="mosaic-test-api",
+                identifier_uri="api://example",
+                tags=["product:MOSAIC"],
+                existing_group_membership_claims="DirectoryRole",
+            )
+        self.assertNotIn("groupMembershipClaims", payload)
+        self.assertIn("Set it to 'SecurityGroup' or 'All'", output.getvalue())
 
     def test_api_payload_pre_authorizes_spa_and_portal(self) -> None:
         payload = mosaic_entra.build_api_app_payload(
@@ -218,23 +264,27 @@ class MosaicEntraTests(unittest.TestCase):
         self.assertEqual(payload["signInAudience"], "AzureADMyOrg")
         self.assertEqual(payload["api"]["requestedAccessTokenVersion"], 2)
         self.assertEqual(payload["identifierUris"], ["api://11111111-1111-1111-1111-111111111111"])
-        self.assertEqual(len(payload["api"]["oauth2PermissionScopes"]), 1)
-        scope = payload["api"]["oauth2PermissionScopes"][0]
-        self.assertEqual(scope["id"], mosaic_entra.model_runtime_scope_id())
-        self.assertEqual(scope["value"], "Models.Invoke")
-        self.assertEqual(scope["type"], "Admin")
-        self.assertTrue(scope["isEnabled"])
-        self.assertEqual(len(payload["appRoles"]), 1)
-        role = payload["appRoles"][0]
-        self.assertEqual(role["id"], mosaic_entra.model_runtime_role_id())
-        self.assertEqual(role["value"], "Models.Invoke.Application")
-        self.assertNotEqual(role["value"].casefold(), scope["value"].casefold())
-        self.assertNotIn("origin", role)
-        self.assertEqual(role["allowedMemberTypes"], ["Application"])
-        self.assertTrue(role["isEnabled"])
+        scopes = {scope["value"]: scope for scope in payload["api"]["oauth2PermissionScopes"]}
+        self.assertEqual(set(scopes), {"Models.Invoke", "Mcp.Invoke"})
+        self.assertEqual(scopes["Models.Invoke"]["id"], mosaic_entra.model_runtime_scope_id())
+        self.assertEqual(scopes["Models.Invoke"]["type"], "Admin")
+        self.assertTrue(scopes["Models.Invoke"]["isEnabled"])
+        self.assertEqual(scopes["Mcp.Invoke"]["id"], mosaic_entra.mcp_runtime_scope_id())
+        self.assertIn("MCP servers", scopes["Mcp.Invoke"]["adminConsentDescription"])
+        roles = {role["value"]: role for role in payload["appRoles"]}
+        self.assertEqual(set(roles), {"Models.Invoke.Application", "Mcp.Invoke.Application"})
+        self.assertEqual(
+            roles["Models.Invoke.Application"]["id"], mosaic_entra.model_runtime_role_id()
+        )
+        self.assertEqual(roles["Mcp.Invoke.Application"]["id"], mosaic_entra.mcp_runtime_role_id())
+        for role in roles.values():
+            self.assertNotIn("origin", role)
+            self.assertEqual(role["allowedMemberTypes"], ["Application"])
+            self.assertTrue(role["isEnabled"])
         self.assertNotIn("preAuthorizedApplications", payload["api"])
         self.assertNotIn("requiredResourceAccess", payload)
         self.assertNotIn("spa", payload)
+        self.assertEqual(payload["groupMembershipClaims"], "SecurityGroup")
 
     def test_model_runtime_preserves_operator_client_preauthorization(self) -> None:
         existing_api = {
@@ -257,6 +307,45 @@ class MosaicEntraTests(unittest.TestCase):
             self.assertEqual(payload["api"][key], value)
         self.assertEqual(existing_api, original)
 
+    def test_model_runtime_merges_mcp_scope_and_role_without_removing_existing_items(self) -> None:
+        existing_api = {
+            "oauth2PermissionScopes": [
+                {
+                    "id": mosaic_entra.model_runtime_scope_id(),
+                    "value": "Models.Invoke",
+                    "isEnabled": True,
+                    "type": "Admin",
+                },
+                {"id": "operator-scope", "value": "Other.Scope", "isEnabled": True},
+            ]
+        }
+        existing_roles = [
+            {
+                "id": mosaic_entra.model_runtime_role_id(),
+                "value": "Models.Invoke.Application",
+                "allowedMemberTypes": ["Application"],
+                "isEnabled": True,
+            },
+            {"id": "operator-role", "value": "Other.Role", "isEnabled": True},
+        ]
+        payload = mosaic_entra.build_model_runtime_app_payload(
+            display_name="mosaic-test-model-runtime",
+            identifier_uri="api://11111111-1111-1111-1111-111111111111",
+            tags=["product:MOSAIC"],
+            existing_api=existing_api,
+            existing_app_roles=existing_roles,
+        )
+        self.assertEqual(
+            {scope["value"] for scope in payload["api"]["oauth2PermissionScopes"]},
+            {"Models.Invoke", "Mcp.Invoke", "Other.Scope"},
+        )
+        self.assertEqual(
+            {role["value"] for role in payload["appRoles"]},
+            {"Models.Invoke.Application", "Mcp.Invoke.Application", "Other.Role"},
+        )
+        self.assertEqual(existing_api["oauth2PermissionScopes"][1]["id"], "operator-scope")
+        self.assertEqual(existing_roles[1]["id"], "operator-role")
+
     def test_model_client_payload_is_a_public_client_for_the_runtime_scope_only(self) -> None:
         runtime_client_id = "11111111-1111-1111-1111-111111111111"
         payload = mosaic_entra.build_model_client_app_payload(
@@ -274,7 +363,8 @@ class MosaicEntraTests(unittest.TestCase):
                 {
                     "resourceAppId": runtime_client_id,
                     "resourceAccess": [
-                        {"id": mosaic_entra.model_runtime_scope_id(), "type": "Scope"}
+                        {"id": mosaic_entra.model_runtime_scope_id(), "type": "Scope"},
+                        {"id": mosaic_entra.mcp_runtime_scope_id(), "type": "Scope"},
                     ],
                 }
             ],
@@ -330,7 +420,19 @@ class MosaicEntraTests(unittest.TestCase):
                 "https://login.microsoftonline.com/common/oauth2/nativeclient",
             ],
         )
-        self.assertEqual(payload["requiredResourceAccess"], original["requiredResourceAccess"])
+        self.assertEqual(
+            payload["requiredResourceAccess"],
+            [
+                graph_access,
+                {
+                    "resourceAppId": runtime_client_id,
+                    "resourceAccess": [
+                        {"id": mosaic_entra.model_runtime_scope_id(), "type": "Scope"},
+                        {"id": mosaic_entra.mcp_runtime_scope_id(), "type": "Scope"},
+                    ],
+                },
+            ],
+        )
         self.assertEqual(existing, original)
 
     def test_model_client_toggle_defaults_on_and_rejects_unknown_values(self) -> None:
@@ -402,7 +504,11 @@ class MosaicEntraTests(unittest.TestCase):
         )
         self.assertEqual(len({app["appId"] for app in apps.values()}), 5)
         self.assertEqual(len({app["id"] for app in apps.values()}), 5)
-        service_principals = runner._dry_run_objects["servicePrincipals"]
+        service_principals = {
+            object_id: sp
+            for object_id, sp in runner._dry_run_objects["servicePrincipals"].items()
+            if sp["appId"] != mosaic_entra.GRAPH_APP_ID
+        }
         self.assertEqual(len(service_principals), 5)
         api = apps["mosaic-test-api"]
         runtime = apps["mosaic-test-model-runtime"]
@@ -450,7 +556,8 @@ class MosaicEntraTests(unittest.TestCase):
                 {
                     "resourceAppId": runtime["appId"],
                     "resourceAccess": [
-                        {"id": mosaic_entra.model_runtime_scope_id(), "type": "Scope"}
+                        {"id": mosaic_entra.model_runtime_scope_id(), "type": "Scope"},
+                        {"id": mosaic_entra.mcp_runtime_scope_id(), "type": "Scope"},
                     ],
                 }
             ],
@@ -471,7 +578,7 @@ class MosaicEntraTests(unittest.TestCase):
                     "clientId": model_client_sp["id"],
                     "consentType": "AllPrincipals",
                     "resourceId": runtime_sp["id"],
-                    "scope": "Models.Invoke",
+                    "scope": "Models.Invoke Mcp.Invoke",
                 }
             ],
         )
@@ -572,6 +679,7 @@ class MosaicEntraTests(unittest.TestCase):
             self.assertIn("requiredResourceAccess", selection.split(","))
             self.assertIn("publicClient", selection.split(","))
         os.environ["PORTAL_APP_URL"] = "https://mosaic-portal.example.com"
+        os.environ["MOSAIC_ENTRA_DIRECTORY_LOOKUP"] = "false"
         with redirect_stderr(StringIO()):
             mosaic_entra.postprovision(runner, "mosaic-test", "https://mosaic-spa.example.com")
         self.assertEqual(runner._dry_run_objects, original_objects)
@@ -634,7 +742,16 @@ class MosaicEntraTests(unittest.TestCase):
         names = {app["displayName"] for app in runner._dry_run_objects["applications"].values()}
         self.assertEqual(len(names), 4)
         self.assertNotIn("mosaic-test-model-client", names)
-        self.assertEqual(len(runner._dry_run_objects["servicePrincipals"]), 4)
+        self.assertEqual(
+            len(
+                [
+                    sp
+                    for sp in runner._dry_run_objects["servicePrincipals"].values()
+                    if sp["appId"] != mosaic_entra.GRAPH_APP_ID
+                ]
+            ),
+            4,
+        )
         self.assertEqual(runner._dry_run_objects["oauth2PermissionGrants"], {})
         self.assertIn("MOSAIC_MODEL_RUNTIME_CLIENT_ID", os.environ)
         self.assertNotIn("MOSAIC_MODEL_CLIENT_ID", os.environ)
@@ -709,11 +826,11 @@ class MosaicEntraTests(unittest.TestCase):
                 (
                     "PATCH",
                     f"/v1.0/oauth2PermissionGrants/{tenant_grant['id']}",
-                    {"scope": "Other.Scope Models.Invoke"},
+                    {"scope": "Other.Scope Models.Invoke Mcp.Invoke"},
                 )
             ],
         )
-        self.assertEqual(tenant_grant["scope"], "Other.Scope Models.Invoke")
+        self.assertEqual(tenant_grant["scope"], "Other.Scope Models.Invoke Mcp.Invoke")
         self.assertEqual(
             [grant["consentType"] for grant in grants.values()].count("AllPrincipals"), 1
         )
@@ -747,7 +864,7 @@ class MosaicEntraTests(unittest.TestCase):
         self.assertIn("WARNING", output.getvalue())
         self.assertIn(
             f"az ad app permission grant --id {client_id} --api {runtime_id} "
-            "--scope Models.Invoke",
+            '--scope "Models.Invoke Mcp.Invoke"',
             output.getvalue(),
         )
         self.assertIn("Grant admin consent", output.getvalue())
@@ -776,7 +893,7 @@ class MosaicEntraTests(unittest.TestCase):
                 "clientId": MODEL_CLIENT_CONSENT["client_service_principal_id"],
                 "consentType": "AllPrincipals",
                 "resourceId": MODEL_CLIENT_CONSENT["runtime_service_principal_id"],
-                "scope": "Models.Invoke",
+                "scope": "Models.Invoke Mcp.Invoke",
             },
         )
 
@@ -813,15 +930,185 @@ class MosaicEntraTests(unittest.TestCase):
             mosaic_entra.ensure_model_client_consent(runner, **MODEL_CLIENT_CONSENT)
         sleep.assert_not_called()
 
+    def test_graph_application_permissions_skip_already_assigned_roles(self) -> None:
+        graph_sp = {
+            "id": "graph-sp",
+            "appRoles": [
+                {
+                    "id": f"role-{value}",
+                    "value": value,
+                    "allowedMemberTypes": ["Application"],
+                    "isEnabled": True,
+                }
+                for value in mosaic_entra.GRAPH_APPLICATION_PERMISSION_VALUES
+            ],
+        }
+        runner = mock.Mock()
+        runner.az_json.side_effect = [
+            {"value": [graph_sp]},
+            {
+                "value": [
+                    {"resourceId": "graph-sp", "appRoleId": f"role-{value}"}
+                    for value in mosaic_entra.GRAPH_APPLICATION_PERMISSION_VALUES
+                ]
+            },
+        ]
+        mosaic_entra.ensure_api_managed_identity_graph_permissions(
+            runner, managed_identity_principal_id="api-msi"
+        )
+        self.assertFalse(
+            any(
+                call.args[0][:3] == ["rest", "--method", "POST"]
+                for call in runner.az_json.mock_calls
+            )
+        )
+
+    def test_graph_application_permissions_assign_missing_roles(self) -> None:
+        graph_sp = {
+            "id": "graph-sp",
+            "appRoles": [
+                {
+                    "id": f"role-{value}",
+                    "value": value,
+                    "allowedMemberTypes": ["Application"],
+                    "isEnabled": True,
+                }
+                for value in mosaic_entra.GRAPH_APPLICATION_PERMISSION_VALUES
+            ],
+        }
+        runner = mock.Mock()
+        runner.az_json.side_effect = [{"value": [graph_sp]}, {"value": []}, {}, {}, {}]
+        with redirect_stderr(StringIO()):
+            mosaic_entra.ensure_api_managed_identity_graph_permissions(
+                runner, managed_identity_principal_id="api-msi"
+            )
+        posts = [
+            json.loads(call.args[0][call.args[0].index("--body") + 1])
+            for call in runner.az_json.mock_calls
+            if call.args[0][:3] == ["rest", "--method", "POST"]
+        ]
+        self.assertEqual(
+            posts,
+            [
+                {
+                    "principalId": "api-msi",
+                    "resourceId": "graph-sp",
+                    "appRoleId": f"role-{value}",
+                }
+                for value in mosaic_entra.GRAPH_APPLICATION_PERMISSION_VALUES
+            ],
+        )
+
+    def test_graph_application_permissions_warns_when_role_is_not_offered(self) -> None:
+        graph_sp = {
+            "id": "graph-sp",
+            "appRoles": [
+                {
+                    "id": "role-User.ReadBasic.All",
+                    "value": "User.ReadBasic.All",
+                    "allowedMemberTypes": ["Application"],
+                    "isEnabled": True,
+                }
+            ],
+        }
+        runner = mock.Mock()
+        runner.az_json.side_effect = [{"value": [graph_sp]}, {"value": []}, {}]
+        output = StringIO()
+        with redirect_stderr(output):
+            mosaic_entra.ensure_api_managed_identity_graph_permissions(
+                runner, managed_identity_principal_id="api-msi"
+            )
+        posts = [
+            call.args[0]
+            for call in runner.az_json.mock_calls
+            if call.args[0][:3] == ["rest", "--method", "POST"]
+        ]
+        self.assertEqual(len(posts), 1)
+        self.assertIn("AgentIdentity.Read.All", output.getvalue())
+
+    def test_graph_application_permissions_denial_prints_admin_commands(self) -> None:
+        graph_sp = {
+            "id": "graph-sp",
+            "appRoles": [
+                {
+                    "id": f"role-{value}",
+                    "value": value,
+                    "allowedMemberTypes": ["Application"],
+                    "isEnabled": True,
+                }
+                for value in mosaic_entra.GRAPH_APPLICATION_PERMISSION_VALUES
+            ],
+        }
+        runner = mock.Mock()
+        runner.az_json.side_effect = [
+            {"value": [graph_sp]},
+            {"value": []},
+            mosaic_entra.OperationFailed(
+                "Operation grant failed: Authorization_RequestDenied: Insufficient privileges"
+            ),
+        ]
+        output = StringIO()
+        with redirect_stderr(output):
+            mosaic_entra.ensure_api_managed_identity_graph_permissions(
+                runner, managed_identity_principal_id="api-msi"
+            )
+        text = output.getvalue()
+        self.assertIn("Missing permissions: User.ReadBasic.All, GroupMember.Read.All", text)
+        self.assertIn(
+            f"az rest --method POST --url {mosaic_entra.GRAPH_ROOT}/servicePrincipals/"
+            "api-msi/appRoleAssignments",
+            text,
+        )
+        self.assertIn('"appRoleId":"role-AgentIdentity.Read.All"', text)
+
+    @mock.patch.dict(
+        os.environ,
+        {
+            "WEB_APP_URL": "https://mosaic-web.example.com",
+            "MOSAIC_API_CLIENT_ID": "11111111-1111-1111-1111-111111111111",
+            "MOSAIC_ENTRA_DIRECTORY_LOOKUP": "false",
+        },
+        clear=True,
+    )
+    def test_postprovision_directory_lookup_toggle_skips_graph_permission_grants(self) -> None:
+        runner = mosaic_entra.CliRunner(dry_run=True)
+        output = StringIO()
+        with (
+            mock.patch.object(runner, "az_json", wraps=runner.az_json) as az_json,
+            redirect_stderr(output),
+        ):
+            mosaic_entra.postprovision(runner, "mosaic-test", "https://mosaic-spa.example.com")
+        self.assertIn("MOSAIC_ENTRA_DIRECTORY_LOOKUP is false", output.getvalue())
+        self.assertFalse(
+            any(
+                len(call.args[0]) > 4 and "appRoleAssignments" in call.args[0][4]
+                for call in az_json.call_args_list
+            )
+        )
+
     def test_model_client_infrastructure_wiring_is_optional(self) -> None:
         root = Path(__file__).resolve().parents[2]
         parameters = json.loads(root.joinpath("infra", "main.parameters.json").read_text())
         self.assertEqual(
             parameters["parameters"]["modelClientId"]["value"], "${MOSAIC_MODEL_CLIENT_ID}"
         )
+        self.assertEqual(
+            parameters["parameters"]["entraDirectoryLookup"]["value"],
+            "${MOSAIC_ENTRA_DIRECTORY_LOOKUP=true}",
+        )
+        self.assertEqual(
+            parameters["parameters"]["entraGroupClaims"]["value"],
+            "${MOSAIC_ENTRA_GROUP_CLAIMS=true}",
+        )
         template = root.joinpath("infra", "main.bicep").read_text()
         self.assertIn("param modelClientId string = ''", template)
         self.assertIn("name: 'MOSAIC_MODEL_CLIENT_ID'\n    value: modelClientId", template)
+        self.assertIn("param entraDirectoryLookup string = 'true'", template)
+        self.assertIn("param entraGroupClaims string = 'true'", template)
+        self.assertIn(
+            "name: 'MOSAIC_ENTRA_DIRECTORY_LOOKUP'\n    value: entraDirectoryLookup", template
+        )
+        self.assertIn("name: 'MOSAIC_ENTRA_GROUP_CLAIMS'\n    value: entraGroupClaims", template)
         self.assertIn("output MOSAIC_MODEL_CLIENT_ID string = modelClientId", template)
         example = root.joinpath("apps", "api", ".env.example").read_text()
         self.assertIn("# MOSAIC_MODEL_CLIENT_ID=", example)

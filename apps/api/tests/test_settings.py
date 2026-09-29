@@ -224,3 +224,34 @@ def test_model_client_id_environment_wiring(monkeypatch: pytest.MonkeyPatch) -> 
     assert local_settings().model_client_id == MODEL_CLIENT_ID
     monkeypatch.setenv("MOSAIC_MODEL_CLIENT_ID", "")
     assert local_settings().model_client_id is None
+
+
+def test_directory_settings_default_to_graph_lookup_and_group_claims() -> None:
+    settings = local_settings()
+    assert settings.entra_directory_lookup is True
+    assert settings.entra_group_claims is True
+    assert str(settings.graph_endpoint).rstrip("/") == "https://graph.microsoft.com"
+
+
+def test_directory_settings_read_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("MOSAIC_ENTRA_DIRECTORY_LOOKUP", "false")
+    monkeypatch.setenv("MOSAIC_ENTRA_GROUP_CLAIMS", "false")
+    monkeypatch.setenv("MOSAIC_GRAPH_ENDPOINT", "https://graph.microsoft.us")
+    settings = local_settings()
+    assert settings.entra_directory_lookup is False
+    assert settings.entra_group_claims is False
+    assert str(settings.graph_endpoint).rstrip("/") == "https://graph.microsoft.us"
+
+
+def test_azure_requires_https_graph_endpoint() -> None:
+    with pytest.raises(ValidationError, match="MOSAIC_GRAPH_ENDPOINT must use https"):
+        Settings(
+            _env_file=None,
+            environment=Environment.AZURE,
+            auth_mode=AuthMode.ENTRA,
+            repository_backend=RepositoryBackend.COSMOS,
+            tenant_id="tenant",
+            api_client_id=CONTROL_PLANE_CLIENT_ID,
+            cosmos_endpoint="https://cosmos.example.com",
+            graph_endpoint="http://graph.example.com",
+        )

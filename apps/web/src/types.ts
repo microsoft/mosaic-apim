@@ -1,4 +1,10 @@
-export type PrincipalKind = 'user' | 'servicePrincipal' | 'managedIdentity'
+export type PrincipalKind =
+  | 'user'
+  | 'servicePrincipal'
+  | 'managedIdentity'
+  | 'agentIdentity'
+  | 'agentUser'
+  | 'securityGroup'
 
 /** The caller's MOSAIC roles, from `GET /api/v1/console/me`. Only a caller with a MOSAIC role gets
  * one, so `isAdmin` false means the caller holds the User role alone. */
@@ -13,6 +19,10 @@ export interface Principal {
   objectId: string
   kind: PrincipalKind
   label?: string
+  detail?: string | null
+  identityParentId?: string | null
+  blueprintId?: string | null
+  directoryVerifiedAt?: string | null
   createdAt: string
   updatedAt: string
 }
@@ -60,7 +70,7 @@ export interface EntitlementEnforcement {
   requests?: RequestEnforcement | null
 }
 
-export type EntitlementSubjectKind = 'user' | 'group' | 'application'
+export type EntitlementSubjectKind = 'user' | 'group' | 'application' | 'securityGroup'
 
 export type EntitlementResourceKind =
   | 'modelApi'
@@ -120,9 +130,11 @@ export interface Entitlement {
 
 export interface ResolvedEntitlement {
   entitlement: Entitlement
-  via: 'direct' | 'group'
+  via: 'direct' | 'group' | 'securityGroup'
   viaGroupId?: string | null
   viaGroupName?: string | null
+  effective: boolean
+  shadowedBy?: string | null
 }
 
 export type AccessRequestState = 'pending' | 'approved' | 'denied' | 'withdrawn'
@@ -780,7 +792,7 @@ export interface ModelAccessGrant {
   subject: EntitlementSubject
   objectId: string
   displayName: string
-  subscriptionName: string
+  subscriptionName?: string | null
   enabled: boolean
   enforcement?: EntitlementEnforcement | null
   intentDigest: string
@@ -907,11 +919,71 @@ export interface ModelConnection {
   appliedMethods?: ModelAccessSettings | null
   entraAudience?: string | null
   entraScope?: string | null
+  entraClientId?: string | null
   subscriptionHeader: 'Ocp-Apim-Subscription-Key'
   apiShape?: ApiShape | null
   operations: { name: string; method: string; path: string }[]
   publicationLimits: TokenEnforcement | null
   grantLimits?: EntitlementEnforcement | null
+  principalKind?: PrincipalKind | null
+  requiredAppRole?: string | null
+  entraApplicationScope?: string | null
+  keysAvailable: boolean
+  viaGroupId?: string | null
+  viaGroupName?: string | null
+}
+
+export type DirectorySearchKind = 'user' | 'group' | 'agent'
+
+export interface DirectoryObject {
+  objectId: string
+  kind: PrincipalKind
+  displayName?: string | null
+  detail?: string | null
+  appId?: string | null
+  identityParentId?: string | null
+  blueprintId?: string | null
+  principalId?: string | null
+}
+
+export interface DirectoryMemberPage {
+  groupObjectId: string
+  members: DirectoryObject[]
+  truncated: boolean
+}
+
+export interface DirectoryStatus {
+  lookupEnabled: boolean
+  groupClaimsEnabled: boolean
+  message?: string | null
+}
+
+export type GrantOverlapKind = 'groups' | 'directAndGroup' | 'multipleGroups'
+
+export interface OverlapGrant {
+  entitlementId: string
+  subject: EntitlementSubject
+  subjectLabel: string
+  enabled: boolean
+  enforcement?: EntitlementEnforcement | null
+}
+
+export interface GrantOverlap {
+  kind: GrantOverlapKind
+  resource: EntitlementResource
+  resourceLabel: string
+  principalId?: string | null
+  principalLabel?: string | null
+  winner: OverlapGrant
+  shadowed: OverlapGrant[]
+  reason: string
+}
+
+export interface GrantOverlapReport {
+  overlaps: GrantOverlap[]
+  membershipChecked: boolean
+  skipped: string[]
+  generatedAt: string
 }
 
 export type KeySlot = 'primary' | 'secondary'

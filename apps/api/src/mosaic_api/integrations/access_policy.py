@@ -26,6 +26,7 @@ from mosaic_api.domain import (
     PolicySection,
     Publication,
     QuotaPeriod,
+    grant_precedence_key,
 )
 from mosaic_api.errors import ValidationError
 from mosaic_api.integrations.apim.model_apis import OperationSpec, operations_for
@@ -58,8 +59,13 @@ _GRANT = '(string)context.Variables["mosaic-grant"]'
 _HAS_KEY = '(bool)context.Variables["mosaic-has-key"]'
 _HAS_TOKEN = '(bool)context.Variables["mosaic-has-token"]'
 _KEY_GRANT = '(string)context.Variables["mosaic-key-grant"]'
+_MEMBER = '(string)context.Variables["mosaic-member"]'
 _TOKEN_GRANT = '(string)context.Variables["mosaic-token-grant"]'
 _DENIED = "Model access denied."
+_GROUPS_OVERAGE_DENIED = (
+    "Model access denied. Your token doesn't list your groups because you belong to too many; "
+    "ask an administrator for a direct grant."
+)
 _PERIOD_LABELS: dict[QuotaPeriod, str] = {
     "Hourly": "hour",
     "Daily": "day",
@@ -108,6 +114,15 @@ def grant_counter_identity(publication: Publication, grant: ModelAccessGrant) ->
     return hashlib.sha256(identity.encode("utf-8")).hexdigest()
 
 
+def governed_counter_key_expression(publication: Publication, grant: ModelAccessGrant) -> str:
+    """The publication token counter expression for one governed grant."""
+
+    identity = grant_counter_identity(publication, grant)
+    if grant.is_group_grant:
+        return f'@("{_COUNTER_PREFIX}publication-tokens:{identity}:" + {_MEMBER})'
+    return f'@("{_COUNTER_PREFIX}publication-tokens:{identity}")'
+
+
 def _validate(publication: Publication, snapshot: ModelAccessSnapshot) -> None:
     if not all(
         _RESOURCE_NAME.fullmatch(name)
@@ -138,13 +153,18 @@ def _validate(publication: Publication, snapshot: ModelAccessSnapshot) -> None:
         if grant.subject.kind not in {
             EntitlementSubjectKind.USER,
             EntitlementSubjectKind.APPLICATION,
+            EntitlementSubjectKind.SECURITY_GROUP,
         }:
             raise ValidationError(
-                "Governed policies support only direct user and application grants."
+                "Governed policies support only user, application and security-group grants."
             )
+        if grant.is_group_grant:
+            if not snapshot.settings.entra_enabled:
+                raise ValidationError("Security-group grants require governed Entra access.")
+            if not _GUID.fullmatch(grant.object_id):
+                raise ValidationError("Security-group grants require a GUID object ID.")
         identities = {
             "entitlement": grant.entitlement_id,
-            "subscription": grant.subscription_name,
             "object": grant.object_id,
             "subject": grant.subject.id,
         }
@@ -154,13 +174,23 @@ def _validate(publication: Publication, snapshot: ModelAccessSnapshot) -> None:
                     "Governed access grants must have nonempty, unambiguous identities."
                 )
             seen[kind].add(identity.casefold())
-        if grant.subscription_name.casefold() in {
-            "master",
-            publication.subscription_name.casefold(),
-        }:
-            raise ValidationError(
-                "A governed grant cannot use the all-access or publication bootstrap subscription."
-            )
+        if grant.subscription_name is not None:
+            if (
+                not grant.subscription_name.strip()
+                or grant.subscription_name.casefold() in seen["subscription"]
+            ):
+                raise ValidationError(
+                    "Governed access grants must have nonempty, unambiguous identities."
+                )
+            seen["subscription"].add(grant.subscription_name.casefold())
+            if grant.subscription_name.casefold() in {
+                "master",
+                publication.subscription_name.casefold(),
+            }:
+                raise ValidationError(
+                    "A governed grant cannot use the all-access or publication bootstrap "
+                    "subscription."
+                )
         if grant.enabled and grant.enforcement:
             if grant.enforcement.tokens:
                 if not metered:
@@ -215,6 +245,9 @@ def _key_lookup(publication: Publication, grants: list[ModelAccessGrant]) -> str
         "var subscription = context.Subscription.Id;",
     ]
     for grant in grants:
+        if grant.is_group_grant:
+            continue
+        assert grant.subscription_name is not None
         lines.append(
             f"if (String.Equals(subscription, {_literal(grant.subscription_name)}, "
             "StringComparison.OrdinalIgnoreCase)) "
@@ -223,7 +256,18 @@ def _key_lookup(publication: Publication, grants: list[ModelAccessGrant]) -> str
     return _expression([*lines, 'return "";'])
 
 
-def _token_lookup(publication: Publication, grants: list[ModelAccessGrant]) -> str:
+def _token_lookup(
+    publication: Publication,
+    grants: list[ModelAccessGrant],
+    *,
+    delegated_scope: str = "Models.Invoke",
+    application_role: str = "Models.Invoke.Application",
+) -> str:
+    direct_grants = [grant for grant in grants if not grant.is_group_grant]
+    group_grants = sorted(
+        (grant for grant in grants if grant.is_group_grant),
+        key=lambda grant: grant_precedence_key(grant.enforcement, grant.entitlement_id),
+    )
     lines = [
         'var jwt = context.Variables.ContainsKey("mosaic-validated-token")'
         ' ? context.Variables["mosaic-validated-token"] as Jwt : null;',
@@ -234,23 +278,100 @@ def _token_lookup(publication: Publication, grants: list[ModelAccessGrant]) -> s
         "var oid = objects[0];",
         "bool delegated = false;",
         "bool application = false;",
+        "bool hasRealScopes = false;",
         'if (jwt.Claims.ContainsKey("scp")) {',
         '    var scopes = jwt.Claims["scp"];',
-        "    delegated = scopes != null && scopes.Length == 1 && scopes[0] != null"
-        " && scopes[0].Split(' ').Contains(\"Models.Invoke\");",
-        '} else if (jwt.Claims.ContainsKey("roles")) {',
+        "    if (scopes != null && scopes.Length == 1 && scopes[0] != null) {",
+        "        foreach (var scope in scopes[0].Split(' ')) {",
+        '            if (String.IsNullOrWhiteSpace(scope) || scope == "/") continue;',
+        "            hasRealScopes = true;",
+        f"            if (String.Equals(scope, {_literal(delegated_scope)}, "
+        "StringComparison.Ordinal)) delegated = true;",
+        "        }",
+        "    }",
+        "}",
+        'if (!hasRealScopes && jwt.Claims.ContainsKey("roles")) {',
         '    var roles = jwt.Claims["roles"];',
-        '    application = roles != null && roles.Contains("Models.Invoke.Application");',
+        f"    application = roles != null && roles.Contains({_literal(application_role)});",
         "}",
     ]
-    for grant in grants:
+    for grant in direct_grants:
         kind = "delegated" if grant.subject.kind == EntitlementSubjectKind.USER else "application"
         lines.append(
             f"if ({kind} && String.Equals(oid, {_literal(grant.object_id)}, "
             "StringComparison.OrdinalIgnoreCase)) "
             f"return {_literal(grant_counter_identity(publication, grant))};"
         )
+    if group_grants:
+        lines.extend(
+            [
+                'var groups = jwt.Claims.ContainsKey("groups") ? jwt.Claims["groups"] : null;',
+                "if ((delegated || application) && groups != null) {",
+            ]
+        )
+        for grant in group_grants:
+            lines.extend(
+                [
+                    "    foreach (var group in groups) {",
+                    f"        if (String.Equals(group, {_literal(grant.object_id.lower())}, "
+                    "StringComparison.OrdinalIgnoreCase)) "
+                    f"return {_literal(grant_counter_identity(publication, grant))};",
+                    "    }",
+                ]
+            )
+        lines.append("}")
     return _expression([*lines, 'return "";'])
+
+
+def _token_member_lookup(publication: Publication, grants: list[ModelAccessGrant]) -> str:
+    group_ids = {
+        grant_counter_identity(publication, grant) for grant in grants if grant.is_group_grant
+    }
+    if not group_ids:
+        return ""
+    lines = [
+        "if (",
+        "    "
+        + " && ".join(
+            f"{_TOKEN_GRANT} != {_literal(identity)}" for identity in sorted(group_ids)
+        ),
+        ') return "";',
+        'var jwt = context.Variables.ContainsKey("mosaic-validated-token")'
+        ' ? context.Variables["mosaic-validated-token"] as Jwt : null;',
+        'if (jwt == null || jwt.Claims == null || !jwt.Claims.ContainsKey("oid")) return "";',
+        'var objects = jwt.Claims["oid"];',
+        "if (objects == null || objects.Length != 1 || String.IsNullOrWhiteSpace(objects[0]))"
+        ' return "";',
+        "return objects[0].ToLowerInvariant();",
+    ]
+    return _expression(lines)
+
+
+def _token_groups_overage() -> str:
+    """A whole condition: no token grant matched and the token omitted its groups (overage).
+
+    A single multi-statement expression, because APIM can't nest ``@{...}`` inside ``@(...)``.
+    """
+
+    return _expression(
+        [
+            f"if (!String.IsNullOrEmpty({_TOKEN_GRANT})) return false;",
+            'var jwt = context.Variables.ContainsKey("mosaic-validated-token")'
+            ' ? context.Variables["mosaic-validated-token"] as Jwt : null;',
+            "if (jwt == null || jwt.Claims == null) return false;",
+            'if (jwt.Claims.ContainsKey("hasgroups")) return true;',
+            "try {",
+            '    if (!jwt.Claims.ContainsKey("_claim_names")) return false;',
+            '    var values = jwt.Claims["_claim_names"];',
+            "    if (values == null) return false;",
+            "    foreach (var value in values) {",
+            "        if (value != null && "
+            'value.IndexOf("groups", StringComparison.OrdinalIgnoreCase) >= 0) return true;',
+            "    }",
+            "} catch { return false; }",
+            "return false;",
+        ]
+    )
 
 
 def _authentication(
@@ -258,6 +379,9 @@ def _authentication(
     publication: Publication,
     snapshot: ModelAccessSnapshot,
     grants: list[ModelAccessGrant],
+    *,
+    delegated_scope: str = "Models.Invoke",
+    application_role: str = "Models.Invoke.Application",
 ) -> None:
     _variable(
         fragment,
@@ -275,6 +399,7 @@ def _authentication(
         _reject(fragment, f"@({_HAS_TOKEN})", code=401)
     _variable(fragment, "mosaic-key-grant", "")
     _variable(fragment, "mosaic-token-grant", "")
+    _variable(fragment, "mosaic-member", "")
 
     if snapshot.settings.keys_enabled:
         key = ET.SubElement(
@@ -323,7 +448,19 @@ def _authentication(
             },
         )
         ET.SubElement(claim, "value").text = "2.0"
-        _variable(token, "mosaic-token-grant", _token_lookup(publication, grants))
+        _variable(
+            token,
+            "mosaic-token-grant",
+            _token_lookup(
+                publication,
+                grants,
+                delegated_scope=delegated_scope,
+                application_role=application_role,
+            ),
+        )
+        _variable(token, "mosaic-member", _token_member_lookup(publication, grants))
+        if any(grant.is_group_grant for grant in grants):
+            _reject(token, _token_groups_overage(), message=_GROUPS_OVERAGE_DENIED)
         _reject(token, f"@(String.IsNullOrEmpty({_TOKEN_GRANT}))")
 
     _reject(fragment, f"@({_HAS_KEY} && {_HAS_TOKEN} && {_KEY_GRANT} != {_TOKEN_GRANT})")
@@ -365,18 +502,26 @@ def _operation_guard(
         )
 
 
-def _calendar_counter(identity: str, period: QuotaPeriod) -> str:
+def _grant_counter_key(namespace: str, identity: str, *, per_member: bool) -> str:
+    key = f"{_COUNTER_PREFIX}{namespace}:{identity}"
+    if per_member:
+        return f'@("{key}:" + {_MEMBER})'
+    return key
+
+
+def _calendar_counter(identity: str, period: QuotaPeriod, *, per_member: bool) -> str:
     prefix = _literal(f"{_COUNTER_PREFIX}grant-request-quota:{identity}:{period}:")
     if period == "Weekly":
         date = "now.Date.AddDays(-(((int)now.DayOfWeek + 6) % 7))"
     else:
         date = "now"
     length = {"Hourly": 13, "Daily": 10, "Weekly": 10, "Monthly": 7, "Yearly": 4}[period]
+    suffix = f' + ":" + {_MEMBER}' if per_member else ""
     # "u" is the invariant Gregorian format. CultureInfo is not in APIM's expression allowlist.
     return _expression(
         [
             "var now = DateTime.UtcNow;",
-            f'return {prefix} + {date}.ToString("u").Substring(0, {length});',
+            f'return {prefix} + {date}.ToString("u").Substring(0, {length}){suffix};',
         ]
     )
 
@@ -405,7 +550,11 @@ def _limits(
                         {
                             "calls": str(requests.calls),
                             "renewal-period": str(requests.renewal_period_seconds),
-                            "counter-key": f"{_COUNTER_PREFIX}grant-request-rate:{identity}",
+                            "counter-key": _grant_counter_key(
+                                "grant-request-rate",
+                                identity,
+                                per_member=grant.is_group_grant,
+                            ),
                         },
                     )
                 if requests.call_quota is not None:
@@ -416,7 +565,11 @@ def _limits(
                         {
                             "calls": str(requests.call_quota),
                             "renewal-period": "0",
-                            "counter-key": _calendar_counter(identity, requests.call_quota_period),
+                            "counter-key": _calendar_counter(
+                                identity,
+                                requests.call_quota_period,
+                                per_member=grant.is_group_grant,
+                            ),
                         },
                     )
             if tokens := enforcement.tokens:
@@ -425,16 +578,26 @@ def _limits(
                     "llm-token-limit",
                     {
                         **_token_limit_attributes(tokens),
-                        "counter-key": f"{_COUNTER_PREFIX}grant-tokens:{identity}",
+                        "counter-key": _grant_counter_key(
+                            "grant-tokens",
+                            identity,
+                            per_member=grant.is_group_grant,
+                        ),
                     },
                 )
     if snapshot.publication_enforcement is not None:
+        counter = f'@("{_COUNTER_PREFIX}publication-tokens:" + {_GRANT})'
+        if any(grant.is_group_grant for grant in grants):
+            counter = (
+                f'@("{_COUNTER_PREFIX}publication-tokens:" + {_GRANT} + '
+                f'(String.IsNullOrEmpty({_MEMBER}) ? "" : ":" + {_MEMBER}))'
+            )
         ET.SubElement(
             fragment,
             "llm-token-limit",
             {
                 **_token_limit_attributes(snapshot.publication_enforcement),
-                "counter-key": f'@("{_COUNTER_PREFIX}publication-tokens:" + {_GRANT})',
+                "counter-key": counter,
             },
         )
 
@@ -485,6 +648,42 @@ def _facets(
         methods.append("an allowlisted APIM subscription key")
     if snapshot.settings.entra_enabled:
         methods.append("a validated Microsoft Entra bearer token")
+    enabled_group_grants = sum(grant.enabled and grant.is_group_grant for grant in snapshot.grants)
+    auth_details = [
+        "Every presented credential must be enabled and valid; there is no fallback.",
+        "When a key and a token are both presented, they must resolve to the same "
+        "enabled grant.",
+        "Keys in both header and query must be identical; ambiguous or empty credentials "
+        "are denied.",
+        "User tokens require Models.Invoke in scp; application tokens require "
+        "Models.Invoke.Application in roles with no scp claim. Claims are read only "
+        "after signature, tenant,"
+        " audience and expiry validation.",
+        "Only enabled direct grants are allowlisted; all-access, bootstrap and unrelated "
+        "subscriptions are denied. No caller identity header or control-plane callback "
+        "is used.",
+        "Legacy subscription ID/key counter defaults are replaced by shared grant "
+        "counters in this reviewed policy; saved grant inputs are not silently rewritten.",
+    ]
+    auth_attributes = {
+        "keys-enabled": str(snapshot.settings.keys_enabled).lower(),
+        "entra-enabled": str(snapshot.settings.entra_enabled).lower(),
+        "enabled-grants": str(sum(grant.enabled for grant in snapshot.grants)),
+    }
+    if enabled_group_grants:
+        auth_details.extend(
+            [
+                f"{enabled_group_grants} enabled security-group grant"
+                f"{'' if enabled_group_grants == 1 else 's'} match the validated token's "
+                "groups claim.",
+                "Security-group grants accept Microsoft Entra tokens only; they have no "
+                "APIM subscription key path.",
+                "Security-group grant limits apply separately to each validated member object ID.",
+                "A direct user or application grant to the caller wins before any group grant is "
+                "considered.",
+            ]
+        )
+        auth_attributes["security-group-grants"] = str(enabled_group_grants)
     facets = [
         PolicyFacet(
             kind=PolicyFacetKind.AUTHORIZATION,
@@ -493,27 +692,8 @@ def _facets(
             summary=f"Requires {' or '.join(methods)}."
             if methods
             else "All model access is denied.",
-            details=[
-                "Every presented credential must be enabled and valid; there is no fallback.",
-                "When a key and a token are both presented, they must resolve to the same "
-                "enabled grant.",
-                "Keys in both header and query must be identical; ambiguous or empty credentials "
-                "are denied.",
-                "User tokens require Models.Invoke in scp; application tokens require "
-                "Models.Invoke.Application in roles with no scp claim. Claims are read only "
-                "after signature, tenant,"
-                " audience and expiry validation.",
-                "Only enabled direct grants are allowlisted; all-access, bootstrap and unrelated "
-                "subscriptions are denied. No caller identity header or control-plane callback "
-                "is used.",
-                "Legacy subscription ID/key counter defaults are replaced by shared grant "
-                "counters in this reviewed policy; saved grant inputs are not silently rewritten.",
-            ],
-            attributes={
-                "keys-enabled": str(snapshot.settings.keys_enabled).lower(),
-                "entra-enabled": str(snapshot.settings.entra_enabled).lower(),
-                "enabled-grants": str(sum(grant.enabled for grant in snapshot.grants)),
-            },
+            details=auth_details,
+            attributes=auth_attributes,
             managed_by_mosaic=True,
         ),
         _operations_facet(publication, operations),
@@ -606,7 +786,11 @@ def governed_operations(publication: Publication) -> tuple[OperationSpec, ...]:
 
 
 def render_governed_policy(
-    publication: Publication, snapshot: ModelAccessSnapshot
+    publication: Publication,
+    snapshot: ModelAccessSnapshot,
+    *,
+    delegated_scope: str = "Models.Invoke",
+    application_role: str = "Models.Invoke.Application",
 ) -> PublicationPolicy:
     """Return in-process XML and redacted facets; reject unsafe intent with ValidationError.
 
@@ -623,7 +807,14 @@ def render_governed_policy(
     if not (snapshot.settings.keys_enabled or snapshot.settings.entra_enabled):
         _deny(fragment)
     else:
-        _authentication(fragment, publication, snapshot, grants)
+        _authentication(
+            fragment,
+            publication,
+            snapshot,
+            grants,
+            delegated_scope=delegated_scope,
+            application_role=application_role,
+        )
         _operation_guard(fragment, publication, operations)
         _limits(fragment, publication, snapshot, grants)
         for name in ("Ocp-Apim-Subscription-Key", "api-key", "Authorization"):

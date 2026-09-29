@@ -28,6 +28,7 @@ from mosaic_api.domain import (
     EntitlementSubject,
     EntitlementSubjectKind,
     EntitlementUpdate,
+    GrantOverlapReport,
     GrantPath,
     Principal,
     PrincipalCreate,
@@ -35,10 +36,13 @@ from mosaic_api.domain import (
     ResolvedEntitlement,
     deterministic_id,
     entitlement_id,
+    grant_precedence_key,
     new_id,
+    subject_kind_for,
     utc_now,
 )
-from mosaic_api.errors import ConflictError, NotFoundError, ValidationError
+from mosaic_api.errors import ConflictError, DirectoryError, NotFoundError, ValidationError
+from mosaic_api.integrations.graph import DirectoryLookup
 from mosaic_api.observed import (
     ObservedApimUser,
     ObservedModelDeployment,
@@ -93,12 +97,11 @@ def _resource_key(resource: EntitlementResource) -> tuple[str, str, str]:
 
 
 def _subject_for(principal: Principal) -> EntitlementSubject:
-    kind = (
-        EntitlementSubjectKind.USER
-        if principal.kind == PrincipalKind.USER
-        else EntitlementSubjectKind.APPLICATION
-    )
-    return EntitlementSubject(kind=kind, id=principal.id)
+    return EntitlementSubject(kind=subject_kind_for(principal.kind), id=principal.id)
+
+
+def _principal_label(principal: Principal) -> str:
+    return principal.label or principal.object_id
 
 
 def _approved_with_grant(access_request: AccessRequest) -> bool:
@@ -126,11 +129,13 @@ class EntitlementService:
         directory_repository: DirectoryRepository,
         gateway_repository: GatewayRepository,
         endpoint_repository: ModelEndpointRepository,
+        directory_lookup: DirectoryLookup | None = None,
     ) -> None:
         self._repository = repository
         self._directory = directory_repository
         self._gateways = gateway_repository
         self._endpoints = endpoint_repository
+        self._directory_lookup = directory_lookup
 
     @staticmethod
     def _audit(
@@ -166,11 +171,18 @@ class EntitlementService:
                 "The principal named by this entitlement does not exist",
                 details={"subjectId": subject.id},
             )
-        expected = "application" if principal.kind != "user" else "user"
+        expected = subject_kind_for(principal.kind)
         if subject.kind != expected:
             raise ValidationError(
                 f"This principal is a {principal.kind}, so the entitlement subject must be "
                 f"{expected!r}",
+                details={"subjectId": subject.id, "principalKind": str(principal.kind)},
+            )
+        if subject.kind == EntitlementSubjectKind.SECURITY_GROUP and (
+            principal.kind != PrincipalKind.SECURITY_GROUP
+        ):
+            raise ValidationError(
+                "A securityGroup entitlement subject must name a securityGroup principal",
                 details={"subjectId": subject.id, "principalKind": str(principal.kind)},
             )
 
@@ -444,7 +456,7 @@ class EntitlementService:
     # ------------------------------------------------------------------ resolution
 
     async def resolve_for_object_id(
-        self, actor: Actor, object_id: str
+        self, actor: Actor, object_id: str, *, group_object_ids: frozenset[str] | None = None
     ) -> list[ResolvedEntitlement]:
         """Effective access for an Entra object ID.
 
@@ -454,22 +466,63 @@ class EntitlementService:
 
         principal = await self._directory.find_principal_by_object_id(actor.tenant_id, object_id)
         if not principal:
-            return []
-        return await self.resolve_for_principal(actor, principal.id)
+            if not group_object_ids:
+                return []
+            groups = {
+                item.id: item
+                for item in await self._directory.list_principals(actor.tenant_id)
+                if item.kind == PrincipalKind.SECURITY_GROUP
+                and item.object_id.casefold() in group_object_ids
+            }
+            reached = [
+                ResolvedEntitlement(
+                    entitlement=await self._decorate(entitlement),
+                    via=GrantPath.SECURITY_GROUP,
+                    via_group_id=groups[entitlement.subject.id].id,
+                    via_group_name=_principal_label(groups[entitlement.subject.id]),
+                )
+                for entitlement in await self._repository.list_entitlements(actor.tenant_id)
+                if entitlement.enabled
+                and entitlement.subject.kind == EntitlementSubjectKind.SECURITY_GROUP
+                and entitlement.subject.id in groups
+            ]
+            winners: dict[tuple[str, str, str], ResolvedEntitlement] = {}
+            for item in reached:
+                key = _resource_key(item.entitlement.resource)
+                current = winners.get(key)
+                if current is None or grant_precedence_key(
+                    item.entitlement.enforcement, item.entitlement.id
+                ) < grant_precedence_key(current.entitlement.enforcement, current.entitlement.id):
+                    winners[key] = item
+            return sorted(winners.values(), key=lambda item: item.entitlement.id)
+        return [
+            item
+            for item in await self.resolve_for_principal(
+                actor, principal.id, group_object_ids=group_object_ids, only_effective=True
+            )
+            if item.effective
+        ]
 
     async def resolve_for_principal(
-        self, actor: Actor, principal_id: str
+        self,
+        actor: Actor,
+        principal_id: str,
+        *,
+        group_object_ids: frozenset[str] | None = None,
+        only_effective: bool = False,
     ) -> list[ResolvedEntitlement]:
-        # Keyed on the resource, not the entitlement: a direct grant and a group grant over the
-        # same resource are different entitlements, and returning both would leave a consumer
-        # choosing arbitrarily between two contradictory limits.
-        resolved: dict[tuple[str, str, str], ResolvedEntitlement] = {}
+        principal = await self._directory.get_principal(actor.tenant_id, principal_id)
+        if principal is None:
+            raise NotFoundError("Principal was not found", details={"id": principal_id})
+        reached: list[ResolvedEntitlement] = []
         for entitlement in await self._repository.list_entitlements(
             actor.tenant_id, subject_id=principal_id
         ):
-            if entitlement.subject.kind != "group" and entitlement.enabled:
-                resolved[_resource_key(entitlement.resource)] = ResolvedEntitlement(
-                    entitlement=await self._decorate(entitlement), via=GrantPath.DIRECT
+            if entitlement.subject.kind == subject_kind_for(principal.kind):
+                reached.append(
+                    ResolvedEntitlement(
+                        entitlement=await self._decorate(entitlement), via=GrantPath.DIRECT
+                    )
                 )
 
         memberships = await self._directory.list_memberships(
@@ -482,17 +535,126 @@ class EntitlementService:
             ):
                 if entitlement.subject.kind != "group" or not entitlement.enabled:
                     continue
-                # A direct grant is the more specific statement about this person, so it wins over
-                # anything a group contributes for the same resource.
-                if _resource_key(entitlement.resource) in resolved:
-                    continue
-                resolved[_resource_key(entitlement.resource)] = ResolvedEntitlement(
-                    entitlement=entitlement,
-                    via=GrantPath.GROUP,
-                    via_group_id=membership.group_id,
-                    via_group_name=group.name if group else None,
+                reached.append(
+                    ResolvedEntitlement(
+                        entitlement=entitlement,
+                        via=GrantPath.GROUP,
+                        via_group_id=membership.group_id,
+                        via_group_name=group.name if group else None,
+                    )
                 )
-        return sorted(resolved.values(), key=lambda item: item.entitlement.id)
+        security_group_principals = [
+            item
+            for item in await self._directory.list_principals(actor.tenant_id)
+            if item.kind == PrincipalKind.SECURITY_GROUP
+        ]
+        security_groups_by_principal_id = {item.id: item for item in security_group_principals}
+        group_grants = [
+            item
+            for item in await self._repository.list_entitlements(actor.tenant_id)
+            if item.subject.kind == EntitlementSubjectKind.SECURITY_GROUP
+            and item.subject.id in security_groups_by_principal_id
+        ]
+        if principal.kind != PrincipalKind.SECURITY_GROUP:
+            matched_group_object_ids = group_object_ids
+            if matched_group_object_ids is None and group_grants:
+                if self._directory_lookup is None:
+                    logger.warning(
+                        "security_group_resolution_skipped",
+                        tenant_id=actor.tenant_id,
+                        principal_id=principal_id,
+                        reason="directory_lookup_not_configured",
+                    )
+                    matched_group_object_ids = frozenset()
+                else:
+                    try:
+                        matched_group_object_ids = frozenset(
+                            object_id.casefold()
+                            for object_id in await self._directory_lookup.member_groups(
+                                principal.object_id,
+                                [
+                                    security_groups_by_principal_id[
+                                        entitlement.subject.id
+                                    ].object_id
+                                    for entitlement in group_grants
+                                ],
+                            )
+                        )
+                    except DirectoryError as error:
+                        logger.warning(
+                            "security_group_resolution_failed",
+                            tenant_id=actor.tenant_id,
+                            principal_id=principal_id,
+                            error_code=error.code,
+                        )
+                        matched_group_object_ids = frozenset()
+            matched_group_object_ids = matched_group_object_ids or frozenset()
+            for entitlement in group_grants:
+                security_group = security_groups_by_principal_id[entitlement.subject.id]
+                if security_group.object_id.casefold() not in matched_group_object_ids:
+                    continue
+                reached.append(
+                    ResolvedEntitlement(
+                        entitlement=await self._decorate(entitlement),
+                        via=GrantPath.SECURITY_GROUP,
+                        via_group_id=security_group.id,
+                        via_group_name=_principal_label(security_group),
+                    )
+                )
+
+        winners: dict[tuple[str, str, str], ResolvedEntitlement] = {}
+        for item in reached:
+            if not item.entitlement.enabled:
+                continue
+            key = _resource_key(item.entitlement.resource)
+            current = winners.get(key)
+            if current is None:
+                winners[key] = item
+                continue
+            if item.via == GrantPath.DIRECT and current.via != GrantPath.DIRECT:
+                winners[key] = item
+            elif item.via == GrantPath.SECURITY_GROUP and current.via == GrantPath.GROUP:
+                winners[key] = item
+            elif item.via == GrantPath.SECURITY_GROUP and current.via == GrantPath.SECURITY_GROUP:
+                if grant_precedence_key(
+                    item.entitlement.enforcement, item.entitlement.id
+                ) < grant_precedence_key(current.entitlement.enforcement, current.entitlement.id):
+                    winners[key] = item
+            elif item.via == GrantPath.GROUP and current.via == GrantPath.GROUP:
+                if item.entitlement.id < current.entitlement.id:
+                    winners[key] = item
+
+        resolved: list[ResolvedEntitlement] = []
+        for item in reached:
+            winner = winners.get(_resource_key(item.entitlement.resource))
+            effective = bool(
+                item.entitlement.enabled and winner and winner.entitlement.id == item.entitlement.id
+            )
+            if only_effective and not effective:
+                continue
+            resolved.append(
+                item.model_copy(
+                    update={
+                        "effective": effective,
+                        "shadowed_by": None
+                        if effective or not item.entitlement.enabled or winner is None
+                        else winner.entitlement.id,
+                    }
+                )
+            )
+        return sorted(resolved, key=lambda item: item.entitlement.id)
+
+    async def list_overlaps(
+        self, actor: Actor, resource_id: str | None = None
+    ) -> GrantOverlapReport:
+        from mosaic_api.services.overlaps import GrantOverlapService
+
+        return await GrantOverlapService(
+            self._repository,
+            directory_repository=self._directory,
+            gateway_repository=self._gateways,
+            directory_lookup=self._directory_lookup,
+        ).list_overlaps(actor, resource_id=resource_id)
 
     # ------------------------------------------------------------------ access requests
 

@@ -42,7 +42,12 @@ function CatalogAction({ entry }: { entry: CatalogEntry }) {
   })
 
   if (entry.entitled) {
-    return <Badge appearance="filled">Already entitled</Badge>
+    return (
+      <div className="action-stack">
+        <Badge appearance="filled">Already entitled</Badge>
+        {entry.kind === 'mcpServer' && <Badge appearance="tint">Recorded, not yet enforced</Badge>}
+      </div>
+    )
   }
   if (entry.requestState === 'pending') {
     return (

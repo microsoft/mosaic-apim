@@ -9,6 +9,7 @@ export interface PortalProfile {
   displayLabel: string | null
   entitlementCount: number
   pendingRequestCount: number
+  groupsOverage: boolean
 }
 
 export type PortalResourceKind = 'modelApi' | 'mcpServer'
@@ -100,7 +101,7 @@ export interface Entitlement {
   id: string
   tenantId: string
   entityType: 'entitlement'
-  subject: { kind: 'user' | 'group' | 'application'; id: string }
+  subject: { kind: 'user' | 'group' | 'application' | 'securityGroup'; id: string }
   resource: EntitlementResource
   enabled: boolean
   enforcement: EntitlementEnforcement | null
@@ -113,9 +114,11 @@ export interface Entitlement {
 
 export interface ResolvedEntitlement {
   entitlement: Entitlement
-  via: 'direct' | 'group'
+  via: 'direct' | 'group' | 'securityGroup'
   viaGroupId: string | null
   viaGroupName: string | null
+  effective?: boolean
+  shadowedBy?: string | null
 }
 
 export interface ConnectionOperation {
@@ -145,7 +148,13 @@ export interface ModelConnection {
    * Older APIs omit it.
    */
   entraClientId?: string | null
-  subscriptionHeader: string
+   principalKind?: 'user' | 'servicePrincipal' | 'managedIdentity' | 'agentIdentity' | 'agentUser' | 'securityGroup' | null
+   requiredAppRole?: string | null
+   entraApplicationScope?: string | null
+   keysAvailable?: boolean
+   viaGroupId?: string | null
+   viaGroupName?: string | null
+   subscriptionHeader: string
   /** Older APIs omit it. */
   apiShape?: ApiShape | null
   operations: ConnectionOperation[]

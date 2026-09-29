@@ -30,6 +30,7 @@ from mosaic_api.domain import (
     BindingSource,
     CapabilitySupport,
     EntitlementBinding,
+    EntitlementSubjectKind,
     Gateway,
     ManagementMode,
     ModelAccessGrant,
@@ -52,10 +53,12 @@ from mosaic_api.domain import (
     PublishStepResult,
     PublishStepStatus,
     TokenEnforcement,
+    grant_precedence_key,
     model_access_subscription_name,
     model_api_id,
     new_id,
     publication_id,
+    subject_kind_for,
     utc_now,
 )
 from mosaic_api.errors import ConflictError, NotFoundError, ValidationError
@@ -299,6 +302,7 @@ class PublishingService:
         directory_repository: DirectoryRepository | None = None,
         entitlement_repository: EntitlementRepository | None = None,
         model_runtime_client_id: str | None = None,
+        security_group_claims: bool = True,
     ) -> None:
         self._repository = repository
         self._endpoints = endpoint_repository
@@ -307,6 +311,7 @@ class PublishingService:
         self._directory = directory_repository
         self._entitlements = entitlement_repository
         self._runtime_audience = model_runtime_client_id
+        self._security_group_claims = security_group_claims
         self._active: set[str] = set()
         self._tasks: set[asyncio.Task[None]] = set()
         self._task_failures: list[BaseException] = []
@@ -851,6 +856,7 @@ class PublishingService:
             entitlements = await self._entitlements.list_entitlements(
                 publication.tenant_id, resource_id=model.id
             )
+            saw_security_group_grant = False
             for entitlement in entitlements:
                 if entitlement.resource.kind != "modelApi" or entitlement.subject.kind == "group":
                     warnings.append(
@@ -858,6 +864,10 @@ class PublishingService:
                         "not be enforced by this apply."
                     )
                     continue
+                is_security_group = (
+                    entitlement.subject.kind == EntitlementSubjectKind.SECURITY_GROUP
+                )
+                saw_security_group_grant = saw_security_group_grant or is_security_group
                 if (
                     publication.enforcement is None
                     and entitlement.enforcement is not None
@@ -874,27 +884,63 @@ class PublishingService:
                 principal = await self._directory.get_principal(
                     publication.tenant_id, entitlement.subject.id
                 )
-                if principal is None or entitlement.subject.kind != (
-                    "user" if principal.kind == "user" else "application"
+                if principal is None or entitlement.subject.kind != subject_kind_for(
+                    principal.kind
                 ):
                     warnings.append(
                         f"Grant {entitlement.id} has a missing or mismatched principal; it is "
                         "excluded from runtime access."
                     )
                     continue
+                if is_security_group and not settings.entra_enabled:
+                    warning = (
+                        "Grants to security groups need Entra access. Turn on Entra sign-in for "
+                        "this model to apply them."
+                    )
+                    if warning not in warnings:
+                        warnings.append(warning)
+                    continue
                 grants.append(
                     ModelAccessGrant(
                         entitlement_id=entitlement.id,
                         subject=entitlement.subject,
-                        object_id=principal.object_id,
+                        object_id=(
+                            principal.object_id.casefold()
+                            if is_security_group
+                            else principal.object_id
+                        ),
                         display_name=principal.label or principal.object_id,
-                        subscription_name=model_access_subscription_name(
-                            publication.tenant_id, publication.id, entitlement.id
+                        subscription_name=(
+                            None
+                            if is_security_group
+                            else model_access_subscription_name(
+                                publication.tenant_id, publication.id, entitlement.id
+                            )
                         ),
                         enabled=entitlement.enabled,
                         enforcement=entitlement.enforcement,
                         intent_digest=entitlement_intent_digest(entitlement, principal),
                     )
+                )
+            if saw_security_group_grant and not self._security_group_claims:
+                warnings.append(
+                    "Group claims aren't configured for this deployment, so the gateway can't "
+                    "match grants to security groups."
+                )
+            group_grants = [
+                grant
+                for grant in grants
+                if grant.enabled and grant.subject.kind == EntitlementSubjectKind.SECURITY_GROUP
+            ]
+            if len(group_grants) >= 2:
+                ordered = sorted(
+                    group_grants,
+                    key=lambda grant: grant_precedence_key(grant.enforcement, grant.entitlement_id),
+                )
+                warnings.append(
+                    "Members of more than one of these groups get only the most generous grant: "
+                    f"{', '.join(grant.display_name for grant in ordered)}. "
+                    f"{ordered[0].display_name} wins."
                 )
         included = {grant.entitlement_id for grant in grants}
         if publication.applied_access:
@@ -970,7 +1016,11 @@ class PublishingService:
             )
         )
 
-        grants = {grant.subscription_name: grant for grant in snapshot.grants}
+        grants = {
+            grant.subscription_name: grant
+            for grant in snapshot.grants
+            if grant.subscription_name is not None
+        }
         subscription_names = set(grants)
         subscription_names.update(
             item.name
@@ -1542,7 +1592,7 @@ class PublishingService:
                 (
                     grant
                     for grant in snapshot.grants
-                    if grant.subscription_name == step.name
+                    if grant.subscription_name is not None and grant.subscription_name == step.name
                 ),
                 None,
             ) if snapshot else None
@@ -1750,7 +1800,11 @@ class PublishingService:
                         PublishedResourceKind.API, publication.api_name, False, "activate"
                     )
                     for grant in candidate.grants:
-                        if not grant.enabled or not candidate.settings.keys_enabled:
+                        if (
+                            not grant.enabled
+                            or not candidate.settings.keys_enabled
+                            or grant.subscription_name is None
+                        ):
                             continue
                         if not self._owns(
                             actual, PublishedResourceKind.SUBSCRIPTION, grant.subscription_name
@@ -2164,7 +2218,7 @@ class PublishingService:
     ) -> None:
         if self._entitlements is None:
             return
-        from mosaic_api.integrations.access_policy import grant_counter_identity
+        from mosaic_api.integrations.access_policy import governed_counter_key_expression
 
         grants = {grant.entitlement_id: grant for grant in snapshot.grants} if snapshot else {}
         records = await self._entitlements.list_entitlements(
@@ -2181,11 +2235,10 @@ class PublishingService:
             if grant and grant.enabled and snapshot and (
                 snapshot.settings.keys_enabled or snapshot.settings.entra_enabled
             ):
-                counter = grant_counter_identity(publication, grant)
                 binding = EntitlementBinding(
                     gateway_id=publication.gateway_id,
                     apim_subscription_name=grant.subscription_name,
-                    counter_key_expression=f'@("mosaic:governed:publication-tokens:{counter}")',
+                    counter_key_expression=governed_counter_key_expression(publication, grant),
                     source=BindingSource.ORCHESTRATED,
                     bound_at=utc_now(),
                 )

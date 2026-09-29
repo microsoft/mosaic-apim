@@ -25,12 +25,15 @@ import { type FormEvent, useCallback, useEffect, useMemo, useState } from 'react
 import { useLocation, useNavigate } from 'react-router-dom'
 import { useMosaicApi } from '../api'
 import { EmptyState, ErrorState, Loading } from '../components/AsyncState'
+import { DirectoryPrincipalPicker } from '../components/DirectoryPrincipalPicker'
 import { PageHeader } from '../components/PageHeader'
+import { PrincipalKindBadge } from '../components/PrincipalKindBadge'
+import { PRINCIPAL_KIND_LABELS } from '../labels'
 import type { Principal, PrincipalKind } from '../types'
 import styles from './IdentityPage.module.css'
 
 type IdentityTab = 'users' | 'workloads' | 'groups'
-type PrincipalDialogMode = 'user' | 'workload' | null
+type PrincipalDialogMode = 'identity' | null
 
 type ConfirmationState =
   | {
@@ -52,12 +55,6 @@ type ConfirmationState =
     }
   | null
 
-const principalKindLabels: Record<PrincipalKind, string> = {
-  user: 'User',
-  servicePrincipal: 'Service principal',
-  managedIdentity: 'Managed identity',
-}
-
 function isIdentityTab(value: string | null): value is IdentityTab {
   return value === 'users' || value === 'workloads' || value === 'groups'
 }
@@ -76,21 +73,6 @@ function getPrincipalName(principal: Principal) {
 function formatTimestamp(value: string) {
   const parsed = new Date(value)
   return Number.isNaN(parsed.valueOf()) ? value : parsed.toLocaleString()
-}
-
-function PrincipalKindBadge({ kind }: { kind: PrincipalKind }) {
-  const className =
-    kind === 'user'
-      ? styles.userBadge
-      : kind === 'servicePrincipal'
-        ? styles.servicePrincipalBadge
-        : styles.managedIdentityBadge
-
-  return (
-    <Badge appearance="tint" className={className}>
-      {principalKindLabels[kind]}
-    </Badge>
-  )
 }
 
 function LiveBadge() {
@@ -117,6 +99,7 @@ export function IdentityPage() {
   const [createPrincipalObjectId, setCreatePrincipalObjectId] = useState('')
   const [createPrincipalLabel, setCreatePrincipalLabel] = useState('')
   const [createPrincipalKind, setCreatePrincipalKind] = useState<PrincipalKind>('user')
+  const [createPrincipalParentId, setCreatePrincipalParentId] = useState('')
   const [createGroupOpen, setCreateGroupOpen] = useState(false)
   const [createGroupName, setCreateGroupName] = useState('')
   const [createGroupDescription, setCreateGroupDescription] = useState('')
@@ -128,6 +111,10 @@ export function IdentityPage() {
 
   const principals = useQuery({ queryKey: ['principals'], queryFn: api.listPrincipals })
   const groups = useQuery({ queryKey: ['groups'], queryFn: api.listGroups })
+  const directoryStatus = useQuery({
+    queryKey: ['directory', 'status'],
+    queryFn: api.getDirectoryStatus,
+  })
   const memberships = useQuery({
     queryKey: ['memberships', selectedGroupId],
     queryFn: () => api.listMemberships(selectedGroupId),
@@ -160,11 +147,12 @@ export function IdentityPage() {
     onSuccess: async (principal) => {
       setCreatePrincipalObjectId('')
       setCreatePrincipalLabel('')
+      setCreatePrincipalParentId('')
       setCreatePrincipalKind(principal.kind)
       setPrincipalDialogMode(null)
       setSelectedPrincipalId(principal.id)
       await queryClient.invalidateQueries({ queryKey: ['principals'] })
-      updateTab(principal.kind === 'user' ? 'users' : 'workloads', true)
+      updateTab(principal.kind === 'user' || principal.kind === 'agentUser' ? 'users' : 'workloads', true)
     },
   })
 
@@ -179,7 +167,7 @@ export function IdentityPage() {
     onSuccess: async (principal) => {
       setSelectedPrincipalId(principal.id)
       await queryClient.invalidateQueries({ queryKey: ['principals'] })
-      const nextTab = principal.kind === 'user' ? 'users' : 'workloads'
+      const nextTab = principal.kind === 'user' || principal.kind === 'agentUser' ? 'users' : 'workloads'
       if (activeTab !== nextTab) {
         updateTab(nextTab, true)
       }
@@ -247,11 +235,11 @@ export function IdentityPage() {
 
   const normalizedSearch = searchQuery.trim().toLowerCase()
   const users = useMemo(
-    () => principals.data?.filter((principal) => principal.kind === 'user') ?? [],
+    () => principals.data?.filter((principal) => principal.kind === 'user' || principal.kind === 'agentUser') ?? [],
     [principals.data],
   )
   const workloads = useMemo(
-    () => principals.data?.filter((principal) => principal.kind !== 'user') ?? [],
+    () => principals.data?.filter((principal) => principal.kind !== 'user' && principal.kind !== 'agentUser') ?? [],
     [principals.data],
   )
   const filteredUsers = useMemo(
@@ -268,7 +256,8 @@ export function IdentityPage() {
           normalizedSearch,
           principal.label,
           principal.objectId,
-          principalKindLabels[principal.kind],
+          principal.detail ?? undefined,
+          PRINCIPAL_KIND_LABELS[principal.kind],
         ),
       ),
     [normalizedSearch, workloads],
@@ -312,6 +301,11 @@ export function IdentityPage() {
 
   const selectedPrincipal = principals.data?.find((principal) => principal.id === selectedPrincipalId)
   const selectedGroup = groups.data?.find((group) => group.id === selectedGroupId)
+  const selectedPrincipalMembers = useQuery({
+    queryKey: ['principals', selectedPrincipal?.id, 'members'],
+    queryFn: () => api.listPrincipalMembers(selectedPrincipal?.id ?? ''),
+    enabled: Boolean(selectedPrincipal && selectedPrincipal.kind === 'securityGroup'),
+  })
 
   useEffect(() => {
     setPrincipalDraftLabel(selectedPrincipal?.label ?? '')
@@ -330,7 +324,7 @@ export function IdentityPage() {
   const availablePrincipals = useMemo(
     () =>
       [...(principals.data ?? [])]
-        .filter((principal) => !memberIds.has(principal.id))
+        .filter((principal) => principal.kind !== 'securityGroup' && !memberIds.has(principal.id))
         .sort((left, right) =>
           getPrincipalName(left).localeCompare(getPrincipalName(right), undefined, {
             sensitivity: 'base',
@@ -346,25 +340,23 @@ export function IdentityPage() {
           normalizedSearch,
           principal?.label,
           principal?.objectId,
-          principal ? principalKindLabels[principal.kind] : undefined,
+          principal ? PRINCIPAL_KIND_LABELS[principal.kind] : undefined,
         )
       }),
     [memberships.data, normalizedSearch, principalsById],
   )
 
-  const principalCreateLabel =
-    principalDialogMode === 'workload' ? 'Add workload identity' : 'Add user'
-  const principalCreateHint =
-    principalDialogMode === 'workload'
-      ? 'Register a service principal or managed identity by its Entra object ID.'
-      : 'Register an Entra user object ID without copying profile details into MOSAIC.'
+  const principalCreateLabel = 'Add identity'
+  const principalCreateHint = directoryStatus.data?.lookupEnabled
+    ? 'Search Microsoft Entra for people, agents, and security groups, or use manual entry for applications and managed identities.'
+    : 'Directory lookup is off. Enter the Entra object ID and kind manually.'
 
-  const principalListTitle = activeTab === 'workloads' ? 'Workload identities' : 'Users'
+  const principalListTitle = activeTab === 'workloads' ? 'Applications and security groups' : 'People and agent users'
   const principalEmptyTitle =
-    activeTab === 'workloads' ? 'No workload identities registered' : 'No users registered'
+    activeTab === 'workloads' ? 'No applications or security groups registered' : 'No people or agent users registered'
   const principalSearchPlaceholder =
     activeTab === 'workloads'
-      ? 'Filter by label, object ID, or workload type'
+      ? 'Filter by label, detail, object ID, or kind'
       : 'Filter by label or object ID'
   const groupSearchPlaceholder = 'Filter groups or visible members'
 
@@ -381,12 +373,13 @@ export function IdentityPage() {
   const groupDetailError =
     updateGroup.error ?? deleteGroup.error ?? addMembership.error ?? removeMembership.error
 
-  function openPrincipalDialog(mode: NonNullable<PrincipalDialogMode>) {
+  function openPrincipalDialog() {
     createPrincipal.reset()
-    setPrincipalDialogMode(mode)
+    setPrincipalDialogMode('identity')
     setCreatePrincipalObjectId('')
     setCreatePrincipalLabel('')
-    setCreatePrincipalKind(mode === 'user' ? 'user' : 'servicePrincipal')
+    setCreatePrincipalParentId('')
+    setCreatePrincipalKind('user')
   }
 
   function closePrincipalDialog() {
@@ -405,6 +398,10 @@ export function IdentityPage() {
       objectId: createPrincipalObjectId.trim(),
       kind: createPrincipalKind,
       label: createPrincipalLabel.trim() || undefined,
+      identityParentId:
+        createPrincipalKind === 'agentUser' && createPrincipalParentId.trim()
+          ? createPrincipalParentId.trim()
+          : undefined,
     })
   }
 
@@ -476,6 +473,16 @@ export function IdentityPage() {
         description="MOSAIC stores live references to Entra object IDs for access control. Entra IDs remain the authoritative source for identity details."
       />
 
+      {directoryStatus.data?.groupClaimsEnabled === false && (
+        <MessageBar intent="warning">
+          <MessageBarBody>
+            <MessageBarTitle>Security-group grants are not enforceable yet</MessageBarTitle>
+            MOSAIC can record security-group grants, but the gateway cannot enforce them until
+            Entra group claims are configured for the model-runtime app.
+          </MessageBarBody>
+        </MessageBar>
+      )}
+
       <div className={styles.toolbar}>
         <TabList
           className={styles.tabs}
@@ -486,9 +493,9 @@ export function IdentityPage() {
             }
           }}
         >
-          <Tab value="users">Users</Tab>
-          <Tab value="workloads">Workload identities</Tab>
-          <Tab value="groups">Groups</Tab>
+          <Tab value="users">People and agent users</Tab>
+          <Tab value="workloads">Applications and security groups</Tab>
+          <Tab value="groups">MOSAIC groups</Tab>
         </TabList>
 
         <div className={styles.toolbarControls}>
@@ -502,16 +509,10 @@ export function IdentityPage() {
 
           <div className={styles.actionRow}>
             <Button
-              appearance={activeTab === 'users' ? 'primary' : 'secondary'}
-              onClick={() => openPrincipalDialog('user')}
+              appearance={activeTab !== 'groups' ? 'primary' : 'secondary'}
+              onClick={() => openPrincipalDialog()}
             >
-              Add user
-            </Button>
-            <Button
-              appearance={activeTab === 'workloads' ? 'primary' : 'secondary'}
-              onClick={() => openPrincipalDialog('workload')}
-            >
-              Add workload identity
+              Add identity
             </Button>
             <Button
               appearance={activeTab === 'groups' ? 'primary' : 'secondary'}
@@ -542,7 +543,7 @@ export function IdentityPage() {
             <Card className={styles.listCard}>
               <div className={styles.cardHeader}>
                 <div className={styles.cardHeaderText}>
-                  <Title3 as="h2">Groups</Title3>
+                  <Title3 as="h2">MOSAIC groups</Title3>
                   <Text className={styles.muted}>
                     {filteredGroups.length} of {groups.data.length} group
                     {groups.data.length === 1 ? '' : 's'}
@@ -589,6 +590,10 @@ export function IdentityPage() {
                     <div className={styles.detailTitleBlock}>
                       <Text className={styles.eyebrow}>Group</Text>
                       <Title3 as="h2">{selectedGroup.name}</Title3>
+                      <Text className={styles.muted}>
+                        Organize identities in MOSAIC. The gateway doesn&apos;t enforce these
+                        groups; to control access for a group, add an Entra security group and grant it.
+                      </Text>
                       <div className={styles.badgeRow}>
                         <LiveBadge />
                         <Badge appearance="tint" className={styles.groupBadge}>
@@ -667,7 +672,7 @@ export function IdentityPage() {
                           <option value="">Select a principal</option>
                           {availablePrincipals.map((principal) => (
                             <option key={principal.id} value={principal.id}>
-                              {getPrincipalName(principal)} — {principalKindLabels[principal.kind]}
+                              {getPrincipalName(principal)} — {PRINCIPAL_KIND_LABELS[principal.kind]}
                             </option>
                           ))}
                         </Select>
@@ -683,7 +688,7 @@ export function IdentityPage() {
                     </form>
                     {!(principals.data?.length ?? 0) ? (
                       <Text className={styles.helperText}>
-                        Register a user or workload identity before adding group members.
+                        Register a person, agent, application, or managed identity before adding group members.
                       </Text>
                     ) : !availablePrincipals.length && (
                       <Text className={styles.helperText}>
@@ -771,8 +776,8 @@ export function IdentityPage() {
       ) : !(activeTab === 'users' ? users.length : workloads.length) ? (
         <EmptyState title={principalEmptyTitle}>
           {activeTab === 'workloads'
-            ? 'Add a service principal or managed identity to begin.'
-            : 'Add an Entra user object ID to begin.'}
+            ? 'Add an application, agent identity, managed identity, or security group to begin.'
+            : 'Add a person or agent user to begin.'}
         </EmptyState>
       ) : (
         <div className={styles.contentGrid}>
@@ -794,7 +799,7 @@ export function IdentityPage() {
                     <tr>
                       <th scope="col">Identity</th>
                       <th scope="col">Type</th>
-                      <th scope="col">Object ID</th>
+                      <th scope="col">Details</th>
                       <th scope="col">Status</th>
                     </tr>
                   </thead>
@@ -819,7 +824,7 @@ export function IdentityPage() {
                             >
                               <span className={styles.rowPrimary}>{getPrincipalName(principal)}</span>
                               <span className={styles.rowSecondary}>
-                                {principal.label ? principal.objectId : 'No local label'}
+                                {principal.detail ?? principal.objectId}
                               </span>
                             </button>
                           </td>
@@ -827,10 +832,24 @@ export function IdentityPage() {
                             <PrincipalKindBadge kind={principal.kind} />
                           </td>
                           <td>
-                            <code className={styles.monospace}>{principal.objectId}</code>
+                            <div className={styles.memberMeta}>
+                              <code className={styles.monospace}>{principal.objectId}</code>
+                              {principal.kind === 'agentUser' && (
+                                <span className={styles.rowSecondary}>
+                                  Parent agent {principals.data?.find((item) => item.objectId === principal.identityParentId)?.label ?? principal.identityParentId ?? 'not recorded'}
+                                </span>
+                              )}
+                              {principal.kind === 'agentIdentity' && principal.blueprintId && (
+                                <span className={styles.rowSecondary}>Blueprint {principal.blueprintId}</span>
+                              )}
+                            </div>
                           </td>
                           <td>
-                            <LiveBadge />
+                            <Badge appearance="tint" className={principal.directoryVerifiedAt ? styles.liveBadge : styles.groupBadge}>
+                              {principal.directoryVerifiedAt
+                                ? `Verified in Entra ${formatTimestamp(principal.directoryVerifiedAt)}`
+                                : 'Entered by hand'}
+                            </Badge>
                           </td>
                         </tr>
                       )
@@ -853,7 +872,7 @@ export function IdentityPage() {
                 <div className={styles.detailHeader}>
                   <div className={styles.detailTitleBlock}>
                     <Text className={styles.eyebrow}>
-                      {selectedPrincipal.kind === 'user' ? 'User' : 'Workload identity'}
+                      {PRINCIPAL_KIND_LABELS[selectedPrincipal.kind]}
                     </Text>
                     <Title3 as="h2">{getPrincipalName(selectedPrincipal)}</Title3>
                     <div className={styles.badgeRow}>
@@ -891,6 +910,28 @@ export function IdentityPage() {
                     <Text className={styles.readOnlyLabel}>Entra object ID</Text>
                     <code className={styles.monospace}>{selectedPrincipal.objectId}</code>
                   </div>
+                  {selectedPrincipal.detail && (
+                    <div className={styles.readOnlyPanel}>
+                      <Text className={styles.readOnlyLabel}>Directory detail</Text>
+                      <Text block>{selectedPrincipal.detail}</Text>
+                    </div>
+                  )}
+                  {selectedPrincipal.kind === 'agentUser' && (
+                    <div className={styles.readOnlyPanel}>
+                      <Text className={styles.readOnlyLabel}>Parent agent</Text>
+                      <Text block>
+                        {principals.data?.find((item) => item.objectId === selectedPrincipal.identityParentId)?.label
+                          ?? selectedPrincipal.identityParentId
+                          ?? 'Not recorded'}
+                      </Text>
+                    </div>
+                  )}
+                  {selectedPrincipal.kind === 'agentIdentity' && selectedPrincipal.blueprintId && (
+                    <div className={styles.readOnlyPanel}>
+                      <Text className={styles.readOnlyLabel}>Blueprint ID</Text>
+                      <code className={styles.monospace}>{selectedPrincipal.blueprintId}</code>
+                    </div>
+                  )}
 
                   <Field label="Local label">
                     <Input
@@ -905,7 +946,10 @@ export function IdentityPage() {
                       onChange={(event) => setPrincipalDraftKind(event.target.value as PrincipalKind)}
                     >
                       <option value="user">User</option>
-                      <option value="servicePrincipal">Service principal</option>
+                      <option value="agentUser">Agent user</option>
+                      <option value="agentIdentity">Agent</option>
+                      <option value="securityGroup">Security group</option>
+                      <option value="servicePrincipal">Application</option>
                       <option value="managedIdentity">Managed identity</option>
                     </Select>
                   </Field>
@@ -929,6 +973,57 @@ export function IdentityPage() {
                     <Text className={styles.readOnlyLabel}>Created</Text>
                     <Text block>{formatTimestamp(selectedPrincipal.createdAt)}</Text>
                   </div>
+                  {selectedPrincipal.kind === 'securityGroup' && (
+                    <div className={styles.detailSection}>
+                      <Title3 as="h3">Security group members</Title3>
+                      <Text className={styles.helperText}>
+                        Loaded from Microsoft Graph when this group is selected. Recorded members can
+                        already be granted directly in MOSAIC.
+                      </Text>
+                      {selectedPrincipalMembers.isLoading ? (
+                        <Loading label="Loading security group members" />
+                      ) : selectedPrincipalMembers.error ? (
+                        <ErrorState
+                          title="Unable to load security group members"
+                          error={selectedPrincipalMembers.error}
+                        />
+                      ) : selectedPrincipalMembers.data ? (
+                        <>
+                          {selectedPrincipalMembers.data.truncated && (
+                            <MessageBar intent="warning">
+                              <MessageBarBody>
+                                The member list is truncated. Refine access by adding direct grants
+                                where needed.
+                              </MessageBarBody>
+                            </MessageBar>
+                          )}
+                          {!selectedPrincipalMembers.data.members.length ? (
+                            <EmptyState title="No members returned">
+                              Microsoft Graph did not return members for this security group.
+                            </EmptyState>
+                          ) : (
+                            <div className={styles.memberList}>
+                              {selectedPrincipalMembers.data.members.map((member) => (
+                                <div key={`${member.kind}:${member.objectId}`} className={styles.memberRow}>
+                                  <div className={styles.memberMeta}>
+                                    <Text className={styles.memberName}>
+                                      {member.displayName ?? member.objectId}
+                                    </Text>
+                                    <div className={styles.badgeRow}>
+                                      <PrincipalKindBadge kind={member.kind} />
+                                      {member.principalId && <Badge appearance="tint">Recorded in MOSAIC</Badge>}
+                                    </div>
+                                    {member.detail && <Text className={styles.rowSecondary}>{member.detail}</Text>}
+                                    <code className={styles.monospace}>{member.objectId}</code>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </>
+                      ) : null}
+                    </div>
+                  )}
                   <div className={styles.readOnlyPanel}>
                     <Text className={styles.readOnlyLabel}>Updated</Text>
                     <Text block>{formatTimestamp(selectedPrincipal.updatedAt)}</Text>
@@ -936,7 +1031,7 @@ export function IdentityPage() {
                 </div>
               </>
             ) : (
-              <EmptyState title={`Select a ${activeTab === 'users' ? 'user' : 'workload identity'}`}>
+              <EmptyState title={`Select a ${activeTab === 'users' ? 'person or agent user' : 'record'}`}>
                 Choose a record to inspect and edit its local metadata.
               </EmptyState>
             )}
@@ -949,6 +1044,17 @@ export function IdentityPage() {
           <DialogBody>
             <DialogTitle>{principalCreateLabel}</DialogTitle>
             <DialogContent>
+              {directoryStatus.data?.lookupEnabled && (
+                <div className={styles.detailSection}>
+                  <DirectoryPrincipalPicker
+                    onCreated={(principal) => {
+                      setSelectedPrincipalId(principal.id)
+                      setPrincipalDialogMode(null)
+                    }}
+                    onManualFallback={() => undefined}
+                  />
+                </div>
+              )}
               <form className={styles.dialogForm} onSubmit={submitCreatePrincipal}>
                 <Text className={styles.muted}>{principalCreateHint}</Text>
 
@@ -969,23 +1075,27 @@ export function IdentityPage() {
                   />
                 </Field>
 
-                {principalDialogMode === 'workload' ? (
-                  <Field label="Workload type">
-                    <Select
-                      value={createPrincipalKind}
-                      onChange={(event) => setCreatePrincipalKind(event.target.value as PrincipalKind)}
-                    >
-                      <option value="servicePrincipal">Service principal</option>
-                      <option value="managedIdentity">Managed identity</option>
-                    </Select>
+                <Field label="Principal type">
+                  <Select
+                    value={createPrincipalKind}
+                    onChange={(event) => setCreatePrincipalKind(event.target.value as PrincipalKind)}
+                  >
+                    <option value="user">Person</option>
+                    <option value="agentIdentity">Agent</option>
+                    <option value="agentUser">Agent user</option>
+                    <option value="securityGroup">Security group</option>
+                    <option value="servicePrincipal">Application</option>
+                    <option value="managedIdentity">Managed identity</option>
+                  </Select>
+                </Field>
+
+                {createPrincipalKind === 'agentUser' && directoryStatus.data?.lookupEnabled === false && (
+                  <Field label="Parent agent object ID">
+                    <Input
+                      value={createPrincipalParentId}
+                      onChange={(_, data) => setCreatePrincipalParentId(data.value)}
+                    />
                   </Field>
-                ) : (
-                  <div className={styles.readOnlyPanel}>
-                    <Text className={styles.readOnlyLabel}>Principal type</Text>
-                    <div className={styles.badgeRow}>
-                      <PrincipalKindBadge kind="user" />
-                    </div>
-                  </div>
                 )}
 
                 <Field label="Local label">

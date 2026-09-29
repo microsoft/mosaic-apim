@@ -22,6 +22,7 @@ from mosaic_api.domain import (
     GatewaySuggestion,
     GatewaySyncRun,
     GatewayUpdate,
+    GrantOverlapReport,
     Group,
     GroupCreate,
     GroupMembership,
@@ -126,7 +127,12 @@ def _mcp_endpoints(request: Request) -> McpEndpointService:
 
 
 def _actor(auth: AuthContext) -> Actor:
-    return Actor(object_id=auth.object_id, tenant_id=auth.tenant_id)
+    return Actor(
+        object_id=auth.object_id,
+        tenant_id=auth.tenant_id,
+        group_ids=auth.group_ids,
+        groups_overage=auth.groups_overage,
+    )
 
 
 router = APIRouter(prefix="/api/v1", tags=["admin"])
@@ -710,6 +716,15 @@ async def resolve_entitlements(
     """Effective access for one principal, including what a group grant contributes."""
 
     return await _entitlements(request).resolve_for_principal(_actor(auth), principal_id)
+
+
+@router.get("/entitlements/overlaps", response_model=GrantOverlapReport)
+async def grant_overlaps(
+    request: Request,
+    auth: Admin,
+    resource: str | None = None,
+) -> GrantOverlapReport:
+    return await _entitlements(request).list_overlaps(_actor(auth), resource_id=resource)
 
 
 @router.get("/entitlements/{entitlement_id}", response_model=Entitlement)

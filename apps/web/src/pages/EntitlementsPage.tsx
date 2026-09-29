@@ -36,6 +36,7 @@ import { EmptyState, ErrorState, Loading } from '../components/AsyncState'
 import { PageHeader } from '../components/PageHeader'
 import { EntitlementAccessState } from '../components/EntitlementAccessState'
 import { EntitlementConnectionDialog } from '../components/EntitlementConnectionDialog'
+import { PrincipalKindBadge } from '../components/PrincipalKindBadge'
 import { ModelAccessSettingsPanel } from '../components/ModelAccessSettingsPanel'
 import { PublishModelDialog } from '../components/PublishModelDialog'
 import {
@@ -47,6 +48,12 @@ import {
   type LimitForm,
 } from '../entitlement-limits'
 import { runtimeConfig } from '../runtime-config'
+import {
+  ENTITLEMENT_SUBJECT_KIND_LABELS,
+  GRANT_OVERLAP_KIND_LABELS,
+  PRINCIPAL_KIND_LABELS,
+  subjectKindForPrincipal,
+} from '../labels'
 import type {
   AccessRequest,
   AccessRequestApproval,
@@ -59,6 +66,7 @@ import type {
   QuotaPeriod,
   Publication,
   PublishPlan,
+  PrincipalKind,
 } from '../types'
 import styles from './EntitlementsPage.module.css'
 
@@ -66,6 +74,8 @@ interface SubjectOption {
   id: string
   kind: EntitlementSubjectKind
   label: string
+  group: 'People' | 'Agents' | 'Security groups' | 'Applications' | 'MOSAIC groups'
+  principalKind?: PrincipalKind
 }
 
 interface ResourceOption {
@@ -153,22 +163,39 @@ export function EntitlementsPage() {
     queryKey: ['access-requests', 'pending'],
     queryFn: () => api.listAccessRequests('pending'),
   })
+  const overlaps = useQuery({
+    queryKey: ['entitlements', 'overlaps'],
+    queryFn: () => api.getGrantOverlaps(),
+  })
 
   const subjectOptions = useMemo<SubjectOption[]>(
     () => [
+      ...(principals.data ?? []).map<SubjectOption>((principal) => {
+        const kind = subjectKindForPrincipal(principal.kind)
+        const principalLabel = principal.label ?? principal.objectId
+        const group: SubjectOption['group'] =
+          principal.kind === 'user'
+            ? 'People'
+            : principal.kind === 'agentIdentity' || principal.kind === 'agentUser'
+              ? 'Agents'
+              : principal.kind === 'securityGroup'
+                ? 'Security groups'
+                : 'Applications'
+        return {
+          id: principal.id,
+          kind,
+          label: `${principalLabel} (${PRINCIPAL_KIND_LABELS[principal.kind]})`,
+          group,
+          principalKind: principal.kind,
+        }
+      }),
       ...(groups.data ?? []).map<SubjectOption>((group) => ({
         id: group.id,
         kind: 'group',
-        label: `${group.name} (group)`,
+        label: `${group.name} (MOSAIC group)`,
+        group: 'MOSAIC groups',
       })),
-      ...(principals.data ?? []).map<SubjectOption>((principal) => ({
-        id: principal.id,
-        kind: principal.kind === 'user' ? 'user' : 'application',
-        label: `${principal.label ?? principal.objectId} (${
-          principal.kind === 'user' ? 'user' : 'application'
-        })`,
-      })),
-    ],
+    ].sort((left, right) => left.group.localeCompare(right.group) || left.label.localeCompare(right.label)),
     [groups.data, principals.data],
   )
 
@@ -300,7 +327,7 @@ export function EntitlementsPage() {
       (item) => item.id === accessRequest.requesterPrincipalId || item.objectId.toLowerCase() === objectId,
     )
     const subject: EntitlementSubject = {
-      kind: principal && principal.kind !== 'user' ? 'application' : 'user',
+      kind: principal ? subjectKindForPrincipal(principal.kind) : 'user',
       id: principal?.id ?? accessRequest.requesterObjectId,
     }
     const { resource } = accessRequest
@@ -527,7 +554,20 @@ export function EntitlementsPage() {
                           <Text className={styles.primaryCell}>
                             {labels.get(entitlement.subject.id) ?? entitlement.subject.id}
                           </Text>
-                          <Text className={styles.secondaryCell}>{entitlement.subject.kind}</Text>
+                          <div className={styles.rowActions}>
+                            <Badge appearance="tint">
+                              {ENTITLEMENT_SUBJECT_KIND_LABELS[entitlement.subject.kind]}
+                            </Badge>
+                            {(() => {
+                              const principal = principals.data?.find((item) => item.id === entitlement.subject.id)
+                              return principal ? <PrincipalKindBadge kind={principal.kind} /> : null
+                            })()}
+                          </div>
+                          {entitlement.subject.kind === 'securityGroup' && (
+                            <Text className={styles.secondaryCell}>
+                              Entra tokens only · limits apply to each member
+                            </Text>
+                          )}
                         </div>
                       </TableCell>
                       <TableCell>
@@ -615,6 +655,70 @@ export function EntitlementsPage() {
         </div>
       </Card>
 
+      <Card className={styles.tableCard}>
+        <div className={styles.tableHeader}>
+          <div>
+            <Title3 as="h2">Overlapping grants</Title3>
+            <Text size={200}>
+              When more than one grant can reach the same caller on the same resource, MOSAIC shows
+              which grant applies and which grants are shadowed.
+            </Text>
+          </div>
+        </div>
+        <div className={styles.tableWrap}>
+          {overlaps.isPending && <Loading label="Loading overlapping grants..." />}
+          {overlaps.isError && <ErrorState error={overlaps.error} />}
+          {overlaps.data && !overlaps.data.membershipChecked && (
+            <MessageBar intent="warning">
+              <MessageBarBody>
+                Microsoft Graph membership was not checked. Group-only overlaps are shown, but
+                principal-specific overlaps may be missing.
+                {overlaps.data.skipped.length > 0 && (
+                  <> Skipped: {overlaps.data.skipped.join(', ')}.</>
+                )}
+              </MessageBarBody>
+            </MessageBar>
+          )}
+          {overlaps.data && overlaps.data.overlaps.length === 0 && (
+            <EmptyState title="No overlapping grants.">
+              No saved grants currently overlap for the selected scope.
+            </EmptyState>
+          )}
+          {overlaps.data && overlaps.data.overlaps.length > 0 && (
+            <div className={styles.accessPanel}>
+              {overlaps.data.overlaps.map((overlap) => (
+                <Card key={`${overlap.kind}:${overlap.resource.kind}:${overlap.resource.id}:${overlap.winner.entitlementId}`} className={styles.noteCard}>
+                  <div className={styles.cellStack}>
+                    <div className={styles.rowActions}>
+                      <Badge appearance="tint">{GRANT_OVERLAP_KIND_LABELS[overlap.kind]}</Badge>
+                      <Badge appearance="outline">{overlap.resourceLabel}</Badge>
+                    </div>
+                    {overlap.principalLabel && (
+                      <Text>
+                        Affected principal: <strong>{overlap.principalLabel}</strong>
+                      </Text>
+                    )}
+                    <Text>{overlap.reason}</Text>
+                    <dl className={styles.detailList}>
+                      <div>
+                        <dt>Applies</dt>
+                        <dd>{overlap.winner.subjectLabel}</dd>
+                      </div>
+                      {overlap.shadowed.map((grant) => (
+                        <div key={grant.entitlementId}>
+                          <dt>Doesn&apos;t apply</dt>
+                          <dd>{grant.subjectLabel}</dd>
+                        </div>
+                      ))}
+                    </dl>
+                  </div>
+                </Card>
+              ))}
+            </div>
+          )}
+        </div>
+      </Card>
+
       <div className={styles.contentGrid}>
         <Card className={styles.tableCard}>
           <div className={styles.tableHeader}>
@@ -692,8 +796,8 @@ export function EntitlementsPage() {
             <Title3 as="h2">Resolved desired access</Title3>
           </div>
           <Text size={200}>
-            Recorded direct and group intent for a principal. This is not proof of active gateway
-            access; group grants remain desired state only.
+            Recorded direct, MOSAIC group, and security-group intent for a principal. Access through
+            security groups is found with Microsoft Graph.
           </Text>
           <Field label="Principal">
             <Select
@@ -721,8 +825,20 @@ export function EntitlementsPage() {
                     </dt>
                     <dd>
                       {item.via === 'direct'
-                        ? 'Granted directly'
-                        : `Granted through ${item.viaGroupName ?? 'a group'}`}
+                        ? 'Direct'
+                        : item.via === 'securityGroup'
+                          ? `Security group ${item.viaGroupName ?? item.viaGroupId ?? ''}`
+                          : `MOSAIC group ${item.viaGroupName ?? item.viaGroupId ?? ''}`}
+                      {' · '}
+                      {!item.entitlement.enabled
+                        ? 'Disabled'
+                        : item.effective
+                          ? 'Applies'
+                          : `Overridden by ${
+                            rows.find((grant) => grant.id === item.shadowedBy)?.id
+                            ?? item.shadowedBy
+                            ?? 'another grant'
+                          }`}
                     </dd>
                   </div>
                 ))}
@@ -745,11 +861,20 @@ export function EntitlementsPage() {
                     onChange={(_, data) => setForm({ ...form, subject: data.value })}
                   >
                     <option value="">Select a user, group, or application</option>
-                    {subjectOptions.filter((option) => !directModelId || option.kind !== 'group').map((option) => (
-                      <option key={option.id} value={option.id}>
-                        {option.label}
-                      </option>
-                    ))}
+                    {(['People', 'Agents', 'Security groups', 'Applications', 'MOSAIC groups'] as const).map((group) => {
+                    const grouped = subjectOptions.filter(
+                      (option) => option.group === group && (!directModelId || option.kind !== 'group'),
+                    )
+                    return grouped.length ? (
+                      <optgroup key={group} label={group}>
+                        {grouped.map((option) => (
+                          <option key={option.id} value={option.id}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </optgroup>
+                    ) : null
+                    })}
                   </Select>
                 </Field>
                 <Field label="Resource" required>

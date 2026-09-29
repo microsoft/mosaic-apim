@@ -97,3 +97,11 @@ model's plan is reviewed and applied.
   the same field with `source: orchestrated`.
 - ADR 0001 is unaffected. Nothing here writes to API Management, and the Contributor role stays
   ungranted.
+
+## Amendment 2026-09-29: Agent principals and Entra security groups
+
+[ADR 0014](0014-agent-identities-and-security-group-grants.md) adds principal kinds
+`agentIdentity`, `agentUser` and `securityGroup`, plus entitlement subject kind `securityGroup`.
+`agentUser` grants behave as user grants; `agentIdentity`, service-principal and managed-identity
+grants behave as application grants. MOSAIC-local groups remain informational desired state and are
+not an APIM runtime authorization mechanism.
