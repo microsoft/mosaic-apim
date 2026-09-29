@@ -351,8 +351,14 @@ npm run lint
 npm run test
 npm run build
 
+Set-Location ..\..\e2e
+npm run test:unit
+npm run typecheck
+npm run lint
+Set-Location ..
+
 az bicep build --file infra\main.bicep
-python -m unittest scripts.tests.test_mosaic_entra
+python -m unittest scripts.tests.test_mosaic_entra scripts.tests.test_verify_model_access
 python -m unittest scripts.tests.test_spa_nginx
 ```
 
@@ -981,42 +987,122 @@ token or can reach its model. `scripts\verify_model_access.py` is an opt-in veri
 it calls the actual APIM endpoint and does not proxy through MOSAIC, provision resources, change
 grants, or save credentials.
 
-Deploy the feature and bootstrap its runtime registration, then prepare an isolated non-production
-published chat model with an applied user grant and an applied application grant. Obtain tokens
-using authorized clients and place them in these process environment variables, not source files:
+Deploy the feature and bootstrap its runtime registration. Then publish the models to check, in a
+non-production environment, and apply grants for them: any number of user grants held by one
+person, and application grants held by one workload. The script reads each grant's connection
+details from MOSAIC and calls the operation its publication exposes:
 
-- `MOSAIC_SMOKE_USER_CONTROL_TOKEN`: the entitled user's token for the MOSAIC API, with `User`.
-- `MOSAIC_SMOKE_ADMIN_CONTROL_TOKEN`: an administrator's MOSAIC API token for application-key handoff.
+- Azure OpenAI chat completions under `/openai/`, with `--api-version`.
+- Foundry Models chat completions under `/models/`, with `--models-api-version`.
+- Anthropic Messages at `/anthropic/v1/messages`, which takes no API version.
+
+Credentials come from process environment variables, not source files:
+
+- `MOSAIC_SMOKE_USER_CONTROL_TOKEN`: the granted user's token for the MOSAIC API, with `User`.
+  Needed for user grants and for grants held by someone else. For application grants, it also
+  lets the script check that the user can't reveal the application's key.
+- `MOSAIC_SMOKE_ADMIN_CONTROL_TOKEN`: an administrator's MOSAIC API token for application-key
+  handoff. Needed for application grants, and to confirm whose grants the user must not reach.
 - `MOSAIC_SMOKE_USER_RUNTIME_TOKEN`: that user's delegated model-runtime token. The user can get
   one by signing in with the model client, as in
   [Call a published model with an Entra token](docs/call-models-with-entra-tokens.md).
 - `MOSAIC_SMOKE_APPLICATION_RUNTIME_TOKEN`: the granted application's model-runtime token.
+- `MOSAIC_SMOKE_UNGRANTED_USER_RUNTIME_TOKEN`: for `--check-ungranted-user`, a model-runtime token
+  for a different user who holds none of the grants.
+
+The script can sign in instead of reading runtime tokens. With `--user-token-source device-code`
+it uses the model client that MOSAIC names in the connection details, and prints a code for the
+user to enter at the sign-in page. With `--application-token-source client-credentials` it reads
+the workload's `MOSAIC_SMOKE_APPLICATION_CLIENT_ID` and `MOSAIC_SMOKE_APPLICATION_CLIENT_SECRET`.
+Use a short-lived secret and delete it afterward.
 
 ```powershell
 python scripts\verify_model_access.py `
   --api-base-url https://<mosaic-api-host> `
   --gateway-origin https://<approved-apim-host> `
   --user-entitlement <user-grant-id> `
+  --user-entitlement <another-user-grant-id> `
   --application-entitlement <application-grant-id> `
-  --api-version <model-api-version> `
+  --api-version <azure-openai-api-version> `
+  --models-api-version <foundry-models-api-version> `
+  --user-token-source device-code `
+  --check-ungranted-user `
   --send-model-requests
 ```
 
-The explicit flag acknowledges actual inference requests and their consumption. The script
-verifies each subject with key-only and token-only calls, rejects anonymous/invalid/mismatched
-audience calls, checks cross-subject key denial, and refuses redirects or an unexpected gateway
-origin. It prints neither keys, tokens, nor model output. Set `MOSAIC_SMOKE_PAYLOAD` to a bounded
-chat request JSON object if the deployment needs a different token-limit parameter.
+The explicit flag acknowledges actual inference requests and their consumption; each asks for at
+most 8 output tokens. Every sign-in happens before the first model call. For each grant, the
+gateway must first reject an anonymous call and an invalid key. Token validation must refuse a
+MOSAIC control-plane token, and an invalid token sent with a valid key, with 401. When the run has
+a token for the other kind of subject, the gateway must refuse it with the grant's key with 403,
+because the two name different grants. With `--check-ungranted-user`, the grant lookup must also
+refuse the ungranted user's token with 403. When Entra tokens are off, every token must get 401. A
+rejection with the other status came from a different rule, so the check fails. Then the grant
+must reach its model with its own key and its own Entra token, whichever methods are applied.
 
-For the shared-counter check, use fresh isolated grants configured for **2 requests per 300
-seconds**, with no other callers, and add `--prove-shared-budget`. Two successful calls using the
-primary key and Entra token must exhaust the budget for the secondary key too.
+The script refuses redirects or an unexpected gateway origin. Before using a token, it checks the
+token's audience, permission and expiry, and that Entra issued it in the version 2.0 format the
+gateway accepts. The run fails if the grant subject's own token or the ungranted user's token
+doesn't pass, or expires within a minute. A check that only borrows a token, such as the other
+subject's token with this grant's key, is skipped with the reason instead, because token
+validation would refuse that token before the rule under test. The script prints neither keys,
+tokens, nor model output. Sign-in failures show only their error and `AADSTS` codes, which the
+[troubleshooting table](docs/call-models-with-entra-tokens.md#troubleshooting) explains. Chat
+requests cap output with `max_completion_tokens` on Azure OpenAI routes and `max_tokens` on
+Foundry Models routes; `--chat-token-parameter` overrides that for API versions that differ. Set
+`MOSAIC_SMOKE_PAYLOAD` to a bounded request JSON object to send instead of the default; the script
+still sets its `model` to each grant's deployment.
 
-Separately exercise method toggles and revocation through reviewed plans, allowing APIM to
-propagate each change before checking both paths. Verify rotation by changing a test subscription
-key directly in APIM and revealing it again: no MOSAIC synchronization should be needed. Do not
-report these live scenarios as passed when deployment, consent, credentials, or a test gateway
-are unavailable.
+Each run can add one proof, using fresh isolated grants with no other callers. Only the gateway's
+own limit counts: a 429 from the model deployment, or from a different limit, fails the proof as
+inconclusive.
+
+- `--prove-shared-budget`: for grants limited to **2 requests per 300 seconds**, with keys and Entra
+  tokens applied. Two successful calls using the primary key and Entra token must exhaust the
+  budget for the secondary key too, which then gets the gateway's call-limit 429.
+- `--prove-token-limit`: for grants limited to at most **100 tokens per minute**, without call
+  limits. The model's own token limit for each grant must be higher than the grant's. Further
+  calls must reach the gateway's token-limit 429 with `Retry-After`. Classic-tier gateways can't
+  limit an Anthropic model's tokens, so this proof doesn't apply to Claude there, and the script
+  refuses it before calling the model.
+
+`--watch-revocation <grant-id>` ends the run by waiting while you revoke that grant in the console,
+which disables it, and apply its model's access plan. Don't delete the grant: the script follows
+its status in MOSAIC. Every apply briefly refuses all calls to the model, so rejections count only
+after MOSAIC reports the grant revoked. Then the gateway must reject the grant's key, and its Entra
+token with 403 from the grant lookup (401 if the plan also turned Entra tokens off), twice in a
+row. The watch polls every `--revocation-interval` seconds (30 by default) and fails after
+`--revocation-timeout` seconds (900 by default). The tokens it uses must stay valid for the whole
+watch plus a minute; otherwise it stops before waiting.
+
+`--foreign-user-entitlement <grant-id>` checks that the user can't reach a grant someone else
+holds. Repeat it for each such grant. With the administrator's token, the script first confirms
+that the grant exists and that a different user holds it, so a mistyped ID or one of the user's
+own grants can't pass as a refusal. Then, with the user's token, MOSAIC must leave the grant out
+of the user's lists, including the portal's **My access**, and out of the user's 90-day usage
+report, both its rows and its timeline. It must also refuse the grant's connection details and
+its key with 403 or 404. A MOSAIC from before the usage report (ADR 0015) answers its route with
+404, and the script says it skipped that part. These checks call only MOSAIC's API, before any
+model call, and each refused key request is recorded in MOSAIC's audit log. A run that names only
+grants held by someone else sends no model requests, so it doesn't need `--send-model-requests`.
+
+Separately exercise method toggles through reviewed plans, allowing APIM to propagate each change
+before rerunning the script. Verify rotation by changing a test subscription key directly in APIM
+and revealing it again: no MOSAIC synchronization should be needed. Do not report these live
+scenarios as passed when deployment, consent, credentials, or a test gateway are unavailable.
+
+### End-to-end UI testing
+
+[`e2e/`](e2e) holds a live, human-in-the-loop Playwright harness. People sign in their own test
+accounts, and the harness drives the web console and portal to:
+
+- Import Azure OpenAI and Foundry endpoints, publish their models, and grant them.
+- Check that each end user or workload can call its model, and that others are denied.
+
+The [roadmap](docs/e2e/roadmap.md) tracks the phases and the journey matrix. The
+[runbook](docs/e2e/runbook.md) covers setup, personas, flags and secret hygiene. Its `verify`
+command runs `scripts\verify_model_access.py` with the personas' own MOSAIC API tokens, and
+enters its device codes in their browsers.
 
 ## Environments
 
