@@ -10,12 +10,18 @@ export function Loading({ label }: { label: string }) {
   return <Spinner label={label} />
 }
 
-export function ErrorState({ error }: { error: unknown }) {
+export function ErrorState({
+  error,
+  title = 'Unable to load data',
+}: {
+  error: unknown
+  title?: string
+}) {
   const message = error instanceof Error ? error.message : 'An unexpected error occurred.'
   return (
     <MessageBar intent="error">
       <MessageBarBody>
-        <MessageBarTitle>Unable to load data</MessageBarTitle>
+        <MessageBarTitle>{title}</MessageBarTitle>
         {message}
       </MessageBarBody>
     </MessageBar>
