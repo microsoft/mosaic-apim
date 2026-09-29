@@ -88,7 +88,7 @@ test('verify sends everything after -- to the live driver, with its people and t
     '--check-ungranted-user',
     '--send-model-requests',
   ]
-  const personas = { user: 'tuxedo', stranger: 'chevron' }
+  const personas = { user: 'member', stranger: 'outsider' }
   const reply = { ok: true, result: { exitCode: 0, timedOut: false, lines: ['PASS: one', 'PASS: two'], personas } }
   const env = {
     ...cleanEnv,
@@ -97,16 +97,16 @@ test('verify sends everything after -- to the live driver, with its people and t
     MOSAIC_SMOKE_USER_CONTROL_TOKEN: 'stale-control-token',
     MOSAIC_SMOKE_ADMIN_CONTROL_TOKEN: 'stale-admin-token',
   }
-  const run = await driveStub(reply, env, 'verify', '--user', 'tuxedo', '--stranger', 'chevron', '--', ...verifierArgs)
+  const run = await driveStub(reply, env, 'verify', '--user', 'member', '--stranger', 'outsider', '--', ...verifierArgs)
   assert.equal(run.status, 0, run.stderr)
   assert.equal(run.stderr, '')
-  assert.equal(run.stdout, 'Personas: user tuxedo, stranger chevron\nPASS: one\nPASS: two\n')
+  assert.equal(run.stdout, 'Personas: user member, stranger outsider\nPASS: one\nPASS: two\n')
   assert.deepEqual(run.received, [
     {
       authorization: ['Bearer', 'stub-run-token'].join(' '),
       body: {
         action: 'verify',
-        args: { verifierArgs, user: 'tuxedo', stranger: 'chevron', env: { MOSAIC_SMOKE_APPLICATION_CLIENT_SECRET: 'short-lived-secret' } },
+        args: { verifierArgs, user: 'member', stranger: 'outsider', env: { MOSAIC_SMOKE_APPLICATION_CLIENT_SECRET: 'short-lived-secret' } },
       },
     },
   ])
@@ -116,11 +116,11 @@ test('verify prints what the verifier printed and exits with its exit code', asy
   const valid = ['--user-entitlement', 'ent_x', '--send-model-requests']
   const result = (exitCode: number | null, timedOut: boolean) => ({
     ok: true,
-    result: { exitCode, timedOut, lines: ['FAIL: User grant 1 connection details: unexpected HTTP 404'], personas: { user: 'tuxedo' } },
+    result: { exitCode, timedOut, lines: ['FAIL: User grant 1 connection details: unexpected HTTP 404'], personas: { user: 'member' } },
   })
   const failed = await driveStub(result(130, false), cleanEnv, 'verify', '--', ...valid)
   assert.equal(failed.status, 130)
-  assert.equal(failed.stdout, 'Personas: user tuxedo\nFAIL: User grant 1 connection details: unexpected HTTP 404\n')
+  assert.equal(failed.stdout, 'Personas: user member\nFAIL: User grant 1 connection details: unexpected HTTP 404\n')
   assert.equal(failed.stderr, 'The verifier exited with code 130.\n')
 
   const timedOut = await driveStub(result(null, true), cleanEnv, 'verify', '--', ...valid)
@@ -140,9 +140,9 @@ test('verify flags must follow --', () => {
 })
 
 test('verify takes its people as options, not a persona', () => {
-  assert.match(drive('tuxedo', 'verify', '--', '--send-model-requests').stderr, /"verify" takes no persona before it/)
+  assert.match(drive('member', 'verify', '--', '--send-model-requests').stderr, /"verify" takes no persona before it/)
   for (const option of ['--user', '--admin', '--stranger']) {
-    const { status, stderr } = drive('admin', 'click', 'role:button:Revoke', option, 'tuxedo')
+    const { status, stderr } = drive('admin', 'click', 'role:button:Revoke', option, 'member')
     assert.equal(status, 2)
     assert.match(stderr, /only apply to "verify"/)
   }
