@@ -22,6 +22,8 @@ export interface VerifyPlan {
   argv: string[]
   userEntitlements: string[]
   applicationEntitlements: string[]
+  /** Grants held by someone other than the user, which the user must not list, read or retrieve a key for. */
+  foreignUserEntitlements: string[]
   userTokenSource: UserTokenSource
   applicationTokenSource: ApplicationTokenSource
   checkUngrantedUser: boolean
@@ -46,6 +48,7 @@ const apiVersion = /^[A-Za-z0-9][A-Za-z0-9.-]{0,31}$/
 const valueFlags: Readonly<Record<string, ValueFlag>> = {
   '--user-entitlement': { pattern: identifier, repeat: true, expects: 'a grant ID' },
   '--application-entitlement': { pattern: identifier, repeat: true, expects: 'a grant ID' },
+  '--foreign-user-entitlement': { pattern: identifier, repeat: true, expects: 'a grant ID' },
   '--watch-revocation': { pattern: identifier, expects: 'a grant ID' },
   '--api-version': { pattern: apiVersion, expects: 'an API version, such as 2024-10-21' },
   '--models-api-version': { pattern: apiVersion, expects: 'an API version, such as 2024-05-01-preview' },
@@ -113,12 +116,17 @@ export function planVerification(targets: Targets, args: readonly string[]): Ver
   const single = (name: string) => values.get(name)?.[0]
   const userEntitlements = values.get('--user-entitlement') ?? []
   const applicationEntitlements = values.get('--application-entitlement') ?? []
-  const listed = [...userEntitlements, ...applicationEntitlements]
+  const foreignUserEntitlements = values.get('--foreign-user-entitlement') ?? []
+  // Only the grants the run calls models with. Grants held by someone else are only checked through MOSAIC's API.
+  const own = [...userEntitlements, ...applicationEntitlements]
+  const listed = [...own, ...foreignUserEntitlements]
   const watchRevocation = single('--watch-revocation')
-  if (!switches.has('--send-model-requests')) {
+  if (listed.length === 0) {
+    throw new VerifyError('Name at least one --user-entitlement, --application-entitlement or --foreign-user-entitlement.')
+  }
+  if (own.length > 0 && !switches.has('--send-model-requests')) {
     throw new VerifyError('Add --send-model-requests to acknowledge that the checks send real, billed model requests.')
   }
-  if (listed.length === 0) throw new VerifyError('Name at least one --user-entitlement or --application-entitlement.')
   if (new Set(listed).size !== listed.length) throw new VerifyError('List each grant only once.')
   if (switches.has('--check-ungranted-user') && userEntitlements.length === 0) {
     throw new VerifyError('--check-ungranted-user needs a --user-entitlement in the same run.')
@@ -126,8 +134,11 @@ export function planVerification(targets: Targets, args: readonly string[]): Ver
   if (switches.has('--prove-shared-budget') && switches.has('--prove-token-limit')) {
     throw new VerifyError('Choose one proof per run: --prove-shared-budget or --prove-token-limit.')
   }
-  if (watchRevocation !== undefined && !listed.includes(watchRevocation)) {
-    throw new VerifyError('--watch-revocation must name a grant listed in this run.')
+  if ((switches.has('--prove-shared-budget') || switches.has('--prove-token-limit')) && own.length === 0) {
+    throw new VerifyError('A proof needs a --user-entitlement or --application-entitlement to run on.')
+  }
+  if (watchRevocation !== undefined && !own.includes(watchRevocation)) {
+    throw new VerifyError('--watch-revocation must name a --user-entitlement or --application-entitlement in this run.')
   }
 
   const argv = ['--api-base-url', targets.origins.api, '--gateway-origin', targets.origins.gateway]
@@ -140,6 +151,7 @@ export function planVerification(targets: Targets, args: readonly string[]): Ver
     argv,
     userEntitlements,
     applicationEntitlements,
+    foreignUserEntitlements,
     userTokenSource: (single('--user-token-source') ?? 'env') as UserTokenSource,
     applicationTokenSource: (single('--application-token-source') ?? 'env') as ApplicationTokenSource,
     checkUngrantedUser: switches.has('--check-ungranted-user'),
@@ -152,7 +164,10 @@ export function planVerification(targets: Targets, args: readonly string[]): Ver
 export interface VerifyPersonas {
   /** Holds the user grants. Its MOSAIC API token reads their connection details on every run. */
   user: string
-  /** Only for application grants, whose connection details and keys only an admin can read. */
+  /**
+   * Only for application grants, whose connection details and keys only an admin can read, and for grants held
+   * by someone else, which the admin confirms are real before the user's refusals count.
+   */
   admin?: string
   /** Signs in for --check-ungranted-user when the verifier signs users in with device codes. */
   stranger?: string
@@ -174,13 +189,15 @@ export function verifyPersonas(targets: Targets, plan: VerifyPlan, choice: Perso
   persona(targets, user)
 
   let admin: string | undefined
-  if (plan.applicationEntitlements.length > 0) {
+  if (plan.applicationEntitlements.length > 0 || plan.foreignUserEntitlements.length > 0) {
     admin = choice.admin ?? targets.roles.admin
     persona(targets, admin)
     // The verifier checks that the end user can't read an application's key, so they must be different people.
-    if (samePerson(targets, admin, user)) throw new VerifyError(`The admin and the user must be different people, not both ${user}.`)
+    if (plan.applicationEntitlements.length > 0 && samePerson(targets, admin, user)) {
+      throw new VerifyError(`The admin and the user must be different people, not both ${user}.`)
+    }
   } else if (choice.admin !== undefined) {
-    throw new VerifyError('--admin is only used with --application-entitlement.')
+    throw new VerifyError('--admin is only used with --application-entitlement or --foreign-user-entitlement.')
   }
 
   let stranger: string | undefined

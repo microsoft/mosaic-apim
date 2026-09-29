@@ -103,6 +103,8 @@ test('the daemon checks the people in a run before signing anyone in', async () 
     [['--admin', 'admin', '--', ...valid], /--admin is only used with --application-entitlement/],
     [['--user', 'nobody', '--', ...valid], /Unknown persona "nobody"/],
     [['--stranger', 'outsider', '--', ...valid], /--stranger is only used with/],
+    // Grants held by someone else need no --send-model-requests, so this run gets as far as its people.
+    [['--stranger', 'outsider', '--', '--foreign-user-entitlement', 'ent_other'], /--stranger is only used with/],
     [['--user', 'admin', '--', '--application-entitlement', 'ent_app', '--send-model-requests'], /must be different people/],
   ]
   for (const [args, message] of cases) {

@@ -3,7 +3,8 @@
 The script reads each grant's connection details and keys from MOSAIC, then calls the gateway
 directly. Every grant must reach its model with its own key and its own Entra token, and anonymous,
 invalid, wrong-audience and cross-subject calls must be rejected. Optional checks cover an
-ungranted user, the shared request budget, the tokens-per-minute limit and revocation.
+ungranted user, the shared request budget, the tokens-per-minute limit and revocation, and that
+grants held by other people stay out of the user's reach in MOSAIC.
 
 Credentials come from environment variables, or from sign-ins the script starts: the device code
 flow for users and client credentials for a workload. They stay in memory and are never printed,
@@ -119,6 +120,16 @@ def object_body(response: httpx.Response, label: str) -> dict[str, Any]:
         raise VerificationFailed(f"{label}: response was not JSON") from None
     if not isinstance(value, dict):
         raise VerificationFailed(f"{label}: response was not an object")
+    return value
+
+
+def list_body(response: httpx.Response, label: str) -> list[Any]:
+    try:
+        value = response.json()
+    except ValueError:
+        raise VerificationFailed(f"{label}: response was not JSON") from None
+    if not isinstance(value, list):
+        raise VerificationFailed(f"{label}: response was not a list")
     return value
 
 
@@ -999,6 +1010,75 @@ def check_foreign_keys(
     say("PASS: the end user can't retrieve an application grant's key")
 
 
+def listed_grant_ids(client: httpx.Client, base: str, token: str) -> set[str]:
+    """The grant IDs the caller's own lists show: MOSAIC's and the portal's My access."""
+    response = client.get(f"{base}/me/entitlements", headers=bearer(token))
+    expect(response, {200}, "The user's list of grants")
+    mine = [mapping(item).get("id") for item in list_body(response, "The user's list of grants")]
+    response = client.get(f"{base}/portal/entitlements", headers=bearer(token))
+    expect(response, {200}, "The portal's list of the user's grants")
+    portal = [
+        mapping(mapping(item).get("entitlement")).get("id")
+        for item in list_body(response, "The portal's list of the user's grants")
+    ]
+    return {value for value in [*mine, *portal] if isinstance(value, str)}
+
+
+def check_foreign_user_grants(
+    client: httpx.Client,
+    base: str,
+    user_control: str,
+    admin_control: str,
+    identifiers: list[str],
+) -> None:
+    """Grants held by other people must stay out of the user's lists, details and keys.
+
+    The admin first confirms that each grant exists and that someone else holds it, so a mistyped
+    ID or the user's own grant can't pass as a refusal.
+    """
+    user = object_id(user_control)
+    if user is None:
+        raise VerificationFailed(f"{USER_CONTROL_TOKEN} names no user object ID")
+    labels = {
+        identifier: f"Another person's grant {index}"
+        for index, identifier in enumerate(identifiers, start=1)
+    }
+    for identifier, label in labels.items():
+        response = client.get(f"{base}/entitlements/{identifier}", headers=bearer(admin_control))
+        expect(response, {200}, f"The admin reading {label}")
+        subject = mapping(object_body(response, f"The admin reading {label}").get("subject"))
+        holder_id = subject.get("id")
+        if subject.get("kind") != "user" or not isinstance(holder_id, str):
+            raise VerificationFailed(f"{label} isn't a user grant")
+        if not ENTITLEMENT.fullmatch(holder_id):
+            raise VerificationFailed(f"{label} names an unusable holder ID")
+        response = client.get(f"{base}/principals/{holder_id}", headers=bearer(admin_control))
+        expect(response, {200}, f"The admin reading {label}'s holder")
+        holder = guid(object_body(response, f"The admin reading {label}'s holder").get("objectId"))
+        if holder is None:
+            raise VerificationFailed(f"{label}'s holder has no object ID")
+        if holder == user:
+            raise VerificationFailed(
+                f"{label} is held by the user. Name a grant that someone else holds"
+            )
+    listed = listed_grant_ids(client, base, user_control)
+    for identifier, label in labels.items():
+        if identifier in listed:
+            raise VerificationFailed(f"MOSAIC lists {label} among the user's own grants")
+        route = f"{base}/me/entitlements/{identifier}"
+        response = client.get(f"{route}/connection", headers=bearer(user_control))
+        expect(response, {403, 404}, f"The user reading {label}'s connection details")
+        # A refusal carries no key. Anything else is never printed, like every other response.
+        response = client.post(
+            f"{route}/keys/reveal", headers=bearer(user_control), json={"slot": "primary"}
+        )
+        expect(response, {403, 404}, f"The user retrieving {label}'s key")
+    say(
+        f"PASS: the user can't list, read or retrieve the key of {len(identifiers)} grant(s) "
+        "held by someone else"
+    )
+
+
 def parse_arguments(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--api-base-url", required=True, help="MOSAIC API origin, without /api/v1")
@@ -1019,6 +1099,14 @@ def parse_arguments(argv: list[str] | None) -> argparse.Namespace:
         metavar="ID",
         help="An application grant to verify. Repeat it for each grant of the same application",
     )
+    parser.add_argument(
+        "--foreign-user-entitlement",
+        action="append",
+        default=[],
+        metavar="ID",
+        help="A grant held by someone other than the user, which the user must not list, read "
+        "or retrieve a key for. Repeat it for each grant",
+    )
     parser.add_argument("--api-version", help="Azure OpenAI API version, for /openai/ routes")
     parser.add_argument(
         "--models-api-version", help="Foundry Models API version, for /models/ routes"
@@ -1035,8 +1123,8 @@ def parse_arguments(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument(
         "--send-model-requests",
         action="store_true",
-        required=True,
-        help="Acknowledge that the checks send real, billed model requests",
+        help="Acknowledge that the checks send real, billed model requests. Needed when the run "
+        "names a --user-entitlement or --application-entitlement",
     )
     parser.add_argument(
         "--check-ungranted-user",
@@ -1074,29 +1162,47 @@ def validate(args: argparse.Namespace) -> tuple[Options, str | None, str | None]
     if urlsplit(args.gateway_origin).path not in {"", "/"}:
         raise VerificationFailed("Supply the gateway origin without an API path")
     identifiers = [*args.user_entitlement, *args.application_entitlement]
-    if not identifiers:
+    listed = [*identifiers, *args.foreign_user_entitlement]
+    if not listed:
         raise VerificationFailed(
-            "Supply at least one --user-entitlement or --application-entitlement"
+            "Supply at least one --user-entitlement, --application-entitlement or "
+            "--foreign-user-entitlement"
         )
-    if not all(ENTITLEMENT.fullmatch(identifier) for identifier in identifiers):
+    if not all(ENTITLEMENT.fullmatch(identifier) for identifier in listed):
         raise VerificationFailed("Supply an entitlement identifier, not a URL")
-    if len(set(identifiers)) != len(identifiers):
+    if len(set(listed)) != len(listed):
         raise VerificationFailed("List each entitlement only once")
+    if identifiers and not args.send_model_requests:
+        raise VerificationFailed(
+            "Add --send-model-requests to acknowledge that the checks send real, billed model "
+            "requests"
+        )
     if args.check_ungranted_user and not args.user_entitlement:
         raise VerificationFailed(
             "--check-ungranted-user needs a --user-entitlement in the same run"
         )
+    if (args.prove_shared_budget or args.prove_token_limit) and not identifiers:
+        raise VerificationFailed(
+            "A proof needs a --user-entitlement or --application-entitlement to run on"
+        )
     if args.watch_revocation is not None and args.watch_revocation not in identifiers:
-        raise VerificationFailed("--watch-revocation must name an entitlement listed in this run")
+        raise VerificationFailed(
+            "--watch-revocation must name a --user-entitlement or --application-entitlement in "
+            "this run"
+        )
     if not 60 <= args.revocation_timeout <= 3600:
         raise VerificationFailed("--revocation-timeout must be from 60 to 3600 seconds")
     if not 10 <= args.revocation_interval <= 300:
         raise VerificationFailed("--revocation-interval must be from 10 to 300 seconds")
-    if args.user_entitlement:
+    if args.user_entitlement or args.foreign_user_entitlement:
         user_control: str | None = credential(USER_CONTROL_TOKEN)
     else:
         user_control = optional_credential(USER_CONTROL_TOKEN)
-    admin_control = credential(ADMIN_CONTROL_TOKEN) if args.application_entitlement else None
+    admin_control = (
+        credential(ADMIN_CONTROL_TOKEN)
+        if args.application_entitlement or args.foreign_user_entitlement
+        else None
+    )
     if args.application_entitlement and args.application_token_source == "client-credentials":
         if guid(credential(APPLICATION_CLIENT_ID)) is None:
             raise VerificationFailed(f"{APPLICATION_CLIENT_ID} must be the application's client ID")
@@ -1123,8 +1229,13 @@ def run(
     options: Options,
     user_control: str | None,
     admin_control: str | None,
-) -> int:
+) -> tuple[int, int]:
     base = f"{args.api_base_url.rstrip('/')}/api/v1"
+    # Isolation needs no model call, so it runs first and can fail before any is billed.
+    if args.foreign_user_entitlement:
+        check_foreign_user_grants(
+            client, base, user_control or "", admin_control or "", args.foreign_user_entitlement
+        )
     grants: list[Grant] = []
     subjects: list[tuple[Kind, list[str], str | None]] = [
         ("user", args.user_entitlement, user_control),
@@ -1167,7 +1278,7 @@ def run(
             timeout=args.revocation_timeout,
             interval=args.revocation_interval,
         )
-    return len(grants)
+    return len(grants), len(args.foreign_user_entitlement)
 
 
 def main(argv: list[str] | None = None, *, transport: httpx.BaseTransport | None = None) -> int:
@@ -1175,7 +1286,7 @@ def main(argv: list[str] | None = None, *, transport: httpx.BaseTransport | None
     try:
         options, user_control, admin_control = validate(args)
         with httpx.Client(timeout=30, follow_redirects=False, transport=transport) as client:
-            count = run(client, args, options, user_control, admin_control)
+            count, foreign = run(client, args, options, user_control, admin_control)
     except KeyboardInterrupt:
         print("STOPPED: interrupted before the checks finished", file=sys.stderr)
         return 130
@@ -1184,6 +1295,9 @@ def main(argv: list[str] | None = None, *, transport: httpx.BaseTransport | None
         message = str(error) if isinstance(error, VerificationFailed) else "HTTP transport failure"
         print(f"FAIL: {message}", file=sys.stderr)
         return 1
+    if not count:
+        say(f"Isolation checks passed for {foreign} grant(s) held by someone else.")
+        return 0
     later = "key rotation" if args.watch_revocation else "key rotation and revocation"
     say(
         f"Live checks passed for {count} grant(s). Rerun after each method toggle, and "

@@ -947,10 +947,10 @@ details from MOSAIC and calls the operation its publication exposes:
 Credentials come from process environment variables, not source files:
 
 - `MOSAIC_SMOKE_USER_CONTROL_TOKEN`: the granted user's token for the MOSAIC API, with `User`.
-  Needed for user grants. For application grants, it also lets the script check that the user
-  can't reveal the application's key.
+  Needed for user grants and for grants held by someone else. For application grants, it also
+  lets the script check that the user can't reveal the application's key.
 - `MOSAIC_SMOKE_ADMIN_CONTROL_TOKEN`: an administrator's MOSAIC API token for application-key
-  handoff. Needed for application grants.
+  handoff. Needed for application grants, and to confirm whose grants the user must not reach.
 - `MOSAIC_SMOKE_USER_RUNTIME_TOKEN`: that user's delegated model-runtime token. The user can get
   one by signing in with the model client, as in
   [Call a published model with an Entra token](docs/call-models-with-entra-tokens.md).
@@ -1022,6 +1022,15 @@ token with 403 from the grant lookup (401 if the plan also turned Entra tokens o
 row. The watch polls every `--revocation-interval` seconds (30 by default) and fails after
 `--revocation-timeout` seconds (900 by default). The tokens it uses must stay valid for the whole
 watch plus a minute; otherwise it stops before waiting.
+
+`--foreign-user-entitlement <grant-id>` checks that the user can't reach a grant someone else
+holds. Repeat it for each such grant. With the administrator's token, the script first confirms
+that the grant exists and that a different user holds it, so a mistyped ID or one of the user's
+own grants can't pass as a refusal. Then, with the user's token, MOSAIC must leave the grant out
+of the user's lists, including the portal's **My access**, and refuse its connection details and
+its key with 403 or 404. These checks call only MOSAIC's API, before any model call, and each
+refused key request is recorded in MOSAIC's audit log. A run that names only grants held by
+someone else sends no model requests, so it doesn't need `--send-model-requests`.
 
 Separately exercise method toggles through reviewed plans, allowing APIM to propagate each change
 before rerunning the script. Verify rotation by changing a test subscription key directly in APIM

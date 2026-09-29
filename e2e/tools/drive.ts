@@ -35,7 +35,8 @@ Verify
                                     its device codes in the right browser. Everything after "--" goes to the
                                     verifier, for example: verify -- --user-entitlement <id> --send-model-requests
   --user <persona>                  Holds the user grants (default: the manifest's roles.user)
-  --admin <persona>                 Hands off application keys, with --application-entitlement (default: roles.admin)
+  --admin <persona>                 Hands off application keys, with --application-entitlement, and confirms that
+                                    --foreign-user-entitlement grants are someone else's (default: roles.admin)
   --stranger <persona>              Holds no grant, for --check-ungranted-user with device-code sign-in
                                     (default: roles.outsider, then roles.noRole)
   Passes ${forwardedVariables.join(', ')}

@@ -704,7 +704,9 @@ const handlers: Record<string, Handler> = {
     activeVerification = verification
     try {
       const user = await captureApiToken(people.user, plan, signal)
-      const admin = people.admin === undefined ? undefined : await captureApiToken(people.admin, plan, signal)
+      // Checking grants held by someone else may name the user as the admin too. One sign-in serves both.
+      const admin =
+        people.admin === undefined ? undefined : people.admin === people.user ? user : await captureApiToken(people.admin, plan, signal)
       signal.throwIfAborted()
       const { env, secrets } = verifierLaunch(process.env, forwarded, { user, admin })
       const outcome = await runVerifier(plan, people, env, secrets, signal, verification)

@@ -158,6 +158,7 @@ node tools/drive.ts verify --user user-a -- `
   --user-entitlement <grant-id> --user-entitlement <another-grant-id> `
   --api-version <azure-openai-api-version> --models-api-version <foundry-models-api-version> `
   --user-token-source device-code --check-ungranted-user --send-model-requests
+node tools/drive.ts verify --user user-a -- --foreign-user-entitlement <someone-else's-grant-id>
 ```
 
 Everything after `--` goes to the verifier. The driver adds `--api-base-url` and
@@ -167,8 +168,11 @@ before anyone signs in.
 
 - **People:**
   - `--user` holds the user grants. It defaults to `roles.user`.
-  - `--admin` hands off application keys. It's only used with `--application-entitlement`,
-    defaults to `roles.admin`, and must be a different account from the user.
+  - `--admin` hands off application keys, and confirms that each `--foreign-user-entitlement` is
+    a real grant that someone other than the user holds. It's only used with those two flags, and
+    defaults to `roles.admin`. With `--application-entitlement` it must be a different account
+    from the user. A run with only grants held by someone else may name the admin as the user:
+    the driver then signs in once and uses that token for both.
   - `--stranger` holds no grant for the models in the run. It's only used with
     `--check-ungranted-user` and `--user-token-source device-code`, and defaults to
     `roles.outsider`, then `roles.noRole`.
@@ -199,6 +203,10 @@ Grant IDs appear in the console's model access review, as `Grant: <id>` on each 
 fresh grants with no other callers. Create them for the run in the console, with the limits the
 README names for each proof. Sign-in failures print only their `AADSTS` codes. The
 [troubleshooting table](../call-models-with-entra-tokens.md#troubleshooting) explains them.
+
+`--foreign-user-entitlement` needs no fresh grants and sends no model requests: name any user
+grant that someone other than `--user` holds. It checks journey P7 at MOSAIC's API, because the
+portal has no page for a single grant that a changed ID could reach.
 
 For `--watch-revocation <grant-id>`, leave `verify` running and drive the admin from another
 terminal. Revoke the grant (this disables it; don't delete it), then review and apply its model's

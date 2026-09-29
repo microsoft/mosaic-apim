@@ -42,6 +42,7 @@ test('a minimal run gets the manifest origins and the verifier defaults', () => 
   assert.deepEqual(result.argv, ['--api-base-url', api, '--gateway-origin', gateway, '--user-entitlement', 'ent_user', '--send-model-requests'])
   assert.deepEqual(result.userEntitlements, ['ent_user'])
   assert.deepEqual(result.applicationEntitlements, [])
+  assert.deepEqual(result.foreignUserEntitlements, [])
   assert.equal(result.userTokenSource, 'env')
   assert.equal(result.applicationTokenSource, 'env')
   assert.equal(result.checkUngrantedUser, false)
@@ -57,6 +58,7 @@ test('every flag passes through, in either --flag value or --flag=value form', (
     'ent_b',
     '--application-entitlement',
     'ent_app',
+    '--foreign-user-entitlement=ent_other',
     '--api-version',
     '2024-10-21',
     '--models-api-version=2024-05-01-preview',
@@ -78,6 +80,7 @@ test('every flag passes through, in either --flag value or --flag=value form', (
     '--api-base-url', api, '--gateway-origin', gateway,
     '--user-entitlement', 'ent_a', '--user-entitlement', 'ent_b',
     '--application-entitlement', 'ent_app',
+    '--foreign-user-entitlement', 'ent_other',
     '--api-version', '2024-10-21',
     '--models-api-version', '2024-05-01-preview',
     '--chat-token-parameter', 'max_tokens',
@@ -90,6 +93,7 @@ test('every flag passes through, in either --flag value or --flag=value form', (
   ])
   assert.deepEqual(result.userEntitlements, ['ent_a', 'ent_b'])
   assert.deepEqual(result.applicationEntitlements, ['ent_app'])
+  assert.deepEqual(result.foreignUserEntitlements, ['ent_other'])
   assert.equal(result.userTokenSource, 'device-code')
   assert.equal(result.applicationTokenSource, 'client-credentials')
   assert.equal(result.checkUngrantedUser, true)
@@ -138,23 +142,50 @@ test('flag values are checked before anything runs', () => {
 })
 
 test('a run mirrors the verifier: acknowledged, with distinct grants and a consistent watch', () => {
+  const foreign = ['--foreign-user-entitlement', 'ent_other']
   const cases: [string[], RegExp][] = [
     [['--user-entitlement', 'ent_user'], /Add --send-model-requests/],
-    [['--send-model-requests'], /at least one --user-entitlement or --application-entitlement/],
+    [[...foreign, '--user-entitlement', 'ent_user'], /Add --send-model-requests/],
+    [[], /Name at least one --user-entitlement, --application-entitlement or --foreign-user-entitlement/],
+    [['--send-model-requests'], /Name at least one --user-entitlement, --application-entitlement or --foreign-user-entitlement/],
     [[...minimal, '--user-entitlement', 'ent_user'], /List each grant only once/],
     [[...minimal, '--application-entitlement', 'ent_user'], /List each grant only once/],
+    [[...minimal, '--foreign-user-entitlement', 'ent_user'], /List each grant only once/],
     [['--application-entitlement', 'ent_app', '--send-model-requests', '--check-ungranted-user'], /needs a --user-entitlement/],
+    [[...foreign, '--check-ungranted-user'], /needs a --user-entitlement/],
     [[...minimal, '--prove-shared-budget', '--prove-token-limit'], /Choose one proof per run/],
-    [[...minimal, '--watch-revocation', 'ent_other'], /must name a grant listed in this run/],
+    [[...foreign, '--prove-token-limit'], /A proof needs a --user-entitlement or --application-entitlement/],
+    [[...minimal, '--watch-revocation', 'ent_other'], /must name a --user-entitlement or --application-entitlement in this run/],
+    [[...minimal, ...foreign, '--watch-revocation', 'ent_other'], /must name a --user-entitlement or --application-entitlement/],
   ]
   for (const [args, message] of cases) assert.throws(() => plan(...args), message, args.join(' '))
   assert.throws(() => plan('--send-model-requests'), VerifyError)
 })
 
+test('grants held by someone else need no model requests, and the admin confirms whose they are', () => {
+  const foreign = plan('--foreign-user-entitlement', 'ent_other', '--foreign-user-entitlement', 'ent_more')
+  assert.deepEqual(foreign.argv, [
+    '--api-base-url', api, '--gateway-origin', gateway,
+    '--foreign-user-entitlement', 'ent_other', '--foreign-user-entitlement', 'ent_more',
+  ])
+  assert.deepEqual(foreign.foreignUserEntitlements, ['ent_other', 'ent_more'])
+  assert.deepEqual(foreign.userEntitlements, [])
+  assert.deepEqual(foreign.applicationEntitlements, [])
+  assert.deepEqual(verifyPersonas(targets, foreign), { user: 'user-a', admin: 'admin', stranger: undefined })
+  // Nothing here reads a key the user may not see, so the admin can play the user too.
+  assert.deepEqual(verifyPersonas(targets, foreign, { user: 'admin' }), { user: 'admin', admin: 'admin', stranger: undefined })
+  assert.equal(verifyPersonas(targets, foreign, { admin: 'user-b' }).admin, 'user-b')
+  const withApplication = plan('--application-entitlement', 'ent_app', '--foreign-user-entitlement', 'ent_other', '--send-model-requests')
+  assert.throws(() => verifyPersonas(targets, withApplication, { user: 'admin' }), /must be different people/)
+})
+
 test('user grants use the manifest user and need no admin', () => {
   assert.deepEqual(verifyPersonas(targets, plan(...minimal)), { user: 'user-a', admin: undefined, stranger: undefined })
   assert.equal(verifyPersonas(targets, plan(...minimal), { user: 'guest' }).user, 'guest')
-  assert.throws(() => verifyPersonas(targets, plan(...minimal), { admin: 'admin' }), /--admin is only used with --application-entitlement/)
+  assert.throws(
+    () => verifyPersonas(targets, plan(...minimal), { admin: 'admin' }),
+    /--admin is only used with --application-entitlement or --foreign-user-entitlement/,
+  )
   assert.throws(() => verifyPersonas(targets, plan(...minimal), { user: 'nobody' }), TargetsError)
 })
 

@@ -21,6 +21,7 @@ USER_OID = "55555555-5555-4555-8555-555555555555"
 STRANGER_OID = "66666666-6666-4666-8666-666666666666"
 APP_OID = "77777777-7777-4777-8777-777777777777"
 ADMIN_OID = "88888888-8888-4888-8888-888888888888"
+OTHER_OID = "99999999-9999-4999-8999-999999999999"
 APP_SECRET = "fixture-client-secret"
 MODEL_OUTPUT = "MODEL-OUTPUT-FIXTURE"
 ECHO = "ECHOED-REQUEST-FIXTURE"
@@ -164,6 +165,9 @@ class FakeWorld:
         self.split_budget = False
         self.retry_after = True
         self.foreign_reveal_status = 404
+        # What MOSAIC wrongly shows the user of grants that other users hold: "list" puts them in
+        # the user's lists, "connection" returns their details, and "key" reveals their key.
+        self.foreign_user_leaks: set[str] = set()
         # Whether the gateway validates tokens "always", only "without-key" (skipping it when a
         # key comes too), or "never", leaving only the grant lookup to refuse tokens.
         self.token_validation = "always"
@@ -218,13 +222,40 @@ class FakeWorld:
         raise AssertionError("unexpected host")
 
     def control(self, request: httpx.Request) -> httpx.Response:
-        parts = request.url.path.removeprefix("/api/v1/").split("/")
+        path = request.url.path.removeprefix("/api/v1/")
         token = request.headers.get("Authorization", "").removeprefix("Bearer ")
+        if path in {"me/entitlements", "portal/entitlements"}:
+            if token != USER_CONTROL:
+                return httpx.Response(401)
+            listed = [
+                self.entitlement(grant)
+                for grant in self.grants.values()
+                if not self.deleted(grant)
+                and grant.kind == "user"
+                and (grant.oid == USER_OID or "list" in self.foreign_user_leaks)
+            ]
+            if path.startswith("portal/"):
+                return httpx.Response(
+                    200, json=[{"entitlement": e, "via": "direct"} for e in listed]
+                )
+            return httpx.Response(200, json=listed)
+        if path.startswith("principals/"):
+            if token != ADMIN_CONTROL:
+                return httpx.Response(401)
+            oid = path.removeprefix("principals/principal-")
+            kinds = {grant.oid: grant.kind for grant in self.grants.values()}
+            if oid not in kinds:
+                return httpx.Response(404)
+            return httpx.Response(
+                200, json={"id": f"principal-{oid}", "objectId": oid, "kind": kinds[oid]}
+            )
+        parts = path.split("/")
         mine = parts[0] == "me"
         parts = parts[1:] if mine else parts
-        grant = self.grants.get(parts[1]) if len(parts) > 2 else None
+        grant = self.grants.get(parts[1]) if len(parts) > 1 else None
         if grant is not None and self.deleted(grant):
             grant = None
+        foreign = grant is not None and grant.kind == "user" and grant.oid != USER_OID
         if mine and token == USER_CONTROL:
             visible = grant is not None and grant.kind == "user" and grant.oid == USER_OID
         elif not mine and token == ADMIN_CONTROL:
@@ -234,14 +265,27 @@ class FakeWorld:
         if grant is not None and parts[2:] == ["keys", "reveal"]:
             if mine and grant.kind == "application":
                 return httpx.Response(self.foreign_reveal_status, json={"key": grant.primary})
+            if mine and foreign and "key" in self.foreign_user_leaks:
+                visible = True
             if not visible:
                 return httpx.Response(404)
             slot = json.loads(request.content)["slot"]
             key = grant.primary if slot == "primary" else grant.secondary
             return httpx.Response(200, json={"key": key}, headers={"Cache-Control": "no-store"})
+        if mine and foreign and "connection" in self.foreign_user_leaks:
+            visible = True
         if grant is not None and visible and parts[2:] == ["connection"]:
             return httpx.Response(200, json=self.connection(grant))
+        if grant is not None and visible and not mine and len(parts) == 2:
+            return httpx.Response(200, json=self.entitlement(grant))
         return httpx.Response(404)
+
+    def entitlement(self, grant: FakeGrant) -> dict[str, Any]:
+        return {
+            "id": grant.id,
+            "subject": {"kind": grant.kind, "id": f"principal-{grant.oid}"},
+            "resource": {"kind": "modelApi", "id": grant.publication},
+        }
 
     def deleted(self, grant: FakeGrant) -> bool:
         return grant.deleted_at is not None and self.clock.now >= grant.deleted_at
@@ -464,6 +508,13 @@ def standard_world() -> FakeWorld:
     )
 
 
+def isolation_world() -> FakeWorld:
+    """The standard world, plus a grant that another user holds."""
+    world = standard_world()
+    world.grants["other-aoai"] = FakeGrant("other-aoai", "user", "aoai", OTHER_OID)
+    return world
+
+
 def chat_connection(
     path: str, *, name: str = "chat-completions", deployment: str = "gpt-4o-mini"
 ) -> dict[str, Any]:
@@ -479,16 +530,22 @@ AOAI_PATH = "/openai/deployments/gpt-4o-mini/chat/completions"
 
 class ModelAccessVerifierTests(unittest.TestCase):
     def verify(
-        self, world: FakeWorld, arguments: list[str], env: dict[str, str] | None = None
+        self,
+        world: FakeWorld,
+        arguments: list[str],
+        env: dict[str, str] | None = None,
+        *,
+        acknowledge: bool = True,
     ) -> tuple[int, str, str]:
         stdout, stderr = io.StringIO(), io.StringIO()
+        base = [arg for arg in BASE_ARGS if acknowledge or arg != "--send-model-requests"]
         with (
             patch.dict(os.environ, ENV if env is None else env, clear=True),
             patch.object(verifier, "time", world.clock),
             contextlib.redirect_stdout(stdout),
             contextlib.redirect_stderr(stderr),
         ):
-            code = verifier.main([*BASE_ARGS, *arguments], transport=world.transport())
+            code = verifier.main([*base, *arguments], transport=world.transport())
         return code, stdout.getvalue(), stderr.getvalue()
 
     def assert_nothing_secret(self, world: FakeWorld, text: str) -> None:
@@ -709,6 +766,121 @@ class ModelAccessVerifierTests(unittest.TestCase):
         )
         self.assertEqual(world.model_calls, [])
         self.assert_nothing_secret(world, out + err)
+
+    def test_another_user_s_grant_stays_out_of_the_user_s_reach(self) -> None:
+        world = isolation_world()
+        code, out, err = self.verify(
+            world, ["--foreign-user-entitlement", "other-aoai"], acknowledge=False
+        )
+        self.assertEqual(code, 0, err)
+        self.assertIn(
+            "PASS: the user can't list, read or retrieve the key of 1 grant(s) held by someone "
+            "else",
+            out,
+        )
+        self.assertIn("Isolation checks passed for 1 grant(s) held by someone else.", out)
+        # The admin confirms the grant is real and someone else's before the user's refusals count.
+        calls = [
+            (
+                request.method,
+                request.url.path,
+                request.headers["Authorization"].removeprefix("Bearer "),
+            )
+            for request in world.requests
+        ]
+        self.assertEqual(
+            calls,
+            [
+                ("GET", "/api/v1/entitlements/other-aoai", ADMIN_CONTROL),
+                ("GET", f"/api/v1/principals/principal-{OTHER_OID}", ADMIN_CONTROL),
+                ("GET", "/api/v1/me/entitlements", USER_CONTROL),
+                ("GET", "/api/v1/portal/entitlements", USER_CONTROL),
+                ("GET", "/api/v1/me/entitlements/other-aoai/connection", USER_CONTROL),
+                ("POST", "/api/v1/me/entitlements/other-aoai/keys/reveal", USER_CONTROL),
+            ],
+        )
+        self.assert_nothing_secret(world, out + err)
+
+    def test_isolation_is_checked_before_any_model_call(self) -> None:
+        world = isolation_world()
+        code, out, err = self.verify(
+            world, ["--user-entitlement", "user-aoai", "--foreign-user-entitlement", "other-aoai"]
+        )
+        self.assertEqual(code, 0, err)
+        self.assertIn("held by someone else", out)
+        self.assertIn("Live checks passed for 1 grant(s)", out)
+        paths = [request.url.path for request in world.requests]
+        first_model_call = world.requests.index(world.model_calls[0])
+        self.assertLess(
+            paths.index("/api/v1/me/entitlements/other-aoai/keys/reveal"), first_model_call
+        )
+
+    def test_another_user_s_grant_that_leaks_fails_before_model_calls(self) -> None:
+        for leak, message in (
+            ("list", "MOSAIC lists Another person's grant 1 among the user's own grants"),
+            (
+                "connection",
+                "The user reading Another person's grant 1's connection details: unexpected "
+                "HTTP 200",
+            ),
+            ("key", "The user retrieving Another person's grant 1's key: unexpected HTTP 200"),
+        ):
+            with self.subTest(leak=leak):
+                world = isolation_world()
+                world.foreign_user_leaks = {leak}
+                code, out, err = self.verify(
+                    world,
+                    ["--user-entitlement", "user-aoai", "--foreign-user-entitlement", "other-aoai"],
+                )
+                self.assertEqual(code, 1)
+                self.assertIn(message, err)
+                self.assertEqual(world.model_calls, [])
+                self.assert_nothing_secret(world, out + err)
+
+    def test_isolation_needs_a_real_grant_that_someone_else_holds(self) -> None:
+        for identifier, message in (
+            ("missing", "The admin reading Another person's grant 1: unexpected HTTP 404"),
+            (
+                "user-aoai",
+                "Another person's grant 1 is held by the user. Name a grant that someone else "
+                "holds",
+            ),
+            ("app-aoai", "Another person's grant 1 isn't a user grant"),
+        ):
+            with self.subTest(identifier=identifier):
+                world = isolation_world()
+                code, _, err = self.verify(
+                    world, ["--foreign-user-entitlement", identifier], acknowledge=False
+                )
+                self.assertEqual(code, 1)
+                self.assertIn(message, err)
+                self.assertFalse(
+                    [r for r in world.requests if r.url.path.startswith("/api/v1/me/")]
+                )
+
+    def test_isolation_needs_both_control_tokens_and_no_acknowledgement(self) -> None:
+        for missing in (verifier.USER_CONTROL_TOKEN, verifier.ADMIN_CONTROL_TOKEN):
+            with self.subTest(missing=missing):
+                world = isolation_world()
+                code, _, err = self.verify(
+                    world,
+                    ["--foreign-user-entitlement", "other-aoai"],
+                    without(missing),
+                    acknowledge=False,
+                )
+                self.assertEqual(code, 1)
+                self.assertIn(missing, err)
+                self.assertEqual(world.requests, [])
+        # Only a run that sends model requests needs the acknowledgement.
+        world = isolation_world()
+        code, _, err = self.verify(
+            world,
+            ["--user-entitlement", "user-aoai", "--foreign-user-entitlement", "other-aoai"],
+            acknowledge=False,
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("Add --send-model-requests", err)
+        self.assertEqual(world.requests, [])
 
     def test_unapplied_access_stops_before_model_calls(self) -> None:
         world = standard_world()
@@ -1312,13 +1484,30 @@ class ModelAccessVerifierTests(unittest.TestCase):
         for message, arguments in (
             ("at least one", []),
             ("only once", ["--user-entitlement", "a", "--application-entitlement", "a"]),
+            ("only once", ["--user-entitlement", "a", "--foreign-user-entitlement", "a"]),
             ("not a URL", ["--user-entitlement", "https://mosaic.example/grant"]),
             ("not a URL", ["--user-entitlement", "grant id"]),
+            ("not a URL", ["--foreign-user-entitlement", "grant/connection"]),
             (
                 "needs a --user-entitlement",
                 ["--application-entitlement", "a", "--check-ungranted-user"],
             ),
-            ("must name an entitlement", ["--user-entitlement", "a", "--watch-revocation", "b"]),
+            (
+                "needs a --user-entitlement",
+                ["--foreign-user-entitlement", "a", "--check-ungranted-user"],
+            ),
+            ("A proof needs", ["--foreign-user-entitlement", "a", "--prove-shared-budget"]),
+            (
+                "must name a --user-entitlement or --application-entitlement",
+                ["--user-entitlement", "a", "--watch-revocation", "b"],
+            ),
+            (
+                "must name a --user-entitlement or --application-entitlement",
+                [
+                    *("--user-entitlement", "a", "--foreign-user-entitlement", "b"),
+                    *("--watch-revocation", "b"),
+                ],
+            ),
             ("--revocation-timeout", ["--user-entitlement", "a", "--revocation-timeout", "5"]),
             ("--revocation-interval", ["--user-entitlement", "a", "--revocation-interval", "1"]),
         ):

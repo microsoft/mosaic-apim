@@ -465,7 +465,11 @@ Progress:
   MOSAIC, so it runs these steps without another tenant change.
 - The `user` persona sees its grants, limits and connection details (G3). Primary and secondary
   key reveal is masked, transient and never cached.
-- Users are isolated from each other: another user's entitlement ID returns 403 or 404.
+- Users are isolated from each other: another user's entitlement ID returns 403 or 404. The
+  portal has no page for a single grant, so the verifier checks this at MOSAIC's API with
+  `--foreign-user-entitlement`. The admin first confirms that someone else holds the grant. Then
+  the grant must stay out of the user's lists, and its connection details and key are refused.
+  The check sends no model requests.
 
 Progress:
 
