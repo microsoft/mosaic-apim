@@ -92,12 +92,19 @@ tests and README or ADR updates wherever a decision changes.
 | G11 | Discovery suggested, and registration accepted, the parent account of a registered Foundry project. The second endpoint had the same URL, and syncing it listed the project's deployments again, each publishable on its own (O9). **Remove** on an endpoint deletes it and its synced models at once, and the server doesn't check publications, so a publication whose endpoint is gone can't be re-planned or applied (O10). Found live in Phase 3 | Treat each registration as covering its account: don't suggest a covered account, and refuse a registration that overlaps one, naming it. Confirm before removing an endpoint, and refuse while publications depend on it ([#27](https://github.com/microsoft/mosaic-apim/pull/27)) | ✅ merged |
 | G12 | Endpoint settings leave out the Key authentication row and its note when an account doesn't set `disableLocalAuth`. Azure leaves it unset by default, which means keys are enabled, so both Azure OpenAI targets showed nothing (O8). Found live in Phase 3 | Treat an unset value on a readable account as Enabled, and add the note ([#26](https://github.com/microsoft/mosaic-apim/pull/26)) | ✅ merged |
 | G13 | **No model can be published.** The default publish plan creates the policy fragment before the backend its `set-backend-service` names. APIM accepts the fragment PUT, then its validation fails it: "Backend with id '…' could not be found." The run rolls back, so API Management is left unchanged. The console shows only "The Azure operation did not succeed", because MOSAIC drops Azure's error when it polls the operation. The governed-access plan already creates the backend first. Also, the fragment PUT is long-running even when it updates an existing fragment (its 200 carries a poll header too), but MOSAIC polls only 201 and 202. So a fragment update that APIM rejects would be reported as success, which matters for governed access and every later re-apply. Found live in Phase 5 (A8) | Create the backend before the fragment, which also makes teardown remove the fragment first. Refuse to apply a plan saved in the old order, and ask for a re-plan. Show Azure's reason when an operation fails, and when a request is refused outright. Poll any write response that carries a poll header. Make the test fake of APIM validate fragments the way APIM does ([#30](https://github.com/microsoft/mosaic-apim/pull/30)) | ✅ merged |
-| G14 | The console never tells someone without the Admin role that it isn't for them. For an account with only the User role, and for one with no MOSAIC role, it renders the whole admin shell with its actions, labels the account "Global Admin" (hard-coded for every Entra sign-in), calls it the administrator on Settings and the profile page, and shows "Unable to load data" in every live section. The API refuses correctly, so no admin data is shown. The portal already handles the same case with one clear denial and a sign-out button. Initials also keep punctuation, so a display name like "Name (Team)" shows "N(". Found live in A1 | Ask the API for the caller's MOSAIC roles before rendering the console. Without the Admin role, show one clear state instead of the shell: no access for an account with no role, and a pointer to the end-user portal for a User. Show the real MOSAIC role instead of "Global Admin", and build initials from letters and digits only. No infrastructure or app-setting change, so it ships in an image-only deploy | 🔄 in progress |
+| G14 | The console never tells someone without the Admin role that it isn't for them. For an account with only the User role, and for one with no MOSAIC role, it renders the whole admin shell with its actions, labels the account "Global Admin" (hard-coded for every Entra sign-in), calls it the administrator on Settings and the profile page, and shows "Unable to load data" in every live section. The API refuses correctly, so no admin data is shown. The portal already handles the same case with one clear denial and a sign-out button. Initials also keep punctuation, so a display name like "Name (Team)" shows "N(". Found live in A1 | A new `GET /api/v1/console/me` returns the caller's MOSAIC roles from the access token, and the console asks it before rendering. Without the Admin role it shows one card instead of the shell: no access for an account with no role, and a pointer to the end-user portal for a User, each with **Sign out**. The account label reads "MOSAIC Admin", and initials use letters and digits only. No infrastructure or app-setting change, so it ships in an image-only deploy, with the API before or together with the web app ([#31](https://github.com/microsoft/mosaic-apim/pull/31)) | 🔄 PR open |
+| G16 | **Re-plan** says "Created a fresh publish plan. Review it before applying.", but nothing shows that plan: the console discards it, and the API can't return a saved plan. On a publication without governed access, the row's **Apply** then applies the saved plan with no review. The README says re-planning shows how API Management has diverged, and the page says changes are made only after a reviewed plan is applied. Found live in A8 | Show every fresh plan in the review before it can be applied, whether it comes from **Re-plan** or from the row's **Apply**. Also fix O13 | 🔄 in progress |
 
-G12, G9, G11, G13 and G10 are merged, in that order, and #25 is still open. Before any of them
-merged, #25, G13 (both commits), G9, G12, G10 and G11 were merged onto `main` locally, in that
-order, and combined cleanly except for two test files. G10 merged last and resolved both by
-keeping both sides:
+There is no G15. What was first logged as G15 turned out to be APIM's own behavior, and is
+recorded as O12.
+
+G12, G9, G11, G13 and G10 are merged, in that order, and Batch 3b deployed them. #25 and G14
+([#31](https://github.com/microsoft/mosaic-apim/pull/31)) are open, and G16 is in progress. Two
+web tests that G11 added fail intermittently, and a fix that changes only tests is in progress.
+
+Before those five merged, #25, G13 (both commits), G9, G12, G10 and G11 were merged onto `main`
+locally, in that order, and combined cleanly except for two test files. G10 merged last and
+resolved both by keeping both sides:
 
 - G10 and G11 both change the import block of `apps/api/tests/test_model_endpoint_api.py`.
 - G10 and G13 both add fields to the fake Azure AI service in `apps/api/tests/aoai_double.py`.
@@ -141,7 +148,7 @@ Each batch runs only after approval and is recorded in the change ledger.
   remediation commands the UI shows.
 - **Exit:** the ledger lists every change and its rollback command.
 
-### Phase 3: Live, admin imports endpoints (A2 to A6) ✅ except A2's partial-scan message (G10)
+### Phase 3: Live, admin imports endpoints (A2 to A6) ✅ except seeing A2's partial-scan card
 
 - Paste AOAI A before MOSAIC can read anything. Record "cannot read" and the exact remediation
   command, run it, and check again. Then run the subscription-scope remediation so discovery
@@ -224,6 +231,9 @@ Progress on the new build (G7 and G8 deployed):
   Cognitive Services OpenAI User".
 - "Can invoke" is judged from role assignments, which MOSAIC can list at once. Whether the data
   plane honors them yet is for Phase 8 to show; O7 suggests allowing tens of minutes.
+- ✅ After Batch 3b deployed G10: discovery on the subscription, now readable at subscription
+  scope, reports no partial scan. ⏭️ Seeing G10's card for a partly readable subscription would
+  mean removing MOSAIC's subscription Reader, a tenant change, so G10's tests cover it instead.
 
 ### Phase 4: Close product gaps ✅
 
@@ -255,16 +265,19 @@ Progress on the new build (G7 and G8 deployed):
     manifest and test results hold tenant details that must never reach an image.
   - An azd environment rebuilt from live values needs `MOSAIC_PYTHON_INDEX_URL` set, as the README
     says. Left empty, the build argument overrides the Dockerfile's default package index.
-  - Not in this deploy: the dialog fix for O4 ([#25](https://github.com/microsoft/mosaic-apim/pull/25)),
-    and G9 to G14. G9 to G13 are merged; #25 is still open, and G14 is in progress. #25, G9 and
-    G14 change only the web and portal apps (G14 may add an API route). G10 to G13 also change
-    the API, and G13 is needed before anything can publish. They go out as `azd deploy` of the
-    API, web and portal images, after approval: the merged fixes first, so A8 can resume, and
-    #25 and G14 in a second deploy before Phase 6, which needs #25. None of them changes
-    infrastructure, the Entra hooks or app settings, so nothing is provisioned.
+  - ✅ Batch 3b, after approval: `azd deploy` put `main` at G10's merge, which carries G9 to G13,
+    on the API, web and portal (images only). Every check passed: health; G9's cache headers
+    (`/config.js` returns `no-store`, which G9 intends); S1, S2 and A0; G10, with no partial scan
+    reported; G11, which refused an overlapping registration by naming the project it overlaps,
+    and confirms before **Remove**; G12, after **Check access** (O5); and the A8 retry (Phase 5).
+  - Next, Batch 3c (images only, after approval): the dialog fix for O4
+    ([#25](https://github.com/microsoft/mosaic-apim/pull/25)), G14
+    ([#31](https://github.com/microsoft/mosaic-apim/pull/31)) and G16. G14 adds an API route, so
+    the API must go out with or before the web app, which `azd deploy --all` already does. None of
+    them changes infrastructure, the Entra hooks or app settings. Phase 6 needs #25.
 - **Exit:** the deployed build contains G1 to G5, G7 and G8, and the smoke specs pass.
 
-### Phase 5: Live, admin publishes (A7 to A9) 🔄 A7 done; A8 waits for G13's deploy
+### Phase 5: Live, admin publishes (A7 to A9) 🔄 every target published; the re-plan check waits for G16
 
 - Switch the gateway to manage mode (G1). Publish each target deployment and review the plan
   steps and policy facets before applying. Every step must succeed.
@@ -303,29 +316,41 @@ Progress:
     endpoints get six different paths.
 - ✅ Plan review for AOAI A `gpt-35-turbo`, with the dialog's defaults: subscription
   required, 12,000 tokens per minute counted per subscription, and prompt tokens estimated.
-  - The plan had 16 create steps: fragment, backend, API, 7 operations, API policy, product,
+  - The plan had 14 create steps: fragment, backend, API, 7 operations, API policy, product,
     product link and subscription. It had no warnings.
   - The facets showed managed-identity authentication to `https://cognitiveservices.azure.com`,
     routing, the token limit, token telemetry and the shared rule set.
 - ❌ A8, first apply (03:00): step 1 failed and the run rolled back (G13). The console said only
   "The Azure operation did not succeed". The activity log showed the reason: APIM rejected the
-  fragment because the backend it routes to didn't exist yet.
-  - The inventory afterwards matched the baseline exactly, including the global policy hash.
-  - The publication shows "Rolled back" with **Re-plan** and **Apply**, so once G13 is deployed
-    the retry starts from that row.
-  - After G13 is deployed, **Apply** on that row must refuse the saved plan, because it was saved
-    in the old order. The console then re-plans by itself and opens the publish dialog on its
-    review step, with the refusal as a warning: "This plan does not create resources in the order
-    MOSAIC now uses, so API Management could reject a step that names a resource not created
-    yet. Re-plan this publication and review the new order before applying." The fresh plan must
-    list the backend first and the fragment second, and **Apply plan** must succeed.
-  - The console offers no way around G13. Governed access creates the backend first, but
-    **Governed model access** lists only models that have already published, and this one never
-    has.
-- ⬜ A9: each published model gets a row under **Imported model APIs**. That row's **Catalog**
-  select offers "Discoverable" or "Entitled users only". The `guest` persona holds the User role
-  and is signed in to the portal, and the `admin` persona to the console, so A9 can run as soon as
-  a model publishes.
+  fragment because the backend it routes to didn't exist yet. The inventory afterwards matched the
+  baseline exactly, including the global policy hash, and the publication showed "Rolled back"
+  with **Re-plan** and **Apply**.
+- ✅ A8, retry after Batch 3b deployed G13:
+  - **Apply** on the rolled-back row was refused, because the saved plan used the old order. The
+    console re-planned by itself, which took about a minute, and opened the publish dialog on its
+    review step with the refusal as a warning (O13).
+  - The new plan had 14 create steps: backend first, then the fragment, the API, 7 operations, the
+    API policy, the product, the product link and the subscription.
+  - That review dialog was hidden from assistive technology (O4), so the harness had to reach its
+    buttons by CSS.
+  - **Apply plan** succeeded in about 40 seconds, and the publication shows Published.
+- ✅ A8, the other eleven deployments, each with the dialog's defaults: every plan put the backend
+  first and the fragment second, every step was a create, and every apply succeeded, most in 11
+  to 17 seconds. Azure OpenAI plans have 14 steps with 7 operations. Foundry plans have 10 steps
+  with chat completions, embeddings and model info.
+- ✅ A8, read-only cross-check against the baseline: 12 new APIs, products, backends and policy
+  fragments, and 24 new subscriptions. The named values are unchanged, and the global policy is
+  still APIM's default. Half of the new subscriptions are MOSAIC's. APIM created the other half
+  for its Administrator when each product was created (O12).
+- ⚠️ A8, re-plan: **Re-plan** on AOAI A `gpt-35-turbo` finished in about 10 seconds with "Created a
+  fresh publish plan. Review it before applying.", but nothing showed the plan (G16). The row's
+  **Apply** would now apply that unreviewed plan, so it stays unused until G16 is deployed. Then
+  re-plan each publication, review it, and confirm that every step reads "No change".
+- ✅ A9: each published model has a row under **Imported model APIs**, and its **Catalog** select
+  starts at "Discoverable". The `guest` persona's portal catalog listed all 12, each with
+  **Request access**. Setting AOAI C `o4-mini` to "Entitled users only" removed it from that
+  catalog after a reload, and setting it back restored it. Every entry reads "No summary
+  provided." (O14).
 
 ### Phase 6: Live, admin sets identity and governed access (A10 to A12) 🔄 started early
 
@@ -376,8 +401,8 @@ Progress:
     account "Global Admin", and called it the administrator. The `noRole` persona got the same
     shell and label in the console, with "A MOSAIC app role is required: Admin, User" in each
     section.
-  - Once G14 is deployed, A1's smoke spec must assert the console's new denial instead of the
-    per-section error.
+  - Once G14 ([#31](https://github.com/microsoft/mosaic-apim/pull/31)) is deployed, A1's smoke
+    spec must assert the console's new denial instead of the per-section error.
 
 ### Phase 8: Runtime verification (R1 to R8, A14) 🔄 verifier ready
 
@@ -398,6 +423,10 @@ tenant batches, the redeploy and Phases 5 to 7.
 | R8 | Manual: find the calls in Application Insights and Log Analytics |
 
 Method toggles (A14) are checked by rerunning the verifier after each reviewed plan.
+
+Proposed addition to R4, which needs approval because it reads keys: APIM's all-access key, the
+key of the subscription APIM gave its Administrator (O12) and MOSAIC's bootstrap key must each be
+refused on a governed publication.
 
 The live driver's `verify` command runs the verifier for the personas. It signs the `user`
 persona, and the `admin` persona for application grants, in to MOSAIC again, and passes their
@@ -441,8 +470,8 @@ has passed, and ❌ means the latest run failed on the product gap named.
 | A5 | Synced deployments match the Azure inventory | 3 | ✅ |
 | A6 | Gateway runtime readiness moves from "cannot invoke" with a command to "can invoke" | 3 | ✅ |
 | A7 | Manage mode is refused without APIM write access and allowed with it (G1) | 5 | 🔄 |
-| A8 | Publish every target deployment; every plan step succeeds, and re-planning is a no-op | 5 | ❌ G13 |
-| A9 | Catalog visibility makes a published model appear in the portal | 5 | ⬜ |
+| A8 | Publish every target deployment; every plan step succeeds, and re-planning is a no-op | 5 | 🔄 G16 |
+| A9 | Catalog visibility makes a published model appear in the portal | 5 | ✅ |
 | A10 | Identity entries exist for the `user` persona and the workload; a duplicate is rejected | 6 | 🔄 |
 | A11 | Governed access with keys, Entra and limits is reviewed and applied, and the applied state shows | 6 | ⬜ |
 | A12 | Workload connection details and key handoff work, and the key is never logged | 6 | ⬜ |
@@ -485,16 +514,19 @@ be confirmed, or fixed, once the journeys that exercise them have run.
 | ID | Observation | Next step |
 | --- | --- | --- |
 | O1 | Before MOSAIC can read an account, it records a placeholder endpoint (`https://<account>.cognitiveservices.azure.com`) and the provider "Azure AI Foundry", even for an Azure OpenAI account. The UI shows these as fact | Confirmed in Phase 3: once MOSAIC can read the account, **Check access** corrects both. Still worth labeling the values as unconfirmed until the first successful read |
-| O2 | A rejected duplicate registration appears under the generic title "Unable to load data". The Identity page gets this right with "Unable to add principal" | Use a title that fits a failed registration |
+| O2 | A rejected duplicate registration appears under the generic title "Unable to load data". The Identity page gets this right with "Unable to add principal" | Fixed by G11, which titles every refused registration "MOSAIC didn't register this endpoint". Seen live after Batch 3b |
 | O3 | The console's key reveal (`EntitlementConnectionDialog`) shows the key in an element labelled "Revealed primary key" or "Revealed secondary key", with no `data-secret` marker. The harness masks it by that label | Add `data-secret` to the revealed value when the component is next changed, so any tooling can find it |
-| O4 | Opening **Review model access** from the Models or Entitlements page left keyboard focus on the page, not in the dialog. The dialog first rendered its opening step and then switched to the review in an effect, which removed the control that had focus. The same dialog also showed its first step while it closed, and an apply that finished after it closed made the next **Publish a model** open on "Step 4 of 4". Found while stabilizing the web tests ([#24](https://github.com/microsoft/mosaic-apim/pull/24)), not in a live run | Fixed in [#25](https://github.com/microsoft/mosaic-apim/pull/25). Until that's deployed, let each apply finish before closing the dialog in A8. Once it's deployed, A11, A13 and A14 confirm that focus starts in the review |
-| O5 | After the redeploy, each endpoint kept the readiness verdict the previous build had saved, until someone ran **Check access** again. The Foundry project still recommended Foundry User at the project scope, which G8 reports as too narrow | Run **Check access** on every endpoint after a deploy that changes the readiness rules. The product could record which rules produced a verdict and flag older ones as out of date |
+| O4 | Opening **Review model access** from the Models or Entitlements page left keyboard focus on the page, not in the dialog. The dialog first rendered its opening step and then switched to the review in an effect, which removed the control that had focus. The same dialog also showed its first step while it closed, and an apply that finished after it closed made the next **Publish a model** open on "Step 4 of 4". Found while stabilizing the web tests ([#24](https://github.com/microsoft/mosaic-apim/pull/24)). Seen live in A8's retry, and worse: the review the console opened after the refusal was itself `aria-hidden`. Focus never entered it, so screen readers and role queries couldn't reach the dialog, while the page behind it stayed reachable | Fixed in [#25](https://github.com/microsoft/mosaic-apim/pull/25). Until that's deployed, let each apply finish before closing the dialog. Once it's deployed (Batch 3c), confirm that the review opened after a refusal, and G16's review, take focus and aren't hidden. A11, A13 and A14 then confirm that focus starts in the review |
+| O5 | After the redeploy, each endpoint kept the readiness verdict the previous build had saved, until someone ran **Check access** again. The Foundry project still recommended Foundry User at the project scope, which G8 reports as too narrow | Run **Check access** on every endpoint after a deploy that changes the readiness rules. The product could record which rules produced a verdict and flag older ones as out of date. Seen again after Batch 3b: G12's key-authentication row appeared only after **Check access** |
 | O6 | The harness's unattended sign-in gave up while silent single sign-on was still redirecting. It took the first sight of the Entra sign-in page to mean a password, MFA or consent was needed | Fixed in the harness. It gives single sign-on 10 seconds to finish before it asks for a person, and still fails at once on an Entra `AADSTS` error |
 | O7 | After Reader was granted to MOSAIC's managed identity on one account (01:50), **Check access** kept failing for at least 17 minutes, past the 10 minutes Microsoft documents. ARM returned 403 to MOSAIC's read, and restarting the API didn't help. The assignment was listed at once, and no deny assignment applied. A subscription-wide Reader granted at 02:12 made every account readable within 4 to 6 minutes, including one registered only after that grant | Allow for tens of minutes after granting a role, and grant the gateway's roles (A6) well before Phase 8 needs them. G10 makes the UI say that a new role can take a while |
-| O8 | Both Azure OpenAI targets showed no Key authentication row or note, though keys work on them. They never set `disableLocalAuth`, and Azure leaves it out when it's unset, which means enabled. The AI Services account sets it to false explicitly and shows "Enabled" | G12 treats an unset value as enabled |
-| O9 | With the Foundry project registered, discovery still suggested its parent account, and registering it succeeded. The second endpoint had the same URL, and syncing it listed the project's six deployments again, each publishable on its own. Registration rejects only an exact resource ID match, and discovery compares exact IDs | G11 refuses overlapping registrations and stops suggesting covered accounts. The duplicate was removed |
-| O10 | **Remove** on an endpoint deleted it and its synced models at once, with no confirmation. From the code: the server doesn't check publications, and a publication whose endpoint is gone can't be re-planned or applied ("Model endpoint was not found"), so its access can't change while its API keeps serving. Registering the same resource again restores the same endpoint ID | G11 confirms first and refuses while publications depend on the endpoint. Until it's deployed, don't remove an endpoint after A8 |
+| O8 | Both Azure OpenAI targets showed no Key authentication row or note, though keys work on them. They never set `disableLocalAuth`, and Azure leaves it out when it's unset, which means enabled. The AI Services account sets it to false explicitly and shows "Enabled" | G12 treats an unset value as enabled. After Batch 3b and **Check access**, both show "Enabled" |
+| O9 | With the Foundry project registered, discovery still suggested its parent account, and registering it succeeded. The second endpoint had the same URL, and syncing it listed the project's six deployments again, each publishable on its own. Registration rejects only an exact resource ID match, and discovery compares exact IDs | G11 refuses overlapping registrations and stops suggesting covered accounts. The duplicate was removed. After Batch 3b, the parent account is no longer suggested, and pasting its ID is refused with a message naming the project |
+| O10 | **Remove** on an endpoint deleted it and its synced models at once, with no confirmation. From the code: the server doesn't check publications, and a publication whose endpoint is gone can't be re-planned or applied ("Model endpoint was not found"), so its access can't change while its API keeps serving. Registering the same resource again restores the same endpoint ID | G11 confirms first and refuses while publications depend on the endpoint. After Batch 3b, **Remove** asks first, lists what goes with the endpoint, and says MOSAIC refuses while a model from it is still published |
 | O11 | A published API exposes every operation of its API shape, whatever the deployment can serve. The Azure OpenAI shape gives `gpt-35-turbo` seven operations: chat completions, completions, embeddings, image generation, audio transcription and translation, and responses. MOSAIC already syncs each deployment's capabilities (A5) but doesn't use them to choose operations | In Phase 8, confirm that a call to an operation the model can't serve fails cleanly at the model. Consider publishing only the operations that match the synced capabilities |
+| O12 | When MOSAIC creates a product, APIM subscribes its own Administrator to it. So each publication without governed access has a second subscription whose key can call the model, besides APIM's all-access key. The activity log shows MOSAIC wrote only its own subscription. APIM's two built-in products got the same subscription when the gateway was created | Governed access already accepts only direct-grant subscriptions, and unpublishing deletes the product with all its subscriptions. In Phase 8, check that APIM's all-access key, the Administrator's key and MOSAIC's bootstrap key are all refused on a governed publication. Reading those keys is a secret read, so it needs approval. MOSAIC could also disable the automatic subscription, or show it in the plan |
+| O13 | When a plan saved in the old order is refused, the review repeats the refusal, "…Re-plan this publication and review the new order before applying.", above a plan the console has already re-planned | Being fixed with G16 |
+| O14 | Every model in the portal catalog reads "No summary provided." The API accepts a summary for each catalog entry, and the portal shows it, but the console offers only the visibility select | Let the admin write a summary in the console, or fill a default from the endpoint, model and API shape |
 
 The Phase 3 check on whether the gateway role recommendation narrows once the account kind is
 known led to G8: it does narrow, and the check then rejects the broader role it recommended
@@ -521,6 +553,10 @@ before.
   refresh tokens, so they live under the user's local app data folder, never in the repository.
 - **Redeploying from a new checkout.** Rebuild the azd environment from live values and confirm
   with `azd provision --preview` that it targets the existing resources before running `azd up`.
+- **Gateway maintenance.** A Developer-tier gateway has no SLA and goes offline for platform
+  updates. During one, ARM answered requests for it with 422 `ManagementApiRequestFailed` for about
+  7 minutes. Check that the gateway answers before a publish batch, and treat that error as
+  transient.
 
 ## Out of scope
 
