@@ -108,11 +108,15 @@ DENY_ALL_FRAGMENT = (
     "</return-response></fragment>"
 )
 
-# Dependency order. A rollback walks it backwards, and unpublish is the same list reversed, so the
-# ordering is stated once rather than duplicated in three places that could drift apart.
+# Dependency order: every resource is created after the resources it names. The fragment's
+# set-backend-service names the backend, and API Management validates a fragment asynchronously and
+# fails the write when that backend does not exist yet, so the backend comes first. The API policy's
+# include-fragment names the fragment, and the subscription's scope names the product. A rollback
+# walks this order backwards and unpublish is the same list reversed, so teardown removes each
+# resource before the one it names. The plan follows it too; a test holds the two together.
 CREATE_ORDER: tuple[PublishedResourceKind, ...] = (
-    PublishedResourceKind.POLICY_FRAGMENT,
     PublishedResourceKind.BACKEND,
+    PublishedResourceKind.POLICY_FRAGMENT,
     PublishedResourceKind.API,
     PublishedResourceKind.API_OPERATION,
     PublishedResourceKind.API_POLICY,
@@ -120,6 +124,17 @@ CREATE_ORDER: tuple[PublishedResourceKind, ...] = (
     PublishedResourceKind.PRODUCT_API,
     PublishedResourceKind.SUBSCRIPTION,
 )
+
+
+def _follows_create_order(steps: list[PublishPlanStep]) -> bool:
+    """Whether a plan's steps run in CREATE_ORDER.
+
+    Apply runs a plan's steps in the order they were stored. A plan saved before the order changed
+    keeps the old one, and the digest covers intent rather than order, so this is checked apart.
+    """
+
+    ranks = [CREATE_ORDER.index(step.kind) for step in steps]
+    return ranks == sorted(ranks)
 
 
 @dataclass(frozen=True)
@@ -136,14 +151,14 @@ def _desired_resources(publication: Publication) -> list[_Resource]:
     operations = operations_for(publication)
     resources = [
         _Resource(
-            PublishedResourceKind.POLICY_FRAGMENT,
-            publication.fragment_name,
-            f"policyFragments/{publication.fragment_name}",
-        ),
-        _Resource(
             PublishedResourceKind.BACKEND,
             publication.backend_name,
             f"backends/{publication.backend_name}",
+        ),
+        _Resource(
+            PublishedResourceKind.POLICY_FRAGMENT,
+            publication.fragment_name,
+            f"policyFragments/{publication.fragment_name}",
         ),
         _Resource(
             PublishedResourceKind.API, publication.api_name, f"apis/{publication.api_name}"
@@ -1237,6 +1252,13 @@ class PublishingService:
                 "This publication changed after the plan was produced. Re-plan it and review the "
                 "new changes before applying.",
                 details={"planId": plan.id, "planDigest": plan.digest},
+            )
+        if not snapshot and not _follows_create_order(plan.steps):
+            raise ConflictError(
+                "This plan does not create resources in the order MOSAIC now uses, so API "
+                "Management could reject a step that names a resource not created yet. Re-plan "
+                "this publication and review the new order before applying.",
+                details={"planId": plan.id},
             )
 
         run = self._claim(actor, publication, plan, owner)

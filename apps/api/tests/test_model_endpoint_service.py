@@ -980,6 +980,23 @@ class TestSuggestions:
         )
 
     @pytest.mark.asyncio
+    async def test_a_subscription_that_fails_to_list_is_explained_in_mosaics_words(
+        self, endpoint_service, fake_aoai: FakeCognitiveServices
+    ) -> None:
+        fake_aoai.failing_subscriptions = {AI_SUBSCRIPTION_ID: 503}
+
+        view = await endpoint_service.suggestions(ACTOR)
+
+        assert view.scan_status == SubscriptionScanStatus.SCANNED
+        [issue] = view.scan_issues
+        assert issue.message.endswith(
+            "(Azure Resource Manager did not return a usable response)"
+        )
+        # An upstream error's message says what Azure said. A scan still never returns it.
+        assert "denied" not in view.model_dump_json()
+        assert "ServiceUnavailable" not in view.model_dump_json()
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize(
         "listed",
         [[], [{"displayName": "Listed without an ID"}]],

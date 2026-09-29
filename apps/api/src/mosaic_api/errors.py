@@ -9,9 +9,18 @@ class DomainError(Exception):
     status_code = 400
     code = "domain_error"
 
-    def __init__(self, message: str, *, details: dict[str, Any] | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        details: dict[str, Any] | None = None,
+        summary: str | None = None,
+    ) -> None:
         self.message = message
         self.details = details or {}
+        # MOSAIC's own wording. It differs from the message only when the message also says what
+        # an upstream service said, such as the reason Azure gave for refusing a request.
+        self.summary = summary or message
         super().__init__(message)
 
 

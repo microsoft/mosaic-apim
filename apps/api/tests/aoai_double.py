@@ -198,6 +198,8 @@ class FakeCognitiveServices:
             ]
         }
         self.forbidden_subscriptions: set[str] = set()
+        # Subscriptions whose account listing keeps failing with this status.
+        self.failing_subscriptions: dict[str, int] = {}
 
     def fail_always(self, path_suffix: str, status_code: int) -> None:
         self.persistent_failures[path_suffix] = status_code
@@ -227,6 +229,11 @@ class FakeCognitiveServices:
             subscription_id = path.split("/")[2]
             if subscription_id in self.forbidden_subscriptions:
                 return httpx.Response(403, json={"error": {"message": "denied"}})
+            failing = self.failing_subscriptions.get(subscription_id)
+            if failing is not None:
+                return httpx.Response(
+                    failing, json={"error": {"code": "ServiceUnavailable", "message": "denied"}}
+                )
             return _collection(self.accounts_by_subscription.get(subscription_id, []))
 
         if not path.startswith(AI_RESOURCE_ID):

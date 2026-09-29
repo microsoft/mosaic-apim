@@ -126,7 +126,11 @@ def _reader_at_subscription(subscription_id: str, principal_id: str | None) -> A
 
 
 def _list_failure_message(reason: str) -> str:
-    """A :class:`DomainError` message as a sentence. MOSAIC wrote it, so it is safe to return."""
+    """A :class:`DomainError` summary as a sentence. MOSAIC wrote it, so it is safe to return.
+
+    Callers pass the error's ``summary`` rather than its message, because an upstream error's
+    message can also say what Azure said, and a scan never returns Azure's text.
+    """
 
     reason = reason.strip().rstrip(".")
     return f"{reason}." if reason else UNEXPECTED_LIST_FAILURE
@@ -890,10 +894,10 @@ class ModelEndpointService:
             return await self._unscanned(
                 SubscriptionScanStatus.LIST_FAILED,
                 gateways,
-                message=_list_failure_message(error.message),
+                message=_list_failure_message(error.summary),
             )
         except Exception:
-            # Unlike a DomainError's message, arbitrary exception text can carry upstream or
+            # Unlike a DomainError's summary, arbitrary exception text can carry upstream or
             # credential detail, so it is logged and never returned.
             logger.exception("endpoint_subscription_list_failed")
             return await self._unscanned(
@@ -926,7 +930,7 @@ class ModelEndpointService:
                         message=(
                             "MOSAIC could not list Azure AI resources in this subscription, so "
                             "any endpoints it holds are not suggested here. Endpoints can still "
-                            f"be registered by resource ID. ({error.message})"
+                            f"be registered by resource ID. ({error.summary})"
                         ),
                         remediation=_reader_at_subscription(subscription_id, principal_id),
                     )
