@@ -157,6 +157,43 @@ class TestRegistration:
         assert "Microsoft.CognitiveServices/accounts/deployments/read" in (
             endpoint.access.missing_actions
         )
+        # A grant is rarely in effect by the time the administrator checks again.
+        assert endpoint.access.message == (
+            "MOSAIC's managed identity is missing permissions needed to enumerate models on this "
+            "endpoint. Grant it the role shown below. Azure can take several minutes, and "
+            "occasionally longer, to apply a new role. If Check access still fails right after "
+            "the grant, wait a few minutes and try again."
+        )
+
+    @pytest.mark.asyncio
+    async def test_unreadable_account_reports_reader_remediation(
+        self, gateway_repository: InMemoryGatewayRepository
+    ) -> None:
+        fake = FakeCognitiveServices(account_status=403)
+        service = build_endpoint_service(fake, gateway_repository=gateway_repository)
+
+        endpoint = await service.register(ACTOR, _create())
+
+        assert endpoint.status == ModelEndpointStatus.UNAUTHORIZED
+        assert endpoint.access.can_read is False
+        remediation = endpoint.access.remediation
+        assert remediation is not None
+        assert remediation.role_definition_id == READER_ROLE_ID
+        assert remediation.scope == AI_RESOURCE_ID
+        # Observed live: ARM kept refusing MOSAIC for many minutes after the grant was visible.
+        assert endpoint.access.message == (
+            "MOSAIC's managed identity cannot read this Azure AI resource. Grant it the role shown "
+            "below. Azure can take several minutes, and occasionally longer, to apply a new role. "
+            "If Check access still fails right after the grant, wait a few minutes and try again."
+        )
+
+        # Once the role applies, Check access clears the advice.
+        fake.account_status = 200
+        checked = await service.preflight(ACTOR, endpoint.id)
+
+        assert checked.access.can_read is True
+        assert checked.access.remediation is None
+        assert checked.access.message == "MOSAIC can enumerate models on this endpoint."
 
     @pytest.mark.asyncio
     async def test_remediation_offers_least_privilege_custom_role(

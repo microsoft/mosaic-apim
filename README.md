@@ -589,6 +589,10 @@ subscription, still offers what it found, and gives the subscription-scope `Read
 of reporting nothing new to register. If MOSAIC can't read its own permissions, it makes no claim
 either way.
 
+Azure can take several minutes, and occasionally longer, to apply a new role. So when MOSAIC asks
+for `Reader` on its own identity to read an endpoint or to scan subscriptions, it says so: if
+**Check access** or the scan still fails right after the grant, wait a few minutes and try again.
+
 OpenAI-compatible endpoints are registered with a Key Vault secret identifier the operator created.
 MOSAIC stores the URI only; discovery for those endpoints is not implemented yet.
 

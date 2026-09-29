@@ -352,6 +352,16 @@ function ScanReaderExplanation() {
   )
 }
 
+/** A role granted to MOSAIC is rarely in effect by the time the page is reloaded. */
+function ScanRoleDelayNote() {
+  return (
+    <Text size={200} className={styles.muted}>
+      Azure can take several minutes, and occasionally longer, to apply a new role. If the scan
+      still reports this right after the grant, wait a few minutes and refresh this page.
+    </Text>
+  )
+}
+
 function ImportedModelApis({ onRemoved }: { onRemoved: (message: string) => void }) {
   const api = useMosaicApi()
   const queryClient = useQueryClient()
@@ -1026,6 +1036,7 @@ function ModelEndpoints() {
               {scan.remediation && <CommandBlock command={scan.remediation.command} />}
             </div>
           ))}
+          {partialScans.some((scan) => scan.remediation) && <ScanRoleDelayNote />}
         </Card>
       )}
 
@@ -1040,6 +1051,7 @@ function ModelEndpoints() {
               {issue.remediation && <CommandBlock command={issue.remediation.command} />}
             </div>
           ))}
+          {scanIssues.some((issue) => issue.remediation) && <ScanRoleDelayNote />}
         </Card>
       )}
 
@@ -1055,6 +1067,7 @@ function ModelEndpoints() {
           {scanRemediation.map((remediation) => (
             <CommandBlock key={remediation.scope} command={remediation.command} />
           ))}
+          {scanRemediation.length > 0 && <ScanRoleDelayNote />}
         </Card>
       )}
 
