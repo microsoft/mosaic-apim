@@ -50,7 +50,7 @@ export function MyAccessPage() {
                     )}
                   </Text>
                 }
-                action={<Badge appearance={resolved.entitlement.runtime?.status === 'applied' ? 'filled' : 'tint'}>{describeRuntime(resolved.entitlement)}</Badge>}
+                action={<Badge className="card-header-badge" appearance={resolved.entitlement.runtime?.status === 'applied' ? 'filled' : 'tint'}>{describeRuntime(resolved.entitlement)}</Badge>}
               />
               <div className="access-card-grid">
                 <section>
