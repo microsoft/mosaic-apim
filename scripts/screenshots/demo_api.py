@@ -1,0 +1,763 @@
+"""Run the real MOSAIC API against a fictional Contoso estate, for README screenshots.
+
+The API is the production FastAPI app with in-memory repositories. Its Azure-facing services are
+rebuilt on the fakes in :mod:`scripts.screenshots.demo_fakes`, and the estate is seeded through
+MOSAIC's own services (register, sync, import, publish, grant, request, approve), so every page
+renders exactly what the product would show for that estate.
+
+Nothing here reaches Azure, Entra, Key Vault, or an MCP server. Every name, address, identifier,
+and key is invented. Run it on its own to browse the demo estate with ``npm run dev``::
+
+    python -m uv run python -m scripts.screenshots.demo_api
+
+Requests from a portal origin are answered as the demo end user; everything else is answered as
+the demo administrator. Local authentication is refused outside local and test environments, so
+this cannot be pointed at a deployed MOSAIC.
+"""
+
+import argparse
+from collections.abc import AsyncIterator, Iterable
+from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
+from typing import Any, cast
+
+import httpx
+import uvicorn
+from azure.core.credentials_async import AsyncTokenCredential
+from fastapi import FastAPI, Request
+from mosaic_api.auth import AuthContext
+from mosaic_api.config import AuthMode, Environment, RepositoryBackend, Settings
+from mosaic_api.domain import (
+    AccessRequestApproval,
+    AccessRequestCreate,
+    AccessRequestState,
+    CatalogEntryUpdate,
+    EntitlementCreate,
+    EntitlementEnforcement,
+    EntitlementResource,
+    EntitlementSubject,
+    GatewayCreate,
+    GatewayUpdate,
+    GroupCreate,
+    ImportRequest,
+    McpEndpointCreate,
+    ModelAccessSettings,
+    ModelEndpointCreate,
+    PrincipalCreate,
+    PublicationCreate,
+    PublishRunStatus,
+    RequestEnforcement,
+    TokenEnforcement,
+    mcp_server_id,
+    model_api_id,
+)
+from mosaic_api.integrations.aoai import CognitiveServicesClient
+from mosaic_api.integrations.aoai.client import SubscriptionScanner
+from mosaic_api.integrations.apim import ApimClient, ApimWriter, ArmClient
+from mosaic_api.integrations.apim.credentials import ApimCredentialClient
+from mosaic_api.main import create_app
+from mosaic_api.services import (
+    DirectoryService,
+    EntitlementService,
+    GatewayService,
+    McpEndpointService,
+    ModelEndpointService,
+    PublishingService,
+)
+from mosaic_api.services.directory import Actor
+from mosaic_api.services.mcp_endpoints import build_mcp_client_factory
+from mosaic_api.services.portal_access import PortalAccessService
+
+from scripts.screenshots.demo_fakes import (
+    AI_RESOURCE_ID,
+    FOUNDRY_RESOURCE_ID,
+    GATEWAY_RESOURCE_ID,
+    PARTNER_GATEWAY_RESOURCE_ID,
+    DemoApim,
+    FakeCredential,
+    build_cognitive_accounts,
+    build_mcp_servers,
+    cognitive_handler,
+    gateway_handler,
+    mcp_handler,
+)
+
+TENANT_ID = "5f2d7c1e-8a3b-4c9d-b0e1-f2a3b4c5d6e7"
+MOSAIC_PRINCIPAL_ID = "6e3f8d2a-9b4c-4d0e-a1f2-a3b4c5d6e7f8"
+MODEL_RUNTIME_CLIENT_ID = "7f4a9e3b-0c5d-4e1f-b2a3-b4c5d6e7f809"
+MODEL_CLIENT_ID = "8a5b0f4c-1d6e-4f2a-83b4-c5d6e7f8091a"
+SUBSCRIPTION_COUNTER = "@(context.Subscription.Id)"
+
+DEFAULT_API_PORT = 8000
+DEFAULT_CONSOLE_PORT = 5173
+DEFAULT_PORTAL_PORT = 5174
+
+
+@dataclass(frozen=True)
+class Person:
+    label: str
+    object_id: str
+    kind: str = "user"
+
+
+# Microsoft's long-standing fictional demo personas and invented workloads. None is a real person.
+ADELE = Person("Adele Vance", "11a0f3c2-4b6d-4e8f-9a1b-2c3d4e5f6a7b")
+ALEX = Person("Alex Wilber", "22b1e4d3-5c7e-4f90-8b2c-3d4e5f6a7b8c")
+DIEGO = Person("Diego Siciliani", "33c2f5e4-6d8f-4a01-9c3d-4e5f6a7b8c9d")
+MEGAN = Person("Megan Bowen", "44d3a6f5-7e90-4b12-8d4e-5f6a7b8c9d0e")
+ISAIAH = Person("Isaiah Langer", "55e4b7a6-8fa1-4c23-9e5f-6a7b8c9d0e1f")
+LIDIA = Person("Lidia Holloway", "66f5c8b7-90b2-4d34-8f6a-7b8c9d0e1f2a")
+NESTOR = Person("Nestor Wilke", "77a6d9c8-a1c3-4e45-9a7b-8c9d0e1f2a3b")
+PATTI = Person("Patti Fernandez", "88b7e0d9-b2d4-4f56-8b8c-9d0e1f2a3b4c")
+PRADEEP = Person("Pradeep Gupta", "99c8f1ea-c3e5-4a67-9c9d-0e1f2a3b4c5d")
+JOHANNA = Person("Johanna Lorenz", "a0d9a2fb-d4f6-4b78-8d0e-1f2a3b4c5d6e")
+SUPPORT_COPILOT = Person(
+    "Contoso Support Copilot", "b1eab30c-e5a7-4c89-9e1f-2a3b4c5d6e7f", "servicePrincipal"
+)
+CLAIMS_TRIAGE = Person(
+    "Claims triage function", "c2fbc41d-f6b8-4d9a-8f2a-3b4c5d6e7f80", "managedIdentity"
+)
+DOCS_INDEXER = Person("Docs indexer", "d3acd52e-a7c9-4eab-9a3b-4c5d6e7f8091", "managedIdentity")
+SALES_INSIGHTS = Person(
+    "Sales insights bot", "e4bde63f-b8da-4fbc-8b4c-5d6e7f8091a2", "servicePrincipal"
+)
+
+PEOPLE = [
+    ADELE,
+    ALEX,
+    DIEGO,
+    MEGAN,
+    ISAIAH,
+    LIDIA,
+    NESTOR,
+    PATTI,
+    PRADEEP,
+    JOHANNA,
+    SUPPORT_COPILOT,
+    CLAIMS_TRIAGE,
+    DOCS_INDEXER,
+    SALES_INSIGHTS,
+]
+
+# The administrator signed in to the console, and the end user signed in to the portal.
+ADMIN = ADELE
+PORTAL_USER = MEGAN
+
+GROUPS: list[tuple[str, str, list[Person]]] = [
+    (
+        "AI Platform Engineers",
+        "Run the shared AI gateway and review access requests.",
+        [ADELE, ALEX, PRADEEP],
+    ),
+    (
+        "Data Science",
+        "Analysts and data scientists building on shared models.",
+        [MEGAN, ISAIAH, LIDIA, JOHANNA],
+    ),
+    (
+        "Customer Support Agents",
+        "Frontline support staff using assisted replies.",
+        [PATTI, NESTOR],
+    ),
+    ("Finance Analysts", "Forecasting and reporting.", [DIEGO, LIDIA]),
+]
+
+# Every string that identifies a resource, endpoint, or account in the estate. Captures blur these
+# wherever they render, alongside the generic patterns in capture.py.
+SENSITIVE_LITERALS = [
+    TENANT_ID,
+    MOSAIC_PRINCIPAL_ID,
+    MODEL_RUNTIME_CLIENT_ID,
+    MODEL_CLIENT_ID,
+    *(person.object_id for person in PEOPLE),
+]
+
+
+class DemoAuthenticator:
+    """Sign every console request in as the administrator and every portal request as the user.
+
+    The browser names the calling SPA in the ``Origin`` header of each cross-origin request, which
+    is all a local demo needs to tell the two apart.
+    """
+
+    def __init__(self, tenant_id: str, portal_origins: Iterable[str]) -> None:
+        self._portal_origins = {origin.rstrip("/").casefold() for origin in portal_origins}
+        self._admin = AuthContext(
+            object_id=ADMIN.object_id,
+            tenant_id=tenant_id,
+            roles=frozenset({"Admin", "User"}),
+        )
+        self._user = AuthContext(
+            object_id=PORTAL_USER.object_id,
+            tenant_id=tenant_id,
+            roles=frozenset({"User"}),
+        )
+
+    async def authenticate(self, request: Request) -> AuthContext:
+        origin = (request.headers.get("origin") or "").rstrip("/").casefold()
+        return self._user if origin in self._portal_origins else self._admin
+
+    async def close(self) -> None:
+        return None
+
+
+async def _no_sleep(_seconds: float) -> None:
+    return None
+
+
+async def _demo_secret(_secret_uri: str) -> str:
+    return "demo-mcp-token-not-a-real-secret"
+
+
+async def _demo_token(_audience: str) -> str:
+    return "demo-entra-token-not-a-real-token"
+
+
+@dataclass
+class DemoServices:
+    """The fake-backed services that replace the Azure-facing ones in ``app.state``."""
+
+    directory: DirectoryService
+    gateways: GatewayService
+    endpoints: ModelEndpointService
+    publishing: PublishingService
+    mcp_endpoints: McpEndpointService
+    entitlements: EntitlementService
+    clients: list[httpx.AsyncClient] = field(default_factory=list)
+
+    async def aclose(self) -> None:
+        await self.gateways.aclose()
+        await self.endpoints.aclose()
+        await self.publishing.aclose()
+        await self.mcp_endpoints.aclose()
+        for client in self.clients:
+            await client.aclose()
+
+
+def _arm(handler: Any) -> tuple[ArmClient, httpx.AsyncClient]:
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    arm = ArmClient(cast(AsyncTokenCredential, FakeCredential()), client=http, sleep=_no_sleep)
+    return arm, http
+
+
+def install_demo_services(app: FastAPI, portal_origins: Iterable[str]) -> DemoServices:
+    state = app.state
+    settings: Settings = state.settings
+    apim = DemoApim()
+    gateway_arm, gateway_http = _arm(gateway_handler(apim))
+    ai_arm, ai_http = _arm(cognitive_handler(build_cognitive_accounts()))
+    mcp_http = httpx.AsyncClient(transport=httpx.MockTransport(mcp_handler(build_mcp_servers())))
+
+    gateways = GatewayService(
+        state.gateway_repository,
+        client_factory=lambda resource: ApimClient(gateway_arm, resource),
+        principal_id=MOSAIC_PRINCIPAL_ID,
+    )
+    endpoints = ModelEndpointService(
+        state.model_endpoint_repository,
+        gateway_repository=state.gateway_repository,
+        client_factory=lambda resource: CognitiveServicesClient(ai_arm, resource),
+        scanner=SubscriptionScanner(ai_arm),
+        principal_id=MOSAIC_PRINCIPAL_ID,
+    )
+    publishing = PublishingService(
+        state.gateway_repository,
+        endpoint_repository=state.model_endpoint_repository,
+        client_factory=lambda resource: ApimClient(gateway_arm, resource),
+        writer_factory=lambda resource: ApimWriter(gateway_arm, resource),
+        directory_repository=state.repository,
+        entitlement_repository=state.entitlement_repository,
+        model_runtime_client_id=settings.model_runtime_client_id,
+    )
+    mcp_endpoints = McpEndpointService(
+        state.mcp_endpoint_repository,
+        client_factory=build_mcp_client_factory(mcp_http),
+        secret_resolver=_demo_secret,
+        token_resolver=_demo_token,
+        require_https=True,
+        allow_private_endpoints=False,
+    )
+    state.gateway_service = gateways
+    state.model_endpoint_service = endpoints
+    state.publishing_service = publishing
+    state.mcp_endpoint_service = mcp_endpoints
+    state.portal_access_service = PortalAccessService(
+        state.entitlement_service,
+        repository=state.entitlement_repository,
+        directory_repository=state.repository,
+        gateway_repository=state.gateway_repository,
+        credential_factory=lambda resource: ApimCredentialClient(gateway_arm, resource),
+        model_runtime_client_id=settings.model_runtime_client_id,
+        model_client_id=settings.model_client_id,
+    )
+    state.authenticator = DemoAuthenticator(settings.tenant_id, portal_origins)
+    return DemoServices(
+        directory=state.directory_service,
+        gateways=gateways,
+        endpoints=endpoints,
+        publishing=publishing,
+        mcp_endpoints=mcp_endpoints,
+        entitlements=state.entitlement_service,
+        clients=[gateway_http, ai_http, mcp_http],
+    )
+
+
+def _tokens(
+    per_minute: int | None = None, quota: int | None = None, period: str | None = None
+) -> TokenEnforcement:
+    return TokenEnforcement.model_validate(
+        {
+            "counter_key_expression": SUBSCRIPTION_COUNTER,
+            "tokens_per_minute": per_minute,
+            "token_quota": quota,
+            "token_quota_period": period,
+        }
+    )
+
+
+def _calls(
+    per_window: int | None = None,
+    window_seconds: int | None = None,
+    quota: int | None = None,
+    period: str | None = None,
+) -> RequestEnforcement:
+    return RequestEnforcement.model_validate(
+        {
+            "counter_key_expression": SUBSCRIPTION_COUNTER,
+            "calls": per_window,
+            "renewal_period_seconds": window_seconds,
+            "call_quota": quota,
+            "call_quota_period": period,
+        }
+    )
+
+
+class SeedError(RuntimeError):
+    pass
+
+
+@dataclass
+class Estate:
+    """What the seed created, by the names the capture script and a reader care about."""
+
+    gateway_id: str = ""
+    partner_gateway_id: str = ""
+    aoai_endpoint_id: str = ""
+    foundry_endpoint_id: str = ""
+    publications: dict[str, str] = field(default_factory=dict)
+    model_apis: dict[str, str] = field(default_factory=dict)
+    mcp_servers: dict[str, str] = field(default_factory=dict)
+    principals: dict[str, str] = field(default_factory=dict)
+    groups: dict[str, str] = field(default_factory=dict)
+
+
+def _require_synced(run: Any, label: str) -> None:
+    # A partial sync means a fake is missing a surface the collector reads; fix the fake rather
+    # than capturing a degraded estate.
+    if str(run.status) != "succeeded":
+        raise SeedError(f"Syncing {label} ended {run.status}: {run.errors}")
+
+
+async def _publish(services: DemoServices, actor: Actor, publication_id: str, label: str) -> None:
+    plan = await services.publishing.plan(actor, publication_id)
+    run = await services.publishing.apply(actor, publication_id, plan.id)
+    await services.publishing.wait_for_idle()
+    finished = await services.publishing.get_run(actor, run.id)
+    if finished.status != PublishRunStatus.SUCCEEDED:
+        raise SeedError(f"Publishing {label} ended {finished.status}: {finished.model_dump()}")
+
+
+async def seed_estate(services: DemoServices, tenant_id: str) -> Estate:
+    """Build the Contoso estate through MOSAIC's own services, in the order an operator would."""
+
+    admin = Actor(ADMIN.object_id, tenant_id)
+    estate = Estate()
+
+    for person in PEOPLE:
+        principal = await services.directory.create_principal(
+            admin,
+            PrincipalCreate.model_validate(
+                {"object_id": person.object_id, "kind": person.kind, "label": person.label}
+            ),
+        )
+        estate.principals[person.label] = principal.id
+    for name, description, members in GROUPS:
+        group = await services.directory.create_group(
+            admin, GroupCreate(name=name, description=description)
+        )
+        estate.groups[name] = group.id
+        for member in members:
+            await services.directory.add_membership(
+                admin, group.id, estate.principals[member.label]
+            )
+
+    gateway = await services.gateways.register(
+        admin,
+        GatewayCreate(
+            azure_resource_id=GATEWAY_RESOURCE_ID,
+            name="Contoso AI Gateway",
+            environment_label="Production",
+        ),
+    )
+    estate.gateway_id = gateway.id
+    _require_synced(await services.gateways.sync_now(admin, gateway.id), gateway.name)
+    await services.gateways.update(admin, gateway.id, GatewayUpdate(management_mode="manage"))
+    partner = await services.gateways.register(
+        admin,
+        GatewayCreate(
+            azure_resource_id=PARTNER_GATEWAY_RESOURCE_ID,
+            name="Partner Gateway",
+            environment_label="Partner",
+        ),
+    )
+    estate.partner_gateway_id = partner.id
+
+    for model in await services.gateways.import_model_apis(
+        admin, gateway.id, ImportRequest(api_names=["azure-openai", "foundry-inference"])
+    ):
+        estate.model_apis[model.api_name] = model.id
+    for server in await services.gateways.import_mcp_servers(
+        admin,
+        gateway.id,
+        ImportRequest(api_names=["orders-mcp", "docs-search-mcp", "service-desk-mcp"]),
+    ):
+        estate.mcp_servers[server.api_name] = server.id
+    catalog_summaries = {
+        "azure-openai": "The shared Azure OpenAI surface, with semantic caching and safety.",
+        "foundry-inference": "Open-weight and partner models from Azure AI Foundry.",
+    }
+    for api_name, summary in catalog_summaries.items():
+        await services.gateways.update_model_api_catalog(
+            admin,
+            model_api_id(tenant_id, gateway.id, api_name),
+            CatalogEntryUpdate(summary=summary),
+        )
+    mcp_summaries = {
+        "orders-mcp": ("catalog", "Look up orders, start returns, and track shipments."),
+        "docs-search-mcp": ("catalog", "Search Contoso product and policy documentation."),
+        "service-desk-mcp": ("catalog", "Open and track IT service desk tickets."),
+    }
+    for api_name, (visibility, summary) in mcp_summaries.items():
+        await services.gateways.update_mcp_server_catalog(
+            admin,
+            mcp_server_id(tenant_id, gateway.id, api_name),
+            CatalogEntryUpdate.model_validate({"visibility": visibility, "summary": summary}),
+        )
+
+    aoai = await services.endpoints.register(
+        admin,
+        ModelEndpointCreate(
+            azure_resource_id=AI_RESOURCE_ID,
+            name="Contoso Azure OpenAI",
+            environment_label="Production",
+        ),
+    )
+    estate.aoai_endpoint_id = aoai.id
+    foundry = await services.endpoints.register(
+        admin,
+        ModelEndpointCreate(
+            azure_resource_id=FOUNDRY_RESOURCE_ID,
+            name="Contoso AI Foundry",
+            environment_label="Production",
+        ),
+    )
+    estate.foundry_endpoint_id = foundry.id
+    for endpoint in (aoai, foundry):
+        _require_synced(await services.endpoints.sync_now(admin, endpoint.id), endpoint.name)
+
+    mcp_endpoints = [
+        McpEndpointCreate.model_validate(
+            {
+                "endpoint": "https://mcp.contoso.com/docs/mcp",
+                "name": "Contoso Docs Search",
+                "environment_label": "Production",
+            }
+        ),
+        McpEndpointCreate.model_validate(
+            {
+                "endpoint": "https://servicedesk.contoso.com/mcp",
+                "name": "IT Service Desk",
+                "environment_label": "Production",
+                "resource_audience": "api://contoso-servicedesk",
+            }
+        ),
+        McpEndpointCreate.model_validate(
+            {
+                "endpoint": "https://crm.contoso.com/mcp",
+                "name": "Sales CRM",
+                "environment_label": "Pilot",
+                "credential_secret_uri": (
+                    "https://kv-contoso-ai.vault.azure.net/secrets/crm-mcp-token"
+                ),
+            }
+        ),
+    ]
+    for request in mcp_endpoints:
+        mcp_endpoint = await services.mcp_endpoints.register(admin, request)
+        _require_synced(
+            await services.mcp_endpoints.sync_now(admin, mcp_endpoint.id), mcp_endpoint.name
+        )
+
+    governed = ModelAccessSettings(keys_enabled=True, entra_enabled=True)
+    publications: list[tuple[str, str, str, TokenEnforcement, ModelAccessSettings | None, str]] = [
+        (
+            aoai.id,
+            "gpt-4o",
+            "GPT-4o",
+            _tokens(per_minute=50_000),
+            governed,
+            "General-purpose chat and reasoning for internal copilots.",
+        ),
+        (
+            aoai.id,
+            "gpt-4o-mini",
+            "GPT-4o mini",
+            _tokens(per_minute=100_000, quota=20_000_000, period="Monthly"),
+            ModelAccessSettings(keys_enabled=True, entra_enabled=False),
+            "Fast, low-cost chat for high-volume workloads.",
+        ),
+        (
+            aoai.id,
+            "text-embedding-3-large",
+            "Text embeddings (large)",
+            _tokens(per_minute=200_000),
+            None,
+            "Embeddings for search and retrieval-augmented generation.",
+        ),
+        (
+            foundry.id,
+            "Phi-4",
+            "Phi-4",
+            _tokens(per_minute=30_000),
+            governed,
+            "A small language model for classification and extraction.",
+        ),
+    ]
+    for endpoint_id, deployment, display_name, limits, access, summary in publications:
+        publication = await services.publishing.create(
+            admin,
+            PublicationCreate(
+                gateway_id=gateway.id,
+                model_endpoint_id=endpoint_id,
+                deployment_name=deployment,
+                display_name=display_name,
+                enforcement=limits,
+                governed_access=access,
+            ),
+        )
+        await _publish(services, admin, publication.id, display_name)
+        published = await services.publishing.get_publication(admin, publication.id)
+        if not published.model_api_id:
+            raise SeedError(f"{display_name} has no catalog model API after publishing")
+        estate.publications[display_name] = publication.id
+        estate.model_apis[display_name] = published.model_api_id
+        await services.gateways.update_model_api_catalog(
+            admin, published.model_api_id, CatalogEntryUpdate(summary=summary)
+        )
+
+    async def grant(
+        subject: Person | str,
+        resource_kind: str,
+        resource_id: str,
+        enforcement: EntitlementEnforcement | None = None,
+        notes: str | None = None,
+    ) -> None:
+        if isinstance(subject, Person):
+            kind = "user" if subject.kind == "user" else "application"
+            subject_id = estate.principals[subject.label]
+        else:
+            kind = "group"
+            subject_id = estate.groups[subject]
+        await services.entitlements.create_entitlement(
+            admin,
+            EntitlementCreate(
+                subject=EntitlementSubject.model_validate({"kind": kind, "id": subject_id}),
+                resource=EntitlementResource.model_validate(
+                    {"kind": resource_kind, "id": resource_id}
+                ),
+                enforcement=enforcement,
+                notes=notes,
+            ),
+        )
+
+    gpt4o = estate.model_apis["GPT-4o"]
+    gpt4o_mini = estate.model_apis["GPT-4o mini"]
+    embeddings = estate.model_apis["Text embeddings (large)"]
+    phi4 = estate.model_apis["Phi-4"]
+    docs_mcp = estate.mcp_servers["docs-search-mcp"]
+    orders_mcp = estate.mcp_servers["orders-mcp"]
+    service_desk_mcp = estate.mcp_servers["service-desk-mcp"]
+
+    await grant(
+        SUPPORT_COPILOT,
+        "modelApi",
+        gpt4o_mini,
+        EntitlementEnforcement(tokens=_tokens(per_minute=80_000)),
+        "Production support assistant.",
+    )
+    await grant(
+        CLAIMS_TRIAGE,
+        "modelApi",
+        gpt4o,
+        EntitlementEnforcement(
+            tokens=_tokens(per_minute=20_000, quota=5_000_000, period="Monthly")
+        ),
+    )
+    await grant(CLAIMS_TRIAGE, "modelApi", phi4)
+    await grant(ALEX, "modelApi", gpt4o)
+    await grant(
+        DOCS_INDEXER,
+        "modelApi",
+        embeddings,
+        EntitlementEnforcement(tokens=_tokens(per_minute=150_000)),
+    )
+    await grant(
+        SALES_INSIGHTS,
+        "mcpServer",
+        orders_mcp,
+        EntitlementEnforcement(requests=_calls(per_window=120, window_seconds=60)),
+    )
+    await grant(
+        PORTAL_USER,
+        "mcpServer",
+        docs_mcp,
+        EntitlementEnforcement(requests=_calls(per_window=60, window_seconds=60)),
+    )
+    await grant(
+        "Data Science",
+        "mcpServer",
+        orders_mcp,
+        EntitlementEnforcement(requests=_calls(quota=10_000, period="Monthly")),
+    )
+    await grant("Finance Analysts", "modelApi", embeddings)
+    await grant("AI Platform Engineers", "mcpServer", service_desk_mcp)
+
+    async def request_access(
+        person: Person, kind: str, resource_id: str, justification: str
+    ) -> str:
+        created = await services.entitlements.create_access_request(
+            Actor(person.object_id, tenant_id),
+            AccessRequestCreate(
+                resource=EntitlementResource.model_validate({"kind": kind, "id": resource_id}),
+                justification=justification,
+            ),
+        )
+        return created.id
+
+    approved = await request_access(
+        PORTAL_USER,
+        "modelApi",
+        gpt4o,
+        "Summarizing customer interviews for the churn analysis project.",
+    )
+    await services.entitlements.approve_access_request(
+        admin,
+        approved,
+        AccessRequestApproval(
+            note="Approved for the churn analysis project.",
+            enforcement=EntitlementEnforcement(
+                tokens=_tokens(per_minute=20_000, quota=2_000_000, period="Monthly")
+            ),
+        ),
+    )
+    denied = await request_access(
+        PORTAL_USER,
+        "mcpServer",
+        service_desk_mcp,
+        "Want to open tickets from my notebook.",
+    )
+    await services.entitlements.decide_access_request(
+        admin,
+        denied,
+        state=AccessRequestState.DENIED,
+        note="Limited to the AI Platform Engineers group. Use the service desk portal instead.",
+    )
+    await request_access(
+        PORTAL_USER,
+        "modelApi",
+        estate.model_apis["foundry-inference"],
+        "Comparing Phi-4 and Mistral Large for claims summarization.",
+    )
+    await request_access(ISAIAH, "modelApi", gpt4o_mini, "Prototype for customer email triage.")
+    await request_access(
+        LIDIA, "modelApi", gpt4o, "Quarterly forecast narratives for the finance review."
+    )
+    await request_access(
+        PRADEEP, "mcpServer", orders_mcp, "Agent that answers order-status questions in Teams."
+    )
+
+    # Apply the governed publications so their grants reach the gateway, then add one grant
+    # afterwards so the console also shows a change still waiting to be applied.
+    for display_name in ("GPT-4o", "GPT-4o mini", "Phi-4"):
+        await _publish(services, admin, estate.publications[display_name], display_name)
+    await grant(NESTOR, "modelApi", gpt4o)
+
+    _require_synced(await services.gateways.sync_now(admin, gateway.id), gateway.name)
+    return estate
+
+
+def build_settings(cors_origins: list[str]) -> Settings:
+    return Settings(
+        _env_file=None,
+        environment=Environment.LOCAL,
+        auth_mode=AuthMode.LOCAL,
+        repository_backend=RepositoryBackend.MEMORY,
+        tenant_id=TENANT_ID,
+        api_client_id=None,
+        model_runtime_client_id=MODEL_RUNTIME_CLIENT_ID,
+        model_client_id=MODEL_CLIENT_ID,
+        managed_identity_principal_id=MOSAIC_PRINCIPAL_ID,
+        applicationinsights_connection_string=None,
+        apim_subscription_id=None,
+        apim_resource_group=None,
+        apim_service_name=None,
+        cors_origins=cors_origins,
+        log_level="WARNING",
+    )
+
+
+def origins_for(port: int) -> list[str]:
+    return [f"http://localhost:{port}", f"http://127.0.0.1:{port}"]
+
+
+def build_demo_app(console_port: int, portal_port: int) -> FastAPI:
+    portal_origins = origins_for(portal_port)
+    app = create_app(build_settings([*origins_for(console_port), *portal_origins]))
+    production_lifespan = app.router.lifespan_context
+
+    @asynccontextmanager
+    async def demo_lifespan(demo_app: FastAPI) -> AsyncIterator[None]:
+        async with production_lifespan(demo_app):
+            services = install_demo_services(demo_app, portal_origins)
+            try:
+                estate = await seed_estate(services, TENANT_ID)
+                demo_app.state.demo_estate = estate
+                print(
+                    "MOSAIC demo estate ready: "
+                    f"{len(estate.principals)} principals, {len(estate.groups)} groups, "
+                    f"{len(estate.publications)} publications, "
+                    f"{len(estate.model_apis)} model APIs, {len(estate.mcp_servers)} MCP servers",
+                    flush=True,
+                )
+                yield
+            finally:
+                await services.aclose()
+
+    app.router.lifespan_context = demo_lifespan
+    return app
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0] if __doc__ else None)
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=DEFAULT_API_PORT)
+    parser.add_argument("--console-port", type=int, default=DEFAULT_CONSOLE_PORT)
+    parser.add_argument("--portal-port", type=int, default=DEFAULT_PORTAL_PORT)
+    args = parser.parse_args(argv)
+    app = build_demo_app(args.console_port, args.portal_port)
+    uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
