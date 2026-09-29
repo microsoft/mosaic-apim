@@ -2061,9 +2061,19 @@ records.
    [ADR 0022](docs/adr/0022-cost-centers.md). Monthly budgets warn by email at 80% and 100%, and
    can block a cost center's calls at the gateway; see
    [ADR 0023](docs/adr/0023-budgets-and-notifications.md).
-8. **Catalog ecosystem:** API Center experiences, MCP tool-level governance, broader self-service
+8. **Model pools (proposed):** serve one model from many deployments, across endpoints and
+   regions, behind one governed endpoint.
+   - Pool types:
+     - **Breaker:** load-balanced, with circuit breakers.
+     - **Linear:** ordered failover.
+     - **Preferential:** provisioned throughput first, with pay-as-you-go overflow.
+   - People request access per model, and get one key for every model they hold in a pool.
+   - AWS Bedrock members follow in a later phase.
+
+   See [ADR 0024](docs/adr/0024-model-pools.md).
+9. **Catalog ecosystem:** API Center experiences, MCP tool-level governance, broader self-service
    workflows, and environment chains that relate the same model across environments and clouds.
-9. **Production hardening:** private networking, multi-region/production APIM tiers, CMK where
-   required, measured partition scaling, retention and operational SLOs.
+10. **Production hardening:** private networking, multi-region/production APIM tiers, CMK where
+    required, measured partition scaling, retention and operational SLOs.
 
 See [the architecture decisions](docs/adr) for the durable rationale behind this foundation.
