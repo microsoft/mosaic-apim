@@ -6,6 +6,7 @@ the only credential path.
 """
 
 import asyncio
+import re
 from types import TracebackType
 from typing import Any, Self
 
@@ -54,7 +55,156 @@ _UNSUPPORTED_VERSION_CODES: frozenset[str] = frozenset(
 )
 _UNSUPPORTED_VERSION_MARKERS: tuple[str, ...] = ("api-version", "api version")
 
+# Why a long-running operation failed, as Azure tells it, is carried into the error message
+# because that message is what a publish run shows. Every piece is bounded, and the whole is too.
+_OPERATION_CODE_LIMIT = 80
+_OPERATION_MESSAGE_LIMIT = 300
+_OPERATION_REASON_LIMIT = 700
+_ERROR_DETAIL_DEPTH = 8
+_ERROR_DETAIL_NODES = 100
+# Azure can echo the document it rejected. MOSAIC-authored policy markup must not cross the API
+# boundary (ADR 0004), so Azure's text is cut where a tag or a policy expression begins. Naming an
+# element, a line and a column is fine; the markup itself is not.
+_POLICY_MARKUP = re.compile(r"(?:<|&lt;)[A-Za-z_!?/]|@[({]")
+_MARKUP_OMITTED = "[policy markup omitted]"
+_SENTENCE_ENDINGS: tuple[str, ...] = (".", "!", "?", "…")
+
 JsonObject = dict[str, Any]
+
+
+def _json_body(response: httpx.Response) -> object:
+    try:
+        return response.json()
+    except ValueError:
+        return None
+
+
+def _bounded(text: str, limit: int) -> str:
+    return text if len(text) <= limit else f"{text[: limit - 1].rstrip()}…"
+
+
+def _clean_text(value: object, limit: int) -> str:
+    """Azure-supplied text made safe to show: one line, bounded, and free of policy markup."""
+
+    if not isinstance(value, str):
+        return ""
+    text = " ".join("".join(char if char.isprintable() else " " for char in value).split())
+    markup = _POLICY_MARKUP.search(text)
+    if markup is None:
+        return _bounded(text, limit)
+    kept = _bounded(text[: markup.start()].rstrip(), limit - len(_MARKUP_OMITTED) - 1)
+    return f"{kept} {_MARKUP_OMITTED}".lstrip()
+
+
+def _as_sentence(text: str) -> str:
+    text = text.rstrip(" :;,")
+    return text if not text or text.endswith(_SENTENCE_ENDINGS) else f"{text}."
+
+
+def _operation_status(payload: object) -> str:
+    """The state a poll reports: an operation's ``status`` or a resource's provisioning state."""
+
+    if not isinstance(payload, dict):
+        return ""
+    status = payload.get("status")
+    if not isinstance(status, str) or not status.strip():
+        properties = payload.get("properties")
+        status = properties.get("provisioningState") if isinstance(properties, dict) else None
+    return status.strip() if isinstance(status, str) else ""
+
+
+def _operation_error(payload: object) -> JsonObject | None:
+    """An operation's error, at the top level or, on a resource body, under ``properties``."""
+
+    if not isinstance(payload, dict):
+        return None
+    error = payload.get("error")
+    if not isinstance(error, dict):
+        properties = payload.get("properties")
+        error = properties.get("error") if isinstance(properties, dict) else None
+    return error if isinstance(error, dict) else None
+
+
+def _error_children(node: JsonObject) -> list[JsonObject]:
+    details = node.get("details")
+    return [item for item in details if isinstance(item, dict)] if isinstance(details, list) else []
+
+
+def _has_message(node: JsonObject) -> bool:
+    message = node.get("message")
+    return isinstance(message, str) and bool(message.strip())
+
+
+def _error_leaves(error: JsonObject) -> list[tuple[int, JsonObject]]:
+    """Nested details that carry a message of their own, with their depth, in document order.
+
+    A detail whose children carry messages is a heading for them, such as "One or more fields
+    contain incorrect values:", so only the details beneath it count.
+    """
+
+    leaves: list[tuple[int, JsonObject]] = []
+    stack = [(1, child) for child in reversed(_error_children(error))]
+    visited = 0
+    while stack and visited < _ERROR_DETAIL_NODES:
+        depth, node = stack.pop()
+        visited += 1
+        children = _error_children(node) if depth < _ERROR_DETAIL_DEPTH else []
+        if _has_message(node) and not any(_has_message(child) for child in children):
+            leaves.append((depth, node))
+        stack.extend((depth + 1, child) for child in reversed(children))
+    return leaves
+
+
+def _operation_reason(error: JsonObject) -> tuple[str | None, str]:
+    """Azure's code and message, then the most specific nested detail, as one bounded string."""
+
+    code = _clean_text(error.get("code"), _OPERATION_CODE_LIMIT) or None
+    message = _as_sentence(_clean_text(error.get("message"), _OPERATION_MESSAGE_LIMIT))
+    if code and message:
+        reason = f"{code}: {message}"
+    else:
+        reason = message or (f"{code}." if code else "")
+    leaves = _error_leaves(error)
+    if leaves:
+        # The deepest detail is the most specific. max() keeps the first of equally deep ones.
+        _, leaf = max(leaves, key=lambda item: item[0])
+        detail = _as_sentence(_clean_text(leaf.get("message"), _OPERATION_MESSAGE_LIMIT))
+        if detail and detail != message:
+            detail_code = _clean_text(leaf.get("code"), _OPERATION_CODE_LIMIT)
+            if detail_code and detail_code != code:
+                detail = f"{detail_code}: {detail}"
+            target = _clean_text(leaf.get("target"), _OPERATION_CODE_LIMIT)
+            if target and target not in detail:
+                detail = f"{detail} (target: {target})"
+            others = len(leaves) - 1
+            if others:
+                detail = f"{detail} (+{others} more detail{'' if others == 1 else 's'})"
+            reason = f"{reason} Detail: {detail}".strip()
+    return code, _bounded(reason, _OPERATION_REASON_LIMIT)
+
+
+def _operation_failure(
+    *, resource_url: str, poll_url: str, state: str, payload: object
+) -> UpstreamError:
+    error = _operation_error(payload)
+    code, reason = _operation_reason(error) if error is not None else (None, "")
+    if reason:
+        message = f"The Azure operation did not succeed ({state}). {reason}"
+    else:
+        message = (
+            f"The Azure operation did not succeed ({state}) and Azure returned no reason. "
+            "Check the Azure activity log for this resource."
+        )
+    return UpstreamError(
+        message,
+        details={
+            "url": resource_url,
+            "pollUrl": poll_url,
+            "status": state,
+            "code": code,
+            "reason": reason or None,
+        },
+    )
 
 
 class ArmClient:
@@ -163,6 +313,9 @@ class ArmClient:
     ) -> httpx.Response | None:
         return await self._send("GET", url, params=params, allow_not_found=allow_not_found)
 
+    def _absolute(self, url: str) -> str:
+        return url if url.startswith("http") else f"{self._base_url}{url}"
+
     async def _send(
         self,
         method: str,
@@ -173,8 +326,16 @@ class ArmClient:
         if_match: str | None = None,
         allow_not_found: bool = False,
         sensitive: bool = False,
+        return_client_errors: bool = False,
     ) -> httpx.Response | None:
-        target = url if url.startswith("http") else f"{self._base_url}{url}"
+        """Send one ARM request with the shared retry policy and typed error mapping.
+
+        ``return_client_errors`` hands a 4xx the mapping does not treat specially back to the
+        caller. Polling needs it: a failed operation can answer its Location URL with a 4xx whose
+        body says why, and that reason is the point of the error the poller raises.
+        """
+
+        target = self._absolute(url)
         last_error: str = "unknown error"
         for attempt in range(MAX_ATTEMPTS):
             headers = {
@@ -248,6 +409,8 @@ class ArmClient:
                 await self._sleep(delay)
                 continue
             if response.status_code >= 400:
+                if return_client_errors:
+                    return response
                 raise UpstreamError(
                     "Azure Resource Manager rejected the request",
                     details={
@@ -331,7 +494,7 @@ class ArmClient:
             logger.warning("arm_paging_truncated", url=url, pages=pages)
         return items
 
-    async def _await_operation(self, response: httpx.Response) -> None:
+    async def _await_operation(self, response: httpx.Response, *, resource_url: str) -> None:
         """Poll an Azure long-running operation to completion.
 
         A write that returns 202 has not happened yet. Treating it as done would make the *next*
@@ -342,6 +505,16 @@ class ArmClient:
         200 with a ``status`` body throughout, so completion is decided by that status and never by
         the response code. A ``Location`` endpoint answers 202 while running and then returns the
         resource itself, which carries no operation status at all.
+
+        A failure says why. API Management validates some writes only after accepting them: a
+        policy fragment whose ``set-backend-service`` names a backend that does not exist is
+        answered 201, and its Location poll then reports ``Failed`` with a ValidationError naming
+        the element, line and column. The error's code, message and most specific nested detail
+        go into the raised message, because that message is what a publish run shows. A failed
+        poll with no error body is reported by its terminal state. No further read is made to
+        find a reason: after a failed create the resource does not exist, after a failed update it
+        still holds its previous content, and the activity log needs subscription-scope access
+        MOSAIC is not granted.
         """
 
         poll_url = response.headers.get("Azure-AsyncOperation") or response.headers.get("Location")
@@ -350,16 +523,33 @@ class ArmClient:
         delay = self._poll_delay(response, DEFAULT_POLL_DELAY_SECONDS)
         for _ in range(MAX_POLL_ATTEMPTS):
             await self._sleep(delay)
-            polled = await self._send("GET", poll_url, allow_not_found=True)
+            polled = await self._send(
+                "GET", poll_url, allow_not_found=True, return_client_errors=True
+            )
             if polled is None:
                 return
-            state = self._operation_state(polled)
-            if state in _FAILED_OPERATION_STATES:
-                raise UpstreamError(
-                    "The Azure operation did not succeed",
-                    details={"url": poll_url, "status": state},
+            payload = _json_body(polled)
+            state = _operation_status(payload)
+            if state.casefold() in _FAILED_OPERATION_STATES or polled.status_code >= 400:
+                failure = _operation_failure(
+                    resource_url=resource_url,
+                    poll_url=poll_url,
+                    state=(
+                        _clean_text(state, _OPERATION_CODE_LIMIT)
+                        or f"HTTP {polled.status_code}"
+                    ),
+                    payload=payload,
                 )
-            if state in _TERMINAL_OPERATION_STATES:
+                logger.warning(
+                    "arm_operation_failed",
+                    url=resource_url,
+                    poll_url=poll_url,
+                    status=failure.details["status"],
+                    code=failure.details["code"],
+                    reason=failure.details["reason"],
+                )
+                raise failure
+            if state.casefold() in _TERMINAL_OPERATION_STATES:
                 return
             if not state and polled.status_code != 202:
                 return
@@ -367,7 +557,7 @@ class ArmClient:
 
         raise UpstreamError(
             "The Azure operation did not complete in time",
-            details={"url": poll_url},
+            details={"url": resource_url, "pollUrl": poll_url},
         )
 
     @staticmethod
@@ -379,17 +569,6 @@ class ArmClient:
             except ValueError:
                 pass
         return min(fallback, MAX_RETRY_DELAY_SECONDS)
-
-    @staticmethod
-    def _operation_state(response: httpx.Response) -> str:
-        try:
-            payload = response.json()
-        except ValueError:
-            return ""
-        if not isinstance(payload, dict):
-            return ""
-        state = payload.get("status") or payload.get("properties", {}).get("provisioningState")
-        return str(state).casefold() if isinstance(state, str) else ""
 
     async def put(
         self,
@@ -405,7 +584,7 @@ class ArmClient:
         if response is None:
             return None
         if response.status_code in {201, 202}:
-            await self._await_operation(response)
+            await self._await_operation(response, resource_url=self._absolute(url))
         try:
             body = response.json()
         except ValueError:
@@ -431,7 +610,7 @@ class ArmClient:
         if response is None:
             return False
         if response.status_code == 202:
-            await self._await_operation(response)
+            await self._await_operation(response, resource_url=self._absolute(url))
         return response.status_code != 204
 
 

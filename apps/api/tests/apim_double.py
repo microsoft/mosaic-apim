@@ -5,6 +5,7 @@ paging, error mapping, policy parsing, and AI detection are all covered by the s
 """
 
 import json
+import re
 import time
 from typing import Any
 
@@ -72,6 +73,21 @@ STABLE_API_VERSION = "2024-05-01"
 MCP_API_VERSION = "2025-09-01-preview"
 OPERATION_PREFIX = "/mosaic-test-operations/"
 
+# Resources the fake serves without anything having written them, so a reference to one resolves.
+STATIC_RESOURCES: frozenset[str] = frozenset(
+    {
+        "apis/chat-api",
+        "apis/echo-api",
+        "apis/orders-mcp",
+        "apis/weather-mcp",
+        "backends/foundry-pool",
+        "products/gold",
+        "policyFragments/mosaic-rate-standard",
+    }
+)
+_BACKEND_REFERENCE = re.compile(r"<set-backend-service\b[^>]*?\bbackend-id=([\"'])(.*?)\1")
+_FRAGMENT_REFERENCE = re.compile(r"<include-fragment\b[^>]*?\bfragment-id=([\"'])(.*?)\1")
+
 
 class FakeCredential:
     def __init__(self) -> None:
@@ -117,6 +133,15 @@ class FakeApim:
         self.async_writes: set[str] = set()
         self.operation_polls: dict[str, int] = {}
         self.operation_result: dict[str, str] = {}
+        self.operation_errors: dict[str, dict[str, Any]] = {}
+        # A policy fragment write is answered with a Location header and validated afterwards, as
+        # API Management does. Each poll body is kept here under the asyncId its URL carries.
+        self.location_operations: dict[str, dict[str, Any]] = {}
+        self._async_ids = 0
+        # Every write that named a resource that did not exist yet, as (written, named). API
+        # Management fails a fragment that routes to a missing backend; other references are only
+        # recorded, so a test can assert an apply created everything after what it names.
+        self.dangling_references: list[tuple[str, str]] = []
         # ARM reports a system-assigned principal at the top level, but a user-assigned one only
         # under userAssignedIdentities. Tests override this to cover both shapes.
         self.identity: dict[str, Any] | None = {
@@ -145,12 +170,26 @@ class FakeApim:
 
         self.delete_failures[path_suffix] = status_code
 
-    def make_async(self, path_suffix: str, *, polls: int = 1, result: str = "Succeeded") -> None:
-        """Make one write return 202 and settle only after ``polls`` in-progress responses."""
+    def make_async(
+        self,
+        path_suffix: str,
+        *,
+        polls: int = 1,
+        result: str = "Succeeded",
+        error: dict[str, Any] | None = None,
+    ) -> None:
+        """Make one write return 202 and settle only after ``polls`` in-progress responses.
+
+        ``error`` is the ``error`` object the settled operation reports, as Azure says why an
+        operation failed. Policy fragments ignore this: they always answer through a Location
+        poll, and fail it only when their routing names a missing backend.
+        """
 
         self.async_writes.add(path_suffix)
         self.operation_polls[path_suffix] = polls
         self.operation_result[path_suffix] = result
+        if error is not None:
+            self.operation_errors[path_suffix] = error
 
     def seed(self, path_suffix: str, payload: dict[str, Any] | None = None) -> None:
         """Pretend a resource already exists, so a plan reports update rather than create."""
@@ -181,6 +220,9 @@ class FakeApim:
         suffix = path[len(RESOURCE_ID) :].strip("/")
         if request.method in {"PUT", "DELETE"}:
             return self._write(request, suffix)
+        async_id = request.url.params.get("azure-asyncId")
+        if async_id is not None:
+            return self._location_poll(async_id)
         injected = self._maybe_fail(suffix)
         if injected is not None:
             return injected
@@ -245,11 +287,17 @@ class FakeApim:
             body = json.loads(request.content) if request.content else {}
         except ValueError:
             body = {}
-        self.written[suffix] = body if isinstance(body, dict) else {}
+        body = body if isinstance(body, dict) else {}
+        if suffix.startswith("policyFragments/"):
+            return self._write_fragment(suffix, body)
+        self._record_references(suffix, body)
+        self.written[suffix] = body
         if suffix in self.async_writes:
             operation = f"{OPERATION_PREFIX}{len(self.writes)}"
             self.operation_polls[operation] = self.operation_polls.get(suffix, 1)
             self.operation_result[operation] = self.operation_result.get(suffix, "Succeeded")
+            if suffix in self.operation_errors:
+                self.operation_errors[operation] = self.operation_errors[suffix]
             return httpx.Response(
                 202,
                 json={},
@@ -260,6 +308,99 @@ class FakeApim:
             )
         return httpx.Response(200, json=self._written_resource(suffix))
 
+    def _exists(self, suffix: str) -> bool:
+        return suffix in self.written or suffix in STATIC_RESOURCES
+
+    def _record_references(self, suffix: str, body: dict[str, Any]) -> None:
+        """Note each resource this write names that does not exist yet."""
+
+        parts = suffix.split("/")
+        named = [f"{parts[0]}/{parts[1]}"] if len(parts) >= 4 else []
+        if len(parts) == 4 and parts[0] == "products" and parts[2] == "apis":
+            named.append(f"apis/{parts[3]}")
+        properties = body.get("properties")
+        properties = properties if isinstance(properties, dict) else {}
+        value = properties.get("value")
+        if isinstance(value, str):
+            named.extend(f"backends/{m.group(2)}" for m in _BACKEND_REFERENCE.finditer(value))
+            named.extend(
+                f"policyFragments/{m.group(2)}" for m in _FRAGMENT_REFERENCE.finditer(value)
+            )
+        scope = properties.get("scope")
+        if isinstance(scope, str) and scope.casefold().startswith(RESOURCE_ID.casefold()):
+            named.append(scope[len(RESOURCE_ID) :].strip("/"))
+        self.dangling_references.extend(
+            (suffix, reference) for reference in named if not self._exists(reference)
+        )
+
+    def _write_fragment(self, suffix: str, body: dict[str, Any]) -> httpx.Response:
+        """Accept a policy fragment as API Management does, then validate it.
+
+        API Management answers 201 (200 when replacing) with only a Location header and checks the
+        policy afterwards. A ``set-backend-service`` naming a backend that does not exist fails the
+        operation: the Location poll reports ``Failed`` with the ValidationError Azure returns, and
+        the fragment is not stored. The line and column are where the element's name starts.
+        """
+
+        existed = self._exists(suffix)
+        self._async_ids += 1
+        async_id = f"{self._async_ids:024x}"
+        properties = body.get("properties")
+        value = properties.get("value") if isinstance(properties, dict) else None
+        xml = value if isinstance(value, str) else ""
+        missing = next(
+            (
+                match
+                for match in _BACKEND_REFERENCE.finditer(xml)
+                if not self._exists(f"backends/{match.group(2)}")
+            ),
+            None,
+        )
+        if missing is None:
+            self._record_references(suffix, body)
+            self.written[suffix] = body
+            self.location_operations[async_id] = self._written_resource(suffix)
+        else:
+            backend = missing.group(2)
+            self.dangling_references.append((suffix, f"backends/{backend}"))
+            line = xml.count("\n", 0, missing.start()) + 1
+            column = missing.start() - (xml.rfind("\n", 0, missing.start()) + 1) + 2
+            self.location_operations[async_id] = {
+                "status": "Failed",
+                "error": {
+                    "code": "ValidationError",
+                    "message": "One or more fields contain incorrect values:",
+                    "details": [
+                        {
+                            "code": "ValidationError",
+                            "target": "set-backend-service",
+                            "message": (
+                                f"Error in element 'set-backend-service' on line {line}, "
+                                f"column {column}: Backend with id '{backend}' could not be "
+                                "found."
+                            ),
+                        }
+                    ],
+                },
+            }
+        return httpx.Response(
+            200 if existed else 201,
+            json={"name": suffix.rsplit("/", 1)[-1], **body},
+            headers={
+                "Location": (
+                    f"https://management.azure.com{RESOURCE_ID}/{suffix}"
+                    f"?api-version={STABLE_API_VERSION}&azure-asyncId={async_id}"
+                    "&format=rawxml"
+                )
+            },
+        )
+
+    def _location_poll(self, async_id: str) -> httpx.Response:
+        body = self.location_operations.get(async_id)
+        if body is None:
+            return httpx.Response(404, json={"error": {"message": "operation not found"}})
+        return httpx.Response(200, json=body)
+
     def _operation(self, path: str) -> httpx.Response:
         remaining = self.operation_polls.get(path, 0)
         if remaining > 0:
@@ -267,7 +408,10 @@ class FakeApim:
             return httpx.Response(
                 200, json={"status": "InProgress"}, headers={"Retry-After": "0"}
             )
-        return httpx.Response(200, json={"status": self.operation_result.get(path, "Succeeded")})
+        body: dict[str, Any] = {"status": self.operation_result.get(path, "Succeeded")}
+        if path in self.operation_errors:
+            body["error"] = self.operation_errors[path]
+        return httpx.Response(200, json=body)
 
     def _route(
         self,

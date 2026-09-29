@@ -620,6 +620,35 @@ async def test_governed_plan_never_takes_over_customer_policy(harness: Harness) 
     assert not harness.apim.writes
 
 
+async def test_governed_apply_creates_the_backend_before_the_fragment_that_routes_to_it(
+    harness: Harness,
+) -> None:
+    await harness.grant()
+    await harness.govern()
+    publication = await harness.service.get_publication(ACTOR, harness.publication_id)
+    backend = f"backends/{publication.backend_name}"
+    fragment = f"policyFragments/{publication.fragment_name}"
+    # The backend went missing outside MOSAIC, so the governed apply has to create it again, and
+    # first: API Management fails a fragment whose set-backend-service names a missing backend.
+    harness.apim.written.pop(backend)
+    harness.apim.writes.clear()
+
+    plan = await harness.service.plan(ACTOR, harness.publication_id)
+
+    stages = [(step.kind, step.stage) for step in plan.steps]
+    assert stages.index((PublishedResourceKind.BACKEND, "prepare")) < stages.index(
+        (PublishedResourceKind.POLICY_FRAGMENT, "policy")
+    )
+    run = await harness.service.apply(ACTOR, harness.publication_id, plan.id)
+    await harness.service.wait_for_idle()
+    assert (await harness.service.get_run(ACTOR, run.id)).status == PublishRunStatus.SUCCEEDED
+    puts = harness.apim.write_paths("PUT")
+    assert puts.index(backend) < puts.index(fragment)
+    assert fragment in harness.apim.written
+    # Nothing written during setup or this apply named a resource that did not exist yet.
+    assert harness.apim.dangling_references == []
+
+
 async def test_persistence_failure_after_activation_is_not_success(
     harness: Harness, monkeypatch: pytest.MonkeyPatch
 ) -> None:
