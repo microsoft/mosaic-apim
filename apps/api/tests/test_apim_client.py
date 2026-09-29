@@ -193,7 +193,7 @@ async def test_a_failed_operation_raises_rather_than_reporting_success(
     )
 
 
-FRAGMENT_NAME = "mosaic-retroburn-aoai-east-gpt-35-turbo"
+FRAGMENT_NAME = "mosaic-contoso-aoai-east-gpt-35-turbo"
 FRAGMENT_URL = f"https://management.azure.com{RESOURCE_ID}/policyFragments/{FRAGMENT_NAME}"
 POLL_URL = (
     f"{FRAGMENT_URL}?api-version=2024-05-01&azure-asyncId=6abb29da463461025c035d71&format=rawxml"

@@ -141,7 +141,7 @@ which the dialog shows as banners, name the step's resource kind and name before
 that names a missing backend fails as:
 
 ```text
-policyFragment mosaic-retroburn-aoai-east-gpt-35-turbo: The Azure operation did not succeed (Failed). ValidationError: One or more fields contain incorrect values. Detail: Error in element 'set-backend-service' on line 3, column 4: Backend with id 'mosaic-retroburn-aoai-east-gpt-35-turbo' could not be found.
+policyFragment mosaic-contoso-aoai-east-gpt-35-turbo: The Azure operation did not succeed (Failed). ValidationError: One or more fields contain incorrect values. Detail: Error in element 'set-backend-service' on line 3, column 4: Backend with id 'mosaic-contoso-aoai-east-gpt-35-turbo' could not be found.
 ```
 
 The reason is bounded in length. Any policy markup or policy expression Azure echoes is cut off, so
