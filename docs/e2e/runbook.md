@@ -95,6 +95,13 @@ node tools/drive.ts shutdown
     match with `--nth <n>` (counting from 0) or `--nth last`, and add `--exact` for an exact name.
     Negative numbers need an equals sign (`--nth=-1`), because the argument parser reads
     `--nth -1` as two options.
+- **Dialogs:** about 250 ms after a console dialog opens, Fluent UI marks the rest of the page
+  `aria-hidden`, and it stays hidden for about 250 ms after the dialog closes. Role targets and
+  `snapshot` skip hidden content. `click`, `wait` and `text` wait for their target, but `count`
+  doesn't, so `wait` for the target before you count right after a dialog closes. Until
+  [#25](https://github.com/microsoft/mosaic-apim/pull/25) is deployed, a dialog opened on its
+  review step can itself be hidden (O4 in the [roadmap](roadmap.md#findings)); reach its
+  controls with `css:` targets.
 - **Values:** `@target:<dot.path>` reads a value from the manifest, so identifiers don't end up in
   shell history. `fill` never echoes the value.
 - **Sign-in:** `signin` waits for a person to finish MFA; the default timeout is 10 minutes.
