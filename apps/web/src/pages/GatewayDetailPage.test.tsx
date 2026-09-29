@@ -3,7 +3,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
-import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { GatewayDetailPage } from './GatewayDetailPage'
 import { modelPublication } from '../test/model-access'
 import type { Gateway, GatewayAccess, ManagementMode } from '../types'
@@ -160,21 +160,9 @@ async function dialogClosed() {
 }
 
 describe('GatewayDetailPage management mode', () => {
-  let bodySize: MockInstance
-
   beforeEach(() => {
     vi.clearAllMocks()
     api.listPublications.mockResolvedValue([])
-    // Fluent's focus management treats everything as invisible when the page has no size, as in
-    // happy-dom. The dialog then can't focus its first button, never becomes the active modal,
-    // and is hidden from assistive technology moments after it opens. Size the page like a browser.
-    bodySize = vi
-      .spyOn(document.body, 'getBoundingClientRect')
-      .mockReturnValue(new DOMRect(0, 0, 1280, 800))
-  })
-
-  afterEach(() => {
-    bodySize.mockRestore()
   })
 
   it('shows the gateway’s real management mode', async () => {
