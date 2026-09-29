@@ -8,6 +8,11 @@ administrator console's; this keeps their data surfaces separate too.
 The portal never queries API Management. Cosmos is the source of truth for entitlement, as ADR 0009
 records, so a grant that has not yet been realised in APIM still shows here — described as exactly
 that rather than silently omitted.
+
+Grants and requests are named the way the catalog names the resource, and the names are resolved
+here rather than joined against the catalog in the browser: the catalog lists only the model APIs
+and MCP servers currently published to it, while a grant or a request can be for one an
+administrator has since made private, or for a product or model deployment, which it never lists.
 """
 
 from mosaic_api.domain import (
@@ -17,7 +22,9 @@ from mosaic_api.domain import (
     CatalogEntry,
     CatalogEntryKind,
     CatalogVisibility,
+    PortalAccessRequest,
     PortalProfile,
+    PortalResolvedEntitlement,
     ResolvedEntitlement,
 )
 from mosaic_api.repositories import DirectoryRepository, GatewayRepository
@@ -41,11 +48,9 @@ class PortalService:
         principal = await self._directory.find_principal_by_object_id(
             actor.tenant_id, actor.object_id
         )
-        entitlements = await self.my_entitlements(actor)
+        entitlements = await self._resolved(actor)
         pending = [
-            item
-            for item in await self.my_access_requests(actor)
-            if item.state == AccessRequestState.PENDING
+            item for item in await self._requests(actor) if item.state == AccessRequestState.PENDING
         ]
         return PortalProfile(
             object_id=actor.object_id,
@@ -58,23 +63,49 @@ class PortalService:
             pending_request_count=len(pending),
         )
 
-    async def my_entitlements(self, actor: Actor) -> list[ResolvedEntitlement]:
+    async def _resolved(self, actor: Actor) -> list[ResolvedEntitlement]:
         return await self._entitlements.resolve_for_object_id(actor, actor.object_id)
 
-    async def my_access_requests(self, actor: Actor) -> list[AccessRequest]:
+    async def _requests(self, actor: Actor) -> list[AccessRequest]:
         # Scoped here rather than trusting a caller-supplied filter: this is the only thing
         # standing between one portal user and another's requests.
         return await self._entitlements.list_access_requests(
             actor, requester_object_id=actor.object_id
         )
 
+    async def _named_requests(
+        self, actor: Actor, requests: list[AccessRequest]
+    ) -> list[PortalAccessRequest]:
+        names = await self._entitlements.resource_display_names(
+            actor, [item.resource for item in requests]
+        )
+        return [
+            PortalAccessRequest.model_validate({**dict(item), "resource_display_name": name})
+            for item, name in zip(requests, names, strict=True)
+        ]
+
+    async def my_entitlements(self, actor: Actor) -> list[PortalResolvedEntitlement]:
+        resolved = await self._resolved(actor)
+        names = await self._entitlements.resource_display_names(
+            actor, [item.entitlement.resource for item in resolved]
+        )
+        return [
+            PortalResolvedEntitlement.model_validate({**dict(item), "resource_display_name": name})
+            for item, name in zip(resolved, names, strict=True)
+        ]
+
+    async def my_access_requests(self, actor: Actor) -> list[PortalAccessRequest]:
+        return await self._named_requests(actor, await self._requests(actor))
+
     async def create_access_request(
         self, actor: Actor, request: AccessRequestCreate
-    ) -> AccessRequest:
-        return await self._entitlements.create_access_request(actor, request)
+    ) -> PortalAccessRequest:
+        created = await self._entitlements.create_access_request(actor, request)
+        return (await self._named_requests(actor, [created]))[0]
 
-    async def withdraw_access_request(self, actor: Actor, request_id: str) -> AccessRequest:
-        return await self._entitlements.withdraw_access_request(actor, request_id)
+    async def withdraw_access_request(self, actor: Actor, request_id: str) -> PortalAccessRequest:
+        withdrawn = await self._entitlements.withdraw_access_request(actor, request_id)
+        return (await self._named_requests(actor, [withdrawn]))[0]
 
     async def catalog(self, actor: Actor) -> list[CatalogEntry]:
         """Everything an administrator published to the catalog, annotated for this caller.
@@ -85,13 +116,13 @@ class PortalService:
 
         entitled = {
             (str(item.entitlement.resource.kind), item.entitlement.resource.id)
-            for item in await self.my_entitlements(actor)
+            for item in await self._resolved(actor)
         }
         # Only open requests describe the caller's current position. A denied or withdrawn request
         # from last month should not stop them asking again, so it is not surfaced as state here.
         open_requests: dict[tuple[str, str], AccessRequestState] = {
             (str(item.resource.kind), item.resource.id): item.state
-            for item in await self.my_access_requests(actor)
+            for item in await self._requests(actor)
             if item.state == AccessRequestState.PENDING
         }
         gateways = {

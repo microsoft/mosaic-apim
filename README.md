@@ -226,9 +226,11 @@ explicit local/test modes and application startup rejects them when `MOSAIC_ENVI
 - Separate non-root frontend/backend containers
 - End-user portal: a separate SPA on its own Entra registration and the `User` app role, where
   a non-administrator sees what they are entitled to, how each grant reached them, the catalog
-  of governed resources, and can request access to something they cannot yet use. For an applied
-  direct model grant, the portal also shows the endpoint, operations, accepted credentials, limits,
-  and placeholder code samples, and reveals a key on request
+  of governed resources, and can request access to something they cannot yet use. My access and
+  My requests head each grant and request with its resource's name, as the catalog shows it, and
+  keep its kind visible, including for a resource since made private. For an applied direct model
+  grant, the portal also shows the endpoint, operations, accepted credentials, limits, and
+  placeholder code samples, and reveals a key on request
 - ACR remote builds for every image, so deployment does not depend on a local Docker daemon
 - `azd` and modular Bicep for three Linux Web Apps on one plan, ACR, Cosmos, Key Vault, APIM,
   Log Analytics, Application Insights, diagnostics, managed identities, and narrow RBAC

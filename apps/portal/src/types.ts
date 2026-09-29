@@ -52,6 +52,11 @@ export interface AccessRequest {
   grantedEntitlementId: string | null
   createdAt: string
   updatedAt: string
+  /**
+   * The name the catalog shows for the requested resource. Null when the API can't resolve it,
+   * for example because the resource was deleted. Older APIs omit it.
+   */
+  resourceDisplayName?: string | null
 }
 
 export interface TokenEnforcement {
@@ -116,6 +121,11 @@ export interface ResolvedEntitlement {
   via: 'direct' | 'group'
   viaGroupId: string | null
   viaGroupName: string | null
+  /**
+   * The name the catalog shows for the granted resource. Null when the API can't resolve it,
+   * for example because the resource was deleted. Older APIs omit it.
+   */
+  resourceDisplayName?: string | null
 }
 
 export interface ConnectionOperation {

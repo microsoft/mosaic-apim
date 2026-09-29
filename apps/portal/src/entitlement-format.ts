@@ -63,6 +63,32 @@ export function resourceLabel(resource: EntitlementResource) {
   return `${resourceKindLabel(resource.kind)} ${resource.id}`
 }
 
+function usableName(displayName: string | null | undefined) {
+  const name = displayName?.trim()
+  return name ? name : null
+}
+
+/**
+ * Heads a grant or request with the name the catalog shows for its resource. Falls back to the
+ * kind and ID when the name is missing (an older API), null (a resource the API can't resolve),
+ * or blank.
+ */
+export function resourceTitle(
+  resource: EntitlementResource,
+  displayName: string | null | undefined,
+) {
+  return usableName(displayName) ?? resourceLabel(resource)
+}
+
+/** Secondary text for a card, led by the resource's kind whenever the title is a name. */
+export function withResourceKind(
+  resource: EntitlementResource,
+  displayName: string | null | undefined,
+  detail: string,
+) {
+  return usableName(displayName) ? `${resourceKindLabel(resource.kind)} · ${detail}` : detail
+}
+
 export function formatNumber(value: number) {
   return new Intl.NumberFormat('en-US').format(value)
 }

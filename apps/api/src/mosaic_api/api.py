@@ -45,7 +45,9 @@ from mosaic_api.domain import (
     ModelEndpointUpdate,
     PolicyPreview,
     PolicyPreviewRequest,
+    PortalAccessRequest,
     PortalProfile,
+    PortalResolvedEntitlement,
     Principal,
     PrincipalCreate,
     PrincipalUpdate,
@@ -881,10 +883,10 @@ async def portal_profile(request: Request, auth: PortalUser) -> PortalProfile:
     )
 
 
-@router.get("/portal/entitlements", response_model=list[ResolvedEntitlement], tags=["portal"])
+@router.get("/portal/entitlements", response_model=list[PortalResolvedEntitlement], tags=["portal"])
 async def portal_entitlements(
     request: Request, auth: PortalUser
-) -> list[ResolvedEntitlement]:
+) -> list[PortalResolvedEntitlement]:
     return await _portal(request).my_entitlements(_actor(auth))
 
 
@@ -893,29 +895,29 @@ async def portal_catalog(request: Request, auth: PortalUser) -> list[CatalogEntr
     return await _portal(request).catalog(_actor(auth))
 
 
-@router.get("/portal/access-requests", response_model=list[AccessRequest], tags=["portal"])
-async def portal_access_requests(request: Request, auth: PortalUser) -> list[AccessRequest]:
+@router.get("/portal/access-requests", response_model=list[PortalAccessRequest], tags=["portal"])
+async def portal_access_requests(request: Request, auth: PortalUser) -> list[PortalAccessRequest]:
     return await _portal(request).my_access_requests(_actor(auth))
 
 
 @router.post(
     "/portal/access-requests",
-    response_model=AccessRequest,
+    response_model=PortalAccessRequest,
     status_code=status.HTTP_201_CREATED,
     tags=["portal"],
 )
 async def create_portal_access_request(
     request: Request, auth: PortalUser, payload: AccessRequestCreate
-) -> AccessRequest:
+) -> PortalAccessRequest:
     return await _portal(request).create_access_request(_actor(auth), payload)
 
 
 @router.post(
     "/portal/access-requests/{request_id}/withdraw",
-    response_model=AccessRequest,
+    response_model=PortalAccessRequest,
     tags=["portal"],
 )
 async def withdraw_portal_access_request(
     request: Request, auth: PortalUser, request_id: str
-) -> AccessRequest:
+) -> PortalAccessRequest:
     return await _portal(request).withdraw_access_request(_actor(auth), request_id)
