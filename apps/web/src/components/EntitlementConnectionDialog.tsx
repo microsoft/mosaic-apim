@@ -61,6 +61,7 @@ function ConnectionSession({
   const [secret, setSecret] = useState<{ slot: KeySlot; key: string } | null>(null)
   const [revealing, setRevealing] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [copyError, setCopyError] = useState<string | null>(null)
   const [copyMessage, setCopyMessage] = useState<string | null>(null)
   const generation = useRef(0)
   const controller = useRef<AbortController | null>(null)
@@ -114,11 +115,20 @@ function ConnectionSession({
     }
   }, [eligible])
 
+  // A reveal that fails shows why. Move focus there, so a screen reader reads it. A reveal that succeeds
+  // leaves focus on its button and says which key it revealed, but never the key: focusing the key would
+  // have a screen reader read it aloud. Fluent places focus as the dialog opens.
+  const errorRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (error) errorRef.current?.focus()
+  }, [error])
+
   function close() {
     generation.current += 1
     controller.current?.abort()
     setSecret(null)
     setError(null)
+    setCopyError(null)
     setCopyMessage(null)
     setClosed(true)
     onClose()
@@ -132,6 +142,7 @@ function ConnectionSession({
     controller.current = abort
     setSecret(null)
     setError(null)
+    setCopyError(null)
     setCopyMessage(null)
     setRevealing(true)
     try {
@@ -155,7 +166,7 @@ function ConnectionSession({
   async function copy() {
     if (!secret || !eligible) return
     const request = generation.current
-    setError(null)
+    setCopyError(null)
     try {
       if (!navigator.clipboard?.writeText) throw new Error('Clipboard unavailable')
       await navigator.clipboard.writeText(secret.key)
@@ -164,7 +175,7 @@ function ConnectionSession({
       }
     } catch {
       if (mounted.current && generation.current === request) {
-        setError('Could not copy the key. Your browser may require clipboard permission; copy it manually or try again.')
+        setCopyError('Could not copy the key. Your browser may require clipboard permission; copy it manually or try again.')
       }
     }
   }
@@ -229,20 +240,31 @@ function ConnectionSession({
               Sharing a key delegates this grant&apos;s access.
             </Text>
             {!eligible && <Text>Key reveal requires an enabled, applied direct grant with key authentication and a trusted orchestrated binding.</Text>}
+            {/* A browser takes focus off a button that becomes disabled, so a busy button stays focusable. */}
             <div className={styles.rowActions}>
-              <Button disabled={!eligible || revealing} onClick={() => void reveal('primary')}>Reveal primary key</Button>
-              <Button disabled={!eligible || revealing} onClick={() => void reveal('secondary')}>Reveal secondary key</Button>
+              <Button disabled={!eligible} disabledFocusable={revealing} onClick={() => void reveal('primary')}>Reveal primary key</Button>
+              <Button disabled={!eligible} disabledFocusable={revealing} onClick={() => void reveal('secondary')}>Reveal secondary key</Button>
             </div>
             {revealing && <Loading label="Retrieving the current key from APIM" />}
             {secret && eligible && (
               <div className={styles.cellStack}>
                 <Text weight="semibold">Revealed {secret.slot} key</Text>
-                <pre aria-label={`Revealed ${secret.slot} key`} className={styles.secretValue}>{secret.key}</pre>
+                <pre data-secret="true" aria-label={`Revealed ${secret.slot} key`} className={styles.secretValue}>{secret.key}</pre>
                 <Button onClick={() => void copy()}>Copy revealed key</Button>
               </div>
             )}
-            {error && <MessageBar intent="error"><MessageBarBody>{error}</MessageBarBody></MessageBar>}
+            {error && (
+              <div ref={errorRef} tabIndex={-1}>
+                <MessageBar intent="error"><MessageBarBody>{error}</MessageBarBody></MessageBar>
+              </div>
+            )}
+            {/* A copy that fails leaves focus on Copy, to try again, so its reason is an alert that a screen reader reads. */}
+            {copyError && <MessageBar intent="error" role="alert"><MessageBarBody>{copyError}</MessageBarBody></MessageBar>}
             {copyMessage && <Text role="status">{copyMessage}</Text>}
+            {/* Always present, so a screen reader announces each reveal. It says which key, never the key itself. */}
+            <span className={styles.srOnly} role="status">
+              {secret && eligible && `${secret.slot === 'primary' ? 'Primary' : 'Secondary'} key revealed.`}
+            </span>
           </DialogContent>
           <DialogActions><Button onClick={close}>Close</Button></DialogActions>
         </DialogBody>

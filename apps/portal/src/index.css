@@ -331,8 +331,6 @@ textarea { font: inherit; }
   gap: 8px 12px;
 }
 
-.connection-status-error { flex-basis: 100%; min-width: 0; }
-
 .connection-section {
   min-width: 0;
   display: grid;
