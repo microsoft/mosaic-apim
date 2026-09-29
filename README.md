@@ -94,8 +94,8 @@ explicit local/test modes and application startup rejects them when `MOSAIC_ENVI
   AWS Bedrock
 - MCP server discovery, and import of selected model APIs and MCP servers from a synchronised
   gateway into MOSAIC's own desired state
-- Model publishing: expose an observed deployment through a gateway by creating its policy fragment,
-  backend, API, operations, API policy, product, product link, and subscription — through a
+- Model publishing: expose an observed deployment through a gateway by creating its backend, policy
+  fragment, API, operations, API policy, product, product link, and subscription — through a
   persisted deterministic plan, an explicit apply, per-step results, and a rollback that deletes
   only the resources that apply created
 - Async repository abstraction with explicit in-memory and Cosmos implementations
@@ -643,14 +643,21 @@ Applying creates, in dependency order:
 
 | Order | Resource | Purpose |
 | --- | --- | --- |
-| 1 | `mosaic-*` policy fragment | Managed-identity authentication, backend routing, and, where the gateway's tier supports them, token limit and token metric |
-| 2 | Backend | The model endpoint origin, with query and fragment stripped |
+| 1 | Backend | The model endpoint origin, with query and fragment stripped |
+| 2 | `mosaic-*` policy fragment | Managed-identity authentication, routing to the backend, and, where the gateway's tier supports them, token limit and token metric |
 | 3 | API | The route, created with no `serviceUrl` so removing the fragment fails closed |
 | 4 | Operations | A curated, versioned set per API shape |
 | 5 | API policy | A thin `<include-fragment>` of the MOSAIC fragment |
 | 6 | Product | Carries the API |
 | 7 | Product/API link | |
 | 8 | Subscription | Only when the publication requires one |
+
+Each resource is created after the resources it names. API Management accepts a policy fragment and
+only then checks the backend its `set-backend-service` names, failing the write if that backend does
+not exist yet, so the backend comes first. Likewise, the API policy includes the fragment; the
+operations and the API policy belong to the API; the product link joins the product and the API;
+and the subscription is scoped to the product. A plan saved by an earlier MOSAIC release that put
+the fragment first is refused at apply; plan the publication again.
 
 Operation sets are shipped and versioned by MOSAIC rather than fetched from the provider, so a plan
 is deterministic and does not couple an APIM write to a third-party document being reachable. Each
@@ -673,16 +680,26 @@ only on v2 tiers. On a classic tier such as Developer, the publish wizard explai
 publication applies no token limits or token metrics. Governed grants on it can use call limits
 instead.
 
-Every step records whether it created the resource or found one already there. If a step fails,
-MOSAIC reverses the completed steps and deletes **only** resources that run created — ownership is
-recorded at the moment of the write, never inferred from a name, so a product that merely matches a
-MOSAIC name is never destroyed. A resource MOSAIC replaced rather than created is not reverted,
-because the previous content was never stored; those are named in the run instead. If the rollback
-itself fails, the run reports `rollbackFailed` and lists exactly what was left behind.
+Every step records whether it created the resource or found one already there. A step succeeds only
+once Azure has finished its write: API Management finishes a policy fragment or an API write
+asynchronously, on an update as well as a create, so MOSAIC waits for any write Azure answers with
+`Azure-AsyncOperation` or `Location`, whatever its status code. A failed step says why: when Azure
+explains a failed operation, or refuses a request outright, the step's error carries Azure's error
+code, message and most specific detail, such as a validation error naming the policy element, line
+and column. It is bounded in length and never includes policy markup. An update API Management
+rejects after accepting it leaves the previous content in place and fails its step, so it is never
+reported as applied: a re-applied publication rolls back, and a failed governed apply denies access,
+then restores only the last safe access. If a step fails, MOSAIC reverses the completed steps and
+deletes **only** resources that run created — ownership is recorded at the moment of the write,
+never inferred from a name, so a product that merely matches a MOSAIC name is never destroyed. A
+resource MOSAIC replaced rather than created is not reverted, because the previous content was never
+stored; those are named in the run instead. If the rollback itself fails, the run reports
+`rollbackFailed` and lists exactly what was left behind.
 
-Unpublishing runs the same machinery over the tracked resources in reverse. A publication that still
-owns API Management resources cannot be deleted, and a gateway with published models cannot be
-removed, so intent is never dropped while the resources it created keep running.
+Unpublishing runs the same machinery over the tracked resources in reverse, so a fragment is removed
+before the backend it routes to. A publication that still owns API Management resources cannot be
+deleted, and a gateway with published models cannot be removed, so intent is never dropped while
+the resources it created keep running.
 
 ## Governed model access
 
@@ -909,7 +926,7 @@ already acknowledged for imported records.
    gateway's runtime access to them, and register MCP servers directly to record the tools they
    declare.
 4. **Model publishing:** expose an observed deployment through a gateway by writing
-   its policy fragment, backend, API, operations, product and subscription, through a deterministic
+   its backend, policy fragment, API, operations, product and subscription, through a deterministic
    plan, an explicit apply, per-step results, and rollback that removes only what it created. This
    is the orchestration [ADR 0009](docs/adr/0009-entitlement-subjects-resources-and-apim-binding.md)
    defers to, for models.

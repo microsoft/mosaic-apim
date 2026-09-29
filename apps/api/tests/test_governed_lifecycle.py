@@ -35,6 +35,7 @@ from mosaic_api.domain import (
     PublishedResourceKind,
     PublishRun,
     PublishRunStatus,
+    PublishStepStatus,
     RequestEnforcement,
     TokenEnforcement,
     model_access_subscription_name,
@@ -618,6 +619,79 @@ async def test_governed_plan_never_takes_over_customer_policy(harness: Harness) 
     with pytest.raises(ConflictError, match="customer resources or policy"):
         await harness.service.plan(ACTOR, publication.id)
     assert not harness.apim.writes
+
+
+async def test_governed_apply_creates_the_backend_before_the_fragment_that_routes_to_it(
+    harness: Harness,
+) -> None:
+    await harness.grant()
+    await harness.govern()
+    publication = await harness.service.get_publication(ACTOR, harness.publication_id)
+    backend = f"backends/{publication.backend_name}"
+    fragment = f"policyFragments/{publication.fragment_name}"
+    # The backend went missing outside MOSAIC, so the governed apply has to create it again, and
+    # first: API Management fails a fragment whose set-backend-service names a missing backend.
+    harness.apim.written.pop(backend)
+    harness.apim.writes.clear()
+
+    plan = await harness.service.plan(ACTOR, harness.publication_id)
+
+    stages = [(step.kind, step.stage) for step in plan.steps]
+    assert stages.index((PublishedResourceKind.BACKEND, "prepare")) < stages.index(
+        (PublishedResourceKind.POLICY_FRAGMENT, "policy")
+    )
+    run = await harness.service.apply(ACTOR, harness.publication_id, plan.id)
+    await harness.service.wait_for_idle()
+    assert (await harness.service.get_run(ACTOR, run.id)).status == PublishRunStatus.SUCCEEDED
+    puts = harness.apim.write_paths("PUT")
+    assert puts.index(backend) < puts.index(fragment)
+    assert fragment in harness.apim.written
+    # Nothing written during setup or this apply named a resource that did not exist yet.
+    assert harness.apim.dangling_references == []
+
+
+async def test_a_governed_fragment_update_azure_rejects_is_not_applied_access(
+    harness: Harness,
+) -> None:
+    await harness.grant()
+    await harness.govern()
+    assert (await harness.apply()).status == PublishRunStatus.SUCCEEDED
+    newcomer = await harness.grant(NEW_USER)
+    publication = await harness.service.get_publication(ACTOR, harness.publication_id)
+    backend = f"backends/{publication.backend_name}"
+    fragment = f"policyFragments/{publication.fragment_name}"
+    previous = harness.apim.written[fragment]["properties"]["value"]
+    # The backend is deleted after the prepare stage rewrites it, so the policy stage's update of
+    # the fragment names a missing backend. API Management answers that update 200 with a
+    # Location header, then fails the operation and keeps the fragment it had.
+    harness.apim.remove_before_write(fragment, backend)
+
+    run = await harness.apply()
+
+    assert run.status == PublishRunStatus.FAILED
+    step = next(
+        step
+        for step in run.steps
+        if step.kind == PublishedResourceKind.POLICY_FRAGMENT and step.stage == "policy"
+    )
+    assert step.status == PublishStepStatus.FAILED
+    assert step.error and step.error.startswith("The Azure operation did not succeed (Failed).")
+    assert f"Backend with id '{publication.backend_name}' could not be found." in step.error
+    assert run.errors[0] == f"policyFragment {publication.fragment_name}: {step.error}"
+    # Restoring the last safe snapshot rewrites the fragment too, and is refused the same way,
+    # so the model is left denied rather than reported as restored.
+    assert any("Restoring the last safe access snapshot failed" in error for error in run.errors)
+    current = await harness.service.get_publication(ACTOR, harness.publication_id)
+    assert current.access_state == "failed"
+    assert current.applied_access
+    assert not any(grant.enabled for grant in current.applied_access.grants)
+    assert harness.apim.written[fragment]["properties"]["value"] == previous
+    assert NEW_USER not in previous
+    api_policy = harness.apim.written[f"apis/{publication.api_name}/policies/policy"]
+    assert "include-fragment" not in api_policy["properties"]["value"]
+    newcomer_key = harness.apim.written[f"subscriptions/{harness.subscription(newcomer)}"]
+    assert newcomer_key["properties"]["state"] == "suspended"
+    assert await harness.gateways.get_publication_lock(TENANT, publication.id) is None
 
 
 async def test_persistence_failure_after_activation_is_not_success(

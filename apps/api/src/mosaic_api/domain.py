@@ -1330,8 +1330,8 @@ class PublicationStatus(StrEnum):
 class PublishedResourceKind(StrEnum):
     """The API Management resource types a publication creates, in dependency order."""
 
-    POLICY_FRAGMENT = "policyFragment"
     BACKEND = "backend"
+    POLICY_FRAGMENT = "policyFragment"
     API = "api"
     API_OPERATION = "apiOperation"
     API_POLICY = "apiPolicy"
