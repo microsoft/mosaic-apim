@@ -524,6 +524,79 @@ async def test_an_update_azure_fails_after_accepting_it_raises_and_keeps_the_old
     assert fake_apim.written["policyFragments/mosaic-test"] == previous
 
 
+UNBRACED_FRAGMENT = (
+    "<fragment>\n"
+    '  <set-variable name="mosaic-key-grant" value=\'@{ if (context.Subscription == null) '
+    'return ""; return context.Subscription.Id; }\' />\n'
+    "</fragment>"
+)
+# Why API Management refused a governed fragment whose if statement had no braces, as MOSAIC
+# reported it.
+UNBRACED_REASON = (
+    'Expected a "{" but found a "return". Block statements must be enclosed in "{" and "}". You '
+    "cannot use single-statement control-flow statements in CSHTML pages. For example, the "
+    "following is not allowed: @if(isLoggedIn) [policy markup omitted]."
+)
+
+
+@pytest.mark.parametrize("existed", [False, True])
+async def test_a_fragment_with_an_unbraced_if_body_fails_as_api_management_fails_it(
+    fake_apim: FakeApim, existed: bool
+) -> None:
+    writer = ApimWriter(build_arm_client(fake_apim), ApimResourceId.parse(RESOURCE_ID))
+    previous = {"properties": {"format": "rawxml", "value": "<fragment />"}}
+    if existed:
+        fake_apim.seed("policyFragments/mosaic-test", previous)
+
+    with pytest.raises(UpstreamError) as error:
+        await writer.put_policy_fragment("mosaic-test", UNBRACED_FRAGMENT, description="MOSAIC")
+
+    assert error.value.message == (
+        "The Azure operation did not succeed (Failed). ValidationError: The policy fragment "
+        f"contains invalid policy expression. {UNBRACED_REASON}"
+    )
+    assert fake_apim.written.get("policyFragments/mosaic-test") == (previous if existed else None)
+
+    braced = UNBRACED_FRAGMENT.replace('return "";', '{ return ""; }')
+    await writer.put_policy_fragment("mosaic-test", braced, description="MOSAIC")
+
+    assert fake_apim.written["policyFragments/mosaic-test"]["properties"]["value"] == braced
+
+
+async def test_an_api_policy_with_an_unbraced_if_body_is_refused_as_it_is_written(
+    fake_apim: FakeApim,
+) -> None:
+    writer = ApimWriter(build_arm_client(fake_apim), ApimResourceId.parse(RESOURCE_ID))
+    policy = (
+        "<policies>\n"
+        "  <inbound>\n"
+        "    <base />\n"
+        "    <choose>\n"
+        "      <when condition='@{ if (context.Subscription == null) return true; "
+        "return false; }'>\n"
+        '        <return-response><set-status code="403" reason="Forbidden" /></return-response>\n'
+        "      </when>\n"
+        "    </choose>\n"
+        "  </inbound>\n"
+        "</policies>"
+    )
+
+    with pytest.raises(UpstreamError) as error:
+        await writer.put_api_policy("chat-api", policy)
+
+    assert error.value.message == (
+        "Azure Resource Manager rejected the request (HTTP 400). ValidationError: One or more "
+        "fields contain incorrect values. Detail: Error in element 'when' on line 5, column 8: "
+        f"{UNBRACED_REASON}"
+    )
+    assert "apis/chat-api/policies/policy" not in fake_apim.written
+
+    braced = policy.replace("return true;", "{ return true; }")
+    await writer.put_api_policy("chat-api", braced)
+
+    assert fake_apim.written["apis/chat-api/policies/policy"]["properties"]["value"] == braced
+
+
 API_POLICY_URL = f"https://management.azure.com{RESOURCE_ID}/apis/{FRAGMENT_NAME}/policies/policy"
 MISSING_FRAGMENT = (
     "Error in element 'include-fragment' on line 3, column 6: Fragment with id "
