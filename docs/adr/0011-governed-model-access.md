@@ -10,6 +10,13 @@ on navigation. Code samples use placeholders, never a revealed key. When the con
 the model client ID, the panel shows it with a device code token sample. Group grants still receive
 no credentials.
 
+**Update:** The current-user and portal routes (`/api/v1/me/...` and `/api/v1/portal/...`) return
+a grant's `runtime.status` but always return `runtime.error` as null, whoever calls them. That
+field is the publication's last apply error, verbatim from API Management. It names MOSAIC's
+internal resources, and because it is stored once per publication it can describe other people's
+grants. The administrator routes still return it. The portal explains a failed apply from its
+status and no longer shows the error text.
+
 ## Context
 
 ADR 0009 made an entitlement durable governance intent, but did not enforce it. ADR 0010

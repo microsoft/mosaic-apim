@@ -17,6 +17,10 @@ than one per row. The browser does not join against the catalog, because the cat
 for them remain. The name is null when the resource no longer exists, and the portal then falls
 back to the resource's kind and ID. Administrative responses are unchanged.
 
+**Update:** `GET /api/v1/portal/entitlements` returns each grant's runtime state without API
+Management's error text: `runtime.error` is always null there, as on the other current-user routes.
+See [ADR 0011](0011-governed-model-access.md).
+
 ## Context
 
 `Entitlement` existed in the domain but had no routes, no service, and no repository. Nothing ever

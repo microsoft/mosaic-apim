@@ -887,10 +887,16 @@ The administrator equivalents omit `/me` and require `Admin`. Knowing another en
 application ID does not authorize a reveal. Application-owner delegation remains future work.
 A current-user route always uses the token's identity, never a caller-supplied user ID.
 
+When an apply fails, the `/me` and `/portal` routes report it through `runtime.status` alone and
+return `runtime.error` as null, even to an administrator. That field holds API Management's raw
+error, which names MOSAIC's internal resources and is shared by every grant on the model, so only
+the administrator routes return it.
+
 In the portal, each model grant on **My access** has a **Connection details** button. The
 connection loads only when it is expanded, and it shows the endpoint, full operation URLs,
 deployment, key header, accepted methods, Entra tenant, client ID, scope and audience, limits, and
-whether the grant is applied to APIM. When the connection has an `entraClientId`, a **Get a token
+whether the grant is applied to APIM. If the last apply failed, the panel says so and asks the
+person to have an administrator retry it. When the connection has an `entraClientId`, a **Get a token
 (Python)** sample signs the person in with the model client using a device code. Without one, the
 panel asks them to get the client ID from an administrator. **Show primary key** and **Show
 secondary key** reveal one key for 60 seconds. The key is also hidden by **Hide key**, when the

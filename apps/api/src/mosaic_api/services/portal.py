@@ -7,7 +7,9 @@ administrator console's; this keeps their data surfaces separate too.
 
 The portal never queries API Management. Cosmos is the source of truth for entitlement, as ADR 0009
 records, so a grant that has not yet been realised in APIM still shows here — described as exactly
-that rather than silently omitted.
+that rather than silently omitted. A grant's runtime state is reported by its status alone: API
+Management's error text for a failed apply stays on the administrator routes, for the reasons
+:func:`~mosaic_api.services.model_access.portal_runtime` gives.
 
 Grants and requests are named the way the catalog names the resource, and the names are resolved
 here rather than joined against the catalog in the browser: the catalog lists only the model APIs
@@ -30,6 +32,7 @@ from mosaic_api.domain import (
 from mosaic_api.repositories import DirectoryRepository, GatewayRepository
 from mosaic_api.services.directory import Actor
 from mosaic_api.services.entitlements import EntitlementService
+from mosaic_api.services.model_access import portal_entitlement
 
 
 class PortalService:
@@ -90,7 +93,13 @@ class PortalService:
             actor, [item.entitlement.resource for item in resolved]
         )
         return [
-            PortalResolvedEntitlement.model_validate({**dict(item), "resource_display_name": name})
+            PortalResolvedEntitlement.model_validate(
+                {
+                    **dict(item),
+                    "entitlement": portal_entitlement(item.entitlement),
+                    "resource_display_name": name,
+                }
+            )
             for item, name in zip(resolved, names, strict=True)
         ]
 

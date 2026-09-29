@@ -1112,6 +1112,14 @@ class ModelAccessSettings(MosaicModel):
 
 
 class EntitlementRuntime(MosaicModel):
+    """How far a grant has been applied to API Management, derived from its publication.
+
+    ``error`` is the publication's last apply error, verbatim from API Management. It names
+    MOSAIC's internal resources and is shared by every grant on the publication, so only the
+    administrator routes return it. The end-user routes under ``/api/v1/me`` and ``/api/v1/portal``
+    always return it as null and report a failed apply through ``status`` alone.
+    """
+
     publication_id: str
     status: Literal[
         "pending", "applying", "applied", "revocationPending", "revoked", "failed", "unknown"
@@ -1119,7 +1127,13 @@ class EntitlementRuntime(MosaicModel):
     applied_methods: ModelAccessSettings | None = None
     subscription_name: str | None = None
     applied_at: datetime | None = None
-    error: str | None = None
+    error: str | None = Field(
+        default=None,
+        description=(
+            "The publication's last API Management apply error, verbatim. Administrator routes "
+            "return it; the end-user routes under /api/v1/me and /api/v1/portal always return null."
+        ),
+    )
 
 
 class EntitlementBinding(MosaicModel):
