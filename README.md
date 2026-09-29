@@ -191,6 +191,7 @@ npm run build
 
 az bicep build --file infra\main.bicep
 python -m unittest scripts.tests.test_mosaic_entra
+python -m unittest scripts.tests.test_spa_nginx
 ```
 
 ## Deploy with `azd`
@@ -250,6 +251,12 @@ Assign these permissions through normal Entra administration. A MOSAIC grant doe
 consent a client, create an identity, or grant Microsoft Graph permissions. The only consent
 bootstrap creates is the model client's `Models.Invoke` grant. Bootstrap exposes
 `MOSAIC_MODEL_RUNTIME_CLIENT_ID`; this must not be the MOSAIC control-plane API's client ID.
+
+The console and portal containers serve `index.html` and every SPA route with
+`Cache-Control: no-cache`, `/config.js` with `no-store`, and the content-hashed files under
+`/assets/` with `public, max-age=31536000, immutable`. After a redeploy, the next page load
+revalidates `index.html` and picks up the new bundle and runtime configuration. The policy is in
+`apps/web/nginx.conf` and `apps/portal/nginx.conf`, which are kept identical.
 
 APIM Developer is the dominant cost (currently roughly USD 51/month at continuous use) and can take
 30–60 minutes or longer to provision. The shared B1 Linux plan is roughly USD 13–15/month; Basic ACR
