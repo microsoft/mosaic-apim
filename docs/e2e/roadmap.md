@@ -87,8 +87,10 @@ tests and README or ADR updates wherever a decision changes.
 | G6 | Only if Grok or Llama fail on `/models/chat/completions` through APIM | Add OpenAI v1 routes | ⬜ conditional |
 | G7 | When MOSAIC's identity can see no subscriptions, discovery shows nothing at all: no suggestions, no unreadable subscriptions and no hint. Found live in Phase 3 | Say how many subscriptions were scanned. When there are none, or the list fails, show the Reader command for the subscriptions MOSAIC already knows about ([#17](https://github.com/microsoft/mosaic-apim/pull/17)) | ✅ merged |
 | G8 | Gateway runtime readiness can disagree with what the gateway can actually call. It accepts exactly one role, so a sufficient role such as the Cognitive Services User role it recommends before it can read the account is later reported as missing. It also checks a project-registered endpoint at the project scope, although published APIs call the parent resource, where a project-scoped grant doesn't apply | Judge readiness at the account the published API calls, and accept any role whose data actions cover the published operations. Recommend only roles the check accepts: Cognitive Services OpenAI User for Azure OpenAI, and Foundry User otherwise. A deny assignment, or disabled public access with no virtual network on the gateway, means "cannot invoke". Conditions MOSAIC can't evaluate mean "not confirmed". The endpoint's Access card shows its network, firewall and key settings. Readiness covers every API MOSAIC can publish from the endpoint, including Anthropic Messages on AI Services accounts ([#23](https://github.com/microsoft/mosaic-apim/pull/23)) | ✅ merged |
-| G9 | After a redeploy, an open browser kept running the previous console build. Both web apps' nginx serve `index.html`, the SPA routes and `/config.js` with no `Cache-Control`, so browsers cache them heuristically and load the old hashed bundle. Found live in Phase 3 | Revalidate the HTML, the SPA fallback and `/config.js` on every load. Cache the hashed `/assets/` files as immutable, and return 404 for a missing asset instead of the SPA page. Keep the security headers on every response | 🔄 in progress |
-| G10 | Discovery said "Scanned 1 subscription. Nothing new to register." while the subscription held 56 Azure AI accounts MOSAIC couldn't read. MOSAIC's roles were all on single resources, and ARM silently filters a subscription-wide list to what the caller can read, so the scan looked complete. Found live in Phase 3 | Check MOSAIC's own permissions at each scanned subscription. When it can read only part of one, say so and show the subscription Reader command. Also say, wherever MOSAIC asks for a role on its own identity, that Azure can take hours to apply it (O7) | 🔄 in progress |
+| G9 | After a redeploy, an open browser kept running the previous console build. Both web apps' nginx serve `index.html`, the SPA routes and `/config.js` with no `Cache-Control`, so browsers cache them heuristically and load the old hashed bundle. Found live in Phase 3 | Revalidate the HTML, the SPA fallback and `/config.js` on every load. Cache the hashed `/assets/` files as immutable, and return 404 for a missing asset instead of the SPA page. Keep the security headers on every response | 🔄 committed, waiting on push access |
+| G10 | Discovery said "Scanned 1 subscription. Nothing new to register." while the subscription held 56 Azure AI accounts MOSAIC couldn't read. MOSAIC's roles were all on single resources, and ARM silently filters a subscription-wide list to what the caller can read, so the scan looked complete. Found live in Phase 3 | Check MOSAIC's own permissions at each scanned subscription. When it can read only part of one, say so and show the subscription Reader command. Also say, wherever MOSAIC asks for a role on its own identity, that a new role can take a while to apply (O7) | 🔄 in progress |
+| G11 | Discovery suggested, and registration accepted, the parent account of a registered Foundry project. The second endpoint had the same URL, and syncing it listed the project's deployments again, each publishable on its own (O9). **Remove** on an endpoint deletes it and its synced models at once, and the server doesn't check publications, so a publication whose endpoint is gone can't be re-planned or applied (O10). Found live in Phase 3 | Treat each registration as covering its account: don't suggest a covered account, and refuse a registration that overlaps one, naming it. Confirm before removing an endpoint, and refuse while publications depend on it | 🔄 in progress |
+| G12 | Endpoint settings leave out the Key authentication row and its note when an account doesn't set `disableLocalAuth`. Azure leaves it unset by default, which means keys are enabled, so both Azure OpenAI targets showed nothing (O8). Found live in Phase 3 | Treat an unset value on a readable account as Enabled, and add the note | 🔄 committed, waiting on push access |
 
 ## Phases
 
@@ -123,7 +125,7 @@ Each batch runs only after approval and is recorded in the change ledger.
   remediation commands the UI shows.
 - **Exit:** the ledger lists every change and its rollback command.
 
-### Phase 3: Live, admin imports endpoints (A2 to A6) 🔄 remediation approved and under way
+### Phase 3: Live, admin imports endpoints (A2 to A6) ✅ except A2's partial-scan message (G10)
 
 - Paste AOAI A before MOSAIC can read anything. Record "cannot read" and the exact remediation
   command, run it, and check again. Then run the subscription-scope remediation so discovery
@@ -171,8 +173,41 @@ Progress on the new build (G7 and G8 deployed):
   subscription holds 56 Azure AI accounts, but MOSAIC could read none of them (G10).
 - ✅ Reader granted to MOSAIC on AOAI A (2a), exactly as the UI's command says, and then on the
   subscription (2b).
-- ⏳ A4, after: MOSAIC still can't read AOAI A, because the new role hasn't reached ARM for its
-  managed identity (O7). **Check access** runs again periodically until it does.
+- ✅ A4, after: AOAI A became readable, but only after 2b; 2a alone hadn't applied after 17
+  minutes (O7). **Check access** corrected the provider to Azure OpenAI and the endpoint to
+  `https://<account>.openai.azure.com/`, which settles O1's first question.
+- ✅ A3, pasted negative: the private account registered by resource ID and was readable at once.
+  It shows kind OpenAI and public network access Disabled, with the note that a gateway can only
+  reach it privately. The gateway row reads "cannot invoke": no role, and MOSAIC hasn't recorded
+  whether the gateway is on a virtual network, so it asks for the gateway's access check to run
+  again.
+- ✅ A2, after 2b: discovery reads "Scanned 1 subscription." and lists 24 suggestions, including
+  the four remaining targets. Registered endpoints are left out. The message for a partly
+  readable subscription waits for G10.
+- ✅ A3, from suggestions: AOAI B, AOAI C, Foundry multi-provider
+  and Foundry hub-connected each registered with one click on **Register**, and each was
+  readable at once.
+- ⚠️ O9: the Foundry project's parent account was still suggested, and registering it succeeded.
+  The second endpoint had the project's URL, and syncing it listed the same six deployments
+  again. **Remove** deleted it with one click and no confirmation (O10), and discovery then
+  suggested it again. G11 fixes both.
+- ✅ A5: **Sync models** on all eight endpoints. Every row matched
+  `az cognitiveservices account deployment list` on deployment, model, version, SKU and capacity,
+  and state: 51 rows, or 45 deployments without the duplicate. That covers deployments named
+  differently from their model (`gpt-35-turbo` runs gpt-4.1-mini), disabled deployments, and xAI,
+  DeepSeek and Meta models. Each row shows its API shape: chat completions, embeddings, image
+  generation or realtime. sora-2 has none.
+- ✅ A6, network: after the gateway's **Check access**, MOSAIC recorded that the gateway has no
+  virtual network. The private account then read "cannot invoke": public network access is
+  disabled, so the gateway has no network path to it "whatever roles it holds".
+- ✅ A6, after 2c: the APIM identity got the role each gateway row showed (02:45). A minute later,
+  **Check access** read "can invoke" on all six public targets, with "Satisfied by {role},
+  assigned directly on {account}". The Foundry project adds "Checked at
+  {account}, the resource the published API calls." The private account
+  still reads "cannot invoke" for the network, and now says "The role requirement is met by
+  Cognitive Services OpenAI User".
+- "Can invoke" is judged from role assignments, which MOSAIC can list at once. Whether the data
+  plane honors them yet is for Phase 8 to show; O7 suggests allowing tens of minutes.
 
 ### Phase 4: Close product gaps ✅
 
@@ -306,10 +341,10 @@ runtime journeys. **Status** is the result of the latest live run; 🔄 means pa
 | A0 | The admin reaches the console; the model endpoints page loads without errors | 1 | ✅ |
 | A1 | A User-only account signs in but sees no admin data | 1 | ⬜ |
 | A2 | Discovery suggestions list the target accounts; unreadable subscriptions show a remediation command | 3 | 🔄 |
-| A3 | Register from a suggestion, a pasted account ID and a pasted Foundry project ID; a duplicate is rejected | 3 | 🔄 |
-| A4 | An unreadable endpoint shows "cannot read" and the exact command; after running it, MOSAIC can read it | 3 | 🔄 |
-| A5 | Synced deployments match the Azure inventory | 3 | ⬜ |
-| A6 | Gateway runtime readiness moves from "cannot invoke" with a command to "can invoke" | 3 | 🔄 |
+| A3 | Register from a suggestion, a pasted account ID and a pasted Foundry project ID; a duplicate is rejected | 3 | ✅ |
+| A4 | An unreadable endpoint shows "cannot read" and the exact command; after running it, MOSAIC can read it | 3 | ✅ |
+| A5 | Synced deployments match the Azure inventory | 3 | ✅ |
+| A6 | Gateway runtime readiness moves from "cannot invoke" with a command to "can invoke" | 3 | ✅ |
 | A7 | Manage mode is refused without APIM write access and allowed with it (G1) | 5 | ⬜ |
 | A8 | Publish every target deployment; every plan step succeeds, and re-planning is a no-op | 5 | ⬜ |
 | A9 | Catalog visibility makes a published model appear in the portal | 5 | ⬜ |
@@ -354,13 +389,16 @@ be confirmed, or fixed, once the journeys that exercise them have run.
 
 | ID | Observation | Next step |
 | --- | --- | --- |
-| O1 | Before MOSAIC can read an account, it records a placeholder endpoint (`https://<account>.cognitiveservices.azure.com`) and the provider "Azure AI Foundry", even for an Azure OpenAI account. The UI shows these as fact | After Reader is granted, confirm that **Check access** corrects the provider and endpoint. If it does, label the values as unconfirmed until the first successful read |
+| O1 | Before MOSAIC can read an account, it records a placeholder endpoint (`https://<account>.cognitiveservices.azure.com`) and the provider "Azure AI Foundry", even for an Azure OpenAI account. The UI shows these as fact | Confirmed in Phase 3: once MOSAIC can read the account, **Check access** corrects both. Still worth labeling the values as unconfirmed until the first successful read |
 | O2 | A rejected duplicate registration appears under the generic title "Unable to load data". The Identity page gets this right with "Unable to add principal" | Use a title that fits a failed registration |
 | O3 | The console's key reveal (`EntitlementConnectionDialog`) shows the key in an element labelled "Revealed primary key" or "Revealed secondary key", with no `data-secret` marker. The harness masks it by that label | Add `data-secret` to the revealed value when the component is next changed, so any tooling can find it |
 | O4 | Opening **Review model access** from the Models or Entitlements page left keyboard focus on the page, not in the dialog. The dialog first rendered its opening step and then switched to the review in an effect, which removed the control that had focus. The same dialog also showed its first step while it closed, and an apply that finished after it closed made the next **Publish a model** open on "Step 4 of 4". Found while stabilizing the web tests ([#24](https://github.com/microsoft/mosaic-apim/pull/24)), not in a live run | Fixed in [#25](https://github.com/microsoft/mosaic-apim/pull/25). Until that's deployed, let each apply finish before closing the dialog in A8. Once it's deployed, A11, A13 and A14 confirm that focus starts in the review |
 | O5 | After the redeploy, each endpoint kept the readiness verdict the previous build had saved, until someone ran **Check access** again. The Foundry project still recommended Foundry User at the project scope, which G8 reports as too narrow | Run **Check access** on every endpoint after a deploy that changes the readiness rules. The product could record which rules produced a verdict and flag older ones as out of date |
 | O6 | The harness's unattended sign-in gave up while silent single sign-on was still redirecting. It took the first sight of the Entra sign-in page to mean a password, MFA or consent was needed | Fixed in the harness. It gives single sign-on 10 seconds to finish before it asks for a person, and still fails at once on an Entra `AADSTS` error |
-| O7 | After Reader was granted to MOSAIC's managed identity on an account, **Check access** kept failing: ARM returned 403 to MOSAIC's read for more than 15 minutes, and restarting the API didn't help. The assignment was listed at once, and no deny assignment applied. Microsoft documents the cause: ARM sees a role change once the caller's token is refreshed, but a managed identity's token is cached for about 24 hours and can't be refreshed on demand | Grant roles to managed identities well before a run needs them, including the gateway's in A6. Record how long each grant took to apply. G10 adds this caveat to the UI |
+| O7 | After Reader was granted to MOSAIC's managed identity on one account (01:50), **Check access** kept failing for at least 17 minutes, past the 10 minutes Microsoft documents. ARM returned 403 to MOSAIC's read, and restarting the API didn't help. The assignment was listed at once, and no deny assignment applied. A subscription-wide Reader granted at 02:12 made every account readable within 4 to 6 minutes, including one registered only after that grant | Allow for tens of minutes after granting a role, and grant the gateway's roles (A6) well before Phase 8 needs them. G10 makes the UI say that a new role can take a while |
+| O8 | Both Azure OpenAI targets showed no Key authentication row or note, though keys work on them. They never set `disableLocalAuth`, and Azure leaves it out when it's unset, which means enabled. The AI Services account sets it to false explicitly and shows "Enabled" | G12 treats an unset value as enabled |
+| O9 | With the Foundry project registered, discovery still suggested its parent account, and registering it succeeded. The second endpoint had the same URL, and syncing it listed the project's six deployments again, each publishable on its own. Registration rejects only an exact resource ID match, and discovery compares exact IDs | G11 refuses overlapping registrations and stops suggesting covered accounts. The duplicate was removed |
+| O10 | **Remove** on an endpoint deleted it and its synced models at once, with no confirmation. From the code: the server doesn't check publications, and a publication whose endpoint is gone can't be re-planned or applied ("Model endpoint was not found"), so its access can't change while its API keeps serving. Registering the same resource again restores the same endpoint ID | G11 confirms first and refuses while publications depend on the endpoint. Until it's deployed, don't remove an endpoint after A8 |
 
 The Phase 3 check on whether the gateway role recommendation narrows once the account kind is
 known led to G8: it does narrow, and the check then rejects the broader role it recommended
@@ -380,10 +418,9 @@ before.
 - **Sign-in friction.** Conditional Access and MFA are handled by a person in persistent profiles.
   A guest whose home tenant requires a managed browser can switch that persona to Edge.
 - **Propagation delays.** RBAC, Entra consent and APIM policy all take time to apply, so journeys
-  poll with explicit timeouts instead of fixed sleeps. A role granted to a managed identity can
-  take hours, not minutes (O7): its token is cached for about 24 hours and can't be refreshed on
-  demand, and a restart doesn't help. So the gateway's roles (Batch 2c) go in as soon as the UI
-  shows them, well before Phase 8 needs them.
+  poll with explicit timeouts instead of fixed sleeps. A role granted to MOSAIC's managed identity
+  took more than 17 minutes to apply (O7), and restarting the API didn't help. So the gateway's
+  roles (Batch 2c) go in as soon as the UI shows them, well before Phase 8 needs them.
 - **Secret leakage.** Handled by the redaction and artifact rules above. Browser profiles hold
   refresh tokens, so they live under the user's local app data folder, never in the repository.
 - **Redeploying from a new checkout.** Rebuild the azd environment from live values and confirm
