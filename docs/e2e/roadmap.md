@@ -323,8 +323,9 @@ Progress:
     **Governed model access** lists only models that have already published, and this one never
     has.
 - ⬜ A9: each published model gets a row under **Imported model APIs**. That row's **Catalog**
-  select offers "Discoverable" or "Entitled users only". The `guest` persona already holds the User
-  role, so it checks the portal catalog once someone signs it in.
+  select offers "Discoverable" or "Entitled users only". The `guest` persona holds the User role
+  and is signed in to the portal, and the `admin` persona to the console, so A9 can run as soon as
+  a model publishes.
 
 ### Phase 6: Live, admin sets identity and governed access (A10 to A12) 🔄 started early
 
