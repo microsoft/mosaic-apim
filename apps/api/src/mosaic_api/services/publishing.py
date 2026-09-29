@@ -58,6 +58,12 @@ from mosaic_api.domain import (
     publication_id,
     utc_now,
 )
+from mosaic_api.environments import (
+    EnvironmentVerdict,
+    VerdictLevel,
+    compatibility_fingerprint,
+    permits,
+)
 from mosaic_api.errors import ConflictError, NotFoundError, ValidationError
 from mosaic_api.integrations.apim import ApimClient
 from mosaic_api.integrations.apim.model_apis import (
@@ -78,14 +84,16 @@ from mosaic_api.observed import ObservedApi, ObservedModelDeployment
 from mosaic_api.repositories import (
     DirectoryRepository,
     EntitlementRepository,
+    EnvironmentRepository,
     GatewayRepository,
     ModelEndpointRepository,
 )
 from mosaic_api.services.directory import Actor
+from mosaic_api.services.environments import load_environment_catalog
 from mosaic_api.services.model_access import (
     denied_access_snapshot,
     entitlement_intent_digest,
-    gateway_mutation_scope,
+    environment_guard,
     local_mutation_active,
     publication_lock,
     safe_access_snapshot,
@@ -231,6 +239,7 @@ def publication_digest(
     policy: PublicationPolicy,
     origin: str,
     snapshot: ModelAccessSnapshot | None = None,
+    environment_fingerprint: str | None = None,
 ) -> str:
     """A digest over the *intent*, not the observation.
 
@@ -264,6 +273,7 @@ def publication_digest(
                 else None
             ),
             "accessSnapshot": snapshot.model_dump(mode="json") if snapshot else None,
+            "environmentFingerprint": environment_fingerprint,
             "previousAccessVersion": (
                 publication.applied_access.version if publication.applied_access else None
             ),
@@ -299,6 +309,7 @@ class PublishingService:
         directory_repository: DirectoryRepository | None = None,
         entitlement_repository: EntitlementRepository | None = None,
         model_runtime_client_id: str | None = None,
+        environment_repository: EnvironmentRepository | None = None,
     ) -> None:
         self._repository = repository
         self._endpoints = endpoint_repository
@@ -307,6 +318,8 @@ class PublishingService:
         self._directory = directory_repository
         self._entitlements = entitlement_repository
         self._runtime_audience = model_runtime_client_id
+        # None only in tests that don't exercise environments; the built-in seeds apply then.
+        self._environments = environment_repository
         self._active: set[str] = set()
         self._tasks: set[asyncio.Task[None]] = set()
         self._task_failures: list[BaseException] = []
@@ -382,19 +395,37 @@ class PublishingService:
                 },
             )
 
+    @staticmethod
+    def _refuse_blocked_environment(verdict: EnvironmentVerdict) -> None:
+        if verdict.level == VerdictLevel.BLOCKED:
+            raise ConflictError(
+                verdict.reason,
+                details={
+                    "reason": "environmentBlocked",
+                    "verdict": verdict.model_dump(mode="json", by_alias=True),
+                },
+            )
+
     async def create(self, actor: Actor, request: PublicationCreate) -> Publication:
         target = publication_id(
             actor.tenant_id, request.gateway_id, request.model_endpoint_id, request.deployment_name
         )
-        async with publication_lock(
-            self._repository, actor.tenant_id, gateway_mutation_scope(request.gateway_id)
+        async with environment_guard(
+            self._repository,
+            actor.tenant_id,
+            environments=True,
+            gateway_ids=[request.gateway_id],
+            endpoint_ids=[request.model_endpoint_id],
+            publication_ids=[target],
         ):
-            async with publication_lock(self._repository, actor.tenant_id, target):
-                return await self._create(actor, request)
+            return await self._create(actor, request)
 
     async def _create(self, actor: Actor, request: PublicationCreate) -> Publication:
         gateway = await self._load_gateway(actor, request.gateway_id)
         endpoint = await self._load_endpoint(actor, request.model_endpoint_id)
+        catalog = await load_environment_catalog(self._environments, actor.tenant_id)
+        verdict = permits(catalog, gateway.environment, endpoint.environment)
+        self._refuse_blocked_environment(verdict)
         if endpoint.provider == ModelProvider.OPENAI_COMPATIBLE:
             raise ValidationError(
                 "MOSAIC has no curated API shape for OpenAI-compatible endpoints, so it cannot "
@@ -659,6 +690,7 @@ class PublishingService:
                 actor.tenant_id, gateway_id=gateway_id
             )
         }
+        catalog = await load_environment_catalog(self._environments, actor.tenant_id)
         candidates: list[PublishableModel] = []
         for endpoint in endpoints:
             if endpoint.provider == ModelProvider.OPENAI_COMPATIBLE:
@@ -676,6 +708,7 @@ class PublishingService:
                 existing = publications.get(f"{endpoint.id}|{deployment.deployment_name}")
                 api_name, api_path = suggested_names(endpoint.name, deployment.deployment_name)
                 fit = self._fit(endpoint, deployment, gateway)
+                verdict = permits(catalog, gateway.environment, endpoint.environment)
                 candidates.append(
                     PublishableModel(
                         model_endpoint_id=endpoint.id,
@@ -697,6 +730,7 @@ class PublishingService:
                         suggested_api_name=api_name,
                         suggested_api_path=api_path,
                         runtime_access=runtime,
+                        environment_verdict=verdict,
                     )
                 )
         candidates.sort(key=lambda item: (item.endpoint_name.casefold(), item.deployment_name))
@@ -713,6 +747,12 @@ class PublishingService:
         gateway = await self._load_gateway(actor, publication.gateway_id)
         self._require_writable(gateway)
         endpoint = await self._load_endpoint(actor, publication.model_endpoint_id)
+        catalog = await load_environment_catalog(self._environments, actor.tenant_id)
+        verdict = permits(catalog, gateway.environment, endpoint.environment)
+        self._refuse_blocked_environment(verdict)
+        environment_fingerprint = compatibility_fingerprint(
+            catalog, gateway.environment, endpoint.environment
+        )
 
         self._require_enforcement_fit(
             publication.enforcement,
@@ -766,11 +806,21 @@ class PublishingService:
             tenant_id=actor.tenant_id,
             publication_id=publication.id,
             gateway_id=gateway.id,
-            digest=publication_digest(publication, policy, origin, snapshot),
             steps=steps,
             facets=policy.facets,
             policy_content_sha256=policy.content_sha256,
-            warnings=[*self._warnings(publication, gateway, endpoint), *access_warnings],
+            digest=publication_digest(
+                publication,
+                policy,
+                origin,
+                snapshot,
+                environment_fingerprint=environment_fingerprint,
+            ),
+            warnings=[
+                *self._warnings(publication, gateway, endpoint),
+                *([verdict.reason] if verdict.level == VerdictLevel.WARNING else []),
+                *access_warnings,
+            ],
             actor_object_id=actor.object_id,
             access_snapshot=snapshot,
             previous_access_version=(
@@ -1244,10 +1294,25 @@ class PublishingService:
         if plan is None or plan.publication_id != publication.id:
             raise NotFoundError("Publish plan was not found", details={"id": resolved})
 
+        catalog = await load_environment_catalog(self._environments, actor.tenant_id)
+        verdict = permits(catalog, gateway.environment, endpoint.environment)
+        self._refuse_blocked_environment(verdict)
+        environment_fingerprint = compatibility_fingerprint(
+            catalog, gateway.environment, endpoint.environment
+        )
         origin = backend_origin(publication.api_shape, str(endpoint.endpoint))
         snapshot, _ = await self._access_snapshot(publication, gateway)
         policy = self._policy(publication, snapshot)
-        if publication_digest(publication, policy, origin, snapshot) != plan.digest:
+        if (
+            publication_digest(
+                publication,
+                policy,
+                origin,
+                snapshot,
+                environment_fingerprint=environment_fingerprint,
+            )
+            != plan.digest
+        ):
             raise ConflictError(
                 "This publication changed after the plan was produced. Re-plan it and review the "
                 "new changes before applying.",

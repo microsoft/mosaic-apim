@@ -1,17 +1,20 @@
 from collections.abc import Sequence
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 
 import structlog
+from azure.core import MatchConditions
 from azure.cosmos import exceptions
 from azure.cosmos.aio import ContainerProxy, CosmosClient
 from pydantic import BaseModel
 
 from mosaic_api.domain import AuditEvent, Group, GroupMembership, Principal
 from mosaic_api.errors import ConflictError
+from mosaic_api.repositories.observation_writes import merge_observation
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
 BatchOperation = tuple[str, tuple[Any, ...]] | tuple[str, tuple[Any, ...], dict[str, Any]]
 logger = structlog.get_logger()
+OBSERVATION_WRITE_ATTEMPTS = 3
 
 
 class CosmosRepositoryBase:
@@ -201,6 +204,39 @@ class CosmosRepositoryBase:
             batch_operations = [entity_operation, ("create", (audit_document,))]
         await self._execute_batch(batch_operations, audit_event, conflict_message)
         return model
+
+    async def _record_observation(
+        self,
+        model_type: type[ModelT],
+        incoming: ModelT,
+        authored_fields: frozenset[str],
+        *,
+        conflict_message: str,
+    ) -> ModelT | None:
+        """Conditionally merge observed fields without recreating deleted desired-state records."""
+
+        incoming_entity = cast(Any, incoming)
+        tenant_id = incoming_entity.tenant_id
+        item_id = incoming_entity.id
+        for _ in range(OBSERVATION_WRITE_ATTEMPTS):
+            stored = await self._read(model_type, tenant_id, item_id)
+            if stored is None:
+                return None
+            stored_entity = cast(Any, stored)
+            merged = merge_observation(stored, incoming, authored_fields)
+            try:
+                await self._desired.replace_item(
+                    item=item_id,
+                    body=self._document(merged),
+                    etag=stored_entity.etag,
+                    match_condition=MatchConditions.IfNotModified,
+                )
+                return merged
+            except exceptions.CosmosResourceNotFoundError:
+                return None
+            except exceptions.CosmosAccessConditionFailedError:
+                continue
+        raise ConflictError(conflict_message)
 
 
 class CosmosDirectoryRepository(CosmosRepositoryBase):

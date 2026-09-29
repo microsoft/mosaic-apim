@@ -103,16 +103,21 @@ portal at `http://localhost:5174` signs you in as the demo end user, Megan Bowen
 ## How it works
 
 - `demo_fakes.py` is the fictional Azure side. It extends the API's test doubles in
-  `apps/api/tests` into a Contoso estate: a production gateway MOSAIC can read, a partner gateway
-  that answers `403` so it shows **Access needed**, Azure OpenAI and Foundry accounts, and MCP
-  servers. MOSAIC reaches them through `httpx` mock transports, so nothing leaves the machine.
+  `apps/api/tests` into a Contoso estate: a production gateway MOSAIC can read, a development copy
+  of it whose APIs still point at the production accounts, a partner gateway that answers `403`
+  so it shows **Access needed**, Azure OpenAI and Foundry accounts, and MCP servers. MOSAIC
+  reaches them through `httpx` mock transports, so nothing leaves the machine.
 - `demo_api.py` runs the production FastAPI app with in-memory repositories and swaps its
   Azure-facing services for the fakes. It then seeds the estate through MOSAIC's own services, in
-  the order an operator would: register and sync gateways, import, publish, grant, and request,
-  approve, and deny access. Every page therefore renders what the product would show for that
-  estate. Requests from the portal's origin are answered as Megan Bowen with the `User` role, and
-  all others as Adele Vance with `Admin` and `User`. Local authentication is refused outside local
-  and test environments, so the demo can't be pointed at a deployed MOSAIC.
+  the order an operator would: add a custom Partner environment, register, classify, and sync
+  gateways, import, publish, grant, and request, approve, and deny access. One MCP server keeps
+  only a legacy label, so Settings has something to classify, and the development gateway's
+  routes to production produce environment findings. Grants and decided requests are then dated
+  back as far as 120 days, so the portal's usage report has history to show. Every page therefore
+  renders what the product would show for that estate. Requests from the portal's origin are
+  answered as Megan Bowen with the `User` role, and all others as Adele Vance with `Admin` and
+  `User`. Local authentication is refused outside local and test environments, so the demo can't
+  be pointed at a deployed MOSAIC.
 - `capture.py` opens each shot in a fresh Chromium context 1440 pixels wide, with the shot's theme
   set both as the operating-system preference and as MOSAIC's stored preference. It waits for
   every spinner to clear and for the shot's ready text, runs the shot's actions, captures the
@@ -194,5 +199,9 @@ shows both themes. Keep new shots in that pattern.
 | `console-identity` | Console | `/identity?tab=users` | Dark | Identity |
 | `console-entitlements` | Console | `/entitlements`, scrolled to **Grants** | Light | Entitlements |
 | `console-analytics` | Console | `/analytics`, which shows sample data | Dark | Analytics |
+| `console-environments` | Console | `/settings` | Light | Environments |
+| `console-environment-findings` | Console | `/settings`, scrolled to **Findings** | Dark | Environment findings |
 | `portal-access` | Portal | `/access`, with a grant's **Connection details** open | Light | My access |
 | `portal-requests` | Portal | `/requests` | Dark | My requests |
+| `portal-usage` | Portal | `/usage`, which shows sample data | Light | Usage and cost |
+| `portal-usage-resources` | Portal | `/usage`, scrolled to **By resource** | Dark | Usage by resource |

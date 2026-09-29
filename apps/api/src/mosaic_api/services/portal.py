@@ -31,7 +31,7 @@ from mosaic_api.domain import (
 )
 from mosaic_api.repositories import DirectoryRepository, GatewayRepository
 from mosaic_api.services.directory import Actor
-from mosaic_api.services.entitlements import EntitlementService
+from mosaic_api.services.entitlements import EntitlementService, GovernedRecords
 from mosaic_api.services.model_access import portal_entitlement
 
 
@@ -66,8 +66,16 @@ class PortalService:
             pending_request_count=len(pending),
         )
 
-    async def _resolved(self, actor: Actor) -> list[ResolvedEntitlement]:
-        return await self._entitlements.resolve_for_object_id(actor, actor.object_id)
+    async def _resolved(
+        self,
+        actor: Actor,
+        *,
+        include_disabled: bool = False,
+        records: GovernedRecords | None = None,
+    ) -> list[ResolvedEntitlement]:
+        return await self._entitlements.resolve_for_object_id(
+            actor, actor.object_id, include_disabled=include_disabled, records=records
+        )
 
     async def _requests(self, actor: Actor) -> list[AccessRequest]:
         # Scoped here rather than trusting a caller-supplied filter: this is the only thing
@@ -76,21 +84,43 @@ class PortalService:
             actor, requester_object_id=actor.object_id
         )
 
-    async def _named_requests(
+    async def _portal_requests(
         self, actor: Actor, requests: list[AccessRequest]
     ) -> list[PortalAccessRequest]:
-        names = await self._entitlements.resource_display_names(
-            actor, [item.resource for item in requests]
+        """Name each request and summarise its resource, as the portal shows it.
+
+        The name follows the catalog's naming rules. The summary shows live gateway and
+        environment details only for a resource the caller can still see, and otherwise what the
+        request recorded when it was made. Both share one read of each kind of record.
+        """
+
+        if not requests:
+            return []
+        records = self._entitlements.governed_records(actor.tenant_id)
+        resources = [item.resource for item in requests]
+        names = await self._entitlements.resource_display_names(actor, resources, records=records)
+        summaries = await self._entitlements.resource_summaries(
+            actor.tenant_id,
+            resources,
+            snapshots=[item.resource_snapshot for item in requests],
+            requested_environments=[item.requested_environment for item in requests],
+            visible=await self._visible_resource_keys(actor, records),
+            records=records,
         )
         return [
-            PortalAccessRequest.model_validate({**dict(item), "resource_display_name": name})
-            for item, name in zip(requests, names, strict=True)
+            PortalAccessRequest.model_validate(
+                {**dict(item), "resource_display_name": name, "resource_summary": summary}
+            )
+            for item, name, summary in zip(requests, names, summaries, strict=True)
         ]
 
-    async def my_entitlements(self, actor: Actor) -> list[PortalResolvedEntitlement]:
-        resolved = await self._resolved(actor)
+    async def my_entitlements(
+        self, actor: Actor, *, include_disabled: bool = False
+    ) -> list[PortalResolvedEntitlement]:
+        records = self._entitlements.governed_records(actor.tenant_id)
+        resolved = await self._resolved(actor, include_disabled=include_disabled, records=records)
         names = await self._entitlements.resource_display_names(
-            actor, [item.entitlement.resource for item in resolved]
+            actor, [item.entitlement.resource for item in resolved], records=records
         )
         return [
             PortalResolvedEntitlement.model_validate(
@@ -104,17 +134,39 @@ class PortalService:
         ]
 
     async def my_access_requests(self, actor: Actor) -> list[PortalAccessRequest]:
-        return await self._named_requests(actor, await self._requests(actor))
+        return await self._portal_requests(actor, await self._requests(actor))
 
     async def create_access_request(
         self, actor: Actor, request: AccessRequestCreate
     ) -> PortalAccessRequest:
-        created = await self._entitlements.create_access_request(actor, request)
-        return (await self._named_requests(actor, [created]))[0]
+        created = await self._entitlements.create_catalog_access_request(actor, request)
+        return (await self._portal_requests(actor, [created]))[0]
 
     async def withdraw_access_request(self, actor: Actor, request_id: str) -> PortalAccessRequest:
         withdrawn = await self._entitlements.withdraw_access_request(actor, request_id)
-        return (await self._named_requests(actor, [withdrawn]))[0]
+        return (await self._portal_requests(actor, [withdrawn]))[0]
+
+    async def _visible_resource_keys(
+        self, actor: Actor, records: GovernedRecords
+    ) -> dict[tuple[str, str, str], bool]:
+        visible: dict[tuple[str, str, str], bool] = {}
+        for item in await self._resolved(actor, records=records):
+            resource = item.entitlement.resource
+            visible[(str(resource.kind), resource.id, resource.scope_id or "")] = True
+        gateways = await records.gateways()
+        for model_api in (await records.model_apis()).values():
+            if (
+                model_api.visibility == CatalogVisibility.CATALOG
+                and model_api.gateway_id in gateways
+            ):
+                visible[("modelApi", model_api.id, "")] = True
+        for mcp_server in (await records.mcp_servers()).values():
+            if (
+                mcp_server.visibility == CatalogVisibility.CATALOG
+                and mcp_server.gateway_id in gateways
+            ):
+                visible[("mcpServer", mcp_server.id, "")] = True
+        return visible
 
     async def catalog(self, actor: Actor) -> list[CatalogEntry]:
         """Everything an administrator published to the catalog, annotated for this caller.
@@ -135,13 +187,16 @@ class PortalService:
             if item.state == AccessRequestState.PENDING
         }
         gateways = {
-            gateway.id: gateway.name
+            gateway.id: gateway
             for gateway in await self._gateways.list_gateways(actor.tenant_id)
         }
 
         entries: list[CatalogEntry] = []
         for model_api in await self._gateways.list_model_apis(actor.tenant_id):
             if model_api.visibility != CatalogVisibility.CATALOG:
+                continue
+            gateway = gateways.get(model_api.gateway_id)
+            if gateway is None:
                 continue
             entries.append(
                 CatalogEntry(
@@ -150,13 +205,17 @@ class PortalService:
                     display_name=model_api.display_name,
                     summary=model_api.summary,
                     gateway_id=model_api.gateway_id,
-                    gateway_name=gateways.get(model_api.gateway_id),
+                    gateway_name=gateway.name,
+                    environment=gateway.environment,
                     entitled=("modelApi", model_api.id) in entitled,
                     request_state=open_requests.get(("modelApi", model_api.id)),
                 )
             )
         for mcp_server in await self._gateways.list_mcp_servers(actor.tenant_id):
             if mcp_server.visibility != CatalogVisibility.CATALOG:
+                continue
+            gateway = gateways.get(mcp_server.gateway_id)
+            if gateway is None:
                 continue
             entries.append(
                 CatalogEntry(
@@ -165,7 +224,8 @@ class PortalService:
                     display_name=mcp_server.display_name,
                     summary=mcp_server.summary,
                     gateway_id=mcp_server.gateway_id,
-                    gateway_name=gateways.get(mcp_server.gateway_id),
+                    gateway_name=gateway.name,
+                    environment=gateway.environment,
                     entitled=("mcpServer", mcp_server.id) in entitled,
                     request_state=open_requests.get(("mcpServer", mcp_server.id)),
                 )

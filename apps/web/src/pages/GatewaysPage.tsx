@@ -13,17 +13,21 @@ import {
   MessageBar,
   MessageBarBody,
   MessageBarTitle,
+  Select,
   Text,
   Title3,
 } from '@fluentui/react-components'
 import { AddRegular } from '@fluentui/react-icons'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { type FormEvent, useState } from 'react'
+import { type FormEvent, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useMosaicApi } from '../api'
 import { EmptyState, ErrorState, Loading } from '../components/AsyncState'
+import { EnvironmentBadge } from '../components/EnvironmentBadge'
+import { EnvironmentPicker } from '../components/EnvironmentPicker'
 import { PageHeader } from '../components/PageHeader'
-import type { Gateway, GatewayStatus } from '../types'
+import { useEnvironmentCatalog } from '../environments'
+import type { Gateway, GatewayStatus, GatewaySuggestion } from '../types'
 import styles from './GatewaysPage.module.css'
 
 const statusLabels: Record<GatewayStatus, string> = {
@@ -107,10 +111,14 @@ export function GatewaysPage() {
   const [dialogOpen, setDialogOpen] = useState(false)
   const [resourceId, setResourceId] = useState('')
   const [name, setName] = useState('')
-  const [environmentLabel, setEnvironmentLabel] = useState('')
+  const [environment, setEnvironment] = useState<string | null>(null)
+  const [environmentTouched, setEnvironmentTouched] = useState(false)
+  const [environmentFilter, setEnvironmentFilter] = useState('all')
+  const [selectedSuggestion, setSelectedSuggestion] = useState<GatewaySuggestion | null>(null)
   const [lastRegistered, setLastRegistered] = useState<Gateway | null>(null)
 
   const gateways = useQuery({ queryKey: ['gateways'], queryFn: api.listGateways })
+  const catalog = useEnvironmentCatalog()
   const suggestions = useQuery({
     queryKey: ['gateway-suggestions'],
     queryFn: api.listSuggestedGateways,
@@ -124,10 +132,7 @@ export function GatewaysPage() {
   const register = useMutation({
     mutationFn: api.registerGateway,
     onSuccess: async (gateway) => {
-      setResourceId('')
-      setName('')
-      setEnvironmentLabel('')
-      setDialogOpen(false)
+      closeDialog()
       setLastRegistered(gateway)
       await refresh()
     },
@@ -153,14 +158,52 @@ export function GatewaysPage() {
 
   function submit(event: FormEvent) {
     event.preventDefault()
+    setEnvironmentTouched(true)
+    if (!environment) return
     register.mutate({
       azureResourceId: resourceId.trim(),
       name: name.trim() || undefined,
-      environmentLabel: environmentLabel.trim() || undefined,
+      environment,
     })
   }
 
+  function suggestionEvidence(item: GatewaySuggestion) {
+    return item.suggestedEnvironment && item.azureEnvironmentTag
+      ? `Azure tag environment = "${item.azureEnvironmentTag}"`
+      : undefined
+  }
+
+  function openDialog(prefill?: GatewaySuggestion) {
+    register.reset()
+    setSelectedSuggestion(prefill ?? null)
+    setResourceId(prefill?.azureResourceId ?? '')
+    setName(prefill?.serviceName ?? '')
+    setEnvironment(prefill?.suggestedEnvironment ?? null)
+    setEnvironmentTouched(false)
+    setDialogOpen(true)
+  }
+
+  function closeDialog() {
+    setDialogOpen(false)
+    setResourceId('')
+    setName('')
+    setEnvironment(null)
+    setEnvironmentTouched(false)
+    setSelectedSuggestion(null)
+    register.reset()
+  }
+
   const pending = (suggestions.data ?? []).filter((item) => !item.alreadyRegistered)
+  const filteredGateways = (gateways.data ?? []).filter((gateway) => {
+    if (environmentFilter === 'all') return true
+    if (environmentFilter === '__unclassified__') return gateway.environment == null
+    return gateway.environment === environmentFilter
+  })
+  useEffect(() => {
+    if (dialogOpen && !environment && !selectedSuggestion && catalog.data?.environments[0]) {
+      setEnvironment(catalog.data.environments[0].key)
+    }
+  }, [dialogOpen, environment, selectedSuggestion, catalog.data])
 
   return (
     <div className={styles.page}>
@@ -172,7 +215,7 @@ export function GatewaysPage() {
           <Button
             appearance="primary"
             icon={<AddRegular />}
-            onClick={() => setDialogOpen(true)}
+            onClick={() => openDialog()}
           >
             Onboard gateway
           </Button>
@@ -192,7 +235,7 @@ export function GatewaysPage() {
               </div>
               <Button
                 appearance="primary"
-                onClick={() => register.mutate({ azureResourceId: item.azureResourceId })}
+                onClick={() => openDialog(item)}
               >
                 Onboard
               </Button>
@@ -218,16 +261,30 @@ export function GatewaysPage() {
             <div className={styles.cardHeaderText}>
               <Title3 as="h2">Registered gateways</Title3>
               <Text size={200} className={styles.muted}>
-                {gateways.data.length} gateway{gateways.data.length === 1 ? '' : 's'} under MOSAIC
+                {filteredGateways.length} of {gateways.data.length} gateway{gateways.data.length === 1 ? '' : 's'} under MOSAIC
                 observation.
               </Text>
             </div>
+            <Field label="Environment filter">
+              <Select
+                aria-label="Filter gateways by environment"
+                value={environmentFilter}
+                onChange={(event) => setEnvironmentFilter(event.target.value)}
+              >
+                <option value="all">All</option>
+                {catalog.data?.environments.map((item) => (
+                  <option key={item.key} value={item.key}>{item.displayName}</option>
+                ))}
+                <option value="__unclassified__">Unclassified</option>
+              </Select>
+            </Field>
           </div>
           <div className="table-scroll">
             <table>
               <thead>
                 <tr>
                   <th>Gateway</th>
+                  <th>Environment</th>
                   <th>Status</th>
                   <th>AI APIs</th>
                   <th>Last synced</th>
@@ -235,7 +292,7 @@ export function GatewaysPage() {
                 </tr>
               </thead>
               <tbody>
-                {gateways.data.map((gateway) => (
+                {filteredGateways.map((gateway) => (
                   <tr key={gateway.id}>
                     <td>
                       <div className={styles.gatewayName}>
@@ -244,10 +301,11 @@ export function GatewaysPage() {
                         </Link>
                         <Text size={200} className={styles.muted}>
                           {gateway.serviceName}
-                          {gateway.environmentLabel ? ` · ${gateway.environmentLabel}` : ''}
+                          {gateway.environmentLabel ? ` · Legacy label: ${gateway.environmentLabel}` : ''}
                         </Text>
                       </div>
                     </td>
+                    <td><EnvironmentBadge environment={gateway.environment} catalog={catalog.data} /></td>
                     <td>
                       <GatewayStatusBadge status={gateway.status} />
                     </td>
@@ -296,7 +354,7 @@ export function GatewaysPage() {
         </Card>
       )}
 
-      <Dialog open={dialogOpen} onOpenChange={(_, data) => setDialogOpen(data.open)}>
+      <Dialog open={dialogOpen} onOpenChange={(_, data) => data.open ? setDialogOpen(true) : closeDialog()}>
         <DialogSurface>
           <form onSubmit={submit}>
             <DialogBody>
@@ -316,16 +374,24 @@ export function GatewaysPage() {
                 <Field label="Display name" hint="Defaults to the service name">
                   <Input value={name} onChange={(_, data) => setName(data.value)} />
                 </Field>
-                <Field label="Environment label" hint="For example dev or prod">
-                  <Input
-                    value={environmentLabel}
-                    onChange={(_, data) => setEnvironmentLabel(data.value)}
-                  />
-                </Field>
+                <EnvironmentPicker
+                  catalog={catalog.data}
+                  value={environment}
+                  onChange={(value) => { setEnvironment(value); setEnvironmentTouched(true) }}
+                  required
+                  label="Environment"
+                  suggestion={selectedSuggestion?.suggestedEnvironment && suggestionEvidence(selectedSuggestion)
+                    ? { environment: selectedSuggestion.suggestedEnvironment, evidence: suggestionEvidence(selectedSuggestion)! }
+                    : undefined}
+                  validationMessage={environmentTouched && !environment ? 'Choose an environment.' : undefined}
+                />
+                {selectedSuggestion?.azureEnvironmentTag && !selectedSuggestion.suggestedEnvironment && (
+                  <Text size={200} className={styles.muted}>Azure tag: {selectedSuggestion.azureEnvironmentTag}</Text>
+                )}
                 {register.isError && <ErrorState error={register.error} />}
               </DialogContent>
               <DialogActions>
-                <Button appearance="secondary" type="button" onClick={() => setDialogOpen(false)}>
+                <Button appearance="secondary" type="button" onClick={closeDialog}>
                   Cancel
                 </Button>
                 <Button appearance="primary" type="submit" disabled={register.isPending}>

@@ -44,8 +44,9 @@ one under **Settings > Appearance**.
   </tr>
   <tr>
     <td colspan="2"><b>Console overview.</b> Live counts of the users, workload identities, and
-    access groups registered in MOSAIC. Below them, the telemetry, cost, model-ranking, and
-    service-health panels show labelled sample data until MOSAIC queries Azure Monitor.</td>
+    access groups registered in MOSAIC, and of the gateways, model endpoints, and MCP servers in
+    each environment. Below them, the telemetry, cost, model-ranking, and service-health panels
+    show labelled sample data until MOSAIC queries Azure Monitor.</td>
   </tr>
   <tr>
     <td><img src="docs/images/screenshots/portal-catalog-light.png" alt="The portal catalog in the light theme"></td>
@@ -53,8 +54,8 @@ one under **Settings > Appearance**.
   </tr>
   <tr>
     <td colspan="2"><b>Portal catalog.</b> The model APIs and MCP servers published to portal
-    users. People request access with an optional justification, and can see what they already
-    hold or have asked for.</td>
+    users, each labelled with its environment. People request the development or production copy
+    with an optional justification, and can see what they already hold or have asked for.</td>
   </tr>
 </table>
 
@@ -63,16 +64,16 @@ one under **Settings > Appearance**.
 <table>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/console-gateways.png" alt="Registered gateways with their status, AI API counts, and last sync">
-      <p><b>Gateways.</b> Existing API Management services registered by resource ID. MOSAIC
-      reports whether it can read each one, how many APIs front Azure AI backends, and when it
-      last synced.</p>
+      <img src="docs/images/screenshots/console-gateways.png" alt="Registered gateways with their environment, status, AI API counts, and last sync">
+      <p><b>Gateways.</b> Existing API Management services registered by resource ID, each in one
+      environment. MOSAIC reports whether it can read each one, how many APIs front Azure AI
+      backends, and when it last synced.</p>
     </td>
     <td width="50%" valign="top">
       <img src="docs/images/screenshots/console-gateway-overview.png" alt="A gateway overview with inventory counts and service details">
       <p><b>Gateway overview.</b> One gateway at a glance: its AI APIs, operations, MCP servers,
-      access paths, and policy rules, with its mode and service details. Tabs open its APIs, MCP
-      servers, products, subscriptions, users and groups, policies, and backends.</p>
+      access paths, and policy rules, with its environment, mode, and service details. Tabs open
+      its APIs, MCP servers, products, subscriptions, users and groups, policies, and backends.</p>
     </td>
   </tr>
   <tr>
@@ -90,10 +91,10 @@ one under **Settings > Appearance**.
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/console-mcps.png" alt="Registered MCP servers with status, authentication, and tools">
+      <img src="docs/images/screenshots/console-mcps.png" alt="Registered MCP servers with environment, status, authentication, and tools">
       <p><b>MCP servers.</b> Servers registered directly or imported from a gateway, with their
-      connection status, authentication method, and tools. MOSAIC reads what a server offers and
-      never calls a tool.</p>
+      environment, connection status, authentication method, and tools. MOSAIC reads what a server
+      offers and never calls a tool.</p>
     </td>
     <td width="50%" valign="top">
       <img src="docs/images/screenshots/console-identity.png" alt="Users referenced by Entra object ID with a detail panel">
@@ -103,15 +104,31 @@ one under **Settings > Appearance**.
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/console-entitlements.png" alt="Grants with subjects, resources, limits, desired and applied state, and bindings">
+      <img src="docs/images/screenshots/console-entitlements.png" alt="Grants with subjects, resources, environments, limits, desired and applied state, and bindings">
       <p><b>Entitlements.</b> Grants of model APIs and MCP servers to users, groups, and
-      applications, with each grant's limits, desired and applied state, and APIM binding. Model
-      grants reach APIM only through a reviewed apply.</p>
+      applications, with each grant's environment, limits, desired and applied state, and APIM
+      binding. Model grants reach APIM only through a reviewed apply.</p>
     </td>
     <td width="50%" valign="top">
       <img src="docs/images/screenshots/console-analytics.png" alt="Analytics with request, token, success-rate, and cost summaries">
-      <p><b>Analytics.</b> A preview of the usage, token, cost, and chargeback views. It shows
-      labelled sample data until MOSAIC queries Azure Monitor and Log Analytics.</p>
+      <p><b>Analytics.</b> A preview of the usage, token, cost, and chargeback views, filtered by
+      time range, model, and environment. It shows labelled sample data until MOSAIC queries Azure
+      Monitor and Log Analytics.</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/images/screenshots/console-environments.png" alt="The environment catalog in Settings with usage counts and one unclassified resource">
+      <p><b>Environments.</b> The catalog administrators define in Settings: the built-in
+      environments plus custom ones such as Partner, each with a color and a production-class
+      flag. Gateways, model endpoints, and MCP servers are each classified into one, and any not
+      yet classified wait below with suggestions to review.</p>
+    </td>
+    <td width="50%" valign="top">
+      <img src="docs/images/screenshots/console-environment-findings.png" alt="Findings where a development gateway routes to production endpoints">
+      <p><b>Environment findings.</b> Pairings already in API Management that break the
+      environment rules, such as a development gateway routing to production endpoints, with the
+      evidence and how confident the match is. Findings are advisory and never block anything.</p>
     </td>
   </tr>
 </table>
@@ -121,15 +138,28 @@ one under **Settings > Appearance**.
 <table>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/portal-access.png" alt="A model grant with its limits and expanded connection details">
-      <p><b>My access.</b> Each grant with its limits and APIM state. A direct model grant expands
-      to show its endpoint, operations, accepted credentials, and Entra details, with code samples
-      and an on-demand key reveal below.</p>
+      <img src="docs/images/screenshots/portal-access.png" alt="A model grant with its environment, limits, and expanded connection details">
+      <p><b>My access.</b> Each grant with its environment, limits, and APIM state. A direct model
+      grant expands to show its endpoint, operations, accepted credentials, and Entra details, with
+      code samples and an on-demand key reveal below.</p>
     </td>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/portal-requests.png" alt="Approved, denied, and pending access requests">
-      <p><b>My requests.</b> Access requests with their justification, state, and the
+      <img src="docs/images/screenshots/portal-requests.png" alt="Approved, denied, and pending access requests with their environments">
+      <p><b>My requests.</b> Access requests with their environment, justification, state, and the
       administrator's decision note. A pending request can be withdrawn.</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/images/screenshots/portal-usage.png" alt="Usage and cost totals with a daily trend per environment">
+      <p><b>Usage and cost.</b> A person's requests, tokens, and estimated cost across everything
+      they hold, with a daily trend per environment. It shows labelled sample data, simulated from
+      their real grants and limits, until MOSAIC queries Log Analytics.</p>
+    </td>
+    <td width="50%" valign="top">
+      <img src="docs/images/screenshots/portal-usage-resources.png" alt="Usage broken down by environment and by resource">
+      <p><b>Usage by resource.</b> The same figures by environment and by granted resource, with
+      each grant's quotas, rate limits, and whether its APIM subscription is linked yet.</p>
     </td>
   </tr>
 </table>
@@ -228,17 +258,28 @@ explicit local/test modes and application startup rejects them when `MOSAIC_ENVI
   a non-administrator sees what they are entitled to, how each grant reached them, the catalog
   of governed resources, and can request access to something they cannot yet use. My access and
   My requests head each grant and request with its resource's name, as the catalog shows it, and
-  keep its kind visible, including for a resource since made private. For an applied direct model
-  grant, the portal also shows the endpoint, operations, accepted credentials, limits, and
-  placeholder code samples, and reveals a key on request
+  keep its kind visible, including for a resource since made private. They never show a raw
+  resource ID. For an applied direct model grant, the portal also shows the endpoint, operations,
+  accepted credentials, limits, and placeholder code samples, and reveals a key on request
+- Environments: an administrator-defined catalog (Development, Test, QC, Staging, Production,
+  Sandbox, and custom environments) that classifies gateways, model endpoints, and MCP servers.
+  Compatibility rules are enforced when models are published, and Azure `environment` tags and
+  legacy labels become suggestions an administrator confirms. Re-classification is guarded, and
+  advisory findings flag mismatched pairings MOSAIC didn't create. The portal shows each catalog
+  entry's and grant's environment, so people request development and production access separately
+- End-user usage report: a caller-scoped `/me/usage` contract and the portal's **Usage & cost**
+  page. Until Log Analytics is wired in, it reports simulated usage built from the caller's real
+  grants and limits
 - ACR remote builds for every image, so deployment does not depend on a local Docker daemon
 - `azd` and modular Bicep for three Linux Web Apps on one plan, ACR, Cosmos, Key Vault, APIM,
   Log Analytics, Application Insights, diagnostics, managed identities, and narrow RBAC
 - Idempotent Entra application/service-principal setup through `azd` hooks
 
 The Gateways workspace, the Identity workspace, the Models and MCPs workspaces, the Entitlements
-workspace, model publishing, the end-user portal, and the deterministic policy preview use live
-API contracts. Analytics, policy metadata, and other future operational experiences are
+workspace, Settings → Environments, model publishing, the end-user portal, and the deterministic
+policy preview use live API contracts. The portal's **Usage & cost** page also uses a live API
+contract, but the figures it reports are simulated from the caller's real grants and labeled
+**Sample data**. Analytics, policy metadata, and other future operational experiences are
 interactive frontend previews labeled
 **Sample data** or **Local preview**. They never claim to mutate Azure, query Azure Monitor, or
 substitute sample data for a failed API request.
@@ -401,6 +442,9 @@ not. The domain distinguishes:
 - `CatalogModel`: provider model identity/version
 - `ModelDeployment`: callable deployed endpoint
 - `Principal`, `Group`, `GroupMembership`
+- `EnvironmentCatalog`: the tenant's environments, which are production-class, which other
+  environments each one's gateways also accept endpoints from, and whether classification is
+  required
 - `Gateway`: a registered API Management service, its verified access, and its inventory summary
 - `GatewaySyncRun`: the outcome of one inventory synchronisation
 - `ModelApi`: an API Management API an administrator adopted as a governed model endpoint
@@ -491,6 +535,7 @@ measured scale, not speculation.
 A gateway is an existing Azure API Management service that an administrator registers with MOSAIC by
 resource ID. MOSAIC supports several across subscriptions and environments; the APIM that `azd`
 deploys is registered automatically on first startup and also appears as a one-click suggestion.
+Each gateway belongs to one environment, or is Unclassified; see [Environments](#environments).
 
 Onboarding runs a preflight against Azure Resource Manager with MOSAIC's managed identity. It reads
 effective permissions at the resource scope, and when they are missing it reports the exact role,
@@ -876,6 +921,7 @@ Administrators can explicitly reveal/copy an applied grant's key. Portal clients
 | GET | `/me/entitlements` | The caller's own direct grants and deployment state; no keys |
 | GET | `/me/entitlements/{id}/connection` | Endpoint, operations, runtime audience/scope, model client ID, and limits |
 | POST | `/me/entitlements/{id}/keys/reveal` | The requested key; body `{"slot":"primary"}` or `{"slot":"secondary"}` |
+| GET | `/me/usage?period=30d` | The caller's usage and estimated cost per grant, simulated for now; see [Usage and cost in the portal](#usage-and-cost-in-the-portal) |
 
 People use the connection's `tenantId`, `entraClientId` and `entraScope` to get a runtime token.
 See [Call a published model with an Entra token](docs/call-models-with-entra-tokens.md).
@@ -972,6 +1018,105 @@ key directly in APIM and revealing it again: no MOSAIC synchronization should be
 report these live scenarios as passed when deployment, consent, credentials, or a test gateway
 are unavailable.
 
+## Environments
+
+Every gateway, model endpoint, and registered MCP server belongs to one environment, or is
+**Unclassified**. Administrators manage environments in **Settings → Environments**. MOSAIC
+seeds Development, Test, QC, Staging, Production, and Sandbox. Administrators can rename or
+recolor them and add their own.
+
+Each environment has:
+- a key that never changes;
+- optionally, the **production-class** flag;
+- optionally, a list of other environments whose endpoints its gateways may also front.
+
+A production-class environment may list only other production-class environments.
+
+Whenever a model is published, MOSAIC judges the pairing of gateway and endpoint:
+- **Allowed:** both are in the same environment, or the gateway's environment lists the
+  endpoint's as an exception.
+- **Blocked:** two different classified environments without an exception.
+- **Blocked:** a production-class resource paired with an unclassified one, in either direction.
+- **Warning:** any other pairing that involves an unclassified resource. Once **Require
+  classification** is on, these are blocked too.
+
+The publish dialog disables blocked deployments and says why. Creating, planning, and applying a
+publication each check again. A plan also records the verdict it was reviewed under. If either
+environment, a production-class flag, the exception, or Require classification changes before
+apply, apply asks for a fresh plan.
+
+**Classifying resources**
+- Registration asks for an environment.
+- To change it later, use **Change environment** on the resource's page. To classify many
+  resources at once, use the **Unclassified** card in Settings. Both go through
+  `POST /environment-assignments`. The gateway, model endpoint, and MCP server update routes don't
+  accept an environment, so every change passes the same checks.
+- MOSAIC suggests an environment, but never applies one without confirmation. It suggests from
+  either:
+  - an Azure `environment` or `env` tag it read during preflight or the subscription scan; or
+  - the legacy environment label.
+- MCP servers are registered by URL, so they have no Azure tag.
+
+**Changes that are refused**
+
+MOSAIC refuses any change that would leave an applied publication blocked:
+- re-classifying a gateway or endpoint;
+- editing or deleting an environment;
+- turning on Require classification.
+
+The refusal names the publications. Sometimes a gateway and its endpoints must move together, for
+example to classify an unclassified pair as Production. The console then submits them as one
+batch, which MOSAIC validates as a whole and writes atomically.
+
+**Grants follow their resource.** Moving a resource with enabled grants into or out of a
+production-class environment lists the people and applications affected, and requires
+confirmation. The audit event records the grants.
+
+**In the portal**
+- Every catalog entry and grant shows its environment, and the catalog can be filtered by it.
+- People request each environment separately, so development access doesn't imply production
+  access.
+- A request records the environment it was made for. If the resource has moved since, approval
+  asks the administrator to confirm the new environment.
+
+**Findings** point out blocked pairings that exist in API Management but that MOSAIC didn't
+publish. They cover:
+- a gateway backend or API that calls a registered model endpoint in an incompatible environment;
+- a gateway MCP server whose URL is a registered MCP endpoint's URL.
+
+Findings are advisory, and each shows its evidence and confidence. They appear on the gateway, in
+Settings, and in the import dialog. MOSAIC doesn't inspect backends referenced only from policy.
+
+| Method | Route under `/api/v1` | Result |
+| --- | --- | --- |
+| GET | `/environment-catalog` | Environments with usage counts, the compatibility matrix, and Require classification |
+| POST | `/environment-catalog/environments` | Add an environment |
+| PATCH, DELETE | `/environment-catalog/environments/{key}` | Edit or delete an environment |
+| PATCH | `/environment-catalog/settings` | Turn Require classification on or off |
+| GET | `/environment-suggestions` | Unclassified resources and the environment suggested for each |
+| POST | `/environment-assignments` | Classify or re-classify resources as one validated batch |
+| GET | `/environment-findings?gatewayId=` | Advisory findings, optionally for one gateway |
+| GET | `/portal/environments` | The environments, for portal users |
+
+[ADR 0014](docs/adr/0014-environments.md) records these rules.
+
+### Usage and cost in the portal
+
+The portal's **Usage & cost** page shows a person the requests, tokens, and estimated cost of each
+grant they hold. It breaks them down by day, by environment, and by resource, and shows each
+quota's utilization within that quota's own window. It reads
+`GET /api/v1/me/usage?period=7d|30d|90d`, which returns only the caller's own usage.
+
+Until MOSAIC reads Log Analytics, the report is simulated:
+- The figures are deterministic, built from the caller's real grants and limits, and never exceed
+  a quota. A given day shows the same figures whichever period is selected.
+- A disabled grant shows no usage.
+- The page is labeled **Sample data**.
+- Costs are estimates at illustrative rates, only for models MOSAIC knows, and never a bill.
+
+Once a real source is configured, a failure is reported, never replaced with simulated data. See
+[ADR 0015](docs/adr/0015-end-user-usage-report.md).
+
 ## Reconciliation boundary
 
 The API contains a deterministic policy preview using current documented policies:
@@ -1022,9 +1167,10 @@ records.
 6. **Insights and chargeback:** Azure Monitor queries over `ApiManagementGatewayLogs` and
    `ApiManagementGatewayLlmLog`, consumption measured against each entitlement's own enforcement
    window, per-user attribution, token/traffic/cost allocation, budgets, and portal usage views
-   alongside administrator dashboards.
+   alongside administrator dashboards. The portal's Usage & cost page and its `/me/usage`
+   contract already exist on simulated data; this phase supplies measured figures.
 7. **Catalog ecosystem:** API Center experiences, MCP tool-level governance, broader self-service
-   workflows.
+   workflows, and environment chains that relate the same model across environments and clouds.
 8. **Production hardening:** private networking, multi-region/production APIM tiers, CMK where
    required, measured partition scaling, retention and operational SLOs.
 

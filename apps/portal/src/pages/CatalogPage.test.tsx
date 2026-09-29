@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render, screen, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 import type { PortalApi } from '../api'
 import type { AccessRequest, CatalogEntry } from '../types'
@@ -23,6 +24,7 @@ const catalogEntry: CatalogEntry = {
   summary: 'Forecast and alert tools.',
   gatewayId: 'gateway-1',
   gatewayName: 'production gateway',
+  environment: 'production',
   entitled: false,
   requestState: null,
 }
@@ -40,6 +42,18 @@ const pendingRequest: AccessRequest = {
   decidedAt: null,
   decisionNote: null,
   grantedEntitlementId: null,
+  requestedEnvironment: 'production',
+  resourceSnapshot: { displayName: 'Weather tools', gatewayId: 'gateway-1', gatewayName: 'production gateway' },
+  resourceSummary: {
+    kind: 'mcpServer',
+    id: 'mcp-weather',
+    scopeId: null,
+    displayName: 'Weather tools',
+    gatewayId: 'gateway-1',
+    gatewayName: 'production gateway',
+    environment: 'production',
+    available: true,
+  },
   createdAt: '2026-01-01T00:00:00Z',
   updatedAt: '2026-01-01T00:00:00Z',
 }
@@ -47,6 +61,24 @@ const pendingRequest: AccessRequest = {
 function renderPage(entries: CatalogEntry[], requests: AccessRequest[]) {
   mocks.api = {
     listCatalog: async () => entries,
+    listEnvironments: async () => [
+      {
+        key: 'development',
+        displayName: 'Development',
+        description: null,
+        color: 'brand',
+        production: false,
+        order: 10,
+      },
+      {
+        key: 'production',
+        displayName: 'Production',
+        description: null,
+        color: 'danger',
+        production: true,
+        order: 50,
+      },
+    ],
     listAccessRequests: async () => requests,
     createAccessRequest: vi.fn(),
     withdrawAccessRequest: vi.fn(),
@@ -74,5 +106,42 @@ describe('CatalogPage', () => {
     expect(await screen.findByText('A request is already open.')).toBeVisible()
     await waitFor(() => expect(screen.getByRole('button', { name: 'Withdraw' })).toBeEnabled())
     expect(screen.queryByRole('button', { name: 'Request access' })).not.toBeInTheDocument()
+  })
+
+  it('shows environment badges and filters by environment and resource type', async () => {
+    const user = userEvent.setup()
+    renderPage([
+      catalogEntry,
+      {
+        ...catalogEntry,
+        id: 'dev-chat',
+        kind: 'modelApi',
+        displayName: 'Development chat',
+        gatewayName: 'development gateway',
+        environment: 'development',
+      },
+      {
+        ...catalogEntry,
+        id: 'unclassified-mcp',
+        displayName: 'Unclassified tools',
+        environment: null,
+      },
+    ], [])
+
+    expect(await screen.findByText('Weather tools')).toBeVisible()
+    expect(screen.getAllByText('Production')[0]).toBeVisible()
+    expect(screen.getAllByText('Development')[0]).toBeVisible()
+    expect(screen.getAllByText('Unclassified')[0]).toBeVisible()
+    expect(screen.getByRole('option', { name: 'Unclassified' })).toBeInTheDocument()
+
+    await user.selectOptions(screen.getByLabelText('Environment'), 'development')
+    expect(screen.getByText('Development chat')).toBeVisible()
+    expect(screen.queryByText('Weather tools')).not.toBeInTheDocument()
+
+    await user.selectOptions(screen.getByLabelText('Resource type'), 'mcpServer')
+    expect(screen.getByText('No catalog entries match these filters')).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Clear filters' }))
+    expect(screen.getByText('Weather tools')).toBeVisible()
+    expect(screen.getByText('Development chat')).toBeVisible()
   })
 })

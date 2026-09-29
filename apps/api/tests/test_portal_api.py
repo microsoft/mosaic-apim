@@ -62,6 +62,21 @@ def _audit() -> Any:
     )
 
 
+def _gateway() -> Gateway:
+    return Gateway(
+        id="gateway_1",
+        tenant_id=TENANT,
+        name="Development gateway",
+        azure_resource_id=(
+            "/subscriptions/00000000-0000-0000-0000-000000000000"
+            "/resourceGroups/rg/providers/Microsoft.ApiManagement/service/apim"
+        ),
+        subscription_id="00000000-0000-0000-0000-000000000000",
+        resource_group="rg",
+        service_name="apim",
+    )
+
+
 class Harness:
     def __init__(self) -> None:
         self.directory = InMemoryDirectoryRepository()
@@ -81,18 +96,7 @@ class Harness:
         )
 
     async def add_gateway(self) -> Gateway:
-        gateway = Gateway(
-            id="gateway_1",
-            tenant_id=TENANT,
-            name="Development gateway",
-            azure_resource_id=(
-                "/subscriptions/00000000-0000-0000-0000-000000000000"
-                "/resourceGroups/rg/providers/Microsoft.ApiManagement/service/apim"
-            ),
-            subscription_id="00000000-0000-0000-0000-000000000000",
-            resource_group="rg",
-            service_name="apim",
-        )
+        gateway = _gateway()
         await self.gateways.create_gateway(gateway, _audit())
         return gateway
 
@@ -491,11 +495,18 @@ async def test_a_deleted_resource_is_still_listed_without_a_name(harness: Harnes
     [request] = await harness.service.my_access_requests(ACTOR)
 
     # Still listed, so the person can see what they hold or asked for. With no name to show, the
-    # portal falls back to the resource's kind and ID.
+    # portal falls back to the resource summary, where a request keeps the name it recorded when it
+    # was made, and never to a raw ID.
     assert grant.entitlement.resource.id == "api-granted"
     assert grant.resource_display_name is None
+    assert grant.resource_summary is not None
+    assert grant.resource_summary.display_name is None
+    assert grant.resource_summary.available is False
     assert request.resource.id == "retired-mcp"
     assert request.resource_display_name is None
+    assert request.resource_summary is not None
+    assert request.resource_summary.display_name == "MCP retired-mcp"
+    assert request.resource_summary.available is False
 
 
 async def test_observed_resources_are_named_from_what_mosaic_observed(harness: Harness) -> None:
@@ -617,9 +628,12 @@ async def test_nothing_is_read_to_name_an_empty_list(
 
 async def test_only_the_callers_own_resources_are_named(harness: Harness) -> None:
     await harness.add_model_api("api-mine")
-    await harness.add_model_api("api-theirs", visibility=CatalogVisibility.PRIVATE)
+    theirs = await harness.add_model_api("api-theirs")
     await harness.service.create_access_request(ACTOR, _request_for("modelApi", "api-mine"))
+    # Only a catalog resource may be requested, so theirs is hidden once they have asked for it.
     await harness.service.create_access_request(OTHER_ACTOR, _request_for("modelApi", "api-theirs"))
+    hidden = theirs.model_copy(update={"visibility": CatalogVisibility.PRIVATE})
+    await harness.gateways.save_model_api(hidden, _audit())
 
     mine = await harness.service.my_access_requests(ACTOR)
 
@@ -687,6 +701,8 @@ async def test_portal_routes_name_the_callers_requests_and_grants(settings: Sett
     client = _portal_client(settings, roles=["User"])
     try:
         state = client.app.state
+        # A request names a catalog resource, and the catalog lists only what a gateway publishes.
+        await state.gateway_repository.create_gateway(_gateway(), _audit())
         model_api = ModelApi(
             id="api-json",
             tenant_id=TENANT,

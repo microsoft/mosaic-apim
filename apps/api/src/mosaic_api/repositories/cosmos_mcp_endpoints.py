@@ -2,6 +2,7 @@ import structlog
 
 from mosaic_api.domain import AuditEvent, CredentialReference, McpEndpoint, McpEndpointSyncRun
 from mosaic_api.repositories.cosmos_endpoint_state import CosmosEndpointStateBase
+from mosaic_api.repositories.observation_writes import MCP_ENDPOINT_AUTHORED_FIELDS
 
 logger = structlog.get_logger()
 
@@ -51,9 +52,13 @@ class CosmosMcpEndpointRepository(CosmosEndpointStateBase):
         )
         return endpoint
 
-    async def record_endpoint_state(self, endpoint: McpEndpoint) -> McpEndpoint:
-        await self._desired.upsert_item(self._document(endpoint))
-        return endpoint
+    async def record_endpoint_state(self, endpoint: McpEndpoint) -> McpEndpoint | None:
+        return await self._record_observation(
+            McpEndpoint,
+            endpoint,
+            MCP_ENDPOINT_AUTHORED_FIELDS,
+            conflict_message="The MCP server changed while MOSAIC was recording observations",
+        )
 
     async def delete_endpoint(self, endpoint: McpEndpoint, audit_event: AuditEvent) -> None:
         await self.delete_observed_for_endpoint(endpoint.tenant_id, endpoint.id)

@@ -14,8 +14,10 @@ optional `resourceDisplayName`, resolved by the API for the caller's own grants 
 with one list read per resource kind (per gateway or model endpoint for observed resources) rather
 than one per row. The browser does not join against the catalog, because the catalog omits
 `private` resources and never lists products or model deployments, yet grants to them and requests
-for them remain. The name is null when the resource no longer exists, and the portal then falls
-back to the resource's kind and ID. Administrative responses are unchanged.
+for them remain. The name is null when the resource no longer exists. The portal then falls back
+to the resource summary: the name a request recorded when it was made (see
+[ADR 0014](0014-environments.md)), then "Resource no longer available", then the resource's kind.
+It never shows a raw resource ID. Administrative responses are unchanged.
 
 **Update:** `GET /api/v1/portal/entitlements` returns each grant's runtime state without API
 Management's error text: `runtime.error` is always null there, as on the other current-user routes.

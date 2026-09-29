@@ -1,4 +1,4 @@
-import type { GatewayRuntimeAccess, RuntimeRoleFinding } from './types'
+import type { EnvironmentCompatibilityCell, GatewayRuntimeAccess, RuntimeRoleFinding } from './types'
 
 export interface RuntimeVerdict {
   intent: 'success' | 'warning' | 'error'
@@ -9,6 +9,13 @@ export interface RuntimeVerdict {
 export const CAN_INVOKE: RuntimeVerdict = { intent: 'success', label: 'can invoke' }
 export const CANNOT_INVOKE: RuntimeVerdict = { intent: 'error', label: 'cannot invoke' }
 export const NOT_CONFIRMED: RuntimeVerdict = { intent: 'warning', label: 'not confirmed' }
+
+export function environmentRuntimeVerdict(cell: EnvironmentCompatibilityCell | undefined): RuntimeVerdict {
+  if (!cell) return { intent: 'warning', label: 'environment not evaluated' }
+  if (cell.level === 'allowed') return { intent: 'success', label: 'environment allowed' }
+  if (cell.level === 'warning') return { intent: 'warning', label: 'environment warning' }
+  return { intent: 'error', label: 'environment blocked' }
+}
 
 /**
  * Whether a gateway can call an endpoint, keyed on what the check found rather than on

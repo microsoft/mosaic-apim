@@ -44,6 +44,7 @@ from mosaic_api.domain import (
     new_id,
     utc_now,
 )
+from mosaic_api.environments import azure_environment_tag
 from mosaic_api.errors import ConflictError, NotFoundError, ValidationError
 from mosaic_api.integrations.apim import ApimClient, InventoryCollector, run_preflight
 from mosaic_api.integrations.apim.policy_semantics import analyze_policy, summarize_facets
@@ -64,9 +65,15 @@ from mosaic_api.observed import (
     PolicyScope,
     ScopedPolicyView,
 )
-from mosaic_api.repositories import GatewayRepository
+from mosaic_api.repositories import EnvironmentRepository, GatewayRepository
 from mosaic_api.services.directory import Actor
-from mosaic_api.services.model_access import gateway_mutation_scope, publication_lock
+from mosaic_api.services.environments import load_environment_catalog
+from mosaic_api.services.model_access import (
+    ENVIRONMENTS_SCOPE,
+    gateway_mutation_scope,
+    publication_lock,
+    scope_lease,
+)
 
 logger = structlog.get_logger()
 
@@ -76,6 +83,14 @@ IdentityResolver = Callable[[], Awaitable[str | None]]
 STALE_RUN_MESSAGE = "The API restarted while this sync was running; its result is unknown."
 BOOTSTRAP_ACTOR = "system:bootstrap"
 BOOTSTRAP_TIMEOUT_SECONDS = 60.0
+
+
+def _validate_environment_key(catalog_keys: set[str], value: str) -> None:
+    if value not in catalog_keys:
+        raise ValidationError(
+            f"Environment {value!r} is not defined in Settings → Environments.",
+            details={"reason": "unknownEnvironment", "environment": value},
+        )
 
 
 def _catalog_changes(request: CatalogEntryUpdate) -> dict[str, Any]:
@@ -100,6 +115,7 @@ class GatewayService:
         principal_id: str | None = None,
         identity_resolver: IdentityResolver | None = None,
         bootstrap_resource_id: str | None = None,
+        environment_repository: EnvironmentRepository | None = None,
     ) -> None:
         self._repository = repository
         self._client_factory = client_factory
@@ -107,6 +123,8 @@ class GatewayService:
         self._identity_resolver = identity_resolver
         self._identity_resolved = principal_id is not None
         self._bootstrap_resource_id = bootstrap_resource_id
+        # None only in tests that don't exercise environments; the built-in seeds apply then.
+        self._environments = environment_repository
         self._active: set[str] = set()
         self._tasks: set[asyncio.Task[None]] = set()
 
@@ -177,9 +195,19 @@ class GatewayService:
             environment_label=request.environment_label,
         )
         gateway = await self._apply_preflight(gateway)
-        return await self._repository.create_gateway(
-            gateway, self._audit(actor, "gateway.registered", gateway.id)
-        )
+        if request.environment is None:
+            return await self._repository.create_gateway(
+                gateway, self._audit(actor, "gateway.registered", gateway.id)
+            )
+        async with scope_lease(self._repository, actor.tenant_id, ENVIRONMENTS_SCOPE):
+            catalog = await load_environment_catalog(self._environments, actor.tenant_id)
+            _validate_environment_key(
+                {environment.key for environment in catalog.environments}, request.environment
+            )
+            gateway = gateway.model_copy(update={"environment": request.environment})
+            return await self._repository.create_gateway(
+                gateway, self._audit(actor, "gateway.registered", gateway.id)
+            )
 
     async def update(self, actor: Actor, gateway_id: str, request: GatewayUpdate) -> Gateway:
         async with AsyncExitStack() as stack:
@@ -268,7 +296,10 @@ class GatewayService:
     async def preflight(self, actor: Actor, gateway_id: str) -> Gateway:
         gateway = await self.get_gateway(actor, gateway_id)
         checked = await self._apply_preflight(gateway)
-        return await self._repository.record_gateway_state(checked)
+        recorded = await self._repository.record_gateway_state(checked)
+        if recorded is None:
+            raise NotFoundError("Gateway was not found", details={"id": gateway_id})
+        return recorded
 
     async def _apply_preflight(self, gateway: Gateway) -> Gateway:
         resource = ApimResourceId.parse(gateway.azure_resource_id)
@@ -289,6 +320,12 @@ class GatewayService:
             update={
                 "access": result.access,
                 "capabilities": capabilities,
+                # A failed read leaves the tag as last seen rather than claiming it was removed.
+                "azure_environment_tag": (
+                    azure_environment_tag(result.tags)
+                    if result.tags is not None
+                    else gateway.azure_environment_tag
+                ),
                 "status": result.status,
                 "updated_at": utc_now(),
             }

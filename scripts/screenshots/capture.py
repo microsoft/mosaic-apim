@@ -41,8 +41,10 @@ Action = Callable[[Page], None]
 # shapes; these catch the bare names wherever the UI shows them on their own.
 RESOURCE_NAMES = [
     "apim-contoso-dev",
+    "apim-contoso-ai-dev",
     "apim-contoso-partners",
     "rg-contoso-dev",
+    "rg-contoso-ai-dev",
     "rg-contoso-partners",
     "rg-contoso-ai",
     "contoso-aoai",
@@ -214,8 +216,8 @@ SHOTS: list[Shot] = [
     # The same view in both themes, shown side by side.
     Shot("console-dashboard-light", "console", "/dashboard", "light", "access groups", height=1120),
     Shot("console-dashboard-dark", "console", "/dashboard", "dark", "access groups", height=1120),
-    Shot("portal-catalog-light", "portal", "/catalog", "light", "Docs search MCP", height=940),
-    Shot("portal-catalog-dark", "portal", "/catalog", "dark", "Docs search MCP", height=940),
+    Shot("portal-catalog-light", "portal", "/catalog", "light", "Docs search MCP", height=1040),
+    Shot("portal-catalog-dark", "portal", "/catalog", "dark", "Docs search MCP", height=1040),
     # Capability galleries: light shots sit in the README's left column and dark in its right.
     Shot("console-gateways", "console", "/gateways", "light", "Partner Gateway"),
     Shot(
@@ -243,9 +245,21 @@ SHOTS: list[Shot] = [
         "/entitlements",
         "light",
         "Contoso Support Copilot",
-        actions=(scroll_to_text("Desired intent and last recorded", margin=64),),
+        actions=(scroll_to_text("Desired intent and last recorded", margin=96),),
     ),
     Shot("console-analytics", "console", "/analytics", "dark", "Token usage by group"),
+    Shot(
+        "console-environments", "console", "/settings", "light", "needs classification", height=1178
+    ),
+    Shot(
+        "console-environment-findings",
+        "console",
+        "/settings",
+        "dark",
+        "needs classification",
+        height=924,
+        actions=(wait_for_text("Limitations:"), scroll_to_text("Findings", margin=80)),
+    ),
     Shot(
         "portal-access",
         "portal",
@@ -259,6 +273,15 @@ SHOTS: list[Shot] = [
         ),
     ),
     Shot("portal-requests", "portal", "/requests", "dark", "Approved for the churn analysis"),
+    Shot("portal-usage", "portal", "/usage", "light", "Busiest resource", height=1104),
+    Shot(
+        "portal-usage-resources",
+        "portal",
+        "/usage",
+        "dark",
+        "Busiest resource",
+        actions=(scroll_to_text("By resource", margin=96),),
+    ),
 ]
 
 
@@ -408,7 +431,10 @@ def _capture_one(
     image = _blur(Image.open(io.BytesIO(png)).convert("RGB"), rects)
     target = output / f"{shot.name}.png"
     image.save(target, optimize=True)
-    print(f"captured {target.relative_to(REPO_ROOT)} ({len(rects)} regions blurred)")
+    shown = target.resolve()
+    if shown.is_relative_to(REPO_ROOT):
+        shown = shown.relative_to(REPO_ROOT)
+    print(f"captured {shown} ({len(rects)} regions blurred)")
     return target
 
 

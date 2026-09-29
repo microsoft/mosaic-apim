@@ -52,6 +52,7 @@ class EndpointPreflightResult:
     status: ModelEndpointStatus
     account_name: str | None = None
     endpoint_url: str | None = None
+    tags: dict[str, str] | None = None
 
 
 def least_privilege_role_definition(scope: str) -> dict[str, Any]:
@@ -227,6 +228,19 @@ def _endpoint_url(account: JsonObject | None) -> str | None:
     return None
 
 
+def _tags(resource: JsonObject) -> dict[str, str]:
+    """The resource's string tags; empty when it has none, since ``None`` means "not read"."""
+
+    tags = resource.get("tags")
+    if not isinstance(tags, dict):
+        return {}
+    return {
+        name: value
+        for name, value in tags.items()
+        if isinstance(name, str) and isinstance(value, str)
+    }
+
+
 async def run_endpoint_preflight(
     client: CognitiveServicesClient, *, principal_id: str | None = None
 ) -> EndpointPreflightResult:
@@ -301,6 +315,7 @@ async def run_endpoint_preflight(
             status=ModelEndpointStatus.CONNECTED,
             account_name=resource.account_name,
             endpoint_url=endpoint_url,
+            tags=_tags(account),
         )
 
     missing = [action for action in MODEL_READ_ACTIONS if not permits(permissions, action)]
@@ -321,6 +336,7 @@ async def run_endpoint_preflight(
             status=ModelEndpointStatus.UNAUTHORIZED,
             account_name=resource.account_name,
             endpoint_url=endpoint_url,
+            tags=_tags(account),
         )
 
     return EndpointPreflightResult(
@@ -334,4 +350,5 @@ async def run_endpoint_preflight(
         status=ModelEndpointStatus.CONNECTED,
         account_name=resource.account_name,
         endpoint_url=endpoint_url,
+        tags=_tags(account),
     )

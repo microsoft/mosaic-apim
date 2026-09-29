@@ -2,6 +2,7 @@ import type {
   Entitlement,
   KeyRevealResult,
   ModelConnection,
+  ResourceSummary,
   ResolvedEntitlement,
 } from '../types'
 
@@ -43,8 +44,20 @@ export const directGrant: Entitlement = {
   updatedAt: timestamp,
 }
 
+export const directSummary: ResourceSummary = {
+  kind: 'modelApi',
+  id: 'modelApi_chat',
+  scopeId: null,
+  displayName: 'Chat model API',
+  gatewayId: 'gateway_1',
+  gatewayName: 'Production gateway',
+  environment: 'production',
+  available: true,
+}
+
 export const directResolved: ResolvedEntitlement = {
   entitlement: directGrant,
+  resourceSummary: directSummary,
   via: 'direct',
   viaGroupId: null,
   viaGroupName: null,
@@ -58,6 +71,7 @@ export const groupResolved: ResolvedEntitlement = {
     binding: null,
     runtime: null,
   },
+  resourceSummary: directSummary,
   via: 'group',
   viaGroupId: 'group_1',
   viaGroupName: 'Platform engineering',

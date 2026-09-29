@@ -134,4 +134,67 @@ describe('useMosaicApi', () => {
       message: 'MOSAIC cannot write to this gateway yet, so it cannot be managed.',
     })
   })
+
+  it('uses the environment catalog contract paths', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockImplementation(
+        async () =>
+          new Response(
+            JSON.stringify({
+              environments: [],
+              requireClassification: false,
+              unclassified: { gateways: 0, modelEndpoints: 0, mcpEndpoints: 0 },
+              compatibility: [],
+              updatedAt: null,
+              items: [],
+              results: [],
+              grantsCarried: 0,
+              warnings: [],
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } },
+          ),
+      )
+    vi.stubGlobal('fetch', fetchMock)
+    const { result } = renderHook(() => useMosaicApi())
+    await result.current.getEnvironmentCatalog()
+    await result.current.createEnvironment({ key: 'prod2', displayName: 'Prod 2', color: 'danger' })
+    await result.current.updateEnvironment('prod2', { displayName: 'Prod 2' })
+    await result.current.deleteEnvironment('prod2')
+    await result.current.updateEnvironmentSettings({ requireClassification: true })
+    await result.current.listEnvironmentSuggestions()
+    await result.current.assignEnvironments({
+      assignments: [
+        { resourceKind: 'gateway', resourceId: 'gateway_1', environment: 'production' },
+      ],
+    })
+    await result.current.listEnvironmentFindings('gateway_1')
+
+    expect(fetchMock.mock.calls.map(([url]) => String(url).replace(/^https?:\/\/[^/]+/, ''))).toEqual([
+      '/api/v1/environment-catalog',
+      '/api/v1/environment-catalog/environments',
+      '/api/v1/environment-catalog/environments/prod2',
+      '/api/v1/environment-catalog/environments/prod2',
+      '/api/v1/environment-catalog/settings',
+      '/api/v1/environment-suggestions',
+      '/api/v1/environment-assignments',
+      '/api/v1/environment-findings?gatewayId=gateway_1',
+    ])
+    expect(fetchMock.mock.calls.map(([, options]) => options.method ?? 'GET')).toEqual([
+      'GET',
+      'POST',
+      'PATCH',
+      'DELETE',
+      'PATCH',
+      'GET',
+      'POST',
+      'GET',
+    ])
+    expect(JSON.parse(String(fetchMock.mock.calls[6][1].body))).toEqual({
+      assignments: [
+        { resourceKind: 'gateway', resourceId: 'gateway_1', environment: 'production' },
+      ],
+    })
+  })
+
 })

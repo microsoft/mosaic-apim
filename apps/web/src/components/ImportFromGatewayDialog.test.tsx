@@ -7,7 +7,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Gateway, ModelApiCandidateList } from '../types'
 import { ImportFromGatewayDialog } from './ImportFromGatewayDialog'
 
-const api = { listGateways: vi.fn(), listImportableApis: vi.fn(), importModelApis: vi.fn() }
+const api = {
+  listGateways: vi.fn(),
+  listImportableApis: vi.fn(),
+  importModelApis: vi.fn(),
+  listEnvironmentFindings: vi.fn(),
+}
 vi.mock('../api', () => ({ useMosaicApi: () => api }))
 
 const gateway: Gateway = {
@@ -21,6 +26,7 @@ const gateway: Gateway = {
   subscriptionId: '00000000-0000-0000-0000-000000000000',
   resourceGroup: 'rg-test',
   serviceName: 'apim-test',
+  environment: 'development',
   environmentLabel: 'dev',
   managementMode: 'observe',
   status: 'connected',
@@ -150,6 +156,11 @@ describe('ImportFromGatewayDialog', () => {
     api.listGateways.mockResolvedValue([gateway])
     api.listImportableApis.mockResolvedValue(importable)
     api.importModelApis.mockResolvedValue([])
+    api.listEnvironmentFindings.mockResolvedValue({
+      items: [],
+      limitations: [],
+      generatedAt: '2026-09-01T12:00:00Z',
+    })
   })
 
   it('keeps focus on Import while it works, without letting it be pressed again', async () => {

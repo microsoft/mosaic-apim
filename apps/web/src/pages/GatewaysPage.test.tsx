@@ -6,6 +6,27 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { GatewaysPage } from './GatewaysPage'
 import type { Gateway, GatewaySuggestion } from '../types'
 
+const environmentCatalog = {
+  environments: [
+    {
+      key: 'development',
+      displayName: 'Development',
+      description: null,
+      color: 'brand',
+      production: false,
+      aliases: [],
+      acceptsEndpointsFrom: [],
+      order: 10,
+      builtIn: true,
+      usage: { gateways: 0, modelEndpoints: 0, mcpEndpoints: 0 },
+    },
+  ],
+  requireClassification: false,
+  unclassified: { gateways: 0, modelEndpoints: 0, mcpEndpoints: 0 },
+  compatibility: [],
+  updatedAt: null,
+}
+
 const RESOURCE_ID =
   '/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-contoso-dev' +
   '/providers/Microsoft.ApiManagement/service/apim-contoso-dev'
@@ -20,6 +41,8 @@ function gateway(overrides: Partial<Gateway> = {}): Gateway {
     subscriptionId: '00000000-0000-0000-0000-000000000000',
     resourceGroup: 'rg-contoso-dev',
     serviceName: 'apim-contoso-dev',
+    environment: null,
+    azureEnvironmentTag: null,
     environmentLabel: 'dev',
     managementMode: 'observe',
     status: 'connected',
@@ -93,6 +116,7 @@ const api = {
   syncGateway: vi.fn(),
   preflightGateway: vi.fn(),
   deleteGateway: vi.fn(),
+  getEnvironmentCatalog: vi.fn(),
 }
 
 vi.mock('../api', () => ({
@@ -118,6 +142,7 @@ describe('GatewaysPage', () => {
     vi.clearAllMocks()
     api.listGateways.mockResolvedValue([])
     api.listSuggestedGateways.mockResolvedValue([])
+    api.getEnvironmentCatalog.mockResolvedValue(environmentCatalog)
   })
 
   it('explains that MOSAIC observes rather than changes the gateway', async () => {
@@ -155,7 +180,8 @@ describe('GatewaysPage', () => {
   async function onboard(user: ReturnType<typeof userEvent.setup>) {
     await user.click(await screen.findByRole('button', { name: 'Onboard gateway' }))
     const input = await screen.findByRole('textbox', { name: /API Management resource ID/ })
-    await user.type(input, RESOURCE_ID)
+    await user.click(input)
+    await user.paste(RESOURCE_ID)
     await user.click(screen.getByRole('button', { name: 'Check access and onboard' }))
   }
 
@@ -170,7 +196,7 @@ describe('GatewaysPage', () => {
     expect(api.registerGateway.mock.calls[0][0]).toEqual({
       azureResourceId: RESOURCE_ID,
       name: undefined,
-      environmentLabel: undefined,
+      environment: 'development',
     })
   })
 

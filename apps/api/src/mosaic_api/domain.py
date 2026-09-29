@@ -425,7 +425,13 @@ class Gateway(Entity):
     subscription_id: str
     resource_group: str
     service_name: str
-    environment_label: str | None = None
+    environment_label: str | None = Field(
+        default=None,
+        description="Deprecated: free-text legacy label. Use environment.",
+        json_schema_extra={"deprecated": True},
+    )
+    environment: str | None = None
+    azure_environment_tag: str | None = None
     management_mode: ManagementMode = ManagementMode.OBSERVE
     status: GatewayStatus = GatewayStatus.PENDING
     access: GatewayAccess = Field(default_factory=GatewayAccess)
@@ -669,7 +675,13 @@ class ModelEndpoint(Entity):
     resource_group: str | None = None
     account_name: str | None = None
     project_name: str | None = None
-    environment_label: str | None = None
+    environment_label: str | None = Field(
+        default=None,
+        description="Deprecated: free-text legacy label. Use environment.",
+        json_schema_extra={"deprecated": True},
+    )
+    environment: str | None = None
+    azure_environment_tag: str | None = None
     auth_mode: EndpointAuthMode = EndpointAuthMode.MANAGED_IDENTITY
     credential_reference_id: str | None = None
     status: ModelEndpointStatus = ModelEndpointStatus.PENDING
@@ -930,7 +942,12 @@ class McpEndpoint(Entity):
     entity_type: Literal["mcpEndpoint"] = "mcpEndpoint"
     name: str
     endpoint: AnyHttpUrl
-    environment_label: str | None = None
+    environment_label: str | None = Field(
+        default=None,
+        description="Deprecated: free-text legacy label. Use environment.",
+        json_schema_extra={"deprecated": True},
+    )
+    environment: str | None = None
     auth_mode: McpAuthMode = McpAuthMode.NONE
     credential_reference_id: str | None = None
     resource_audience: str | None = Field(
@@ -1224,6 +1241,7 @@ class ResolvedEntitlement(MosaicModel):
     via: GrantPath
     via_group_id: str | None = None
     via_group_name: str | None = None
+    resource_summary: "ResourceSummary | None" = None
 
 
 class AccessRequestState(StrEnum):
@@ -1239,6 +1257,8 @@ class AccessRequest(Entity):
     requester_principal_id: str | None = None
     resource: EntitlementResource
     justification: str | None = None
+    requested_environment: str | None = None
+    resource_snapshot: "AccessRequestResourceSnapshot | None" = None
     state: AccessRequestState = AccessRequestState.PENDING
     decided_by_object_id: str | None = None
     decided_at: datetime | None = None
@@ -1264,6 +1284,28 @@ class AccessRequestApproval(AccessRequestDecision):
     """
 
     enforcement: EntitlementEnforcement | None = None
+    confirmed_environment: str | None = None
+
+
+class AccessRequestResourceSnapshot(MosaicModel):
+    display_name: str | None = None
+    gateway_id: str | None = None
+    gateway_name: str | None = None
+
+
+class ResourceSummary(MosaicModel):
+    kind: EntitlementResourceKind
+    id: str
+    scope_id: str | None = None
+    display_name: str | None = None
+    gateway_id: str | None = None
+    gateway_name: str | None = None
+    environment: str | None = None
+    available: bool = False
+
+
+class AdminAccessRequestListItem(AccessRequest):
+    resource_summary: ResourceSummary | None = None
 
 
 class CatalogEntryKind(StrEnum):
@@ -1284,6 +1326,7 @@ class CatalogEntry(MosaicModel):
     summary: str | None = None
     gateway_id: str
     gateway_name: str | None = None
+    environment: str | None = None
     entitled: bool = False
     request_state: AccessRequestState | None = None
 
@@ -1305,10 +1348,13 @@ class PortalAccessRequest(AccessRequest):
 
     The name is derived when the request is read and never persisted, which is why it lives on this
     response model rather than on :class:`AccessRequest`. It follows the same rules as
-    :class:`PortalResolvedEntitlement`.
+    :class:`PortalResolvedEntitlement`. ``resource_summary`` is derived when read too: live gateway
+    and environment details for a resource the caller can still see, and otherwise only what the
+    request recorded when it was made.
     """
 
     resource_display_name: str | None = None
+    resource_summary: ResourceSummary | None = None
 
 
 class PortalProfile(MosaicModel):
@@ -1580,7 +1626,13 @@ class GroupUpdate(MosaicModel):
 class GatewayCreate(MosaicModel):
     azure_resource_id: str = Field(min_length=1, max_length=512)
     name: str | None = Field(default=None, max_length=120)
-    environment_label: str | None = Field(default=None, max_length=60)
+    environment_label: str | None = Field(
+        default=None,
+        max_length=60,
+        description="Deprecated: free-text legacy label. Use environment.",
+        json_schema_extra={"deprecated": True},
+    )
+    environment: str | None = None
     provider: GatewayProvider = GatewayProvider.APIM
 
     @field_validator("azure_resource_id")
@@ -1591,7 +1643,12 @@ class GatewayCreate(MosaicModel):
 
 class GatewayUpdate(MosaicModel):
     name: str | None = Field(default=None, min_length=1, max_length=120)
-    environment_label: str | None = Field(default=None, max_length=60)
+    environment_label: str | None = Field(
+        default=None,
+        max_length=60,
+        description="Deprecated: free-text legacy label. Use environment.",
+        json_schema_extra={"deprecated": True},
+    )
     management_mode: ManagementMode | None = None
 
     @field_validator("name")
@@ -1607,6 +1664,8 @@ class GatewaySuggestion(MosaicModel):
     service_name: str
     resource_group: str
     subscription_id: str
+    azure_environment_tag: str | None = None
+    suggested_environment: str | None = None
     already_registered: bool
     gateway_id: str | None = None
     reason: str
@@ -1622,7 +1681,13 @@ class ModelEndpointCreate(MosaicModel):
     azure_resource_id: str | None = Field(default=None, max_length=512)
     endpoint: AnyHttpUrl | None = None
     name: str | None = Field(default=None, max_length=120)
-    environment_label: str | None = Field(default=None, max_length=60)
+    environment_label: str | None = Field(
+        default=None,
+        max_length=60,
+        description="Deprecated: free-text legacy label. Use environment.",
+        json_schema_extra={"deprecated": True},
+    )
+    environment: str | None = None
     provider: ModelProvider | None = None
     credential_secret_uri: AnyHttpUrl | None = None
 
@@ -1657,7 +1722,12 @@ class ModelEndpointCreate(MosaicModel):
 
 class ModelEndpointUpdate(MosaicModel):
     name: str | None = Field(default=None, min_length=1, max_length=120)
-    environment_label: str | None = Field(default=None, max_length=60)
+    environment_label: str | None = Field(
+        default=None,
+        max_length=60,
+        description="Deprecated: free-text legacy label. Use environment.",
+        json_schema_extra={"deprecated": True},
+    )
     credential_secret_uri: AnyHttpUrl | None = None
 
     @field_validator("name")
@@ -1680,7 +1750,13 @@ class McpEndpointCreate(MosaicModel):
 
     endpoint: AnyHttpUrl
     name: str | None = Field(default=None, max_length=120)
-    environment_label: str | None = Field(default=None, max_length=60)
+    environment_label: str | None = Field(
+        default=None,
+        max_length=60,
+        description="Deprecated: free-text legacy label. Use environment.",
+        json_schema_extra={"deprecated": True},
+    )
+    environment: str | None = None
     auth_mode: McpAuthMode | None = None
     credential_secret_uri: AnyHttpUrl | None = None
     resource_audience: str | None = Field(default=None, max_length=512)
@@ -1713,7 +1789,12 @@ class McpEndpointCreate(MosaicModel):
 
 class McpEndpointUpdate(MosaicModel):
     name: str | None = Field(default=None, min_length=1, max_length=120)
-    environment_label: str | None = Field(default=None, max_length=60)
+    environment_label: str | None = Field(
+        default=None,
+        max_length=60,
+        description="Deprecated: free-text legacy label. Use environment.",
+        json_schema_extra={"deprecated": True},
+    )
     credential_secret_uri: AnyHttpUrl | None = None
     resource_audience: str | None = Field(default=None, max_length=512)
 
@@ -1749,6 +1830,8 @@ class ModelEndpointSuggestion(MosaicModel):
     kind: str | None = None
     location: str | None = None
     provider: ModelProvider | None = None
+    azure_environment_tag: str | None = None
+    suggested_environment: str | None = None
     already_registered: bool = False
     model_endpoint_id: str | None = None
     reason: str
@@ -2155,6 +2238,26 @@ class DeploymentCapability(StrEnum):
     UNKNOWN = "unknown"
 
 
+class VerdictLevel(StrEnum):
+    ALLOWED = "allowed"
+    WARNING = "warning"
+    BLOCKED = "blocked"
+
+
+class EnvironmentVerdict(MosaicModel):
+    """Whether a gateway in one environment may front an endpoint in another, and why.
+
+    Defined here rather than in ``environments`` so publishing models can carry it without an
+    import cycle; ``mosaic_api.environments`` re-exports it with the compatibility rules.
+    """
+
+    level: VerdictLevel
+    reason: str
+    gateway_environment: str | None
+    endpoint_environment: str | None
+    via_exception: bool = False
+
+
 class PublishableModel(MosaicModel):
     """A deployment on a registered endpoint that could be published through a given gateway.
 
@@ -2185,3 +2288,4 @@ class PublishableModel(MosaicModel):
     suggested_api_name: str = ""
     suggested_api_path: str = ""
     runtime_access: GatewayRuntimeAccess | None = None
+    environment_verdict: EnvironmentVerdict
