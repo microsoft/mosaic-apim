@@ -93,6 +93,15 @@ tests and README or ADR updates wherever a decision changes.
 | G12 | Endpoint settings leave out the Key authentication row and its note when an account doesn't set `disableLocalAuth`. Azure leaves it unset by default, which means keys are enabled, so both Azure OpenAI targets showed nothing (O8). Found live in Phase 3 | Treat an unset value on a readable account as Enabled, and add the note | 🔄 committed, waiting on push access |
 | G13 | **No model can be published.** The default publish plan creates the policy fragment before the backend its `set-backend-service` names. APIM accepts the fragment PUT, then its validation fails it: "Backend with id '…' could not be found." The run rolls back, so API Management is left unchanged. The console shows only "The Azure operation did not succeed", because MOSAIC drops Azure's error when it polls the operation. The governed-access plan already creates the backend first. Also, the fragment PUT is long-running even when it updates an existing fragment (its 200 carries a poll header too), but MOSAIC polls only 201 and 202. So a fragment update that APIM rejects would be reported as success, which matters for governed access and every later re-apply. Found live in Phase 5 (A8) | Create the backend before the fragment, which also makes teardown remove the fragment first. Refuse to apply a plan saved in the old order, and ask for a re-plan. Show Azure's reason when an operation fails, and when a request is refused outright. Poll any write response that carries a poll header. Make the test fake of APIM validate fragments the way APIM does | 🔄 first commit done; adding update polling and synchronous reasons |
 
+The open fixes combine cleanly. #25, G13's first commit, G9, G12, G10 and G11 were merged onto
+`main` locally, in that order. The only conflict is G10 against G11, in the import block of
+`apps/api/tests/test_model_endpoint_api.py`. Whichever of the two merges second keeps both import
+lists. On the combined tree:
+
+- The API passes ruff, mypy and 956 tests.
+- The web app passes 213 tests, typecheck, lint and build.
+- The script tests pass.
+
 ## Phases
 
 ### Phase 0: Baseline and discovery ✅
@@ -241,8 +250,9 @@ Progress on the new build (G7 and G8 deployed):
   - An azd environment rebuilt from live values needs `MOSAIC_PYTHON_INDEX_URL` set, as the README
     says. Left empty, the build argument overrides the Dockerfile's default package index.
   - Not in this deploy: the dialog fix for O4 ([#25](https://github.com/microsoft/mosaic-apim/pull/25),
-    still open) and G9. Both change only the web and portal apps, so once merged they go out
-    together in a web and portal deploy.
+    still open), and G9 to G13. #25 and G9 change only the web and portal apps. G10 to G13 also
+    change the API, and G13 is needed before anything can publish. Once they're merged, they go
+    out together in one redeploy of the API, web and portal, after approval.
 - **Exit:** the deployed build contains G1 to G5, G7 and G8, and the smoke specs pass.
 
 ### Phase 5: Live, admin publishes (A7 to A9) 🔄 A7 done; A8 blocked by G13
