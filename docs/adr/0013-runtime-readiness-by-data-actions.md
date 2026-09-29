@@ -149,7 +149,10 @@ only what is certain:
 - **Unknown:** MOSAIC cannot read the resource, so the role verdict stands alone.
 
 The Models page's Access card shows these settings in an **Endpoint settings** section, between
-MOSAIC's own access and the gateway verdicts.
+MOSAIC's own access and the gateway verdicts. The section also shows key authentication, read from
+the account's `disableLocalAuth`. Azure omits that property when it was never set, and its default
+is `false`, so an absent or `null` value reads as *Enabled*. A value that is not a boolean, or an
+account MOSAIC cannot read, leaves it unknown and the row is hidden.
 
 **Recommendations follow the same rules, and must pass them.**
 

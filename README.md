@@ -561,7 +561,8 @@ On the Models page, select an endpoint to open its **Access** card.
     command. MOSAIC never runs the command itself.
 - **Endpoint settings**, above the gateway verdicts, shows the resource kind, public network access,
   firewall, and key authentication. Those settings decide whether a gateway can reach the endpoint
-  at all.
+  at all. Azure omits `disableLocalAuth` from accounts where it was never set, and its default is
+  `false`, so MOSAIC shows an unset value as key authentication *Enabled*.
 
 Every role whose name begins `Cognitive Services` or `Foundry` that grants control-plane deployment
 read also grants data-plane inference, and most also grant `listKeys`. `Reader` is the only built-in
