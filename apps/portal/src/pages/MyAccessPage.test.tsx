@@ -169,4 +169,58 @@ describe('MyAccessPage', () => {
     expect(api.getMyEntitlementConnection).not.toHaveBeenCalled()
     expect(api.revealMyEntitlementKey).not.toHaveBeenCalled()
   })
+
+  it('heads each grant with the name the catalog shows and keeps its kind visible', async () => {
+    renderPage([
+      {
+        entitlement: baseEntitlement,
+        via: 'group',
+        viaGroupId: 'group-1',
+        viaGroupName: 'Platform engineering',
+        resourceDisplayName: 'Chat model',
+      },
+      {
+        entitlement: {
+          ...baseEntitlement,
+          id: 'mcp-grant',
+          subject: { kind: 'user', id: 'user-1' },
+          resource: { kind: 'mcpServer', id: 'docs-mcp', scopeId: 'gateway-1' },
+        },
+        via: 'direct',
+        viaGroupId: null,
+        viaGroupName: null,
+        resourceDisplayName: 'Docs search',
+      },
+    ])
+
+    expect(await screen.findByRole('heading', { level: 2, name: 'Chat model' })).toBeVisible()
+    expect(screen.getByText('Model API · Granted through Platform engineering')).toBeVisible()
+    expect(screen.getByRole('heading', { level: 2, name: 'Docs search' })).toBeVisible()
+    expect(screen.getByText('MCP server · Granted directly to you')).toBeVisible()
+    expect(screen.queryByText(/chat-completions|docs-mcp/)).not.toBeInTheDocument()
+  })
+
+  it.each([
+    ['an older API omits the name', {}],
+    ['the API cannot resolve the name', { resourceDisplayName: null }],
+    ['the API sends a blank name', { resourceDisplayName: '  ' }],
+  ] satisfies [string, Partial<ResolvedEntitlement>][])(
+    'falls back to the kind and ID when %s',
+    async (_, name) => {
+      renderPage([
+        {
+          entitlement: baseEntitlement,
+          via: 'group',
+          viaGroupId: 'group-1',
+          viaGroupName: 'Platform engineering',
+          ...name,
+        },
+      ])
+
+      expect(
+        await screen.findByRole('heading', { level: 2, name: 'Model API chat-completions' }),
+      ).toBeVisible()
+      expect(screen.getByText('Granted through Platform engineering')).toBeVisible()
+    },
+  )
 })

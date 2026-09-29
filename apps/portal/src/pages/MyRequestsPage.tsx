@@ -4,7 +4,7 @@ import { Link } from 'react-router-dom'
 import { usePortalApi } from '../api'
 import { EmptyState, ErrorState, Loading } from '../components/AsyncState'
 import { PageHeader } from '../components/PageHeader'
-import { requestStateLabel, resourceLabel } from '../entitlement-format'
+import { requestStateLabel, resourceTitle, withResourceKind } from '../entitlement-format'
 import type { AccessRequest } from '../types'
 
 function GrantStatus({ request }: { request: AccessRequest }) {
@@ -52,8 +52,12 @@ export function MyRequestsPage() {
           {requests.data.map((request) => (
             <Card key={request.id} className="request-card">
               <CardHeader
-                header={<h2>{resourceLabel(request.resource)}</h2>}
-                description={`Opened ${new Date(request.createdAt).toLocaleDateString()}`}
+                header={<h2>{resourceTitle(request.resource, request.resourceDisplayName)}</h2>}
+                description={withResourceKind(
+                  request.resource,
+                  request.resourceDisplayName,
+                  `Opened ${new Date(request.createdAt).toLocaleDateString()}`,
+                )}
                 action={<Badge appearance="tint">{requestStateLabel(request.state)}</Badge>}
               />
               <dl className="metadata-list">

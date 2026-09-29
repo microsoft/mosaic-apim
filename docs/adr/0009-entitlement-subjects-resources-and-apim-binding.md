@@ -8,6 +8,15 @@ the desired-state-only behavior described here. A trusted `orchestrated` binding
 server-produced, never evidence a client may supply to obtain a key. Approving an access request
 now creates and links the requester's grant; see *Access requests close the loop*.
 
+**Update:** The portal names each grant and access request the way the catalog names its
+resource. `GET /api/v1/portal/entitlements` and the portal's access-request responses carry an
+optional `resourceDisplayName`, resolved by the API for the caller's own grants and requests only,
+with one list read per resource kind (per gateway or model endpoint for observed resources) rather
+than one per row. The browser does not join against the catalog, because the catalog omits
+`private` resources and never lists products or model deployments, yet grants to them and requests
+for them remain. The name is null when the resource no longer exists, and the portal then falls
+back to the resource's kind and ID. Administrative responses are unchanged.
+
 ## Context
 
 `Entitlement` existed in the domain but had no routes, no service, and no repository. Nothing ever

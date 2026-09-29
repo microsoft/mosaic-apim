@@ -6,7 +6,7 @@ product or subscription that realizes a grant, because gateway telemetry is keye
 subscription and a grant with no binding cannot be joined to a usage row.
 """
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
@@ -230,6 +230,54 @@ class EntitlementService:
             "MOSAIC does not govern the resource named by this entitlement",
             details={"resourceKind": str(resource.kind), "resourceId": resource.id},
         )
+
+    async def resource_display_names(
+        self, actor: Actor, resources: Sequence[EntitlementResource]
+    ) -> list[str | None]:
+        """Name many resources at once, in the order given, for a list a person will read.
+
+        Each name comes from the record :meth:`_describe_resource` reads for the same reference,
+        so it is the name the catalog and the administrator console show. Reads are batched: one
+        per desired-state kind, and one per gateway or model endpoint for observed resources,
+        however many references there are. A resource that no longer exists, or whose name is
+        blank, is ``None`` rather than an error, because a grant or request can outlive the
+        resource it names.
+
+        Only the resources passed in are named, so a caller that passes its own grants and
+        requests learns nothing about anything else.
+        """
+
+        keys = [_resource_key(resource) for resource in resources]
+        kinds = {kind for kind, _, _ in keys}
+        # Desired-state records carry their own gateway, so a scope never distinguishes them.
+        desired: dict[tuple[str, str], str] = {}
+        if "modelApi" in kinds:
+            for model_api in await self._gateways.list_model_apis(actor.tenant_id):
+                desired[("modelApi", model_api.id)] = model_api.display_name
+        if "mcpServer" in kinds:
+            for mcp_server in await self._gateways.list_mcp_servers(actor.tenant_id):
+                desired[("mcpServer", mcp_server.id)] = mcp_server.display_name
+
+        observed: dict[tuple[str, str, str], str] = {}
+        for scope_id in {scope for kind, _, scope in keys if kind == "product" and scope}:
+            for product in await self._gateways.list_observed(
+                ObservedProduct, actor.tenant_id, scope_id, "observedProduct"
+            ):
+                observed[("product", product.id, scope_id)] = product.display_name
+        for scope_id in {scope for kind, _, scope in keys if kind == "modelDeployment" and scope}:
+            for deployment in await self._endpoints.list_observed_for_endpoint(
+                ObservedModelDeployment, actor.tenant_id, scope_id, "observedModelDeployment"
+            ):
+                observed[("modelDeployment", deployment.id, scope_id)] = deployment.deployment_name
+
+        names: list[str | None] = []
+        for kind, resource_id, scope_id in keys:
+            if kind in {"modelApi", "mcpServer"}:
+                name = desired.get((kind, resource_id))
+            else:
+                name = observed.get((kind, resource_id, scope_id))
+            names.append(name if name and name.strip() else None)
+        return names
 
     # ------------------------------------------------------------------ binding
 

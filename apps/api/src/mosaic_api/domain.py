@@ -1274,6 +1274,29 @@ class CatalogEntry(MosaicModel):
     request_state: AccessRequestState | None = None
 
 
+class PortalResolvedEntitlement(ResolvedEntitlement):
+    """One of the caller's grants, named the way the catalog names the resource.
+
+    The name is resolved for every grant the caller holds, including one over a resource the
+    catalog does not list, because hiding a resource from the catalog does not revoke access to it.
+    ``resource_display_name`` is null only when MOSAIC can no longer resolve the resource — for
+    example because it was deleted after the grant was made.
+    """
+
+    resource_display_name: str | None = None
+
+
+class PortalAccessRequest(AccessRequest):
+    """One of the caller's access requests, named the way the catalog names the resource.
+
+    The name is derived when the request is read and never persisted, which is why it lives on this
+    response model rather than on :class:`AccessRequest`. It follows the same rules as
+    :class:`PortalResolvedEntitlement`.
+    """
+
+    resource_display_name: str | None = None
+
+
 class PortalProfile(MosaicModel):
     """Who the caller is, as the portal understands them.
 
