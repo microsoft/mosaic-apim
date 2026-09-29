@@ -50,7 +50,7 @@ Services, a Developer-tier (classic) APIM with a system-assigned identity, and C
 | `admin` | Admin | Drives every console journey |
 | `user` (member) | User, assigned in Phase 2 | Gets grants directly; calls models by key and by Entra token |
 | `noRole` (member) | None | Portal denial first (P1); then requests access and is approved |
-| `guest` (B2B) | User | Cross-tenant sign-in; holds only User, so the console must withhold admin data (A1) |
+| `guest` (B2B) | User | Cross-tenant sign-in; holds only User, so the console must withhold admin data (A1). The first to request access (P2, P4, A13) |
 | `outsider` (member) | None | Never granted anything; every runtime call must be denied |
 | Workload application | `Models.Invoke.Application` | Client-credentials token plus an admin-handed-off key |
 
@@ -369,13 +369,14 @@ Progress:
   principal with this Entra object ID already exists".
 - ⏳ A10, workload: waiting for the workload app registration (Phase 2).
 
-### Phase 7: Live, end-user portal (P1 to P8, A13) 🔄 P1 and P8 done
+### Phase 7: Live, end-user portal (P1 to P8, A13) 🔄 P0 to P2, P4 and P8 done; A13 waits for A11
 
-- The `noRole` persona is denied cleanly. After getting the User role it sees an empty My access
-  view and the catalog.
+- The `noRole` persona is denied cleanly. A persona with the User role and no grants sees an
+  empty My access view and the catalog.
 - That persona requests access with a justification, withdraws the request and requests again.
   The admin approves it, which creates grant intent (G2), and reviews and applies it. The persona
-  then sees the grant.
+  then sees the grant. The `guest` persona already has the User role and isn't registered in
+  MOSAIC, so it runs these steps without another tenant change.
 - The `user` persona sees its grants, limits and connection details (G3). Primary and secondary
   key reveal is masked, transient and never cached.
 - Users are isolated from each other: another user's entitlement ID returns 403 or 404.
@@ -403,6 +404,23 @@ Progress:
     section.
   - Once G14 ([#31](https://github.com/microsoft/mosaic-apim/pull/31)) is deployed, A1's smoke
     spec must assert the console's new denial instead of the per-section error.
+- ✅ P2: after A8 and A9, the `guest` persona's My access still shows "No access granted yet",
+  and its catalog lists every Discoverable model with **Request access**.
+- ✅ P4: the `guest` persona requested AOAI B `gpt-4o-mini` with a justification. The card
+  switched to "A request is already open." with **Withdraw**, and My requests listed the request
+  as Pending with its justification. **Withdraw** there marked it Withdrawn and removed the
+  button, and the catalog card offered **Request access** again. A second request, with a new
+  justification, is Pending above the withdrawn one. No step logged a browser error.
+  - My requests names both requests "Model API" followed by an internal ID, not the model's name
+    (O15).
+- ⏳ A13: the console's Entitlements page counts one pending request and lists it with
+  **Approve** and **Deny**. The resource shows the endpoint and deployment names followed by
+  "(model API)", and the requester shows as an object ID, because MOSAIC hasn't registered the
+  `guest` persona. The
+  request stays pending until governed access is set on that publication (A11). Approving then
+  takes the path that sends the admin to review and apply the model plan. Approving now would
+  only record desired state, which MOSAIC says it doesn't apply for a publication without
+  governed access.
 
 ### Phase 8: Runtime verification (R1 to R8, A14) 🔄 verifier ready
 
@@ -475,7 +493,7 @@ has passed, and ❌ means the latest run failed on the product gap named.
 | A10 | Identity entries exist for the `user` persona and the workload; a duplicate is rejected | 6 | 🔄 |
 | A11 | Governed access with keys, Entra and limits is reviewed and applied, and the applied state shows | 6 | ⬜ |
 | A12 | Workload connection details and key handoff work, and the key is never logged | 6 | ⬜ |
-| A13 | Approving an access request creates grant intent, which is then reviewed and applied (G2) | 7 | ⬜ |
+| A13 | Approving an access request creates grant intent, which is then reviewed and applied (G2) | 7 | 🔄 |
 | A14 | Disable, revoke and method toggles go through review and apply | 8 | ⬜ |
 | A15 | Unpublishing removes only what MOSAIC created | 9 | ⬜ |
 
@@ -485,9 +503,9 @@ has passed, and ❌ means the latest run failed on the product gap named.
 | --- | --- | --- | --- |
 | P0 | A User persona reaches My access and the catalog | 1 | ✅ |
 | P1 | A persona without a MOSAIC role gets a clean denial with a sign-out option | 1, 7 | ✅ |
-| P2 | With the role but no grants, My access shows its empty state and the catalog is visible | 7 | ⬜ |
+| P2 | With the role but no grants, My access shows its empty state and the catalog is visible | 7 | ✅ |
 | P3 | My access shows applied grants, limits and attribution | 7 | ⬜ |
-| P4 | A request with a justification can be withdrawn and requested again | 7 | ⬜ |
+| P4 | A request with a justification can be withdrawn and requested again | 7 | ✅ |
 | P5 | After approval and apply, the requester sees the grant | 7 | ⬜ |
 | P6 | Connection details appear, and key reveal is masked, transient and uncached (G3) | 7 | ⬜ |
 | P7 | Another user's entitlement ID returns 403 or 404 | 7 | ⬜ |
@@ -527,6 +545,7 @@ be confirmed, or fixed, once the journeys that exercise them have run.
 | O12 | When MOSAIC creates a product, APIM subscribes its own Administrator to it. So each publication without governed access has a second subscription whose key can call the model, besides APIM's all-access key. The activity log shows MOSAIC wrote only its own subscription. APIM's two built-in products got the same subscription when the gateway was created | Governed access already accepts only direct-grant subscriptions, and unpublishing deletes the product with all its subscriptions. In Phase 8, check that APIM's all-access key, the Administrator's key and MOSAIC's bootstrap key are all refused on a governed publication. Reading those keys is a secret read, so it needs approval. MOSAIC could also disable the automatic subscription, or show it in the plan |
 | O13 | When a plan saved in the old order is refused, the review repeats the refusal, "…Re-plan this publication and review the new order before applying.", above a plan the console has already re-planned | Being fixed with G16 |
 | O14 | Every model in the portal catalog reads "No summary provided." The API accepts a summary for each catalog entry, and the portal shows it, but the console offers only the visibility select | Let the admin write a summary in the console, or fill a default from the endpoint, model and API shape |
+| O15 | The portal's My requests page heads each request "Model API" and an internal ID, where the catalog shows the model's name. Someone with several requests can't tell them apart. The console's list of pending requests does show the name | Show the catalog's display name on each request |
 
 The Phase 3 check on whether the gateway role recommendation narrows once the account kind is
 known led to G8: it does narrow, and the check then rejects the broader role it recommended
