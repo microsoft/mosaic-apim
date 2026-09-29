@@ -1,6 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { Profiler, useState } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { PublishModelDialog } from './PublishModelDialog'
 import type { Gateway, Publication, PublishableModel, PublishPlan, PublishRun } from '../types'
@@ -97,6 +98,84 @@ async function advanceToReview(user: ReturnType<typeof userEvent.setup>) {
   await user.click(await screen.findByRole('checkbox', { name: 'Publish gpt-4o-prod' }))
   await user.click(screen.getByRole('button', { name: 'Configure' }))
   await user.click(screen.getByRole('button', { name: 'Review plan' }))
+}
+
+type Review = { publication: Publication; plan: PublishPlan; message?: string }
+
+// What the dialog showed when React committed a render.
+type Frame = { title?: string; step?: string; choosing: boolean; text: string }
+
+// Profiler calls onRender as React commits, after it updates the DOM but before useEffect callbacks run,
+// so this records even a frame that an effect replaces straight away, which no query after the render
+// can see.
+function recordFrame(frames: Frame[]) {
+  const dialog = document.querySelector('[role="dialog"]')
+  if (!dialog) return
+  const text = dialog.textContent ?? ''
+  frames.push({
+    title: dialog.querySelector('h2')?.textContent ?? undefined,
+    step: text.match(/Step \d of 4/)?.[0],
+    choosing: dialog.querySelector('select[aria-label="Gateway"], [aria-label="Publishable models"]') !== null,
+    text,
+  })
+}
+
+// Opens the dialog the way its parents do. The dialog stays mounted while closed. It opens when the parent
+// sets a review, as EntitlementsPage and ModelsPage do, or to publish a model, as the Models page's publish
+// button does. Closing clears it.
+function DialogParent({
+  reviews,
+  frames,
+  onPublished,
+}: {
+  reviews: Review[]
+  frames: Frame[]
+  onPublished: (message: string) => void
+}) {
+  const [opened, setOpened] = useState<{ review: Review | null } | null>(null)
+  return (
+    <>
+      <button type="button" onClick={() => setOpened({ review: null })}>Start publishing</button>
+      {reviews.map((review, index) => (
+        <button key={index} type="button" onClick={() => setOpened({ review })}>
+          Open review {index + 1}
+        </button>
+      ))}
+      <Profiler id="publish-model-dialog" onRender={() => recordFrame(frames)}>
+        <PublishModelDialog
+          open={opened !== null}
+          initialReview={opened?.review}
+          onClose={() => setOpened(null)}
+          onPublished={onPublished}
+        />
+      </Profiler>
+    </>
+  )
+}
+
+function renderDialogParent(reviews: Review[] = [], onPublished = vi.fn()) {
+  const frames: Frame[] = []
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  render(
+    <QueryClientProvider client={queryClient}>
+      <DialogParent reviews={reviews} frames={frames} onPublished={onPublished} />
+    </QueryClientProvider>,
+  )
+  return frames
+}
+
+const secondReview: Review = {
+  publication: { ...modelPublication, id: 'pub_2', displayName: 'Second chat' },
+  plan: {
+    ...accessPlan,
+    id: 'access-plan-2',
+    publicationId: 'pub_2',
+    accessSnapshot: {
+      ...accessSnapshot,
+      grants: [{ ...accessSnapshot.grants[0], entitlementId: 'second_grant', displayName: 'Grace Hopper' }],
+    },
+  },
+  message: 'The earlier plan was rejected. Review the refreshed plan before applying it.',
 }
 
 describe('PublishModelDialog', () => {
@@ -320,6 +399,58 @@ describe('PublishModelDialog', () => {
     expect(api.applyPublishPlan).not.toHaveBeenCalled()
   })
 
+  it('says plainly when API Management already matches the publication and offers nothing to apply', async () => {
+    const unchanged: PublishPlan = {
+      ...plan,
+      steps: [{ ...plan.steps[0], action: 'noChange', reason: 'The API already matches this publication.', existed: true }],
+    }
+    renderDialog({ publication, plan: unchanged })
+
+    expect(
+      await screen.findByText('API Management already matches this publication. Nothing to apply.'),
+    ).toBeVisible()
+    expect(within(screen.getByRole('table', { name: 'Publish plan steps' })).getByText('No change')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Apply plan' })).toBeDisabled()
+  })
+
+  it('offers Apply plan when any step would change API Management', async () => {
+    const mixed: PublishPlan = {
+      ...plan,
+      steps: [
+        { ...plan.steps[0], action: 'noChange', reason: 'The API already matches this publication.', existed: true },
+        { ...plan.steps[0], kind: 'product', name: 'product', action: 'update', reason: 'Replace the product that carries this API.', existed: true },
+      ],
+    }
+    renderDialog({ publication, plan: mixed })
+
+    expect(await screen.findByRole('button', { name: 'Apply plan' })).toBeEnabled()
+    expect(screen.queryByText(/Nothing to apply/)).not.toBeInTheDocument()
+  })
+
+  it('says MOSAIC refused the reviewed plan, and why, above the fresh plan it made instead', async () => {
+    const user = userEvent.setup()
+    const refusal =
+      'This plan does not create resources in the order MOSAIC now uses, so API Management could reject a step that ' +
+      'names a resource not created yet. Re-plan this publication and review the new order before applying.'
+    api.applyPublishPlan.mockRejectedValueOnce(Object.assign(new Error(refusal), { status: 409 }))
+    api.createPublishPlan.mockResolvedValueOnce({ ...plan, id: 'plan_2' })
+    renderDialog({ publication, plan })
+
+    await user.click(await screen.findByRole('button', { name: 'Apply plan' }))
+
+    expect(
+      await screen.findByText('MOSAIC has already re-planned. Review the fresh plan below before you apply it.'),
+    ).toBeVisible()
+    expect(screen.getByText("MOSAIC didn't apply the plan you reviewed")).toBeVisible()
+    expect(screen.getByText(refusal)).toBeVisible()
+    expect(screen.queryByText(/earlier plan was rejected/)).not.toBeInTheDocument()
+    expect(api.createPublishPlan).toHaveBeenCalledWith('pub_1')
+
+    await user.click(screen.getByRole('button', { name: 'Apply plan' }))
+
+    await waitFor(() => expect(api.applyPublishPlan).toHaveBeenLastCalledWith('pub_1', 'plan_2'))
+  })
+
   it('lists a deployment MOSAIC cannot publish with its reason and does not let it be chosen', async () => {
     const reason = 'Realtime models use WebSocket sessions, which MOSAIC can\'t publish yet.'
     api.listPublishableModels.mockResolvedValue([
@@ -424,6 +555,141 @@ describe('PublishModelDialog', () => {
     renderDialog({ publication: modelPublication, plan: accessPlan })
     await user.click(await screen.findByRole('button', { name: 'Apply plan' }))
     expect(await screen.findByText('Cannot refresh the model plan.')).toBeVisible()
+    expect(screen.queryByText(/already re-planned/)).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Apply plan' })).toBeDisabled()
+  })
+
+  it('opens a review on its review step, without first rendering the gateway and model chooser', async () => {
+    const user = userEvent.setup()
+    const frames = renderDialogParent([{ publication: modelPublication, plan: accessPlan }])
+
+    await user.click(screen.getByRole('button', { name: 'Open review 1' }))
+
+    // Every frame React committed while opening, not just the one left once effects have run.
+    expect(new Set(frames.map((frame) => frame.step))).toEqual(new Set(['Step 3 of 4']))
+    expect(frames.filter((frame) => frame.choosing)).toEqual([])
+    expect(frames[0].text).toContain('Model-wide access changes')
+    expect(screen.getByText('Step 3 of 4')).toBeVisible()
+    expect(screen.getByRole('table', { name: 'All target model grants' })).toBeVisible()
+    expect(screen.queryByRole('combobox', { name: 'Gateway' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Back' })).not.toBeInTheDocument()
+    expect(api.listGateways).not.toHaveBeenCalled()
+  })
+
+  it('moves focus into the review as it opens', async () => {
+    const user = userEvent.setup()
+    renderDialogParent([{ publication: modelPublication, plan: accessPlan }])
+
+    await user.click(screen.getByRole('button', { name: 'Open review 1' }))
+
+    expect(document.activeElement).not.toBe(document.body)
+    expect(screen.getByRole('dialog')).toContainElement(document.activeElement as HTMLElement)
+  })
+
+  it('shows the next review from its first frame after closing and reopening', async () => {
+    const user = userEvent.setup()
+    const frames = renderDialogParent([{ publication: modelPublication, plan: accessPlan }, secondReview])
+
+    await user.click(screen.getByRole('button', { name: 'Open review 1' }))
+    expect(within(screen.getByRole('table', { name: 'All target model grants' })).getByText('Ada Lovelace')).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Close' }))
+
+    // The page stays aria-hidden for a moment after a modal closes.
+    const openSecond = await screen.findByRole('button', { name: 'Open review 2' })
+    expect(screen.queryByRole('dialog', { hidden: true })).not.toBeInTheDocument()
+    frames.length = 0
+    await user.click(openSecond)
+
+    expect(new Set(frames.map((frame) => frame.step))).toEqual(new Set(['Step 3 of 4']))
+    expect(frames[0].text).toContain('Grace Hopper')
+    expect(frames[0].text).toContain(secondReview.message)
+    expect(frames.filter((frame) => frame.text.includes('Ada Lovelace'))).toEqual([])
+    expect(screen.getByRole('dialog')).toContainElement(document.activeElement as HTMLElement)
+
+    // Closing forgets the review, so reopening the very same one starts on it again.
+    await user.click(screen.getByRole('button', { name: 'Close' }))
+    const reopenSecond = await screen.findByRole('button', { name: 'Open review 2' })
+    frames.length = 0
+    await user.click(reopenSecond)
+
+    expect(new Set(frames.map((frame) => frame.step))).toEqual(new Set(['Step 3 of 4']))
+    expect(frames[0].text).toContain('Grace Hopper')
+    expect(screen.getByRole('dialog')).toContainElement(document.activeElement as HTMLElement)
+  })
+
+  it('keeps showing the review, as it was, while it closes', async () => {
+    const user = userEvent.setup()
+    api.applyPublishPlan.mockRejectedValue(new Error('API Management refused the change.'))
+    const frames = renderDialogParent([{ publication: modelPublication, plan: accessPlan }])
+
+    await user.click(screen.getByRole('button', { name: 'Open review 1' }))
+    await user.click(screen.getByRole('button', { name: 'Apply plan' }))
+    expect(await screen.findByText('API Management refused the change.')).toBeVisible()
+    frames.length = 0
+    await user.click(screen.getByRole('button', { name: 'Close' }))
+
+    await screen.findByRole('button', { name: 'Open review 1' })
+    expect(screen.queryByRole('dialog', { hidden: true })).not.toBeInTheDocument()
+    // Every frame React committed while Fluent animated the dialog out.
+    expect(frames.length).toBeGreaterThan(0)
+    expect(new Set(frames.map((frame) => `${frame.title} · ${frame.step}`))).toEqual(
+      new Set(['Review model access · Step 3 of 4']),
+    )
+    expect(frames.filter((frame) => frame.choosing)).toEqual([])
+    expect(frames.filter((frame) => !frame.text.includes('API Management refused the change.'))).toEqual([])
+  })
+
+  it('keeps showing the publish step it was on while it closes, and starts over when opened again', async () => {
+    const user = userEvent.setup()
+    const frames = renderDialogParent()
+
+    await user.click(screen.getByRole('button', { name: 'Start publishing' }))
+    await advanceToReview(user)
+    expect(await screen.findByText('Step 3 of 4')).toBeVisible()
+    frames.length = 0
+    await user.click(screen.getByRole('button', { name: 'Close' }))
+
+    const startAgain = await screen.findByRole('button', { name: 'Start publishing' })
+    expect(screen.queryByRole('dialog', { hidden: true })).not.toBeInTheDocument()
+    expect(frames.length).toBeGreaterThan(0)
+    expect(new Set(frames.map((frame) => `${frame.title} · ${frame.step}`))).toEqual(
+      new Set(['Publish a model · Step 3 of 4']),
+    )
+    expect(frames.filter((frame) => frame.choosing)).toEqual([])
+
+    frames.length = 0
+    await user.click(startAgain)
+
+    expect(new Set(frames.map((frame) => frame.step))).toEqual(new Set(['Step 1 of 4']))
+    expect(await screen.findByRole('checkbox', { name: 'Publish gpt-4o-prod' })).not.toBeChecked()
+    expect(screen.getByRole('dialog')).toContainElement(document.activeElement as HTMLElement)
+  })
+
+  it('does not announce an apply that finishes after closing, or carry it into the next opening', async () => {
+    const user = userEvent.setup()
+    let finishApply: (value: PublishRun) => void = () => {}
+    api.applyPublishPlan.mockReturnValue(new Promise<PublishRun>((resolve) => { finishApply = resolve }))
+    const onPublished = vi.fn()
+    const frames = renderDialogParent([{ publication: modelPublication, plan: accessPlan }], onPublished)
+
+    await user.click(screen.getByRole('button', { name: 'Open review 1' }))
+    await user.click(screen.getByRole('button', { name: 'Apply plan' }))
+    expect(await screen.findByRole('button', { name: 'Applying…' })).toBeDisabled()
+    await user.click(screen.getByRole('button', { name: 'Close' }))
+    const startPublishing = await screen.findByRole('button', { name: 'Start publishing' })
+
+    // TanStack Query reports the result on a timer, so wait inside act for everything it sets off.
+    await act(async () => {
+      finishApply(run())
+      await new Promise((resolve) => setTimeout(resolve, 50))
+    })
+    expect(onPublished).not.toHaveBeenCalled()
+
+    frames.length = 0
+    await user.click(startPublishing)
+
+    expect(new Set(frames.map((frame) => frame.step))).toEqual(new Set(['Step 1 of 4']))
+    expect(screen.getByRole('combobox', { name: 'Gateway' })).toBeVisible()
+    expect(onPublished).not.toHaveBeenCalled()
   })
 })

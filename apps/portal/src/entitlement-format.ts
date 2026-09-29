@@ -60,10 +60,45 @@ export function requestStateLabel(state: AccessRequest['state']) {
   return stateLabels[state]
 }
 
+function usableName(displayName: string | null | undefined) {
+  const name = displayName?.trim()
+  return name ? name : null
+}
+
+/**
+ * Names a resource without its ID: the summary's name, then whether it is gone, then its kind.
+ * End users never see a raw resource ID, so this is the last resort for every title below.
+ */
 export function resourceLabel(resource: EntitlementResource, summary?: ResourceSummary | null) {
-  if (summary?.displayName) return summary.displayName
+  const name = usableName(summary?.displayName)
+  if (name) return name
   if (summary?.available === false) return 'Resource no longer available'
   return `${resourceKindLabel(resource.kind)} resource`
+}
+
+/**
+ * Heads a grant or request with the name the catalog shows for its resource. When that name is
+ * missing (an older API), null (a resource the API can't resolve), or blank, it falls back to
+ * {@link resourceLabel}, so the heading is never a raw ID.
+ */
+export function resourceTitle(
+  resource: EntitlementResource,
+  displayName: string | null | undefined,
+  summary?: ResourceSummary | null,
+) {
+  return usableName(displayName) ?? resourceLabel(resource, summary)
+}
+
+/** Secondary text for a card, led by the resource's kind unless the title already states it. */
+export function withResourceKind(
+  resource: EntitlementResource,
+  displayName: string | null | undefined,
+  detail: string,
+  summary?: ResourceSummary | null,
+) {
+  const titleIsKind =
+    !usableName(displayName) && !usableName(summary?.displayName) && summary?.available !== false
+  return titleIsKind ? detail : `${resourceKindLabel(resource.kind)} · ${detail}`
 }
 
 export function formatNumber(value: number) {

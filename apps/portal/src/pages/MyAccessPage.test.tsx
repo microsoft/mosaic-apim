@@ -93,7 +93,7 @@ describe('MyAccessPage', () => {
     ])
 
     expect(await screen.findByText('Chat completions')).toBeVisible()
-    expect(screen.getByText('Granted through Platform engineering')).toBeVisible()
+    expect(screen.getByText('Model API · Granted through Platform engineering')).toBeVisible()
     expect(screen.getByText('Production')).toBeVisible()
     expect(screen.getByText('Production gateway')).toBeVisible()
     expect(screen.getByText('10,000 tokens per minute')).toBeVisible()
@@ -211,11 +211,76 @@ describe('MyAccessPage', () => {
       via: 'direct',
       viaGroupId: null,
       viaGroupName: null,
+      resourceDisplayName: null,
     }])
 
     const card = (await screen.findByText('Retired chat')).closest('.access-card')
     expect(card).not.toBeNull()
     expect(within(card as HTMLElement).getByText('No longer available')).toBeVisible()
+    expect(within(card as HTMLElement).getByText('Model API · Granted directly to you')).toBeVisible()
     expect(screen.queryByText(/modelApi_removed_123/)).not.toBeInTheDocument()
   })
+
+  it('heads each grant with the name the catalog shows and keeps its kind visible', async () => {
+    renderPage([
+      {
+        entitlement: baseEntitlement,
+        resourceSummary: { ...baseSummary, displayName: 'Chat model' },
+        via: 'group',
+        viaGroupId: 'group-1',
+        viaGroupName: 'Platform engineering',
+        resourceDisplayName: 'Chat model',
+      },
+      {
+        entitlement: {
+          ...baseEntitlement,
+          id: 'mcp-grant',
+          subject: { kind: 'user', id: 'user-1' },
+          resource: { kind: 'mcpServer', id: 'docs-mcp', scopeId: 'gateway-1' },
+        },
+        resourceSummary: {
+          ...baseSummary,
+          kind: 'mcpServer',
+          id: 'docs-mcp',
+          displayName: 'Docs search',
+        },
+        via: 'direct',
+        viaGroupId: null,
+        viaGroupName: null,
+        resourceDisplayName: 'Docs search',
+      },
+    ])
+
+    expect(await screen.findByRole('heading', { level: 2, name: 'Chat model' })).toBeVisible()
+    expect(screen.getByText('Model API · Granted through Platform engineering')).toBeVisible()
+    expect(screen.getByRole('heading', { level: 2, name: 'Docs search' })).toBeVisible()
+    expect(screen.getByText('MCP server · Granted directly to you')).toBeVisible()
+    expect(screen.queryByText(/chat-completions|docs-mcp/)).not.toBeInTheDocument()
+  })
+
+  it.each([
+    ['an older API omits the name', {}],
+    ['the API cannot resolve the name', { resourceDisplayName: null }],
+    ['the API sends a blank name', { resourceDisplayName: '  ' }],
+  ] satisfies [string, Partial<ResolvedEntitlement>][])(
+    'falls back to the kind, never the ID, when %s',
+    async (_, name) => {
+      renderPage([
+        {
+          entitlement: baseEntitlement,
+          resourceSummary: null,
+          via: 'group',
+          viaGroupId: 'group-1',
+          viaGroupName: 'Platform engineering',
+          ...name,
+        },
+      ])
+
+      expect(
+        await screen.findByRole('heading', { level: 2, name: 'Model API resource' }),
+      ).toBeVisible()
+      expect(screen.getByText('Granted through Platform engineering')).toBeVisible()
+      expect(screen.queryByText(/chat-completions/)).not.toBeInTheDocument()
+    },
+  )
 })

@@ -56,7 +56,9 @@ plan's steps in the order they were saved and the plan digest covers intent rath
 observed state -> deterministic plan -> explicit apply -> audited result, and stopped one step
 short. A `Publication` record in `desired-state` produces a persisted, deterministic `PublishPlan`.
 Apply runs against that specific plan and rejects a stale plan digest. A `PublishRun` records the
-result of each step. Saving a publication is never the operation that mutates APIM.
+result of each step. Saving a publication is never the operation that mutates APIM. The admin
+console applies a plan only from a review of that plan, so an administrator sees the steps that
+will run before they run; re-planning opens its fresh plan in the same review.
 
 **Rollback deletes only resources this failing apply created.** Each step records whether it created
 the resource or found it already present. On failure MOSAIC reverses the completed steps and deletes
@@ -185,7 +187,9 @@ returning MOSAIC's own wording without Azure's text, as it always has.
   `manual` only; making a publication populate it as `orchestrated` is the obvious next step and is
   deliberately not taken here, because ADR 0009's binding landed while this was being built.
   Enforcement is specified per publication in the meantime.
-- Nothing detects drift in the background. Re-planning shows it, consistent with the gap ADR 0005
-  already acknowledged.
+- Nothing detects drift in the background. An administrator sees it by re-planning, and the console
+  opens every fresh plan for review before anything is applied. A plan compares existence rather
+  than content, so a missing resource shows as a create, and a changed one shows as an update, the
+  same as one nobody touched. This is consistent with the gap ADR 0005 already acknowledged.
 - Every fragment and API write waits for its operation, so a publish or a governed apply makes a
   few more reads than it writes, and takes as long as API Management takes to validate the policy.

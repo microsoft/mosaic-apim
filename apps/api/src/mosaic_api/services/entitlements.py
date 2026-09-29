@@ -6,7 +6,7 @@ product or subscription that realizes a grant, because gateway telemetry is keye
 subscription and a grant with no binding cannot be joined to a usage row.
 """
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
@@ -31,7 +31,10 @@ from mosaic_api.domain import (
     EntitlementSubject,
     EntitlementSubjectKind,
     EntitlementUpdate,
+    Gateway,
     GrantPath,
+    McpServer,
+    ModelApi,
     Principal,
     PrincipalCreate,
     PrincipalKind,
@@ -77,6 +80,44 @@ class ResourceDescriptor:
     product_names: tuple[str, ...] = ()
     gateway_name: str | None = None
     environment: str | None = None
+
+
+class GovernedRecords:
+    """Gateway, model API, and MCP server records, each read at most once.
+
+    Naming, summarising, and scoping one list of grants or requests all need the same records.
+    Sharing one of these across those lookups keeps a response to one read per kind however many
+    lookups it makes, and reading on first use keeps an empty list free. It lives for one response
+    only, so it never serves a later response a stale record.
+    """
+
+    def __init__(self, repository: GatewayRepository, tenant_id: str) -> None:
+        self._repository = repository
+        self._tenant_id = tenant_id
+        self._gateways: dict[str, Gateway] | None = None
+        self._model_apis: dict[str, ModelApi] | None = None
+        self._mcp_servers: dict[str, McpServer] | None = None
+
+    async def gateways(self) -> dict[str, Gateway]:
+        if self._gateways is None:
+            self._gateways = {
+                item.id: item for item in await self._repository.list_gateways(self._tenant_id)
+            }
+        return self._gateways
+
+    async def model_apis(self) -> dict[str, ModelApi]:
+        if self._model_apis is None:
+            self._model_apis = {
+                item.id: item for item in await self._repository.list_model_apis(self._tenant_id)
+            }
+        return self._model_apis
+
+    async def mcp_servers(self) -> dict[str, McpServer]:
+        if self._mcp_servers is None:
+            self._mcp_servers = {
+                item.id: item for item in await self._repository.list_mcp_servers(self._tenant_id)
+            }
+        return self._mcp_servers
 
 
 def _subscription_owner(subscription: ObservedSubscription) -> str | None:
@@ -141,6 +182,11 @@ class EntitlementService:
         self._directory = directory_repository
         self._gateways = gateway_repository
         self._endpoints = endpoint_repository
+
+    def governed_records(self, tenant_id: str) -> GovernedRecords:
+        """Records to share across the lookups that serve one response."""
+
+        return GovernedRecords(self._gateways, tenant_id)
 
     @staticmethod
     def _audit(
@@ -323,23 +369,29 @@ class EntitlementService:
         snapshots: list[AccessRequestResourceSnapshot | None] | None = None,
         requested_environments: list[str | None] | None = None,
         visible: bool | dict[tuple[str, str, str], bool] | None = None,
+        records: GovernedRecords | None = None,
     ) -> list[ResourceSummary]:
-        """Build summaries for several resources with shared repository reads."""
+        """Build summaries for several resources with shared repository reads.
 
+        Each list is read once, and only for the kinds present, so an empty list reads nothing.
+        Pass ``records`` to share those reads with other lookups that serve the same response.
+        """
+
+        if not resources:
+            return []
+        if records is None:
+            records = self.governed_records(tenant_id)
         snapshots = snapshots or [None] * len(resources)
         requested_environments = requested_environments or [None] * len(resources)
-        gateways = {
-            gateway.id: gateway for gateway in await self._gateways.list_gateways(tenant_id)
-        }
-        endpoints = {
-            endpoint.id: endpoint for endpoint in await self._endpoints.list_endpoints(tenant_id)
-        }
-        model_apis = {
-            item.id: item for item in await self._gateways.list_model_apis(tenant_id)
-        }
-        mcp_servers = {
-            item.id: item for item in await self._gateways.list_mcp_servers(tenant_id)
-        }
+        kinds = {str(resource.kind) for resource in resources}
+        gateways = await records.gateways() if kinds - {"modelDeployment"} else {}
+        endpoints = (
+            {endpoint.id: endpoint for endpoint in await self._endpoints.list_endpoints(tenant_id)}
+            if "modelDeployment" in kinds
+            else {}
+        )
+        model_apis = await records.model_apis() if "modelApi" in kinds else {}
+        mcp_servers = await records.mcp_servers() if "mcpServer" in kinds else {}
         product_scopes = {
             resource.scope_id or ""
             for resource in resources
@@ -471,6 +523,61 @@ class EntitlementService:
                 )
             result.append(summary)
         return result
+
+    async def resource_display_names(
+        self,
+        actor: Actor,
+        resources: Sequence[EntitlementResource],
+        *,
+        records: GovernedRecords | None = None,
+    ) -> list[str | None]:
+        """Name many resources at once, in the order given, for a list a person will read.
+
+        Each name comes from the record :meth:`_describe_resource` reads for the same reference,
+        so it is the name the catalog and the administrator console show. Reads are batched: one
+        per desired-state kind, and one per gateway or model endpoint for observed resources,
+        however many references there are. Pass ``records`` to share the desired-state reads with
+        other lookups that serve the same response. A resource that no longer exists, or whose
+        name is blank, is ``None`` rather than an error, because a grant or request can outlive
+        the resource it names.
+
+        Only the resources passed in are named, so a caller that passes its own grants and
+        requests learns nothing about anything else.
+        """
+
+        keys = [_resource_key(resource) for resource in resources]
+        kinds = {kind for kind, _, _ in keys}
+        if records is None:
+            records = self.governed_records(actor.tenant_id)
+        # Desired-state records carry their own gateway, so a scope never distinguishes them.
+        desired: dict[tuple[str, str], str] = {}
+        if "modelApi" in kinds:
+            for model_api in (await records.model_apis()).values():
+                desired[("modelApi", model_api.id)] = model_api.display_name
+        if "mcpServer" in kinds:
+            for mcp_server in (await records.mcp_servers()).values():
+                desired[("mcpServer", mcp_server.id)] = mcp_server.display_name
+
+        observed: dict[tuple[str, str, str], str] = {}
+        for scope_id in {scope for kind, _, scope in keys if kind == "product" and scope}:
+            for product in await self._gateways.list_observed(
+                ObservedProduct, actor.tenant_id, scope_id, "observedProduct"
+            ):
+                observed[("product", product.id, scope_id)] = product.display_name
+        for scope_id in {scope for kind, _, scope in keys if kind == "modelDeployment" and scope}:
+            for deployment in await self._endpoints.list_observed_for_endpoint(
+                ObservedModelDeployment, actor.tenant_id, scope_id, "observedModelDeployment"
+            ):
+                observed[("modelDeployment", deployment.id, scope_id)] = deployment.deployment_name
+
+        names: list[str | None] = []
+        for kind, resource_id, scope_id in keys:
+            if kind in {"modelApi", "mcpServer"}:
+                name = desired.get((kind, resource_id))
+            else:
+                name = observed.get((kind, resource_id, scope_id))
+            names.append(name if name and name.strip() else None)
+        return names
 
     # ------------------------------------------------------------------ binding
 
@@ -685,7 +792,12 @@ class EntitlementService:
     # ------------------------------------------------------------------ resolution
 
     async def resolve_for_object_id(
-        self, actor: Actor, object_id: str, *, include_disabled: bool = False
+        self,
+        actor: Actor,
+        object_id: str,
+        *,
+        include_disabled: bool = False,
+        records: GovernedRecords | None = None,
     ) -> list[ResolvedEntitlement]:
         """Effective access for an Entra object ID.
 
@@ -697,11 +809,16 @@ class EntitlementService:
         if not principal:
             return []
         return await self.resolve_for_principal(
-            actor, principal.id, include_disabled=include_disabled
+            actor, principal.id, include_disabled=include_disabled, records=records
         )
 
     async def resolve_for_principal(
-        self, actor: Actor, principal_id: str, *, include_disabled: bool = False
+        self,
+        actor: Actor,
+        principal_id: str,
+        *,
+        include_disabled: bool = False,
+        records: GovernedRecords | None = None,
     ) -> list[ResolvedEntitlement]:
         """One entitlement per resource: direct over group, and enabled over disabled.
 
@@ -758,6 +875,7 @@ class EntitlementService:
             actor.tenant_id,
             [item.entitlement.resource for item in items],
             visible=True,
+            records=records,
         )
         return [
             item.model_copy(update={"resource_summary": summaries[index]})

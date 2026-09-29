@@ -279,6 +279,13 @@ textarea { font: inherit; }
   font-size: 18px;
 }
 
+/* Fluent sizes a card header's action column to its min-content width, so a multi-word badge
+   there would wrap inside its fixed height. Keep it on one line, and let a heading that falls
+   back to a long ID break rather than push the badge out of the card. */
+.access-card h2,
+.request-card h2 { overflow-wrap: anywhere; }
+.card-header-badge { white-space: nowrap; }
+
 .access-card-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);

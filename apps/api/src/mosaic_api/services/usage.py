@@ -504,7 +504,7 @@ class UsageService:
                 starts.append(_current_window(now, period)[0])
         return min(starts)
 
-    async def _usage_entitlements(self, actor: Actor) -> list[ResolvedEntitlement]:
+    async def _usage_entitlements(self, actor: Actor) -> Sequence[ResolvedEntitlement]:
         # The portal access list hides disabled grants, but the usage contract shows them with
         # explicit zero usage so users understand the grant exists but is not active.
         return await self._portal.my_entitlements(actor, include_disabled=True)

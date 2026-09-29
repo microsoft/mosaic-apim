@@ -25,6 +25,7 @@ import { NavLink, Navigate, Outlet, Route, Routes } from 'react-router-dom'
 import { usePortalApi } from './api'
 import { AuthGate } from './auth'
 import { ErrorState, Loading } from './components/AsyncState'
+import { initialsFor } from './initials'
 import { CatalogPage } from './pages/CatalogPage'
 import { MyAccessPage } from './pages/MyAccessPage'
 import { MyRequestsPage } from './pages/MyRequestsPage'
@@ -58,15 +59,6 @@ function NavigationLinks({ onNavigate }: { onNavigate: () => void }) {
       <span>{item.label}</span>
     </NavLink>
   ))
-}
-
-function initialsFor(label: string) {
-  return label
-    .split(/\s+/)
-    .map((part) => part[0])
-    .join('')
-    .slice(0, 2)
-    .toUpperCase()
 }
 
 function PortalShell() {

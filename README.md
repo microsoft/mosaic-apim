@@ -19,6 +19,121 @@ deterministic plan and an explicit apply, only to a gateway an administrator has
 See [ADR 0010](docs/adr/0010-publishing-models-into-apim.md) and
 [ADR 0011](docs/adr/0011-governed-model-access.md) for the write and credential-disclosure boundaries.
 
+## Screenshots
+
+These show the administrator console (`apps/web`) and the end-user portal (`apps/portal`) running
+against a fictional Contoso estate that [`scripts/screenshots`](scripts/screenshots) seeds
+locally, not a real tenant; that is why the console reports **Local mode**. Endpoint URLs, host
+and resource names, tenant and object IDs, MOSAIC record IDs, and keys are blurred. When the UI
+changes, regenerate them and update their descriptions as described in
+[docs/screenshots.md](docs/screenshots.md).
+
+### Light and dark
+
+Both apps follow the operating system's light or dark setting, and the console can pin either
+one under **Settings > Appearance**.
+
+<table>
+  <tr>
+    <th width="50%">Light</th>
+    <th width="50%">Dark</th>
+  </tr>
+  <tr>
+    <td><img src="docs/images/screenshots/console-dashboard-light.png" alt="The console overview in the light theme"></td>
+    <td><img src="docs/images/screenshots/console-dashboard-dark.png" alt="The console overview in the dark theme"></td>
+  </tr>
+  <tr>
+    <td colspan="2"><b>Console overview.</b> Live counts of the users, workload identities, and
+    access groups registered in MOSAIC. Below them, the telemetry, cost, model-ranking, and
+    service-health panels show labelled sample data until MOSAIC queries Azure Monitor.</td>
+  </tr>
+  <tr>
+    <td><img src="docs/images/screenshots/portal-catalog-light.png" alt="The portal catalog in the light theme"></td>
+    <td><img src="docs/images/screenshots/portal-catalog-dark.png" alt="The portal catalog in the dark theme"></td>
+  </tr>
+  <tr>
+    <td colspan="2"><b>Portal catalog.</b> The model APIs and MCP servers published to portal
+    users. People request access with an optional justification, and can see what they already
+    hold or have asked for.</td>
+  </tr>
+</table>
+
+### Administrator console
+
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/images/screenshots/console-gateways.png" alt="Registered gateways with their status, AI API counts, and last sync">
+      <p><b>Gateways.</b> Existing API Management services registered by resource ID. MOSAIC
+      reports whether it can read each one, how many APIs front Azure AI backends, and when it
+      last synced.</p>
+    </td>
+    <td width="50%" valign="top">
+      <img src="docs/images/screenshots/console-gateway-overview.png" alt="A gateway overview with inventory counts and service details">
+      <p><b>Gateway overview.</b> One gateway at a glance: its AI APIs, operations, MCP servers,
+      access paths, and policy rules, with its mode and service details. Tabs open its APIs, MCP
+      servers, products, subscriptions, users and groups, policies, and backends.</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/images/screenshots/console-gateway-apis.png" alt="A gateway's APIs described in plain language with their operations">
+      <p><b>APIs and endpoints.</b> Each API on a gateway described in plain language: the
+      backend it points at, what it exposes, the policies that govern it, and its operations.</p>
+    </td>
+    <td width="50%" valign="top">
+      <img src="docs/images/screenshots/console-models.png" alt="Published models with status, gateway, API path, and actions">
+      <p><b>Models.</b> Model deployments MOSAIC has planned or published into API Management,
+      with their gateway and API path. Publishing changes APIM only when a reviewed plan is
+      applied, and only on a gateway in manage mode.</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/images/screenshots/console-mcps.png" alt="Registered MCP servers with status, authentication, and tools">
+      <p><b>MCP servers.</b> Servers registered directly or imported from a gateway, with their
+      connection status, authentication method, and tools. MOSAIC reads what a server offers and
+      never calls a tool.</p>
+    </td>
+    <td width="50%" valign="top">
+      <img src="docs/images/screenshots/console-identity.png" alt="Users referenced by Entra object ID with a detail panel">
+      <p><b>Identity.</b> The users, workload identities, and groups MOSAIC references by Entra
+      object ID. Entra stays the source of truth; MOSAIC keeps only a local label and type.</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/images/screenshots/console-entitlements.png" alt="Grants with subjects, resources, limits, desired and applied state, and bindings">
+      <p><b>Entitlements.</b> Grants of model APIs and MCP servers to users, groups, and
+      applications, with each grant's limits, desired and applied state, and APIM binding. Model
+      grants reach APIM only through a reviewed apply.</p>
+    </td>
+    <td width="50%" valign="top">
+      <img src="docs/images/screenshots/console-analytics.png" alt="Analytics with request, token, success-rate, and cost summaries">
+      <p><b>Analytics.</b> A preview of the usage, token, cost, and chargeback views. It shows
+      labelled sample data until MOSAIC queries Azure Monitor and Log Analytics.</p>
+    </td>
+  </tr>
+</table>
+
+### End-user portal
+
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/images/screenshots/portal-access.png" alt="A model grant with its limits and expanded connection details">
+      <p><b>My access.</b> Each grant with its limits and APIM state. A direct model grant expands
+      to show its endpoint, operations, accepted credentials, and Entra details, with code samples
+      and an on-demand key reveal below.</p>
+    </td>
+    <td width="50%" valign="top">
+      <img src="docs/images/screenshots/portal-requests.png" alt="Approved, denied, and pending access requests">
+      <p><b>My requests.</b> Access requests with their justification, state, and the
+      administrator's decision note. A pending request can be withdrawn.</p>
+    </td>
+  </tr>
+</table>
+
 ## Architecture and trust boundaries
 
 ```mermaid
@@ -41,7 +156,9 @@ flowchart LR
 The administrator console and the end-user portal are separate applications with separate
 Entra registrations and separate app roles, so they are independently governable. The portal
 reaches only `/api/v1/portal/*` and the current-user `/api/v1/me/*` routes. Every one of them is
-scoped to the caller's own token, and none accepts a subject or requester parameter. See
+scoped to the caller's own token, and none accepts a subject or requester parameter. The console
+first asks `GET /api/v1/console/me` which MOSAIC role the caller holds, and renders only for
+`Admin`; anyone else sees a single page that says what their account has and what to ask for. See
 [ADR 0008](docs/adr/0008-portal-identity-and-role-separation.md).
 
 | Concern | Source of truth | MOSAIC responsibility |
@@ -100,16 +217,20 @@ explicit local/test modes and application startup rejects them when `MOSAIC_ENVI
   only the resources that apply created
 - Async repository abstraction with explicit in-memory and Cosmos implementations
 - React/TypeScript/Vite administrator console using Fluent UI, React Router, TanStack Query, and
-  MSAL, with responsive navigation and persisted light/dark/system themes
+  MSAL, with responsive navigation and persisted light/dark/system themes. It confirms the caller
+  holds the `Admin` role before it shows any of that; a caller with only `User`, or with no MOSAIC
+  role, is told the console isn't for them and what to ask an administrator for
 - Runtime browser configuration; Azure IDs and service URLs are not baked into the web image
 - Typed APIM read and write boundaries kept in separate classes, plus Foundry import and
   deterministic policy authoring that never returns markup
 - Separate non-root frontend/backend containers
 - End-user portal: a separate SPA on its own Entra registration and the `User` app role, where
   a non-administrator sees what they are entitled to, how each grant reached them, the catalog
-  of governed resources, and can request access to something they cannot yet use. For an applied
-  direct model grant, the portal also shows the endpoint, operations, accepted credentials, limits,
-  and placeholder code samples, and reveals a key on request
+  of governed resources, and can request access to something they cannot yet use. My access and
+  My requests head each grant and request with its resource's name, as the catalog shows it, and
+  keep its kind visible, including for a resource since made private. They never show a raw
+  resource ID. For an applied direct model grant, the portal also shows the endpoint, operations,
+  accepted credentials, limits, and placeholder code samples, and reveals a key on request
 - Environments: an administrator-defined catalog (Development, Test, QC, Staging, Production,
   Sandbox, and custom environments) that classifies gateways, model endpoints, and MCP servers.
   Compatibility rules are enforced when models are published, and Azure `environment` tags and
@@ -339,6 +460,12 @@ measured scale, not speculation.
   `Admin` role and guards every administrative route; `require_portal_user` demands the `User`
   role, which `Admin` also satisfies. Neither role is implied by tenant membership, so an operator
   assigns `User` — usually to an Entra group — before anyone can use the portal.
+- `require_mosaic_role` admits either role and guards only `GET /api/v1/console/me`, which reports
+  the caller's MOSAIC roles from their validated token. The console uses it to decide what to show:
+  the console for `Admin`; for `User` alone, a page saying the console is for MOSAIC
+  administrators and that `User` opens the end-user portal; with no MOSAIC role, a page saying an
+  administrator must grant one. That page is presentation, not a boundary — the administrative
+  routes still refuse those callers.
 - Production uses system-assigned managed identities. Local Azure SDK access uses
   `DefaultAzureCredential`; Azure uses `ManagedIdentityCredential`.
 - Cosmos local/key authentication and ACR admin credentials are disabled.
@@ -661,6 +788,12 @@ it produces a persisted, deterministic `PublishPlan`; applying runs against that
 rejects one whose digest no longer matches, so an administrator cannot approve one set of changes
 and have another applied. A `PublishRun` records the outcome of every step.
 
+The admin console applies a plan only from its review, which lists the plan's steps and policy
+facets, and for governed access every target grant. In the Published models table, **Re-plan** makes
+a fresh plan and opens that review; it is also how a failed or rolled-back publication is retried.
+If MOSAIC refuses the reviewed plan, for example because the publication changed after it was
+planned, the review says why and shows a fresh plan in its place.
+
 Applying creates, in dependency order:
 
 | Order | Resource | Purpose |
@@ -963,9 +1096,13 @@ The preview and the publish plan both return the same plain-language facets used
 policy, plus a content digest. Generated XML stays in process and is never serialised to a caller,
 so MOSAIC-authored markup never reaches a browser any more than customer-authored markup does.
 
-Nothing detects drift in the background yet. Re-planning a publication shows how API Management has
-diverged from it, which is the same gap [ADR 0005](docs/adr/0005-adopting-model-apis-and-mcp-servers.md)
-already acknowledged for imported records.
+Nothing detects drift in the background yet. **Re-plan** on the Models page makes a fresh plan and
+opens it for review, and nothing in API Management changes until the administrator chooses **Apply
+plan**. A plan compares what exists, not what it contains: a resource missing from API Management
+shows as Create, and one someone changed shows as Update, the same as one nobody touched, because
+applying replaces it with what the publication describes. This is the same gap
+[ADR 0005](docs/adr/0005-adopting-model-apis-and-mcp-servers.md) already acknowledged for imported
+records.
 
 ## Roadmap
 

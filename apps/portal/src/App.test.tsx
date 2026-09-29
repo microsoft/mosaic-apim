@@ -57,4 +57,26 @@ describe('App', () => {
       screen.getByText(/An administrator must grant you the MOSAIC User role/),
     ).toBeVisible()
   })
+
+  it('builds the avatar initials from letters and digits only', async () => {
+    mocks.api = {
+      getProfile: async () => ({
+        objectId: 'object-id',
+        tenantId: 'tenant-id',
+        roles: ['User'],
+        isAdmin: false,
+        principalId: null,
+        displayLabel: 'Name (Team)',
+        entitlementCount: 0,
+        pendingRequestCount: 0,
+      }),
+      listEntitlements: async () => [],
+    } as unknown as PortalApi
+
+    renderApp()
+
+    expect(await screen.findByText('Name (Team)')).toBeVisible()
+    expect(screen.getByText('NT')).toBeVisible()
+    expect(screen.queryByText('N(')).not.toBeInTheDocument()
+  })
 })

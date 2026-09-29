@@ -5,9 +5,25 @@ import { usePortalApi } from '../api'
 import { EmptyState, ErrorState, Loading } from '../components/AsyncState'
 import { EnvironmentBadge } from '../components/EnvironmentBadge'
 import { PageHeader } from '../components/PageHeader'
-import { gatewayLabel, requestStateLabel, resourceLabel } from '../entitlement-format'
+import { gatewayLabel, requestStateLabel, resourceTitle, withResourceKind } from '../entitlement-format'
 import { usePortalEnvironments } from '../environments'
-import type { AccessRequest } from '../types'
+import type { AccessRequest, ResourceSummary } from '../types'
+
+/** What names a request: its live summary, else what it recorded about the resource when made. */
+function headingSummary(request: AccessRequest): ResourceSummary | null {
+  if (request.resourceSummary) return request.resourceSummary
+  if (!request.resourceSnapshot) return null
+  return {
+    kind: request.resource.kind,
+    id: request.resource.id,
+    scopeId: request.resource.scopeId,
+    displayName: request.resourceSnapshot.displayName,
+    gatewayId: request.resourceSnapshot.gatewayId,
+    gatewayName: request.resourceSnapshot.gatewayName,
+    environment: request.requestedEnvironment,
+    available: false,
+  }
+}
 
 function GrantStatus({ request }: { request: AccessRequest }) {
   if (request.grantedEntitlementId) {
@@ -57,20 +73,11 @@ export function MyRequestsPage() {
               <CardHeader
                 header={
                   <h2>
-                    {resourceLabel(request.resource, request.resourceSummary ?? (
-                      request.resourceSnapshot
-                        ? {
-                            kind: request.resource.kind,
-                            id: request.resource.id,
-                            scopeId: request.resource.scopeId,
-                            displayName: request.resourceSnapshot.displayName,
-                            gatewayId: request.resourceSnapshot.gatewayId,
-                            gatewayName: request.resourceSnapshot.gatewayName,
-                            environment: request.requestedEnvironment,
-                            available: false,
-                          }
-                        : null
-                    ))}
+                    {resourceTitle(
+                      request.resource,
+                      request.resourceDisplayName,
+                      headingSummary(request),
+                    )}
                     {request.resourceSummary?.available === false && (
                       <Badge className="inline-status-badge" appearance="outline" color="warning">
                         No longer available
@@ -78,7 +85,12 @@ export function MyRequestsPage() {
                     )}
                   </h2>
                 }
-                description={`Opened ${new Date(request.createdAt).toLocaleDateString()}`}
+                description={withResourceKind(
+                  request.resource,
+                  request.resourceDisplayName,
+                  `Opened ${new Date(request.createdAt).toLocaleDateString()}`,
+                  headingSummary(request),
+                )}
                 action={<Badge appearance="tint">{requestStateLabel(request.state)}</Badge>}
               />
               <div className="badge-row">

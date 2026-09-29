@@ -1290,10 +1290,6 @@ class ResourceSummary(MosaicModel):
     available: bool = False
 
 
-class PortalAccessRequest(AccessRequest):
-    resource_summary: ResourceSummary | None = None
-
-
 class AdminAccessRequestListItem(AccessRequest):
     resource_summary: ResourceSummary | None = None
 
@@ -1321,6 +1317,32 @@ class CatalogEntry(MosaicModel):
     request_state: AccessRequestState | None = None
 
 
+class PortalResolvedEntitlement(ResolvedEntitlement):
+    """One of the caller's grants, named the way the catalog names the resource.
+
+    The name is resolved for every grant the caller holds, including one over a resource the
+    catalog does not list, because hiding a resource from the catalog does not revoke access to it.
+    ``resource_display_name`` is null only when MOSAIC can no longer resolve the resource — for
+    example because it was deleted after the grant was made.
+    """
+
+    resource_display_name: str | None = None
+
+
+class PortalAccessRequest(AccessRequest):
+    """One of the caller's access requests, named the way the catalog names the resource.
+
+    The name is derived when the request is read and never persisted, which is why it lives on this
+    response model rather than on :class:`AccessRequest`. It follows the same rules as
+    :class:`PortalResolvedEntitlement`. ``resource_summary`` is derived when read too: live gateway
+    and environment details for a resource the caller can still see, and otherwise only what the
+    request recorded when it was made.
+    """
+
+    resource_display_name: str | None = None
+    resource_summary: ResourceSummary | None = None
+
+
 class PortalProfile(MosaicModel):
     """Who the caller is, as the portal understands them.
 
@@ -1337,6 +1359,21 @@ class PortalProfile(MosaicModel):
     display_label: str | None = None
     entitlement_count: int = 0
     pending_request_count: int = 0
+
+
+class ConsoleAccess(MosaicModel):
+    """Which MOSAIC role the administrator console's caller holds.
+
+    Read from the validated access token. MOSAIC's app roles are defined on the API's registration,
+    so they arrive in the API token's ``roles`` claim and in neither SPA's ID token: the console
+    asks here rather than decoding a token in the browser.
+
+    Only a caller holding a MOSAIC role gets an answer, so ``is_admin`` false means the caller holds
+    the portal role and not the administrator one.
+    """
+
+    roles: list[str] = Field(default_factory=list)
+    is_admin: bool = False
 
 
 MOSAIC_RESOURCE_PREFIX = "mosaic-"

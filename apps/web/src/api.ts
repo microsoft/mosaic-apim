@@ -6,6 +6,7 @@ import type {
   AccessRequestApproval,
   ApiErrorBody,
   CatalogVisibility,
+  ConsoleAccess,
   Entitlement,
   EntitlementBinding,
   EntitlementEnforcement,
@@ -88,6 +89,7 @@ interface RequestOptions {
 }
 
 export interface MosaicApi {
+  getConsoleAccess(): Promise<ConsoleAccess>
   getEnvironmentCatalog(): Promise<EnvironmentCatalogView>
   createEnvironment(payload: EnvironmentCreate): Promise<EnvironmentCatalogView>
   updateEnvironment(key: string, payload: EnvironmentUpdate): Promise<EnvironmentCatalogView>
@@ -331,6 +333,7 @@ export function useMosaicApi(): MosaicApi {
     }
 
     return {
+      getConsoleAccess: () => request<ConsoleAccess>('/api/v1/console/me'),
       getEnvironmentCatalog: () => request<EnvironmentCatalogView>('/api/v1/environment-catalog'),
       createEnvironment: (payload) =>
         request<EnvironmentCatalogView>('/api/v1/environment-catalog/environments', {

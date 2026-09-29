@@ -30,7 +30,7 @@ import { AddRegular } from '@fluentui/react-icons'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { type FormEvent, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
-import { ApiError, useMosaicApi } from '../api'
+import { useMosaicApi } from '../api'
 import { environmentLabel, lookupCompatibility, useEnvironmentCatalog } from '../environments'
 import { EmptyState, ErrorState, Loading } from '../components/AsyncState'
 import { ChangeEnvironmentDialog } from '../components/ChangeEnvironmentDialog'
@@ -127,11 +127,7 @@ function PublishedModels({ onMessage }: { onMessage: (message: string) => void }
   const restoreFocus = useRestoreFocusTarget()
   const [runIssue, setRunIssue] = useState<Error | null>(null)
   const [removing, setRemoving] = useState<Publication | null>(null)
-  const [review, setReview] = useState<{
-    publication: Publication
-    plan: PublishPlan
-    message?: string
-  } | null>(null)
+  const [review, setReview] = useState<{ publication: Publication; plan: PublishPlan } | null>(null)
 
   const publications = useQuery({
     queryKey: ['publications'],
@@ -169,13 +165,8 @@ function PublishedModels({ onMessage }: { onMessage: (message: string) => void }
     }
   }
 
-  const replan = useMutation({
-    mutationFn: (publicationId: string) => api.createPublishPlan(publicationId),
-    onSuccess: async () => {
-      await refresh()
-      onMessage('Created a fresh publish plan. Review it before applying.')
-    },
-  })
+  // The table never applies a plan. Re-plan opens a fresh plan in the publish dialog, and only its
+  // Apply plan applies it, so the administrator sees every plan before it runs.
   const reviewPlan = useMutation({
     mutationFn: async (publication: Publication) => ({
       publication,
@@ -183,39 +174,9 @@ function PublishedModels({ onMessage }: { onMessage: (message: string) => void }
     }),
     onSuccess: ({ publication, plan }) => {
       setReview({ publication, plan })
+      void queryClient.invalidateQueries({ queryKey: ['publications'] })
     },
   })
-  const apply = useMutation({
-    onMutate: () => setRunIssue(null),
-    mutationFn: async (publication: Publication): Promise<PublishRun> => {
-      if (!publication.lastPlanId) throw new Error('Review the publish plan before applying it.')
-      return await api.applyPublishPlan(publication.id, publication.lastPlanId)
-    },
-    onSuccess: async (run) => {
-      await refresh()
-      reportRun(run)
-    },
-    onError: async (error, publication) => {
-      if (!(error instanceof ApiError) || error.status !== 409) return
-      // The server rejected the plan because the publication changed under it. Produce a fresh
-      // plan and put the administrator back in front of it rather than retrying silently.
-      try {
-        const plan = await api.createPublishPlan(publication.id)
-        setReview({ publication, plan, message: error.message })
-      } catch (replanError) {
-        onMessage(
-          replanError instanceof Error
-            ? `The publish plan is stale and MOSAIC could not produce a new one: ${replanError.message}`
-            : 'The publish plan is stale and MOSAIC could not produce a new one.',
-        )
-      }
-      await refresh()
-    },
-  })
-  const applyError =
-    apply.error && !(apply.error instanceof ApiError && apply.error.status === 409)
-      ? apply.error
-      : null
   const unpublish = useMutation({
     onMutate: () => setRunIssue(null),
     mutationFn: (publicationId: string) => api.unpublishPublication(publicationId),
@@ -250,8 +211,8 @@ function PublishedModels({ onMessage }: { onMessage: (message: string) => void }
           <Text>Model deployments MOSAIC has planned or published into API Management.</Text>
         </div>
       </div>
-      {(replan.isError || reviewPlan.isError || applyError || unpublish.isError || runIssue) && (
-        <ErrorState error={replan.error ?? reviewPlan.error ?? applyError ?? unpublish.error ?? runIssue} />
+      {(reviewPlan.isError || unpublish.isError || runIssue) && (
+        <ErrorState error={reviewPlan.error ?? unpublish.error ?? runIssue} />
       )}
       {publications.isPending && <Loading label="Loading published models" />}
       {publications.isError && <ErrorState error={publications.error} />}
@@ -297,15 +258,12 @@ function PublishedModels({ onMessage }: { onMessage: (message: string) => void }
                     <TableCell>{formatTimestamp(publication.lastAppliedAt)}</TableCell>
                     <TableCell>
                       <div className={styles.actionRow}>
-                        <Button appearance="secondary" disabled={replan.isPending} onClick={() => replan.mutate(publication.id)}>Re-plan</Button>
                         <Button
                           appearance="secondary"
-                          disabled={reviewPlan.isPending || apply.isPending || publication.status === 'applying' || publication.accessState === 'applying' || publication.accessState === 'unknown'}
-                          onClick={() => publication.lastPlanId && !publication.governedAccess && !publication.appliedAccess
-                            ? apply.mutate(publication)
-                            : reviewPlan.mutate(publication)}
+                          disabled={reviewPlan.isPending || publication.status === 'applying' || publication.accessState === 'applying' || publication.accessState === 'unknown'}
+                          onClick={() => reviewPlan.mutate(publication)}
                         >
-                          Apply
+                          {reviewPlan.isPending && reviewPlan.variables?.id === publication.id ? 'Planning…' : 'Re-plan'}
                         </Button>
                         <Button appearance="secondary" disabled={unpublish.isPending} onClick={() => unpublish.mutate(publication.id)}>Unpublish</Button>
                         <Button appearance="subtle" disabled={remove.isPending} onClick={() => confirmRemoval(publication)} {...restoreFocus}>Remove</Button>

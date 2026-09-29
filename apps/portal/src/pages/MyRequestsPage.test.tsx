@@ -49,6 +49,8 @@ function accessRequest(overrides: Partial<AccessRequest>): AccessRequest {
   }
 }
 
+const opened = `Opened ${new Date('2026-01-01T00:00:00Z').toLocaleDateString()}`
+
 function renderPage(requests: AccessRequest[]) {
   mocks.api = {
     listAccessRequests: async () => requests,
@@ -121,6 +123,7 @@ describe('MyRequestsPage', () => {
       accessRequest({
         id: 'request-removed-known',
         resource: { kind: 'modelApi', id: 'modelApi_removed_123', scopeId: null },
+        resourceDisplayName: null,
         resourceSummary: {
           kind: 'modelApi',
           id: 'modelApi_removed_123',
@@ -135,6 +138,7 @@ describe('MyRequestsPage', () => {
       accessRequest({
         id: 'request-removed-unknown',
         resource: { kind: 'modelApi', id: 'modelApi_unknown_456', scopeId: null },
+        resourceDisplayName: null,
         resourceSnapshot: null,
         resourceSummary: {
           kind: 'modelApi',
@@ -152,6 +156,42 @@ describe('MyRequestsPage', () => {
     expect(await screen.findByText('Retired chat')).toBeVisible()
     expect(screen.getByText('Resource no longer available')).toBeVisible()
     expect(screen.getAllByText('No longer available')).toHaveLength(2)
+    // Neither title names the kind, so each description does.
+    expect(screen.getAllByText(`Model API · ${opened}`)).toHaveLength(2)
     expect(screen.queryByText(/modelApi_removed_123|modelApi_unknown_456/)).not.toBeInTheDocument()
   })
+
+  it('heads each request with the name the catalog shows and keeps its kind visible', async () => {
+    renderPage([
+      accessRequest({ id: 'request-1', resourceDisplayName: 'Chat model' }),
+      accessRequest({
+        id: 'request-2',
+        resource: { kind: 'mcpServer', id: 'docs-mcp', scopeId: null },
+        resourceDisplayName: 'Docs search',
+      }),
+    ])
+
+    expect(await screen.findByRole('heading', { level: 2, name: 'Chat model' })).toBeVisible()
+    expect(screen.getByText(`Model API · ${opened}`)).toBeVisible()
+    expect(screen.getByRole('heading', { level: 2, name: 'Docs search' })).toBeVisible()
+    expect(screen.getByText(`MCP server · ${opened}`)).toBeVisible()
+    expect(screen.queryByText(/chat-completions|docs-mcp/)).not.toBeInTheDocument()
+  })
+
+  it.each([
+    ['an older API omits the name', {}],
+    ['the API cannot resolve the name', { resourceDisplayName: null }],
+    ['the API sends a blank name', { resourceDisplayName: '  ' }],
+  ] satisfies [string, Partial<AccessRequest>][])(
+    'falls back to the kind, never the ID, when %s',
+    async (_, name) => {
+      renderPage([accessRequest({ resourceSnapshot: null, resourceSummary: null, ...name })])
+
+      expect(
+        await screen.findByRole('heading', { level: 2, name: 'Model API resource' }),
+      ).toBeVisible()
+      expect(screen.getByText(opened)).toBeVisible()
+      expect(screen.queryByText(/chat-completions/)).not.toBeInTheDocument()
+    },
+  )
 })

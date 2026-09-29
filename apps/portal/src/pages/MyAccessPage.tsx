@@ -11,7 +11,8 @@ import {
   describeLimits,
   describeRuntime,
   gatewayLabel,
-  resourceLabel,
+  resourceTitle,
+  withResourceKind,
 } from '../entitlement-format'
 import { usePortalEnvironments } from '../environments'
 
@@ -43,7 +44,11 @@ export function MyAccessPage() {
               <CardHeader
                 header={
                   <h2>
-                    {resourceLabel(resolved.entitlement.resource, resolved.resourceSummary)}
+                    {resourceTitle(
+                      resolved.entitlement.resource,
+                      resolved.resourceDisplayName,
+                      resolved.resourceSummary,
+                    )}
                     {resolved.resourceSummary?.available === false && (
                       <Badge className="inline-status-badge" appearance="outline" color="warning">
                         No longer available
@@ -52,9 +57,16 @@ export function MyAccessPage() {
                   </h2>
                 }
                 description={
-                  <Text>{describeAttribution(resolved)}</Text>
+                  <Text>
+                    {withResourceKind(
+                      resolved.entitlement.resource,
+                      resolved.resourceDisplayName,
+                      describeAttribution(resolved),
+                      resolved.resourceSummary,
+                    )}
+                  </Text>
                 }
-                action={<Badge appearance={resolved.entitlement.runtime?.status === 'applied' ? 'filled' : 'tint'}>{describeRuntime(resolved.entitlement)}</Badge>}
+                action={<Badge className="card-header-badge" appearance={resolved.entitlement.runtime?.status === 'applied' ? 'filled' : 'tint'}>{describeRuntime(resolved.entitlement)}</Badge>}
               />
               <div className="badge-row">
                 <EnvironmentBadge environment={resolved.resourceSummary?.environment ?? null} environments={environments.data} />
