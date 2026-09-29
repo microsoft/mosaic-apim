@@ -442,7 +442,9 @@ describe('ModelsPage', () => {
     await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument())
     expect(api.deletePublication).not.toHaveBeenCalled()
 
-    await user.click(within(table).getByRole('button', { name: 'Remove' }))
+    // The rest of the page stays hidden from assistive technology for a moment after the modal
+    // dialog is gone, so the first role query outside it has to wait.
+    await user.click(await within(table).findByRole('button', { name: 'Remove' }))
     await user.click(
       within(await screen.findByRole('alertdialog')).getByRole('button', {
         name: 'Remove publication',
@@ -730,7 +732,9 @@ describe('ModelsPage model endpoints', () => {
     await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument())
     expect(api.deleteModelEndpoint).not.toHaveBeenCalled()
 
-    await user.click(within(table).getByRole('button', { name: 'Remove' }))
+    // The rest of the page stays hidden from assistive technology for a moment after the modal
+    // dialog is gone, so the first role query outside it has to wait.
+    await user.click(await within(table).findByRole('button', { name: 'Remove' }))
     await user.click(
       within(await screen.findByRole('alertdialog')).getByRole('button', {
         name: 'Remove endpoint',
@@ -773,6 +777,9 @@ describe('ModelsPage model endpoints', () => {
     await user.click(within(dialog).getByRole('button', { name: 'Remove endpoint' }))
 
     const refusal = await within(dialog).findByRole('alert')
+    // Queries within a dialog that has closed still find its detached content, so check it's still
+    // the open dialog on the page.
+    expect(screen.getByRole('alertdialog', { name: 'Remove Contoso models?' })).toBe(dialog)
     expect(refusal).toHaveTextContent("MOSAIC didn't remove this endpoint")
     expect(refusal).toHaveTextContent(message)
     const blocking = within(dialog).getByRole('list', { name: 'Publications blocking removal' })
@@ -782,9 +789,11 @@ describe('ModelsPage model endpoints', () => {
         .map((item) => item.textContent),
     ).toEqual(['GPT-4o production (Published)', 'Embeddings (Failed)'])
     expect(screen.queryByText('Unable to load data')).not.toBeInTheDocument()
-    expect(screen.getByRole('table', { name: 'Registered model endpoints' })).toHaveTextContent(
-      'Contoso models',
-    )
+    // The open modal dialog hides the rest of the page from assistive technology, so include hidden
+    // elements to find the table behind it.
+    expect(
+      screen.getByRole('table', { name: 'Registered model endpoints', hidden: true }),
+    ).toHaveTextContent('Contoso models')
   })
 
   it('shows why the Register dialog was refused', async () => {
