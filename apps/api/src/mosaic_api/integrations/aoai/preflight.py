@@ -131,11 +131,27 @@ def _count(count: int, singular: str) -> str:
     return f"{count} {singular}" if count == 1 else f"{count} {singular}s"
 
 
+def _local_auth_disabled(properties: object) -> bool | None:
+    """``disableLocalAuth``, where ARM omitting it means the default: keys are enabled.
+
+    Azure leaves the property out of an account on which it was never set, so absent and ``null``
+    read as ``False``. A value of any other type, or no ``properties`` at all, stays unknown.
+    """
+
+    if not isinstance(properties, dict):
+        return None
+    value = properties.get("disableLocalAuth")
+    if value is None:
+        return False
+    return value if isinstance(value, bool) else None
+
+
 def _capabilities(account: JsonObject | None) -> ModelEndpointCapabilities:
     if not account:
         return ModelEndpointCapabilities(
             notes=["MOSAIC could not read the account description."]
         )
+    local_auth_disabled = _local_auth_disabled(account.get("properties"))
     properties = account.get("properties") if isinstance(account.get("properties"), dict) else {}
     sku = account.get("sku") if isinstance(account.get("sku"), dict) else {}
     kind = account.get("kind")
@@ -143,7 +159,6 @@ def _capabilities(account: JsonObject | None) -> ModelEndpointCapabilities:
     location = account.get("location")
     provisioning_state = properties.get("provisioningState") if properties else None
     public_network_access = properties.get("publicNetworkAccess") if properties else None
-    disable_local_auth = properties.get("disableLocalAuth") if properties else None
     default_action, ip_rules, network_rule_count = _network_acls(
         properties.get("networkAcls") if properties else None
     )
@@ -152,7 +167,7 @@ def _capabilities(account: JsonObject | None) -> ModelEndpointCapabilities:
     )
 
     notes: list[str] = []
-    if disable_local_auth is False:
+    if local_auth_disabled is False:
         notes.append(
             "Key authentication is enabled on this endpoint. Disabling it forces callers, "
             "including the gateway, onto managed identity."
@@ -183,9 +198,7 @@ def _capabilities(account: JsonObject | None) -> ModelEndpointCapabilities:
         network_default_action=default_action,
         network_ip_rules=ip_rules,
         network_virtual_network_rule_count=network_rule_count,
-        local_auth_disabled=(
-            disable_local_auth if isinstance(disable_local_auth, bool) else None
-        ),
+        local_auth_disabled=local_auth_disabled,
         notes=notes,
     )
 
