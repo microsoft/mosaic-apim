@@ -2,13 +2,20 @@
 
 import asyncio
 import json
+import re
 from collections.abc import AsyncIterator
 from typing import Any, cast
 
 import httpx
 import pytest
 from aoai_double import AI_RESOURCE_ID, FakeCognitiveServices
-from apim_double import CONTRIBUTOR_PERMISSIONS, RESOURCE_ID, FakeApim, FakeCredential
+from apim_double import (
+    CONTRIBUTOR_PERMISSIONS,
+    RESOURCE_ID,
+    FakeApim,
+    FakeCredential,
+    policy_expression_error,
+)
 from azure.core.credentials_async import AsyncTokenCredential
 from conftest import build_endpoint_service, build_gateway_service
 from mosaic_api.domain import (
@@ -31,6 +38,7 @@ from mosaic_api.domain import (
     PrincipalUpdate,
     Publication,
     PublicationCreate,
+    PublicationStatus,
     PublicationUpdate,
     PublishedResourceKind,
     PublishRun,
@@ -41,6 +49,7 @@ from mosaic_api.domain import (
     model_access_subscription_name,
 )
 from mosaic_api.errors import ConflictError, ValidationError
+from mosaic_api.integrations import access_policy
 from mosaic_api.integrations.apim import ApimClient, ApimWriter, ArmClient
 from mosaic_api.observed import ObservedApi
 from mosaic_api.repositories import (
@@ -691,6 +700,133 @@ async def test_a_governed_fragment_update_azure_rejects_is_not_applied_access(
     assert "include-fragment" not in api_policy["properties"]["value"]
     newcomer_key = harness.apim.written[f"subscriptions/{harness.subscription(newcomer)}"]
     assert newcomer_key["properties"]["state"] == "suspended"
+    assert await harness.gateways.get_publication_lock(TENANT, publication.id) is None
+
+
+async def _limit_grants(harness: Harness) -> list[Entitlement]:
+    """Grant two users and an application, two of them with their own limits."""
+
+    users = [await harness.grant(), await harness.grant(NEW_USER)]
+    application = await harness.grant(APPLICATION, application=True)
+    counter = "@(context.Subscription.Id)"
+    await harness.grants.update_entitlement(
+        ACTOR,
+        users[0].id,
+        EntitlementUpdate(
+            enforcement=EntitlementEnforcement(
+                tokens=TokenEnforcement(
+                    counter_key_expression=counter,
+                    tokens_per_minute=1000,
+                    token_quota=100000,
+                    token_quota_period="Daily",
+                )
+            )
+        ),
+    )
+    await harness.grants.update_entitlement(
+        ACTOR,
+        application.id,
+        EntitlementUpdate(
+            enforcement=EntitlementEnforcement(
+                requests=RequestEnforcement(
+                    counter_key_expression=counter,
+                    calls=10,
+                    renewal_period_seconds=60,
+                    call_quota=1000,
+                    call_quota_period="Weekly",
+                )
+            )
+        ),
+    )
+    return [*users, application]
+
+
+def _assert_governed_access_applied(
+    harness: Harness, publication: Publication, grants: list[Entitlement]
+) -> None:
+    assert publication.status == PublicationStatus.PUBLISHED
+    assert publication.access_state == "applied"
+    written = harness.apim.written
+    fragment = written[f"policyFragments/{publication.fragment_name}"]["properties"]["value"]
+    api_policy = written[f"apis/{publication.api_name}/policies/policy"]["properties"]["value"]
+    # The key and token lookups, the shape checks, the model check for the Responses route and
+    # the weekly call quota's counter are each a multi-statement expression.
+    markers = ("mosaic-key-grant", "mosaic-token-grant", "preserveContent: true", "quota-by-key")
+    for marker in markers:
+        assert marker in fragment
+    assert fragment.count("@{") >= 6
+    assert policy_expression_error(fragment) is None
+    assert "include-fragment" in api_policy
+    assert policy_expression_error(api_policy) is None
+    for grant in grants:
+        key = written[f"subscriptions/{harness.subscription(grant)}"]
+        assert key["properties"]["state"] == "active"
+
+
+async def test_governed_access_with_per_grant_limits_is_a_fragment_api_management_accepts(
+    harness: Harness,
+) -> None:
+    grants = await _limit_grants(harness)
+    await harness.govern()
+
+    run = await harness.apply()
+
+    assert run.status == PublishRunStatus.SUCCEEDED
+    publication = await harness.service.get_publication(ACTOR, harness.publication_id)
+    _assert_governed_access_applied(harness, publication, grants)
+    assert await harness.gateways.get_publication_lock(TENANT, publication.id) is None
+
+
+async def test_a_governed_fragment_api_management_cannot_parse_denies_and_can_be_planned_again(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    grants = await _limit_grants(harness)
+    await harness.govern()
+    before = await harness.service.get_publication(ACTOR, harness.publication_id)
+    fragment = f"policyFragments/{before.fragment_name}"
+    key_lookup = access_policy._key_lookup
+
+    def unbraced_key_lookup(*args: Any) -> str:
+        # The key lookup as MOSAIC used to write it: `if (...) return "...";` with no braces.
+        return re.sub(r"\{ (return [^;]*;) \}", r"\1", key_lookup(*args))
+
+    with monkeypatch.context() as patch:
+        patch.setattr(access_policy, "_key_lookup", unbraced_key_lookup)
+        run = await harness.apply()
+
+    # API Management accepts the update, then fails the operation. This is its message, as the
+    # run records it.
+    assert run.status == PublishRunStatus.FAILED
+    step = next(
+        step
+        for step in run.steps
+        if step.kind == PublishedResourceKind.POLICY_FRAGMENT and step.stage == "policy"
+    )
+    assert step.status == PublishStepStatus.FAILED
+    assert run.errors[0] == (
+        f"policyFragment {before.fragment_name}: The Azure operation did not succeed (Failed). "
+        "ValidationError: The policy fragment contains invalid policy expression. Expected a "
+        '"{" but found a "return". Block statements must be enclosed in "{" and "}". You cannot '
+        "use single-statement control-flow statements in CSHTML pages. For example, the "
+        "following is not allowed: @if(isLoggedIn) [policy markup omitted]."
+    )
+    # Nothing was granted: the model is denied and every key MOSAIC owns is suspended.
+    failed = await harness.service.get_publication(ACTOR, harness.publication_id)
+    assert failed.status == PublicationStatus.FAILED
+    assert failed.access_state == "failed"
+    assert failed.applied_access
+    assert not any(grant.enabled for grant in failed.applied_access.grants)
+    denied = harness.apim.written[fragment]["properties"]["value"]
+    assert "return-response" in denied and "@{" not in denied
+    for name in [failed.subscription_name, *(harness.subscription(grant) for grant in grants)]:
+        assert harness.apim.written[f"subscriptions/{name}"]["properties"]["state"] == "suspended"
+    assert await harness.gateways.get_publication_lock(TENANT, failed.id) is None
+
+    run = await harness.apply()
+
+    assert run.status == PublishRunStatus.SUCCEEDED
+    publication = await harness.service.get_publication(ACTOR, harness.publication_id)
+    _assert_governed_access_applied(harness, publication, grants)
     assert await harness.gateways.get_publication_lock(TENANT, publication.id) is None
 
 
