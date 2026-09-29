@@ -9,7 +9,8 @@ import {
   describeBinding,
   describeLimits,
   describeRuntime,
-  resourceLabel,
+  resourceTitle,
+  withResourceKind,
 } from '../entitlement-format'
 
 export function MyAccessPage() {
@@ -37,11 +38,19 @@ export function MyAccessPage() {
           {entitlements.data.map((resolved) => (
             <Card key={resolved.entitlement.id} className="access-card">
               <CardHeader
-                header={<h2>{resourceLabel(resolved.entitlement.resource)}</h2>}
-                description={
-                  <Text>{describeAttribution(resolved)}</Text>
+                header={
+                  <h2>{resourceTitle(resolved.entitlement.resource, resolved.resourceDisplayName)}</h2>
                 }
-                action={<Badge appearance={resolved.entitlement.runtime?.status === 'applied' ? 'filled' : 'tint'}>{describeRuntime(resolved.entitlement)}</Badge>}
+                description={
+                  <Text>
+                    {withResourceKind(
+                      resolved.entitlement.resource,
+                      resolved.resourceDisplayName,
+                      describeAttribution(resolved),
+                    )}
+                  </Text>
+                }
+                action={<Badge className="card-header-badge" appearance={resolved.entitlement.runtime?.status === 'applied' ? 'filled' : 'tint'}>{describeRuntime(resolved.entitlement)}</Badge>}
               />
               <div className="access-card-grid">
                 <section>

@@ -15,6 +15,7 @@ import type {
   ModelEndpointSuggestionView,
   Publication,
   PublishPlan,
+  PublishRun,
   SubscriptionScanIssue,
 } from '../types'
 
@@ -158,6 +159,16 @@ const publishPlan: PublishPlan = {
   warnings: ['Review runtime access before applying.'],
   createdAt: '2026-09-01T12:00:00Z',
   updatedAt: '2026-09-01T12:00:00Z',
+}
+
+function publishRun(overrides: Partial<PublishRun> = {}): PublishRun {
+  return {
+    id: 'run_1', tenantId: 'tenant-test', entityType: 'publishRun', publicationId: 'pub_1', gatewayId: 'gateway_1',
+    planId: 'plan_1', planDigest: 'digest', status: 'running', startedAt: '2026-09-01T12:00:00Z', completedAt: null,
+    durationMs: null, steps: [], rolledBack: false, orphanedResources: [], errors: [],
+    createdAt: '2026-09-01T12:00:00Z', updatedAt: '2026-09-01T12:00:00Z',
+    ...overrides,
+  }
 }
 
 const api = {
@@ -343,34 +354,46 @@ describe('ModelsPage', () => {
     expect(within(table).getByText('/models/gpt-4o')).toBeVisible()
   })
 
-  it('opens plan review instead of applying when a publication has no current plan', async () => {
-    const user = userEvent.setup()
-    api.listPublications.mockResolvedValue([{ ...publication, lastPlanId: null }])
-
-    renderPage()
-
-    const table = await screen.findByRole('table', { name: 'Published models' })
-    await user.click(within(table).getByRole('button', { name: 'Apply' }))
-
-    await waitFor(() => expect(api.createPublishPlan).toHaveBeenCalledWith('pub_1'))
-    expect(api.applyPublishPlan).not.toHaveBeenCalled()
-    expect(await screen.findByRole('table', { name: 'Publish plan steps' })).toBeVisible()
-    expect(screen.getByText('Review runtime access before applying.')).toBeVisible()
-  })
-
-  it('applies the existing plan when a publication has a current plan', async () => {
+  it('opens the fresh plan for review when an administrator re-plans', async () => {
     const user = userEvent.setup()
     api.listPublications.mockResolvedValue([publication])
 
     renderPage()
 
     const table = await screen.findByRole('table', { name: 'Published models' })
-    await user.click(within(table).getByRole('button', { name: 'Apply' }))
+    await user.click(within(table).getByRole('button', { name: 'Re-plan' }))
 
-    await waitFor(() => {
-      expect(api.applyPublishPlan).toHaveBeenCalledWith('pub_1', 'plan_1')
-    })
-    expect(api.createPublishPlan).not.toHaveBeenCalled()
+    await waitFor(() => expect(api.createPublishPlan).toHaveBeenCalledWith('pub_1'))
+    const steps = await screen.findByRole('table', { name: 'Publish plan steps' })
+    const dialog = screen.getByRole('dialog')
+    expect(dialog).toContainElement(steps)
+    expect(within(steps).getByText('Create the API for this deployment.')).toBeVisible()
+    expect(within(dialog).getByText('Review runtime access before applying.')).toBeVisible()
+    expect(within(dialog).getByRole('button', { name: 'Apply plan' })).toBeEnabled()
+    expect(within(dialog).queryByText(/Nothing to apply/)).not.toBeInTheDocument()
+    expect(api.applyPublishPlan).not.toHaveBeenCalled()
+  })
+
+  it('applies only the plan the administrator reviewed, never the saved one', async () => {
+    const user = userEvent.setup()
+    // A legacy publication with a saved plan, which the table used to apply without showing it.
+    api.listPublications.mockResolvedValue([publication])
+    api.createPublishPlan.mockResolvedValue({ ...publishPlan, id: 'plan_2' })
+
+    renderPage()
+
+    const table = await screen.findByRole('table', { name: 'Published models' })
+    expect(within(table).queryByRole('button', { name: 'Apply' })).not.toBeInTheDocument()
+    await user.click(within(table).getByRole('button', { name: 'Re-plan' }))
+
+    const applyPlan = await screen.findByRole('button', { name: 'Apply plan' })
+    expect(screen.getByRole('table', { name: 'Publish plan steps' })).toBeVisible()
+    expect(api.applyPublishPlan).not.toHaveBeenCalled()
+
+    await user.click(applyPlan)
+
+    await waitFor(() => expect(api.applyPublishPlan).toHaveBeenCalledTimes(1))
+    expect(api.applyPublishPlan).toHaveBeenCalledWith('pub_1', 'plan_2')
   })
 
   it('always reviews the complete governed-access snapshot before applying an existing plan', async () => {
@@ -379,38 +402,133 @@ describe('ModelsPage', () => {
     api.createPublishPlan.mockResolvedValue(accessPlan)
     renderPage()
     const table = await screen.findByRole('table', { name: 'Published models' })
-    await user.click(within(table).getByRole('button', { name: 'Apply' }))
+    await user.click(within(table).getByRole('button', { name: 'Re-plan' }))
     expect(await screen.findByRole('table', { name: 'All target model grants' })).toBeVisible()
     expect(api.applyPublishPlan).not.toHaveBeenCalled()
+  })
+
+  it('moves focus into the model access review it opens', async () => {
+    const user = userEvent.setup()
+    api.listPublications.mockResolvedValue([modelPublication])
+    api.createPublishPlan.mockResolvedValue(accessPlan)
+    renderPage()
+    const table = await screen.findByRole('table', { name: 'Published models' })
+    await user.click(within(table).getByRole('button', { name: 'Re-plan' }))
+
+    expect(await screen.findByRole('table', { name: 'All target model grants' })).toBeVisible()
+    await waitFor(() => {
+      expect(screen.getByRole('dialog', { name: 'Review model access' })).toContainElement(
+        document.activeElement as HTMLElement,
+      )
+    })
+  })
+
+  it('moves focus into the publish plan review it opens for a legacy publication', async () => {
+    const user = userEvent.setup()
+    api.listPublications.mockResolvedValue([publication])
+    renderPage()
+    const table = await screen.findByRole('table', { name: 'Published models' })
+    await user.click(within(table).getByRole('button', { name: 'Re-plan' }))
+
+    expect(await screen.findByRole('table', { name: 'Publish plan steps' })).toBeVisible()
+    await waitFor(() => {
+      expect(screen.getByRole('dialog', { name: 'Publish a model' })).toContainElement(
+        document.activeElement as HTMLElement,
+      )
+    })
   })
 
   it('does not describe an interrupted apply as still running or successful', async () => {
     const user = userEvent.setup()
     api.listPublications.mockResolvedValue([publication])
-    api.applyPublishPlan.mockResolvedValue({ id: 'interrupted-run', status: 'interrupted', errors: [] })
+    const interrupted = publishRun({ id: 'run_2', status: 'interrupted', errors: ['Worker stopped after policy install.'] })
+    api.applyPublishPlan.mockResolvedValue(interrupted)
+    api.getPublishRun.mockResolvedValue(interrupted)
     renderPage()
     const table = await screen.findByRole('table', { name: 'Published models' })
-    await user.click(within(table).getByRole('button', { name: 'Apply' }))
-    expect(await screen.findByText(/Apply interrupted — runtime state unknown/)).toBeVisible()
+    await user.click(within(table).getByRole('button', { name: 'Re-plan' }))
+    await user.click(await screen.findByRole('button', { name: 'Apply plan' }))
+    expect(await screen.findByText('Apply interrupted — runtime state unknown')).toBeVisible()
+    expect(screen.getByText('Worker stopped after policy install.')).toBeVisible()
     expect(screen.queryByText(/Run started/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/reported completion|reports the model plan applied/)).not.toBeInTheDocument()
   })
 
-  it('routes a stale direct apply back to fresh plan review', async () => {
+  it('says why MOSAIC refused the reviewed plan and reviews the fresh one it made', async () => {
     const user = userEvent.setup()
+    const refusal =
+      'This publication changed after the plan was produced. Re-plan it and review the new changes before applying.'
+    const freshPlan: PublishPlan = {
+      ...publishPlan,
+      id: 'plan_3',
+      steps: [{ ...publishPlan.steps[0], action: 'update', reason: 'Replace the API that fronts this model.', existed: true }],
+    }
     api.listPublications.mockResolvedValue([publication])
-    api.applyPublishPlan.mockRejectedValue(new TestApiError('The publish plan is stale.', 409))
+    api.createPublishPlan.mockResolvedValueOnce({ ...publishPlan, id: 'plan_2' }).mockResolvedValueOnce(freshPlan)
+    api.applyPublishPlan.mockRejectedValueOnce(new TestApiError(refusal, 409))
 
     renderPage()
 
     const table = await screen.findByRole('table', { name: 'Published models' })
-    await user.click(within(table).getByRole('button', { name: 'Apply' }))
+    await user.click(within(table).getByRole('button', { name: 'Re-plan' }))
+    await user.click(await screen.findByRole('button', { name: 'Apply plan' }))
 
-    await waitFor(() => {
-      expect(api.createPublishPlan).toHaveBeenCalledWith('pub_1')
-    })
-    expect(await screen.findByText('The publish plan is stale.')).toBeVisible()
-    expect(screen.getByRole('table', { name: 'Publish plan steps' })).toBeVisible()
+    expect(
+      await screen.findByText('MOSAIC has already re-planned. Review the fresh plan below before you apply it.'),
+    ).toBeVisible()
+    expect(screen.getByText("MOSAIC didn't apply the plan you reviewed")).toBeVisible()
+    expect(screen.getByText(refusal)).toBeVisible()
+    expect(screen.queryByText(/earlier plan was rejected/)).not.toBeInTheDocument()
+    expect(screen.getByText('Replace the API that fronts this model.')).toBeVisible()
+    expect(api.applyPublishPlan).toHaveBeenCalledWith('pub_1', 'plan_2')
+
+    await user.click(screen.getByRole('button', { name: 'Apply plan' }))
+
+    await waitFor(() => expect(api.applyPublishPlan).toHaveBeenLastCalledWith('pub_1', 'plan_3'))
   })
+
+  it('says when API Management already matches a publication and offers nothing to apply', async () => {
+    const user = userEvent.setup()
+    const unchanged: PublishPlan = {
+      ...publishPlan,
+      id: 'plan_2',
+      warnings: [],
+      steps: [{ ...publishPlan.steps[0], action: 'noChange', reason: 'The API already matches this publication.', existed: true }],
+    }
+    api.listPublications.mockResolvedValue([publication])
+    api.createPublishPlan.mockResolvedValue(unchanged)
+
+    renderPage()
+
+    const table = await screen.findByRole('table', { name: 'Published models' })
+    await user.click(within(table).getByRole('button', { name: 'Re-plan' }))
+
+    expect(
+      await screen.findByText('API Management already matches this publication. Nothing to apply.'),
+    ).toBeVisible()
+    expect(within(screen.getByRole('table', { name: 'Publish plan steps' })).getByText('No change')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Apply plan' })).toBeDisabled()
+    expect(api.applyPublishPlan).not.toHaveBeenCalled()
+  })
+
+  it.each(['failed', 'rolledBack'] as const)(
+    'retries a %s publication through a review of a fresh plan',
+    async (status) => {
+      const user = userEvent.setup()
+      api.listPublications.mockResolvedValue([{ ...publication, status, lastAppliedAt: null }])
+      api.createPublishPlan.mockResolvedValue({ ...publishPlan, id: 'plan_2' })
+
+      renderPage()
+
+      const table = await screen.findByRole('table', { name: 'Published models' })
+      await user.click(within(table).getByRole('button', { name: 'Re-plan' }))
+      const applyPlan = await screen.findByRole('button', { name: 'Apply plan' })
+      expect(api.applyPublishPlan).not.toHaveBeenCalled()
+      await user.click(applyPlan)
+
+      await waitFor(() => expect(api.applyPublishPlan).toHaveBeenCalledWith('pub_1', 'plan_2'))
+    },
+  )
 
   it('does not claim the models page never changes API Management', async () => {
     renderPage()
@@ -442,7 +560,9 @@ describe('ModelsPage', () => {
     await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument())
     expect(api.deletePublication).not.toHaveBeenCalled()
 
-    await user.click(within(table).getByRole('button', { name: 'Remove' }))
+    // The rest of the page stays hidden from assistive technology for a moment after the modal
+    // dialog is gone, so the first role query outside it has to wait.
+    await user.click(await within(table).findByRole('button', { name: 'Remove' }))
     await user.click(
       within(await screen.findByRole('alertdialog')).getByRole('button', {
         name: 'Remove publication',
@@ -730,7 +850,9 @@ describe('ModelsPage model endpoints', () => {
     await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument())
     expect(api.deleteModelEndpoint).not.toHaveBeenCalled()
 
-    await user.click(within(table).getByRole('button', { name: 'Remove' }))
+    // The rest of the page stays hidden from assistive technology for a moment after the modal
+    // dialog is gone, so the first role query outside it has to wait.
+    await user.click(await within(table).findByRole('button', { name: 'Remove' }))
     await user.click(
       within(await screen.findByRole('alertdialog')).getByRole('button', {
         name: 'Remove endpoint',
@@ -773,6 +895,9 @@ describe('ModelsPage model endpoints', () => {
     await user.click(within(dialog).getByRole('button', { name: 'Remove endpoint' }))
 
     const refusal = await within(dialog).findByRole('alert')
+    // Queries within a dialog that has closed still find its detached content, so check it's still
+    // the open dialog on the page.
+    expect(screen.getByRole('alertdialog', { name: 'Remove Contoso models?' })).toBe(dialog)
     expect(refusal).toHaveTextContent("MOSAIC didn't remove this endpoint")
     expect(refusal).toHaveTextContent(message)
     const blocking = within(dialog).getByRole('list', { name: 'Publications blocking removal' })
@@ -782,9 +907,11 @@ describe('ModelsPage model endpoints', () => {
         .map((item) => item.textContent),
     ).toEqual(['GPT-4o production (Published)', 'Embeddings (Failed)'])
     expect(screen.queryByText('Unable to load data')).not.toBeInTheDocument()
-    expect(screen.getByRole('table', { name: 'Registered model endpoints' })).toHaveTextContent(
-      'Contoso models',
-    )
+    // The open modal dialog hides the rest of the page from assistive technology, so include hidden
+    // elements to find the table behind it.
+    expect(
+      screen.getByRole('table', { name: 'Registered model endpoints', hidden: true }),
+    ).toHaveTextContent('Contoso models')
   })
 
   it('shows why the Register dialog was refused', async () => {

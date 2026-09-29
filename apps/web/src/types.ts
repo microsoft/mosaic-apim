@@ -1,5 +1,12 @@
 export type PrincipalKind = 'user' | 'servicePrincipal' | 'managedIdentity'
 
+/** The caller's MOSAIC roles, from `GET /api/v1/console/me`. Only a caller with a MOSAIC role gets
+ * one, so `isAdmin` false means the caller holds the User role alone. */
+export interface ConsoleAccess {
+  roles: string[]
+  isAdmin: boolean
+}
+
 export interface Principal {
   id: string
   tenantId: string

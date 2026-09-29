@@ -37,6 +37,8 @@ function accessRequest(overrides: Partial<AccessRequest>): AccessRequest {
   }
 }
 
+const opened = `Opened ${new Date('2026-01-01T00:00:00Z').toLocaleDateString()}`
+
 function renderPage(requests: AccessRequest[]) {
   mocks.api = {
     listAccessRequests: async () => requests,
@@ -98,4 +100,37 @@ describe('MyRequestsPage', () => {
     expect(screen.getByText('Not for this project')).toBeVisible()
     expect(screen.queryByText('Grant')).not.toBeInTheDocument()
   })
+
+  it('heads each request with the name the catalog shows and keeps its kind visible', async () => {
+    renderPage([
+      accessRequest({ id: 'request-1', resourceDisplayName: 'Chat model' }),
+      accessRequest({
+        id: 'request-2',
+        resource: { kind: 'mcpServer', id: 'docs-mcp', scopeId: null },
+        resourceDisplayName: 'Docs search',
+      }),
+    ])
+
+    expect(await screen.findByRole('heading', { level: 2, name: 'Chat model' })).toBeVisible()
+    expect(screen.getByText(`Model API · ${opened}`)).toBeVisible()
+    expect(screen.getByRole('heading', { level: 2, name: 'Docs search' })).toBeVisible()
+    expect(screen.getByText(`MCP server · ${opened}`)).toBeVisible()
+    expect(screen.queryByText(/chat-completions|docs-mcp/)).not.toBeInTheDocument()
+  })
+
+  it.each([
+    ['an older API omits the name', {}],
+    ['the API cannot resolve the name', { resourceDisplayName: null }],
+    ['the API sends a blank name', { resourceDisplayName: '  ' }],
+  ] satisfies [string, Partial<AccessRequest>][])(
+    'falls back to the kind and ID when %s',
+    async (_, name) => {
+      renderPage([accessRequest(name)])
+
+      expect(
+        await screen.findByRole('heading', { level: 2, name: 'Model API chat-completions' }),
+      ).toBeVisible()
+      expect(screen.getByText(opened)).toBeVisible()
+    },
+  )
 })
