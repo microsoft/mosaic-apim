@@ -118,8 +118,9 @@ web app, so it can ship in the same batch. The O23 fix
 next, so Batch 3d now deploys all three apps. Environments and the end-user usage report
 ([#40](https://github.com/microsoft/mosaic-apim/pull/40)) merged after them, and they join
 Batch 3d too. MOSAIC now classifies gateways, endpoints and MCP servers by environment, and it
-checks each gateway and endpoint pairing when a model is published. The portal gains a usage page,
-whose figures are simulated and labeled so until MOSAIC reads Log Analytics. #40 changes no
+checks each gateway and endpoint pairing when a model is published. The portal gains a
+**Usage & cost** page, whose figures are simulated and labeled so until MOSAIC reads Log
+Analytics. #40 changes no
 infrastructure or app setting and keeps its data in the existing Cosmos containers. Everything
 starts Unclassified, which warns but never blocks, and a plan reviewed before the upgrade must be
 planned again once (ADR 0014).
@@ -486,12 +487,14 @@ Progress:
 - Users are isolated from each other: another user's entitlement ID returns 403 or 404. The
   portal has no page for a single grant, so the verifier checks this at MOSAIC's API with
   `--foreign-user-entitlement`. The admin first confirms that someone else holds the grant. Then
-  the grant must stay out of the user's lists, and its connection details and key are refused.
-  The check sends no model requests.
-- After Batch 3d, the portal's **Usage** page lists only the caller's own grants, one row per
-  resource, and says its figures are simulated, because MOSAIC doesn't read Log Analytics yet
+  the grant must stay out of the user's lists and usage report, and its connection details and
+  key are refused. The check sends no model requests.
+- After Batch 3d, the portal's **Usage & cost** page lists only the caller's own grants, one row
+  per resource, and says its figures are simulated, because MOSAIC doesn't read Log Analytics yet
   (ADR 0015). Its route, `GET /api/v1/me/usage`, is scoped to the caller the way the portal's
-  entitlements are, so P7's foreign grants must not appear in it either (P9).
+  entitlements are, so P7's foreign grants must not appear in it either (P9). The verifier's
+  `--foreign-user-entitlement` check reads the route's 90-day report and fails if a foreign grant
+  is in its rows or timeline. Against a MOSAIC without the route it says it skipped the check.
 
 Progress:
 
@@ -651,7 +654,7 @@ has passed, and ❌ means the latest run failed on the product gap named.
 | P6 | Connection details appear, and key reveal is masked, transient and uncached (G3) | 7 | ⬜ |
 | P7 | Another user's entitlement ID returns 403 or 404 | 7 | 🔄 |
 | P8 | The admin shows as allowed in the portal | 7 | ✅ |
-| P9 | The usage page lists only the caller's grants and labels its figures as simulated (#40) | 7 | ⬜ |
+| P9 | **Usage & cost** lists only the caller's grants and labels its figures as simulated; the verifier checks its route leaves out other people's grants (#40) | 7 | ⬜ |
 
 ### Runtime (real calls through APIM)
 

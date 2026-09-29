@@ -206,7 +206,9 @@ README names for each proof. Sign-in failures print only their `AADSTS` codes. T
 
 `--foreign-user-entitlement` needs no fresh grants and sends no model requests: name any user
 grant that someone other than `--user` holds. It checks journey P7 at MOSAIC's API, because the
-portal has no page for a single grant that a changed ID could reach.
+portal has no page for a single grant that a changed ID could reach. It also checks P9's route:
+the grant must stay out of the user's usage report, which **Usage & cost** shows. A MOSAIC from
+before that report skips this part and says so.
 
 For `--watch-revocation <grant-id>`, leave `verify` running and drive the admin from another
 terminal. Revoke the grant (this disables it; don't delete it), then review and apply its model's

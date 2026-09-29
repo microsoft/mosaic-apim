@@ -1024,6 +1024,28 @@ def listed_grant_ids(client: httpx.Client, base: str, token: str) -> set[str]:
     return {value for value in [*mine, *portal] if isinstance(value, str)}
 
 
+def usage_grant_ids(client: httpx.Client, base: str, token: str) -> set[str] | None:
+    """The grant IDs in the caller's usage report, or None if this MOSAIC has no usage report."""
+    response = client.get(f"{base}/me/usage", params={"period": "90d"}, headers=bearer(token))
+    # MOSAIC before the usage report (ADR 0015) has no such route, and its 404 shows no grant.
+    if response.status_code == 404:
+        return None
+    expect(response, {200}, "The user's usage report")
+    report = object_body(response, "The user's usage report")
+    ids: set[str] = set()
+    for part in ("byResource", "timeline"):
+        rows = report.get(part)
+        if not isinstance(rows, list):
+            raise VerificationFailed(f"The user's usage report has no {part} list")
+        for row in rows:
+            identifier = mapping(row).get("entitlementId")
+            # A row that names no grant would make the check below pass without looking.
+            if not isinstance(identifier, str):
+                raise VerificationFailed(f"The user's usage report has a {part} row with no grant")
+            ids.add(identifier)
+    return ids
+
+
 def check_foreign_user_grants(
     client: httpx.Client,
     base: str,
@@ -1031,7 +1053,7 @@ def check_foreign_user_grants(
     admin_control: str,
     identifiers: list[str],
 ) -> None:
-    """Grants held by other people must stay out of the user's lists, details and keys.
+    """Grants held by other people must stay out of the user's lists, usage, details and keys.
 
     The admin first confirms that each grant exists and that someone else holds it, so a mistyped
     ID or the user's own grant can't pass as a refusal.
@@ -1062,9 +1084,12 @@ def check_foreign_user_grants(
                 f"{label} is held by the user. Name a grant that someone else holds"
             )
     listed = listed_grant_ids(client, base, user_control)
+    usage = usage_grant_ids(client, base, user_control)
     for identifier, label in labels.items():
         if identifier in listed:
             raise VerificationFailed(f"MOSAIC lists {label} among the user's own grants")
+        if usage is not None and identifier in usage:
+            raise VerificationFailed(f"The user's usage report includes {label}")
         route = f"{base}/me/entitlements/{identifier}"
         response = client.get(f"{route}/connection", headers=bearer(user_control))
         expect(response, {403, 404}, f"The user reading {label}'s connection details")
@@ -1077,6 +1102,13 @@ def check_foreign_user_grants(
         f"PASS: the user can't list, read or retrieve the key of {len(identifiers)} grant(s) "
         "held by someone else"
     )
+    if usage is None:
+        say("SKIP: the user's usage report: this MOSAIC has none")
+    else:
+        say(
+            f"PASS: the user's usage report leaves out {len(identifiers)} grant(s) held by "
+            "someone else"
+        )
 
 
 def parse_arguments(argv: list[str] | None) -> argparse.Namespace:

@@ -1079,10 +1079,12 @@ watch plus a minute; otherwise it stops before waiting.
 holds. Repeat it for each such grant. With the administrator's token, the script first confirms
 that the grant exists and that a different user holds it, so a mistyped ID or one of the user's
 own grants can't pass as a refusal. Then, with the user's token, MOSAIC must leave the grant out
-of the user's lists, including the portal's **My access**, and refuse its connection details and
-its key with 403 or 404. These checks call only MOSAIC's API, before any model call, and each
-refused key request is recorded in MOSAIC's audit log. A run that names only grants held by
-someone else sends no model requests, so it doesn't need `--send-model-requests`.
+of the user's lists, including the portal's **My access**, and out of the user's 90-day usage
+report, both its rows and its timeline. It must also refuse the grant's connection details and
+its key with 403 or 404. A MOSAIC from before the usage report (ADR 0015) answers its route with
+404, and the script says it skipped that part. These checks call only MOSAIC's API, before any
+model call, and each refused key request is recorded in MOSAIC's audit log. A run that names only
+grants held by someone else sends no model requests, so it doesn't need `--send-model-requests`.
 
 Separately exercise method toggles through reviewed plans, allowing APIM to propagate each change
 before rerunning the script. Verify rotation by changing a test subscription key directly in APIM

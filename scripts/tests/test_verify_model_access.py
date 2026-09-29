@@ -166,8 +166,14 @@ class FakeWorld:
         self.retry_after = True
         self.foreign_reveal_status = 404
         # What MOSAIC wrongly shows the user of grants that other users hold: "list" puts them in
-        # the user's lists, "connection" returns their details, and "key" reveals their key.
+        # the user's lists, "connection" returns their details, "key" reveals their key, "usage"
+        # puts them in the user's usage report, and "usage-timeline" only in its timeline.
         self.foreign_user_leaks: set[str] = set()
+        # The user's usage report. None serves it, 404 is a MOSAIC from before it, and any other
+        # status is an error. A defect breaks its shape: "no-timeline" or "unnamed-row".
+        self.usage_status: int | None = None
+        self.usage_defect: str | None = None
+        self.usage_periods: list[str | None] = []
         # Whether the gateway validates tokens "always", only "without-key" (skipping it when a
         # key comes too), or "never", leaving only the grant lookup to refuse tokens.
         self.token_validation = "always"
@@ -239,6 +245,13 @@ class FakeWorld:
                     200, json=[{"entitlement": e, "via": "direct"} for e in listed]
                 )
             return httpx.Response(200, json=listed)
+        if path == "me/usage":
+            if token != USER_CONTROL:
+                return httpx.Response(401)
+            if self.usage_status is not None:
+                return httpx.Response(self.usage_status)
+            self.usage_periods.append(request.url.params.get("period"))
+            return httpx.Response(200, json=self.usage())
         if path.startswith("principals/"):
             if token != ADMIN_CONTROL:
                 return httpx.Response(401)
@@ -286,6 +299,32 @@ class FakeWorld:
             "subject": {"kind": grant.kind, "id": f"principal-{grant.oid}"},
             "resource": {"kind": "modelApi", "id": grant.publication},
         }
+
+    def usage(self) -> dict[str, Any]:
+        """The user's usage report: a row and a day for each grant the user holds."""
+        held = [
+            grant
+            for grant in self.grants.values()
+            if not self.deleted(grant) and grant.kind == "user"
+        ]
+        own = [grant.id for grant in held if grant.oid == USER_OID]
+        foreign = [grant.id for grant in held if grant.oid != USER_OID]
+        rows = [*own, *(foreign if "usage" in self.foreign_user_leaks else [])]
+        days = [*rows, *(foreign if "usage-timeline" in self.foreign_user_leaks else [])]
+        report: dict[str, Any] = {
+            "dataSource": "simulated",
+            "byResource": [{"entitlementId": identifier, "requests": 3} for identifier in rows],
+            "timeline": [
+                {"date": "2026-09-29", "entitlementId": identifier, "requests": 3}
+                for identifier in days
+            ],
+            "notes": ["Figures are simulated."],
+        }
+        if self.usage_defect == "no-timeline":
+            del report["timeline"]
+        elif self.usage_defect == "unnamed-row":
+            report["byResource"].append({"requests": 1})
+        return report
 
     def deleted(self, grant: FakeGrant) -> bool:
         return grant.deleted_at is not None and self.clock.now >= grant.deleted_at
@@ -779,6 +818,10 @@ class ModelAccessVerifierTests(unittest.TestCase):
             out,
         )
         self.assertIn("Isolation checks passed for 1 grant(s) held by someone else.", out)
+        self.assertIn(
+            "PASS: the user's usage report leaves out 1 grant(s) held by someone else", out
+        )
+        self.assertEqual(world.usage_periods, ["90d"])
         # The admin confirms the grant is real and someone else's before the user's refusals count.
         calls = [
             (
@@ -795,6 +838,7 @@ class ModelAccessVerifierTests(unittest.TestCase):
                 ("GET", f"/api/v1/principals/principal-{OTHER_OID}", ADMIN_CONTROL),
                 ("GET", "/api/v1/me/entitlements", USER_CONTROL),
                 ("GET", "/api/v1/portal/entitlements", USER_CONTROL),
+                ("GET", "/api/v1/me/usage", USER_CONTROL),
                 ("GET", "/api/v1/me/entitlements/other-aoai/connection", USER_CONTROL),
                 ("POST", "/api/v1/me/entitlements/other-aoai/keys/reveal", USER_CONTROL),
             ],
@@ -824,10 +868,43 @@ class ModelAccessVerifierTests(unittest.TestCase):
                 "HTTP 200",
             ),
             ("key", "The user retrieving Another person's grant 1's key: unexpected HTTP 200"),
+            ("usage", "The user's usage report includes Another person's grant 1"),
+            ("usage-timeline", "The user's usage report includes Another person's grant 1"),
         ):
             with self.subTest(leak=leak):
                 world = isolation_world()
                 world.foreign_user_leaks = {leak}
+                code, out, err = self.verify(
+                    world,
+                    ["--user-entitlement", "user-aoai", "--foreign-user-entitlement", "other-aoai"],
+                )
+                self.assertEqual(code, 1)
+                self.assertIn(message, err)
+                self.assertEqual(world.model_calls, [])
+                self.assert_nothing_secret(world, out + err)
+
+    def test_isolation_skips_a_usage_report_this_mosaic_does_not_have(self) -> None:
+        world = isolation_world()
+        world.usage_status = 404
+        code, out, err = self.verify(
+            world, ["--foreign-user-entitlement", "other-aoai"], acknowledge=False
+        )
+        self.assertEqual(code, 0, err)
+        self.assertIn("SKIP: the user's usage report: this MOSAIC has none", out)
+        self.assertNotIn("PASS: the user's usage report", out)
+        self.assertIn("Isolation checks passed for 1 grant(s) held by someone else.", out)
+
+    def test_a_broken_usage_report_fails_before_model_calls(self) -> None:
+        for status, defect, message in (
+            (500, None, "The user's usage report: unexpected HTTP 500"),
+            (403, None, "The user's usage report: unexpected HTTP 403"),
+            (None, "no-timeline", "The user's usage report has no timeline list"),
+            (None, "unnamed-row", "The user's usage report has a byResource row with no grant"),
+        ):
+            with self.subTest(status=status, defect=defect):
+                world = isolation_world()
+                world.usage_status = status
+                world.usage_defect = defect
                 code, out, err = self.verify(
                     world,
                     ["--user-entitlement", "user-aoai", "--foreign-user-entitlement", "other-aoai"],
