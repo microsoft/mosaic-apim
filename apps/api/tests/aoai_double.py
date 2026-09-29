@@ -37,6 +37,8 @@ PARTIAL_PERMISSIONS: list[dict[str, Any]] = [
 
 _AUTHORIZATION = "providers/Microsoft.Authorization"
 
+# Leaves a property out of the account description entirely, as ARM does with unset values.
+OMITTED: Any = object()
 
 def role_assignment(
     role_definition_id: str,
@@ -144,6 +146,7 @@ class FakeCognitiveServices:
         kind: str = "OpenAI",
         public_network_access: str = "Enabled",
         network_acls: dict[str, Any] | None = None,
+        disable_local_auth: Any = False,
     ) -> None:
         self.permissions = READER_PERMISSIONS if permissions is None else permissions
         self.account_status = account_status
@@ -154,6 +157,8 @@ class FakeCognitiveServices:
         self.kind = kind
         self.public_network_access = public_network_access
         self.network_acls = network_acls
+        # ``OMITTED`` leaves ``disableLocalAuth`` out, as ARM does when it was never set.
+        self.disable_local_auth = disable_local_auth
         self.requests: list[str] = []
         self.persistent_failures: dict[str, int] = {}
         self.role_assignments: list[dict[str, Any]] = []
@@ -293,8 +298,9 @@ class FakeCognitiveServices:
             "provisioningState": "Succeeded",
             "endpoint": AI_ENDPOINT,
             "publicNetworkAccess": self.public_network_access,
-            "disableLocalAuth": False,
         }
+        if self.disable_local_auth is not OMITTED:
+            properties["disableLocalAuth"] = self.disable_local_auth
         if self.network_acls is not None:
             properties["networkAcls"] = self.network_acls
         return {

@@ -197,6 +197,7 @@ Set-Location ..
 
 az bicep build --file infra\main.bicep
 python -m unittest scripts.tests.test_mosaic_entra scripts.tests.test_verify_model_access
+python -m unittest scripts.tests.test_spa_nginx
 ```
 
 ## Deploy with `azd`
@@ -256,6 +257,12 @@ Assign these permissions through normal Entra administration. A MOSAIC grant doe
 consent a client, create an identity, or grant Microsoft Graph permissions. The only consent
 bootstrap creates is the model client's `Models.Invoke` grant. Bootstrap exposes
 `MOSAIC_MODEL_RUNTIME_CLIENT_ID`; this must not be the MOSAIC control-plane API's client ID.
+
+The console and portal containers serve `index.html` and every SPA route with
+`Cache-Control: no-cache`, `/config.js` with `no-store`, and the content-hashed files under
+`/assets/` with `public, max-age=31536000, immutable`. After a redeploy, the next page load
+revalidates `index.html` and picks up the new bundle and runtime configuration. The policy is in
+`apps/web/nginx.conf` and `apps/portal/nginx.conf`, which are kept identical.
 
 APIM Developer is the dominant cost (currently roughly USD 51/month at continuous use) and can take
 30–60 minutes or longer to provision. The shared B1 Linux plan is roughly USD 13–15/month; Basic ACR
@@ -567,7 +574,8 @@ On the Models page, select an endpoint to open its **Access** card.
     command. MOSAIC never runs the command itself.
 - **Endpoint settings**, above the gateway verdicts, shows the resource kind, public network access,
   firewall, and key authentication. Those settings decide whether a gateway can reach the endpoint
-  at all.
+  at all. Azure omits `disableLocalAuth` from accounts where it was never set, and its default is
+  `false`, so MOSAIC shows an unset value as key authentication *Enabled*.
 
 Every role whose name begins `Cognitive Services` or `Foundry` that grants control-plane deployment
 read also grants data-plane inference, and most also grant `listKeys`. `Reader` is the only built-in
@@ -588,6 +596,36 @@ each registered gateway's subscription, instead of showing an empty list.
 
 OpenAI-compatible endpoints are registered with a Key Vault secret identifier the operator created.
 MOSAIC stores the URI only; discovery for those endpoints is not implemented yet.
+
+**One registration per Azure AI resource.** Deployments live on the resource (the account), never
+on a Foundry project, so a project and its parent resource list the same models. MOSAIC treats every
+registration as covering its resource:
+
+- Registering a resource whose project is already registered, a project whose resource is, or a
+  second project on the same resource is refused with a `409`. The message names the endpoint that
+  already lists those models, and `details` carries its `id` and `name`.
+- Discovery doesn't suggest a resource that a registered project already covers.
+- Registering the exact same resource ID again is refused as before.
+
+Overlapping records registered before this check are left as they are. Remove one of them to stop
+the duplicate listing.
+
+**Removing an endpoint.** Remove on the Models page asks first. The dialog says what goes: MOSAIC's
+record of the endpoint, its synced models and its sync history. Nothing changes in Azure. The API
+(`DELETE /api/v1/model-endpoints/{id}`) refuses with a `409` while any publication from the endpoint
+may still own resources in API Management, because without the endpoint that publication could
+never be planned, applied or unpublished again, and its API would keep serving traffic. A
+publication blocks when it:
+
+- recorded resources it created, including a failed apply that left some behind;
+- is applying, or its access change is applying or was interrupted (`accessState` unknown);
+- still has an enabled grant applied at the gateway;
+- is locked by a run in progress.
+
+The refusal lists the blocking publications (id, display name, status) in `details`, and the dialog
+shows them. Unpublish those models first. Publication records that own nothing — drafts, planned or
+rolled-back publications, and unpublished ones — are deleted with the endpoint and audited as
+`publication.removed`, because they could never be planned again without it.
 
 ## Publishing models
 

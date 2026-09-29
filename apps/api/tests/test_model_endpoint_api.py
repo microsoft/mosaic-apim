@@ -1,8 +1,18 @@
 """HTTP contract for model endpoint onboarding."""
 
-from aoai_double import AI_RESOURCE_ID, PARTIAL_PERMISSIONS, FakeCognitiveServices
+import asyncio
+
+from aoai_double import AI_PROJECT_ID, AI_RESOURCE_ID, PARTIAL_PERMISSIONS, FakeCognitiveServices
 from fastapi.testclient import TestClient
-from mosaic_api.domain import READER_ROLE_ID
+from mosaic_api.domain import (
+    READER_ROLE_ID,
+    ModelProvider,
+    Publication,
+    PublicationStatus,
+    PublishedResource,
+    PublishedResourceKind,
+)
+from mosaic_api.repositories import InMemoryGatewayRepository
 
 
 def _register(client: TestClient, **overrides: object) -> dict:
@@ -40,6 +50,73 @@ class TestModelEndpointApi:
             "/api/v1/model-endpoints", json={"azureResourceId": AI_RESOURCE_ID}
         )
         assert response.status_code == 409
+
+    def test_overlapping_registration_names_the_existing_endpoint(
+        self, endpoint_client: TestClient
+    ) -> None:
+        project = _register(
+            endpoint_client, azureResourceId=AI_PROJECT_ID, name="Team A project"
+        )
+
+        response = endpoint_client.post(
+            "/api/v1/model-endpoints", json={"azureResourceId": AI_RESOURCE_ID}
+        )
+
+        assert response.status_code == 409
+        body = response.json()
+        assert body["code"] == "conflict"
+        assert body["message"].startswith(
+            "MOSAIC already lists this resource's models through Team A project"
+        )
+        assert body["details"] == {"id": project["id"], "name": "Team A project"}
+
+    def test_delete_refused_while_a_model_is_published(
+        self, endpoint_client: TestClient, gateway_repository: InMemoryGatewayRepository
+    ) -> None:
+        created = _register(endpoint_client, name="Contoso models")
+        publication = Publication(
+            id="publication_1",
+            tenant_id=created["tenantId"],
+            gateway_id="gateway_1",
+            model_endpoint_id=created["id"],
+            deployment_name="gpt-4o-prod",
+            provider=ModelProvider.AZURE_OPENAI,
+            display_name="GPT-4o production",
+            api_name="gpt-4o",
+            api_path="gpt-4o",
+            backend_name="gpt-4o",
+            fragment_name="gpt-4o",
+            product_name="gpt-4o",
+            subscription_name="gpt-4o",
+            shape_version="1",
+            status=PublicationStatus.PUBLISHED,
+            resources=[
+                PublishedResource(
+                    kind=PublishedResourceKind.API,
+                    name="gpt-4o",
+                    resource_id="/apis/gpt-4o",
+                    created_by_mosaic=True,
+                )
+            ],
+        )
+        asyncio.run(gateway_repository.record_publication_state(publication))
+
+        response = endpoint_client.delete(f"/api/v1/model-endpoints/{created['id']}")
+
+        assert response.status_code == 409
+        body = response.json()
+        assert body["message"].startswith(
+            "Unpublish the model published from Contoso models before removing it."
+        )
+        assert body["details"]["publications"] == [
+            {
+                "id": "publication_1",
+                "displayName": "GPT-4o production",
+                "status": "published",
+                "gatewayId": "gateway_1",
+            }
+        ]
+        assert endpoint_client.get(f"/api/v1/model-endpoints/{created['id']}").status_code == 200
 
     def test_sync_then_read_deployments(self, endpoint_client: TestClient) -> None:
         created = _register(endpoint_client)
