@@ -1440,6 +1440,24 @@ class Publication(Entity):
 
         return [resource for resource in self.resources if resource.created_by_mosaic]
 
+    def may_own_gateway_state(self) -> bool:
+        """Whether API Management may hold something this publication is responsible for.
+
+        True while MOSAIC-created resources are recorded, while a run is or may be in flight, while
+        an interrupted apply left the runtime state unknown, and while any applied grant is still
+        enabled. Only a publication for which this is False may be forgotten.
+        """
+
+        return bool(
+            self.created_resources()
+            or self.status == PublicationStatus.APPLYING
+            or self.access_state in {"applying", "unknown"}
+            or (
+                self.applied_access
+                and any(grant.enabled for grant in self.applied_access.grants)
+            )
+        )
+
 
 class CredentialReference(Entity):
     entity_type: Literal["credentialReference"] = "credentialReference"

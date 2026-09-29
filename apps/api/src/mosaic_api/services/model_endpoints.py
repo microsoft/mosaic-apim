@@ -9,6 +9,7 @@ into Cosmos. It writes nothing to Azure AI and nothing to API Management.
 import asyncio
 import re
 from collections.abc import Awaitable, Callable
+from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from datetime import datetime
 from urllib.parse import urlparse
@@ -37,6 +38,7 @@ from mosaic_api.domain import (
     ModelEndpointUpdate,
     ModelInventorySummary,
     ModelProvider,
+    Publication,
     SubscriptionScanIssue,
     SubscriptionScanStatus,
     SuggestionSource,
@@ -63,6 +65,7 @@ from mosaic_api.observed import (
 )
 from mosaic_api.repositories import GatewayRepository, ModelEndpointRepository
 from mosaic_api.services.directory import Actor
+from mosaic_api.services.model_access import publication_lock
 
 logger = structlog.get_logger()
 
@@ -131,6 +134,37 @@ def _list_failure_message(reason: str) -> str:
 
     reason = reason.strip().rstrip(".")
     return f"{reason}." if reason else UNEXPECTED_LIST_FAILURE
+
+
+def _registered_resource(endpoint: ModelEndpoint) -> CognitiveServicesResourceId | None:
+    if not endpoint.azure_resource_id:
+        return None
+    try:
+        return CognitiveServicesResourceId.parse(endpoint.azure_resource_id)
+    except ValueError:
+        return None
+
+
+def _overlap_message(
+    requested: CognitiveServicesResourceId, existing: CognitiveServicesResourceId, name: str
+) -> str:
+    """Why a resource on an account another registration already covers is refused."""
+
+    twice = "so registering both would list every deployment twice."
+    if requested.project_name is None:
+        return (
+            f"MOSAIC already lists this resource's models through {name}, a Foundry project on "
+            f"it. A Foundry project's models are deployed on its parent resource, {twice}"
+        )
+    if existing.project_name is None:
+        return (
+            f"MOSAIC already lists this project's models through {name}, its parent resource. "
+            f"A Foundry project's models are deployed on its parent resource, {twice}"
+        )
+    return (
+        f"MOSAIC already lists this project's models through {name}, another project on the "
+        f"same resource. Foundry projects share their parent resource's deployments, {twice}"
+    )
 
 
 @dataclass(frozen=True)
@@ -225,6 +259,13 @@ class ModelEndpointService:
                 "This Azure AI resource is already registered with MOSAIC",
                 details={"id": existing.id, "name": existing.name},
             )
+        covering = await self._covering_endpoint(actor.tenant_id, resource)
+        if covering is not None:
+            covering_resource, endpoint_covering = covering
+            raise ConflictError(
+                _overlap_message(resource, covering_resource, endpoint_covering.name),
+                details={"id": endpoint_covering.id, "name": endpoint_covering.name},
+            )
 
         endpoint = ModelEndpoint(
             id=deterministic_id("endpoint", actor.tenant_id, resource.dedupe_key),
@@ -246,6 +287,22 @@ class ModelEndpointService:
         return await self._repository.create_endpoint(
             endpoint, self._audit(actor, "modelEndpoint.registered", endpoint.id)
         )
+
+    async def _covering_endpoint(
+        self, tenant_id: str, resource: CognitiveServicesResourceId
+    ) -> tuple[CognitiveServicesResourceId, ModelEndpoint] | None:
+        """The registration that already lists this resource's deployments, if any.
+
+        Deployments live on the account, so an account and every project on it all list the same
+        models. Any registration therefore covers its whole account.
+        """
+
+        account = resource.account_scope.casefold()
+        for endpoint in await self._repository.list_endpoints(tenant_id):
+            registered = _registered_resource(endpoint)
+            if registered is not None and registered.account_scope.casefold() == account:
+                return registered, endpoint
+        return None
 
     async def _register_compatible(
         self, actor: Actor, request: ModelEndpointCreate
@@ -331,9 +388,85 @@ class ModelEndpointService:
         )
 
     async def delete(self, actor: Actor, endpoint_id: str) -> None:
+        """Forget an endpoint, refusing while a publication from it may own anything in APIM.
+
+        A publication that may own gateway state blocks removal: once the endpoint is gone it can
+        no longer be planned, applied or unpublished, while the API it created keeps serving. One
+        that owns nothing (a never-applied draft, or one already unpublished or rolled back) could
+        never be planned again either, so it is deleted with the endpoint rather than left behind.
+        Each publication is locked while it is checked and removed, so an apply cannot start
+        between the check and the delete.
+        """
+
         endpoint = await self.get_endpoint(actor, endpoint_id)
-        await self._repository.delete_endpoint(
-            endpoint, self._audit(actor, "modelEndpoint.removed", endpoint.id)
+        publications = [
+            publication
+            for publication in await self._gateways.list_publications(actor.tenant_id)
+            if publication.model_endpoint_id == endpoint.id
+        ]
+        self._refuse_while_published(
+            endpoint, [item for item in publications if item.may_own_gateway_state()]
+        )
+        async with AsyncExitStack() as stack:
+            forgettable: list[Publication] = []
+            blocking: list[Publication] = []
+            for publication in publications:
+                try:
+                    await stack.enter_async_context(
+                        publication_lock(self._gateways, actor.tenant_id, publication.id)
+                    )
+                except ConflictError:
+                    # Another run or mutation holds it, so it may be about to own something.
+                    blocking.append(publication)
+                    continue
+                current = await self._gateways.get_publication(actor.tenant_id, publication.id)
+                if current is None:
+                    continue
+                if current.may_own_gateway_state():
+                    blocking.append(current)
+                else:
+                    forgettable.append(current)
+            self._refuse_while_published(endpoint, blocking)
+            for publication in forgettable:
+                await self._gateways.delete_publication(
+                    publication,
+                    AuditEvent(
+                        id=new_id("audit"),
+                        tenant_id=actor.tenant_id,
+                        action="publication.removed",
+                        resource_type="publication",
+                        resource_id=publication.id,
+                        actor_object_id=actor.object_id,
+                        details={"reason": "modelEndpoint.removed", "modelEndpointId": endpoint.id},
+                    ),
+                )
+            await self._repository.delete_endpoint(
+                endpoint, self._audit(actor, "modelEndpoint.removed", endpoint.id)
+            )
+
+    @staticmethod
+    def _refuse_while_published(endpoint: ModelEndpoint, blocking: list[Publication]) -> None:
+        if not blocking:
+            return
+        one = len(blocking) == 1
+        raise ConflictError(
+            f"Unpublish the {'model' if one else 'models'} published from {endpoint.name} before "
+            f"removing it. {'Its API' if one else 'Their APIs'} would keep serving traffic in API "
+            "Management with nothing in MOSAIC to change or remove "
+            f"{'it' if one else 'them'}.",
+            details={
+                "id": endpoint.id,
+                "name": endpoint.name,
+                "publications": [
+                    {
+                        "id": publication.id,
+                        "displayName": publication.display_name,
+                        "status": str(publication.status),
+                        "gatewayId": publication.gateway_id,
+                    }
+                    for publication in blocking
+                ],
+            },
         )
 
     async def preflight(self, actor: Actor, endpoint_id: str) -> ModelEndpoint:
@@ -641,11 +774,14 @@ class ModelEndpointService:
         """
 
         registered = await self._repository.list_endpoints(actor.tenant_id)
-        by_resource = {
-            (endpoint.azure_resource_id or "").casefold(): endpoint
-            for endpoint in registered
-            if endpoint.azure_resource_id
-        }
+        # Keyed on the account, because every registration covers its whole account: a Foundry
+        # project's deployments live on its parent resource, so suggesting that resource once the
+        # project is registered would offer the same models a second time.
+        by_account: dict[str, ModelEndpoint] = {}
+        for endpoint in registered:
+            resource = _registered_resource(endpoint)
+            if resource is not None:
+                by_account.setdefault(resource.account_scope.casefold(), endpoint)
         by_host = {
             (urlparse(str(endpoint.endpoint)).hostname or "").casefold(): endpoint
             for endpoint in registered
@@ -676,7 +812,7 @@ class ModelEndpointService:
                 suggestions=suggestions, scan_status=SubscriptionScanStatus.NOT_CONFIGURED
             )
 
-        scan = await self._scan_subscriptions(by_resource, add, gateways)
+        scan = await self._scan_subscriptions(by_account, add, gateways)
         return ModelEndpointSuggestionView(
             suggestions=suggestions,
             scan_issues=scan.issues,
@@ -738,7 +874,7 @@ class ModelEndpointService:
 
     async def _scan_subscriptions(
         self,
-        by_resource: dict[str, ModelEndpoint],
+        by_account: dict[str, ModelEndpoint],
         add: Callable[[ModelEndpointSuggestion], None],
         gateways: list[Gateway],
     ) -> _SubscriptionScan:
@@ -803,7 +939,7 @@ class ModelEndpointService:
 
             scanned += 1
             for account in accounts:
-                suggestion = self._account_suggestion(account, by_resource)
+                suggestion = self._account_suggestion(account, by_account)
                 if suggestion is not None:
                     add(suggestion)
         return _SubscriptionScan(
@@ -846,7 +982,7 @@ class ModelEndpointService:
 
     @staticmethod
     def _account_suggestion(
-        account: dict[str, object], by_resource: dict[str, ModelEndpoint]
+        account: dict[str, object], by_account: dict[str, ModelEndpoint]
     ) -> ModelEndpointSuggestion | None:
         resource_id = account.get("id")
         if not isinstance(resource_id, str) or not resource_id:
@@ -866,7 +1002,7 @@ class ModelEndpointService:
             candidate = properties.get("endpoint")
             endpoint = candidate if isinstance(candidate, str) and candidate else None
         location = account.get("location")
-        existing = by_resource.get(resource.canonical.casefold())
+        existing = by_account.get(resource.account_scope.casefold())
         return ModelEndpointSuggestion(
             source=SuggestionSource.SUBSCRIPTION_SCAN,
             endpoint=endpoint,

@@ -575,15 +575,7 @@ class PublishingService:
 
     async def _delete(self, actor: Actor, target_id: str) -> None:
         publication = await self.get_publication(actor, target_id)
-        if (
-            publication.created_resources()
-            or publication.status == PublicationStatus.APPLYING
-            or publication.access_state in {"applying", "unknown"}
-            or (
-                publication.applied_access
-                and any(grant.enabled for grant in publication.applied_access.grants)
-            )
-        ):
+        if publication.may_own_gateway_state():
             raise ConflictError(
                 "This publication still owns resources in API Management. Unpublish it first so "
                 "MOSAIC can remove them, rather than forgetting they exist.",
