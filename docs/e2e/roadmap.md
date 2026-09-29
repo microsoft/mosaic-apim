@@ -88,7 +88,7 @@ tests and README or ADR updates wherever a decision changes.
 | G7 | When MOSAIC's identity can see no subscriptions, discovery shows nothing at all: no suggestions, no unreadable subscriptions and no hint. Found live in Phase 3 | Say how many subscriptions were scanned. When there are none, or the list fails, show the Reader command for the subscriptions MOSAIC already knows about ([#17](https://github.com/microsoft/mosaic-apim/pull/17)) | ✅ merged |
 | G8 | Gateway runtime readiness can disagree with what the gateway can actually call. It accepts exactly one role, so a sufficient role such as the Cognitive Services User role it recommends before it can read the account is later reported as missing. It also checks a project-registered endpoint at the project scope, although published APIs call the parent resource, where a project-scoped grant doesn't apply | Judge readiness at the account the published API calls, and accept any role whose data actions cover the published operations. Recommend only roles the check accepts: Cognitive Services OpenAI User for Azure OpenAI, and Foundry User otherwise. A deny assignment, or disabled public access with no virtual network on the gateway, means "cannot invoke". Conditions MOSAIC can't evaluate mean "not confirmed". The endpoint's Access card shows its network, firewall and key settings. Readiness covers every API MOSAIC can publish from the endpoint, including Anthropic Messages on AI Services accounts ([#23](https://github.com/microsoft/mosaic-apim/pull/23)) | ✅ merged |
 | G9 | After a redeploy, an open browser kept running the previous console build. Both web apps' nginx serve `index.html`, the SPA routes and `/config.js` with no `Cache-Control`, so browsers cache them heuristically and load the old hashed bundle. Found live in Phase 3 | Revalidate the HTML, the SPA fallback and `/config.js` on every load. Cache the hashed `/assets/` files as immutable, and return 404 for a missing asset instead of the SPA page. Keep the security headers on every response | 🔄 committed, waiting on push access |
-| G10 | Discovery said "Scanned 1 subscription. Nothing new to register." while the subscription held 56 Azure AI accounts MOSAIC couldn't read. MOSAIC's roles were all on single resources, and ARM silently filters a subscription-wide list to what the caller can read, so the scan looked complete. Found live in Phase 3 | Check MOSAIC's own permissions at each scanned subscription. When it can read only part of one, say so and show the subscription Reader command. Also say, wherever MOSAIC asks for a role on its own identity, that a new role can take a while to apply (O7) | 🔄 in progress |
+| G10 | Discovery said "Scanned 1 subscription. Nothing new to register." while the subscription held 56 Azure AI accounts MOSAIC couldn't read. MOSAIC's roles were all on single resources, and ARM silently filters a subscription-wide list to what the caller can read, so the scan looked complete. Found live in Phase 3 | Check MOSAIC's own permissions at each scanned subscription. When it can read only part of one, say so and show the subscription Reader command. Also say, wherever MOSAIC asks for a role on its own identity, that a new role can take a while to apply (O7) | 🔄 committed, waiting on push access |
 | G11 | Discovery suggested, and registration accepted, the parent account of a registered Foundry project. The second endpoint had the same URL, and syncing it listed the project's deployments again, each publishable on its own (O9). **Remove** on an endpoint deletes it and its synced models at once, and the server doesn't check publications, so a publication whose endpoint is gone can't be re-planned or applied (O10). Found live in Phase 3 | Treat each registration as covering its account: don't suggest a covered account, and refuse a registration that overlaps one, naming it. Confirm before removing an endpoint, and refuse while publications depend on it | 🔄 committed, waiting on push access |
 | G12 | Endpoint settings leave out the Key authentication row and its note when an account doesn't set `disableLocalAuth`. Azure leaves it unset by default, which means keys are enabled, so both Azure OpenAI targets showed nothing (O8). Found live in Phase 3 | Treat an unset value on a readable account as Enabled, and add the note | 🔄 committed, waiting on push access |
 | G13 | **No model can be published.** The default publish plan creates the policy fragment before the backend its `set-backend-service` names. APIM accepts the fragment PUT, then its validation fails it: "Backend with id '…' could not be found." The run rolls back, so API Management is left unchanged. The console shows only "The Azure operation did not succeed", because MOSAIC drops Azure's error when it polls the operation. The governed-access plan already creates the backend first. Found live in Phase 5 (A8) | Create the backend before the fragment, which also makes teardown remove the fragment first. Show Azure's reason when an operation fails. Make the test fake of APIM reject a fragment whose backend doesn't exist | 🔄 in progress |
@@ -294,6 +294,12 @@ Progress:
   - The inventory afterwards matched the baseline exactly, including the global policy hash.
   - The publication shows "Rolled back" with **Re-plan** and **Apply**, so once G13 is deployed
     the retry starts from that row.
+  - The console offers no way around G13. Governed access creates the backend first, but
+    **Governed model access** lists only models that have already published, and this one never
+    has.
+- ⬜ A9: each published model gets a row under **Imported model APIs**. That row's **Catalog**
+  select offers "Discoverable" or "Entitled users only". The `guest` persona already holds the User
+  role, so it checks the portal catalog once someone signs it in.
 
 ### Phase 6: Live, admin sets identity and governed access (A10 to A12) 🔄 started early
 
@@ -328,6 +334,11 @@ Progress:
 - ✅ P8: the admin reaches the portal with single sign-on and no second MFA prompt. The header
   shows "Admin allowed", and My access, Catalog and My requests show their empty states without
   errors.
+- ⏳ P1, A1 and P0 need someone to sign the `noRole` and `guest` personas in. Both browsers stopped
+  at "Enter password", and the harness never stores passwords. No tenant change is needed:
+  - None of MOSAIC's app registrations requires user assignment, so Entra lets `noRole` sign in,
+    and the denial P1 checks comes from MOSAIC, not from Entra.
+  - `guest` already holds the User role, so it can run A1 in the console and P0 in the portal.
 
 ### Phase 8: Runtime verification (R1 to R8, A14) 🔄 verifier ready
 
