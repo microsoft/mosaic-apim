@@ -115,18 +115,26 @@ export async function signInErrorCode(page: Page): Promise<string | undefined> {
 }
 
 /**
+ * Silent SSO passes through the login host before any page renders there, so a login page must show
+ * nothing to automate for this long before a non-interactive sign-in decides a person is needed.
+ */
+const loginSettleMs = 10_000
+
+/**
  * Drives the Microsoft Entra redirect for one persona. Account pickers, the UPN prompt, and
  * "Stay signed in?" are automated; passwords, MFA, and consent are left to the human at the keyboard.
  */
-async function completeEntraSignIn(
+export async function completeEntraSignIn(
   page: Page,
   origin: string,
   upn: string,
   interactive: boolean,
   timeoutMs: number,
+  settleMs = loginSettleMs,
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs
   let announced = false
+  let idleSince: number | undefined
   const tile = `[data-test-id="${upn.replace(/["\\]/g, '')}" i]`
   while (Date.now() < deadline) {
     const url = page.url()
@@ -135,21 +143,29 @@ async function completeEntraSignIn(
       const code = await signInErrorCode(page)
       if (code) throw new SignInError(`Microsoft Entra rejected the sign-in with ${code}`)
       if (await visible(page, tile)) {
+        idleSince = undefined
         await page.locator(tile).first().click()
       } else if (await visible(page, 'input[name="loginfmt"]:not([aria-hidden="true"])')) {
+        idleSince = undefined
         const input = page.locator('input[name="loginfmt"]').first()
         if ((await input.inputValue()).toLowerCase() !== upn.toLowerCase()) await input.fill(upn)
         await page.locator('input[type="submit"]').first().click()
       } else if (await visible(page, '#KmsiCheckboxField, #KmsiDescription')) {
+        idleSince = undefined
         await page.locator('#idSIButton9').first().click()
       } else if (!interactive) {
-        throw new SignInError(
-          `Sign-in for ${upn} needs a password, MFA, or consent. Run "npm run login -- <persona>" first or set MOSAIC_E2E_INTERACTIVE=1.`,
-        )
+        idleSince ??= Date.now()
+        if (Date.now() - idleSince >= settleMs) {
+          throw new SignInError(
+            `Sign-in for ${upn} needs a password, MFA, or consent. Run "npm run login -- <persona>" first or set MOSAIC_E2E_INTERACTIVE=1.`,
+          )
+        }
       } else if (!announced) {
         announced = true
         process.stderr.write(`Waiting for ${upn} to finish signing in in the browser window…\n`)
       }
+    } else {
+      idleSince = undefined
     }
     await page.waitForTimeout(750)
   }
