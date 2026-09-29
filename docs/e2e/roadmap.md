@@ -437,7 +437,12 @@ Progress:
   - The console reports the failure everywhere. The publication reads Failed on Models. On
     Entitlements, the model reads "Access: failed" with APIM's reason and "Last applied methods:
     Deny all — both methods disabled", and each grant row reads "Apply failed".
-  - Once G17 is deployed (Batch 3d), retry with **Review model changes** and **Apply plan**.
+  - Once G17 is deployed (Batch 3d), retry with **Review model changes** and **Apply plan**. The
+    retry is also the first live check of what the APIM fake can't model, such as C# compile
+    errors and the bare `catch { }` in the check of the request's model. A refusal fails closed
+    again, as the first attempt did. No planned grant has a weekly call quota, the only
+    expression that uses `DayOfWeek`, a type API Management's list of allowed types doesn't
+    name. A Phase 8 grant can add one.
 - ✅ O4 on the Batch 3c build: **Review model changes** for AOAI B `gpt-4o-mini` opened "Review
   model access" on "Step 3 of 4" with focus inside, and nothing hid it. The plan had A11's shape.
   It was closed without applying, so the model still reads "Access: failed" until Batch 3d.
@@ -645,6 +650,7 @@ be confirmed, or fixed, once the journeys that exercise them have run.
 | O19 | When **Apply plan** finishes, the publish dialog removes the button that had focus, and nothing on the page has focus. Escape then doesn't close the dialog until Tab brings focus back inside. Tabbing works because the dialog still traps focus, but a screen reader isn't taken to the result. #25 handles focus only when the dialog opens. Seen live after Batch 3c, applying a re-plan of AOAI A `gpt-35-turbo`. The code does the same at every step: each step change removes the button that had focus, and **Review plan** and **Apply plan** disable themselves while they work | Move focus into each new step, and to the result or the refusal when an apply ends, and test it the way #25 tests the opening. Being fixed in its own pull request |
 | O20 | The console's card for an account with only the User role says that role opens the MOSAIC end-user portal, but it can't link there, because the console isn't configured with the portal's address. Someone who opens the console by mistake has to find the portal on their own. Seen in A1 after Batch 3c | Add the portal's address to the console's runtime configuration, and link to it from the card |
 | O21 | After Batch 3c, P0 failed within milliseconds, before it opened a page: "Failed to open a new tab", then "Target page, context or browser has been closed". The harness closes every page when a test ends. A headed Chromium quits about a quarter of a second after its last tab closes, so the `guest` persona's browser was gone by the time P0 wanted it. A1 now checks a second persona between the `guest` persona's two smoke tests, so there was time for the browser to quit. Before that, P0 had passed only by winning the race. A throwaway profile shows the same thing every time | Fixed in the harness. Each persona's browser keeps one blank tab open between tests. With that tab, a new page opens after the browser sits idle for 9 seconds; without it, the browser is gone. P0 still needs a live run while someone can answer the `guest` persona's MFA |
+| O22 | MOSAIC lets an admin save limits that API Management may not support on the gateway's tier. The `quota-by-key` page's tier banner lists only the classic tiers, though its usage section also names v2. `rate-limit-by-key` and `llm-token-limit` list the classic and v2 tiers. None lists Consumption. MOSAIC checks the tier only for Anthropic token limits, which need v2. From G17's review of the policy pages, not seen live: this deployment runs the Developer tier, which supports all three | Check the gateway's tier when limits are saved or planned, and say which limit it can't enforce. A follow-up gap, not blocking this plan |
 
 The Phase 3 check on whether the gateway role recommendation narrows once the account kind is
 known led to G8: it does narrow, and the check then rejects the broader role it recommended
