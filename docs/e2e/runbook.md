@@ -218,7 +218,8 @@ won't last until the timeout, the run stops before waiting and names the token, 
 
 - Never commit `targets.local.json`, profiles, artifacts or reports. `e2e/.gitignore` covers them.
 - Key reveal UIs must mark revealed values with `data-secret`, which keeps them out of snapshots,
-  text reads, screenshots and failure messages. The console's reveal dialog doesn't yet, so the
+  text reads, screenshots and failure messages. The console's reveal dialog has done so since
+  [#38](https://github.com/microsoft/mosaic-apim/pull/38). For builds deployed before it, the
   harness also treats elements labelled `Revealed … key` as secret, along with password and
   one-time-code fields.
 - Don't point text or value assertions (`toHaveText`, `toHaveValue`) at a secret element. Failure

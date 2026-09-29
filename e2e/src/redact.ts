@@ -10,7 +10,8 @@ export const maskedSelectors = [
   'input[type="password"]',
   'input[autocomplete="one-time-code"]',
   'input[name="otc"]',
-  // The console's key reveal (EntitlementConnectionDialog) labels the value but has no data-secret marker.
+  // The console's key reveal (EntitlementConnectionDialog) now has a data-secret marker. Its label also
+  // matches, for deployed builds from before the marker.
   '[aria-label^="Revealed "][aria-label$=" key"]',
 ]
 
