@@ -316,7 +316,7 @@ Progress on the new build (G7 and G8 deployed):
     ([#37](https://github.com/microsoft/mosaic-apim/pull/37),
     [#38](https://github.com/microsoft/mosaic-apim/pull/38)) on the web app, and the O18 fix on
     the portal. Since Batch 3c, `main` has changed only the API's governed policy code and its
-    end-user routes, three web dialogs and one portal component, with no infrastructure, Entra
+    end-user routes, four web dialogs and one portal component, with no infrastructure, Entra
     hook, app setting, Dockerfile, nginx configuration or package manifest. The API's, the web
     app's and the portal's tests pass on it, and nothing has been deployed since Batch 3c.
 - **Exit:** the deployed build contains G1 to G5, G7 and G8, and the smoke specs pass.
