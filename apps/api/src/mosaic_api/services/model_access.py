@@ -1,9 +1,10 @@
 """Shared, secret-free model access state and publication mutation guards."""
 
+import asyncio
 import hashlib
 import json
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator, Iterable
+from contextlib import AsyncExitStack, asynccontextmanager
 
 from mosaic_api.domain import (
     BindingSource,
@@ -19,9 +20,19 @@ from mosaic_api.domain import (
     model_access_subscription_name,
     new_id,
 )
+from mosaic_api.errors import ConflictError
 from mosaic_api.repositories import GatewayRepository
 
 _LOCAL_MUTATIONS: set[str] = set()
+
+ENVIRONMENTS_SCOPE = "environments"
+ENVIRONMENT_BUSY_MESSAGE = "Another environment change is in progress. Try again in a moment."
+# Leases guard short critical sections made only of Cosmos reads and conditional writes, so a
+# minute is generous; a holder that stalls past it can't overwrite newer state, because its
+# writes carry etags and apply re-checks the environment verdict under its own publication lock.
+SCOPE_LEASE_SECONDS = 60.0
+SCOPE_LEASE_ATTEMPTS = 5
+SCOPE_LEASE_BACKOFF_SECONDS = 0.1
 
 
 def local_mutation_active(owner_id: str) -> bool:
@@ -30,6 +41,10 @@ def local_mutation_active(owner_id: str) -> bool:
 
 def gateway_mutation_scope(gateway_id: str) -> str:
     return f"gateway:{gateway_id}"
+
+
+def endpoint_mutation_scope(endpoint_id: str) -> str:
+    return f"endpoint:{endpoint_id}"
 
 
 def entitlement_intent_digest(entitlement: Entitlement, principal: Principal | None) -> str:
@@ -71,6 +86,74 @@ async def publication_lock(
             await repository.release_publication_lock(tenant_id, publication_id, owner)
         finally:
             _LOCAL_MUTATIONS.discard(owner)
+
+
+@asynccontextmanager
+async def scope_lease(
+    repository: GatewayRepository,
+    tenant_id: str,
+    scope: str,
+    *,
+    busy_message: str = ENVIRONMENT_BUSY_MESSAGE,
+) -> AsyncIterator[str]:
+    """Hold an expiring lease on a scope, retrying briefly so concurrent admin actions queue.
+
+    For critical sections that touch only MOSAIC's records. A restart can't strand the tenant,
+    because an abandoned lease expires; anything that calls Azure uses ``publication_lock``.
+    """
+
+    owner = new_id("lease")
+    for attempt in range(SCOPE_LEASE_ATTEMPTS):
+        try:
+            await repository.acquire_scope_lease(
+                tenant_id, scope, owner, lease_seconds=SCOPE_LEASE_SECONDS
+            )
+            break
+        except ConflictError as error:
+            if attempt + 1 >= SCOPE_LEASE_ATTEMPTS:
+                raise ConflictError(busy_message, details={"scope": scope}) from error
+            await asyncio.sleep(SCOPE_LEASE_BACKOFF_SECONDS * (attempt + 1))
+    try:
+        yield owner
+    finally:
+        await repository.release_scope_lease(tenant_id, scope, owner)
+
+
+@asynccontextmanager
+async def environment_guard(
+    repository: GatewayRepository,
+    tenant_id: str,
+    *,
+    environments: bool = True,
+    gateway_ids: Iterable[str] = (),
+    endpoint_ids: Iterable[str] = (),
+    publication_ids: Iterable[str] = (),
+) -> AsyncIterator[None]:
+    """Take environment-related scopes in the one order every path uses.
+
+    The tenant ``environments`` lease comes first, then gateway scopes, endpoint leases and
+    publication locks, each group sorted by ID. Locks fail fast rather than wait, so a shared
+    order keeps two changes from each holding what the other needs.
+    """
+
+    async with AsyncExitStack() as stack:
+        if environments:
+            await stack.enter_async_context(
+                scope_lease(repository, tenant_id, ENVIRONMENTS_SCOPE)
+            )
+        for gateway_id in sorted(set(gateway_ids)):
+            await stack.enter_async_context(
+                publication_lock(repository, tenant_id, gateway_mutation_scope(gateway_id))
+            )
+        for endpoint_id in sorted(set(endpoint_ids)):
+            await stack.enter_async_context(
+                scope_lease(repository, tenant_id, endpoint_mutation_scope(endpoint_id))
+            )
+        for publication_id in sorted(set(publication_ids)):
+            await stack.enter_async_context(
+                publication_lock(repository, tenant_id, publication_id)
+            )
+        yield
 
 
 async def entitlement_publication(

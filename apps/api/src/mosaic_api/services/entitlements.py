@@ -18,9 +18,12 @@ from mosaic_api.domain import (
     AccessRequest,
     AccessRequestApproval,
     AccessRequestCreate,
+    AccessRequestResourceSnapshot,
     AccessRequestState,
+    AdminAccessRequestListItem,
     AuditEvent,
     BindingSource,
+    CatalogVisibility,
     Entitlement,
     EntitlementBinding,
     EntitlementCreate,
@@ -33,6 +36,7 @@ from mosaic_api.domain import (
     PrincipalCreate,
     PrincipalKind,
     ResolvedEntitlement,
+    ResourceSummary,
     deterministic_id,
     entitlement_id,
     new_id,
@@ -71,6 +75,8 @@ class ResourceDescriptor:
     display_name: str
     gateway_id: str | None = None
     product_names: tuple[str, ...] = ()
+    gateway_name: str | None = None
+    environment: str | None = None
 
 
 def _subscription_owner(subscription: ObservedSubscription) -> str | None:
@@ -90,6 +96,10 @@ def _subscription_owner(subscription: ObservedSubscription) -> str | None:
 
 def _resource_key(resource: EntitlementResource) -> tuple[str, str, str]:
     return (str(resource.kind), resource.id, resource.scope_id or "")
+
+
+def _environment_confirmation_value(environment: str | None) -> str:
+    return environment if environment is not None else "unclassified"
 
 
 def _subject_for(principal: Principal) -> EntitlementSubject:
@@ -230,6 +240,237 @@ class EntitlementService:
             "MOSAIC does not govern the resource named by this entitlement",
             details={"resourceKind": str(resource.kind), "resourceId": resource.id},
         )
+
+    async def _catalog_visible_resource(
+        self, tenant_id: str, resource: EntitlementResource
+    ) -> ResourceSummary | None:
+        if resource.kind not in {"modelApi", "mcpServer"}:
+            return None
+        summary = await self.resource_summary(tenant_id, resource)
+        if not summary.available:
+            return None
+        if resource.kind == "modelApi":
+            model_api = await self._gateways.get_model_api(tenant_id, resource.id)
+            if model_api is None or model_api.visibility != CatalogVisibility.CATALOG:
+                return None
+        elif resource.kind == "mcpServer":
+            mcp_server = await self._gateways.get_mcp_server(tenant_id, resource.id)
+            if mcp_server is None or mcp_server.visibility != CatalogVisibility.CATALOG:
+                return None
+        return summary
+
+    @staticmethod
+    def _snapshot_from_summary(summary: ResourceSummary) -> AccessRequestResourceSnapshot:
+        return AccessRequestResourceSnapshot(
+            display_name=summary.display_name,
+            gateway_id=summary.gateway_id,
+            gateway_name=summary.gateway_name,
+        )
+
+    @staticmethod
+    def _snapshot_summary(
+        resource: EntitlementResource,
+        *,
+        snapshot: AccessRequestResourceSnapshot | None,
+        requested_environment: str | None,
+    ) -> ResourceSummary:
+        return ResourceSummary(
+            kind=resource.kind,
+            id=resource.id,
+            scope_id=resource.scope_id,
+            display_name=snapshot.display_name if snapshot else None,
+            gateway_id=snapshot.gateway_id if snapshot else None,
+            gateway_name=snapshot.gateway_name if snapshot else None,
+            environment=requested_environment,
+            available=False,
+        )
+
+    async def resource_summary(
+        self,
+        tenant_id: str,
+        resource: EntitlementResource,
+        *,
+        snapshot: AccessRequestResourceSnapshot | None = None,
+        requested_environment: str | None = None,
+        visible: bool | None = None,
+    ) -> ResourceSummary:
+        """Build a human-safe summary for one entitlement resource.
+
+        ``visible=False`` is the portal privacy path: live data is deliberately ignored and only
+        the request snapshot may be shown. ``visible=None`` is the administrative path and may show
+        any live governed resource.
+        """
+
+        if visible is False:
+            return self._snapshot_summary(
+                resource, snapshot=snapshot, requested_environment=requested_environment
+            )
+        return (
+            await self.resource_summaries(
+                tenant_id,
+                [resource],
+                snapshots=[snapshot],
+                requested_environments=[requested_environment],
+                visible=visible,
+            )
+        )[0]
+
+    async def resource_summaries(
+        self,
+        tenant_id: str,
+        resources: list[EntitlementResource],
+        *,
+        snapshots: list[AccessRequestResourceSnapshot | None] | None = None,
+        requested_environments: list[str | None] | None = None,
+        visible: bool | dict[tuple[str, str, str], bool] | None = None,
+    ) -> list[ResourceSummary]:
+        """Build summaries for several resources with shared repository reads."""
+
+        snapshots = snapshots or [None] * len(resources)
+        requested_environments = requested_environments or [None] * len(resources)
+        gateways = {
+            gateway.id: gateway for gateway in await self._gateways.list_gateways(tenant_id)
+        }
+        endpoints = {
+            endpoint.id: endpoint for endpoint in await self._endpoints.list_endpoints(tenant_id)
+        }
+        model_apis = {
+            item.id: item for item in await self._gateways.list_model_apis(tenant_id)
+        }
+        mcp_servers = {
+            item.id: item for item in await self._gateways.list_mcp_servers(tenant_id)
+        }
+        product_scopes = {
+            resource.scope_id or ""
+            for resource in resources
+            if resource.kind == "product" and resource.scope_id
+        }
+        deployment_scopes = {
+            resource.scope_id or ""
+            for resource in resources
+            if resource.kind == "modelDeployment" and resource.scope_id
+        }
+        products_by_scope: dict[str, dict[str, ObservedProduct]] = {}
+        for scope_id in product_scopes:
+            products_by_scope[scope_id] = {
+                item.id: item
+                for item in await self._gateways.list_observed(
+                    ObservedProduct, tenant_id, scope_id, "observedProduct"
+                )
+            }
+        deployments_by_scope: dict[str, dict[str, ObservedModelDeployment]] = {}
+        for scope_id in deployment_scopes:
+            deployments_by_scope[scope_id] = {
+                item.id: item
+                for item in await self._endpoints.list_observed_for_endpoint(
+                    ObservedModelDeployment,
+                    tenant_id,
+                    scope_id,
+                    "observedModelDeployment",
+                )
+            }
+
+        result: list[ResourceSummary] = []
+        for index, resource in enumerate(resources):
+            resource_visible = visible
+            if isinstance(visible, dict):
+                resource_visible = visible.get(_resource_key(resource), False)
+            if resource_visible is False:
+                result.append(
+                    self._snapshot_summary(
+                        resource,
+                        snapshot=snapshots[index],
+                        requested_environment=requested_environments[index],
+                    )
+                )
+                continue
+
+            summary: ResourceSummary | None = None
+            if resource.kind == "modelApi":
+                model_api = model_apis.get(resource.id)
+                gateway = gateways.get(model_api.gateway_id) if model_api else None
+                if model_api and gateway:
+                    summary = ResourceSummary(
+                        kind=resource.kind,
+                        id=resource.id,
+                        scope_id=resource.scope_id,
+                        display_name=model_api.display_name,
+                        gateway_id=gateway.id,
+                        gateway_name=gateway.name,
+                        environment=gateway.environment,
+                        available=True,
+                    )
+                elif model_api:
+                    summary = ResourceSummary(
+                        kind=resource.kind,
+                        id=resource.id,
+                        scope_id=resource.scope_id,
+                        display_name=model_api.display_name,
+                        gateway_id=model_api.gateway_id,
+                        available=False,
+                    )
+            elif resource.kind == "mcpServer":
+                mcp_server = mcp_servers.get(resource.id)
+                gateway = gateways.get(mcp_server.gateway_id) if mcp_server else None
+                if mcp_server and gateway:
+                    summary = ResourceSummary(
+                        kind=resource.kind,
+                        id=resource.id,
+                        scope_id=resource.scope_id,
+                        display_name=mcp_server.display_name,
+                        gateway_id=gateway.id,
+                        gateway_name=gateway.name,
+                        environment=gateway.environment,
+                        available=True,
+                    )
+                elif mcp_server:
+                    summary = ResourceSummary(
+                        kind=resource.kind,
+                        id=resource.id,
+                        scope_id=resource.scope_id,
+                        display_name=mcp_server.display_name,
+                        gateway_id=mcp_server.gateway_id,
+                        available=False,
+                    )
+            elif resource.kind == "product":
+                scope_id = resource.scope_id or ""
+                product = products_by_scope.get(scope_id, {}).get(resource.id)
+                gateway = gateways.get(scope_id)
+                if product and gateway:
+                    summary = ResourceSummary(
+                        kind=resource.kind,
+                        id=resource.id,
+                        scope_id=resource.scope_id,
+                        display_name=product.display_name,
+                        gateway_id=gateway.id,
+                        gateway_name=gateway.name,
+                        environment=gateway.environment,
+                        available=True,
+                    )
+            elif resource.kind == "modelDeployment":
+                scope_id = resource.scope_id or ""
+                deployment = deployments_by_scope.get(scope_id, {}).get(resource.id)
+                endpoint = endpoints.get(scope_id)
+                if deployment and endpoint:
+                    summary = ResourceSummary(
+                        kind=resource.kind,
+                        id=resource.id,
+                        scope_id=resource.scope_id,
+                        display_name=f"{deployment.deployment_name} on {endpoint.name}",
+                        gateway_id=None,
+                        gateway_name=None,
+                        environment=endpoint.environment,
+                        available=True,
+                    )
+
+            if summary is None:
+                summary = self._snapshot_summary(
+                    resource,
+                    snapshot=snapshots[index],
+                    requested_environment=requested_environments[index],
+                )
+            result.append(summary)
+        return result
 
     # ------------------------------------------------------------------ binding
 
@@ -444,7 +685,7 @@ class EntitlementService:
     # ------------------------------------------------------------------ resolution
 
     async def resolve_for_object_id(
-        self, actor: Actor, object_id: str
+        self, actor: Actor, object_id: str, *, include_disabled: bool = False
     ) -> list[ResolvedEntitlement]:
         """Effective access for an Entra object ID.
 
@@ -455,20 +696,35 @@ class EntitlementService:
         principal = await self._directory.find_principal_by_object_id(actor.tenant_id, object_id)
         if not principal:
             return []
-        return await self.resolve_for_principal(actor, principal.id)
+        return await self.resolve_for_principal(
+            actor, principal.id, include_disabled=include_disabled
+        )
 
     async def resolve_for_principal(
-        self, actor: Actor, principal_id: str
+        self, actor: Actor, principal_id: str, *, include_disabled: bool = False
     ) -> list[ResolvedEntitlement]:
+        """One entitlement per resource: direct over group, and enabled over disabled.
+
+        Disabled grants are left out unless ``include_disabled`` is set; then a resource covered
+        only by disabled grants resolves to one of them, so a report can show the grant as off.
+        """
+
         # Keyed on the resource, not the entitlement: a direct grant and a group grant over the
         # same resource are different entitlements, and returning both would leave a consumer
         # choosing arbitrarily between two contradictory limits.
         resolved: dict[tuple[str, str, str], ResolvedEntitlement] = {}
+        disabled: dict[tuple[str, str, str], ResolvedEntitlement] = {}
         for entitlement in await self._repository.list_entitlements(
             actor.tenant_id, subject_id=principal_id
         ):
-            if entitlement.subject.kind != "group" and entitlement.enabled:
+            if entitlement.subject.kind == "group":
+                continue
+            if entitlement.enabled:
                 resolved[_resource_key(entitlement.resource)] = ResolvedEntitlement(
+                    entitlement=await self._decorate(entitlement), via=GrantPath.DIRECT
+                )
+            elif include_disabled:
+                disabled[_resource_key(entitlement.resource)] = ResolvedEntitlement(
                     entitlement=await self._decorate(entitlement), via=GrantPath.DIRECT
                 )
 
@@ -480,19 +736,33 @@ class EntitlementService:
             for entitlement in await self._repository.list_entitlements(
                 actor.tenant_id, subject_id=membership.group_id
             ):
-                if entitlement.subject.kind != "group" or not entitlement.enabled:
+                if entitlement.subject.kind != "group":
+                    continue
+                if not entitlement.enabled and not include_disabled:
                     continue
                 # A direct grant is the more specific statement about this person, so it wins over
                 # anything a group contributes for the same resource.
-                if _resource_key(entitlement.resource) in resolved:
+                target = resolved if entitlement.enabled else disabled
+                if _resource_key(entitlement.resource) in target:
                     continue
-                resolved[_resource_key(entitlement.resource)] = ResolvedEntitlement(
+                target[_resource_key(entitlement.resource)] = ResolvedEntitlement(
                     entitlement=entitlement,
                     via=GrantPath.GROUP,
                     via_group_id=membership.group_id,
                     via_group_name=group.name if group else None,
                 )
-        return sorted(resolved.values(), key=lambda item: item.entitlement.id)
+        for key, item in disabled.items():
+            resolved.setdefault(key, item)
+        items = sorted(resolved.values(), key=lambda item: item.entitlement.id)
+        summaries = await self.resource_summaries(
+            actor.tenant_id,
+            [item.entitlement.resource for item in items],
+            visible=True,
+        )
+        return [
+            item.model_copy(update={"resource_summary": summaries[index]})
+            for index, item in enumerate(items)
+        ]
 
     # ------------------------------------------------------------------ access requests
 
@@ -507,6 +777,29 @@ class EntitlementService:
             actor.tenant_id, requester_object_id=requester_object_id, state=state
         )
 
+    async def list_access_request_items(
+        self,
+        actor: Actor,
+        *,
+        requester_object_id: str | None = None,
+        state: str | None = None,
+    ) -> list[AdminAccessRequestListItem]:
+        requests = await self.list_access_requests(
+            actor, requester_object_id=requester_object_id, state=state
+        )
+        summaries = await self.resource_summaries(
+            actor.tenant_id,
+            [item.resource for item in requests],
+            snapshots=[item.resource_snapshot for item in requests],
+            requested_environments=[item.requested_environment for item in requests],
+        )
+        return [
+            AdminAccessRequestListItem.model_validate(
+                {**item.model_dump(by_alias=False), "resource_summary": summaries[index]}
+            )
+            for index, item in enumerate(requests)
+        ]
+
     async def get_access_request(self, actor: Actor, request_id: str) -> AccessRequest:
         access_request = await self._repository.get_access_request(actor.tenant_id, request_id)
         if not access_request:
@@ -514,9 +807,15 @@ class EntitlementService:
         return access_request
 
     async def create_access_request(
-        self, actor: Actor, request: AccessRequestCreate
+        self,
+        actor: Actor,
+        request: AccessRequestCreate,
+        *,
+        summary: ResourceSummary | None = None,
     ) -> AccessRequest:
         descriptor = await self._describe_resource(actor, request.resource)
+        if summary is None:
+            summary = await self.resource_summary(actor.tenant_id, request.resource)
         principal = await self._directory.find_principal_by_object_id(
             actor.tenant_id, actor.object_id
         )
@@ -525,7 +824,7 @@ class EntitlementService:
             for item in await self._repository.list_access_requests(
                 actor.tenant_id, requester_object_id=actor.object_id, state="pending"
             )
-            if item.resource.id == request.resource.id
+            if _resource_key(item.resource) == _resource_key(request.resource)
         ]
         if open_requests:
             raise ConflictError(
@@ -545,11 +844,29 @@ class EntitlementService:
             requester_principal_id=principal.id if principal else None,
             resource=request.resource,
             justification=request.justification,
+            requested_environment=summary.environment,
+            resource_snapshot=self._snapshot_from_summary(summary),
         )
         return await self._repository.create_access_request(
             record,
-            self._audit(actor, "accessRequest.created", "accessRequest", record.id),
+            self._audit(
+                actor,
+                "accessRequest.created",
+                "accessRequest",
+                record.id,
+                {"requestedEnvironment": record.requested_environment},
+            ),
         )
+
+    async def create_catalog_access_request(
+        self, actor: Actor, request: AccessRequestCreate
+    ) -> AccessRequest:
+        # Only what the caller's catalog shows may be requested, and a private, unknown, product,
+        # or deployment resource all get the same answer, so a guessed ID confirms nothing.
+        summary = await self._catalog_visible_resource(actor.tenant_id, request.resource)
+        if summary is None:
+            raise NotFoundError("That resource isn't in your catalog.")
+        return await self.create_access_request(actor, request, summary=summary)
 
     async def decide_access_request(
         self,
@@ -610,6 +927,7 @@ class EntitlementService:
             return access_request
         self._require_pending(access_request)
         descriptor = await self._describe_resource(actor, access_request.resource)
+        await self._require_environment_confirmation(actor, access_request, approval)
 
         principal = await self._requester_principal(actor, access_request.requester_object_id)
         if principal is not None:
@@ -695,6 +1013,37 @@ class EntitlementService:
             tenant_id=actor.tenant_id,
         )
         return saved
+
+    async def _require_environment_confirmation(
+        self,
+        actor: Actor,
+        access_request: AccessRequest,
+        approval: AccessRequestApproval,
+    ) -> None:
+        summary = await self.resource_summary(actor.tenant_id, access_request.resource)
+        current_environment = summary.environment
+        requested_environment = access_request.requested_environment
+        confirmed = approval.confirmed_environment
+        if confirmed is not None and confirmed != _environment_confirmation_value(
+            current_environment
+        ):
+            raise ConflictError(
+                "The resource's environment changed. Confirm the current environment to approve.",
+                details={
+                    "reason": "environmentChanged",
+                    "requestedEnvironment": requested_environment,
+                    "currentEnvironment": current_environment,
+                },
+            )
+        if current_environment != requested_environment and confirmed is None:
+            raise ConflictError(
+                "The resource's environment changed. Confirm the current environment to approve.",
+                details={
+                    "reason": "environmentChanged",
+                    "requestedEnvironment": requested_environment,
+                    "currentEnvironment": current_environment,
+                },
+            )
 
     @staticmethod
     def _require_pending(access_request: AccessRequest) -> None:

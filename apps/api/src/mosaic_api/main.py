@@ -23,14 +23,17 @@ from mosaic_api.observability import configure_logging, configure_telemetry
 from mosaic_api.repositories import (
     CosmosDirectoryRepository,
     CosmosEntitlementRepository,
+    CosmosEnvironmentRepository,
     CosmosGatewayRepository,
     CosmosMcpEndpointRepository,
     CosmosModelEndpointRepository,
     DirectoryRepository,
     EntitlementRepository,
+    EnvironmentRepository,
     GatewayRepository,
     InMemoryDirectoryRepository,
     InMemoryEntitlementRepository,
+    InMemoryEnvironmentRepository,
     InMemoryGatewayRepository,
     InMemoryMcpEndpointRepository,
     InMemoryModelEndpointRepository,
@@ -40,14 +43,18 @@ from mosaic_api.repositories import (
 from mosaic_api.services import (
     DirectoryService,
     EntitlementService,
+    EnvironmentFindingsService,
+    EnvironmentService,
     GatewayService,
     McpEndpointService,
     ModelEndpointService,
     PortalService,
     PublishingService,
+    UsageService,
 )
 from mosaic_api.services.mcp_endpoints import build_mcp_client_factory
 from mosaic_api.services.portal_access import PortalAccessService
+from mosaic_api.services.usage import SimulatedUsageSource
 
 logger = structlog.get_logger()
 
@@ -71,6 +78,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         gateway_repository: GatewayRepository
         endpoint_repository: ModelEndpointRepository
         entitlement_repository: EntitlementRepository
+        environment_repository: EnvironmentRepository
         mcp_repository: McpEndpointRepository
         if app_settings.repository_backend is RepositoryBackend.MEMORY:
             repository = InMemoryDirectoryRepository()
@@ -78,6 +86,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             endpoint_repository = InMemoryModelEndpointRepository()
             entitlement_repository = InMemoryEntitlementRepository()
             mcp_repository = InMemoryMcpEndpointRepository()
+            environment_repository = InMemoryEnvironmentRepository(
+                gateway_repository, endpoint_repository, mcp_repository
+            )
         else:
             cosmos_client = CosmosClient(
                 str(app_settings.cosmos_endpoint), credential=credential
@@ -123,6 +134,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 app_settings.cosmos_audit_events_container,
                 owns_client=False,
             )
+            environment_repository = CosmosEnvironmentRepository(
+                cosmos_client,
+                app_settings.cosmos_database,
+                app_settings.cosmos_desired_state_container,
+                app_settings.cosmos_audit_events_container,
+                owns_client=False,
+            )
         authenticator = (
             LocalAuthenticator(app_settings.tenant_id, app_settings.local_roles)
             if app_settings.auth_mode is AuthMode.LOCAL
@@ -135,6 +153,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             principal_id=app_settings.managed_identity_principal_id,
             identity_resolver=arm_client.caller_object_id,
             bootstrap_resource_id=app_settings.apim_bootstrap_resource_id,
+            environment_repository=environment_repository,
         )
         model_endpoint_service = ModelEndpointService(
             endpoint_repository,
@@ -144,6 +163,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             principal_id=app_settings.managed_identity_principal_id,
             identity_resolver=arm_client.caller_object_id,
             bootstrap_subscription_id=app_settings.apim_subscription_id,
+            environment_repository=environment_repository,
         )
         publishing_service = PublishingService(
             gateway_repository,
@@ -153,6 +173,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             directory_repository=repository,
             entitlement_repository=entitlement_repository,
             model_runtime_client_id=app_settings.model_runtime_client_id,
+            environment_repository=environment_repository,
         )
         # A dedicated client for outbound MCP calls: redirects are refused per request, and the
         # connection pool for operator-supplied hosts is kept away from the ARM one.
@@ -168,11 +189,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             token_resolver=EntraTokenProvider(credential).token_for,
             require_https=app_settings.environment is Environment.AZURE,
             allow_private_endpoints=app_settings.mcp_allow_private_endpoints,
+            environment_repository=environment_repository,
+            gateway_repository=gateway_repository,
         )
         app.state.repository = repository
         app.state.gateway_repository = gateway_repository
         app.state.model_endpoint_repository = endpoint_repository
         app.state.entitlement_repository = entitlement_repository
+        app.state.environment_repository = environment_repository
         app.state.mcp_endpoint_repository = mcp_repository
         app.state.directory_service = DirectoryService(
             repository,
@@ -190,6 +214,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             endpoint_repository=endpoint_repository,
         )
         app.state.entitlement_service = entitlement_service
+        environment_service = EnvironmentService(
+            environment_repository,
+            gateway_repository=gateway_repository,
+            endpoint_repository=endpoint_repository,
+            mcp_repository=mcp_repository,
+            entitlement_repository=entitlement_repository,
+            directory_repository=repository,
+        )
+        app.state.environment_service = environment_service
+        app.state.environment_findings_service = EnvironmentFindingsService(
+            environment_service=environment_service,
+            gateway_repository=gateway_repository,
+            endpoint_repository=endpoint_repository,
+            mcp_repository=mcp_repository,
+        )
         app.state.portal_access_service = PortalAccessService(
             entitlement_service,
             repository=entitlement_repository,
@@ -203,6 +242,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             entitlement_service,
             directory_repository=repository,
             gateway_repository=gateway_repository,
+        )
+        app.state.usage_service = UsageService(
+            app.state.portal_service,
+            source=SimulatedUsageSource(environment_repository=environment_repository),
+            gateway_repository=gateway_repository,
+            endpoint_repository=endpoint_repository,
+            environment_repository=environment_repository,
         )
         app.state.authenticator = authenticator
         try:
@@ -246,6 +292,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             await gateway_repository.close()
             await endpoint_repository.close()
             await entitlement_repository.close()
+            await environment_repository.close()
             await mcp_repository.close()
             if cosmos_client:
                 await cosmos_client.close()
@@ -291,6 +338,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         endpoint_repository = getattr(request.app.state, "model_endpoint_repository", None)
         entitlement_repository = getattr(request.app.state, "entitlement_repository", None)
         mcp_repository = getattr(request.app.state, "mcp_endpoint_repository", None)
+        environment_repository = getattr(request.app.state, "environment_repository", None)
         is_ready = (
             repository is not None
             and await repository.ready()
@@ -302,6 +350,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             and await entitlement_repository.ready()
             and mcp_repository is not None
             and await mcp_repository.ready()
+            and environment_repository is not None
+            and await environment_repository.ready()
         )
         return JSONResponse(
             status_code=status.HTTP_200_OK if is_ready else status.HTTP_503_SERVICE_UNAVAILABLE,

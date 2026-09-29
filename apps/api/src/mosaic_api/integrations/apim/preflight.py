@@ -65,6 +65,7 @@ class PreflightResult:
     capabilities: GatewayCapabilities
     status: GatewayStatus
     service_name: str | None = None
+    tags: dict[str, str] | None = None
 
 
 def build_remediation(
@@ -205,6 +206,19 @@ def _capabilities(service: JsonObject | None) -> GatewayCapabilities:
     )
 
 
+def _tags(resource: JsonObject) -> dict[str, str]:
+    """The resource's string tags; empty when it has none, since ``None`` means "not read"."""
+
+    tags = resource.get("tags")
+    if not isinstance(tags, dict):
+        return {}
+    return {
+        name: value
+        for name, value in tags.items()
+        if isinstance(name, str) and isinstance(value, str)
+    }
+
+
 async def run_preflight(
     client: ApimClient,
     *,
@@ -281,6 +295,7 @@ async def run_preflight(
             capabilities=capabilities,
             status=GatewayStatus.CONNECTED,
             service_name=resource.service_name,
+            tags=_tags(service),
         )
 
     missing_read = [action for action in READ_ACTIONS if not _permits(permissions, action)]
@@ -325,4 +340,5 @@ async def run_preflight(
         capabilities=capabilities,
         status=status,
         service_name=resource.service_name,
+        tags=_tags(service),
     )

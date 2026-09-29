@@ -53,8 +53,14 @@ from mosaic_api.integrations.mcp import (
     admit_mcp_url,
 )
 from mosaic_api.observed import ObservedMcpTool
-from mosaic_api.repositories import McpEndpointRepository
+from mosaic_api.repositories import (
+    EnvironmentRepository,
+    GatewayRepository,
+    McpEndpointRepository,
+)
 from mosaic_api.services.directory import Actor
+from mosaic_api.services.environments import load_environment_catalog
+from mosaic_api.services.model_access import ENVIRONMENTS_SCOPE, scope_lease
 
 logger = structlog.get_logger()
 
@@ -64,6 +70,14 @@ TOOL_ENTITY_TYPE = "observedMcpTool"
 McpClientFactory = Callable[[str, str | None], McpClient]
 SecretResolver = Callable[[str], Awaitable[str]]
 TokenResolver = Callable[[str], Awaitable[str]]
+
+
+def _validate_environment_key(catalog_keys: set[str], value: str) -> None:
+    if value not in catalog_keys:
+        raise ValidationError(
+            f"Environment {value!r} is not defined in Settings → Environments.",
+            details={"reason": "unknownEnvironment", "environment": value},
+        )
 
 
 def _status_for(error: McpError) -> McpEndpointStatus:
@@ -122,6 +136,8 @@ class McpEndpointService:
         token_resolver: TokenResolver | None = None,
         require_https: bool = True,
         allow_private_endpoints: bool = False,
+        environment_repository: EnvironmentRepository | None = None,
+        gateway_repository: GatewayRepository | None = None,
     ) -> None:
         self._repository = repository
         self._client_factory = client_factory
@@ -129,6 +145,10 @@ class McpEndpointService:
         self._token_resolver = token_resolver
         self._require_https = require_https
         self._allow_private = allow_private_endpoints
+        # None only in tests that don't exercise environments. The gateway repository is used
+        # only for the tenant's environment scope lease, so a catalog edit can't race a write.
+        self._environments = environment_repository
+        self._gateways = gateway_repository
         self._active: set[str] = set()
         self._tasks: set[asyncio.Task[None]] = set()
 
@@ -214,6 +234,20 @@ class McpEndpointService:
             capabilities=McpEndpointCapabilities(notes=notes),
         )
         endpoint = await self._apply_preflight(endpoint)
+        if request.environment is None or self._gateways is None:
+            return await self._create(actor, endpoint, request.environment)
+        # The key is validated and saved under the tenant's environments lease, so the catalog
+        # can't drop it in between.
+        async with scope_lease(self._gateways, actor.tenant_id, ENVIRONMENTS_SCOPE):
+            return await self._create(actor, endpoint, request.environment)
+
+    async def _create(
+        self, actor: Actor, endpoint: McpEndpoint, environment: str | None
+    ) -> McpEndpoint:
+        if environment is not None:
+            catalog = await load_environment_catalog(self._environments, actor.tenant_id)
+            _validate_environment_key({item.key for item in catalog.environments}, environment)
+            endpoint = endpoint.model_copy(update={"environment": environment})
         return await self._repository.create_endpoint(
             endpoint, self._audit(actor, "mcpEndpoint.registered", endpoint.id)
         )
@@ -274,7 +308,10 @@ class McpEndpointService:
     async def preflight(self, actor: Actor, endpoint_id: str) -> McpEndpoint:
         endpoint = await self.get_endpoint(actor, endpoint_id)
         checked = await self._apply_preflight(endpoint)
-        return await self._repository.record_endpoint_state(checked)
+        recorded = await self._repository.record_endpoint_state(checked)
+        if recorded is None:
+            raise NotFoundError("MCP server was not found", details={"id": endpoint_id})
+        return recorded
 
     async def _authorization_for(self, endpoint: McpEndpoint) -> str | None:
         """Resolve the credential to present, at call time and never before."""
