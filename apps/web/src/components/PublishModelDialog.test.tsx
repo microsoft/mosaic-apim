@@ -382,6 +382,58 @@ describe('PublishModelDialog', () => {
     expect(api.applyPublishPlan).not.toHaveBeenCalled()
   })
 
+  it('says plainly when API Management already matches the publication and offers nothing to apply', async () => {
+    const unchanged: PublishPlan = {
+      ...plan,
+      steps: [{ ...plan.steps[0], action: 'noChange', reason: 'The API already matches this publication.', existed: true }],
+    }
+    renderDialog({ publication, plan: unchanged })
+
+    expect(
+      await screen.findByText('API Management already matches this publication. Nothing to apply.'),
+    ).toBeVisible()
+    expect(within(screen.getByRole('table', { name: 'Publish plan steps' })).getByText('No change')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Apply plan' })).toBeDisabled()
+  })
+
+  it('offers Apply plan when any step would change API Management', async () => {
+    const mixed: PublishPlan = {
+      ...plan,
+      steps: [
+        { ...plan.steps[0], action: 'noChange', reason: 'The API already matches this publication.', existed: true },
+        { ...plan.steps[0], kind: 'product', name: 'product', action: 'update', reason: 'Replace the product that carries this API.', existed: true },
+      ],
+    }
+    renderDialog({ publication, plan: mixed })
+
+    expect(await screen.findByRole('button', { name: 'Apply plan' })).toBeEnabled()
+    expect(screen.queryByText(/Nothing to apply/)).not.toBeInTheDocument()
+  })
+
+  it('says MOSAIC refused the reviewed plan, and why, above the fresh plan it made instead', async () => {
+    const user = userEvent.setup()
+    const refusal =
+      'This plan does not create resources in the order MOSAIC now uses, so API Management could reject a step that ' +
+      'names a resource not created yet. Re-plan this publication and review the new order before applying.'
+    api.applyPublishPlan.mockRejectedValueOnce(Object.assign(new Error(refusal), { status: 409 }))
+    api.createPublishPlan.mockResolvedValueOnce({ ...plan, id: 'plan_2' })
+    renderDialog({ publication, plan })
+
+    await user.click(await screen.findByRole('button', { name: 'Apply plan' }))
+
+    expect(
+      await screen.findByText('MOSAIC has already re-planned. Review the fresh plan below before you apply it.'),
+    ).toBeVisible()
+    expect(screen.getByText("MOSAIC didn't apply the plan you reviewed")).toBeVisible()
+    expect(screen.getByText(refusal)).toBeVisible()
+    expect(screen.queryByText(/earlier plan was rejected/)).not.toBeInTheDocument()
+    expect(api.createPublishPlan).toHaveBeenCalledWith('pub_1')
+
+    await user.click(screen.getByRole('button', { name: 'Apply plan' }))
+
+    await waitFor(() => expect(api.applyPublishPlan).toHaveBeenLastCalledWith('pub_1', 'plan_2'))
+  })
+
   it('lists a deployment MOSAIC cannot publish with its reason and does not let it be chosen', async () => {
     const reason = 'Realtime models use WebSocket sessions, which MOSAIC can\'t publish yet.'
     api.listPublishableModels.mockResolvedValue([
@@ -486,6 +538,7 @@ describe('PublishModelDialog', () => {
     renderDialog({ publication: modelPublication, plan: accessPlan })
     await user.click(await screen.findByRole('button', { name: 'Apply plan' }))
     expect(await screen.findByText('Cannot refresh the model plan.')).toBeVisible()
+    expect(screen.queryByText(/already re-planned/)).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Apply plan' })).toBeDisabled()
   })
 

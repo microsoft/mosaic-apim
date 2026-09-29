@@ -409,7 +409,8 @@ code,
 .table-scroll,
 .detail-card,
 .planned-card,
-.empty-state {
+.empty-state,
+.access-denied-card {
   border: 1px solid var(--mosaic-border);
   border-radius: 8px;
   background: var(--mosaic-surface);
@@ -546,6 +547,36 @@ tbody tr:hover {
   margin-top: 24px;
   padding: 24px;
   gap: 12px;
+}
+
+.centered-page {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: var(--mosaic-bg);
+}
+
+.access-denied-card {
+  width: min(620px, 100%);
+  padding: 24px;
+  overflow-wrap: anywhere;
+}
+
+.access-denied-hint {
+  margin: 16px 0 0;
+  color: var(--mosaic-text-muted);
+}
+
+.access-denied-hint + .access-denied-hint {
+  margin-top: 4px;
+}
+
+.access-denied-actions {
+  margin-top: 16px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .sr-only {

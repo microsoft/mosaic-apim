@@ -1292,6 +1292,21 @@ class PortalProfile(MosaicModel):
     pending_request_count: int = 0
 
 
+class ConsoleAccess(MosaicModel):
+    """Which MOSAIC role the administrator console's caller holds.
+
+    Read from the validated access token. MOSAIC's app roles are defined on the API's registration,
+    so they arrive in the API token's ``roles`` claim and in neither SPA's ID token: the console
+    asks here rather than decoding a token in the browser.
+
+    Only a caller holding a MOSAIC role gets an answer, so ``is_admin`` false means the caller holds
+    the portal role and not the administrator one.
+    """
+
+    roles: list[str] = Field(default_factory=list)
+    is_admin: bool = False
+
+
 MOSAIC_RESOURCE_PREFIX = "mosaic-"
 _SLUG_PATTERN = re.compile(r"[^a-z0-9]+")
 
@@ -1330,8 +1345,8 @@ class PublicationStatus(StrEnum):
 class PublishedResourceKind(StrEnum):
     """The API Management resource types a publication creates, in dependency order."""
 
-    POLICY_FRAGMENT = "policyFragment"
     BACKEND = "backend"
+    POLICY_FRAGMENT = "policyFragment"
     API = "api"
     API_OPERATION = "apiOperation"
     API_POLICY = "apiPolicy"
@@ -1439,6 +1454,24 @@ class Publication(Entity):
         """The subset rollback and unpublish are allowed to delete."""
 
         return [resource for resource in self.resources if resource.created_by_mosaic]
+
+    def may_own_gateway_state(self) -> bool:
+        """Whether API Management may hold something this publication is responsible for.
+
+        True while MOSAIC-created resources are recorded, while a run is or may be in flight, while
+        an interrupted apply left the runtime state unknown, and while any applied grant is still
+        enabled. Only a publication for which this is False may be forgotten.
+        """
+
+        return bool(
+            self.created_resources()
+            or self.status == PublicationStatus.APPLYING
+            or self.access_state in {"applying", "unknown"}
+            or (
+                self.applied_access
+                and any(grant.enabled for grant in self.applied_access.grants)
+            )
+        )
 
 
 class CredentialReference(Entity):
@@ -1685,7 +1718,7 @@ class ModelEndpointSuggestion(MosaicModel):
 
 
 class SubscriptionScanIssue(MosaicModel):
-    """One subscription MOSAIC could not enumerate, and what would fix it."""
+    """One subscription MOSAIC could not fully enumerate, and what would fix it."""
 
     subscription_id: str
     display_name: str | None = None
@@ -1708,7 +1741,18 @@ class SubscriptionScanStatus(StrEnum):
 
 class ModelEndpointSuggestionView(MosaicModel):
     suggestions: list[ModelEndpointSuggestion] = Field(default_factory=list)
-    scan_issues: list[SubscriptionScanIssue] = Field(default_factory=list)
+    scan_issues: list[SubscriptionScanIssue] = Field(
+        default_factory=list,
+        description="Subscriptions whose Azure AI resources MOSAIC could not list at all.",
+    )
+    partial_scans: list[SubscriptionScanIssue] = Field(
+        default_factory=list,
+        description=(
+            "Subscriptions MOSAIC listed without a role that reads every Azure AI resource in "
+            "them. Azure leaves out what the caller cannot read without saying so, so these still "
+            "count as scanned and whatever they yielded is still suggested."
+        ),
+    )
     subscriptions_scanned: int = 0
     scan_status: SubscriptionScanStatus
     scan_message: str | None = Field(

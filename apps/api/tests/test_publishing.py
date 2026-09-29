@@ -16,6 +16,7 @@ from mosaic_api.domain import (
     ManagementMode,
     ModelEndpoint,
     ModelEndpointCreate,
+    Publication,
     PublicationCreate,
     PublicationStatus,
     PublicationUpdate,
@@ -28,7 +29,7 @@ from mosaic_api.domain import (
 )
 from mosaic_api.errors import ConflictError, NotFoundError, ValidationError
 from mosaic_api.repositories import InMemoryGatewayRepository, InMemoryModelEndpointRepository
-from mosaic_api.services import PublishingService
+from mosaic_api.services import PublishingService, publishing
 from mosaic_api.services.directory import Actor
 
 ACTOR = Actor(object_id="admin-object-id", tenant_id="tenant-test")
@@ -44,6 +45,13 @@ API_POLICY_SUFFIX = f"apis/{API_NAME}/policies/policy"
 PRODUCT_SUFFIX = f"products/{API_NAME}"
 PRODUCT_API_SUFFIX = f"products/{API_NAME}/apis/{API_NAME}"
 SUBSCRIPTION_SUFFIX = f"subscriptions/{API_NAME}"
+# What API Management says when a fragment routes to a backend that does not exist, as a publish
+# run step reports it. The line and column are the fragment's set-backend-service element.
+MISSING_BACKEND_FAILURE = (
+    "The Azure operation did not succeed (Failed). ValidationError: One or more fields contain "
+    "incorrect values. Detail: Error in element 'set-backend-service' on line 3, column 4: "
+    f"Backend with id '{API_NAME}' could not be found."
+)
 
 
 def enforcement(**kwargs: object) -> TokenEnforcement:
@@ -126,9 +134,11 @@ async def test_plan_creates_every_resource_in_dependency_order(harness: Harness)
 
     plan = await harness.service.plan(ACTOR, publication_id)
 
+    # The backend comes first: the fragment routes to it, and API Management rejects a fragment
+    # whose set-backend-service names a backend that does not exist yet.
     assert [step.kind for step in plan.steps] == [
-        PublishedResourceKind.POLICY_FRAGMENT,
         PublishedResourceKind.BACKEND,
+        PublishedResourceKind.POLICY_FRAGMENT,
         PublishedResourceKind.API,
         *[PublishedResourceKind.API_OPERATION] * 7,
         PublishedResourceKind.API_POLICY,
@@ -136,6 +146,9 @@ async def test_plan_creates_every_resource_in_dependency_order(harness: Harness)
         PublishedResourceKind.PRODUCT_API,
         PublishedResourceKind.SUBSCRIPTION,
     ]
+    # Rollback and unpublish reverse CREATE_ORDER, so the plan has to follow it exactly.
+    ranks = [publishing.CREATE_ORDER.index(step.kind) for step in plan.steps]
+    assert ranks == sorted(ranks)
     assert all(step.action == PublishAction.CREATE for step in plan.steps)
     assert all(step.existed is False for step in plan.steps)
     assert plan.digest
@@ -184,8 +197,8 @@ async def test_apply_writes_in_order_and_records_ownership(harness: Harness) -> 
     assert run.status == PublishRunStatus.SUCCEEDED
     assert all(step.status == PublishStepStatus.SUCCEEDED for step in run.steps)
     assert harness.apim.write_paths("PUT")[:3] == [
-        FRAGMENT_SUFFIX,
         BACKEND_SUFFIX,
+        FRAGMENT_SUFFIX,
         API_SUFFIX,
     ]
     assert harness.apim.write_paths("PUT")[-3:] == [
@@ -193,6 +206,10 @@ async def test_apply_writes_in_order_and_records_ownership(harness: Harness) -> 
         PRODUCT_API_SUFFIX,
         SUBSCRIPTION_SUFFIX,
     ]
+    # Every write named only resources that already existed: the fragment's backend, the API
+    # policy's fragment, the operations' API, the link's product and API, the key's product.
+    assert harness.apim.dangling_references == []
+    assert FRAGMENT_SUFFIX in harness.apim.written
     publication = await harness.service.get_publication(ACTOR, publication_id)
     assert publication.status == PublicationStatus.PUBLISHED
     assert publication.last_applied_at is not None
@@ -206,6 +223,43 @@ async def test_apply_writes_in_order_and_records_ownership(harness: Harness) -> 
         PublishedResourceKind.PRODUCT_API,
         PublishedResourceKind.SUBSCRIPTION,
     }
+
+
+async def test_a_fragment_created_before_its_backend_fails_as_api_management_fails_it(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The order MOSAIC used before: the fragment first, routing to a backend not created yet.
+    # API Management accepts that write with 201 and then fails the operation MOSAIC polls.
+    desired = publishing._desired_resources
+    fragment_kind = PublishedResourceKind.POLICY_FRAGMENT
+
+    def fragment_first(publication: Publication) -> list[publishing._Resource]:
+        resources = desired(publication)
+        fragments = [item for item in resources if item.kind == fragment_kind]
+        return [*fragments, *(item for item in resources if item not in fragments)]
+
+    old_order = (
+        fragment_kind,
+        *(kind for kind in publishing.CREATE_ORDER if kind != fragment_kind),
+    )
+    monkeypatch.setattr(publishing, "_desired_resources", fragment_first)
+    monkeypatch.setattr(publishing, "CREATE_ORDER", old_order)
+    publication_id = await harness.publish()
+
+    run = await harness.apply(publication_id)
+
+    assert run.status == PublishRunStatus.ROLLED_BACK
+    [step] = run.steps
+    assert step.kind == PublishedResourceKind.POLICY_FRAGMENT
+    assert step.status == PublishStepStatus.FAILED
+    assert step.error == MISSING_BACKEND_FAILURE
+    assert run.errors == [f"policyFragment {API_NAME}: {MISSING_BACKEND_FAILURE}"]
+    publication = await harness.service.get_publication(ACTOR, publication_id)
+    assert publication.last_error == run.errors[0]
+    # As on the live gateway, API Management kept nothing, so there was nothing to roll back.
+    assert harness.apim.write_paths() == [FRAGMENT_SUFFIX]
+    assert FRAGMENT_SUFFIX not in harness.apim.written
+    assert harness.apim.dangling_references == [(FRAGMENT_SUFFIX, BACKEND_SUFFIX)]
 
 
 async def test_applying_twice_keeps_ownership_and_unpublish_removes_all(
@@ -269,6 +323,133 @@ async def test_failed_long_running_write_fails_the_step(harness: Harness) -> Non
     assert run.status == PublishRunStatus.ROLLED_BACK
     failed = [step for step in run.steps if step.status == PublishStepStatus.FAILED]
     assert [step.kind for step in failed] == [PublishedResourceKind.API]
+    assert failed[0].error == (
+        "The Azure operation did not succeed (Failed) and Azure returned no reason. Check the "
+        "Azure activity log for this resource."
+    )
+
+
+async def test_a_failed_operation_carries_azures_reason_into_the_run(harness: Harness) -> None:
+    harness.apim.make_async(
+        API_SUFFIX,
+        polls=0,
+        result="Failed",
+        error={
+            "code": "ValidationError",
+            "message": "One or more fields contain incorrect values:",
+            "details": [
+                {
+                    "code": "ValidationError",
+                    "target": "path",
+                    "message": "Value 'mosaic' is reserved.",
+                }
+            ],
+        },
+    )
+    publication_id = await harness.publish()
+
+    run = await harness.apply(publication_id)
+
+    reason = (
+        "The Azure operation did not succeed (Failed). ValidationError: One or more fields "
+        "contain incorrect values. Detail: Value 'mosaic' is reserved. (target: path)"
+    )
+    assert run.status == PublishRunStatus.ROLLED_BACK
+    api_step = next(step for step in run.steps if step.kind == PublishedResourceKind.API)
+    assert api_step.status == PublishStepStatus.FAILED
+    assert api_step.error == reason
+    # The run's errors and the publication's last error are what the console shows.
+    assert run.errors[0] == f"api {API_NAME}: {reason}"
+    publication = await harness.service.get_publication(ACTOR, publication_id)
+    assert publication.last_error == run.errors[0]
+
+
+async def test_a_fragment_update_azure_rejects_fails_its_step_with_azures_reason(
+    harness: Harness,
+) -> None:
+    publication_id = await harness.publish()
+    assert (await harness.apply(publication_id)).status == PublishRunStatus.SUCCEEDED
+    previous = harness.apim.written[FRAGMENT_SUFFIX]
+    # The backend is deleted between MOSAIC's update of it and of the fragment that routes to it.
+    # API Management answers the fragment's update 200 with a Location header, then fails the
+    # operation and keeps the fragment it had.
+    harness.apim.remove_before_write(FRAGMENT_SUFFIX, BACKEND_SUFFIX)
+    harness.apim.writes.clear()
+
+    run = await harness.apply(publication_id)
+
+    assert run.status == PublishRunStatus.ROLLED_BACK
+    step = next(
+        step for step in run.steps if step.kind == PublishedResourceKind.POLICY_FRAGMENT
+    )
+    assert step.action == PublishAction.UPDATE
+    assert step.status == PublishStepStatus.FAILED
+    assert step.error == MISSING_BACKEND_FAILURE
+    assert run.errors[0] == f"policyFragment {API_NAME}: {MISSING_BACKEND_FAILURE}"
+    publication = await harness.service.get_publication(ACTOR, publication_id)
+    assert publication.status == PublicationStatus.ROLLED_BACK
+    assert publication.last_error == run.errors[0]
+    # Nothing after the fragment was written, and API Management still holds the old fragment.
+    assert harness.apim.write_paths() == [BACKEND_SUFFIX, FRAGMENT_SUFFIX]
+    assert harness.apim.written[FRAGMENT_SUFFIX] == previous
+
+
+async def test_a_policy_azure_refuses_fails_its_step_with_azures_reason(
+    harness: Harness,
+) -> None:
+    missing = (
+        "Error in element 'include-fragment' on line 3, column 6: Fragment with id "
+        f"'{API_NAME}' could not be found."
+    )
+    harness.apim.fail_write(
+        API_POLICY_SUFFIX,
+        400,
+        error={
+            "code": "ValidationError",
+            "message": "One or more fields contain incorrect values:",
+            "details": [
+                {"code": "ValidationError", "target": "include-fragment", "message": missing}
+            ],
+        },
+    )
+    publication_id = await harness.publish()
+
+    run = await harness.apply(publication_id)
+
+    reason = (
+        "Azure Resource Manager rejected the request (HTTP 400). ValidationError: One or more "
+        f"fields contain incorrect values. Detail: {missing}"
+    )
+    assert run.status == PublishRunStatus.ROLLED_BACK
+    step = next(step for step in run.steps if step.kind == PublishedResourceKind.API_POLICY)
+    assert step.status == PublishStepStatus.FAILED
+    assert step.error == reason
+    assert run.errors[0] == f"apiPolicy policy: {reason}"
+    publication = await harness.service.get_publication(ACTOR, publication_id)
+    assert publication.last_error == run.errors[0]
+
+
+async def test_policy_markup_in_a_refusal_never_reaches_the_run(harness: Harness) -> None:
+    harness.apim.fail_write(
+        API_POLICY_SUFFIX,
+        400,
+        error={
+            "code": "ValidationError",
+            "message": 'Policy <include-fragment fragment-id="secret-route" /> is not allowed',
+        },
+    )
+    publication_id = await harness.publish()
+
+    run = await harness.apply(publication_id)
+
+    step = next(step for step in run.steps if step.kind == PublishedResourceKind.API_POLICY)
+    assert step.error == (
+        "Azure Resource Manager rejected the request (HTTP 400). ValidationError: Policy "
+        "[policy markup omitted]."
+    )
+    publication = await harness.service.get_publication(ACTOR, publication_id)
+    assert "secret-route" not in run.model_dump_json()
+    assert "secret-route" not in publication.model_dump_json()
 
 
 async def test_partial_failure_rolls_back_only_what_it_created(harness: Harness) -> None:
@@ -281,9 +462,10 @@ async def test_partial_failure_rolls_back_only_what_it_created(harness: Harness)
     assert run.rolled_back is True
     assert not run.orphaned_resources
     deleted = harness.apim.write_paths("DELETE")
-    # Reverse dependency order, and only resources this apply created.
+    # Reverse dependency order, and only resources this apply created. The fragment goes before
+    # the backend it routes to.
     assert deleted[0] == API_POLICY_SUFFIX
-    assert deleted[-1] == FRAGMENT_SUFFIX
+    assert deleted[-2:] == [FRAGMENT_SUFFIX, BACKEND_SUFFIX]
     assert PRODUCT_API_SUFFIX not in deleted
     assert SUBSCRIPTION_SUFFIX not in deleted
     publication = await harness.service.get_publication(ACTOR, publication_id)
@@ -360,6 +542,26 @@ async def test_a_stale_plan_is_rejected(harness: Harness) -> None:
 
     assert "re-plan" in str(error.value.message).casefold()
     assert not harness.apim.writes
+
+
+async def test_a_plan_saved_in_the_old_order_is_refused(harness: Harness) -> None:
+    publication_id = await harness.publish()
+    plan = await harness.service.plan(ACTOR, publication_id)
+    backend, fragment, *rest = plan.steps
+    # A plan saved before the backend moved first. Its digest still matches, because the digest
+    # covers what to publish rather than the order of the steps.
+    await harness.gateway_repository.save_publish_plan(
+        plan.model_copy(update={"steps": [fragment, backend, *rest]})
+    )
+
+    with pytest.raises(ConflictError) as error:
+        await harness.service.apply(ACTOR, publication_id, plan.id)
+
+    assert "re-plan" in str(error.value.message).casefold()
+    assert error.value.details == {"planId": plan.id}
+    assert not harness.apim.writes
+    # The refusal left nothing locked: a fresh plan applies.
+    assert (await harness.apply(publication_id)).status == PublishRunStatus.SUCCEEDED
 
 
 async def test_apply_requires_a_plan(harness: Harness) -> None:
@@ -520,6 +722,23 @@ async def test_unpublish_removes_only_tracked_resources_in_reverse(harness: Harn
     publication = await harness.service.get_publication(ACTOR, publication_id)
     assert publication.status == PublicationStatus.DRAFT
     assert publication.created_resources() == []
+
+
+async def test_unpublish_removes_the_fragment_before_the_backend_it_routes_to(
+    harness: Harness,
+) -> None:
+    publication_id = await harness.publish()
+    await harness.apply(publication_id)
+    harness.apim.writes.clear()
+
+    run_started = await harness.service.unpublish(ACTOR, publication_id)
+    await harness.service.wait_for_idle()
+    run = await harness.service.get_run(ACTOR, run_started.id)
+
+    assert run.status == PublishRunStatus.SUCCEEDED
+    deleted = harness.apim.write_paths("DELETE")
+    assert deleted[0] == SUBSCRIPTION_SUFFIX
+    assert deleted[-2:] == [FRAGMENT_SUFFIX, BACKEND_SUFFIX]
 
 
 async def test_a_publication_owning_resources_cannot_be_deleted(harness: Harness) -> None:

@@ -103,6 +103,19 @@ assignment on this endpoint are not the same governance posture.
 descriptive properties, and models are enumerated on the parent account. A registered project ID is
 preserved for display and scoping but reads happen at `account_scope`.
 
+**Update:** because reads happen at `account_scope`, a project and its parent account list the same
+deployments. Registering both, or two projects on one account, listed every deployment twice and
+let each copy be published separately. Every registration now covers its account.
+
+- Registration refuses an Azure resource whose `account_scope` another endpoint already covers,
+  with a conflict that names that endpoint.
+- Discovery treats an account as registered when any endpoint's `account_scope` matches it.
+- Existing overlapping records are not migrated.
+
+Removing an endpoint is refused while a publication from it may still own API Management resources,
+since the publication cannot be planned or applied without its endpoint. Publication records that
+own nothing are deleted with the endpoint.
+
 **Credentials remain Key Vault URIs.** An OpenAI-compatible endpoint is registered with a Key Vault
 secret identifier the operator created; MOSAIC stores only the URI. No Bicep or RBAC change was
 needed, and the "MOSAIC stores no secret values" property holds. This is, however, the first place
@@ -123,6 +136,15 @@ scope. `infra/main.bicep` targets a resource group, and self-granting a subscrip
 power a convenience feature is precisely the escalation MOSAIC refuses elsewhere. So the scan runs
 per subscription, and one it cannot read records the remediation and is skipped rather than blanking
 the whole list.
+
+A subscription that lists successfully can still be read only in part. ARM filters a collection read
+to the resources the caller can read and answers 200 either way, so an identity whose roles sit on a
+resource group or a resource gets a short (often empty) list that looks exactly like a complete one.
+After listing, the scan therefore reads MOSAIC's own permissions at the subscription scope, which
+count only roles assigned at or above it, and reports the subscription as partly read, with the same
+`Reader` remediation, when they do not grant `Microsoft.CognitiveServices/accounts/read`. Whatever
+the list did return is still suggested. When those permissions cannot be read, nothing is claimed
+either way: a partial scan is reported only when MOSAIC knows it was partial.
 
 **MCP discovery belongs to ADR 0005, not here.** An earlier draft of this work added its own
 MCP-server detection on the same preview API version. ADR 0005 landed a richer model first —

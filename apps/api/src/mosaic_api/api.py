@@ -2,7 +2,7 @@ from typing import Annotated, cast
 
 from fastapi import APIRouter, Depends, Query, Request, Response, status
 
-from mosaic_api.auth import AuthContext, require_admin, require_portal_user
+from mosaic_api.auth import AuthContext, require_admin, require_mosaic_role, require_portal_user
 from mosaic_api.config import Settings
 from mosaic_api.domain import (
     AccessRequest,
@@ -12,6 +12,7 @@ from mosaic_api.domain import (
     AccessRequestState,
     CatalogEntry,
     CatalogEntryUpdate,
+    ConsoleAccess,
     Entitlement,
     EntitlementCreate,
     EntitlementUpdate,
@@ -89,6 +90,7 @@ from mosaic_api.services.portal_access import PortalAccessService
 
 Admin = Annotated[AuthContext, Depends(require_admin)]
 PortalUser = Annotated[AuthContext, Depends(require_portal_user)]
+AnyMosaicRole = Annotated[AuthContext, Depends(require_mosaic_role)]
 
 
 def _service(request: Request) -> DirectoryService:
@@ -844,6 +846,23 @@ async def get_publish_run(
 @router.get("/publish-plans/{plan_id}", response_model=PublishPlan)
 async def get_publish_plan(request: Request, auth: Admin, plan_id: str) -> PublishPlan:
     return await _publishing(request).get_plan(_actor(auth), plan_id)
+
+
+# --- Administrator console -------------------------------------------------------------------
+# The one console route that does not demand ``Admin``. The console calls it before showing
+# anything, so a caller holding only ``User`` is told the console is not for them instead of being
+# shown an administrator shell whose every request is refused. It returns the caller's own roles
+# and nothing else.
+
+
+@router.get("/console/me", response_model=ConsoleAccess, tags=["console"])
+async def console_access(request: Request, auth: AnyMosaicRole) -> ConsoleAccess:
+    settings: Settings = request.app.state.settings
+    mosaic_roles = auth.roles & {settings.required_role, settings.portal_role}
+    return ConsoleAccess(
+        roles=sorted(mosaic_roles),
+        is_admin=settings.required_role in auth.roles,
+    )
 
 
 # --- End-user portal -------------------------------------------------------------------------

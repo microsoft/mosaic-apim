@@ -9,6 +9,7 @@ into Cosmos. It writes nothing to Azure AI and nothing to API Management.
 import asyncio
 import re
 from collections.abc import Awaitable, Callable
+from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from datetime import datetime
 from urllib.parse import urlparse
@@ -37,6 +38,7 @@ from mosaic_api.domain import (
     ModelEndpointUpdate,
     ModelInventorySummary,
     ModelProvider,
+    Publication,
     SubscriptionScanIssue,
     SubscriptionScanStatus,
     SuggestionSource,
@@ -54,6 +56,7 @@ from mosaic_api.integrations.aoai import (
     verify_gateway_runtime_access,
 )
 from mosaic_api.integrations.apim import classify_url
+from mosaic_api.integrations.rbac import permits
 from mosaic_api.observed import (
     AiBackendKind,
     ObservedApi,
@@ -63,6 +66,7 @@ from mosaic_api.observed import (
 )
 from mosaic_api.repositories import GatewayRepository, ModelEndpointRepository
 from mosaic_api.services.directory import Actor
+from mosaic_api.services.model_access import publication_lock
 
 logger = structlog.get_logger()
 
@@ -74,6 +78,14 @@ STALE_RUN_MESSAGE = "The API restarted while this sync was running; its result i
 IDENTITY_PLACEHOLDER = "<mosaic-managed-identity-object-id>"
 SUBSCRIPTION_PLACEHOLDER = "<subscription-id>"
 UNEXPECTED_LIST_FAILURE = "The request failed unexpectedly; the API log has the details."
+PARTIAL_SCAN_MESSAGE = (
+    "MOSAIC can read only some resources in this subscription, so any Azure AI resources it "
+    "cannot read are not suggested here. Endpoints can still be registered by resource ID."
+)
+
+# A subscription-wide account list returns only the accounts this action allows the caller to read,
+# so holding it at the subscription itself is what makes that list complete.
+_ACCOUNT_READ_ACTION = "Microsoft.CognitiveServices/accounts/read"
 
 # The same shape the resource ID parsers accept. A candidate scope is interpolated into a command an
 # operator will run, so anything else is left out rather than quoted into it.
@@ -123,10 +135,45 @@ def _reader_at_subscription(subscription_id: str, principal_id: str | None) -> A
 
 
 def _list_failure_message(reason: str) -> str:
-    """A :class:`DomainError` message as a sentence. MOSAIC wrote it, so it is safe to return."""
+    """A :class:`DomainError` summary as a sentence. MOSAIC wrote it, so it is safe to return.
+
+    Callers pass the error's ``summary`` rather than its message, because an upstream error's
+    message can also say what Azure said, and a scan never returns Azure's text.
+    """
 
     reason = reason.strip().rstrip(".")
     return f"{reason}." if reason else UNEXPECTED_LIST_FAILURE
+
+
+def _registered_resource(endpoint: ModelEndpoint) -> CognitiveServicesResourceId | None:
+    if not endpoint.azure_resource_id:
+        return None
+    try:
+        return CognitiveServicesResourceId.parse(endpoint.azure_resource_id)
+    except ValueError:
+        return None
+
+
+def _overlap_message(
+    requested: CognitiveServicesResourceId, existing: CognitiveServicesResourceId, name: str
+) -> str:
+    """Why a resource on an account another registration already covers is refused."""
+
+    twice = "so registering both would list every deployment twice."
+    if requested.project_name is None:
+        return (
+            f"MOSAIC already lists this resource's models through {name}, a Foundry project on "
+            f"it. A Foundry project's models are deployed on its parent resource, {twice}"
+        )
+    if existing.project_name is None:
+        return (
+            f"MOSAIC already lists this project's models through {name}, its parent resource. "
+            f"A Foundry project's models are deployed on its parent resource, {twice}"
+        )
+    return (
+        f"MOSAIC already lists this project's models through {name}, another project on the "
+        f"same resource. Foundry projects share their parent resource's deployments, {twice}"
+    )
 
 
 @dataclass(frozen=True)
@@ -134,6 +181,7 @@ class _SubscriptionScan:
     status: SubscriptionScanStatus
     scanned: int = 0
     issues: list[SubscriptionScanIssue] = field(default_factory=list)
+    partial: list[SubscriptionScanIssue] = field(default_factory=list)
     message: str | None = None
     remediation: list[AccessRemediation] = field(default_factory=list)
 
@@ -221,6 +269,13 @@ class ModelEndpointService:
                 "This Azure AI resource is already registered with MOSAIC",
                 details={"id": existing.id, "name": existing.name},
             )
+        covering = await self._covering_endpoint(actor.tenant_id, resource)
+        if covering is not None:
+            covering_resource, endpoint_covering = covering
+            raise ConflictError(
+                _overlap_message(resource, covering_resource, endpoint_covering.name),
+                details={"id": endpoint_covering.id, "name": endpoint_covering.name},
+            )
 
         endpoint = ModelEndpoint(
             id=deterministic_id("endpoint", actor.tenant_id, resource.dedupe_key),
@@ -242,6 +297,22 @@ class ModelEndpointService:
         return await self._repository.create_endpoint(
             endpoint, self._audit(actor, "modelEndpoint.registered", endpoint.id)
         )
+
+    async def _covering_endpoint(
+        self, tenant_id: str, resource: CognitiveServicesResourceId
+    ) -> tuple[CognitiveServicesResourceId, ModelEndpoint] | None:
+        """The registration that already lists this resource's deployments, if any.
+
+        Deployments live on the account, so an account and every project on it all list the same
+        models. Any registration therefore covers its whole account.
+        """
+
+        account = resource.account_scope.casefold()
+        for endpoint in await self._repository.list_endpoints(tenant_id):
+            registered = _registered_resource(endpoint)
+            if registered is not None and registered.account_scope.casefold() == account:
+                return registered, endpoint
+        return None
 
     async def _register_compatible(
         self, actor: Actor, request: ModelEndpointCreate
@@ -327,9 +398,85 @@ class ModelEndpointService:
         )
 
     async def delete(self, actor: Actor, endpoint_id: str) -> None:
+        """Forget an endpoint, refusing while a publication from it may own anything in APIM.
+
+        A publication that may own gateway state blocks removal: once the endpoint is gone it can
+        no longer be planned, applied or unpublished, while the API it created keeps serving. One
+        that owns nothing (a never-applied draft, or one already unpublished or rolled back) could
+        never be planned again either, so it is deleted with the endpoint rather than left behind.
+        Each publication is locked while it is checked and removed, so an apply cannot start
+        between the check and the delete.
+        """
+
         endpoint = await self.get_endpoint(actor, endpoint_id)
-        await self._repository.delete_endpoint(
-            endpoint, self._audit(actor, "modelEndpoint.removed", endpoint.id)
+        publications = [
+            publication
+            for publication in await self._gateways.list_publications(actor.tenant_id)
+            if publication.model_endpoint_id == endpoint.id
+        ]
+        self._refuse_while_published(
+            endpoint, [item for item in publications if item.may_own_gateway_state()]
+        )
+        async with AsyncExitStack() as stack:
+            forgettable: list[Publication] = []
+            blocking: list[Publication] = []
+            for publication in publications:
+                try:
+                    await stack.enter_async_context(
+                        publication_lock(self._gateways, actor.tenant_id, publication.id)
+                    )
+                except ConflictError:
+                    # Another run or mutation holds it, so it may be about to own something.
+                    blocking.append(publication)
+                    continue
+                current = await self._gateways.get_publication(actor.tenant_id, publication.id)
+                if current is None:
+                    continue
+                if current.may_own_gateway_state():
+                    blocking.append(current)
+                else:
+                    forgettable.append(current)
+            self._refuse_while_published(endpoint, blocking)
+            for publication in forgettable:
+                await self._gateways.delete_publication(
+                    publication,
+                    AuditEvent(
+                        id=new_id("audit"),
+                        tenant_id=actor.tenant_id,
+                        action="publication.removed",
+                        resource_type="publication",
+                        resource_id=publication.id,
+                        actor_object_id=actor.object_id,
+                        details={"reason": "modelEndpoint.removed", "modelEndpointId": endpoint.id},
+                    ),
+                )
+            await self._repository.delete_endpoint(
+                endpoint, self._audit(actor, "modelEndpoint.removed", endpoint.id)
+            )
+
+    @staticmethod
+    def _refuse_while_published(endpoint: ModelEndpoint, blocking: list[Publication]) -> None:
+        if not blocking:
+            return
+        one = len(blocking) == 1
+        raise ConflictError(
+            f"Unpublish the {'model' if one else 'models'} published from {endpoint.name} before "
+            f"removing it. {'Its API' if one else 'Their APIs'} would keep serving traffic in API "
+            "Management with nothing in MOSAIC to change or remove "
+            f"{'it' if one else 'them'}.",
+            details={
+                "id": endpoint.id,
+                "name": endpoint.name,
+                "publications": [
+                    {
+                        "id": publication.id,
+                        "displayName": publication.display_name,
+                        "status": str(publication.status),
+                        "gatewayId": publication.gateway_id,
+                    }
+                    for publication in blocking
+                ],
+            },
         )
 
     async def preflight(self, actor: Actor, endpoint_id: str) -> ModelEndpoint:
@@ -633,15 +780,19 @@ class ModelEndpointService:
 
         The three sources cost very different amounts of privilege. Backends already observed in a
         registered gateway need none at all, so they are gathered first and are always available.
-        The subscription scan needs Reader at subscription scope and degrades per subscription.
+        The subscription scan needs Reader at subscription scope and degrades per subscription,
+        including a subscription it could list but can read only in part.
         """
 
         registered = await self._repository.list_endpoints(actor.tenant_id)
-        by_resource = {
-            (endpoint.azure_resource_id or "").casefold(): endpoint
-            for endpoint in registered
-            if endpoint.azure_resource_id
-        }
+        # Keyed on the account, because every registration covers its whole account: a Foundry
+        # project's deployments live on its parent resource, so suggesting that resource once the
+        # project is registered would offer the same models a second time.
+        by_account: dict[str, ModelEndpoint] = {}
+        for endpoint in registered:
+            resource = _registered_resource(endpoint)
+            if resource is not None:
+                by_account.setdefault(resource.account_scope.casefold(), endpoint)
         by_host = {
             (urlparse(str(endpoint.endpoint)).hostname or "").casefold(): endpoint
             for endpoint in registered
@@ -672,10 +823,11 @@ class ModelEndpointService:
                 suggestions=suggestions, scan_status=SubscriptionScanStatus.NOT_CONFIGURED
             )
 
-        scan = await self._scan_subscriptions(by_resource, add, gateways)
+        scan = await self._scan_subscriptions(by_account, add, gateways)
         return ModelEndpointSuggestionView(
             suggestions=suggestions,
             scan_issues=scan.issues,
+            partial_scans=scan.partial,
             subscriptions_scanned=scan.scanned,
             scan_status=scan.status,
             scan_message=scan.message,
@@ -734,7 +886,7 @@ class ModelEndpointService:
 
     async def _scan_subscriptions(
         self,
-        by_resource: dict[str, ModelEndpoint],
+        by_account: dict[str, ModelEndpoint],
         add: Callable[[ModelEndpointSuggestion], None],
         gateways: list[Gateway],
     ) -> _SubscriptionScan:
@@ -744,6 +896,11 @@ class ModelEndpointService:
         skipped, so a single missing role assignment never blanks the whole suggestion list. A scan
         with no subscription to read at all says so, rather than returning an empty list that is
         indistinguishable from a clean result.
+
+        A subscription that lists successfully is not necessarily read in full: ARM leaves out
+        what MOSAIC cannot read and still answers 200. Such a subscription still counts as scanned
+        and still yields suggestions, but it is recorded as partial with the same Reader remediation
+        so the result is never presented as complete.
         """
 
         assert self._scanner is not None
@@ -754,10 +911,10 @@ class ModelEndpointService:
             return await self._unscanned(
                 SubscriptionScanStatus.LIST_FAILED,
                 gateways,
-                message=_list_failure_message(error.message),
+                message=_list_failure_message(error.summary),
             )
         except Exception:
-            # Unlike a DomainError's message, arbitrary exception text can carry upstream or
+            # Unlike a DomainError's summary, arbitrary exception text can carry upstream or
             # credential detail, so it is logged and never returned.
             logger.exception("endpoint_subscription_list_failed")
             return await self._unscanned(
@@ -778,6 +935,7 @@ class ModelEndpointService:
 
         scanned = 0
         issues: list[SubscriptionScanIssue] = []
+        partial: list[SubscriptionScanIssue] = []
         principal_id = await self._resolve_principal_id()
         for subscription_id, display_name in subscriptions:
             try:
@@ -790,7 +948,7 @@ class ModelEndpointService:
                         message=(
                             "MOSAIC could not list Azure AI resources in this subscription, so "
                             "any endpoints it holds are not suggested here. Endpoints can still "
-                            f"be registered by resource ID. ({error.message})"
+                            f"be registered by resource ID. ({error.summary})"
                         ),
                         remediation=_reader_at_subscription(subscription_id, principal_id),
                     )
@@ -799,12 +957,41 @@ class ModelEndpointService:
 
             scanned += 1
             for account in accounts:
-                suggestion = self._account_suggestion(account, by_resource)
+                suggestion = self._account_suggestion(account, by_account)
                 if suggestion is not None:
                     add(suggestion)
+            if await self._reads_only_part_of(subscription_id):
+                partial.append(
+                    SubscriptionScanIssue(
+                        subscription_id=subscription_id,
+                        display_name=display_name,
+                        message=PARTIAL_SCAN_MESSAGE,
+                        remediation=_reader_at_subscription(subscription_id, principal_id),
+                    )
+                )
         return _SubscriptionScan(
-            status=SubscriptionScanStatus.SCANNED, scanned=scanned, issues=issues
+            status=SubscriptionScanStatus.SCANNED, scanned=scanned, issues=issues, partial=partial
         )
+
+    async def _reads_only_part_of(self, subscription_id: str) -> bool:
+        """Does MOSAIC know that it cannot read every Azure AI account in this subscription?
+
+        Only the permissions MOSAIC holds at the subscription itself can answer that, since the
+        account list looks the same whether or not ARM filtered it. When they cannot be read, the
+        answer is no: MOSAIC reports a partial scan only when it knows the scan was partial.
+        """
+
+        assert self._scanner is not None
+        try:
+            permissions = await self._scanner.subscription_permissions(subscription_id)
+        except Exception:
+            logger.exception(
+                "endpoint_subscription_permissions_failed", subscription_id=subscription_id
+            )
+            return False
+        if permissions is None:
+            return False
+        return not permits(permissions, _ACCOUNT_READ_ACTION)
 
     async def _unscanned(
         self,
@@ -842,7 +1029,7 @@ class ModelEndpointService:
 
     @staticmethod
     def _account_suggestion(
-        account: dict[str, object], by_resource: dict[str, ModelEndpoint]
+        account: dict[str, object], by_account: dict[str, ModelEndpoint]
     ) -> ModelEndpointSuggestion | None:
         resource_id = account.get("id")
         if not isinstance(resource_id, str) or not resource_id:
@@ -862,7 +1049,7 @@ class ModelEndpointService:
             candidate = properties.get("endpoint")
             endpoint = candidate if isinstance(candidate, str) and candidate else None
         location = account.get("location")
-        existing = by_resource.get(resource.canonical.casefold())
+        existing = by_account.get(resource.account_scope.casefold())
         return ModelEndpointSuggestion(
             source=SuggestionSource.SUBSCRIPTION_SCAN,
             endpoint=endpoint,

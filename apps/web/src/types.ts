@@ -1,5 +1,12 @@
 export type PrincipalKind = 'user' | 'servicePrincipal' | 'managedIdentity'
 
+/** The caller's MOSAIC roles, from `GET /api/v1/console/me`. Only a caller with a MOSAIC role gets
+ * one, so `isAdmin` false means the caller holds the User role alone. */
+export interface ConsoleAccess {
+  roles: string[]
+  isAdmin: boolean
+}
+
 export interface Principal {
   id: string
   tenantId: string
@@ -990,7 +997,14 @@ export type SubscriptionScanStatus =
 
 export interface ModelEndpointSuggestionView {
   suggestions: ModelEndpointSuggestion[]
+  /** Subscriptions whose Azure AI resources MOSAIC could not list at all. */
   scanIssues: SubscriptionScanIssue[]
+  /**
+   * Subscriptions MOSAIC listed without a role that reads every Azure AI resource in them. Azure
+   * leaves out what MOSAIC cannot read without saying so, so these still count in
+   * `subscriptionsScanned` and whatever they yielded is still in `suggestions`.
+   */
+  partialScans: SubscriptionScanIssue[]
   subscriptionsScanned: number
   scanStatus: SubscriptionScanStatus
   /** Why MOSAIC could not list subscriptions; set only when `scanStatus` is `listFailed`. */

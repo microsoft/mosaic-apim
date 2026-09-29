@@ -35,10 +35,29 @@ by explicit dependencies:
   keeps it.
 - `require_portal_user` — the `User` role. `Admin` also satisfies it, so an administrator can open
   the portal without holding a second assignment.
+- `require_mosaic_role` — either role. It guards one route, `GET /api/v1/console/me`, which tells
+  the administrator console which of MOSAIC's roles the caller holds. It never widens an
+  administrative route.
 
 Authentication still fails closed at the edge: a token from the configured tenant carrying **none**
 of MOSAIC's app roles is rejected with 403 before a route is reached. Splitting the check widens
 who may be admitted; it does not make admission implicit.
+
+**The administrator console asks the API which role the caller holds before it renders.**
+
+Both roles are defined on the API registration, so they appear in the API access token, not in
+either SPA's ID token. The console does not decode that token. It calls `GET /api/v1/console/me`,
+which answers from the validated token without reading Cosmos, and renders:
+
+- the console, for a caller holding `Admin`;
+- for a caller holding `User` alone, one page saying the console is for MOSAIC administrators,
+  that the `User` role opens the end-user portal, and that an administrator must grant `Admin`;
+- for a caller holding neither, one page saying an administrator must grant them a MOSAIC role;
+- if the check itself fails, an error with a retry — never the console.
+
+That page replaces the console's navigation and actions. It is not the authorization boundary:
+every administrative route still refuses those callers, and each page keeps its own 403 handling.
+Local authentication has no Entra roles, so local mode renders the console without asking.
 
 **The portal gets its own Entra registration and its own app role.**
 
@@ -64,7 +83,9 @@ reruns converge rather than duplicate.
   authenticator, which is where a reviewer looks for it.
 - Moving a security check is a regression risk, so the change lands with a test that enumerates
   the published admin surface from the OpenAPI schema and asserts every operation refuses a caller
-  holding only the portal role. The check covers new routes automatically.
+  holding only the portal role. The check covers new routes automatically. `GET /api/v1/console/me`
+  is the one exception, listed by exact method and path, so a new route under `/api/v1/console` is
+  still checked as administrative.
 - An operator must assign the `User` role before anyone can use the portal. That is deliberate:
   a portal that admitted the whole tenant by default would leak the catalog.
 - Local development can simulate either audience through `MOSAIC_LOCAL_ROLES`, which remains

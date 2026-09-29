@@ -24,16 +24,18 @@ import {
   TabList,
   Text,
   Title3,
+  useRestoreFocusTarget,
 } from '@fluentui/react-components'
 import { AddRegular } from '@fluentui/react-icons'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { type FormEvent, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
-import { ApiError, useMosaicApi } from '../api'
+import { useMosaicApi } from '../api'
 import { EmptyState, ErrorState, Loading } from '../components/AsyncState'
 import { ImportFromGatewayDialog } from '../components/ImportFromGatewayDialog'
 import { PublishModelDialog } from '../components/PublishModelDialog'
 import { PageHeader } from '../components/PageHeader'
+import { RemovalDialog } from '../components/RemovalDialog'
 import { AI_KIND_LABELS } from '../labels'
 import { CAN_INVOKE, describeScope, findingSummary, runtimeVerdict } from '../runtime-access'
 import { runtimeConfig } from '../runtime-config'
@@ -88,6 +90,8 @@ const scanVisibilityTitles: Partial<Record<SubscriptionScanStatus, string>> = {
   listFailed: "MOSAIC couldn't list subscriptions",
 }
 
+const REGISTRATION_REFUSED = "MOSAIC didn't register this endpoint"
+
 
 const publicationStatusLabels: Record<PublicationStatus, string> = {
   draft: 'Draft',
@@ -114,12 +118,10 @@ function PublicationStatusBadge({ status }: { status: PublicationStatus }) {
 function PublishedModels({ onMessage }: { onMessage: (message: string) => void }) {
   const api = useMosaicApi()
   const queryClient = useQueryClient()
+  const restoreFocus = useRestoreFocusTarget()
   const [runIssue, setRunIssue] = useState<Error | null>(null)
-  const [review, setReview] = useState<{
-    publication: Publication
-    plan: PublishPlan
-    message?: string
-  } | null>(null)
+  const [removing, setRemoving] = useState<Publication | null>(null)
+  const [review, setReview] = useState<{ publication: Publication; plan: PublishPlan } | null>(null)
 
   const publications = useQuery({
     queryKey: ['publications'],
@@ -158,13 +160,8 @@ function PublishedModels({ onMessage }: { onMessage: (message: string) => void }
     }
   }
 
-  const replan = useMutation({
-    mutationFn: (publicationId: string) => api.createPublishPlan(publicationId),
-    onSuccess: async () => {
-      await refresh()
-      onMessage('Created a fresh publish plan. Review it before applying.')
-    },
-  })
+  // The table never applies a plan. Re-plan opens a fresh plan in the publish dialog, and only its
+  // Apply plan applies it, so the administrator sees every plan before it runs.
   const reviewPlan = useMutation({
     mutationFn: async (publication: Publication) => ({
       publication,
@@ -172,39 +169,9 @@ function PublishedModels({ onMessage }: { onMessage: (message: string) => void }
     }),
     onSuccess: ({ publication, plan }) => {
       setReview({ publication, plan })
+      void queryClient.invalidateQueries({ queryKey: ['publications'] })
     },
   })
-  const apply = useMutation({
-    onMutate: () => setRunIssue(null),
-    mutationFn: async (publication: Publication): Promise<PublishRun> => {
-      if (!publication.lastPlanId) throw new Error('Review the publish plan before applying it.')
-      return await api.applyPublishPlan(publication.id, publication.lastPlanId)
-    },
-    onSuccess: async (run) => {
-      await refresh()
-      reportRun(run)
-    },
-    onError: async (error, publication) => {
-      if (!(error instanceof ApiError) || error.status !== 409) return
-      // The server rejected the plan because the publication changed under it. Produce a fresh
-      // plan and put the administrator back in front of it rather than retrying silently.
-      try {
-        const plan = await api.createPublishPlan(publication.id)
-        setReview({ publication, plan, message: error.message })
-      } catch (replanError) {
-        onMessage(
-          replanError instanceof Error
-            ? `The publish plan is stale and MOSAIC could not produce a new one: ${replanError.message}`
-            : 'The publish plan is stale and MOSAIC could not produce a new one.',
-        )
-      }
-      await refresh()
-    },
-  })
-  const applyError =
-    apply.error && !(apply.error instanceof ApiError && apply.error.status === 409)
-      ? apply.error
-      : null
   const unpublish = useMutation({
     onMutate: () => setRunIssue(null),
     mutationFn: (publicationId: string) => api.unpublishPublication(publicationId),
@@ -216,10 +183,19 @@ function PublishedModels({ onMessage }: { onMessage: (message: string) => void }
   const remove = useMutation({
     mutationFn: (publicationId: string) => api.deletePublication(publicationId),
     onSuccess: async () => {
+      setRemoving(null)
       await refresh()
-      onMessage('Removed the publication record.')
+      onMessage('Removed the publication record. Nothing changed in API Management.')
+    },
+    onError: async () => {
+      await refresh()
     },
   })
+
+  function confirmRemoval(publication: Publication) {
+    remove.reset()
+    setRemoving(publication)
+  }
 
   return (
     <>
@@ -230,8 +206,8 @@ function PublishedModels({ onMessage }: { onMessage: (message: string) => void }
           <Text>Model deployments MOSAIC has planned or published into API Management.</Text>
         </div>
       </div>
-      {(replan.isError || reviewPlan.isError || applyError || unpublish.isError || remove.isError || runIssue) && (
-        <ErrorState error={replan.error ?? reviewPlan.error ?? applyError ?? unpublish.error ?? remove.error ?? runIssue} />
+      {(reviewPlan.isError || unpublish.isError || runIssue) && (
+        <ErrorState error={reviewPlan.error ?? unpublish.error ?? runIssue} />
       )}
       {publications.isPending && <Loading label="Loading published models" />}
       {publications.isError && <ErrorState error={publications.error} />}
@@ -277,18 +253,15 @@ function PublishedModels({ onMessage }: { onMessage: (message: string) => void }
                     <TableCell>{formatTimestamp(publication.lastAppliedAt)}</TableCell>
                     <TableCell>
                       <div className={styles.actionRow}>
-                        <Button appearance="secondary" disabled={replan.isPending} onClick={() => replan.mutate(publication.id)}>Re-plan</Button>
                         <Button
                           appearance="secondary"
-                          disabled={reviewPlan.isPending || apply.isPending || publication.status === 'applying' || publication.accessState === 'applying' || publication.accessState === 'unknown'}
-                          onClick={() => publication.lastPlanId && !publication.governedAccess && !publication.appliedAccess
-                            ? apply.mutate(publication)
-                            : reviewPlan.mutate(publication)}
+                          disabled={reviewPlan.isPending || publication.status === 'applying' || publication.accessState === 'applying' || publication.accessState === 'unknown'}
+                          onClick={() => reviewPlan.mutate(publication)}
                         >
-                          Apply
+                          {reviewPlan.isPending && reviewPlan.variables?.id === publication.id ? 'Planning…' : 'Re-plan'}
                         </Button>
                         <Button appearance="secondary" disabled={unpublish.isPending} onClick={() => unpublish.mutate(publication.id)}>Unpublish</Button>
-                        <Button appearance="subtle" disabled={remove.isPending} onClick={() => remove.mutate(publication.id)}>Remove</Button>
+                        <Button appearance="subtle" disabled={remove.isPending} onClick={() => confirmRemoval(publication)} {...restoreFocus}>Remove</Button>
                       </div>
                     </TableCell>
                   </TableRow>
@@ -304,6 +277,24 @@ function PublishedModels({ onMessage }: { onMessage: (message: string) => void }
       onClose={() => setReview(null)}
       onPublished={onMessage}
     />
+    <RemovalDialog
+      open={removing !== null}
+      title={`Remove ${removing?.displayName ?? 'this publication'}?`}
+      confirmLabel="Remove publication"
+      refusalTitle="MOSAIC didn't remove this publication"
+      pending={remove.isPending}
+      error={remove.error}
+      onConfirm={() => removing && remove.mutate(removing.id)}
+      onCancel={() => setRemoving(null)}
+    >
+      <Text block>
+        MOSAIC deletes its record of this publication. Nothing changes in API Management.
+      </Text>
+      <Text block>
+        MOSAIC refuses while the publication still owns resources there. Unpublish it first so
+        MOSAIC can remove them.
+      </Text>
+    </RemovalDialog>
     </>
   )
 }
@@ -339,6 +330,26 @@ function CommandBlock({ command }: { command: string }) {
         {copied ? 'Copied' : 'Copy command'}
       </Button>
     </div>
+  )
+}
+
+/** What an administrator can do about a subscription scan that cannot see everything. */
+function ScanReaderExplanation() {
+  return (
+    <Text>
+      Endpoints can still be registered by pasting a resource ID, and granting{' '}
+      <strong>Reader</strong> at subscription scope lets MOSAIC suggest them.
+    </Text>
+  )
+}
+
+/** A role granted to MOSAIC is rarely in effect by the time the page is reloaded. */
+function ScanRoleDelayNote() {
+  return (
+    <Text size={200} className={styles.muted}>
+      Azure can take several minutes, and occasionally longer, to apply a new role. If the scan
+      still reports this right after the grant, wait a few minutes and refresh this page.
+    </Text>
   )
 }
 
@@ -705,13 +716,17 @@ function RuntimeAccessRow({
   )
 }
 
-function ModelEndpoints() {
+function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void }) {
   const api = useMosaicApi()
   const location = useLocation()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
+  const restoreFocus = useRestoreFocusTarget()
   const hasConsumedRegisterQueryRef = useRef(false)
   const [dialogOpen, setDialogOpen] = useState(false)
+  // Where the last registration came from, so a refusal is shown next to the button that asked.
+  const [registerOrigin, setRegisterOrigin] = useState<'dialog' | 'suggestion'>('dialog')
+  const [removing, setRemoving] = useState<ModelEndpoint | null>(null)
   const [mode, setMode] = useState<'azure' | 'compatible'>('azure')
   const [resourceId, setResourceId] = useState('')
   const [endpointUrl, setEndpointUrl] = useState('')
@@ -756,20 +771,46 @@ function ModelEndpoints() {
       setSelectedId(endpoint.id)
       await refresh()
     },
+    onError: async () => {
+      // A refusal can mean the suggestions are out of date, such as an account now covered.
+      await queryClient.invalidateQueries({ queryKey: ['model-endpoint-suggestions'] })
+    },
   })
 
   const sync = useMutation({ mutationFn: api.syncModelEndpoint, onSuccess: refresh })
   const recheck = useMutation({ mutationFn: api.preflightModelEndpoint, onSuccess: refresh })
   const remove = useMutation({
-    mutationFn: api.deleteModelEndpoint,
-    onSuccess: async () => {
+    mutationFn: (endpoint: ModelEndpoint) => api.deleteModelEndpoint(endpoint.id),
+    onSuccess: async (_, endpoint) => {
+      setRemoving(null)
       setSelectedId(null)
+      onMessage(`Removed ${endpoint.name} from MOSAIC. Nothing changed in Azure.`)
       await refresh()
+      await queryClient.invalidateQueries({ queryKey: ['publications'] })
+    },
+    onError: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['publications'] })
     },
   })
 
+  function confirmRemoval(endpoint: ModelEndpoint) {
+    remove.reset()
+    setRemoving(endpoint)
+  }
+
+  function openDialog() {
+    register.reset()
+    setDialogOpen(true)
+  }
+
+  function registerSuggestion(azureResourceId: string) {
+    setRegisterOrigin('suggestion')
+    register.mutate({ azureResourceId })
+  }
+
   function submit(event: FormEvent) {
     event.preventDefault()
+    setRegisterOrigin('dialog')
     if (mode === 'azure') {
       register.mutate({
         azureResourceId: resourceId.trim(),
@@ -790,6 +831,7 @@ function ModelEndpoints() {
     (item) => !item.alreadyRegistered,
   )
   const scanIssues = suggestions.data?.scanIssues ?? []
+  const partialScans = suggestions.data?.partialScans ?? []
   const scanStatus = suggestions.data?.scanStatus
   const scanRemediation = suggestions.data?.scanRemediation ?? []
   const scanVisibilityTitle = scanStatus ? scanVisibilityTitles[scanStatus] : undefined
@@ -799,6 +841,21 @@ function ModelEndpoints() {
     scanStatus === 'scanned' && subscriptionsScanned > 0
       ? `Scanned ${subscriptionsScanned} subscription${subscriptionsScanned === 1 ? '' : 's'}.`
       : null
+  // Azure leaves out what MOSAIC cannot read and still answers, so a partly readable
+  // subscription must never be summarised as having nothing new in it.
+  const partlyReadIn =
+    subscriptionsScanned <= 1
+      ? 'it'
+      : partialScans.length >= subscriptionsScanned
+        ? 'each of them'
+        : `${partialScans.length} of them`
+  const scanOutcome =
+    partialScans.length > 0
+      ? `MOSAIC can read only some resources in ${partlyReadIn}, so any Azure AI resources it ` +
+        "can't read are missing from this list."
+      : pending.length > 0
+        ? null
+        : 'Nothing new to register.'
 
   // The shell's "Add model endpoint" action lands here with ?register=1, so the button opens the
   // real registration form rather than dropping the administrator on the page with no next step.
@@ -849,13 +906,11 @@ function ModelEndpoints() {
           <Button
             appearance="primary"
             icon={<AddRegular />}
-            onClick={() => setDialogOpen(true)}
+            onClick={openDialog}
           >
             Register endpoint
           </Button>
         </div>
-
-        {!dialogOpen && register.isError && <ErrorState error={register.error} />}
 
         {endpoints.isPending && <Loading label="Loading model endpoints" />}
         {endpoints.isError && <ErrorState error={endpoints.error} />}
@@ -921,8 +976,9 @@ function ModelEndpoints() {
                           </Button>
                           <Button
                             appearance="subtle"
-                            onClick={() => remove.mutate(endpoint.id)}
+                            onClick={() => confirmRemoval(endpoint)}
                             disabled={remove.isPending}
+                            {...restoreFocus}
                           >
                             Remove
                           </Button>
@@ -935,7 +991,8 @@ function ModelEndpoints() {
             </div>
             <Text size={200} className={styles.muted}>
               Removing an endpoint deletes only what MOSAIC stored about it. The Azure resource and
-              its deployments are never modified.
+              its deployments are never modified. MOSAIC refuses while a model from it is still
+              published.
             </Text>
           </>
         )}
@@ -946,8 +1003,11 @@ function ModelEndpoints() {
           <Title3 as="h2">Endpoints MOSAIC found</Title3>
           {scanSummary && (
             <Text size={200} className={styles.muted}>
-              {pending.length > 0 ? scanSummary : `${scanSummary} Nothing new to register.`}
+              {scanOutcome ? `${scanSummary} ${scanOutcome}` : scanSummary}
             </Text>
+          )}
+          {registerOrigin === 'suggestion' && register.isError && (
+            <ErrorState title={REGISTRATION_REFUSED} error={register.error} />
           )}
           {pending.map((item) => (
             <div
@@ -969,7 +1029,7 @@ function ModelEndpoints() {
               {item.azureResourceId ? (
                 <Button
                   appearance="primary"
-                  onClick={() => register.mutate({ azureResourceId: item.azureResourceId! })}
+                  onClick={() => registerSuggestion(item.azureResourceId!)}
                   disabled={register.isPending}
                 >
                   Register
@@ -984,6 +1044,26 @@ function ModelEndpoints() {
         </Card>
       )}
 
+      {partialScans.length > 0 && (
+        <Card className={styles.panel}>
+          <Title3 as="h2">
+            {partialScans.length === 1
+              ? 'MOSAIC can read only part of a subscription'
+              : `MOSAIC can read only part of ${partialScans.length} subscriptions`}
+          </Title3>
+          <ScanReaderExplanation />
+          {partialScans.map((scan) => (
+            <div key={scan.subscriptionId} className={styles.scanIssue}>
+              <Text size={200} weight="semibold">
+                {scan.displayName ?? scan.subscriptionId}
+              </Text>
+              {scan.remediation && <CommandBlock command={scan.remediation.command} />}
+            </div>
+          ))}
+          {partialScans.some((scan) => scan.remediation) && <ScanRoleDelayNote />}
+        </Card>
+      )}
+
       {scanIssues.length > 0 && (
         <Card className={styles.panel}>
           <Title3 as="h2">Subscriptions MOSAIC could not scan</Title3>
@@ -995,6 +1075,7 @@ function ModelEndpoints() {
               {issue.remediation && <CommandBlock command={issue.remediation.command} />}
             </div>
           ))}
+          {scanIssues.some((issue) => issue.remediation) && <ScanRoleDelayNote />}
         </Card>
       )}
 
@@ -1006,13 +1087,11 @@ function ModelEndpoints() {
               {suggestions.data.scanMessage}
             </Text>
           )}
-          <Text>
-            Endpoints can still be registered by pasting a resource ID, and granting{' '}
-            <strong>Reader</strong> at subscription scope lets MOSAIC suggest them.
-          </Text>
+          <ScanReaderExplanation />
           {scanRemediation.map((remediation) => (
             <CommandBlock key={remediation.scope} command={remediation.command} />
           ))}
+          {scanRemediation.length > 0 && <ScanRoleDelayNote />}
         </Card>
       )}
 
@@ -1140,7 +1219,9 @@ function ModelEndpoints() {
                   />
                 </Field>
 
-                {register.isError && <ErrorState error={register.error} />}
+                {registerOrigin === 'dialog' && register.isError && (
+                  <ErrorState title={REGISTRATION_REFUSED} error={register.error} />
+                )}
               </DialogContent>
               <DialogActions>
                 <Button appearance="secondary" onClick={closeDialog}>
@@ -1154,6 +1235,31 @@ function ModelEndpoints() {
           </form>
         </DialogSurface>
       </Dialog>
+
+      <RemovalDialog
+        open={removing !== null}
+        title={`Remove ${removing?.name ?? 'this endpoint'}?`}
+        confirmLabel="Remove endpoint"
+        refusalTitle="MOSAIC didn't remove this endpoint"
+        pending={remove.isPending}
+        error={remove.error}
+        statusLabel={(status) =>
+          publicationStatusLabels[status as PublicationStatus] ?? status
+        }
+        onConfirm={() => removing && remove.mutate(removing)}
+        onCancel={() => setRemoving(null)}
+      >
+        <Text block>
+          MOSAIC deletes its record of this endpoint, its{' '}
+          {removing ? plural(removing.inventory.deployments, 'synced model') : 'synced models'}{' '}
+          and its sync history. Nothing changes in Azure: the resource and its deployments stay as
+          they are.
+        </Text>
+        <Text block>
+          Publication records from this endpoint that own nothing in API Management, such as
+          drafts, are deleted with it. MOSAIC refuses while a model from it is still published.
+        </Text>
+      </RemovalDialog>
     </>
   )
 }
@@ -1226,7 +1332,7 @@ export function ModelsPage() {
 
       <ImportedModelApis onRemoved={setLiveBanner} />
 
-      <ModelEndpoints />
+      <ModelEndpoints onMessage={setLiveBanner} />
 
       <PublishModelDialog
         open={publishOpen}

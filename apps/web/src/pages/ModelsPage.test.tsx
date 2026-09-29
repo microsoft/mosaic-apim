@@ -15,6 +15,8 @@ import type {
   ModelEndpointSuggestionView,
   Publication,
   PublishPlan,
+  PublishRun,
+  SubscriptionScanIssue,
 } from '../types'
 
 const RESOURCE_ID =
@@ -159,6 +161,16 @@ const publishPlan: PublishPlan = {
   updatedAt: '2026-09-01T12:00:00Z',
 }
 
+function publishRun(overrides: Partial<PublishRun> = {}): PublishRun {
+  return {
+    id: 'run_1', tenantId: 'tenant-test', entityType: 'publishRun', publicationId: 'pub_1', gatewayId: 'gateway_1',
+    planId: 'plan_1', planDigest: 'digest', status: 'running', startedAt: '2026-09-01T12:00:00Z', completedAt: null,
+    durationMs: null, steps: [], rolledBack: false, orphanedResources: [], errors: [],
+    createdAt: '2026-09-01T12:00:00Z', updatedAt: '2026-09-01T12:00:00Z',
+    ...overrides,
+  }
+}
+
 const api = {
   listGateways: vi.fn(),
   listModelApis: vi.fn(),
@@ -185,10 +197,16 @@ const api = {
 const { TestApiError } = vi.hoisted(() => ({
   TestApiError: class ApiError extends Error {
     readonly status: number
+    readonly body?: { message?: string; details?: Record<string, unknown> }
 
-    constructor(message: string, status: number) {
+    constructor(
+      message: string,
+      status: number,
+      body?: { message?: string; details?: Record<string, unknown> },
+    ) {
       super(message)
       this.status = status
+      this.body = body
     }
   },
 }))
@@ -336,34 +354,46 @@ describe('ModelsPage', () => {
     expect(within(table).getByText('/models/gpt-4o')).toBeVisible()
   })
 
-  it('opens plan review instead of applying when a publication has no current plan', async () => {
-    const user = userEvent.setup()
-    api.listPublications.mockResolvedValue([{ ...publication, lastPlanId: null }])
-
-    renderPage()
-
-    const table = await screen.findByRole('table', { name: 'Published models' })
-    await user.click(within(table).getByRole('button', { name: 'Apply' }))
-
-    await waitFor(() => expect(api.createPublishPlan).toHaveBeenCalledWith('pub_1'))
-    expect(api.applyPublishPlan).not.toHaveBeenCalled()
-    expect(await screen.findByRole('table', { name: 'Publish plan steps' })).toBeVisible()
-    expect(screen.getByText('Review runtime access before applying.')).toBeVisible()
-  })
-
-  it('applies the existing plan when a publication has a current plan', async () => {
+  it('opens the fresh plan for review when an administrator re-plans', async () => {
     const user = userEvent.setup()
     api.listPublications.mockResolvedValue([publication])
 
     renderPage()
 
     const table = await screen.findByRole('table', { name: 'Published models' })
-    await user.click(within(table).getByRole('button', { name: 'Apply' }))
+    await user.click(within(table).getByRole('button', { name: 'Re-plan' }))
 
-    await waitFor(() => {
-      expect(api.applyPublishPlan).toHaveBeenCalledWith('pub_1', 'plan_1')
-    })
-    expect(api.createPublishPlan).not.toHaveBeenCalled()
+    await waitFor(() => expect(api.createPublishPlan).toHaveBeenCalledWith('pub_1'))
+    const steps = await screen.findByRole('table', { name: 'Publish plan steps' })
+    const dialog = screen.getByRole('dialog')
+    expect(dialog).toContainElement(steps)
+    expect(within(steps).getByText('Create the API for this deployment.')).toBeVisible()
+    expect(within(dialog).getByText('Review runtime access before applying.')).toBeVisible()
+    expect(within(dialog).getByRole('button', { name: 'Apply plan' })).toBeEnabled()
+    expect(within(dialog).queryByText(/Nothing to apply/)).not.toBeInTheDocument()
+    expect(api.applyPublishPlan).not.toHaveBeenCalled()
+  })
+
+  it('applies only the plan the administrator reviewed, never the saved one', async () => {
+    const user = userEvent.setup()
+    // A legacy publication with a saved plan, which the table used to apply without showing it.
+    api.listPublications.mockResolvedValue([publication])
+    api.createPublishPlan.mockResolvedValue({ ...publishPlan, id: 'plan_2' })
+
+    renderPage()
+
+    const table = await screen.findByRole('table', { name: 'Published models' })
+    expect(within(table).queryByRole('button', { name: 'Apply' })).not.toBeInTheDocument()
+    await user.click(within(table).getByRole('button', { name: 'Re-plan' }))
+
+    const applyPlan = await screen.findByRole('button', { name: 'Apply plan' })
+    expect(screen.getByRole('table', { name: 'Publish plan steps' })).toBeVisible()
+    expect(api.applyPublishPlan).not.toHaveBeenCalled()
+
+    await user.click(applyPlan)
+
+    await waitFor(() => expect(api.applyPublishPlan).toHaveBeenCalledTimes(1))
+    expect(api.applyPublishPlan).toHaveBeenCalledWith('pub_1', 'plan_2')
   })
 
   it('always reviews the complete governed-access snapshot before applying an existing plan', async () => {
@@ -372,7 +402,7 @@ describe('ModelsPage', () => {
     api.createPublishPlan.mockResolvedValue(accessPlan)
     renderPage()
     const table = await screen.findByRole('table', { name: 'Published models' })
-    await user.click(within(table).getByRole('button', { name: 'Apply' }))
+    await user.click(within(table).getByRole('button', { name: 'Re-plan' }))
     expect(await screen.findByRole('table', { name: 'All target model grants' })).toBeVisible()
     expect(api.applyPublishPlan).not.toHaveBeenCalled()
   })
@@ -383,7 +413,7 @@ describe('ModelsPage', () => {
     api.createPublishPlan.mockResolvedValue(accessPlan)
     renderPage()
     const table = await screen.findByRole('table', { name: 'Published models' })
-    await user.click(within(table).getByRole('button', { name: 'Apply' }))
+    await user.click(within(table).getByRole('button', { name: 'Re-plan' }))
 
     expect(await screen.findByRole('table', { name: 'All target model grants' })).toBeVisible()
     await waitFor(() => {
@@ -396,30 +426,94 @@ describe('ModelsPage', () => {
   it('does not describe an interrupted apply as still running or successful', async () => {
     const user = userEvent.setup()
     api.listPublications.mockResolvedValue([publication])
-    api.applyPublishPlan.mockResolvedValue({ id: 'interrupted-run', status: 'interrupted', errors: [] })
+    const interrupted = publishRun({ id: 'run_2', status: 'interrupted', errors: ['Worker stopped after policy install.'] })
+    api.applyPublishPlan.mockResolvedValue(interrupted)
+    api.getPublishRun.mockResolvedValue(interrupted)
     renderPage()
     const table = await screen.findByRole('table', { name: 'Published models' })
-    await user.click(within(table).getByRole('button', { name: 'Apply' }))
-    expect(await screen.findByText(/Apply interrupted — runtime state unknown/)).toBeVisible()
+    await user.click(within(table).getByRole('button', { name: 'Re-plan' }))
+    await user.click(await screen.findByRole('button', { name: 'Apply plan' }))
+    expect(await screen.findByText('Apply interrupted — runtime state unknown')).toBeVisible()
+    expect(screen.getByText('Worker stopped after policy install.')).toBeVisible()
     expect(screen.queryByText(/Run started/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/reported completion|reports the model plan applied/)).not.toBeInTheDocument()
   })
 
-  it('routes a stale direct apply back to fresh plan review', async () => {
+  it('says why MOSAIC refused the reviewed plan and reviews the fresh one it made', async () => {
     const user = userEvent.setup()
+    const refusal =
+      'This publication changed after the plan was produced. Re-plan it and review the new changes before applying.'
+    const freshPlan: PublishPlan = {
+      ...publishPlan,
+      id: 'plan_3',
+      steps: [{ ...publishPlan.steps[0], action: 'update', reason: 'Replace the API that fronts this model.', existed: true }],
+    }
     api.listPublications.mockResolvedValue([publication])
-    api.applyPublishPlan.mockRejectedValue(new TestApiError('The publish plan is stale.', 409))
+    api.createPublishPlan.mockResolvedValueOnce({ ...publishPlan, id: 'plan_2' }).mockResolvedValueOnce(freshPlan)
+    api.applyPublishPlan.mockRejectedValueOnce(new TestApiError(refusal, 409))
 
     renderPage()
 
     const table = await screen.findByRole('table', { name: 'Published models' })
-    await user.click(within(table).getByRole('button', { name: 'Apply' }))
+    await user.click(within(table).getByRole('button', { name: 'Re-plan' }))
+    await user.click(await screen.findByRole('button', { name: 'Apply plan' }))
 
-    await waitFor(() => {
-      expect(api.createPublishPlan).toHaveBeenCalledWith('pub_1')
-    })
-    expect(await screen.findByText('The publish plan is stale.')).toBeVisible()
-    expect(screen.getByRole('table', { name: 'Publish plan steps' })).toBeVisible()
+    expect(
+      await screen.findByText('MOSAIC has already re-planned. Review the fresh plan below before you apply it.'),
+    ).toBeVisible()
+    expect(screen.getByText("MOSAIC didn't apply the plan you reviewed")).toBeVisible()
+    expect(screen.getByText(refusal)).toBeVisible()
+    expect(screen.queryByText(/earlier plan was rejected/)).not.toBeInTheDocument()
+    expect(screen.getByText('Replace the API that fronts this model.')).toBeVisible()
+    expect(api.applyPublishPlan).toHaveBeenCalledWith('pub_1', 'plan_2')
+
+    await user.click(screen.getByRole('button', { name: 'Apply plan' }))
+
+    await waitFor(() => expect(api.applyPublishPlan).toHaveBeenLastCalledWith('pub_1', 'plan_3'))
   })
+
+  it('says when API Management already matches a publication and offers nothing to apply', async () => {
+    const user = userEvent.setup()
+    const unchanged: PublishPlan = {
+      ...publishPlan,
+      id: 'plan_2',
+      warnings: [],
+      steps: [{ ...publishPlan.steps[0], action: 'noChange', reason: 'The API already matches this publication.', existed: true }],
+    }
+    api.listPublications.mockResolvedValue([publication])
+    api.createPublishPlan.mockResolvedValue(unchanged)
+
+    renderPage()
+
+    const table = await screen.findByRole('table', { name: 'Published models' })
+    await user.click(within(table).getByRole('button', { name: 'Re-plan' }))
+
+    expect(
+      await screen.findByText('API Management already matches this publication. Nothing to apply.'),
+    ).toBeVisible()
+    expect(within(screen.getByRole('table', { name: 'Publish plan steps' })).getByText('No change')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Apply plan' })).toBeDisabled()
+    expect(api.applyPublishPlan).not.toHaveBeenCalled()
+  })
+
+  it.each(['failed', 'rolledBack'] as const)(
+    'retries a %s publication through a review of a fresh plan',
+    async (status) => {
+      const user = userEvent.setup()
+      api.listPublications.mockResolvedValue([{ ...publication, status, lastAppliedAt: null }])
+      api.createPublishPlan.mockResolvedValue({ ...publishPlan, id: 'plan_2' })
+
+      renderPage()
+
+      const table = await screen.findByRole('table', { name: 'Published models' })
+      await user.click(within(table).getByRole('button', { name: 'Re-plan' }))
+      const applyPlan = await screen.findByRole('button', { name: 'Apply plan' })
+      expect(api.applyPublishPlan).not.toHaveBeenCalled()
+      await user.click(applyPlan)
+
+      await waitFor(() => expect(api.applyPublishPlan).toHaveBeenCalledWith('pub_1', 'plan_2'))
+    },
+  )
 
   it('does not claim the models page never changes API Management', async () => {
     renderPage()
@@ -432,17 +526,61 @@ describe('ModelsPage', () => {
     ).not.toBeInTheDocument()
   })
 
-  it('surfaces the conflict message when removing a publication that still owns resources', async () => {
+  it('asks before removing a publication record', async () => {
     const user = userEvent.setup()
-    api.listPublications.mockResolvedValue([publication])
-    api.deletePublication.mockRejectedValue(new Error('Unpublish before removing this publication.'))
+    api.listPublications.mockResolvedValue([{ ...publication, status: 'draft' }])
 
     renderPage()
 
     const table = await screen.findByRole('table', { name: 'Published models' })
     await user.click(within(table).getByRole('button', { name: 'Remove' }))
 
-    expect(await screen.findByText('Unpublish before removing this publication.')).toBeVisible()
+    const dialog = await screen.findByRole('alertdialog', { name: 'Remove GPT-4o production?' })
+    expect(dialog).toHaveTextContent(
+      'MOSAIC deletes its record of this publication. Nothing changes in API Management.',
+    )
+    expect(api.deletePublication).not.toHaveBeenCalled()
+
+    await user.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument())
+    expect(api.deletePublication).not.toHaveBeenCalled()
+
+    // The rest of the page stays hidden from assistive technology for a moment after the modal
+    // dialog is gone, so the first role query outside it has to wait.
+    await user.click(await within(table).findByRole('button', { name: 'Remove' }))
+    await user.click(
+      within(await screen.findByRole('alertdialog')).getByRole('button', {
+        name: 'Remove publication',
+      }),
+    )
+
+    await waitFor(() => expect(api.deletePublication).toHaveBeenCalledWith('pub_1'))
+    expect(
+      await screen.findByText(
+        'Removed the publication record. Nothing changed in API Management.',
+      ),
+    ).toBeVisible()
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument())
+  })
+
+  it('surfaces the conflict message when removing a publication that still owns resources', async () => {
+    const user = userEvent.setup()
+    api.listPublications.mockResolvedValue([publication])
+    api.deletePublication.mockRejectedValue(
+      new TestApiError('Unpublish before removing this publication.', 409),
+    )
+
+    renderPage()
+
+    const table = await screen.findByRole('table', { name: 'Published models' })
+    await user.click(within(table).getByRole('button', { name: 'Remove' }))
+    const dialog = await screen.findByRole('alertdialog')
+    await user.click(within(dialog).getByRole('button', { name: 'Remove publication' }))
+
+    const refusal = await within(dialog).findByRole('alert')
+    expect(refusal).toHaveTextContent("MOSAIC didn't remove this publication")
+    expect(refusal).toHaveTextContent('Unpublish before removing this publication.')
+    expect(screen.queryByText('Unable to load data')).not.toBeInTheDocument()
   })
 
   it('opens the registration dialog from the shell query and clears it when closed', async () => {
@@ -547,6 +685,7 @@ function suggestionView(
   return {
     suggestions: [],
     scanIssues: [],
+    partialScans: [],
     subscriptionsScanned: 0,
     scanStatus: 'notConfigured',
     scanMessage: null,
@@ -588,6 +727,38 @@ function readerAtSubscription(subscriptionId: string): AccessRemediation {
 const SCAN_EXPLANATION =
   'Endpoints can still be registered by pasting a resource ID, and granting Reader at ' +
   'subscription scope lets MOSAIC suggest them.'
+
+const SCAN_ROLE_DELAY =
+  'Azure can take several minutes, and occasionally longer, to apply a new role. If the scan ' +
+  'still reports this right after the grant, wait a few minutes and refresh this page.'
+
+function partialScan(subscriptionId: string, displayName: string | null): SubscriptionScanIssue {
+  return {
+    subscriptionId,
+    displayName,
+    message:
+      'MOSAIC can read only some resources in this subscription, so any Azure AI resources it ' +
+      'cannot read are not suggested here. Endpoints can still be registered by resource ID.',
+    remediation: readerAtSubscription(subscriptionId),
+  }
+}
+
+function subscriptionSuggestion(): ModelEndpointSuggestion {
+  return {
+    source: 'subscriptionScan',
+    endpoint: 'https://contoso-aoai.openai.azure.com/',
+    azureResourceId: AI_RESOURCE_ID,
+    accountName: 'contoso-aoai',
+    resourceGroup: 'rg-contoso-ai',
+    subscriptionId: '00000000-0000-0000-0000-000000000000',
+    kind: 'OpenAI',
+    location: 'eastus2',
+    provider: 'azureOpenAi',
+    alreadyRegistered: false,
+    modelEndpointId: null,
+    reason: 'Found in subscription 00000000-0000-0000-0000-000000000000.',
+  }
+}
 
 const PROJECT_RESOURCE_ID = `${AI_RESOURCE_ID}/projects/team-a`
 const SUBSCRIPTION_SCOPE = '/subscriptions/00000000-0000-0000-0000-000000000000'
@@ -639,6 +810,163 @@ describe('ModelsPage model endpoints', () => {
     renderPage()
 
     expect(await screen.findByText('No model endpoints yet')).toBeVisible()
+  })
+
+  it('asks before removing an endpoint and says what goes with it', async () => {
+    const user = userEvent.setup()
+    api.listModelEndpoints.mockResolvedValue([
+      modelEndpoint({ inventory: { deployments: 6, availableModels: 3, succeededDeployments: 6, deprecatedDeployments: 0 } }),
+    ])
+    api.deleteModelEndpoint.mockResolvedValue(undefined)
+
+    renderPage()
+
+    const table = await screen.findByRole('table', { name: 'Registered model endpoints' })
+    await user.click(within(table).getByRole('button', { name: 'Remove' }))
+
+    const dialog = await screen.findByRole('alertdialog', { name: 'Remove Contoso models?' })
+    expect(dialog).toHaveTextContent(
+      'MOSAIC deletes its record of this endpoint, its 6 synced models and its sync history. ' +
+        'Nothing changes in Azure: the resource and its deployments stay as they are.',
+    )
+    expect(api.deleteModelEndpoint).not.toHaveBeenCalled()
+
+    await user.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument())
+    expect(api.deleteModelEndpoint).not.toHaveBeenCalled()
+
+    // The rest of the page stays hidden from assistive technology for a moment after the modal
+    // dialog is gone, so the first role query outside it has to wait.
+    await user.click(await within(table).findByRole('button', { name: 'Remove' }))
+    await user.click(
+      within(await screen.findByRole('alertdialog')).getByRole('button', {
+        name: 'Remove endpoint',
+      }),
+    )
+
+    await waitFor(() => expect(api.deleteModelEndpoint).toHaveBeenCalledWith('endpoint_1'))
+    expect(
+      await screen.findByText('Removed Contoso models from MOSAIC. Nothing changed in Azure.'),
+    ).toBeVisible()
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument())
+  })
+
+  it('keeps the dialog open and lists the publications when removal is refused', async () => {
+    const user = userEvent.setup()
+    const message =
+      'Unpublish the models published from Contoso models before removing it. Their APIs ' +
+      'would keep serving traffic in API Management with nothing in MOSAIC to change or ' +
+      'remove them.'
+    api.listModelEndpoints.mockResolvedValue([modelEndpoint()])
+    api.deleteModelEndpoint.mockRejectedValue(
+      new TestApiError(message, 409, {
+        message,
+        details: {
+          id: 'endpoint_1',
+          name: 'Contoso models',
+          publications: [
+            { id: 'pub_1', displayName: 'GPT-4o production', status: 'published', gatewayId: 'gateway_1' },
+            { id: 'pub_2', displayName: 'Embeddings', status: 'failed', gatewayId: 'gateway_1' },
+          ],
+        },
+      }),
+    )
+
+    renderPage()
+
+    const table = await screen.findByRole('table', { name: 'Registered model endpoints' })
+    await user.click(within(table).getByRole('button', { name: 'Remove' }))
+    const dialog = await screen.findByRole('alertdialog')
+    await user.click(within(dialog).getByRole('button', { name: 'Remove endpoint' }))
+
+    const refusal = await within(dialog).findByRole('alert')
+    // Queries within a dialog that has closed still find its detached content, so check it's still
+    // the open dialog on the page.
+    expect(screen.getByRole('alertdialog', { name: 'Remove Contoso models?' })).toBe(dialog)
+    expect(refusal).toHaveTextContent("MOSAIC didn't remove this endpoint")
+    expect(refusal).toHaveTextContent(message)
+    const blocking = within(dialog).getByRole('list', { name: 'Publications blocking removal' })
+    expect(
+      within(blocking)
+        .getAllByRole('listitem')
+        .map((item) => item.textContent),
+    ).toEqual(['GPT-4o production (Published)', 'Embeddings (Failed)'])
+    expect(screen.queryByText('Unable to load data')).not.toBeInTheDocument()
+    // The open modal dialog hides the rest of the page from assistive technology, so include hidden
+    // elements to find the table behind it.
+    expect(
+      screen.getByRole('table', { name: 'Registered model endpoints', hidden: true }),
+    ).toHaveTextContent('Contoso models')
+  })
+
+  it('shows why the Register dialog was refused', async () => {
+    const user = userEvent.setup()
+    const message =
+      "MOSAIC already lists this resource's models through Team A project, a Foundry project " +
+      "on it. A Foundry project's models are deployed on its parent resource, so registering " +
+      'both would list every deployment twice.'
+    api.registerModelEndpoint.mockRejectedValue(
+      new TestApiError(message, 409, {
+        message,
+        details: { id: 'endpoint_project', name: 'Team A project' },
+      }),
+    )
+
+    renderPage('/models?register=1')
+
+    const dialog = await screen.findByRole('dialog')
+    await user.type(within(dialog).getByLabelText(/Azure resource ID/i), AI_RESOURCE_ID)
+    await user.click(within(dialog).getByRole('button', { name: 'Register' }))
+
+    await waitFor(() => expect(api.registerModelEndpoint).toHaveBeenCalled())
+    expect(api.registerModelEndpoint.mock.calls[0][0]).toMatchObject({
+      azureResourceId: AI_RESOURCE_ID,
+    })
+    expect(await within(dialog).findByText(message)).toBeVisible()
+    expect(within(dialog).getByText("MOSAIC didn't register this endpoint")).toBeVisible()
+    expect(screen.queryByText('Unable to load data')).not.toBeInTheDocument()
+  })
+
+  it("shows why a suggestion's registration was refused next to the suggestion", async () => {
+    const user = userEvent.setup()
+    const message =
+      "MOSAIC already lists this resource's models through Team A project, a Foundry project " +
+      "on it. A Foundry project's models are deployed on its parent resource, so registering " +
+      'both would list every deployment twice.'
+    api.listSuggestedModelEndpoints.mockResolvedValue(
+      suggestionView({
+        suggestions: [
+          {
+            source: 'subscriptionScan',
+            endpoint: 'https://contoso-aoai.openai.azure.com/',
+            azureResourceId: AI_RESOURCE_ID,
+            accountName: 'contoso-aoai',
+            resourceGroup: 'rg-contoso-ai',
+            subscriptionId: '00000000-0000-0000-0000-000000000000',
+            kind: 'OpenAI',
+            location: 'eastus2',
+            provider: 'azureOpenAi',
+            alreadyRegistered: false,
+            modelEndpointId: null,
+            reason: 'Found in subscription 00000000-0000-0000-0000-000000000000.',
+          },
+        ],
+        subscriptionsScanned: 1,
+        scanStatus: 'scanned',
+      }),
+    )
+    api.registerModelEndpoint.mockRejectedValue(new TestApiError(message, 409))
+
+    renderPage()
+
+    const heading = await screen.findByRole('heading', { name: 'Endpoints MOSAIC found' })
+    const card = heading.closest('.fui-Card') as HTMLElement
+    await user.click(within(card).getByRole('button', { name: 'Register' }))
+
+    expect(await within(card).findByText(message)).toBeVisible()
+    expect(within(card).getByText("MOSAIC didn't register this endpoint")).toBeVisible()
+    expect(screen.queryByText('Unable to load data')).not.toBeInTheDocument()
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   })
 
   it('lists registered endpoints with their discovered model count', async () => {
@@ -1078,7 +1406,11 @@ describe('ModelsPage model endpoints', () => {
             command: 'az role assignment create --role "Reader"',
             customRoleDefinition: { properties: { roleName: 'MOSAIC Model Deployment Reader' } },
           },
-          message: 'MOSAIC is missing permissions needed to enumerate models.',
+          message:
+            "MOSAIC's managed identity is missing permissions needed to enumerate models on " +
+            'this endpoint. Grant it the role shown below. Azure can take several minutes, and ' +
+            'occasionally longer, to apply a new role. If Check access still fails right after ' +
+            'the grant, wait a few minutes and try again.',
         },
       }),
     ])
@@ -1086,6 +1418,8 @@ describe('ModelsPage model endpoints', () => {
     renderPage()
 
     expect(await screen.findByText('MOSAIC cannot read this endpoint')).toBeVisible()
+    // The API's message carries the advice to wait, since a new role is rarely applied at once.
+    expect(screen.getByText(/If Check access still fails right after the grant/)).toBeVisible()
     expect(screen.getByText(/without also granting/i)).toBeVisible()
   })
 
@@ -1147,8 +1481,11 @@ describe('ModelsPage model endpoints', () => {
 
     renderPage()
 
-    expect(await screen.findByText('Subscriptions MOSAIC could not scan')).toBeVisible()
+    const heading = await screen.findByText('Subscriptions MOSAIC could not scan')
+    expect(heading).toBeVisible()
     expect(screen.getByText(/az role assignment create/)).toBeVisible()
+    const card = heading.closest('.fui-Card') as HTMLElement
+    expect(within(card).getByText(SCAN_ROLE_DELAY)).toBeVisible()
     // Scanning none of them is already what the card above says, so no count restates it.
     expect(screen.queryByText('Endpoints MOSAIC found')).not.toBeInTheDocument()
   })
@@ -1180,6 +1517,8 @@ describe('ModelsPage model endpoints', () => {
       readerAtSubscription('66666666-7777-8888-9999-000000000000').command,
     ])
     expect(within(card).getAllByRole('button', { name: 'Copy command' })).toHaveLength(2)
+    // Said once for the card, not once per command.
+    expect(within(card).getAllByText(SCAN_ROLE_DELAY)).toHaveLength(1)
     expect(
       screen.queryByRole('heading', { name: "MOSAIC couldn't list subscriptions" }),
     ).not.toBeInTheDocument()
@@ -1207,6 +1546,7 @@ describe('ModelsPage model endpoints', () => {
     expect(
       within(card).getByText(/--scope "\/subscriptions\/<subscription-id>"/),
     ).toBeVisible()
+    expect(within(card).getByText(SCAN_ROLE_DELAY)).toBeVisible()
     expect(
       screen.queryByRole('heading', { name: "MOSAIC can't see any subscriptions" }),
     ).not.toBeInTheDocument()
@@ -1223,7 +1563,101 @@ describe('ModelsPage model endpoints', () => {
       await screen.findByText('Scanned 3 subscriptions. Nothing new to register.'),
     ).toBeVisible()
     expect(screen.getByRole('heading', { name: 'Endpoints MOSAIC found' })).toBeVisible()
+    // Nothing asks for a grant, so there is nothing to wait for.
+    expect(screen.queryByText(SCAN_ROLE_DELAY)).not.toBeInTheDocument()
   })
+
+  it("says MOSAIC can read only part of a subscription instead of 'nothing new'", async () => {
+    // Observed live: ARM answered with no accounts because it had silently left out every account
+    // MOSAIC could not read.
+    const subscriptionId = '00000000-0000-0000-0000-000000000000'
+    api.listSuggestedModelEndpoints.mockResolvedValue(
+      suggestionView({
+        scanStatus: 'scanned',
+        subscriptionsScanned: 1,
+        partialScans: [partialScan(subscriptionId, 'Contoso dev')],
+      }),
+    )
+
+    renderPage()
+
+    expect(
+      await screen.findByText(
+        'Scanned 1 subscription. MOSAIC can read only some resources in it, so any Azure AI ' +
+          "resources it can't read are missing from this list.",
+      ),
+    ).toBeVisible()
+    expect(screen.queryByText(/Nothing new to register/)).not.toBeInTheDocument()
+    const heading = screen.getByRole('heading', {
+      name: 'MOSAIC can read only part of a subscription',
+    })
+    const card = heading.closest('.fui-Card') as HTMLElement
+    expect(card).toHaveTextContent(SCAN_EXPLANATION)
+    expect(within(card).getByText('Contoso dev')).toBeVisible()
+    expect(
+      within(card).getByText(readerAtSubscription(subscriptionId).command),
+    ).toBeVisible()
+    expect(within(card).getAllByRole('button', { name: 'Copy command' })).toHaveLength(1)
+    expect(within(card).getByText(SCAN_ROLE_DELAY)).toBeVisible()
+    // It was listed, so it is not among the subscriptions MOSAIC could not scan.
+    expect(
+      screen.queryByRole('heading', { name: 'Subscriptions MOSAIC could not scan' }),
+    ).not.toBeInTheDocument()
+  })
+
+  it.each([
+    [2, 1, 'in 1 of them'],
+    [3, 2, 'in 2 of them'],
+    [2, 2, 'in each of them'],
+  ])(
+    'counts %i scanned subscriptions with %i readable only in part',
+    async (scanned, partial, where) => {
+      const partialScans = [
+        partialScan('11111111-2222-3333-4444-555555555555', 'Contoso prod'),
+        partialScan('66666666-7777-8888-9999-000000000000', null),
+      ].slice(0, partial)
+      api.listSuggestedModelEndpoints.mockResolvedValue(
+        suggestionView({
+          suggestions: [subscriptionSuggestion()],
+          scanStatus: 'scanned',
+          subscriptionsScanned: scanned,
+          partialScans,
+        }),
+      )
+
+      renderPage()
+
+      expect(
+        await screen.findByText(
+          `Scanned ${scanned} subscriptions. MOSAIC can read only some resources ${where}, so ` +
+            "any Azure AI resources it can't read are missing from this list.",
+        ),
+      ).toBeVisible()
+      // What MOSAIC could read is still offered.
+      expect(screen.getByRole('button', { name: 'Register' })).toBeVisible()
+      const heading = screen.getByRole('heading', {
+        name:
+          partial === 1
+            ? 'MOSAIC can read only part of a subscription'
+            : `MOSAIC can read only part of ${partial} subscriptions`,
+      })
+      const card = heading.closest('.fui-Card') as HTMLElement
+      expect(
+        within(card)
+          .getAllByText(/az role assignment create/)
+          .map((command) => command.textContent),
+      ).toEqual(partialScans.map((scan) => scan.remediation?.command))
+      expect(within(card).getAllByRole('button', { name: 'Copy command' })).toHaveLength(
+        partial,
+      )
+      // Said once for the card, however many subscriptions it lists.
+      expect(within(card).getAllByText(SCAN_ROLE_DELAY)).toHaveLength(1)
+      // A subscription without a display name is named by its ID.
+      if (partial === 2) {
+        expect(within(card).getByText('66666666-7777-8888-9999-000000000000')).toBeVisible()
+      }
+    },
+  )
 
   it('says nothing about subscriptions when the scan is not configured', async () => {
     api.listSuggestedModelEndpoints.mockResolvedValue(

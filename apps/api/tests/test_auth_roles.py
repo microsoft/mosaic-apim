@@ -4,8 +4,12 @@ Phase 1 moved the app-role check out of ``EntraAuthenticator.authenticate`` so o
 both the administrator console and the end-user portal. These tests are the safety net for that
 move: authentication must still fail closed for a token carrying no MOSAIC role, and every
 existing administrator route must still refuse a caller who only holds the portal role.
+
+The routes in ``ANY_ROLE_ROUTES`` are the deliberate exception outside the portal: the console asks
+one of them which role its caller holds, so it has to answer a portal-only caller too.
 """
 
+import asyncio
 import time
 from collections.abc import Iterator
 from typing import Annotated, Any
@@ -20,6 +24,7 @@ from mosaic_api.auth import (
     AuthContext,
     EntraAuthenticator,
     require_admin,
+    require_mosaic_role,
     require_portal_user,
 )
 from mosaic_api.config import AuthMode, Environment, RepositoryBackend, Settings
@@ -27,9 +32,15 @@ from mosaic_api.main import create_app
 
 KEY_ID = "test-key"
 PORTAL_PREFIXES = ("/api/v1/portal/", "/api/v1/me/")
+# Routes either MOSAIC role may call because all they return is which role the caller holds. Each
+# is listed by method and path rather than by prefix, so a new route beside one of them still has
+# to refuse a portal-only caller unless it is added here on purpose.
+ANY_ROLE_ROUTES = frozenset({("GET", "/api/v1/console/me")})
+NO_MOSAIC_ROLE = "A MOSAIC app role is required: Admin, User"
 
 Admin = Annotated[AuthContext, Depends(require_admin)]
 PortalUser = Annotated[AuthContext, Depends(require_portal_user)]
+AnyMosaicRole = Annotated[AuthContext, Depends(require_mosaic_role)]
 
 
 def _settings(**overrides: Any) -> Settings:
@@ -128,6 +139,7 @@ async def test_authentication_still_fails_closed_without_a_mosaic_role(
     finally:
         await client.aclose()
     assert raised.value.status_code == 403
+    assert raised.value.detail == NO_MOSAIC_ROLE
 
 
 def _dependency_app(roles: list[str]) -> TestClient:
@@ -141,6 +153,10 @@ def _dependency_app(roles: list[str]) -> TestClient:
 
     @app.get("/portal")
     async def portal(auth: PortalUser) -> dict[str, list[str]]:
+        return {"roles": sorted(auth.roles)}
+
+    @app.get("/any-role")
+    async def any_role(auth: AnyMosaicRole) -> dict[str, list[str]]:
         return {"roles": sorted(auth.roles)}
 
     return TestClient(app)
@@ -160,20 +176,22 @@ class _StubAuthenticator:
 
 
 @pytest.mark.parametrize(
-    ("roles", "admin_status", "portal_status"),
+    ("roles", "admin_status", "portal_status", "any_role_status"),
     [
-        (["Admin"], 200, 200),
-        (["User"], 403, 200),
-        (["Admin", "User"], 200, 200),
-        ([], 403, 403),
+        (["Admin"], 200, 200, 200),
+        (["User"], 403, 200, 200),
+        (["Admin", "User"], 200, 200, 200),
+        ([], 403, 403, 403),
+        (["SomeOtherApp.Reader"], 403, 403, 403),
     ],
 )
 def test_role_dependencies_gate_independently(
-    roles: list[str], admin_status: int, portal_status: int
+    roles: list[str], admin_status: int, portal_status: int, any_role_status: int
 ) -> None:
     with _dependency_app(roles) as client:
         assert client.get("/admin-only").status_code == admin_status
         assert client.get("/portal").status_code == portal_status
+        assert client.get("/any-role").status_code == any_role_status
 
 
 def _admin_routes(app: FastAPI) -> list[tuple[str, str]]:
@@ -183,7 +201,8 @@ def _admin_routes(app: FastAPI) -> list[tuple[str, str]]:
     FastAPI changes how included routers are represented internally.
 
     The portal read model and current-user credential APIs have their own authorization coverage.
-    Only their explicit prefixes are exempt, so a new admin route elsewhere is still checked.
+    Only their explicit prefixes are exempt, so a new admin route elsewhere is still checked. The
+    routes in ``ANY_ROLE_ROUTES`` are exempt one by one and are covered separately below.
     """
 
     calls: list[tuple[str, str]] = []
@@ -198,20 +217,26 @@ def _admin_routes(app: FastAPI) -> list[tuple[str, str]]:
         for method in operations:
             if method.upper() in {"HEAD", "OPTIONS", "PARAMETERS"}:
                 continue
+            if (method.upper(), concrete) in ANY_ROLE_ROUTES:
+                continue
             calls.append((method.upper(), concrete))
     return calls
 
 
-@pytest.fixture
-def portal_only_client() -> Iterator[TestClient]:
+def _local_client(roles: list[str]) -> TestClient:
     settings = Settings(
         environment=Environment.TEST,
         auth_mode=AuthMode.LOCAL,
         repository_backend=RepositoryBackend.MEMORY,
         tenant_id="tenant-test",
-        local_roles=["User"],
+        local_roles=roles,
     )
-    with TestClient(create_app(settings)) as client:
+    return TestClient(create_app(settings))
+
+
+@pytest.fixture
+def portal_only_client() -> Iterator[TestClient]:
+    with _local_client(["User"]) as client:
         yield client
 
 
@@ -275,6 +300,80 @@ def test_every_portal_route_admits_a_portal_only_caller(
         if response.status_code == 403:
             forbidden.append((method, path, response.text[:120]))
     assert not forbidden, forbidden
+
+
+def test_every_any_role_route_is_published(portal_only_client: TestClient) -> None:
+    """An entry left behind after its route moved would exempt nothing and prove nothing."""
+
+    paths = portal_only_client.app.openapi()["paths"]
+    missing = [
+        (method, path)
+        for method, path in sorted(ANY_ROLE_ROUTES)
+        if method.lower() not in paths.get(path, {})
+    ]
+    assert not missing, missing
+
+
+@pytest.mark.parametrize(
+    ("roles", "expected"),
+    [
+        (["Admin"], {"roles": ["Admin"], "isAdmin": True}),
+        (["User"], {"roles": ["User"], "isAdmin": False}),
+        (["Admin", "User"], {"roles": ["Admin", "User"], "isAdmin": True}),
+        (["User", "SomeOtherApp.Reader"], {"roles": ["User"], "isAdmin": False}),
+    ],
+)
+def test_the_console_learns_which_role_its_caller_holds(
+    roles: list[str], expected: dict[str, Any]
+) -> None:
+    with _local_client(roles) as client:
+        response = client.get("/api/v1/console/me")
+    assert response.status_code == 200
+    assert response.json() == expected
+
+
+@pytest.mark.parametrize("roles", [[], ["SomeOtherApp.Reader"]])
+def test_every_any_role_route_refuses_a_caller_without_a_mosaic_role(roles: list[str]) -> None:
+    """Local authentication admits whatever roles it is given, so the route itself must refuse."""
+
+    with _local_client(roles) as client:
+        refused = [
+            (method, path, client.request(method, path)) for method, path in sorted(ANY_ROLE_ROUTES)
+        ]
+    unexpected = [
+        (method, path, response.status_code, response.text[:120])
+        for method, path, response in refused
+        if response.status_code != 403 or response.json().get("detail") != NO_MOSAIC_ROLE
+    ]
+    assert not unexpected, unexpected
+
+
+def test_the_console_route_reads_roles_from_the_entra_access_token(
+    signing_key: rsa.RSAPrivateKey,
+) -> None:
+    """What the console sees for an administrator, a portal user, and someone with no role."""
+
+    settings = _settings()
+    authenticator, http_client = _authenticator(settings, signing_key)
+    app = create_app(settings)
+    try:
+        with TestClient(app) as client:
+            app.state.authenticator = authenticator
+            responses = {
+                name: client.get(
+                    "/api/v1/console/me",
+                    headers={"Authorization": f"Bearer {_token(signing_key, settings, roles)}"},
+                )
+                for name, roles in (("admin", ["Admin"]), ("user", ["User"]), ("nobody", []))
+            }
+    finally:
+        asyncio.run(http_client.aclose())
+    assert responses["admin"].status_code == 200
+    assert responses["admin"].json() == {"roles": ["Admin"], "isAdmin": True}
+    assert responses["user"].status_code == 200
+    assert responses["user"].json() == {"roles": ["User"], "isAdmin": False}
+    assert responses["nobody"].status_code == 403
+    assert responses["nobody"].json()["detail"] == NO_MOSAIC_ROLE
 
 
 def test_role_names_must_differ() -> None:
