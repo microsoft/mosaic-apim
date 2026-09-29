@@ -37,6 +37,51 @@
   gap: 12px;
 }
 
+.environmentsCard {
+  margin-top: 12px;
+  padding: 16px !important;
+  display: grid !important;
+  gap: 12px !important;
+  border: 1px solid var(--mosaic-border) !important;
+  background: var(--mosaic-surface) !important;
+  box-shadow: var(--mosaic-shadow) !important;
+}
+
+.environmentsHeader,
+.environmentRow,
+.findingsLine {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.environmentsHeader {
+  justify-content: space-between;
+}
+
+.environmentRows {
+  display: grid;
+  gap: 8px;
+}
+
+.environmentRow {
+  padding: 8px 10px;
+  flex-wrap: wrap;
+  border: 1px solid var(--mosaic-border-soft);
+  border-radius: 8px;
+  background: var(--mosaic-surface-subtle);
+}
+
+.environmentRow span {
+  color: var(--mosaic-text-muted);
+  font-size: 12px;
+}
+
+.unclassifiedRow {
+  border-color: var(--mosaic-warning);
+  background: var(--mosaic-warning-soft);
+}
+
 .inventoryCard {
   min-height: 86px;
   padding: 16px;

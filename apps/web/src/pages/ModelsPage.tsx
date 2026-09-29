@@ -31,20 +31,26 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { type FormEvent, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { ApiError, useMosaicApi } from '../api'
+import { environmentLabel, lookupCompatibility, useEnvironmentCatalog } from '../environments'
 import { EmptyState, ErrorState, Loading } from '../components/AsyncState'
+import { ChangeEnvironmentDialog } from '../components/ChangeEnvironmentDialog'
+import { EnvironmentBadge } from '../components/EnvironmentBadge'
+import { EnvironmentPicker } from '../components/EnvironmentPicker'
 import { ImportFromGatewayDialog } from '../components/ImportFromGatewayDialog'
 import { PublishModelDialog } from '../components/PublishModelDialog'
 import { PageHeader } from '../components/PageHeader'
 import { RemovalDialog } from '../components/RemovalDialog'
 import { AI_KIND_LABELS } from '../labels'
-import { CAN_INVOKE, describeScope, findingSummary, runtimeVerdict } from '../runtime-access'
+import { CAN_INVOKE, describeScope, environmentRuntimeVerdict, findingSummary, runtimeVerdict } from '../runtime-access'
 import { runtimeConfig } from '../runtime-config'
 import type {
   CatalogVisibility,
   Gateway,
   GatewayRuntimeAccess,
+  EnvironmentCompatibilityCell,
   ModelEndpoint,
   ModelEndpointCapabilities,
+  ModelEndpointSuggestion,
   ModelEndpointStatus,
   ModelProvider,
   Publication,
@@ -141,7 +147,6 @@ function PublishedModels({ onMessage }: { onMessage: (message: string) => void }
     for (const gateway of gateways.data ?? []) map.set(gateway.id, gateway)
     return map
   }, [gateways.data])
-
   async function refresh() {
     await queryClient.invalidateQueries({ queryKey: ['publications'] })
     await queryClient.invalidateQueries({ queryKey: ['publishable-models'] })
@@ -407,6 +412,7 @@ function ImportedModelApis({ onRemoved }: { onRemoved: (message: string) => void
     queryKey: ['gateways'],
     queryFn: () => api.listGateways(),
   })
+  const catalog = useEnvironmentCatalog()
 
   const gatewaysById = useMemo(() => {
     const map = new Map<string, Gateway>()
@@ -462,6 +468,7 @@ function ImportedModelApis({ onRemoved }: { onRemoved: (message: string) => void
                   <TableHeaderCell>Provider</TableHeaderCell>
                   <TableHeaderCell>Operations</TableHeaderCell>
                   <TableHeaderCell>Gateway</TableHeaderCell>
+                  <TableHeaderCell>Environment</TableHeaderCell>
                   <TableHeaderCell>Catalog</TableHeaderCell>
                   <TableHeaderCell>Actions</TableHeaderCell>
                 </TableRow>
@@ -492,6 +499,19 @@ function ImportedModelApis({ onRemoved }: { onRemoved: (message: string) => void
                       <Link to={`/gateways/${record.gatewayId}`}>
                         {gatewaysById.get(record.gatewayId)?.name ?? record.gatewayId}
                       </Link>
+                    </TableCell>
+                    <TableCell>
+                      {(() => {
+                        const gateway = gatewaysById.get(record.gatewayId)
+                        return gateway ? (
+                          <Text size={200}>
+                            Environment: {environmentLabel(catalog.data, gateway.environment)} (from
+                            gateway {gateway.name})
+                          </Text>
+                        ) : (
+                          '—'
+                        )
+                      })()}
                     </TableCell>
                     <TableCell>
                       <Select
@@ -534,7 +554,15 @@ function ImportedModelApis({ onRemoved }: { onRemoved: (message: string) => void
  * endpoint perfectly well but the gateway still cannot call it.
  */
 function AccessPanel({ endpoint }: { endpoint: ModelEndpoint }) {
+  const api = useMosaicApi()
   const { access, runtimeAccess } = endpoint
+  const catalog = useEnvironmentCatalog()
+  const gateways = useQuery({ queryKey: ['gateways'], queryFn: () => api.listGateways() })
+  const gatewaysById = useMemo(() => {
+    const map = new Map<string, Gateway>()
+    for (const gateway of gateways.data ?? []) map.set(gateway.id, gateway)
+    return map
+  }, [gateways.data])
 
   return (
     <Card className={styles.accessCard}>
@@ -589,6 +617,7 @@ function AccessPanel({ endpoint }: { endpoint: ModelEndpoint }) {
               key={entry.gatewayId}
               access={entry}
               registeredScope={endpoint.azureResourceId}
+              environmentCell={lookupCompatibility(catalog.data, gatewaysById.get(entry.gatewayId)?.environment, endpoint.environment)}
             />
           ))
         )}
@@ -665,11 +694,14 @@ function sameScope(left?: string | null, right?: string | null): boolean {
 function RuntimeAccessRow({
   access,
   registeredScope,
+  environmentCell,
 }: {
   access: GatewayRuntimeAccess
   registeredScope?: string | null
+  environmentCell?: EnvironmentCompatibilityCell
 }) {
   const verdict = runtimeVerdict(access)
+  const environmentVerdict = environmentRuntimeVerdict(environmentCell)
   const grantedRole = access.grantedRoleName ?? access.grantedRoleDefinitionId
   // Findings explain why nothing satisfied the check, so they are noise once something has.
   const findings = grantedRole ? [] : (access.roleFindings ?? [])
@@ -683,6 +715,14 @@ function RuntimeAccessRow({
             {access.gatewayName}: {verdict.label}
           </MessageBarTitle>
           {access.message}
+        </MessageBarBody>
+      </MessageBar>
+      <MessageBar intent={environmentVerdict.intent}>
+        <MessageBarBody>
+          <MessageBarTitle>
+            Environment rules: {environmentVerdict.label}
+          </MessageBarTitle>
+          {environmentCell?.reason ?? 'MOSAIC has not evaluated the gateway and endpoint environments yet.'}
         </MessageBarBody>
       </MessageBar>
       {grantedRole && access.assignmentScope ? (
@@ -774,13 +814,20 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
   const [endpointUrl, setEndpointUrl] = useState('')
   const [secretUri, setSecretUri] = useState('')
   const [name, setName] = useState('')
-  const [environmentLabel, setEnvironmentLabel] = useState('')
+  const [environment, setEnvironment] = useState<string | null>(null)
+  const [environmentTouched, setEnvironmentTouched] = useState(false)
+  const [environmentFilter, setEnvironmentFilter] = useState('all')
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [changingEndpoint, setChangingEndpoint] = useState<ModelEndpoint | null>(null)
+  const [suggestionEnvironment, setSuggestionEnvironment] = useState<
+    { environment: string; evidence: string } | undefined
+  >()
 
   const endpoints = useQuery({
     queryKey: ['model-endpoints'],
     queryFn: api.listModelEndpoints,
   })
+  const catalog = useEnvironmentCatalog()
   const suggestions = useQuery({
     queryKey: ['model-endpoint-suggestions'],
     queryFn: api.listSuggestedModelEndpoints,
@@ -808,7 +855,9 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
       setEndpointUrl('')
       setSecretUri('')
       setName('')
-      setEnvironmentLabel('')
+      setEnvironment(null)
+      setEnvironmentTouched(false)
+      setSuggestionEnvironment(undefined)
       closeDialog()
       setSelectedId(endpoint.id)
       await refresh()
@@ -842,22 +891,34 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
 
   function openDialog() {
     register.reset()
+    setSuggestionEnvironment(undefined)
     setDialogOpen(true)
   }
 
-  function registerSuggestion(azureResourceId: string) {
+  function registerSuggestion(item: ModelEndpointSuggestion) {
     setRegisterOrigin('suggestion')
-    register.mutate({ azureResourceId })
+    register.reset()
+    setMode('azure')
+    setResourceId(item.azureResourceId ?? '')
+    setName(item.accountName ?? '')
+    setEnvironment(item.suggestedEnvironment ?? null)
+    setEnvironmentTouched(false)
+    setSuggestionEnvironment(item.suggestedEnvironment && item.azureEnvironmentTag
+      ? { environment: item.suggestedEnvironment, evidence: `Azure tag environment = "${item.azureEnvironmentTag}"` }
+      : undefined)
+    setDialogOpen(true)
   }
 
   function submit(event: FormEvent) {
     event.preventDefault()
     setRegisterOrigin('dialog')
+    setEnvironmentTouched(true)
+    if (!environment) return
     if (mode === 'azure') {
       register.mutate({
         azureResourceId: resourceId.trim(),
         name: name.trim() || undefined,
-        environmentLabel: environmentLabel.trim() || undefined,
+        environment,
       })
       return
     }
@@ -865,13 +926,18 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
       endpoint: endpointUrl.trim(),
       credentialSecretUri: secretUri.trim(),
       name: name.trim() || undefined,
-      environmentLabel: environmentLabel.trim() || undefined,
+      environment,
     })
   }
 
   const pending = (suggestions.data?.suggestions ?? []).filter(
     (item) => !item.alreadyRegistered,
   )
+  const filteredEndpoints = (endpoints.data ?? []).filter((endpoint) => {
+    if (environmentFilter === 'all') return true
+    if (environmentFilter === '__unclassified__') return endpoint.environment == null
+    return endpoint.environment === environmentFilter
+  })
   const scanIssues = suggestions.data?.scanIssues ?? []
   const partialScans = suggestions.data?.partialScans ?? []
   const scanStatus = suggestions.data?.scanStatus
@@ -915,9 +981,21 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
       hasConsumedRegisterQueryRef.current = false
     }
   }, [requestedRegister])
+  useEffect(() => {
+    if (dialogOpen && !environment && !suggestionEnvironment && catalog.data?.environments[0]) {
+      setEnvironment(catalog.data.environments[0].key)
+    }
+  }, [dialogOpen, environment, suggestionEnvironment, catalog.data])
 
   function closeDialog() {
     setDialogOpen(false)
+    setResourceId('')
+    setEndpointUrl('')
+    setSecretUri('')
+    setName('')
+    setEnvironment(null)
+    setEnvironmentTouched(false)
+    setSuggestionEnvironment(undefined)
     const params = new URLSearchParams(location.search)
     if (!params.has('register')) {
       return
@@ -964,12 +1042,28 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
 
         {endpoints.data && endpoints.data.length > 0 && (
           <>
+            <div className={styles.filterBar}>
+              <Field label="Environment filter">
+                <Select
+                  aria-label="Filter model endpoints by environment"
+                  value={environmentFilter}
+                  onChange={(event) => setEnvironmentFilter(event.target.value)}
+                >
+                  <option value="all">All</option>
+                  {catalog.data?.environments.map((item) => (
+                    <option key={item.key} value={item.key}>{item.displayName}</option>
+                  ))}
+                  <option value="__unclassified__">Unclassified</option>
+                </Select>
+              </Field>
+            </div>
             <div className={styles.tableWrap}>
               <Table aria-label="Registered model endpoints">
                 <TableHeader>
                   <TableRow>
                     <TableHeaderCell>Endpoint</TableHeaderCell>
                     <TableHeaderCell>Provider</TableHeaderCell>
+                    <TableHeaderCell>Environment</TableHeaderCell>
                     <TableHeaderCell>Status</TableHeaderCell>
                     <TableHeaderCell>Models</TableHeaderCell>
                     <TableHeaderCell>Last synced</TableHeaderCell>
@@ -977,7 +1071,7 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {endpoints.data.map((endpoint) => (
+                  {filteredEndpoints.map((endpoint) => (
                     <TableRow
                       key={endpoint.id}
                       className={endpoint.id === selected?.id ? styles.selectedRow : undefined}
@@ -995,6 +1089,12 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
                         </div>
                       </TableCell>
                       <TableCell>{providerLabels[endpoint.provider]}</TableCell>
+                      <TableCell>
+                        <div className={styles.cellStack}>
+                          <EnvironmentBadge environment={endpoint.environment} catalog={catalog.data} />
+                          {endpoint.environmentLabel && <span className={styles.secondaryCell}>Legacy label: {endpoint.environmentLabel}</span>}
+                        </div>
+                      </TableCell>
                       <TableCell>
                         <EndpointStatusBadge status={endpoint.status} />
                       </TableCell>
@@ -1015,6 +1115,12 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
                             disabled={sync.isPending || !endpoint.access.canRead}
                           >
                             Sync models
+                          </Button>
+                          <Button
+                            appearance="subtle"
+                            onClick={() => setChangingEndpoint(endpoint)}
+                          >
+                            Change environment
                           </Button>
                           <Button
                             appearance="subtle"
@@ -1071,7 +1177,7 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
               {item.azureResourceId ? (
                 <Button
                   appearance="primary"
-                  onClick={() => registerSuggestion(item.azureResourceId!)}
+                  onClick={() => registerSuggestion(item)}
                   disabled={register.isPending}
                 >
                   Register
@@ -1253,13 +1359,15 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
                 <Field label="Display name">
                   <Input value={name} onChange={(_, data) => setName(data.value)} />
                 </Field>
-                <Field label="Environment label">
-                  <Input
-                    value={environmentLabel}
-                    onChange={(_, data) => setEnvironmentLabel(data.value)}
-                    placeholder="Production"
-                  />
-                </Field>
+                <EnvironmentPicker
+                  catalog={catalog.data}
+                  value={environment}
+                  onChange={(value) => { setEnvironment(value); setEnvironmentTouched(true) }}
+                  required
+                  label="Environment"
+                  suggestion={suggestionEnvironment}
+                  validationMessage={environmentTouched && !environment ? 'Choose an environment.' : undefined}
+                />
 
                 {registerOrigin === 'dialog' && register.isError && (
                   <ErrorState title={REGISTRATION_REFUSED} error={register.error} />
@@ -1302,6 +1410,23 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
           drafts, are deleted with it. MOSAIC refuses while a model from it is still published.
         </Text>
       </RemovalDialog>
+      {changingEndpoint && (
+        <ChangeEnvironmentDialog
+          resource={{
+            resourceKind: 'modelEndpoint',
+            resourceId: changingEndpoint.id,
+            resourceName: changingEndpoint.name,
+            environment: changingEndpoint.environment,
+          }}
+          open={changingEndpoint !== null}
+          onClose={() => setChangingEndpoint(null)}
+          onChanged={async () => {
+            setChangingEndpoint(null)
+            onMessage(`Updated ${changingEndpoint.name}'s environment.`)
+            await refresh()
+          }}
+        />
+      )}
     </>
   )
 }

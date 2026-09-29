@@ -123,3 +123,78 @@
     padding-left: 0;
   }
 }
+
+
+.wideCard {
+  grid-column: 1 / -1;
+}
+
+.liveHeading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.tableWrap {
+  overflow-x: auto;
+}
+
+.environmentControls {
+  display: grid;
+  gap: 16px;
+}
+
+.unclassifiedCard {
+  padding: 16px;
+  gap: 10px;
+  background: var(--mosaic-surface-subtle);
+}
+
+.envDialogContent {
+  display: grid;
+  gap: 16px;
+  min-width: min(720px, calc(100vw - 64px));
+}
+
+.checkboxList {
+  display: grid;
+  gap: 8px;
+}
+
+.exceptionGroup {
+  display: grid;
+  gap: 4px;
+}
+
+.exceptionHint {
+  color: var(--mosaic-text-muted);
+}
+
+.swatches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.swatchLabel {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.swatch {
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  border: 1px solid var(--mosaic-border);
+  display: inline-block;
+}
+
+.swatch-brand { background: var(--colorBrandBackground); }
+.swatch-danger { background: var(--colorPaletteRedBackground3); }
+.swatch-important { background: var(--colorPaletteBerryBackground3); }
+.swatch-informative { background: var(--colorPaletteBlueBackground3); }
+.swatch-severe { background: var(--colorPaletteDarkOrangeBackground3); }
+.swatch-subtle { background: var(--colorNeutralBackground5); }
+.swatch-success { background: var(--colorPaletteGreenBackground3); }
+.swatch-warning { background: var(--colorPaletteYellowBackground3); }

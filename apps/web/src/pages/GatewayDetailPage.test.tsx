@@ -48,6 +48,8 @@ function gateway(overrides: Partial<Gateway> = {}): Gateway {
     subscriptionId: '00000000-0000-0000-0000-000000000000',
     resourceGroup: 'rg-contoso-dev',
     serviceName: 'apim-contoso-dev',
+    environment: null,
+    azureEnvironmentTag: null,
     environmentLabel: 'dev',
     managementMode: 'observe',
     status: 'connected',
@@ -102,6 +104,8 @@ const { TestApiError } = vi.hoisted(() => ({
 }))
 
 const api = {
+  getEnvironmentCatalog: vi.fn(),
+  listEnvironmentFindings: vi.fn(),
   getGateway: vi.fn(),
   listPublications: vi.fn(),
   updateGateway: vi.fn(),
@@ -162,6 +166,18 @@ async function dialogClosed() {
 describe('GatewayDetailPage management mode', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    api.getEnvironmentCatalog.mockResolvedValue({
+      environments: [],
+      requireClassification: false,
+      unclassified: { gateways: 1, modelEndpoints: 0, mcpEndpoints: 0 },
+      compatibility: [],
+      updatedAt: null,
+    })
+    api.listEnvironmentFindings.mockResolvedValue({
+      items: [],
+      limitations: [],
+      generatedAt: '2026-09-01T12:00:00Z',
+    })
     api.listPublications.mockResolvedValue([])
   })
 
@@ -170,7 +186,7 @@ describe('GatewayDetailPage management mode', () => {
     renderPage()
 
     const control = await modeControl()
-    expect(screen.getByText('apim-contoso-dev · Observe mode · dev')).toBeVisible()
+    expect(screen.getByText('apim-contoso-dev · Observe mode')).toBeVisible()
     expect(screen.queryByText(/observe only/i)).not.toBeInTheDocument()
     expect(within(control).getByRole('radio', { name: 'Observe' })).toBeChecked()
     expect(within(control).getByRole('radio', { name: 'Manage' })).not.toBeChecked()
@@ -181,7 +197,7 @@ describe('GatewayDetailPage management mode', () => {
     renderPage()
 
     const control = await modeControl()
-    expect(screen.getByText('apim-contoso-dev · Manage mode · dev')).toBeVisible()
+    expect(screen.getByText('apim-contoso-dev · Manage mode')).toBeVisible()
     expect(within(control).getByRole('radio', { name: 'Manage' })).toBeChecked()
   })
 
@@ -266,7 +282,7 @@ describe('GatewayDetailPage management mode', () => {
     await waitFor(() => {
       expect(api.updateGateway).toHaveBeenCalledWith('gateway_1', { managementMode: 'manage' })
     })
-    expect(await screen.findByText('apim-contoso-dev · Manage mode · dev')).toBeVisible()
+    expect(await screen.findByText('apim-contoso-dev · Manage mode')).toBeVisible()
     await dialogClosed()
     // The rest of the page is hidden from assistive technology until the modal dialog is gone.
     const manage = await within(control).findByRole('radio', { name: 'Manage' })
@@ -298,7 +314,7 @@ describe('GatewayDetailPage management mode', () => {
     await waitFor(() => {
       expect(api.updateGateway).toHaveBeenCalledWith('gateway_1', { managementMode: 'observe' })
     })
-    expect(await screen.findByText('apim-contoso-dev · Observe mode · dev')).toBeVisible()
+    expect(await screen.findByText('apim-contoso-dev · Observe mode')).toBeVisible()
   })
 
   it('shows the API’s refusal and leaves the mode unchanged', async () => {
@@ -320,7 +336,7 @@ describe('GatewayDetailPage management mode', () => {
 
     await user.click(within(dialog).getByRole('button', { name: 'Cancel' }))
     await dialogClosed()
-    expect(screen.getByText('apim-contoso-dev · Manage mode · dev')).toBeVisible()
+    expect(screen.getByText('apim-contoso-dev · Manage mode')).toBeVisible()
     expect(await within(control).findByRole('radio', { name: 'Manage' })).toBeChecked()
   })
 

@@ -36,6 +36,7 @@ import { EmptyState, ErrorState, Loading } from '../components/AsyncState'
 import { PageHeader } from '../components/PageHeader'
 import { EntitlementAccessState } from '../components/EntitlementAccessState'
 import { EntitlementConnectionDialog } from '../components/EntitlementConnectionDialog'
+import { EnvironmentBadge } from '../components/EnvironmentBadge'
 import { ModelAccessSettingsPanel } from '../components/ModelAccessSettingsPanel'
 import { PublishModelDialog } from '../components/PublishModelDialog'
 import {
@@ -46,6 +47,8 @@ import {
   emptyLimitForm,
   type LimitForm,
 } from '../entitlement-limits'
+import { entitlementResourceEnvironment } from '../entitlement-environment'
+import { environmentLabel, useEnvironmentCatalog } from '../environments'
 import { runtimeConfig } from '../runtime-config'
 import type {
   AccessRequest,
@@ -93,6 +96,15 @@ interface Banner {
   review?: { publicationId: string; displayName: string }
 }
 
+function requestResourceLabel(accessRequest: AccessRequest, fallback?: string) {
+  return (
+    accessRequest.resourceSummary?.displayName ??
+    accessRequest.resourceSnapshot?.displayName ??
+    fallback ??
+    `Unavailable ${accessRequest.resource.kind}`
+  )
+}
+
 /** Everything the approval dialog and its outcome banner need, resolved when it opens. */
 interface ApprovalContext {
   accessRequest: AccessRequest
@@ -133,6 +145,7 @@ export function EntitlementsPage() {
   const [inspectedPrincipal, setInspectedPrincipal] = useState('')
   const [form, setForm] = useState<GrantForm>(emptyForm)
   const [selectedPublicationId, setSelectedPublicationId] = useState('')
+  const [environmentFilter, setEnvironmentFilter] = useState('all')
   const [directModelId, setDirectModelId] = useState<string | null>(null)
   const [connectionGrantId, setConnectionGrantId] = useState<string | null>(null)
   const [review, setReview] = useState<{ publication: Publication; plan: PublishPlan } | null>(null)
@@ -148,6 +161,12 @@ export function EntitlementsPage() {
   const groups = useQuery({ queryKey: ['groups'], queryFn: () => api.listGroups() })
   const modelApis = useQuery({ queryKey: ['model-apis'], queryFn: () => api.listModelApis() })
   const mcpServers = useQuery({ queryKey: ['mcp-servers'], queryFn: () => api.listMcpServers() })
+  const gateways = useQuery({ queryKey: ['gateways'], queryFn: () => api.listGateways() })
+  const modelEndpoints = useQuery({
+    queryKey: ['model-endpoints'],
+    queryFn: () => api.listModelEndpoints(),
+  })
+  const environmentCatalog = useEnvironmentCatalog()
   const publications = useQuery({ queryKey: ['publications'], queryFn: () => api.listPublications() })
   const accessRequests = useQuery({
     queryKey: ['access-requests', 'pending'],
@@ -313,7 +332,7 @@ export function EntitlementsPage() {
         objectId: accessRequest.requesterObjectId,
         registered: Boolean(principal),
       },
-      resourceLabel: labels.get(resource.id) ?? resource.id,
+      resourceLabel: requestResourceLabel(accessRequest, labels.get(resource.id)),
       publication,
       reviewable: publishedModels.find((item) => item.id === publication?.id),
       governed: managedGrant({ resource, subject }),
@@ -359,6 +378,25 @@ export function EntitlementsPage() {
   }
 
   const rows = entitlements.data ?? []
+  const grantRows = rows
+    .map((entitlement) => ({
+      entitlement,
+      environment: entitlementResourceEnvironment(
+        entitlement.resource,
+        {
+          gateways: gateways.data,
+          modelApis: modelApis.data,
+          mcpServers: mcpServers.data,
+          modelEndpoints: modelEndpoints.data,
+        },
+        entitlement,
+      ),
+    }))
+    .filter((row) => {
+      if (environmentFilter === 'all') return true
+      if (environmentFilter === 'unclassified') return row.environment == null
+      return row.environment === environmentFilter
+    })
   const unbound = rows.filter((item) => !item.binding).length
   const rateError = callRateError(form)
   const connectionGrant = rows.find((entitlement) => entitlement.id === connectionGrantId)
@@ -419,6 +457,8 @@ export function EntitlementsPage() {
       {groups.isError && <ErrorState error={groups.error} />}
       {modelApis.isError && <ErrorState error={modelApis.error} />}
       {mcpServers.isError && <ErrorState error={mcpServers.error} />}
+      {gateways.isError && <ErrorState error={gateways.error} />}
+      {modelEndpoints.isError && <ErrorState error={modelEndpoints.error} />}
       {runtimeConfig.authMode === 'local' && (
         <MessageBar intent="warning">
           <MessageBarBody>Local development mode: service responses may be simulated and do not verify live APIM enforcement.</MessageBarBody>
@@ -491,6 +531,21 @@ export function EntitlementsPage() {
               includes every saved change for that model. Applied metadata is not a live invocation test.
             </Text>
           </div>
+          <Field label="Environment">
+            <Select
+              value={environmentFilter}
+              onChange={(_, data) => setEnvironmentFilter(data.value)}
+              aria-label="Filter grants by environment"
+            >
+              <option value="all">All environments</option>
+              {(environmentCatalog.data?.environments ?? []).map((environment) => (
+                <option key={environment.key} value={environment.key}>
+                  {environment.displayName}
+                </option>
+              ))}
+              <option value="unclassified">Unclassified</option>
+            </Select>
+          </Field>
         </div>
         <div className={styles.tableWrap}>
           {entitlements.isPending && <Loading label="Loading entitlements..." />}
@@ -501,12 +556,17 @@ export function EntitlementsPage() {
                 Import a model API or MCP server, register the people or groups who need it, then
                 grant access here.
               </EmptyState>
+            ) : grantRows.length === 0 ? (
+              <EmptyState title="No grants match this environment">
+                Change the environment filter to see other saved grants.
+              </EmptyState>
             ) : (
               <Table aria-label="Entitlements">
                 <TableHeader>
                   <TableRow>
                     <TableHeaderCell>Subject</TableHeaderCell>
                     <TableHeaderCell>Resource</TableHeaderCell>
+                    <TableHeaderCell>Environment</TableHeaderCell>
                     <TableHeaderCell>Limits</TableHeaderCell>
                     <TableHeaderCell>Desired / applied</TableHeaderCell>
                     <TableHeaderCell>Binding</TableHeaderCell>
@@ -514,7 +574,7 @@ export function EntitlementsPage() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {rows.map((entitlement) => {
+                  {grantRows.map(({ entitlement, environment }) => {
                     const relatedPublication = publicationFor(entitlement)
                     const appliedGrant = relatedPublication?.appliedAccess?.grants.find(
                       (grant) => grant.entitlementId === entitlement.id,
@@ -537,6 +597,9 @@ export function EntitlementsPage() {
                           </Text>
                           <Text className={styles.secondaryCell}>{entitlement.resource.kind}</Text>
                         </div>
+                      </TableCell>
+                      <TableCell>
+                        <EnvironmentBadge environment={environment} catalog={environmentCatalog.data} />
                       </TableCell>
                       <TableCell>
                         <div className={styles.cellStack}>
@@ -641,6 +704,8 @@ export function EntitlementsPage() {
                     <TableRow>
                       <TableHeaderCell>Requester</TableHeaderCell>
                       <TableHeaderCell>Resource</TableHeaderCell>
+                      <TableHeaderCell>Requested environment</TableHeaderCell>
+                      <TableHeaderCell>Current environment</TableHeaderCell>
                       <TableHeaderCell>Justification</TableHeaderCell>
                       <TableHeaderCell>Actions</TableHeaderCell>
                     </TableRow>
@@ -654,7 +719,38 @@ export function EntitlementsPage() {
                           </Text>
                         </TableCell>
                         <TableCell>
-                          {labels.get(accessRequest.resource.id) ?? accessRequest.resource.id}
+                          <div className={styles.cellStack}>
+                            <Text className={styles.primaryCell}>
+                              {requestResourceLabel(accessRequest, labels.get(accessRequest.resource.id))}
+                            </Text>
+                            {accessRequest.resourceSummary?.available === false && (
+                              <Text className={styles.secondaryCell}>No longer available</Text>
+                            )}
+                          </div>
+                        </TableCell>
+                        <TableCell>
+                          <EnvironmentBadge
+                            environment={accessRequest.requestedEnvironment ?? null}
+                            catalog={environmentCatalog.data}
+                          />
+                        </TableCell>
+                        <TableCell>
+                          <div className={styles.cellStack}>
+                            <EnvironmentBadge
+                              environment={accessRequest.resourceSummary?.environment ?? null}
+                              catalog={environmentCatalog.data}
+                            />
+                            {(accessRequest.requestedEnvironment ?? null) !==
+                              (accessRequest.resourceSummary?.environment ?? null) && (
+                              <Text className={styles.secondaryCell}>
+                                Now{' '}
+                                {environmentLabel(
+                                  environmentCatalog.data,
+                                  accessRequest.resourceSummary?.environment ?? null,
+                                )}
+                              </Text>
+                            )}
+                          </div>
                         </TableCell>
                         <TableCell>
                           <Text className={styles.secondaryCell}>
@@ -862,6 +958,7 @@ export function EntitlementsPage() {
           accessRequest={approving.accessRequest}
           requester={approving.requester}
           resourceLabel={approving.resourceLabel}
+          environmentCatalog={environmentCatalog.data}
           publication={approving.publication}
           governed={approving.governed}
           existingGrant={approving.existingGrant}

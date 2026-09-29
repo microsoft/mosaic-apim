@@ -28,6 +28,7 @@ import {
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMosaicApi } from '../api'
+import { environmentBlockedVerdict, useEnvironmentCatalog } from '../environments'
 import { CANNOT_INVOKE, NOT_CONFIRMED, runtimeVerdict } from '../runtime-access'
 import { runtimeConfig } from '../runtime-config'
 import type {
@@ -44,6 +45,7 @@ import type {
   TokenEnforcement,
 } from '../types'
 import { ErrorState, Loading } from './AsyncState'
+import { EnvironmentBadge } from './EnvironmentBadge'
 import { PolicyFacetItem } from './PolicyFacets'
 import { ModelAccessReview } from './ModelAccessReview'
 import { ModelAccessRecovery } from './ModelAccessRecovery'
@@ -306,6 +308,7 @@ export function PublishModelDialog({
   const [runId, setRunId] = useState('')
   const [refreshError, setRefreshError] = useState<Error | null>(null)
   const [invalidPlan, setInvalidPlan] = useState(false)
+  const [showEnvironmentBlocked, setShowEnvironmentBlocked] = useState(false)
   const appliedGatewayRef = useRef(false)
   const notifiedRunRef = useRef('')
   const reviewingExistingPlan = Boolean(initialReview)
@@ -317,6 +320,8 @@ export function PublishModelDialog({
   })
 
   const gatewayOptions: Gateway[] = useMemo(() => gateways.data ?? [], [gateways.data])
+  const catalog = useEnvironmentCatalog()
+  const selectedGateway = gatewayOptions.find((gateway) => gateway.id === gatewayId)
 
   useEffect(() => {
     if (!open || reviewingExistingPlan) {
@@ -336,6 +341,10 @@ export function PublishModelDialog({
   })
 
   const models = publishable.data ?? []
+  const environmentBlockedModels = models.filter((model) => model.environmentVerdict.level === 'blocked')
+  const visibleModels = showEnvironmentBlocked
+    ? models
+    : models.filter((model) => model.environmentVerdict.level !== 'blocked')
   const selectedModel = models.find(
     (model) => `${model.modelEndpointId}:${model.deploymentName}` === modelKey,
   ) ?? null
@@ -450,6 +459,7 @@ export function PublishModelDialog({
     setRunId('')
     setRefreshError(null)
     setInvalidPlan(false)
+    setShowEnvironmentBlocked(false)
     notifiedRunRef.current = ''
     apply.reset()
     createAndPlan.reset()
@@ -462,6 +472,8 @@ export function PublishModelDialog({
     form.apiName.trim() && form.apiPath.trim() && (!tokenLimits || form.counterKeyExpression.trim()),
   )
   const missingAccessReview = Boolean(publication?.governedAccess && !plan?.accessSnapshot)
+  const createEnvironmentBlocked = environmentBlockedVerdict(createAndPlan.error)
+  const applyEnvironmentBlocked = environmentBlockedVerdict(apply.error)
 
   return (
     <Dialog open={open} onOpenChange={(_, data) => !data.open && resetAndClose()}>
@@ -500,12 +512,28 @@ export function PublishModelDialog({
                     ))}
                   </Select>
                 </Field>
+                {selectedGateway && (
+                  <Text size={200}>
+                    Gateway environment:{' '}
+                    <EnvironmentBadge environment={selectedGateway.environment} catalog={catalog.data} size="small" />
+                  </Text>
+                )}
                 {gateways.isPending && <Loading label="Loading gateways" />}
                 {gateways.isError && <ErrorState error={gateways.error} />}
                 {publishable.isPending && gatewayId && <Loading label="Loading publishable models" />}
                 {publishable.isError && <ErrorState error={publishable.error} />}
                 {publishable.isSuccess && models.length === 0 && (
                   <Text>No publishable models were found for this gateway.</Text>
+                )}
+                {environmentBlockedModels.length > 0 && (
+                  <Button
+                    appearance="secondary"
+                    aria-expanded={showEnvironmentBlocked}
+                    onClick={() => setShowEnvironmentBlocked((current) => !current)}
+                  >
+                    {showEnvironmentBlocked ? 'Hide' : 'Show'} {environmentBlockedModels.length}{' '}
+                    {environmentBlockedModels.length === 1 ? 'deployment' : 'deployments'} blocked by environment rules
+                  </Button>
                 )}
                 {models.length > 0 && (
                   <div className={styles.tableScroll}>
@@ -518,16 +546,27 @@ export function PublishModelDialog({
                         </TableRow>
                       </TableHeader>
                       <TableBody>
-                        {models.map((model) => {
+                        {visibleModels.map((model) => {
                           const key = `${model.modelEndpointId}:${model.deploymentName}`
                           const publishableRow = isPublishable(model)
+                          const environmentBlocked = model.environmentVerdict.level === 'blocked'
+                          const environmentWarning = model.environmentVerdict.level === 'warning'
+                          const blockedReasons = [
+                            !publishableRow
+                              ? (model.unpublishableReason ??
+                                "MOSAIC can't publish this deployment yet.")
+                              : null,
+                            environmentBlocked ? model.environmentVerdict.reason : null,
+                          ]
+                            .filter(Boolean)
+                            .join(' ')
                           return (
                             <TableRow key={key}>
                               <TableCell>
                                 <Checkbox
                                   aria-label={`Publish ${model.deploymentName}`}
                                   checked={modelKey === key}
-                                  disabled={!publishableRow}
+                                  disabled={!publishableRow || environmentBlocked}
                                   onChange={(_, data) => setModelKey(data.checked ? key : '')}
                                 />
                               </TableCell>
@@ -541,14 +580,15 @@ export function PublishModelDialog({
                                   <Text size={200}>/{model.suggestedApiPath}</Text>
                                   {model.apiShape && <Badge appearance="outline">{shapeLabels[model.apiShape]}</Badge>}
                                   {model.publicationStatus && <Badge appearance="tint">{model.publicationStatus}</Badge>}
-                                  {!publishableRow && (
+                                  {(!publishableRow || environmentBlocked) && (
                                     <>
                                       <Badge appearance="tint" color="warning">Not publishable</Badge>
                                       <Text size={200}>
-                                        {model.unpublishableReason ?? "MOSAIC can't publish this deployment yet."}
+                                        {blockedReasons}
                                       </Text>
                                     </>
                                   )}
+                                  {environmentWarning && <Text size={200}>{model.environmentVerdict.reason}</Text>}
                                 </div>
                               </TableCell>
                               <TableCell><RuntimeAccessNote model={model} /></TableCell>
@@ -620,7 +660,15 @@ export function PublishModelDialog({
                     />
                   </>
                 )}
-                {createAndPlan.isError && <ErrorState error={createAndPlan.error} />}
+                {createEnvironmentBlocked && (
+                  <MessageBar intent="error">
+                    <MessageBarBody>
+                      <MessageBarTitle>Environment rules block this publication</MessageBarTitle>
+                      {createEnvironmentBlocked.reason}
+                    </MessageBarBody>
+                  </MessageBar>
+                )}
+                {createAndPlan.isError && !createEnvironmentBlocked && <ErrorState error={createAndPlan.error} />}
               </div>
             )}
 
@@ -678,7 +726,15 @@ export function PublishModelDialog({
                     </ul>
                   </>
                 )}
-                {applyError && <ErrorState error={applyError} />}
+                {applyEnvironmentBlocked && (
+                  <MessageBar intent="error">
+                    <MessageBarBody>
+                      <MessageBarTitle>Environment rules block this publication</MessageBarTitle>
+                      {applyEnvironmentBlocked.reason}
+                    </MessageBarBody>
+                  </MessageBar>
+                )}
+                {applyError && !applyEnvironmentBlocked && <ErrorState error={applyError} />}
                 {refreshError && <ErrorState error={refreshError} />}
               </div>
             )}

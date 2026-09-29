@@ -31,6 +31,8 @@ const gateway: Gateway = {
   subscriptionId: '00000000-0000-0000-0000-000000000000',
   resourceGroup: 'rg-contoso-dev',
   serviceName: 'apim-contoso-dev',
+  environment: null,
+  azureEnvironmentTag: null,
   environmentLabel: 'dev',
   managementMode: 'observe',
   status: 'connected',
@@ -161,6 +163,8 @@ const publishPlan: PublishPlan = {
 }
 
 const api = {
+  getEnvironmentCatalog: vi.fn(),
+  listEnvironmentFindings: vi.fn(),
   listGateways: vi.fn(),
   listModelApis: vi.fn(),
   deletePublication: vi.fn(),
@@ -228,6 +232,31 @@ describe('ModelsPage', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     api.listGateways.mockResolvedValue([gateway])
+    api.listEnvironmentFindings.mockResolvedValue({
+      items: [],
+      limitations: [],
+      generatedAt: '2026-09-01T12:00:00Z',
+    })
+    api.getEnvironmentCatalog.mockResolvedValue({
+      environments: [
+        {
+          key: 'development',
+          displayName: 'Development',
+          description: null,
+          color: 'brand',
+          production: false,
+          aliases: [],
+          acceptsEndpointsFrom: [],
+          order: 10,
+          builtIn: true,
+          usage: { gateways: 0, modelEndpoints: 0, mcpEndpoints: 0 },
+        },
+      ],
+      requireClassification: false,
+      unclassified: { gateways: 0, modelEndpoints: 0, mcpEndpoints: 0 },
+      compatibility: [],
+      updatedAt: null,
+    })
     api.listModelApis.mockResolvedValue([])
     api.listPublications.mockResolvedValue([])
     api.listModelEndpoints.mockResolvedValue([])
@@ -430,7 +459,7 @@ describe('ModelsPage', () => {
     renderPage()
 
     const table = await screen.findByRole('table', { name: 'Published models' })
-    await user.click(within(table).getByRole('button', { name: 'Remove' }))
+    await user.click(within(table).getByText('Remove'))
 
     const dialog = await screen.findByRole('alertdialog', { name: 'Remove GPT-4o production?' })
     expect(dialog).toHaveTextContent(
@@ -442,7 +471,7 @@ describe('ModelsPage', () => {
     await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument())
     expect(api.deletePublication).not.toHaveBeenCalled()
 
-    await user.click(within(table).getByRole('button', { name: 'Remove' }))
+    await user.click(within(table).getByText('Remove'))
     await user.click(
       within(await screen.findByRole('alertdialog')).getByRole('button', {
         name: 'Remove publication',
@@ -468,7 +497,7 @@ describe('ModelsPage', () => {
     renderPage()
 
     const table = await screen.findByRole('table', { name: 'Published models' })
-    await user.click(within(table).getByRole('button', { name: 'Remove' }))
+    await user.click(within(table).getByText('Remove'))
     const dialog = await screen.findByRole('alertdialog')
     await user.click(within(dialog).getByRole('button', { name: 'Remove publication' }))
 
@@ -510,6 +539,8 @@ function modelEndpoint(overrides: Partial<ModelEndpoint> = {}): ModelEndpoint {
     resourceGroup: 'rg-contoso-ai',
     accountName: 'contoso-aoai',
     projectName: null,
+    environment: null,
+    azureEnvironmentTag: null,
     environmentLabel: 'dev',
     authMode: 'managedIdentity',
     credentialReferenceId: null,
@@ -686,6 +717,31 @@ describe('ModelsPage model endpoints', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     api.listGateways.mockResolvedValue([gateway])
+    api.listEnvironmentFindings.mockResolvedValue({
+      items: [],
+      limitations: [],
+      generatedAt: '2026-09-01T12:00:00Z',
+    })
+    api.getEnvironmentCatalog.mockResolvedValue({
+      environments: [
+        {
+          key: 'development',
+          displayName: 'Development',
+          description: null,
+          color: 'brand',
+          production: false,
+          aliases: [],
+          acceptsEndpointsFrom: [],
+          order: 10,
+          builtIn: true,
+          usage: { gateways: 0, modelEndpoints: 0, mcpEndpoints: 0 },
+        },
+      ],
+      requireClassification: false,
+      unclassified: { gateways: 0, modelEndpoints: 0, mcpEndpoints: 0 },
+      compatibility: [],
+      updatedAt: null,
+    })
     api.listModelApis.mockResolvedValue([])
     api.listPublications.mockResolvedValue([])
     api.listModelEndpoints.mockResolvedValue([])
@@ -717,7 +773,7 @@ describe('ModelsPage model endpoints', () => {
     renderPage()
 
     const table = await screen.findByRole('table', { name: 'Registered model endpoints' })
-    await user.click(within(table).getByRole('button', { name: 'Remove' }))
+    await user.click(within(table).getByText('Remove'))
 
     const dialog = await screen.findByRole('alertdialog', { name: 'Remove Contoso models?' })
     expect(dialog).toHaveTextContent(
@@ -730,7 +786,7 @@ describe('ModelsPage model endpoints', () => {
     await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument())
     expect(api.deleteModelEndpoint).not.toHaveBeenCalled()
 
-    await user.click(within(table).getByRole('button', { name: 'Remove' }))
+    await user.click(within(table).getByText('Remove'))
     await user.click(
       within(await screen.findByRole('alertdialog')).getByRole('button', {
         name: 'Remove endpoint',
@@ -768,7 +824,7 @@ describe('ModelsPage model endpoints', () => {
     renderPage()
 
     const table = await screen.findByRole('table', { name: 'Registered model endpoints' })
-    await user.click(within(table).getByRole('button', { name: 'Remove' }))
+    await user.click(within(table).getByText('Remove'))
     const dialog = await screen.findByRole('alertdialog')
     await user.click(within(dialog).getByRole('button', { name: 'Remove endpoint' }))
 
@@ -782,7 +838,7 @@ describe('ModelsPage model endpoints', () => {
         .map((item) => item.textContent),
     ).toEqual(['GPT-4o production (Published)', 'Embeddings (Failed)'])
     expect(screen.queryByText('Unable to load data')).not.toBeInTheDocument()
-    expect(screen.getByRole('table', { name: 'Registered model endpoints' })).toHaveTextContent(
+    expect(screen.getByRole('table', { name: 'Registered model endpoints', hidden: true })).toHaveTextContent(
       'Contoso models',
     )
   })
@@ -803,7 +859,8 @@ describe('ModelsPage model endpoints', () => {
     renderPage('/models?register=1')
 
     const dialog = await screen.findByRole('dialog')
-    await user.type(within(dialog).getByLabelText(/Azure resource ID/i), AI_RESOURCE_ID)
+    await user.click(within(dialog).getByLabelText(/Azure resource ID/i))
+    await user.paste(AI_RESOURCE_ID)
     await user.click(within(dialog).getByRole('button', { name: 'Register' }))
 
     await waitFor(() => expect(api.registerModelEndpoint).toHaveBeenCalled())
@@ -815,12 +872,8 @@ describe('ModelsPage model endpoints', () => {
     expect(screen.queryByText('Unable to load data')).not.toBeInTheDocument()
   })
 
-  it("shows why a suggestion's registration was refused next to the suggestion", async () => {
+  it("opens a suggestion's registration dialog with the suggested environment", async () => {
     const user = userEvent.setup()
-    const message =
-      "MOSAIC already lists this resource's models through Team A project, a Foundry project " +
-      "on it. A Foundry project's models are deployed on its parent resource, so registering " +
-      'both would list every deployment twice.'
     api.listSuggestedModelEndpoints.mockResolvedValue(
       suggestionView({
         suggestions: [
@@ -837,13 +890,14 @@ describe('ModelsPage model endpoints', () => {
             alreadyRegistered: false,
             modelEndpointId: null,
             reason: 'Found in subscription 00000000-0000-0000-0000-000000000000.',
+            azureEnvironmentTag: 'dev',
+            suggestedEnvironment: 'development',
           },
         ],
         subscriptionsScanned: 1,
         scanStatus: 'scanned',
       }),
     )
-    api.registerModelEndpoint.mockRejectedValue(new TestApiError(message, 409))
 
     renderPage()
 
@@ -851,10 +905,10 @@ describe('ModelsPage model endpoints', () => {
     const card = heading.closest('.fui-Card') as HTMLElement
     await user.click(within(card).getByRole('button', { name: 'Register' }))
 
-    expect(await within(card).findByText(message)).toBeVisible()
-    expect(within(card).getByText("MOSAIC didn't register this endpoint")).toBeVisible()
-    expect(screen.queryByText('Unable to load data')).not.toBeInTheDocument()
-    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    const dialog = await screen.findByRole('dialog', { name: 'Register model endpoint' })
+    expect(within(dialog).getByDisplayValue(AI_RESOURCE_ID)).toBeVisible()
+    expect(within(dialog).getByText(/Suggested: Development/)).toBeVisible()
+    expect(api.registerModelEndpoint).not.toHaveBeenCalled()
   })
 
   it('lists registered endpoints with their discovered model count', async () => {

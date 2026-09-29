@@ -21,7 +21,9 @@ import { type ReactNode, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useMosaicApi } from '../api'
 import { ErrorState } from '../components/AsyncState'
+import { EnvironmentBadge } from '../components/EnvironmentBadge'
 import { DataSourceBadge, PageHeader, PreviewNotice } from '../components/PageHeader'
+import { environmentFindingsQueryKey, useEnvironmentCatalog } from '../environments'
 import styles from './DashboardPage.module.css'
 
 type TimeRange = '24h' | '7d' | '30d'
@@ -86,6 +88,11 @@ export function DashboardPage() {
     queryFn: api.listPrincipals,
   })
   const groups = useQuery({ queryKey: ['groups'], queryFn: api.listGroups })
+  const environmentCatalog = useEnvironmentCatalog()
+  const environmentFindings = useQuery({
+    queryKey: environmentFindingsQueryKey(),
+    queryFn: () => api.listEnvironmentFindings(),
+  })
   const metrics = metricCopy[timeRange]
   const chartPoints = useMemo(() => {
     const values = requestSeries[timeRange]
@@ -188,6 +195,64 @@ export function DashboardPage() {
             </button>
           </div>
         )}
+        <Card className={styles.environmentsCard}>
+          <div className={styles.environmentsHeader}>
+            <div>
+              <Title3 as="h3">Environments</Title3>
+              <Text size={200}>Live classification counts from Settings.</Text>
+            </div>
+            <Button appearance="subtle" size="small" onClick={() => navigate('/settings')}>
+              Classify
+            </Button>
+          </div>
+          {environmentCatalog.isLoading && <Spinner size="tiny" label="Loading environments" />}
+          {environmentCatalog.isError && <ErrorState error={environmentCatalog.error} />}
+          {environmentCatalog.data && environmentCatalog.data.environments.length === 0 && (
+            <Text>No environments are configured yet.</Text>
+          )}
+          {environmentCatalog.data && environmentCatalog.data.environments.length > 0 && (
+            <div className={styles.environmentRows} role="list" aria-label="Environment usage">
+              {environmentCatalog.data.environments.map((environment) => (
+                <div key={environment.key} className={styles.environmentRow} role="listitem">
+                  <EnvironmentBadge environment={environment.key} catalog={environmentCatalog.data} />
+                  <span>{environment.usage.gateways} gateways</span>
+                  <span>{environment.usage.modelEndpoints} model endpoints</span>
+                  <span>{environment.usage.mcpEndpoints} MCP servers</span>
+                </div>
+              ))}
+              <div
+                className={`${styles.environmentRow} ${
+                  environmentCatalog.data.unclassified.gateways +
+                    environmentCatalog.data.unclassified.modelEndpoints +
+                    environmentCatalog.data.unclassified.mcpEndpoints >
+                  0
+                    ? styles.unclassifiedRow
+                    : ''
+                }`}
+                role="listitem"
+              >
+                <EnvironmentBadge environment={null} catalog={environmentCatalog.data} />
+                <span>{environmentCatalog.data.unclassified.gateways} gateways</span>
+                <span>{environmentCatalog.data.unclassified.modelEndpoints} model endpoints</span>
+                <span>{environmentCatalog.data.unclassified.mcpEndpoints} MCP servers</span>
+                <Button appearance="subtle" size="small" onClick={() => navigate('/settings')}>
+                  Review suggestions
+                </Button>
+              </div>
+            </div>
+          )}
+          <div className={styles.findingsLine}>
+            {environmentFindings.isLoading ? (
+              <Spinner size="tiny" label="Loading findings" />
+            ) : environmentFindings.isError ? (
+              <Text>Findings unavailable</Text>
+            ) : (
+              <Button appearance="subtle" size="small" onClick={() => navigate('/settings')}>
+                {environmentFindings.data?.items.length ?? 0} environment findings
+              </Button>
+            )}
+          </div>
+        </Card>
       </div>
 
       <PreviewNotice>

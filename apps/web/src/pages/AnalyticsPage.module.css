@@ -78,6 +78,7 @@
 }
 
 .groupsPanel,
+.environmentsPanel,
 .errorsPanel,
 .integrationPanel,
 .latencyPanel {
@@ -180,6 +181,29 @@
   padding: 16px;
   display: grid;
   gap: 14px;
+}
+
+.environmentBreakdown {
+  padding: 16px;
+  display: grid;
+  gap: 12px;
+}
+
+.environmentUsageRow {
+  display: grid;
+  gap: 8px;
+}
+
+.environmentUsageHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.environmentUsageHeader span {
+  color: var(--mosaic-text-muted);
+  font-size: 12px;
 }
 
 .endpointRow {
