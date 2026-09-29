@@ -91,14 +91,17 @@ tests and README or ADR updates wherever a decision changes.
 | G10 | Discovery said "Scanned 1 subscription. Nothing new to register." while the subscription held 56 Azure AI accounts MOSAIC couldn't read. MOSAIC's roles were all on single resources, and ARM silently filters a subscription-wide list to what the caller can read, so the scan looked complete. Found live in Phase 3 | Check MOSAIC's own permissions at each scanned subscription. When it can read only part of one, say so and show the subscription Reader command. Also say, wherever MOSAIC asks for a role on its own identity, that a new role can take a while to apply (O7) | 🔄 committed, waiting on push access |
 | G11 | Discovery suggested, and registration accepted, the parent account of a registered Foundry project. The second endpoint had the same URL, and syncing it listed the project's deployments again, each publishable on its own (O9). **Remove** on an endpoint deletes it and its synced models at once, and the server doesn't check publications, so a publication whose endpoint is gone can't be re-planned or applied (O10). Found live in Phase 3 | Treat each registration as covering its account: don't suggest a covered account, and refuse a registration that overlaps one, naming it. Confirm before removing an endpoint, and refuse while publications depend on it | 🔄 committed, waiting on push access |
 | G12 | Endpoint settings leave out the Key authentication row and its note when an account doesn't set `disableLocalAuth`. Azure leaves it unset by default, which means keys are enabled, so both Azure OpenAI targets showed nothing (O8). Found live in Phase 3 | Treat an unset value on a readable account as Enabled, and add the note | 🔄 committed, waiting on push access |
-| G13 | **No model can be published.** The default publish plan creates the policy fragment before the backend its `set-backend-service` names. APIM accepts the fragment PUT, then its validation fails it: "Backend with id '…' could not be found." The run rolls back, so API Management is left unchanged. The console shows only "The Azure operation did not succeed", because MOSAIC drops Azure's error when it polls the operation. The governed-access plan already creates the backend first. Also, the fragment PUT is long-running even when it updates an existing fragment (its 200 carries a poll header too), but MOSAIC polls only 201 and 202. So a fragment update that APIM rejects would be reported as success, which matters for governed access and every later re-apply. Found live in Phase 5 (A8) | Create the backend before the fragment, which also makes teardown remove the fragment first. Refuse to apply a plan saved in the old order, and ask for a re-plan. Show Azure's reason when an operation fails, and when a request is refused outright. Poll any write response that carries a poll header. Make the test fake of APIM validate fragments the way APIM does | 🔄 first commit done; adding update polling and synchronous reasons |
+| G13 | **No model can be published.** The default publish plan creates the policy fragment before the backend its `set-backend-service` names. APIM accepts the fragment PUT, then its validation fails it: "Backend with id '…' could not be found." The run rolls back, so API Management is left unchanged. The console shows only "The Azure operation did not succeed", because MOSAIC drops Azure's error when it polls the operation. The governed-access plan already creates the backend first. Also, the fragment PUT is long-running even when it updates an existing fragment (its 200 carries a poll header too), but MOSAIC polls only 201 and 202. So a fragment update that APIM rejects would be reported as success, which matters for governed access and every later re-apply. Found live in Phase 5 (A8) | Create the backend before the fragment, which also makes teardown remove the fragment first. Refuse to apply a plan saved in the old order, and ask for a re-plan. Show Azure's reason when an operation fails, and when a request is refused outright. Poll any write response that carries a poll header. Make the test fake of APIM validate fragments the way APIM does | 🔄 committed, waiting on push access |
 
-The open fixes combine cleanly. #25, G13's first commit, G9, G12, G10 and G11 were merged onto
-`main` locally, in that order. The only conflict is G10 against G11, in the import block of
-`apps/api/tests/test_model_endpoint_api.py`. Whichever of the two merges second keeps both import
-lists. On the combined tree:
+The open fixes combine cleanly. #25, G13 (both commits), G9, G12, G10 and G11 were merged onto
+`main` locally, in that order. Two test files conflict, and in both the fix is to keep both sides:
 
-- The API passes ruff, mypy and 956 tests.
+- G10 and G11 both change the import block of `apps/api/tests/test_model_endpoint_api.py`.
+- G10 and G13 both add fields to the fake Azure AI service in `apps/api/tests/aoai_double.py`.
+
+Whichever of each pair merges second keeps both. On the combined tree:
+
+- The API passes ruff, mypy and 978 tests.
 - The web app passes 213 tests, typecheck, lint and build.
 - The script tests pass.
 
@@ -252,7 +255,8 @@ Progress on the new build (G7 and G8 deployed):
   - Not in this deploy: the dialog fix for O4 ([#25](https://github.com/microsoft/mosaic-apim/pull/25),
     still open), and G9 to G13. #25 and G9 change only the web and portal apps. G10 to G13 also
     change the API, and G13 is needed before anything can publish. Once they're merged, they go
-    out together in one redeploy of the API, web and portal, after approval.
+    out together as one `azd deploy` of the API, web and portal images, after approval. None of
+    them changes infrastructure, the Entra hooks or app settings, so nothing is provisioned.
 - **Exit:** the deployed build contains G1 to G5, G7 and G8, and the smoke specs pass.
 
 ### Phase 5: Live, admin publishes (A7 to A9) 🔄 A7 done; A8 blocked by G13
