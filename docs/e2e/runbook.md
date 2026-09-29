@@ -98,10 +98,10 @@ node tools/drive.ts shutdown
 - **Dialogs:** about 250 ms after a console dialog opens, Fluent UI marks the rest of the page
   `aria-hidden`, and it stays hidden for about 250 ms after the dialog closes. Role targets and
   `snapshot` skip hidden content. `click`, `wait` and `text` wait for their target, but `count`
-  doesn't, so `wait` for the target before you count right after a dialog closes. Until
-  [#25](https://github.com/microsoft/mosaic-apim/pull/25) is deployed, a dialog opened on its
-  review step can itself be hidden (O4 in the [roadmap](roadmap.md#findings)); reach its
-  controls with `css:` targets.
+  doesn't, so `wait` for the target before you count right after a dialog closes. Before
+  [#25](https://github.com/microsoft/mosaic-apim/pull/25) was deployed, a dialog opened on its
+  review step could itself be hidden (O4 in the [roadmap](roadmap.md#findings)); on such a build,
+  reach its controls with `css:` targets.
 - **Values:** `@target:<dot.path>` reads a value from the manifest, so identifiers don't end up in
   shell history. `fill` never echoes the value.
 - **Sign-in:** `signin` waits for a person to finish MFA; the default timeout is 10 minutes.
@@ -229,13 +229,14 @@ won't last until the timeout, the run stops before waiting and names the token, 
 
 | Symptom | Fix |
 | --- | --- |
-| `needs a password, MFA, or consent` | Run `npm run login -- <persona>`, or set `MOSAIC_E2E_INTERACTIVE=1` |
+| `needs a password, MFA, or consent` | Run `npm run login -- <persona>`, or set `MOSAIC_E2E_INTERACTIVE=1`. Before it fails, the harness gives silent sign-in 30 seconds on a Microsoft sign-in page with nothing to automate. A B2B guest's home tenant can ask for MFA again within 20 minutes, so run the guest's specs interactively while someone can answer |
 | The profile is already in use | Stop the live driver or the other Playwright run using it |
 | `AADSTS53003` or another Conditional Access code | Use `"channel": "msedge"` for that persona, or sign in on a compliant device |
 | `<app> is signed in as X, not persona Y` | Delete that persona's profile and sign in again as the right account |
 | `The live driver is not running` | Run `npm run live` |
 | `Could not reach the live driver` | The driver stopped without cleaning up. Delete the stale `live.json` and restart it |
 | `the browser hadn't finished exiting, so the harness moved on` | Nothing to fix. On a busy Windows machine a browser can take a minute or more to leave the process table after it has saved its profile. The live driver and `login` wait up to 20 seconds and then continue, and the profile can be reopened straight away |
+| `Failed to open a new tab`, or `Target page, context or browser has been closed`, before a test opens its first page | That persona's browser has quit. A headed Chromium quits once its last tab closes, so the harness keeps one blank tab open in each persona's browser between tests. Don't close that tab or the browser window while a run is going. If it happens anyway, rerun |
 | `Worker teardown timeout of 180000ms exceeded` after the tests finished | Playwright waits for every browser it launched to exit before a worker stops, and on a busy machine that can outlast the timeout. The test results reported before it still stand. Rerun when the machine is less loaded if you need a clean exit code |
 | `Could not run the verifier with "python"` | Install `httpx` for that Python, or set `MOSAIC_E2E_PYTHON` to one that has it |
 | `The MOSAIC API token <persona>'s browser sent is for a different account` | That profile is signed in as someone else. Delete its profile and sign in again as the right account |
