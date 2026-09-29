@@ -31,8 +31,12 @@ import { type FormEvent, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { useMosaicApi } from '../api'
 import { EmptyState, ErrorState, Loading } from '../components/AsyncState'
+import { ChangeEnvironmentDialog } from '../components/ChangeEnvironmentDialog'
+import { EnvironmentBadge } from '../components/EnvironmentBadge'
+import { EnvironmentPicker } from '../components/EnvironmentPicker'
 import { ImportFromGatewayDialog } from '../components/ImportFromGatewayDialog'
 import { PageHeader } from '../components/PageHeader'
+import { environmentLabel, useEnvironmentCatalog } from '../environments'
 import type {
   CatalogVisibility,
   Gateway,
@@ -235,14 +239,18 @@ function RegisteredMcpServers({ onBanner }: { onBanner: (message: string) => voi
   const [mode, setMode] = useState<McpAuthMode>('none')
   const [url, setUrl] = useState('')
   const [name, setName] = useState('')
-  const [environmentLabel, setEnvironmentLabel] = useState('')
+  const [environment, setEnvironment] = useState<string | null>(null)
+  const [environmentTouched, setEnvironmentTouched] = useState(false)
+  const [environmentFilter, setEnvironmentFilter] = useState('all')
   const [secretUri, setSecretUri] = useState('')
   const [audience, setAudience] = useState('')
+  const [changingEndpoint, setChangingEndpoint] = useState<McpEndpoint | null>(null)
 
   const endpoints = useQuery({
     queryKey: ['mcp-endpoints'],
     queryFn: () => api.listMcpEndpoints(),
   })
+  const catalog = useEnvironmentCatalog()
 
   const selected = useMemo(
     () => endpoints.data?.find((item) => item.id === selectedId) ?? null,
@@ -258,7 +266,8 @@ function RegisteredMcpServers({ onBanner }: { onBanner: (message: string) => voi
     setDialogOpen(false)
     setUrl('')
     setName('')
-    setEnvironmentLabel('')
+    setEnvironment(null)
+    setEnvironmentTouched(false)
     setSecretUri('')
     setAudience('')
     setMode('none')
@@ -270,7 +279,7 @@ function RegisteredMcpServers({ onBanner }: { onBanner: (message: string) => voi
       api.registerMcpEndpoint({
         endpoint: url.trim(),
         name: name.trim() || undefined,
-        environmentLabel: environmentLabel.trim() || undefined,
+        environment,
         authMode: mode,
         credentialSecretUri: mode === 'apiKey' ? secretUri.trim() : undefined,
         resourceAudience: mode === 'managedIdentity' ? audience.trim() : undefined,
@@ -309,8 +318,20 @@ function RegisteredMcpServers({ onBanner }: { onBanner: (message: string) => voi
 
   function submit(event: FormEvent) {
     event.preventDefault()
+    setEnvironmentTouched(true)
+    if (!environment) return
     register.mutate()
   }
+  const filteredEndpoints = (endpoints.data ?? []).filter((endpoint) => {
+    if (environmentFilter === 'all') return true
+    if (environmentFilter === '__unclassified__') return endpoint.environment == null
+    return endpoint.environment === environmentFilter
+  })
+  useEffect(() => {
+    if (dialogOpen && !environment && catalog.data?.environments[0]) {
+      setEnvironment(catalog.data.environments[0].key)
+    }
+  }, [dialogOpen, environment, catalog.data])
 
   return (
     <>
@@ -344,10 +365,26 @@ function RegisteredMcpServers({ onBanner }: { onBanner: (message: string) => voi
 
         {endpoints.data && endpoints.data.length > 0 && (
           <>
+            <div className={styles.actionRow}>
+              <Field label="Environment filter">
+                <Select
+                  aria-label="Filter MCP servers by environment"
+                  value={environmentFilter}
+                  onChange={(event) => setEnvironmentFilter(event.target.value)}
+                >
+                  <option value="all">All</option>
+                  {catalog.data?.environments.map((item) => (
+                    <option key={item.key} value={item.key}>{item.displayName}</option>
+                  ))}
+                  <option value="__unclassified__">Unclassified</option>
+                </Select>
+              </Field>
+            </div>
             <Table aria-label="Registered MCP servers">
               <TableHeader>
                 <TableRow>
                   <TableHeaderCell>Server</TableHeaderCell>
+                  <TableHeaderCell>Environment</TableHeaderCell>
                   <TableHeaderCell>Status</TableHeaderCell>
                   <TableHeaderCell>Authentication</TableHeaderCell>
                   <TableHeaderCell>Tools</TableHeaderCell>
@@ -356,7 +393,7 @@ function RegisteredMcpServers({ onBanner }: { onBanner: (message: string) => voi
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {endpoints.data.map((endpoint) => (
+                {filteredEndpoints.map((endpoint) => (
                   <TableRow
                     key={endpoint.id}
                     className={endpoint.id === selectedId ? styles.selectedRow : undefined}
@@ -376,6 +413,12 @@ function RegisteredMcpServers({ onBanner }: { onBanner: (message: string) => voi
                             Protocol {endpoint.capabilities.protocolVersion} · Streamable HTTP
                           </span>
                         )}
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      <div className={styles.cellStack}>
+                        <EnvironmentBadge environment={endpoint.environment} catalog={catalog.data} />
+                        {endpoint.environmentLabel && <span className={styles.secondaryCell}>Legacy label: {endpoint.environmentLabel}</span>}
                       </div>
                     </TableCell>
                     <TableCell>
@@ -410,6 +453,12 @@ function RegisteredMcpServers({ onBanner }: { onBanner: (message: string) => voi
                           onClick={() => sync.mutate(endpoint.id)}
                         >
                           Sync tools
+                        </Button>
+                        <Button
+                          appearance="subtle"
+                          onClick={() => setChangingEndpoint(endpoint)}
+                        >
+                          Change environment
                         </Button>
                         <Button
                           appearance="subtle"
@@ -496,13 +545,14 @@ function RegisteredMcpServers({ onBanner }: { onBanner: (message: string) => voi
                 <Field label="Display name">
                   <Input value={name} onChange={(_, data) => setName(data.value)} />
                 </Field>
-                <Field label="Environment label">
-                  <Input
-                    value={environmentLabel}
-                    onChange={(_, data) => setEnvironmentLabel(data.value)}
-                    placeholder="Production"
-                  />
-                </Field>
+                <EnvironmentPicker
+                  catalog={catalog.data}
+                  value={environment}
+                  onChange={(value) => { setEnvironment(value); setEnvironmentTouched(true) }}
+                  required
+                  label="Environment"
+                  validationMessage={environmentTouched && !environment ? 'Choose an environment.' : undefined}
+                />
 
                 {register.isError && <ErrorState error={register.error} />}
               </DialogContent>
@@ -518,6 +568,23 @@ function RegisteredMcpServers({ onBanner }: { onBanner: (message: string) => voi
           </form>
         </DialogSurface>
       </Dialog>
+      {changingEndpoint && (
+        <ChangeEnvironmentDialog
+          resource={{
+            resourceKind: 'mcpEndpoint',
+            resourceId: changingEndpoint.id,
+            resourceName: changingEndpoint.name,
+            environment: changingEndpoint.environment,
+          }}
+          open={changingEndpoint !== null}
+          onClose={() => setChangingEndpoint(null)}
+          onChanged={async () => {
+            setChangingEndpoint(null)
+            onBanner(`Updated ${changingEndpoint.name}'s environment.`)
+            await invalidate()
+          }}
+        />
+      )}
     </>
   )
 }
@@ -551,6 +618,7 @@ function ImportedMcpServers({ onBanner }: { onBanner: (message: string) => void 
     }
     return map
   }, [gateways.data])
+  const catalog = useEnvironmentCatalog()
 
   useEffect(() => {
     if (requestedGatewayId && !hasConsumedImportQueryRef.current) {
@@ -627,6 +695,7 @@ function ImportedMcpServers({ onBanner }: { onBanner: (message: string) => void 
                   <TableHeaderCell>Transport</TableHeaderCell>
                   <TableHeaderCell>Tools</TableHeaderCell>
                   <TableHeaderCell>Gateway</TableHeaderCell>
+                  <TableHeaderCell>Environment</TableHeaderCell>
                   <TableHeaderCell>Catalog</TableHeaderCell>
                   <TableHeaderCell>Actions</TableHeaderCell>
                 </TableRow>
@@ -667,6 +736,19 @@ function ImportedMcpServers({ onBanner }: { onBanner: (message: string) => void 
                       <Link className={styles.gatewayLink} to={`/gateways/${server.gatewayId}`}>
                         {gatewayNames.get(server.gatewayId)?.name ?? server.gatewayId}
                       </Link>
+                    </TableCell>
+                    <TableCell>
+                      {(() => {
+                        const gateway = gatewayNames.get(server.gatewayId)
+                        return gateway ? (
+                          <Text size={200}>
+                            Environment: {environmentLabel(catalog.data, gateway.environment)} (from
+                            gateway {gateway.name})
+                          </Text>
+                        ) : (
+                          '—'
+                        )
+                      })()}
                     </TableCell>
                     <TableCell>
                       <Select

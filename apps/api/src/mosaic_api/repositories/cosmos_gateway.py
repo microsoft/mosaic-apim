@@ -1,3 +1,4 @@
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import structlog
@@ -22,6 +23,7 @@ from mosaic_api.domain import (
 from mosaic_api.errors import ConflictError
 from mosaic_api.observed import ObservedEntity
 from mosaic_api.repositories.cosmos import CosmosRepositoryBase
+from mosaic_api.repositories.observation_writes import GATEWAY_AUTHORED_FIELDS
 
 logger = structlog.get_logger()
 
@@ -106,9 +108,13 @@ class CosmosGatewayRepository(CosmosRepositoryBase):
         )
         return gateway
 
-    async def record_gateway_state(self, gateway: Gateway) -> Gateway:
-        await self._desired.upsert_item(self._document(gateway))
-        return gateway
+    async def record_gateway_state(self, gateway: Gateway) -> Gateway | None:
+        return await self._record_observation(
+            Gateway,
+            gateway,
+            GATEWAY_AUTHORED_FIELDS,
+            conflict_message="The gateway changed while MOSAIC was recording observations",
+        )
 
     async def delete_gateway(self, gateway: Gateway, audit_event: AuditEvent) -> None:
         await self.delete_observed_for_gateway(gateway.tenant_id, gateway.id)
@@ -479,3 +485,83 @@ class CosmosGatewayRepository(CosmosRepositoryBase):
             raise ConflictError(
                 "The publication lock changed; operator recovery is required"
             ) from error
+
+    async def acquire_scope_lease(
+        self, tenant_id: str, scope: str, owner_id: str, *, lease_seconds: float
+    ) -> None:
+        lease_id = deterministic_id("scopeLease", tenant_id, scope)
+        now = utc_now()
+        document = {
+            "id": lease_id,
+            "tenantId": tenant_id,
+            "entityType": "scopeLease",
+            "scope": scope,
+            "ownerId": owner_id,
+            "createdAt": now.isoformat(),
+            "expiresAt": (now + timedelta(seconds=lease_seconds)).isoformat(),
+        }
+        busy = ConflictError(
+            "Another change is already in progress. Try again in a moment.",
+            details={"scope": scope},
+        )
+        try:
+            await self._desired.create_item(document)
+            return
+        except exceptions.CosmosResourceExistsError:
+            pass
+        try:
+            item = await self._desired.read_item(item=lease_id, partition_key=tenant_id)
+        except exceptions.CosmosResourceNotFoundError as error:
+            # Released between the create and the read; the next attempt can take it.
+            raise busy from error
+        if _lease_expiry(item) > now:
+            raise busy
+        # Take over an expired lease only if nobody else took it first.
+        try:
+            await self._desired.replace_item(
+                item=lease_id,
+                body=document,
+                etag=item["_etag"],
+                match_condition=MatchConditions.IfNotModified,
+            )
+        except (
+            exceptions.CosmosResourceNotFoundError,
+            exceptions.CosmosAccessConditionFailedError,
+        ) as error:
+            raise busy from error
+
+    async def release_scope_lease(self, tenant_id: str, scope: str, owner_id: str) -> None:
+        lease_id = deterministic_id("scopeLease", tenant_id, scope)
+        try:
+            item = await self._desired.read_item(item=lease_id, partition_key=tenant_id)
+        except exceptions.CosmosResourceNotFoundError:
+            return
+        if item.get("ownerId") != owner_id or item.get("tenantId") != tenant_id:
+            logger.warning("scope_lease_lost", scope=scope, owner_id=owner_id)
+            return
+        try:
+            await self._desired.delete_item(
+                item=lease_id,
+                partition_key=tenant_id,
+                etag=item["_etag"],
+                match_condition=MatchConditions.IfNotModified,
+            )
+        except (
+            exceptions.CosmosResourceNotFoundError,
+            exceptions.CosmosAccessConditionFailedError,
+        ):
+            logger.warning("scope_lease_lost", scope=scope, owner_id=owner_id)
+
+
+def _lease_expiry(item: dict[str, Any]) -> datetime:
+    """A lease document's expiry; an unreadable one counts as expired rather than held forever."""
+
+    value = item.get("expiresAt")
+    try:
+        expiry = datetime.fromisoformat(value) if isinstance(value, str) else None
+    except ValueError:
+        expiry = None
+    if expiry is None or expiry.tzinfo is None:
+        logger.warning("scope_lease_unreadable", lease_id=item.get("id"))
+        return datetime.min.replace(tzinfo=UTC)
+    return expiry

@@ -382,6 +382,7 @@ class FakeApim:
         # Set when a NAT gateway carries the service's outbound calls instead.
         self.outbound_public_ip_addresses: list[str] = []
         self.additional_locations: list[dict[str, Any]] = []
+        self.tags: dict[str, str] | None = None
 
     def fail_once(self, path_suffix: str, status_code: int) -> None:
         self.failures[path_suffix] = status_code
@@ -797,6 +798,8 @@ class FakeApim:
             service["sku"] = {"name": self.sku_name, "capacity": 1}
         if self.identity is not None:
             service["identity"] = self.identity
+        if self.tags is not None:
+            service["tags"] = self.tags
         return service
 
     def _paged_apis(self, page: str | None) -> httpx.Response:

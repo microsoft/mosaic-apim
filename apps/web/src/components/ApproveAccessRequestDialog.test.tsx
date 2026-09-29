@@ -5,7 +5,8 @@ import userEvent from '@testing-library/user-event'
 import type { ComponentProps } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 import { modelPublication } from '../test/model-access'
-import type { AccessRequest, AccessRequestApproval } from '../types'
+import { ApiError } from '../api'
+import type { AccessRequest, AccessRequestApproval, EnvironmentCatalogView } from '../types'
 import { ApproveAccessRequestDialog } from './ApproveAccessRequestDialog'
 
 const accessRequest: AccessRequest = {
@@ -20,6 +21,39 @@ const accessRequest: AccessRequest = {
   updatedAt: '2026-09-01T12:00:00Z',
 }
 
+const catalog: EnvironmentCatalogView = {
+  environments: [
+    {
+      key: 'development',
+      displayName: 'Development',
+      description: null,
+      color: 'brand',
+      production: false,
+      aliases: [],
+      acceptsEndpointsFrom: [],
+      order: 10,
+      builtIn: true,
+      usage: { gateways: 0, modelEndpoints: 0, mcpEndpoints: 0 },
+    },
+    {
+      key: 'production',
+      displayName: 'Production',
+      description: null,
+      color: 'danger',
+      production: true,
+      aliases: [],
+      acceptsEndpointsFrom: [],
+      order: 50,
+      builtIn: true,
+      usage: { gateways: 0, modelEndpoints: 0, mcpEndpoints: 0 },
+    },
+  ],
+  requireClassification: false,
+  unclassified: { gateways: 0, modelEndpoints: 0, mcpEndpoints: 0 },
+  compatibility: [],
+  updatedAt: null,
+}
+
 type DialogProps = ComponentProps<typeof ApproveAccessRequestDialog>
 
 function renderDialog(props: Partial<DialogProps> = {}) {
@@ -31,6 +65,7 @@ function renderDialog(props: Partial<DialogProps> = {}) {
         accessRequest={accessRequest}
         requester={{ label: 'Ada Lovelace', objectId: 'user-object-1', registered: true }}
         resourceLabel="Chat completions (model API)"
+        environmentCatalog={catalog}
         publication={modelPublication}
         governed
         existingGrant={false}
@@ -47,7 +82,10 @@ function renderDialog(props: Partial<DialogProps> = {}) {
 
 // Approves through a mutation, as the entitlements page does, so the dialog sees the approval start,
 // fail, and start again.
-function renderApproval(approveAccessRequest: (approval: AccessRequestApproval) => Promise<unknown>) {
+function renderApproval(
+  approveAccessRequest: (approval: AccessRequestApproval) => Promise<unknown>,
+  props: Partial<DialogProps> = {},
+) {
   const queryClient = new QueryClient()
   const onCancel = vi.fn()
   function Approval() {
@@ -60,6 +98,7 @@ function renderApproval(approveAccessRequest: (approval: AccessRequestApproval) 
         publication={modelPublication}
         governed
         existingGrant={false}
+        {...props}
         pending={approve.isPending}
         error={approve.error}
         onCancel={onCancel}
@@ -174,6 +213,111 @@ describe('ApproveAccessRequestDialog', () => {
     await user.click(within(dialog).getByRole('button', { name: 'Approve and create grant' }))
 
     expect(onApprove).toHaveBeenCalledExactlyOnceWith({ note: null, enforcement: null })
+  })
+
+  it('requires confirmation when the resource moved and sends the confirmed environment', async () => {
+    const user = userEvent.setup()
+    const { onApprove } = renderDialog({
+      accessRequest: {
+        ...accessRequest,
+        requestedEnvironment: 'development',
+        resourceSummary: {
+          kind: 'modelApi',
+          id: 'modelApi_1',
+          scopeId: null,
+          displayName: 'Chat completions',
+          gatewayId: 'gateway_1',
+          gatewayName: 'Gateway',
+          environment: 'production',
+          available: true,
+        },
+      },
+    })
+
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByText(/moved from Development to Production/)).toBeVisible()
+    expect(within(dialog).getByText('This approval grants production-class access.')).toBeVisible()
+    const approve = within(dialog).getByRole('button', { name: 'Approve and create grant' })
+    expect(approve).toBeDisabled()
+    await user.click(within(dialog).getByRole('checkbox', { name: 'Approve access to Production' }))
+    await user.clear(within(dialog).getByRole('spinbutton', { name: 'Tokens per minute' }))
+    await user.click(approve)
+
+    expect(onApprove).toHaveBeenCalledExactlyOnceWith({
+      note: null,
+      enforcement: null,
+      confirmedEnvironment: 'production',
+    })
+  })
+
+  it('uses the unclassified sentinel when current environment is unclassified', async () => {
+    const user = userEvent.setup()
+    const { onApprove } = renderDialog({
+      accessRequest: {
+        ...accessRequest,
+        requestedEnvironment: 'development',
+        resourceSummary: {
+          kind: 'modelApi',
+          id: 'modelApi_1',
+          scopeId: null,
+          displayName: 'Chat completions',
+          gatewayId: 'gateway_1',
+          gatewayName: 'Gateway',
+          environment: null,
+          available: true,
+        },
+      },
+      publication: undefined,
+    })
+
+    const dialog = await screen.findByRole('dialog')
+    await user.click(within(dialog).getByRole('checkbox', { name: 'Approve access to Unclassified' }))
+    await user.click(within(dialog).getByRole('button', { name: 'Approve and create grant' }))
+
+    expect(onApprove).toHaveBeenCalledWith({
+      note: null,
+      enforcement: null,
+      confirmedEnvironment: 'unclassified',
+    })
+  })
+
+  it('updates the current environment after an environmentChanged conflict', async () => {
+    const user = userEvent.setup()
+    const { onApprove } = renderDialog({
+      accessRequest: {
+        ...accessRequest,
+        requestedEnvironment: 'development',
+        resourceSummary: {
+          kind: 'modelApi',
+          id: 'modelApi_1',
+          scopeId: null,
+          displayName: 'Chat completions',
+          gatewayId: 'gateway_1',
+          gatewayName: 'Gateway',
+          environment: 'development',
+          available: true,
+        },
+      },
+      publication: undefined,
+      error: new ApiError('Environment changed', 409, {
+        details: {
+          reason: 'environmentChanged',
+          requestedEnvironment: 'development',
+          currentEnvironment: 'production',
+        },
+      }),
+    })
+
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByText(/moved from Development to Production/)).toBeVisible()
+    await user.click(within(dialog).getByRole('checkbox', { name: 'Approve access to Production' }))
+    await user.click(within(dialog).getByRole('button', { name: 'Approve and create grant' }))
+
+    expect(onApprove).toHaveBeenCalledWith({
+      note: null,
+      enforcement: null,
+      confirmedEnvironment: 'production',
+    })
   })
 
   it('refuses a half-filled call rate instead of dropping it', async () => {
@@ -312,6 +456,50 @@ describe('ApproveAccessRequestDialog', () => {
 
     await waitFor(() => expect(focused()).toHaveTextContent('The requester is no longer in the directory.'))
     expect(approveAccessRequest).toHaveBeenCalledTimes(2)
+  })
+
+  it('moves focus to a refusal for a moved resource, then approves only once the move is confirmed', async () => {
+    const user = userEvent.setup()
+    const approveAccessRequest = vi.fn()
+      .mockRejectedValueOnce(new ApiError('The resource moved to Production after this request was made.', 409, {
+        details: {
+          reason: 'environmentChanged',
+          requestedEnvironment: 'development',
+          currentEnvironment: 'production',
+        },
+      }))
+      .mockResolvedValueOnce({})
+    renderApproval(approveAccessRequest, {
+      accessRequest: {
+        ...accessRequest,
+        requestedEnvironment: 'development',
+        resourceSummary: {
+          kind: 'modelApi',
+          id: 'modelApi_1',
+          scopeId: null,
+          displayName: 'Chat completions',
+          gatewayId: 'gateway_1',
+          gatewayName: 'Gateway',
+          environment: 'development',
+          available: true,
+        },
+      },
+      environmentCatalog: catalog,
+    })
+    const dialog = await screen.findByRole('dialog')
+    const approve = within(dialog).getByRole('button', { name: 'Approve and create grant' })
+
+    await user.click(approve)
+
+    await waitFor(() => expect(focused()).toHaveTextContent('The resource moved to Production after this request was made.'))
+    expect(within(dialog).getByText(/moved from Development to Production/)).toBeVisible()
+    expect(approve).toBeDisabled()
+    await user.click(within(dialog).getByRole('checkbox', { name: 'Approve access to Production' }))
+    await user.click(approve)
+
+    await waitFor(() => expect(approveAccessRequest).toHaveBeenCalledTimes(2))
+    expect(approveAccessRequest.mock.calls[0][0]).not.toHaveProperty('confirmedEnvironment')
+    expect(approveAccessRequest.mock.calls[1][0]).toMatchObject({ confirmedEnvironment: 'production' })
   })
 
   it('leaves focus where Fluent puts it when the dialog opens showing a failure', async () => {

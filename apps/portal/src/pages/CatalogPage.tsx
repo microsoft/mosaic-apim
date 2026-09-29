@@ -1,8 +1,9 @@
 import { Badge, Button, Card, CardHeader, Textarea, Text } from '@fluentui/react-components'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { usePortalApi } from '../api'
 import { EmptyState, ErrorState, Loading } from '../components/AsyncState'
+import { EnvironmentBadge } from '../components/EnvironmentBadge'
 import { PageHeader } from '../components/PageHeader'
 import {
   requestStateLabel,
@@ -10,7 +11,19 @@ import {
   resourceKindLabel,
   sameResource,
 } from '../entitlement-format'
-import type { CatalogEntry } from '../types'
+import { usePortalEnvironments } from '../environments'
+import type { CatalogEntry, PortalEnvironment, PortalResourceKind } from '../types'
+
+function environmentOptions(entries: CatalogEntry[], environments: PortalEnvironment[] | undefined) {
+  const present = new Set(entries.map((entry) => entry.environment).filter((key): key is string => key !== null))
+  const known = (environments ?? []).filter((environment) => present.has(environment.key))
+  const knownKeys = new Set(known.map((environment) => environment.key))
+  const unknown = entries
+    .map((entry) => entry.environment)
+    .filter((key): key is string => key !== null && !knownKeys.has(key))
+    .filter((key, index, list) => list.indexOf(key) === index)
+  return { known, unknown, hasUnclassified: entries.some((entry) => entry.environment === null) }
+}
 
 function CatalogAction({ entry }: { entry: CatalogEntry }) {
   const api = usePortalApi()
@@ -28,6 +41,7 @@ function CatalogAction({ entry }: { entry: CatalogEntry }) {
       queryClient.invalidateQueries({ queryKey: ['portal', 'profile'] }),
     ])
   }
+
   const create = useMutation({
     mutationFn: () =>
       api.createAccessRequest({
@@ -78,6 +92,27 @@ function CatalogAction({ entry }: { entry: CatalogEntry }) {
 export function CatalogPage() {
   const api = usePortalApi()
   const catalog = useQuery({ queryKey: ['portal', 'catalog'], queryFn: api.listCatalog })
+  const environments = usePortalEnvironments()
+  const [environmentFilter, setEnvironmentFilter] = useState('all')
+  const [kindFilter, setKindFilter] = useState<'all' | PortalResourceKind>('all')
+  const filteredCatalog = useMemo(() => {
+    if (!catalog.data) return []
+    return catalog.data.filter((entry) => {
+      const matchesEnvironment =
+        environmentFilter === 'all' ||
+        (environmentFilter === 'unclassified' ? entry.environment === null : entry.environment === environmentFilter)
+      const matchesKind = kindFilter === 'all' || entry.kind === kindFilter
+      return matchesEnvironment && matchesKind
+    })
+  }, [catalog.data, environmentFilter, kindFilter])
+  const filterOptions = useMemo(
+    () => environmentOptions(catalog.data ?? [], environments.data),
+    [catalog.data, environments.data],
+  )
+  const clearFilters = () => {
+    setEnvironmentFilter('all')
+    setKindFilter('all')
+  }
 
   return (
     <>
@@ -93,19 +128,73 @@ export function CatalogPage() {
         </EmptyState>
       )}
       {catalog.isSuccess && catalog.data.length > 0 && (
-        <div className="catalog-grid">
-          {catalog.data.map((entry) => (
-            <Card key={`${entry.kind}:${entry.id}`} className="catalog-card">
-              <CardHeader
-                header={<h2>{entry.displayName}</h2>}
-                description={`${resourceKindLabel(entry.kind)} · ${entry.gatewayName ?? entry.gatewayId}`}
-                action={entry.requestState && entry.requestState !== 'pending' ? <Badge appearance="tint">{requestStateLabel(entry.requestState)}</Badge> : undefined}
-              />
-              <Text>{entry.summary ?? 'No summary provided.'}</Text>
-              <CatalogAction entry={entry} />
-            </Card>
-          ))}
-        </div>
+        <>
+          <div className="filter-row" role="group" aria-label="Catalog filters">
+            <label>
+              <span>Environment</span>
+              <select
+                value={environmentFilter}
+                onChange={(event) => setEnvironmentFilter(event.currentTarget.value)}
+              >
+                <option value="all">All environments</option>
+                {filterOptions.known.map((environment) => (
+                  <option key={environment.key} value={environment.key}>
+                    {environment.displayName}
+                  </option>
+                ))}
+                {filterOptions.unknown.map((environment) => (
+                  <option key={environment} value={environment}>
+                    {environment}
+                  </option>
+                ))}
+                {filterOptions.hasUnclassified && (
+                  <option value="unclassified">Unclassified</option>
+                )}
+              </select>
+            </label>
+            <label>
+              <span>Resource type</span>
+              <select
+                value={kindFilter}
+                onChange={(event) => setKindFilter(event.currentTarget.value as typeof kindFilter)}
+              >
+                <option value="all">All types</option>
+                <option value="modelApi">Model APIs</option>
+                <option value="mcpServer">MCP servers</option>
+              </select>
+            </label>
+          </div>
+          {filteredCatalog.length === 0 ? (
+            <EmptyState title="No catalog entries match these filters">
+              <p>Clear filters to see all catalog entries.</p>
+              <Button onClick={clearFilters}>Clear filters</Button>
+            </EmptyState>
+          ) : (
+            <div className="catalog-grid">
+              {filteredCatalog.map((entry) => (
+                <Card key={`${entry.kind}:${entry.id}`} className="catalog-card">
+                  <CardHeader
+                    header={<h2>{entry.displayName}</h2>}
+                    description={`${resourceKindLabel(entry.kind)} · ${entry.gatewayName ?? 'Gateway not available'}`}
+                    action={
+                      entry.requestState && entry.requestState !== 'pending' ? (
+                        <Badge appearance="tint">{requestStateLabel(entry.requestState)}</Badge>
+                      ) : undefined
+                    }
+                  />
+                  <div className="badge-row">
+                    <EnvironmentBadge
+                      environment={entry.environment}
+                      environments={environments.data}
+                    />
+                  </div>
+                  <Text>{entry.summary ?? 'No summary provided.'}</Text>
+                  <CatalogAction entry={entry} />
+                </Card>
+              ))}
+            </div>
+          )}
+        </>
       )}
     </>
   )

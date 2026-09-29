@@ -8,6 +8,7 @@ import {
   DialogTitle,
   Field,
   Input,
+  Checkbox,
   MessageBar,
   MessageBarBody,
   Select,
@@ -21,7 +22,13 @@ import {
   limitFormFrom,
   type LimitForm,
 } from '../entitlement-limits'
-import type { AccessRequest, AccessRequestApproval, Publication, QuotaPeriod } from '../types'
+import { EnvironmentBadge } from './EnvironmentBadge'
+import {
+  environmentChangedDetails,
+  environmentLabel,
+  findEnvironment,
+} from '../environments'
+import type { AccessRequest, AccessRequestApproval, EnvironmentCatalogView, Publication, QuotaPeriod } from '../types'
 import { ErrorState } from './AsyncState'
 import styles from '../pages/EntitlementsPage.module.css'
 
@@ -40,6 +47,7 @@ export function ApproveAccessRequestDialog({
   accessRequest,
   requester,
   resourceLabel,
+  environmentCatalog,
   publication,
   governed,
   existingGrant,
@@ -51,6 +59,7 @@ export function ApproveAccessRequestDialog({
   accessRequest: AccessRequest
   requester: ApprovalRequester
   resourceLabel: string
+  environmentCatalog?: EnvironmentCatalogView
   /** The publication of the requested model API, the only source of default grant limits. */
   publication?: Publication
   /** Whether MOSAIC applies this grant to API Management through the model's plan. */
@@ -64,17 +73,41 @@ export function ApproveAccessRequestDialog({
 }) {
   const [limits, setLimits] = useState<LimitForm>(() => limitFormFrom(publication?.enforcement))
   const [note, setNote] = useState('')
+  const [confirmedMove, setConfirmedMove] = useState(false)
+  const [currentEnvironment, setCurrentEnvironment] = useState<string | null>(
+    () => accessRequest.resourceSummary?.environment ?? null,
+  )
   const rateError = callRateError(limits)
   const prefilled = Boolean(
     publication?.enforcement?.tokensPerMinute || publication?.enforcement?.tokenQuota,
   )
   const justification = accessRequest.justification?.trim()
+  const requestedEnvironment = accessRequest.requestedEnvironment ?? null
+  const environmentMoved = requestedEnvironment !== currentEnvironment
+  const requestedIsProduction = Boolean(findEnvironment(environmentCatalog, requestedEnvironment)?.production)
+  const currentIsProduction = Boolean(findEnvironment(environmentCatalog, currentEnvironment)?.production)
+  const currentEnvironmentName = environmentLabel(environmentCatalog, currentEnvironment)
+
+  useEffect(() => {
+    const changed = environmentChangedDetails(error)
+    if (!changed) return
+    setCurrentEnvironment(changed.currentEnvironment ?? null)
+    setConfirmedMove(false)
+  }, [error])
+
+  useEffect(() => {
+    setConfirmedMove(false)
+  }, [requestedEnvironment, currentEnvironment])
 
   function submit(event: FormEvent) {
     event.preventDefault()
     // Approve stays focusable while pending, and a focusable submit button still submits the form.
-    if (rateError || existingGrant || pending) return
-    onApprove({ note: note.trim() || null, enforcement: buildEnforcement(limits, governed) })
+    if (rateError || existingGrant || pending || (environmentMoved && !confirmedMove)) return
+    onApprove({
+      note: note.trim() || null,
+      enforcement: buildEnforcement(limits, governed),
+      ...(environmentMoved ? { confirmedEnvironment: currentEnvironment ?? 'unclassified' } : {}),
+    })
   }
 
   // An approval that fails shows why at the top of the dialog. Move focus there, so a screen reader reads it:
@@ -127,10 +160,43 @@ export function ApproveAccessRequestDialog({
                   <dd>{resourceLabel}</dd>
                 </div>
                 <div>
+                  <dt>Requested environment</dt>
+                  <dd>
+                    <EnvironmentBadge environment={requestedEnvironment} catalog={environmentCatalog} />
+                  </dd>
+                </div>
+                <div>
+                  <dt>Current environment</dt>
+                  <dd>
+                    <EnvironmentBadge environment={currentEnvironment} catalog={environmentCatalog} />
+                  </dd>
+                </div>
+                <div>
                   <dt>Justification</dt>
                   <dd>{justification || 'No justification given'}</dd>
                 </div>
               </dl>
+              {(requestedIsProduction || currentIsProduction) && (
+                <MessageBar intent="warning">
+                  <MessageBarBody>This approval grants production-class access.</MessageBarBody>
+                </MessageBar>
+              )}
+              {environmentMoved && (
+                <MessageBar intent="warning">
+                  <MessageBarBody>
+                    This resource moved from {environmentLabel(environmentCatalog, requestedEnvironment)} to{' '}
+                    {currentEnvironmentName} since the request was created. Confirm the current
+                    environment before approving.
+                  </MessageBarBody>
+                </MessageBar>
+              )}
+              {environmentMoved && (
+                <Checkbox
+                  checked={confirmedMove}
+                  label={`Approve access to ${currentEnvironmentName}`}
+                  onChange={(_, data) => setConfirmedMove(Boolean(data.checked))}
+                />
+              )}
               {existingGrant && (
                 <MessageBar intent="warning">
                   <MessageBarBody>
@@ -215,7 +281,7 @@ export function ApproveAccessRequestDialog({
               <Button
                 appearance="primary"
                 type="submit"
-                disabled={existingGrant || Boolean(rateError)}
+                disabled={existingGrant || Boolean(rateError) || (environmentMoved && !confirmedMove)}
                 disabledFocusable={pending}
               >
                 Approve and create grant

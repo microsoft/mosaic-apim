@@ -209,6 +209,7 @@ class FakeCognitiveServices:
         # account list above is complete. Reader unless a test says otherwise.
         self.subscription_permissions: dict[str, list[dict[str, Any]]] = {}
         self.subscription_permissions_status = 200
+        self.tags: dict[str, str] | None = None
 
     def fail_always(self, path_suffix: str, status_code: int) -> None:
         self.persistent_failures[path_suffix] = status_code
@@ -328,7 +329,7 @@ class FakeCognitiveServices:
             properties["disableLocalAuth"] = self.disable_local_auth
         if self.network_acls is not None:
             properties["networkAcls"] = self.network_acls
-        return {
+        account = {
             "id": AI_RESOURCE_ID,
             "name": AI_ACCOUNT_NAME,
             "kind": self.kind,
@@ -336,6 +337,9 @@ class FakeCognitiveServices:
             "sku": {"name": "S0"},
             "properties": properties,
         }
+        if self.tags is not None:
+            account["tags"] = self.tags
+        return account
 
 
 def _collection(values: list[dict[str, Any]]) -> httpx.Response:

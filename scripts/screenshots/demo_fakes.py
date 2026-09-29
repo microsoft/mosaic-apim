@@ -38,6 +38,7 @@ from mcp_double import FakeMcpServer  # noqa: E402
 
 __all__ = [
     "AI_RESOURCE_ID",
+    "DEV_GATEWAY_RESOURCE_ID",
     "FOUNDRY_RESOURCE_ID",
     "GATEWAY_RESOURCE_ID",
     "PARTNER_GATEWAY_RESOURCE_ID",
@@ -53,6 +54,12 @@ __all__ = [
 ]
 
 GATEWAY_RESOURCE_ID = RESOURCE_ID
+# A development copy of the Contoso gateway, with the same APIs, so the estate has one of each
+# environment's gateways and the portal can offer Development and Production access separately.
+DEV_GATEWAY_RESOURCE_ID = (
+    f"/subscriptions/{SUBSCRIPTION_ID}/resourceGroups/rg-contoso-ai-dev"
+    "/providers/Microsoft.ApiManagement/service/apim-contoso-ai-dev"
+)
 # Registered but unreadable, so the console shows how MOSAIC reports a gateway it cannot see yet.
 PARTNER_GATEWAY_RESOURCE_ID = (
     f"/subscriptions/{SUBSCRIPTION_ID}/resourceGroups/rg-contoso-partners"
@@ -558,9 +565,12 @@ class DemoApim(FakeApim):
     publication's API, product, backend, and subscriptions the way a real gateway would.
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self, resource_id: str = GATEWAY_RESOURCE_ID, public_ip: str = "203.0.113.24"
+    ) -> None:
         super().__init__(permissions=CONTRIBUTOR_PERMISSIONS, sku_name="StandardV2")
-        self.public_ip_addresses = ["203.0.113.24"]
+        self.resource_id = resource_id
+        self.public_ip_addresses = [public_ip]
 
     async def handle(self, request: httpx.Request) -> httpx.Response:
         if request.method == "POST" and request.url.path.endswith("/listSecrets"):
@@ -572,7 +582,25 @@ class DemoApim(FakeApim):
                     "secondaryKey": "demo0secondary0key0not0a0real0secret",
                 },
             )
+        path = request.url.path
+        if self.resource_id != RESOURCE_ID and path.casefold().startswith(
+            self.resource_id.casefold()
+        ):
+            # The base fake serves one fixed resource ID; present this gateway under it.
+            request = httpx.Request(
+                request.method,
+                request.url.copy_with(path=RESOURCE_ID + path[len(self.resource_id) :]),
+                headers=request.headers,
+                content=request.content,
+            )
         return self.handler(request)
+
+    def _service(self) -> dict[str, Any]:
+        service = super()._service()
+        name = self.resource_id.rsplit("/", 1)[-1]
+        service["name"] = name
+        service["properties"]["gatewayUrl"] = f"https://{name}.azure-api.net"
+        return service
 
     def _written_children(self, prefix: str) -> list[dict[str, Any]]:
         depth = prefix.count("/") + 1
@@ -662,11 +690,19 @@ class DemoApim(FakeApim):
         return httpx.Response(404, json={"error": {"code": "ResourceNotFound", "message": what}})
 
 
-def gateway_handler(apim: DemoApim) -> Any:
-    """Route the Contoso gateway to the fake, and refuse the partner gateway outright."""
+def gateway_handler(apim: DemoApim, *others: DemoApim) -> Any:
+    """Route each Contoso gateway to its fake, and refuse the partner gateway outright.
+
+    Anything that names no gateway, such as an operation poll, goes to ``apim``, the only gateway
+    MOSAIC writes to.
+    """
 
     async def handle(request: httpx.Request) -> httpx.Response:
-        if request.url.path.casefold().startswith(PARTNER_GATEWAY_RESOURCE_ID.casefold()):
+        path = request.url.path.casefold()
+        for other in others:
+            if path.startswith(other.resource_id.casefold()):
+                return await other.handle(request)
+        if path.startswith(PARTNER_GATEWAY_RESOURCE_ID.casefold()):
             return httpx.Response(
                 403,
                 json={

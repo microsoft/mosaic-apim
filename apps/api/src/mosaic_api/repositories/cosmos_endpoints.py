@@ -7,6 +7,7 @@ from mosaic_api.domain import (
     ModelEndpointSyncRun,
 )
 from mosaic_api.repositories.cosmos_endpoint_state import CosmosEndpointStateBase
+from mosaic_api.repositories.observation_writes import MODEL_ENDPOINT_AUTHORED_FIELDS
 
 logger = structlog.get_logger()
 
@@ -74,9 +75,13 @@ class CosmosModelEndpointRepository(CosmosEndpointStateBase):
         )
         return endpoint
 
-    async def record_endpoint_state(self, endpoint: ModelEndpoint) -> ModelEndpoint:
-        await self._desired.upsert_item(self._document(endpoint))
-        return endpoint
+    async def record_endpoint_state(self, endpoint: ModelEndpoint) -> ModelEndpoint | None:
+        return await self._record_observation(
+            ModelEndpoint,
+            endpoint,
+            MODEL_ENDPOINT_AUTHORED_FIELDS,
+            conflict_message="The model endpoint changed while MOSAIC was recording observations",
+        )
 
     async def delete_endpoint(self, endpoint: ModelEndpoint, audit_event: AuditEvent) -> None:
         await self.delete_observed_for_endpoint(endpoint.tenant_id, endpoint.id)

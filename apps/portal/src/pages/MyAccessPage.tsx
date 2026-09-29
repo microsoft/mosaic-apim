@@ -3,15 +3,18 @@ import { useQuery } from '@tanstack/react-query'
 import { usePortalApi } from '../api'
 import { EmptyState, ErrorState, Loading } from '../components/AsyncState'
 import { ConnectionDetails } from '../components/ConnectionDetails'
+import { EnvironmentBadge } from '../components/EnvironmentBadge'
 import { PageHeader } from '../components/PageHeader'
 import {
   describeAttribution,
   describeBinding,
   describeLimits,
   describeRuntime,
+  gatewayLabel,
   resourceTitle,
   withResourceKind,
 } from '../entitlement-format'
+import { usePortalEnvironments } from '../environments'
 
 export function MyAccessPage() {
   const api = usePortalApi()
@@ -19,6 +22,7 @@ export function MyAccessPage() {
     queryKey: ['portal', 'entitlements'],
     queryFn: api.listEntitlements,
   })
+  const environments = usePortalEnvironments()
 
   return (
     <>
@@ -39,7 +43,18 @@ export function MyAccessPage() {
             <Card key={resolved.entitlement.id} className="access-card">
               <CardHeader
                 header={
-                  <h2>{resourceTitle(resolved.entitlement.resource, resolved.resourceDisplayName)}</h2>
+                  <h2>
+                    {resourceTitle(
+                      resolved.entitlement.resource,
+                      resolved.resourceDisplayName,
+                      resolved.resourceSummary,
+                    )}
+                    {resolved.resourceSummary?.available === false && (
+                      <Badge className="inline-status-badge" appearance="outline" color="warning">
+                        No longer available
+                      </Badge>
+                    )}
+                  </h2>
                 }
                 description={
                   <Text>
@@ -47,11 +62,15 @@ export function MyAccessPage() {
                       resolved.entitlement.resource,
                       resolved.resourceDisplayName,
                       describeAttribution(resolved),
+                      resolved.resourceSummary,
                     )}
                   </Text>
                 }
                 action={<Badge className="card-header-badge" appearance={resolved.entitlement.runtime?.status === 'applied' ? 'filled' : 'tint'}>{describeRuntime(resolved.entitlement)}</Badge>}
               />
+              <div className="badge-row">
+                <EnvironmentBadge environment={resolved.resourceSummary?.environment ?? null} environments={environments.data} />
+              </div>
               <div className="access-card-grid">
                 <section>
                   <h3>Configured grant limits</h3>
@@ -68,6 +87,12 @@ export function MyAccessPage() {
                 <section>
                   <h3>Usage attribution</h3>
                   <Text>{describeBinding(resolved.entitlement)}</Text>
+                  <dl className="compact-facts">
+                    <div>
+                      <dt>Gateway</dt>
+                      <dd>{gatewayLabel(resolved.resourceSummary)}</dd>
+                    </div>
+                  </dl>
                 </section>
               </div>
               {resolved.entitlement.resource.kind === 'modelApi' && (

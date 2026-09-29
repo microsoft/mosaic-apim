@@ -100,6 +100,21 @@ class Container:
             self.replace_on_read = False
         return document
 
+    async def replace_item(
+        self, *, item: str, body: dict[str, Any], **kwargs: Any
+    ) -> dict[str, Any]:
+        if self.failure:
+            raise self.failure
+        key = (body["tenantId"], item)
+        if key not in self.items:
+            raise exceptions.CosmosResourceNotFoundError(status_code=404)
+        if kwargs.get("etag") and kwargs["etag"] != self.items[key]["_etag"]:
+            raise exceptions.CosmosAccessConditionFailedError(status_code=412)
+        self.generation += 1
+        document = {**deepcopy(body), "_etag": f"etag-{self.generation}"}
+        self.items[key] = document
+        return document
+
     async def delete_item(self, *, item: str, partition_key: str, **kwargs: Any) -> None:
         self.deletes.append(kwargs)
         key = (partition_key, item)

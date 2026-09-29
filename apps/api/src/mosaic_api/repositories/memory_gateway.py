@@ -1,3 +1,5 @@
+from datetime import datetime, timedelta
+
 from mosaic_api.domain import (
     AuditEvent,
     Gateway,
@@ -9,9 +11,13 @@ from mosaic_api.domain import (
     PublishPlan,
     PublishRun,
     PublishRunStatus,
+    utc_now,
 )
 from mosaic_api.errors import ConflictError
 from mosaic_api.observed import ObservedEntity
+from mosaic_api.repositories.observation_writes import GATEWAY_AUTHORED_FIELDS, merge_observation
+
+OBSERVATION_WRITE_ATTEMPTS = 3
 
 
 class InMemoryGatewayRepository:
@@ -27,7 +33,10 @@ class InMemoryGatewayRepository:
         self.publish_plans: dict[str, PublishPlan] = {}
         self.publish_runs: dict[str, PublishRun] = {}
         self.publication_locks: dict[tuple[str, str], str] = {}
+        self.scope_leases: dict[tuple[str, str], tuple[str, datetime]] = {}
         self.audit_events: dict[str, AuditEvent] = {}
+        self._gateway_versions: dict[str, int] = {}
+        self._deleted_gateways: set[str] = set()
 
     async def ready(self) -> bool:
         return True
@@ -66,12 +75,34 @@ class InMemoryGatewayRepository:
 
     async def save_gateway(self, gateway: Gateway, audit_event: AuditEvent) -> Gateway:
         self.gateways[gateway.id] = gateway
+        self._gateway_versions[gateway.id] = self._gateway_versions.get(gateway.id, 0) + 1
+        self._deleted_gateways.discard(gateway.id)
         self.audit_events[audit_event.id] = audit_event
         return gateway
 
-    async def record_gateway_state(self, gateway: Gateway) -> Gateway:
-        self.gateways[gateway.id] = gateway
-        return gateway
+    async def record_gateway_state(self, gateway: Gateway) -> Gateway | None:
+        for _ in range(OBSERVATION_WRITE_ATTEMPTS):
+            stored = await self.get_gateway(gateway.tenant_id, gateway.id)
+            if stored is None:
+                if gateway.id not in self._deleted_gateways:
+                    self.gateways[gateway.id] = gateway
+                    self._gateway_versions[gateway.id] = 1
+                    return gateway
+                return None
+            version = self._gateway_versions.get(gateway.id, 0)
+            await self._before_observation_replace()
+            if await self.get_gateway(gateway.tenant_id, gateway.id) is None:
+                return None
+            if self._gateway_versions.get(gateway.id, 0) != version:
+                continue
+            merged = merge_observation(stored, gateway, GATEWAY_AUTHORED_FIELDS)
+            self.gateways[gateway.id] = merged
+            self._gateway_versions[gateway.id] = version + 1
+            return merged
+        raise ConflictError("The gateway changed while MOSAIC was recording observations")
+
+    async def _before_observation_replace(self) -> None:
+        return None
 
     async def delete_gateway(self, gateway: Gateway, audit_event: AuditEvent) -> None:
         await self.delete_observed_for_gateway(gateway.tenant_id, gateway.id)
@@ -102,6 +133,8 @@ class InMemoryGatewayRepository:
         ]:
             self.publications.pop(publication_key, None)
         self.gateways.pop(gateway.id, None)
+        self._gateway_versions.pop(gateway.id, None)
+        self._deleted_gateways.add(gateway.id)
         self.audit_events[audit_event.id] = audit_event
 
     async def save_sync_run(self, run: GatewaySyncRun) -> GatewaySyncRun:
@@ -315,3 +348,22 @@ class InMemoryGatewayRepository:
         if self.publication_locks.get(key) != owner_id:
             raise ConflictError("The publication lock is no longer owned by this operation")
         del self.publication_locks[key]
+
+    async def acquire_scope_lease(
+        self, tenant_id: str, scope: str, owner_id: str, *, lease_seconds: float
+    ) -> None:
+        key = (tenant_id, scope)
+        now = utc_now()
+        current = self.scope_leases.get(key)
+        if current is not None and current[1] > now:
+            raise ConflictError(
+                "Another change is already in progress. Try again in a moment.",
+                details={"scope": scope},
+            )
+        self.scope_leases[key] = (owner_id, now + timedelta(seconds=lease_seconds))
+
+    async def release_scope_lease(self, tenant_id: str, scope: str, owner_id: str) -> None:
+        key = (tenant_id, scope)
+        current = self.scope_leases.get(key)
+        if current is not None and current[0] == owner_id:
+            del self.scope_leases[key]

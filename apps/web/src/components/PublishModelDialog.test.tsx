@@ -17,6 +17,8 @@ function gateway(overrides: Partial<Gateway> = {}): Gateway {
     subscriptionId: 's',
     resourceGroup: 'rg',
     serviceName: 'apim',
+    environment: null,
+    azureEnvironmentTag: null,
     environmentLabel: null,
     managementMode: 'manage',
     status: 'connected',
@@ -42,6 +44,13 @@ const publishableModel: PublishableModel = {
   publicationStatus: null,
   suggestedApiName: 'gpt-4o-api',
   suggestedApiPath: 'models/gpt-4o',
+  environmentVerdict: {
+    level: 'allowed',
+    reason: 'Both are Production.',
+    gatewayEnvironment: 'production',
+    endpointEnvironment: 'production',
+    viaException: false,
+  },
   runtimeAccess: { gatewayId: 'gateway_1', gatewayName: 'Managed gateway', apimPrincipalId: 'principal', canInvoke: true, evaluation: 'roleAssignments', checkedAt: '2026-09-01T12:00:00Z', requiredRoleName: 'Cognitive Services OpenAI User', requiredRoleDefinitionId: 'role', assignmentScope: null, inherited: false, remediation: null, message: 'Gateway can invoke this endpoint.' },
 }
 
@@ -65,6 +74,7 @@ function run(overrides: Partial<PublishRun> = {}): PublishRun {
 }
 
 const api = {
+  getEnvironmentCatalog: vi.fn(),
   listGateways: vi.fn(),
   listPublishableModels: vi.fn(),
   createPublication: vi.fn(),
@@ -182,6 +192,13 @@ const secondReview: Review = {
 describe('PublishModelDialog', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    api.getEnvironmentCatalog.mockResolvedValue({
+      environments: [],
+      requireClassification: false,
+      unclassified: { gateways: 2, modelEndpoints: 1, mcpEndpoints: 0 },
+      compatibility: [],
+      updatedAt: null,
+    })
     api.listGateways.mockResolvedValue([gateway(), gateway({ id: 'gateway_2', name: 'Observe gateway', managementMode: 'observe' })])
     api.listPublishableModels.mockResolvedValue([publishableModel])
     api.createPublication.mockResolvedValue(publication)
@@ -899,6 +916,32 @@ describe('PublishModelDialog', () => {
     await waitFor(() => expect(focused()).toHaveTextContent('The API path models/gpt-4o is already in use.'))
     expect(focused()).not.toContainElement(screen.getByRole('textbox', { name: 'Display name' }))
     expect(screen.getByText('Step 2 of 4')).toBeVisible()
+  })
+
+  it('moves focus to the environment rule that blocks the plan, in place of the raw error', async () => {
+    const user = userEvent.setup()
+    api.createPublication.mockRejectedValue(Object.assign(new Error('Publishing refused.'), {
+      status: 409,
+      body: {
+        details: {
+          reason: 'environmentBlocked',
+          verdict: {
+            level: 'blocked',
+            reason: 'Production gateways accept only production endpoints.',
+            gatewayEnvironment: 'production',
+            endpointEnvironment: 'development',
+            viaException: false,
+          },
+        },
+      },
+    }))
+    renderDialog()
+
+    await advanceToReview(user)
+
+    await waitFor(() => expect(focused()).toHaveTextContent('Environment rules block this publication'))
+    expect(focused()).toHaveTextContent('Production gateways accept only production endpoints.')
+    expect(screen.queryByText('Publishing refused.')).not.toBeInTheDocument()
   })
 
   it('leaves focus in a field the administrator is typing in when the plan cannot be created', async () => {

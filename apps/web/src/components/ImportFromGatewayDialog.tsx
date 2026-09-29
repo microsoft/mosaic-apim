@@ -24,6 +24,7 @@ import {
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMosaicApi } from '../api'
+import { environmentFindingsQueryKey } from '../environments'
 import { AI_KIND_LABELS } from '../labels'
 import type { Gateway } from '../types'
 import { ErrorState, Loading } from './AsyncState'
@@ -160,6 +161,20 @@ export function ImportFromGatewayDialog({
     () => candidatesQuery.data?.candidates ?? [],
     [candidatesQuery.data],
   )
+  const findingsQuery = useQuery({
+    queryKey: environmentFindingsQueryKey(gatewayId),
+    queryFn: () => api.listEnvironmentFindings(gatewayId),
+    enabled: open && gatewayId !== '',
+  })
+  const findingsByApiName = useMemo(() => {
+    const map = new Map<string, string[]>()
+    for (const finding of findingsQuery.data?.items ?? []) {
+      if ((finding.subject.kind === 'api' || finding.subject.kind === 'mcpServer') && finding.subject.apiName) {
+        map.set(finding.subject.apiName, [...(map.get(finding.subject.apiName) ?? []), finding.message])
+      }
+    }
+    return map
+  }, [findingsQuery.data])
 
   useEffect(() => {
     // Detection pre-checks; it does not decide. Reset only when a fresh list arrives, so an
@@ -354,6 +369,11 @@ export function ImportFromGatewayDialog({
                                   ))}
                                 </div>
                               )}
+                              {(findingsByApiName.get(candidate.apiName) ?? []).map((message) => (
+                                <MessageBar key={message} intent="warning">
+                                  <MessageBarBody>{message}</MessageBarBody>
+                                </MessageBar>
+                              ))}
                             </div>
                           </TableCell>
                           <TableCell>

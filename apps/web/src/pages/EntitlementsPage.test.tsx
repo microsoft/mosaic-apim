@@ -4,7 +4,7 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type { AccessRequest, Entitlement } from '../types'
+import type { AccessRequest, Entitlement, EnvironmentCatalogView } from '../types'
 import { callRateError, describeLimits, describePublicationLimits } from '../entitlement-limits'
 import { EntitlementsPage } from './EntitlementsPage'
 import { accessPlan, directGrant, modelPublication, publishedModelApi } from '../test/model-access'
@@ -30,11 +30,14 @@ const entitlement: Entitlement = {
 }
 
 const api = {
+  getEnvironmentCatalog: vi.fn(),
   listEntitlements: vi.fn(),
   listPrincipals: vi.fn(),
   listGroups: vi.fn(),
   listModelApis: vi.fn(),
   listMcpServers: vi.fn(),
+  listGateways: vi.fn(),
+  listModelEndpoints: vi.fn(),
   listAccessRequests: vi.fn(),
   listPublications: vi.fn(),
   resolveEntitlements: vi.fn(),
@@ -48,6 +51,39 @@ const api = {
   linkPublicationModelApi: vi.fn(),
   approveAccessRequest: vi.fn(),
   denyAccessRequest: vi.fn(),
+}
+
+const catalog: EnvironmentCatalogView = {
+  environments: [
+    {
+      key: 'development',
+      displayName: 'Development',
+      description: null,
+      color: 'brand',
+      production: false,
+      aliases: [],
+      acceptsEndpointsFrom: [],
+      order: 10,
+      builtIn: true,
+      usage: { gateways: 1, modelEndpoints: 1, mcpEndpoints: 0 },
+    },
+    {
+      key: 'production',
+      displayName: 'Production',
+      description: null,
+      color: 'danger',
+      production: true,
+      aliases: [],
+      acceptsEndpointsFrom: [],
+      order: 50,
+      builtIn: true,
+      usage: { gateways: 1, modelEndpoints: 1, mcpEndpoints: 0 },
+    },
+  ],
+  requireClassification: false,
+  unclassified: { gateways: 0, modelEndpoints: 0, mcpEndpoints: 0 },
+  compatibility: [],
+  updatedAt: null,
 }
 
 const pendingRequest: AccessRequest = {
@@ -71,7 +107,10 @@ async function openApproval(user: ReturnType<typeof userEvent.setup>) {
   return screen.findByRole('dialog')
 }
 
-vi.mock('../api', () => ({ useMosaicApi: () => api }))
+vi.mock('../api', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../api')>()
+  return { ...actual, useMosaicApi: () => api }
+})
 
 function renderPage() {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -97,6 +136,14 @@ describe('EntitlementsPage', () => {
     api.listGroups.mockResolvedValue([{
       id: 'group_1', tenantId: 'tenant', name: 'Engineering', createdAt: '', updatedAt: '',
     }])
+    api.getEnvironmentCatalog.mockResolvedValue(catalog)
+    api.listGateways.mockResolvedValue([
+      { id: 'gateway_1', environment: 'production', name: 'Prod gateway' },
+      { id: 'gateway_dev', environment: 'development', name: 'Dev gateway' },
+    ])
+    api.listModelEndpoints.mockResolvedValue([
+      { id: 'endpoint_1', environment: 'development', name: 'Dev endpoint' },
+    ])
     api.listModelApis.mockResolvedValue([{ ...publishedModelApi, publicationId: null, importedFromSnapshotId: 'snapshot_1' }])
     api.listMcpServers.mockResolvedValue([])
     api.listAccessRequests.mockResolvedValue([])
@@ -111,10 +158,59 @@ describe('EntitlementsPage', () => {
 
     expect(await screen.findByText('Engineering (group)')).toBeVisible()
     expect(screen.getByText('Chat completions (model API)')).toBeVisible()
+    expect(screen.getAllByText('Production').length).toBeGreaterThan(0)
     // A grant with no binding must say so: consumption cannot be attributed without one.
     expect(screen.getByText('Not bound')).toBeVisible()
     expect(screen.getByText('Live data')).toBeVisible()
     expect(screen.queryByText('Sample data')).not.toBeInTheDocument()
+  })
+
+  it('filters grants by environment, including deployment grants from their endpoint', async () => {
+    const user = userEvent.setup()
+    api.listEntitlements.mockResolvedValue([
+      entitlement,
+      {
+        ...entitlement,
+        id: 'deployment_grant',
+        resource: { kind: 'modelDeployment', id: 'gpt-4o', scopeId: 'endpoint_1' },
+      },
+    ])
+    renderPage()
+
+    const table = await screen.findByRole('table', { name: 'Entitlements' })
+    expect(within(table).getByText('Production')).toBeVisible()
+    expect(within(table).getByText('Development')).toBeVisible()
+    await user.selectOptions(screen.getByLabelText('Filter grants by environment'), 'development')
+
+    const filtered = await screen.findByRole('table', { name: 'Entitlements' })
+    expect(within(filtered).getByText('Development')).toBeVisible()
+    expect(within(filtered).queryByText('Chat completions (model API)')).not.toBeInTheDocument()
+  })
+
+  it('shows request display names, requested environment, moved note, and removed resource label', async () => {
+    api.listAccessRequests.mockResolvedValue([{
+      ...pendingRequest,
+      requestedEnvironment: 'development',
+      resourceSnapshot: { displayName: 'Legacy chat', gatewayId: 'gateway_1', gatewayName: 'Gateway' },
+      resourceSummary: {
+        kind: 'modelApi',
+        id: 'modelApi_1',
+        scopeId: null,
+        displayName: 'Chat completions',
+        gatewayId: 'gateway_1',
+        gatewayName: 'Gateway',
+        environment: 'production',
+        available: false,
+      },
+    }])
+    renderPage()
+
+    const requests = await screen.findByRole('table', { name: 'Pending access requests' })
+    expect(within(requests).getByText('Chat completions')).toBeVisible()
+    expect(within(requests).getByText('No longer available')).toBeVisible()
+    expect(within(requests).getByText('Development')).toBeVisible()
+    expect(within(requests).getByText('Now Production')).toBeVisible()
+    expect(within(requests).queryByText('modelApi_1')).not.toBeInTheDocument()
   })
 
   it('states limits as sentences rather than policy markup', async () => {

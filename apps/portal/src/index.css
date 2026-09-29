@@ -473,6 +473,62 @@ textarea { font: inherit; }
 }
 
 .catalog-card { gap: 16px; }
+.badge-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.inline-status-badge { margin-left: 8px; vertical-align: middle; }
+
+.filter-row {
+  margin-bottom: 16px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 16px;
+  align-items: end;
+}
+
+.filter-row label {
+  min-width: 180px;
+  display: grid;
+  gap: 4px;
+  color: var(--mosaic-text-muted);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.filter-row select {
+  min-height: 36px;
+  padding: 6px 10px;
+  border: 1px solid var(--mosaic-border);
+  border-radius: 4px;
+  background: var(--mosaic-surface);
+  color: var(--mosaic-text);
+  font-size: 14px;
+  font-weight: 400;
+  letter-spacing: normal;
+  text-transform: none;
+}
+
+.compact-facts {
+  margin: 10px 0 0;
+  display: grid;
+  gap: 6px;
+}
+
+.compact-facts div { display: grid; gap: 2px; }
+.compact-facts dt {
+  color: var(--mosaic-text-muted);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+.compact-facts dd { margin: 0; }
 .action-stack { display: grid; gap: 10px; }
 .form-error { color: var(--mosaic-danger); }
 
@@ -494,6 +550,237 @@ textarea { font: inherit; }
 .metadata-list dd { margin: 0; }
 .request-actions { display: flex; align-items: center; gap: 12px; }
 .standalone-signout { margin-top: 16px; }
+.retry-button { margin-top: 12px; }
+
+.usage-notice {
+  margin-bottom: 16px;
+}
+
+.usage-notice ul {
+  margin: 4px 0 0;
+  padding-left: 18px;
+}
+
+.usage-kpi-grid {
+  margin-bottom: 16px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 12px;
+}
+
+.usage-kpi-card {
+  border: 1px solid var(--mosaic-border-soft);
+  background: var(--mosaic-surface);
+}
+
+.usage-kpi-card strong {
+  display: block;
+  color: var(--mosaic-text);
+  font-size: clamp(22px, 3vw, 30px);
+  line-height: 1.1;
+}
+
+.usage-kpi-card .fui-Text { color: var(--mosaic-text-muted); }
+
+.usage-section {
+  margin-top: 18px;
+  padding: 18px;
+  border: 1px solid var(--mosaic-border);
+  border-radius: 8px;
+  background: var(--mosaic-surface);
+  box-shadow: var(--mosaic-shadow);
+}
+
+.section-header {
+  margin-bottom: 14px;
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.section-header h2 {
+  margin: 0;
+  font-size: 20px;
+}
+
+.section-header p {
+  margin: 4px 0 0;
+  color: var(--mosaic-text-muted);
+}
+
+.usage-chart {
+  position: relative;
+  min-height: 220px;
+  border: 1px solid var(--mosaic-border-soft);
+  border-radius: 8px;
+  overflow: hidden;
+  background: linear-gradient(180deg, var(--mosaic-surface), var(--mosaic-surface-subtle));
+}
+
+.usage-chart svg {
+  position: absolute;
+  inset: 12px;
+  width: calc(100% - 24px);
+  height: calc(100% - 24px);
+}
+
+.chart-grid {
+  position: absolute;
+  inset: 12px;
+  display: grid;
+  grid-template-rows: repeat(4, 1fr);
+}
+
+.chart-grid span {
+  border-top: 1px dashed var(--mosaic-border-soft);
+}
+
+.chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  color: var(--mosaic-text-muted);
+  font-size: 12px;
+}
+
+/* Inset to line up with the plot: the chart's 1px border plus the 12px inset of its SVG. */
+.chart-axis {
+  position: relative;
+  height: 18px;
+  margin: 8px 13px 0;
+  color: var(--mosaic-text-muted);
+  font-size: 12px;
+}
+
+.chart-axis span {
+  position: absolute;
+  top: 0;
+  white-space: nowrap;
+  transform: translateX(-50%);
+}
+
+.chart-axis .axis-start { transform: none; }
+.chart-axis .axis-end { transform: translateX(-100%); }
+
+.chart-legend {
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.chart-legend li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.chart-legend span {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+
+.environment-bars {
+  display: grid;
+  gap: 12px;
+}
+
+.environment-badge { width: fit-content; }
+
+.environment-bar-row {
+  display: grid;
+  grid-template-columns: minmax(140px, 180px) minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+}
+
+.bar-cell {
+  display: grid;
+  gap: 4px;
+}
+
+.bar-track {
+  height: 10px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--mosaic-surface-subtle);
+}
+
+.bar-track span {
+  display: block;
+  height: 100%;
+  min-width: 2px;
+  border-radius: inherit;
+  background: var(--mosaic-primary);
+}
+
+.table-scroll {
+  width: 100%;
+  overflow-x: auto;
+}
+
+.table-scroll table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.table-scroll th,
+.table-scroll td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--mosaic-border-soft);
+  text-align: left;
+  vertical-align: top;
+}
+
+.table-scroll thead th {
+  color: var(--mosaic-text-muted);
+  font-size: 12px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.usage-table small {
+  display: block;
+  margin-top: 4px;
+  color: var(--mosaic-text-muted);
+}
+
+.resource-name {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.not-metered,
+.binding-hint {
+  color: var(--mosaic-text-muted);
+}
+
+.quota-stack {
+  display: grid;
+  gap: 10px;
+  min-width: 180px;
+}
+
+.quota-progress {
+  display: grid;
+  gap: 4px;
+}
+
+.quota-progress span {
+  font-size: 12px;
+  color: var(--mosaic-text-muted);
+}
+
+.quota-warning .fui-ProgressBar__bar { background: #ffaa44; }
+.quota-error .fui-ProgressBar__bar { background: var(--mosaic-danger); }
+.usage-generated {
+  display: block;
+  margin-top: 16px;
+  color: var(--mosaic-text-muted);
+}
 
 .empty-state,
 .access-denied-card {
@@ -541,6 +828,8 @@ textarea { font: inherit; }
   .signed-in-summary small,
   .signed-in-summary [class*="fui-Badge"] { display: none; }
   .access-card-grid { grid-template-columns: 1fr; }
+  .environment-bar-row { grid-template-columns: 1fr; }
+  .section-header { flex-direction: column; }
   .fact-list { grid-template-columns: minmax(0, 1fr); gap: 2px; }
   .fact-list > div + div > dt { margin-top: 10px; }
 }
