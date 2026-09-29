@@ -1,5 +1,11 @@
 import { expect, test } from '../src/fixtures.ts'
-import { noPortalAccessTitle, primaryNavigation } from '../src/personas.ts'
+import { persona } from '../src/config.ts'
+import {
+  consoleUserOnlyTitle,
+  noConsoleAccessTitle,
+  noPortalAccessTitle,
+  primaryNavigation,
+} from '../src/personas.ts'
 
 /**
  * Phase 1 smoke journeys: the deployment is healthy and each persona reaches the surface its role allows.
@@ -32,14 +38,32 @@ test.describe('00 smoke', { tag: '@smoke' }, () => {
     await expect(page.getByRole(primaryNavigation.role, { name: primaryNavigation.name })).toBeVisible()
     await expect(page.getByRole('heading', { name: 'Model endpoints' })).toBeVisible()
     await expect(page.getByRole('button', { name: 'Add model endpoint' }).first()).toBeVisible()
+    await expect(page.getByText('MOSAIC Admin', { exact: true })).toBeVisible()
+    await expect(page.getByText('Global Admin')).toHaveCount(0)
     await expect(page.getByText('Unable to load data')).toHaveCount(0)
   })
 
-  test('A1 console withholds admin data from a User-only persona', async ({ personas, targets }) => {
+  test('A1 console turns a User-only persona away with one explanation', async ({ personas, targets }) => {
     const userKey = targets.roles.guest ?? targets.roles.user
     test.skip(targets.personas[userKey].expectedRole !== 'User', `${userKey} is not expected to hold only the User role`)
     const page = await personas.page(userKey, 'web', '/dashboard')
-    await expect(page.getByText('Unable to load data').first()).toBeVisible()
+    await expect(page.getByText(consoleUserOnlyTitle)).toBeVisible()
+    await expect(page.getByText('an administrator must grant you the Admin role')).toBeVisible()
+    await expect(page.getByText(`Signed in as ${persona(targets, userKey).upn}`)).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Sign out' })).toBeVisible()
+    await expect(page.getByRole(primaryNavigation.role, { name: primaryNavigation.name })).toHaveCount(0)
+    await expect(page.getByText('Unable to load data')).toHaveCount(0)
+  })
+
+  test('A1 console tells a persona without a MOSAIC role that it has no access', async ({ personas, targets }) => {
+    const noRoleKey = targets.roles.noRole
+    test.skip(!noRoleKey, 'No persona is mapped to roles.noRole')
+    test.skip(targets.personas[noRoleKey as string].expectedRole !== 'None', `${noRoleKey} is expected to hold a role`)
+    const page = await personas.page(noRoleKey as string, 'web', '/dashboard')
+    await expect(page.getByText(noConsoleAccessTitle)).toBeVisible()
+    await expect(page.getByText(consoleUserOnlyTitle)).toHaveCount(0)
+    await expect(page.getByRole('button', { name: 'Sign out' })).toBeVisible()
+    await expect(page.getByRole(primaryNavigation.role, { name: primaryNavigation.name })).toHaveCount(0)
   })
 
   test('P0 portal opens for a User persona', async ({ personas, targets }) => {

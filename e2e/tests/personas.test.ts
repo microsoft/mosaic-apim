@@ -5,7 +5,14 @@ import { join } from 'node:path'
 import { test } from 'node:test'
 import { parseTargets } from '../src/config.ts'
 import { e2eRoot } from '../src/paths.ts'
-import { SignInError, appDestination, closePersona, completeEntraSignIn, isAppUrl } from '../src/personas.ts'
+import {
+  SignInError,
+  appDestination,
+  closePersona,
+  completeEntraSignIn,
+  isAppUrl,
+  keepOneBlankTab,
+} from '../src/personas.ts'
 
 const targets = parseTargets(JSON.parse(readFileSync(join(e2eRoot, 'targets.example.json'), 'utf8')))
 const { web, portal, api } = targets.origins
@@ -74,6 +81,31 @@ test('closing a persona browser stops waiting for a browser that never finishes 
   const started = Date.now()
   assert.equal(await closePersona({ close: () => new Promise<void>(() => {}) }, 50), false)
   assert.ok(Date.now() - started < 1_000)
+})
+
+test('a persona browser keeps one blank tab, so closing every test page leaves it running', async () => {
+  const closed: string[] = []
+  const visited: string[] = []
+  const tab = (url: string) =>
+    ({
+      url: () => url,
+      close: async () => {
+        closed.push(url)
+      },
+      goto: async (target: string) => {
+        visited.push(target)
+        return null
+      },
+    }) as unknown as Page
+  const restored = [tab('https://example.com/restored'), tab('about:blank')]
+  const kept = await keepOneBlankTab({ pages: () => restored, newPage: async () => assert.fail('opened a tab it did not need') })
+  assert.equal(kept, restored[0])
+  assert.deepEqual(closed, ['about:blank'])
+  assert.deepEqual(visited, ['about:blank'])
+
+  const opened = tab('about:blank')
+  assert.equal(await keepOneBlankTab({ pages: () => [], newPage: async () => opened }), opened)
+  assert.deepEqual(visited, ['about:blank'])
 })
 
 test('non-interactive sign-in waits out a login page that silent SSO passes through', async () => {

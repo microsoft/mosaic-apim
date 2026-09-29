@@ -1,6 +1,6 @@
 import { test as base, type BrowserContext, type BrowserType, type Page } from '@playwright/test'
 import { type AppName, type Targets, flags, loadTargets } from './config.ts'
-import { browserStillExiting, closePersona, ensureSignedIn, isAppUrl, launchPersona } from './personas.ts'
+import { browserStillExiting, closePersona, ensureSignedIn, isAppUrl, keepOneBlankTab, launchPersona } from './personas.ts'
 import { maskedSelectors, pageSecrets, redact, redactErrors } from './redact.ts'
 
 interface OpenPage {
@@ -24,7 +24,7 @@ export class PersonaPool {
     if (!context) {
       context = await launchPersona(this.#chromium, this.#targets, personaKey, { headless: flags.headless() })
       this.#contexts.set(personaKey, context)
-      for (const page of context.pages()) await page.close()
+      await keepOneBlankTab(context)
     }
     return context
   }

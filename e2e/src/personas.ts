@@ -9,6 +9,11 @@ const loginHosts = ['login.microsoftonline.com', 'login.microsoft.com', 'login.l
 export const primaryNavigation = { role: 'navigation', name: 'Primary navigation' } as const
 export const signInButtonName = 'Sign in with Microsoft'
 export const noPortalAccessTitle = 'You do not have access to the portal yet'
+/** The console shows one of these cards instead of its shell when the API does not confirm the Admin role. */
+export const consoleUserOnlyTitle = 'This console is for MOSAIC administrators'
+export const noConsoleAccessTitle = 'You do not have access to MOSAIC yet'
+export const consoleAccessCheckFailedTitle = 'Unable to check your access'
+const accessPageTitles = [noPortalAccessTitle, consoleUserOnlyTitle, noConsoleAccessTitle, consoleAccessCheckFailedTitle]
 
 export class SignInError extends Error {}
 
@@ -64,6 +69,19 @@ export async function closePersona(context: Pick<BrowserContext, 'close'>, waitM
   }
 }
 
+/**
+ * Leaves the persona's browser with one blank tab, which the harness keeps open between tests. A headed
+ * Chromium quits a moment after its last tab closes, so a persona whose pages all closed at the end of one
+ * test had no browser left for its next test once another persona's test ran in between.
+ */
+export async function keepOneBlankTab(context: Pick<BrowserContext, 'pages' | 'newPage'>): Promise<Page> {
+  const [first, ...others] = context.pages()
+  const tab = first ?? (await context.newPage())
+  for (const page of others) await page.close()
+  if (tab.url() !== 'about:blank') await tab.goto('about:blank')
+  return tab
+}
+
 export function browserStillExiting(personaKey: string): string {
   return `${personaKey}: the browser hadn't finished exiting, so the harness moved on. It finishes on its own.\n`
 }
@@ -116,9 +134,10 @@ export async function signInErrorCode(page: Page): Promise<string | undefined> {
 
 /**
  * Silent SSO passes through the login host before any page renders there, so a login page must show
- * nothing to automate for this long before a non-interactive sign-in decides a person is needed.
+ * nothing to automate for this long before a non-interactive sign-in decides a person is needed. A B2B
+ * guest's silent sign-in has sat on the login host for more than 10 seconds before finishing on its own.
  */
-const loginSettleMs = 10_000
+const loginSettleMs = 30_000
 
 /**
  * Drives the Microsoft Entra redirect for one persona. Account pickers, the UPN prompt, and
@@ -213,7 +232,7 @@ export async function ensureSignedIn(
     await page.goto(destination.href)
   }
   const shell = page.getByRole(primaryNavigation.role, { name: primaryNavigation.name })
-  const landed = shell.or(page.getByText(noPortalAccessTitle))
+  const landed = accessPageTitles.reduce((locator, title) => locator.or(page.getByText(title)), shell)
   const signIn = page.getByRole('button', { name: signInButtonName })
   await landed.or(signIn).first().waitFor({ state: 'visible', timeout: 45_000 })
   if (await signIn.isVisible()) {
