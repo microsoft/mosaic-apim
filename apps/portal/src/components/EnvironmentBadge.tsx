@@ -19,7 +19,8 @@ export function EnvironmentBadge({ environment, environments, size }: Environmen
   const badge = (
     <Badge
       appearance={definition ? 'tint' : 'outline'}
-      color={definition?.color ?? 'subtle'}
+      className="environment-badge"
+      color={definition?.color ?? 'informative'}
       icon={definition?.production ? <ShieldRegular aria-hidden="true" /> : undefined}
       size={size}
       title={unknownDescription}

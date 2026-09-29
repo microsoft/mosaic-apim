@@ -24,6 +24,7 @@ import { ErrorState } from '../components/AsyncState'
 import { EnvironmentBadge } from '../components/EnvironmentBadge'
 import { DataSourceBadge, PageHeader, PreviewNotice } from '../components/PageHeader'
 import { environmentFindingsQueryKey, useEnvironmentCatalog } from '../environments'
+import { plural } from '../labels'
 import styles from './DashboardPage.module.css'
 
 type TimeRange = '24h' | '7d' | '30d'
@@ -198,8 +199,12 @@ export function DashboardPage() {
         <Card className={styles.environmentsCard}>
           <div className={styles.environmentsHeader}>
             <div>
-              <Title3 as="h3">Environments</Title3>
-              <Text size={200}>Live classification counts from Settings.</Text>
+              <Title3 as="h3" block>
+                Environments
+              </Title3>
+              <Text size={200} block>
+                Live classification counts from Settings.
+              </Text>
             </div>
             <Button appearance="subtle" size="small" onClick={() => navigate('/settings')}>
               Classify
@@ -215,9 +220,9 @@ export function DashboardPage() {
               {environmentCatalog.data.environments.map((environment) => (
                 <div key={environment.key} className={styles.environmentRow} role="listitem">
                   <EnvironmentBadge environment={environment.key} catalog={environmentCatalog.data} />
-                  <span>{environment.usage.gateways} gateways</span>
-                  <span>{environment.usage.modelEndpoints} model endpoints</span>
-                  <span>{environment.usage.mcpEndpoints} MCP servers</span>
+                  <span>{plural(environment.usage.gateways, 'gateway')}</span>
+                  <span>{plural(environment.usage.modelEndpoints, 'model endpoint')}</span>
+                  <span>{plural(environment.usage.mcpEndpoints, 'MCP server')}</span>
                 </div>
               ))}
               <div
@@ -232,9 +237,11 @@ export function DashboardPage() {
                 role="listitem"
               >
                 <EnvironmentBadge environment={null} catalog={environmentCatalog.data} />
-                <span>{environmentCatalog.data.unclassified.gateways} gateways</span>
-                <span>{environmentCatalog.data.unclassified.modelEndpoints} model endpoints</span>
-                <span>{environmentCatalog.data.unclassified.mcpEndpoints} MCP servers</span>
+                <span>{plural(environmentCatalog.data.unclassified.gateways, 'gateway')}</span>
+                <span>
+                  {plural(environmentCatalog.data.unclassified.modelEndpoints, 'model endpoint')}
+                </span>
+                <span>{plural(environmentCatalog.data.unclassified.mcpEndpoints, 'MCP server')}</span>
                 <Button appearance="subtle" size="small" onClick={() => navigate('/settings')}>
                   Review suggestions
                 </Button>
@@ -248,7 +255,7 @@ export function DashboardPage() {
               <Text>Findings unavailable</Text>
             ) : (
               <Button appearance="subtle" size="small" onClick={() => navigate('/settings')}>
-                {environmentFindings.data?.items.length ?? 0} environment findings
+                {plural(environmentFindings.data?.items.length ?? 0, 'environment finding')}
               </Button>
             )}
           </div>

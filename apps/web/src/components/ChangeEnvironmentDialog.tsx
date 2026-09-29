@@ -16,6 +16,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
 import { ApiError, useMosaicApi } from '../api'
 import {
+  environmentLabel,
   grantsAcknowledgmentDetails,
   invalidateEnvironmentQueries,
   publicationsBlockedDetails,
@@ -115,7 +116,10 @@ export function ChangeEnvironmentDialog({
                 onClick={() => mutation.mutate({ includeSuggestions: true })}
                 disabled={mutation.isPending}
               >
-                Also classify these {suggested.length} endpoints as {environment ?? 'Unclassified'}
+                {suggested.length === 1
+                  ? 'Also classify this endpoint'
+                  : `Also classify these ${suggested.length} endpoints`}{' '}
+                as {environmentLabel(catalog.data, suggested[0]?.environment)}
               </Button>
             )}
             {grants && <GrantsAcknowledgmentRefusal details={grants} catalog={catalog.data} />}

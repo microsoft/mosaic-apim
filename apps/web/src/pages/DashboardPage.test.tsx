@@ -111,7 +111,8 @@ describe('DashboardPage', () => {
     expect(await screen.findByRole('heading', { name: 'Environments' })).toBeVisible()
     expect(screen.getByText('2 gateways')).toBeVisible()
     expect(screen.getByText('3 MCP servers')).toBeVisible()
-    expect(screen.getByRole('button', { name: '1 environment findings' })).toBeVisible()
+    expect(screen.getByText('1 gateway')).toBeVisible()
+    expect(screen.getByRole('button', { name: '1 environment finding' })).toBeVisible()
   })
 
   it('shows counts even when environment findings fail', async () => {

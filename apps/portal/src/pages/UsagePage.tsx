@@ -7,7 +7,6 @@ import {
   MessageBarTitle,
   ProgressBar,
   Text,
-  Tooltip,
 } from '@fluentui/react-components'
 import { useQuery } from '@tanstack/react-query'
 import { useMemo, useState } from 'react'
@@ -31,6 +30,7 @@ import type {
 import {
   aggregateUsage,
   environmentSort,
+  formatCount,
   formatCurrency,
   formatMetric,
   metricLabel,
@@ -124,9 +124,11 @@ function EnvironmentBreakdown({
                   <span style={{ width: `${percent}%` }} />
                 </div>
                 <Text size={200}>
-                  {formatNumber(row.requests)} requests · {formatNumber(row.totalTokens)} tokens ·{' '}
-                  {formatCurrency(row.estimatedCost, currency)} · {formatNumber(row.resources)}{' '}
-                  resources
+                  {formatCount(row.requests, 'request')} · {formatCount(row.totalTokens, 'token')} ·{' '}
+                  {row.estimatedCost === null
+                    ? 'cost unknown'
+                    : formatCurrency(row.estimatedCost, currency)}{' '}
+                  · {formatCount(row.resources, 'resource')}
                 </Text>
               </div>
             </div>
@@ -172,18 +174,11 @@ function ResourceUsageValue({
 
 function CostCell({ row, currency }: { row: UsageResourceRow; currency: string }) {
   if (row.estimatedCost !== null) return <>{formatCurrency(row.estimatedCost, currency)}</>
-  const content = (
-    <span>
+  return (
+    <>
       Unknown
       {row.costNote && <small>{row.costNote}</small>}
-    </span>
-  )
-  return row.costNote ? (
-    <Tooltip content={row.costNote} relationship="description">
-      {content}
-    </Tooltip>
-  ) : (
-    content
+    </>
   )
 }
 
@@ -216,8 +211,7 @@ function ResourceTable({
               <th scope="col">Estimated cost</th>
               <th scope="col">Quotas</th>
               <th scope="col">Rate limits</th>
-              <th scope="col">Status</th>
-              <th scope="col">Binding</th>
+              <th scope="col">APIM subscription</th>
             </tr>
           </thead>
           <tbody>
@@ -231,6 +225,7 @@ function ResourceTable({
                         No longer available
                       </Badge>
                     )}
+                    {!row.enabled && <Badge color="danger">Disabled</Badge>}
                   </span>
                   <small>{gatewayLabel(row.resourceSummary)}</small>
                 </th>
@@ -293,16 +288,8 @@ function ResourceTable({
                     'No rate limits'
                   )}
                 </td>
-                <td>{row.enabled ? 'Enabled' : <Badge color="danger">Disabled</Badge>}</td>
                 <td>
-                  {row.bound ? (
-                    'Linked'
-                  ) : (
-                    <span className="binding-hint">
-                      Not yet linked to an API Management subscription, so real usage can't be
-                      attributed to this grant yet.
-                    </span>
-                  )}
+                  {row.bound ? 'Linked' : <span className="binding-hint">Not linked yet</span>}
                   {row.attribution === 'unattributed' && (
                     <small>
                       Usage can't be attributed until this grant is bound to an API Management
@@ -440,7 +427,7 @@ export function UsagePage() {
                   value={formatCurrency(filtered.totals.estimatedCost, usage.data.currency)}
                   detail={
                     filtered.totals.costExcludedResources > 0
-                      ? `Excludes ${formatNumber(filtered.totals.costExcludedResources)} resources with unknown cost`
+                      ? `Excludes ${formatCount(filtered.totals.costExcludedResources, 'resource')} with unknown cost`
                       : undefined
                   }
                 />

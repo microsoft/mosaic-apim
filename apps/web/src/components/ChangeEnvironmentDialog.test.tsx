@@ -130,9 +130,11 @@ describe('ChangeEnvironmentDialog', () => {
     renderDialog()
     await userEvent.click(screen.getByRole('button', { name: 'Save' }))
     expect(
-      await screen.findByRole('button', { name: /Also classify these 1 endpoints/ }),
+      await screen.findByRole('button', { name: 'Also classify this endpoint as Production' }),
     ).toBeVisible()
-    await userEvent.click(screen.getByRole('button', { name: /Also classify these 1 endpoints/ }))
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Also classify this endpoint as Production' }),
+    )
     await waitFor(() => expect(api.assignEnvironments).toHaveBeenCalledTimes(2))
     expect(api.assignEnvironments.mock.calls[1][0]).toEqual({
       assignments: [

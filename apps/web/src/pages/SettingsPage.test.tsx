@@ -112,7 +112,11 @@ describe('SettingsPage', () => {
     expect(await screen.findByRole('heading', { name: 'Environments' })).toBeVisible()
     expect(screen.getByText('Live data')).toBeVisible()
     expect(await screen.findByText('Development')).toBeVisible()
-    expect(screen.getByText(/1 gateways, 1 model endpoints, 1 MCP servers/)).toBeVisible()
+    expect(
+      screen.getByText(/3 resources need classification: 1 gateway, 1 model endpoint, 1 MCP server\./),
+    ).toBeVisible()
+    expect(screen.getByText('2 model endpoints')).toBeVisible()
+    expect(screen.getByText('1 MCP server')).toBeVisible()
   })
 
   it('validates create keys before calling the API', async () => {
@@ -158,7 +162,7 @@ describe('SettingsPage', () => {
     await user.click(screen.getByRole('button', { name: 'Delete' }))
     await user.click(screen.getAllByRole('button', { name: 'Delete' }).at(-1)!)
     expect(await screen.findByText(/Environment is in use/)).toBeVisible()
-    expect(screen.getByText(/1 gateways, 0 model endpoints, and 0 MCP servers/)).toBeVisible()
+    expect(screen.getByText(/1 gateway, 0 model endpoints, and 0 MCP servers/)).toBeVisible()
   })
 
   it('shows require-classification publication refusals', async () => {

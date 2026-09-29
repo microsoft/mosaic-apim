@@ -46,6 +46,7 @@ import {
   publicationsBlockedDetails,
   useEnvironmentCatalog,
 } from '../environments'
+import { plural } from '../labels'
 import { runtimeConfig } from '../runtime-config'
 import { type ThemePreference, useMosaicTheme } from '../theme-context'
 import type { EnvironmentCatalogView, EnvironmentColor, EnvironmentCreate, EnvironmentUpdate } from '../types'
@@ -403,8 +404,9 @@ function DeleteEnvironmentDialog({
               <MessageBar intent="error">
                 <MessageBarBody>
                   <MessageBarTitle>Environment is in use</MessageBarTitle>
-                  {inUse.usage.gateways} gateways, {inUse.usage.modelEndpoints} model endpoints, and{' '}
-                  {inUse.usage.mcpEndpoints} MCP servers use it. Referenced by:{' '}
+                  {plural(inUse.usage.gateways, 'gateway')},{' '}
+                  {plural(inUse.usage.modelEndpoints, 'model endpoint')}, and{' '}
+                  {plural(inUse.usage.mcpEndpoints, 'MCP server')} use it. Referenced by:{' '}
                   {inUse.referencedBy.join(', ') || 'None'}.
                 </MessageBarBody>
               </MessageBar>
@@ -510,7 +512,7 @@ function EnvironmentsSettingsSection() {
                   <TableHeaderCell>Key</TableHeaderCell>
                   <TableHeaderCell>Production-class</TableHeaderCell>
                   <TableHeaderCell>Exceptions</TableHeaderCell>
-                  <TableHeaderCell>Usage</TableHeaderCell>
+                  <TableHeaderCell className={styles.usageColumn}>Usage</TableHeaderCell>
                   <TableHeaderCell>Built-in</TableHeaderCell>
                   <TableHeaderCell>Actions</TableHeaderCell>
                 </TableRow>
@@ -531,8 +533,11 @@ function EnvironmentsSettingsSection() {
                           ))}
                     </TableCell>
                     <TableCell>
-                      {environment.usage.gateways} gateways / {environment.usage.modelEndpoints}{' '}
-                      model endpoints / {environment.usage.mcpEndpoints} MCP servers
+                      <div className={styles.usageCounts}>
+                        <span>{plural(environment.usage.gateways, 'gateway')}</span>
+                        <span>{plural(environment.usage.modelEndpoints, 'model endpoint')}</span>
+                        <span>{plural(environment.usage.mcpEndpoints, 'MCP server')}</span>
+                      </div>
                     </TableCell>
                     <TableCell>
                       {environment.builtIn ? (
@@ -566,12 +571,15 @@ function EnvironmentsSettingsSection() {
             <Card className={styles.unclassifiedCard}>
               <Title3 as="h3">Unclassified</Title3>
               <Text>
-                {totalUnclassified} resources need classification:{' '}
-                {catalog.data.unclassified.gateways} gateways,{' '}
-                {catalog.data.unclassified.modelEndpoints} model endpoints,{' '}
-                {catalog.data.unclassified.mcpEndpoints} MCP servers.
+                {plural(totalUnclassified, 'resource')}{' '}
+                {totalUnclassified === 1 ? 'needs' : 'need'} classification:{' '}
+                {plural(catalog.data.unclassified.gateways, 'gateway')},{' '}
+                {plural(catalog.data.unclassified.modelEndpoints, 'model endpoint')},{' '}
+                {plural(catalog.data.unclassified.mcpEndpoints, 'MCP server')}.
               </Text>
-              <Button onClick={() => setReviewOpen(true)}>Review suggestions</Button>
+              <Button className={styles.reviewButton} onClick={() => setReviewOpen(true)}>
+                Review suggestions
+              </Button>
             </Card>
           </div>
           {blocked && <PublicationsBlockedRefusal details={blocked} catalog={catalog.data} />}

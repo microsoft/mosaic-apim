@@ -638,7 +638,6 @@ textarea { font: inherit; }
   border-top: 1px dashed var(--mosaic-border-soft);
 }
 
-.chart-axis,
 .chart-legend {
   display: flex;
   flex-wrap: wrap;
@@ -647,10 +646,24 @@ textarea { font: inherit; }
   font-size: 12px;
 }
 
+/* Inset to line up with the plot: the chart's 1px border plus the 12px inset of its SVG. */
 .chart-axis {
-  margin-top: 8px;
-  justify-content: space-between;
+  position: relative;
+  height: 18px;
+  margin: 8px 13px 0;
+  color: var(--mosaic-text-muted);
+  font-size: 12px;
 }
+
+.chart-axis span {
+  position: absolute;
+  top: 0;
+  white-space: nowrap;
+  transform: translateX(-50%);
+}
+
+.chart-axis .axis-start { transform: none; }
+.chart-axis .axis-end { transform: translateX(-100%); }
 
 .chart-legend {
   margin: 12px 0 0;
@@ -674,6 +687,8 @@ textarea { font: inherit; }
   display: grid;
   gap: 12px;
 }
+
+.environment-badge { width: fit-content; }
 
 .environment-bar-row {
   display: grid;

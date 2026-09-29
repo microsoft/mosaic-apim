@@ -171,6 +171,10 @@ export function formatMetric(value: number | null, unavailableLabel = '—') {
   return value === null ? unavailableLabel : formatNumber(value)
 }
 
+export function formatCount(count: number, noun: string) {
+  return `${formatNumber(count)} ${count === 1 ? noun : `${noun}s`}`
+}
+
 export function formatUtcDate(date: string) {
   const [year, month, day] = date.split('-').map(Number)
   if (!year || !month || !day) return date

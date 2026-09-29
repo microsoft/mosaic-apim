@@ -19,8 +19,9 @@ export function EnvironmentBadge({
   const label = environmentLabel(catalog, environment)
   const badge = (
     <Badge
+      className={styles.badge}
       appearance={environment == null || unknown ? 'outline' : 'tint'}
-      color={definition?.color ?? 'subtle'}
+      color={definition?.color ?? 'informative'}
       size={size}
     >
       <span className={styles.badgeContent}>

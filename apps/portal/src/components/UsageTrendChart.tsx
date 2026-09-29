@@ -75,6 +75,25 @@ function pointString(values: number[], max: number) {
     .join(' ')
 }
 
+const maxAxisLabels = 7
+
+// Label every nth day, counting back from the latest, so labels never crowd or wrap.
+function axisTicks(dates: string[]) {
+  if (dates.length === 1) return [{ date: dates[0], position: 50 }]
+  const step = Math.max(1, Math.ceil((dates.length - 1) / (maxAxisLabels - 1)))
+  const ticks: { date: string; position: number }[] = []
+  for (let index = dates.length - 1; index >= 0; index -= step) {
+    ticks.unshift({ date: dates[index], position: (index / (dates.length - 1)) * 100 })
+  }
+  return ticks
+}
+
+function axisClass(position: number) {
+  if (position === 0) return 'axis-start'
+  if (position === 100) return 'axis-end'
+  return undefined
+}
+
 export function UsageTrendChart({
   points,
   environments,
@@ -149,8 +168,14 @@ export function UsageTrendChart({
             </svg>
           </div>
           <div className="chart-axis" aria-hidden="true">
-            {dates.map((date) => (
-              <span key={date}>{formatUtcDate(date)}</span>
+            {axisTicks(dates).map((tick) => (
+              <span
+                key={tick.date}
+                className={axisClass(tick.position)}
+                style={{ left: `${tick.position}%` }}
+              >
+                {formatUtcDate(tick.date)}
+              </span>
             ))}
           </div>
           <ul className="chart-legend" aria-label="Trend legend">

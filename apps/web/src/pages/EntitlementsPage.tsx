@@ -525,8 +525,10 @@ export function EntitlementsPage() {
       <Card className={styles.tableCard}>
         <div className={styles.tableHeader}>
           <div>
-            <Title3 as="h2">Grants</Title3>
-            <Text size={200}>
+            <Title3 as="h2" block>
+              Grants
+            </Title3>
+            <Text size={200} block>
               Desired intent and last recorded runtime state are separate. Model-wide review above
               includes every saved change for that model. Applied metadata is not a live invocation test.
             </Text>

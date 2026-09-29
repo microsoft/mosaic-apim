@@ -44,8 +44,9 @@ one under **Settings > Appearance**.
   </tr>
   <tr>
     <td colspan="2"><b>Console overview.</b> Live counts of the users, workload identities, and
-    access groups registered in MOSAIC. Below them, the telemetry, cost, model-ranking, and
-    service-health panels show labelled sample data until MOSAIC queries Azure Monitor.</td>
+    access groups registered in MOSAIC, and of the gateways, model endpoints, and MCP servers in
+    each environment. Below them, the telemetry, cost, model-ranking, and service-health panels
+    show labelled sample data until MOSAIC queries Azure Monitor.</td>
   </tr>
   <tr>
     <td><img src="docs/images/screenshots/portal-catalog-light.png" alt="The portal catalog in the light theme"></td>
@@ -53,8 +54,8 @@ one under **Settings > Appearance**.
   </tr>
   <tr>
     <td colspan="2"><b>Portal catalog.</b> The model APIs and MCP servers published to portal
-    users. People request access with an optional justification, and can see what they already
-    hold or have asked for.</td>
+    users, each labelled with its environment. People request the development or production copy
+    with an optional justification, and can see what they already hold or have asked for.</td>
   </tr>
 </table>
 
@@ -63,16 +64,16 @@ one under **Settings > Appearance**.
 <table>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/console-gateways.png" alt="Registered gateways with their status, AI API counts, and last sync">
-      <p><b>Gateways.</b> Existing API Management services registered by resource ID. MOSAIC
-      reports whether it can read each one, how many APIs front Azure AI backends, and when it
-      last synced.</p>
+      <img src="docs/images/screenshots/console-gateways.png" alt="Registered gateways with their environment, status, AI API counts, and last sync">
+      <p><b>Gateways.</b> Existing API Management services registered by resource ID, each in one
+      environment. MOSAIC reports whether it can read each one, how many APIs front Azure AI
+      backends, and when it last synced.</p>
     </td>
     <td width="50%" valign="top">
       <img src="docs/images/screenshots/console-gateway-overview.png" alt="A gateway overview with inventory counts and service details">
       <p><b>Gateway overview.</b> One gateway at a glance: its AI APIs, operations, MCP servers,
-      access paths, and policy rules, with its mode and service details. Tabs open its APIs, MCP
-      servers, products, subscriptions, users and groups, policies, and backends.</p>
+      access paths, and policy rules, with its environment, mode, and service details. Tabs open
+      its APIs, MCP servers, products, subscriptions, users and groups, policies, and backends.</p>
     </td>
   </tr>
   <tr>
@@ -90,10 +91,10 @@ one under **Settings > Appearance**.
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/console-mcps.png" alt="Registered MCP servers with status, authentication, and tools">
+      <img src="docs/images/screenshots/console-mcps.png" alt="Registered MCP servers with environment, status, authentication, and tools">
       <p><b>MCP servers.</b> Servers registered directly or imported from a gateway, with their
-      connection status, authentication method, and tools. MOSAIC reads what a server offers and
-      never calls a tool.</p>
+      environment, connection status, authentication method, and tools. MOSAIC reads what a server
+      offers and never calls a tool.</p>
     </td>
     <td width="50%" valign="top">
       <img src="docs/images/screenshots/console-identity.png" alt="Users referenced by Entra object ID with a detail panel">
@@ -103,15 +104,31 @@ one under **Settings > Appearance**.
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/console-entitlements.png" alt="Grants with subjects, resources, limits, desired and applied state, and bindings">
+      <img src="docs/images/screenshots/console-entitlements.png" alt="Grants with subjects, resources, environments, limits, desired and applied state, and bindings">
       <p><b>Entitlements.</b> Grants of model APIs and MCP servers to users, groups, and
-      applications, with each grant's limits, desired and applied state, and APIM binding. Model
-      grants reach APIM only through a reviewed apply.</p>
+      applications, with each grant's environment, limits, desired and applied state, and APIM
+      binding. Model grants reach APIM only through a reviewed apply.</p>
     </td>
     <td width="50%" valign="top">
       <img src="docs/images/screenshots/console-analytics.png" alt="Analytics with request, token, success-rate, and cost summaries">
-      <p><b>Analytics.</b> A preview of the usage, token, cost, and chargeback views. It shows
-      labelled sample data until MOSAIC queries Azure Monitor and Log Analytics.</p>
+      <p><b>Analytics.</b> A preview of the usage, token, cost, and chargeback views, filtered by
+      time range, model, and environment. It shows labelled sample data until MOSAIC queries Azure
+      Monitor and Log Analytics.</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/images/screenshots/console-environments.png" alt="The environment catalog in Settings with usage counts and one unclassified resource">
+      <p><b>Environments.</b> The catalog administrators define in Settings: the built-in
+      environments plus custom ones such as Partner, each with a color and a production-class
+      flag. Gateways, model endpoints, and MCP servers are each classified into one, and any not
+      yet classified wait below with suggestions to review.</p>
+    </td>
+    <td width="50%" valign="top">
+      <img src="docs/images/screenshots/console-environment-findings.png" alt="Findings where a development gateway routes to production endpoints">
+      <p><b>Environment findings.</b> Pairings already in API Management that break the
+      environment rules, such as a development gateway routing to production endpoints, with the
+      evidence and how confident the match is. Findings are advisory and never block anything.</p>
     </td>
   </tr>
 </table>
@@ -121,15 +138,28 @@ one under **Settings > Appearance**.
 <table>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/portal-access.png" alt="A model grant with its limits and expanded connection details">
-      <p><b>My access.</b> Each grant with its limits and APIM state. A direct model grant expands
-      to show its endpoint, operations, accepted credentials, and Entra details, with code samples
-      and an on-demand key reveal below.</p>
+      <img src="docs/images/screenshots/portal-access.png" alt="A model grant with its environment, limits, and expanded connection details">
+      <p><b>My access.</b> Each grant with its environment, limits, and APIM state. A direct model
+      grant expands to show its endpoint, operations, accepted credentials, and Entra details, with
+      code samples and an on-demand key reveal below.</p>
     </td>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/portal-requests.png" alt="Approved, denied, and pending access requests">
-      <p><b>My requests.</b> Access requests with their justification, state, and the
+      <img src="docs/images/screenshots/portal-requests.png" alt="Approved, denied, and pending access requests with their environments">
+      <p><b>My requests.</b> Access requests with their environment, justification, state, and the
       administrator's decision note. A pending request can be withdrawn.</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/images/screenshots/portal-usage.png" alt="Usage and cost totals with a daily trend per environment">
+      <p><b>Usage and cost.</b> A person's requests, tokens, and estimated cost across everything
+      they hold, with a daily trend per environment. It shows labelled sample data, simulated from
+      their real grants and limits, until MOSAIC queries Log Analytics.</p>
+    </td>
+    <td width="50%" valign="top">
+      <img src="docs/images/screenshots/portal-usage-resources.png" alt="Usage broken down by environment and by resource">
+      <p><b>Usage by resource.</b> The same figures by environment and by granted resource, with
+      each grant's quotas, rate limits, and whether its APIM subscription is linked yet.</p>
     </td>
   </tr>
 </table>

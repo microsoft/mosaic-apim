@@ -19,6 +19,7 @@
 
 .cardHeader {
   display: flex;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
 }
@@ -139,6 +140,16 @@
   overflow-x: auto;
 }
 
+.usageColumn {
+  width: 160px;
+}
+
+.usageCounts {
+  display: grid;
+  padding-block: 6px;
+  white-space: nowrap;
+}
+
 .environmentControls {
   display: grid;
   gap: 16px;
@@ -148,6 +159,14 @@
   padding: 16px;
   gap: 10px;
   background: var(--mosaic-surface-subtle);
+}
+
+.unclassifiedCard h3 {
+  margin: 0;
+}
+
+.reviewButton {
+  align-self: flex-start;
 }
 
 .envDialogContent {

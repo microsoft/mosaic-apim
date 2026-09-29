@@ -17,9 +17,9 @@ import { EnvironmentBadge } from './EnvironmentBadge'
 import styles from './EnvironmentComponents.module.css'
 
 const confidenceLabels: Record<EnvironmentFinding['confidence'], string> = {
-  certain: 'Certain',
-  high: 'High',
-  medium: 'Medium',
+  certain: 'Certain match',
+  high: 'High confidence',
+  medium: 'Medium confidence',
 }
 
 const subjectKindLabels: Record<EnvironmentFinding['subject']['kind'], string> = {

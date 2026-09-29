@@ -287,7 +287,7 @@ describe('UsagePage', () => {
     await user.selectOptions(screen.getByLabelText('Resource'), 'grant-mcp')
     expect(screen.getAllByText('20')[0]).toBeVisible()
     expect(screen.getAllByText('Unknown')[0]).toBeVisible()
-    expect(screen.getByText('Excludes 1 resources with unknown cost')).toBeVisible()
+    expect(screen.getByText('Excludes 1 resource with unknown cost')).toBeVisible()
   })
 
   it('renders MCP null token fields as not metered instead of zero', async () => {
@@ -303,7 +303,14 @@ describe('UsagePage', () => {
 
     const row = await findResourceRow('Development chat')
     expect(within(row).getByText(/Usage can't be attributed until this grant is bound/)).toBeVisible()
-    expect(within(row).getByText(/Not yet linked to an API Management subscription/)).toBeVisible()
+    expect(within(row).getByText('Not linked yet')).toBeVisible()
+  })
+
+  it('summarizes each environment with its cost and resource count', async () => {
+    renderPage()
+
+    expect(await screen.findByText('100 requests · 12,000 tokens · $1.23 · 2 resources')).toBeVisible()
+    expect(screen.getByText('0 requests · 0 tokens · cost unknown · 1 resource')).toBeVisible()
   })
 
   it('renders quota period text, rate limits, disabled badge, and removed resource badge', async () => {
