@@ -364,6 +364,94 @@ async def test_a_failed_operation_carries_azures_reason_into_the_run(harness: Ha
     assert publication.last_error == run.errors[0]
 
 
+async def test_a_fragment_update_azure_rejects_fails_its_step_with_azures_reason(
+    harness: Harness,
+) -> None:
+    publication_id = await harness.publish()
+    assert (await harness.apply(publication_id)).status == PublishRunStatus.SUCCEEDED
+    previous = harness.apim.written[FRAGMENT_SUFFIX]
+    # The backend is deleted between MOSAIC's update of it and of the fragment that routes to it.
+    # API Management answers the fragment's update 200 with a Location header, then fails the
+    # operation and keeps the fragment it had.
+    harness.apim.remove_before_write(FRAGMENT_SUFFIX, BACKEND_SUFFIX)
+    harness.apim.writes.clear()
+
+    run = await harness.apply(publication_id)
+
+    assert run.status == PublishRunStatus.ROLLED_BACK
+    step = next(
+        step for step in run.steps if step.kind == PublishedResourceKind.POLICY_FRAGMENT
+    )
+    assert step.action == PublishAction.UPDATE
+    assert step.status == PublishStepStatus.FAILED
+    assert step.error == MISSING_BACKEND_FAILURE
+    assert run.errors[0] == f"policyFragment {API_NAME}: {MISSING_BACKEND_FAILURE}"
+    publication = await harness.service.get_publication(ACTOR, publication_id)
+    assert publication.status == PublicationStatus.ROLLED_BACK
+    assert publication.last_error == run.errors[0]
+    # Nothing after the fragment was written, and API Management still holds the old fragment.
+    assert harness.apim.write_paths() == [BACKEND_SUFFIX, FRAGMENT_SUFFIX]
+    assert harness.apim.written[FRAGMENT_SUFFIX] == previous
+
+
+async def test_a_policy_azure_refuses_fails_its_step_with_azures_reason(
+    harness: Harness,
+) -> None:
+    missing = (
+        "Error in element 'include-fragment' on line 3, column 6: Fragment with id "
+        f"'{API_NAME}' could not be found."
+    )
+    harness.apim.fail_write(
+        API_POLICY_SUFFIX,
+        400,
+        error={
+            "code": "ValidationError",
+            "message": "One or more fields contain incorrect values:",
+            "details": [
+                {"code": "ValidationError", "target": "include-fragment", "message": missing}
+            ],
+        },
+    )
+    publication_id = await harness.publish()
+
+    run = await harness.apply(publication_id)
+
+    reason = (
+        "Azure Resource Manager rejected the request (HTTP 400). ValidationError: One or more "
+        f"fields contain incorrect values. Detail: {missing}"
+    )
+    assert run.status == PublishRunStatus.ROLLED_BACK
+    step = next(step for step in run.steps if step.kind == PublishedResourceKind.API_POLICY)
+    assert step.status == PublishStepStatus.FAILED
+    assert step.error == reason
+    assert run.errors[0] == f"apiPolicy policy: {reason}"
+    publication = await harness.service.get_publication(ACTOR, publication_id)
+    assert publication.last_error == run.errors[0]
+
+
+async def test_policy_markup_in_a_refusal_never_reaches_the_run(harness: Harness) -> None:
+    harness.apim.fail_write(
+        API_POLICY_SUFFIX,
+        400,
+        error={
+            "code": "ValidationError",
+            "message": 'Policy <include-fragment fragment-id="secret-route" /> is not allowed',
+        },
+    )
+    publication_id = await harness.publish()
+
+    run = await harness.apply(publication_id)
+
+    step = next(step for step in run.steps if step.kind == PublishedResourceKind.API_POLICY)
+    assert step.error == (
+        "Azure Resource Manager rejected the request (HTTP 400). ValidationError: Policy "
+        "[policy markup omitted]."
+    )
+    publication = await harness.service.get_publication(ACTOR, publication_id)
+    assert "secret-route" not in run.model_dump_json()
+    assert "secret-route" not in publication.model_dump_json()
+
+
 async def test_partial_failure_rolls_back_only_what_it_created(harness: Harness) -> None:
     harness.apim.fail_write(PRODUCT_SUFFIX, 500)
     publication_id = await harness.publish()

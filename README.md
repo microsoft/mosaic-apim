@@ -636,15 +636,21 @@ only on v2 tiers. On a classic tier such as Developer, the publish wizard explai
 publication applies no token limits or token metrics. Governed grants on it can use call limits
 instead.
 
-Every step records whether it created the resource or found one already there. A failed step says
-why: when Azure explains a failed operation, the step's error carries Azure's error code, message
-and most specific detail, such as a validation error naming the policy element, line and column. It
-is bounded in length and never includes policy markup. If a step fails, MOSAIC reverses the
-completed steps and deletes **only** resources that run created — ownership is recorded at the
-moment of the write, never inferred from a name, so a product that merely matches a MOSAIC name is
-never destroyed. A resource MOSAIC replaced rather than created is not reverted, because the
-previous content was never stored; those are named in the run instead. If the rollback itself
-fails, the run reports `rollbackFailed` and lists exactly what was left behind.
+Every step records whether it created the resource or found one already there. A step succeeds only
+once Azure has finished its write: API Management finishes a policy fragment or an API write
+asynchronously, on an update as well as a create, so MOSAIC waits for any write Azure answers with
+`Azure-AsyncOperation` or `Location`, whatever its status code. A failed step says why: when Azure
+explains a failed operation, or refuses a request outright, the step's error carries Azure's error
+code, message and most specific detail, such as a validation error naming the policy element, line
+and column. It is bounded in length and never includes policy markup. An update API Management
+rejects after accepting it leaves the previous content in place and fails its step, so it is never
+reported as applied: a re-applied publication rolls back, and a failed governed apply denies access,
+then restores only the last safe access. If a step fails, MOSAIC reverses the completed steps and
+deletes **only** resources that run created — ownership is recorded at the moment of the write,
+never inferred from a name, so a product that merely matches a MOSAIC name is never destroyed. A
+resource MOSAIC replaced rather than created is not reverted, because the previous content was never
+stored; those are named in the run instead. If the rollback itself fails, the run reports
+`rollbackFailed` and lists exactly what was left behind.
 
 Unpublishing runs the same machinery over the tracked resources in reverse, so a fragment is removed
 before the backend it routes to. A publication that still owns API Management resources cannot be

@@ -129,6 +129,10 @@ class FakeApim:
         self.writes: list[tuple[str, str]] = []
         self.written: dict[str, dict[str, Any]] = {}
         self.write_failures: dict[str, int] = {}
+        # The error object a refused write's body carries, as Azure says why it refused it.
+        self.write_errors: dict[str, dict[str, Any]] = {}
+        # A resource removed just before another is written, as if someone else had deleted it.
+        self.removals: dict[str, str] = {}
         self.delete_failures: dict[str, int] = {}
         self.async_writes: set[str] = set()
         self.operation_polls: dict[str, int] = {}
@@ -162,8 +166,23 @@ class FakeApim:
     def fail_always(self, path_suffix: str, status_code: int) -> None:
         self.persistent_failures[path_suffix] = status_code
 
-    def fail_write(self, path_suffix: str, status_code: int = 500) -> None:
+    def fail_write(
+        self, path_suffix: str, status_code: int = 500, *, error: dict[str, Any] | None = None
+    ) -> None:
+        """Refuse every write of a resource, with ``error`` as the error object Azure returns."""
+
         self.write_failures[path_suffix] = status_code
+        if error is not None:
+            self.write_errors[path_suffix] = error
+
+    def remove_before_write(self, path_suffix: str, removed: str) -> None:
+        """Delete ``removed`` when ``path_suffix`` is next written, as if someone else just had.
+
+        An operator deleting a backend while an apply runs is how an update of the fragment that
+        routes to it comes to name a backend that does not exist.
+        """
+
+        self.removals[path_suffix] = removed
 
     def fail_delete(self, path_suffix: str, status_code: int = 500) -> None:
         """Let a resource be created but refuse to remove it, so rollback itself has to fail."""
@@ -271,15 +290,17 @@ class FakeApim:
 
     def _write(self, request: httpx.Request, suffix: str) -> httpx.Response:
         self.writes.append((request.method, suffix))
+        removed = self.removals.pop(suffix, None)
+        if removed is not None:
+            self.written.pop(removed, None)
         failures = self.delete_failures if request.method == "DELETE" else self.write_failures
         status_code = failures.get(suffix)
         if status_code is not None:
             headers = {"Retry-After": "0"} if status_code == 429 else {}
-            return httpx.Response(
-                status_code,
-                json={"error": {"message": f"injected write {status_code}"}},
-                headers=headers,
-            )
+            error = (self.write_errors.get(suffix) if request.method == "PUT" else None) or {
+                "message": f"injected write {status_code}"
+            }
+            return httpx.Response(status_code, json={"error": error}, headers=headers)
         if request.method == "DELETE":
             existed = self.written.pop(suffix, None) is not None
             return httpx.Response(200 if existed else 204)
@@ -336,10 +357,11 @@ class FakeApim:
     def _write_fragment(self, suffix: str, body: dict[str, Any]) -> httpx.Response:
         """Accept a policy fragment as API Management does, then validate it.
 
-        API Management answers 201 (200 when replacing) with only a Location header and checks the
-        policy afterwards. A ``set-backend-service`` naming a backend that does not exist fails the
-        operation: the Location poll reports ``Failed`` with the ValidationError Azure returns, and
-        the fragment is not stored. The line and column are where the element's name starts.
+        API Management answers 201, or 200 when replacing, with only a Location header and checks
+        the policy afterwards. A ``set-backend-service`` naming a backend that does not exist fails
+        the operation: the Location poll reports ``Failed`` with the ValidationError Azure returns,
+        and the new content is not stored. A failed create leaves no fragment, and a failed update
+        leaves the previous one in place. The line and column are where the element's name starts.
         """
 
         existed = self._exists(suffix)

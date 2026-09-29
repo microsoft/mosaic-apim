@@ -41,6 +41,13 @@ DEFAULT_POLL_DELAY_SECONDS = 2.0
 
 _TERMINAL_OPERATION_STATES: frozenset[str] = frozenset({"succeeded"})
 _FAILED_OPERATION_STATES: frozenset[str] = frozenset({"failed", "canceled", "cancelled"})
+# Azure finishes some writes asynchronously and says so with a poll header, on an update's 200 as
+# well as on a create's 201 or an accepted 202.
+_POLLED_WRITE_STATUSES: frozenset[int] = frozenset({200, 201, 202})
+
+_REQUEST_REJECTED = "Azure Resource Manager rejected the request"
+_NO_USABLE_RESPONSE = "Azure Resource Manager did not return a usable response"
+_OPERATION_FAILED = "The Azure operation did not succeed"
 
 # ARM signals "this service does not speak that contract" through a small set of error codes. The
 # code is matched first because it is stable; the message is only a fallback for services that
@@ -55,8 +62,9 @@ _UNSUPPORTED_VERSION_CODES: frozenset[str] = frozenset(
 )
 _UNSUPPORTED_VERSION_MARKERS: tuple[str, ...] = ("api-version", "api version")
 
-# Why a long-running operation failed, as Azure tells it, is carried into the error message
-# because that message is what a publish run shows. Every piece is bounded, and the whole is too.
+# Why Azure refused a request or failed a long-running operation, as Azure tells it, is carried
+# into the error message, because that message is what a publish run shows. A sensitive request's
+# reason never is. Every piece is bounded, and the whole is too.
 _OPERATION_CODE_LIMIT = 80
 _OPERATION_MESSAGE_LIMIT = 300
 _OPERATION_REASON_LIMIT = 700
@@ -189,10 +197,10 @@ def _operation_failure(
     error = _operation_error(payload)
     code, reason = _operation_reason(error) if error is not None else (None, "")
     if reason:
-        message = f"The Azure operation did not succeed ({state}). {reason}"
+        message = f"{_OPERATION_FAILED} ({state}). {reason}"
     else:
         message = (
-            f"The Azure operation did not succeed ({state}) and Azure returned no reason. "
+            f"{_OPERATION_FAILED} ({state}) and Azure returned no reason. "
             "Check the Azure activity log for this resource."
         )
     return UpstreamError(
@@ -204,7 +212,31 @@ def _operation_failure(
             "code": code,
             "reason": reason or None,
         },
+        summary=_OPERATION_FAILED,
     )
+
+
+def _request_failure_message(
+    summary: str, response: httpx.Response | None, *, sensitive: bool
+) -> str:
+    """Why Azure refused a request: its HTTP status and, when Azure gave one, its reason.
+
+    The reason goes through the same extraction, bounds and policy-markup redaction as a failed
+    operation's. A sensitive request's message stays the bare summary, because a credential
+    response must never be reflected in an error.
+    """
+
+    if sensitive or response is None:
+        return summary
+    error = _operation_error(_json_body(response))
+    _, reason = _operation_reason(error) if error is not None else (None, "")
+    status = f"HTTP {response.status_code}"
+    return f"{summary} ({status}). {reason}" if reason else f"{summary} ({status})"
+
+
+def _poll_url(response: httpx.Response) -> str | None:
+    header = response.headers.get("Azure-AsyncOperation") or response.headers.get("Location")
+    return header if isinstance(header, str) and header else None
 
 
 class ArmClient:
@@ -330,6 +362,11 @@ class ArmClient:
     ) -> httpx.Response | None:
         """Send one ARM request with the shared retry policy and typed error mapping.
 
+        A refused request says why. A 4xx the mapping does not treat specially, or a 429 or 5xx
+        that outlasts the retries, raises with its HTTP status and Azure's reason in the message.
+        The 401/403, 404 and 412 mappings keep their fixed messages, because the console keys
+        remediation off them. A sensitive request's message never carries Azure's text.
+
         ``return_client_errors`` hands a 4xx the mapping does not treat specially back to the
         caller. Polling needs it: a failed operation can answer its Location URL with a 4xx whose
         body says why, and that reason is the point of the error the poller raises.
@@ -337,6 +374,7 @@ class ArmClient:
 
         target = self._absolute(url)
         last_error: str = "unknown error"
+        last_response: httpx.Response | None = None
         for attempt in range(MAX_ATTEMPTS):
             headers = {
                 "Authorization": await self._authorization_header(),
@@ -392,6 +430,7 @@ class ArmClient:
                     },
                 )
             if response.status_code == 429 or response.status_code >= 500:
+                last_response = response
                 last_error = (
                     f"Credential request returned HTTP {response.status_code}"
                     if sensitive else self._upstream_detail(response)
@@ -412,7 +451,7 @@ class ArmClient:
                 if return_client_errors:
                     return response
                 raise UpstreamError(
-                    "Azure Resource Manager rejected the request",
+                    _request_failure_message(_REQUEST_REJECTED, response, sensitive=sensitive),
                     details={
                         "url": target,
                         "statusCode": response.status_code,
@@ -422,12 +461,14 @@ class ArmClient:
                             if sensitive else self._upstream_detail(response)
                         ),
                     },
+                    summary=_REQUEST_REJECTED,
                 )
             return response
 
         raise UpstreamError(
-            "Azure Resource Manager did not return a usable response",
+            _request_failure_message(_NO_USABLE_RESPONSE, last_response, sensitive=sensitive),
             details={"url": target, "reason": last_error},
+            summary=_NO_USABLE_RESPONSE,
         )
 
     async def post_sensitive(
@@ -497,9 +538,14 @@ class ArmClient:
     async def _await_operation(self, response: httpx.Response, *, resource_url: str) -> None:
         """Poll an Azure long-running operation to completion.
 
-        A write that returns 202 has not happened yet. Treating it as done would make the *next*
-        plan step fail against a resource that does not exist, and the reported cause would be the
-        wrong step entirely.
+        Until Azure finishes a write, the write has not happened. Treating it as done would make
+        the *next* plan step fail against a resource that does not exist, or report an update as
+        applied while the resource still holds its previous content, and the reported cause would
+        be the wrong step entirely.
+
+        Azure says a write is still running with a poll header, on a create's 201 or an accepted
+        202 and also on an update's 200. The 2024-05-01 contract answers both a create and an
+        update of a policy fragment or an API with ``Azure-AsyncOperation`` and ``Location``.
 
         The two polling styles are handled together. An ``Azure-AsyncOperation`` endpoint answers
         200 with a ``status`` body throughout, so completion is decided by that status and never by
@@ -508,16 +554,16 @@ class ArmClient:
 
         A failure says why. API Management validates some writes only after accepting them: a
         policy fragment whose ``set-backend-service`` names a backend that does not exist is
-        answered 201, and its Location poll then reports ``Failed`` with a ValidationError naming
-        the element, line and column. The error's code, message and most specific nested detail
-        go into the raised message, because that message is what a publish run shows. A failed
-        poll with no error body is reported by its terminal state. No further read is made to
-        find a reason: after a failed create the resource does not exist, after a failed update it
-        still holds its previous content, and the activity log needs subscription-scope access
-        MOSAIC is not granted.
+        answered 201, or 200 when it replaces an existing fragment, and its Location poll then
+        reports ``Failed`` with a ValidationError naming the element, line and column. The error's
+        code, message and most specific nested detail go into the raised message, because that
+        message is what a publish run shows. A failed poll with no error body is reported by its
+        terminal state. No further read is made to find a reason: after a failed create the
+        resource does not exist, after a failed update it still holds its previous content, and
+        the activity log needs subscription-scope access MOSAIC is not granted.
         """
 
-        poll_url = response.headers.get("Azure-AsyncOperation") or response.headers.get("Location")
+        poll_url = _poll_url(response)
         if not poll_url:
             return
         delay = self._poll_delay(response, DEFAULT_POLL_DELAY_SECONDS)
@@ -578,12 +624,16 @@ class ArmClient:
         params: dict[str, str] | None = None,
         if_match: str | None = None,
     ) -> JsonObject | None:
-        """Create or replace a resource. Idempotent, so the shared retry policy is safe."""
+        """Create or replace a resource. Idempotent, so the shared retry policy is safe.
+
+        A write Azure answers with a poll header is waited for, whatever its 2xx status. A 200
+        without one finished synchronously and costs no further request.
+        """
 
         response = await self._send("PUT", url, params=params, json=payload, if_match=if_match)
         if response is None:
             return None
-        if response.status_code in {201, 202}:
+        if response.status_code in _POLLED_WRITE_STATUSES and _poll_url(response):
             await self._await_operation(response, resource_url=self._absolute(url))
         try:
             body = response.json()
