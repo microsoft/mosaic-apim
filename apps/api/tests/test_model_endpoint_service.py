@@ -10,6 +10,7 @@ from aoai_double import (
     COGNITIVE_SERVICES_USER_ROLE_ID,
     FOUNDRY_USER_ROLE_ID,
     PARTIAL_PERMISSIONS,
+    READER_PERMISSIONS,
     FakeCognitiveServices,
     role_assignment,
 )
@@ -252,6 +253,43 @@ class TestOverlappingRegistrations:
         assert "Microsoft.CognitiveServices/accounts/deployments/read" in (
             endpoint.access.missing_actions
         )
+        # A grant is rarely in effect by the time the administrator checks again.
+        assert endpoint.access.message == (
+            "MOSAIC's managed identity is missing permissions needed to enumerate models on this "
+            "endpoint. Grant it the role shown below. Azure can take several minutes, and "
+            "occasionally longer, to apply a new role. If Check access still fails right after "
+            "the grant, wait a few minutes and try again."
+        )
+
+    @pytest.mark.asyncio
+    async def test_unreadable_account_reports_reader_remediation(
+        self, gateway_repository: InMemoryGatewayRepository
+    ) -> None:
+        fake = FakeCognitiveServices(account_status=403)
+        service = build_endpoint_service(fake, gateway_repository=gateway_repository)
+
+        endpoint = await service.register(ACTOR, _create())
+
+        assert endpoint.status == ModelEndpointStatus.UNAUTHORIZED
+        assert endpoint.access.can_read is False
+        remediation = endpoint.access.remediation
+        assert remediation is not None
+        assert remediation.role_definition_id == READER_ROLE_ID
+        assert remediation.scope == AI_RESOURCE_ID
+        # Observed live: ARM kept refusing MOSAIC for many minutes after the grant was visible.
+        assert endpoint.access.message == (
+            "MOSAIC's managed identity cannot read this Azure AI resource. Grant it the role shown "
+            "below. Azure can take several minutes, and occasionally longer, to apply a new role. "
+            "If Check access still fails right after the grant, wait a few minutes and try again."
+        )
+
+        # Once the role applies, Check access clears the advice.
+        fake.account_status = 200
+        checked = await service.preflight(ACTOR, endpoint.id)
+
+        assert checked.access.can_read is True
+        assert checked.access.remediation is None
+        assert checked.access.message == "MOSAIC can enumerate models on this endpoint."
 
     @pytest.mark.asyncio
     async def test_remediation_offers_least_privilege_custom_role(
@@ -978,6 +1016,130 @@ class TestSuggestions:
         assert issue.remediation.command == _reader_command(
             "mosaic-managed-identity", f"/subscriptions/{AI_SUBSCRIPTION_ID}"
         )
+        # It could not be listed at all, which is a different finding from a partial read.
+        assert view.partial_scans == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "permissions",
+        [
+            READER_PERMISSIONS,
+            # A narrower role still reads every account when it is held at the subscription.
+            [{"actions": ["Microsoft.CognitiveServices/accounts/read"], "notActions": []}],
+        ],
+        ids=["reader", "account-read-role"],
+    )
+    async def test_subscription_readable_in_full_is_not_partial(
+        self,
+        endpoint_service,
+        fake_aoai: FakeCognitiveServices,
+        permissions: list[dict[str, object]],
+    ) -> None:
+        fake_aoai.subscription_permissions[AI_SUBSCRIPTION_ID] = permissions
+
+        view = await endpoint_service.suggestions(ACTOR)
+
+        assert (
+            f"/subscriptions/{AI_SUBSCRIPTION_ID}/providers/Microsoft.Authorization/permissions"
+            in fake_aoai.requests
+        )
+        assert view.partial_scans == []
+        assert view.scan_issues == []
+        assert view.subscriptions_scanned == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "permissions",
+        [
+            # Every role MOSAIC holds sits on a resource group or a resource, so nothing is granted
+            # at the subscription itself even though its account list still answers 200.
+            [],
+            [{"actions": ["*/read"], "notActions": ["Microsoft.CognitiveServices/*"]}],
+        ],
+        ids=["roles-below-the-subscription", "reader-except-azure-ai"],
+    )
+    async def test_partly_readable_subscription_is_reported_and_still_suggests(
+        self,
+        endpoint_service,
+        fake_aoai: FakeCognitiveServices,
+        permissions: list[dict[str, object]],
+    ) -> None:
+        fake_aoai.subscription_permissions[AI_SUBSCRIPTION_ID] = permissions
+
+        view = await endpoint_service.suggestions(ACTOR)
+
+        # What MOSAIC could read is still offered, and the subscription still counts as scanned.
+        scanned = [s for s in view.suggestions if s.source == SuggestionSource.SUBSCRIPTION_SCAN]
+        assert [s.account_name for s in scanned] == ["contoso-aoai"]
+        assert view.subscriptions_scanned == 1
+        assert view.scan_status == SubscriptionScanStatus.SCANNED
+        assert view.scan_issues == []
+        assert view.scan_remediation == []
+        [partial] = view.partial_scans
+        assert partial.subscription_id == AI_SUBSCRIPTION_ID
+        assert partial.display_name == "Contoso dev"
+        assert partial.message == (
+            "MOSAIC can read only some resources in this subscription, so any Azure AI resources "
+            "it cannot read are not suggested here. Endpoints can still be registered by "
+            "resource ID."
+        )
+        scope = f"/subscriptions/{AI_SUBSCRIPTION_ID}"
+        assert partial.remediation is not None
+        assert partial.remediation.role_name == READER_ROLE_NAME
+        assert partial.remediation.role_definition_id == READER_ROLE_ID
+        assert partial.remediation.scope == scope
+        assert partial.remediation.command == _reader_command("mosaic-managed-identity", scope)
+
+    @pytest.mark.asyncio
+    async def test_empty_list_from_a_partly_readable_subscription_is_not_a_clean_result(
+        self, endpoint_service, fake_aoai: FakeCognitiveServices
+    ) -> None:
+        # Observed live: ARM answered 200 with no accounts because it had filtered out every
+        # account MOSAIC could not read. A subscription MOSAIC reads in full is unaffected.
+        fake_aoai.subscriptions.append(
+            {"subscriptionId": OTHER_SUBSCRIPTION_ID, "displayName": "Contoso prod"}
+        )
+        fake_aoai.accounts_by_subscription[AI_SUBSCRIPTION_ID] = []
+        fake_aoai.subscription_permissions[AI_SUBSCRIPTION_ID] = []
+
+        view = await endpoint_service.suggestions(ACTOR)
+
+        assert view.suggestions == []
+        assert view.subscriptions_scanned == 2
+        assert view.scan_issues == []
+        assert [item.subscription_id for item in view.partial_scans] == [AI_SUBSCRIPTION_ID]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("status_code", [403, 404, 503])
+    async def test_unreadable_subscription_permissions_claim_nothing(
+        self, endpoint_service, fake_aoai: FakeCognitiveServices, status_code: int
+    ) -> None:
+        # Whether the list was complete is unknown, so the scan is reported as it always was.
+        fake_aoai.subscription_permissions_status = status_code
+
+        view = await endpoint_service.suggestions(ACTOR)
+
+        assert view.partial_scans == []
+        assert view.scan_issues == []
+        assert view.subscriptions_scanned == 1
+        scanned = [s for s in view.suggestions if s.source == SuggestionSource.SUBSCRIPTION_SCAN]
+        assert [s.account_name for s in scanned] == ["contoso-aoai"]
+
+    @pytest.mark.asyncio
+    async def test_unexpected_permissions_failure_claims_nothing(
+        self, endpoint_service, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        async def fail(self: SubscriptionScanner, subscription_id: str) -> None:
+            raise RuntimeError("Bearer secret-token")
+
+        monkeypatch.setattr(SubscriptionScanner, "subscription_permissions", fail)
+
+        view = await endpoint_service.suggestions(ACTOR)
+
+        assert view.partial_scans == []
+        assert view.scan_issues == []
+        assert view.subscriptions_scanned == 1
+        assert "secret-token" not in view.model_dump_json()
 
     @pytest.mark.asyncio
     async def test_a_subscription_that_fails_to_list_is_explained_in_mosaics_words(

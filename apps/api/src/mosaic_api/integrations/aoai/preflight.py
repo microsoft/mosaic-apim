@@ -37,6 +37,13 @@ MODEL_READ_ACTIONS: tuple[str, ...] = (
     "Microsoft.CognitiveServices/accounts/projects/read",
 )
 
+# An administrator usually checks again as soon as the role is granted, which is often before Azure
+# applies it. Saying so keeps a failure straight after the grant from reading as a wrong grant.
+ROLE_DELAY_NOTE = (
+    "Azure can take several minutes, and occasionally longer, to apply a new role. If Check "
+    "access still fails right after the grant, wait a few minutes and try again."
+)
+
 
 @dataclass(frozen=True)
 class EndpointPreflightResult:
@@ -240,7 +247,7 @@ async def run_endpoint_preflight(
                 remediation=build_endpoint_remediation(resource, principal_id=principal_id),
                 message=(
                     "MOSAIC's managed identity cannot read this Azure AI resource. Grant it the "
-                    "role shown below and try again."
+                    f"role shown below. {ROLE_DELAY_NOTE}"
                 ),
             ),
             capabilities=ModelEndpointCapabilities(notes=[str(error.message)]),
@@ -307,7 +314,7 @@ async def run_endpoint_preflight(
                 remediation=build_endpoint_remediation(resource, principal_id=principal_id),
                 message=(
                     "MOSAIC's managed identity is missing permissions needed to enumerate models "
-                    "on this endpoint."
+                    f"on this endpoint. Grant it the role shown below. {ROLE_DELAY_NOTE}"
                 ),
             ),
             capabilities=capabilities,

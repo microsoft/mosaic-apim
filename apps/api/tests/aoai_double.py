@@ -5,6 +5,7 @@ this transport, so paging, error mapping, RBAC evaluation, and the runtime acces
 exercised end to end rather than mocked away.
 """
 
+import re
 from typing import Any
 
 import httpx
@@ -36,6 +37,10 @@ PARTIAL_PERMISSIONS: list[dict[str, Any]] = [
 ]
 
 _AUTHORIZATION = "providers/Microsoft.Authorization"
+# Permissions read at a subscription itself, rather than at the account or a project under it.
+_SUBSCRIPTION_PERMISSIONS = re.compile(
+    r"^/subscriptions/([^/]+)/providers/Microsoft\.Authorization/permissions$"
+)
 
 # Leaves a property out of the account description entirely, as ARM does with unset values.
 OMITTED: Any = object()
@@ -200,6 +205,10 @@ class FakeCognitiveServices:
         self.forbidden_subscriptions: set[str] = set()
         # Subscriptions whose account listing keeps failing with this status.
         self.failing_subscriptions: dict[str, int] = {}
+        # What MOSAIC's identity holds at each subscription itself, which decides whether the
+        # account list above is complete. Reader unless a test says otherwise.
+        self.subscription_permissions: dict[str, list[dict[str, Any]]] = {}
+        self.subscription_permissions_status = 200
 
     def fail_always(self, path_suffix: str, status_code: int) -> None:
         self.persistent_failures[path_suffix] = status_code
@@ -235,6 +244,15 @@ class FakeCognitiveServices:
                     failing, json={"error": {"code": "ServiceUnavailable", "message": "denied"}}
                 )
             return _collection(self.accounts_by_subscription.get(subscription_id, []))
+
+        match = _SUBSCRIPTION_PERMISSIONS.match(path)
+        if match:
+            if self.subscription_permissions_status != 200:
+                return httpx.Response(
+                    self.subscription_permissions_status, json={"error": {"message": "denied"}}
+                )
+            granted = self.subscription_permissions.get(match.group(1), READER_PERMISSIONS)
+            return _collection(granted)
 
         if not path.startswith(AI_RESOURCE_ID):
             return httpx.Response(404, json={"error": {"message": "unknown resource"}})
