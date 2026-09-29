@@ -115,7 +115,14 @@ ships in Batch 3d, because no governed apply can succeed without it. The O19 fix
 web app, so it can ship in the same batch. The O23 fix
 ([#38](https://github.com/microsoft/mosaic-apim/pull/38)), for the web app, and the O18 fix
 ([#39](https://github.com/microsoft/mosaic-apim/pull/39)), for the API and the portal, merged
-next, so Batch 3d now deploys all three apps.
+next, so Batch 3d now deploys all three apps. Environments and the end-user usage report
+([#40](https://github.com/microsoft/mosaic-apim/pull/40)) merged after them, and they join
+Batch 3d too. MOSAIC now classifies gateways, endpoints and MCP servers by environment, and it
+checks each gateway and endpoint pairing when a model is published. The portal gains a usage page,
+whose figures are simulated and labeled so until MOSAIC reads Log Analytics. #40 changes no
+infrastructure or app setting and keeps its data in the existing Cosmos containers. Everything
+starts Unclassified, which warns but never blocks, and a plan reviewed before the upgrade must be
+planned again once (ADR 0014).
 
 The test fix is for web tests that G11 added and that failed intermittently. About 250 ms after a
 Fluent dialog opens, the rest of the page becomes `aria-hidden`, and it stays hidden for about
@@ -314,11 +321,13 @@ Progress on the new build (G7 and G8 deployed):
     ([#36](https://github.com/microsoft/mosaic-apim/pull/36)) and the O18 fix
     ([#39](https://github.com/microsoft/mosaic-apim/pull/39)) on the API, the O19 and O23 fixes
     ([#37](https://github.com/microsoft/mosaic-apim/pull/37),
-    [#38](https://github.com/microsoft/mosaic-apim/pull/38)) on the web app, and the O18 fix on
-    the portal. Since Batch 3c, `main` has changed only the API's governed policy code and its
-    end-user routes, four web dialogs and one portal component, with no infrastructure, Entra
-    hook, app setting, Dockerfile, nginx configuration or package manifest. The API's, the web
-    app's and the portal's tests pass on it, and nothing has been deployed since Batch 3c.
+    [#38](https://github.com/microsoft/mosaic-apim/pull/38)) on the web app, the O18 fix on
+    the portal, and environments with the usage report
+    ([#40](https://github.com/microsoft/mosaic-apim/pull/40)) on all three. Since Batch 3c,
+    `main` has changed no infrastructure, Entra hook, app setting, Dockerfile, nginx
+    configuration or package manifest, and #40 stores its data in the existing Cosmos
+    containers. The API's, the web app's and the portal's tests pass on it, and nothing has been
+    deployed since Batch 3c.
 - **Exit:** the deployed build contains G1 to G5, G7 and G8, and the smoke specs pass.
 
 ### Phase 5: Live, admin publishes (A7 to A9) ✅
@@ -410,7 +419,7 @@ Progress:
   catalog after a reload, and setting it back restored it. Every entry reads "No summary
   provided." (O14).
 
-### Phase 6: Live, admin sets identity and governed access (A10 to A12) 🔄 started early; A11 failed on G17
+### Phase 6: Live, admin sets identity and governed access (A10 to A12, A16) 🔄 started early; A11 failed on G17
 
 - Create identity entries for the `user` persona and the workload service principal. The `noRole`
   persona is left unregistered on purpose, so Phase 7 shows that approving a request from someone
@@ -419,6 +428,11 @@ Progress:
   model-wide review and apply.
 - Get the workload's connection details and key handoff from the console. The key never appears
   in logs.
+- After Batch 3d, check environments (A16). **Settings** lists MOSAIC's six built-in
+  environments, and every gateway, endpoint and MCP server starts Unclassified. Reviewing access
+  or publishing with an Unclassified pairing shows a warning and isn't blocked. Classifying the
+  gateway and the endpoints as Development then clears the warning. Leave **Require
+  classification** off.
 
 Progress:
 
@@ -459,7 +473,7 @@ Progress:
   model access" on "Step 3 of 4" with focus inside, and nothing hid it. The plan had A11's shape.
   It was closed without applying, so the model still reads "Access: failed" until Batch 3d.
 
-### Phase 7: Live, end-user portal (P1 to P8, A13) 🔄 P0 to P2, P4 and P8 done; P7 passed for the admin; A13's apply waits for G17
+### Phase 7: Live, end-user portal (P1 to P9, A13) 🔄 P0 to P2, P4 and P8 done; P7 passed for the admin; A13's apply waits for G17
 
 - The `noRole` persona is denied cleanly. A persona with the User role and no grants sees an
   empty My access view and the catalog.
@@ -474,6 +488,10 @@ Progress:
   `--foreign-user-entitlement`. The admin first confirms that someone else holds the grant. Then
   the grant must stay out of the user's lists, and its connection details and key are refused.
   The check sends no model requests.
+- After Batch 3d, the portal's **Usage** page lists only the caller's own grants, one row per
+  resource, and says its figures are simulated, because MOSAIC doesn't read Log Analytics yet
+  (ADR 0015). Its route, `GET /api/v1/me/usage`, is scoped to the caller the way the portal's
+  entitlements are, so P7's foreign grants must not appear in it either (P9).
 
 Progress:
 
@@ -618,6 +636,7 @@ has passed, and ❌ means the latest run failed on the product gap named.
 | A13 | Approving an access request creates grant intent, which is then reviewed and applied (G2) | 7 | 🔄 G17 |
 | A14 | Disable, revoke and method toggles go through review and apply | 8 | ⬜ |
 | A15 | Unpublishing removes only what MOSAIC created | 9 | ⬜ |
+| A16 | Settings lists the built-in environments; an Unclassified pairing warns but isn't blocked, and classifying both sides clears the warning (#40) | 6 | ⬜ |
 
 ### Portal
 
@@ -632,6 +651,7 @@ has passed, and ❌ means the latest run failed on the product gap named.
 | P6 | Connection details appear, and key reveal is masked, transient and uncached (G3) | 7 | ⬜ |
 | P7 | Another user's entitlement ID returns 403 or 404 | 7 | 🔄 |
 | P8 | The admin shows as allowed in the portal | 7 | ✅ |
+| P9 | The usage page lists only the caller's grants and labels its figures as simulated (#40) | 7 | ⬜ |
 
 ### Runtime (real calls through APIM)
 
@@ -676,7 +696,7 @@ be confirmed, or fixed, once the journeys that exercise them have run.
 | O21 | After Batch 3c, P0 failed within milliseconds, before it opened a page: "Failed to open a new tab", then "Target page, context or browser has been closed". The harness closes every page when a test ends. A headed Chromium quits about a quarter of a second after its last tab closes, so the `guest` persona's browser was gone by the time P0 wanted it. A1 now checks a second persona between the `guest` persona's two smoke tests, so there was time for the browser to quit. Before that, P0 had passed only by winning the race. A throwaway profile shows the same thing every time | Fixed in the harness. Each persona's browser keeps one blank tab open between tests. With that tab, a new page opens after the browser sits idle for 9 seconds; without it, the browser is gone. P0 still needs a live run while someone can answer the `guest` persona's MFA |
 | O22 | MOSAIC lets an admin save limits that API Management may not support on the gateway's tier. The `quota-by-key` page's tier banner lists only the classic tiers, though its usage section also names v2. `rate-limit-by-key` and `llm-token-limit` list the classic and v2 tiers. None lists Consumption. MOSAIC checks the tier only for Anthropic token limits, which need v2. From G17's review of the policy pages, not seen live: this deployment runs the Developer tier, which supports all three | Check the gateway's tier when limits are saved or planned, and say which limit it can't enforce. A follow-up gap, not blocking this plan |
 | O23 | Other dialogs lose focus the way O19's did. The key reveal in the console's connection details, **Approve** on an access request, and **Import** from a gateway are `disabled` while they work, so the button that had focus loses it, and a revealed key or an error doesn't take focus when it appears. The import dialog's **Clear** disables itself too. From the O19 fix's review. A local probe in current Chromium confirms the mechanism: a focused button that becomes `disabled` hands focus to the page, Escape then doesn't reach the dialog, and focus doesn't come back when the button is enabled again. With `aria-disabled`, which the publish and removal dialogs already use, focus stays and Escape closes the dialog. About 45 buttons on the console's and portal's pages also disable themselves while they work. Their impact is lower, because no dialog is trapping Escape there | Fixed in [#38](https://github.com/microsoft/mosaic-apim/pull/38), merged; deploys with Batch 3d (web). A busy button keeps focus and can't be pressed again. A failed reveal, approval or import moves focus to its reason. A failed copy leaves focus on **Copy** and is announced as an alert. A reveal that succeeds leaves focus on its button, and a status says which key it revealed, never the key. **Clear** stays focusable. Reverting each dialog fails 7, 4 and 6 of its tests. A12, A13 and P6 check it live. Two small gaps remain, neither blocking: a copy that fails because the browser has no clipboard API isn't announced again when pressed again, and a copy failure stays on screen if the grant stops qualifying and the key is hidden. The page buttons are left for a separate decision |
-| O24 | End-user routes still return other API Management details. My access shows each grant's APIM product and subscription names, and MOSAIC's gateway record ID, under "Usage attribution". The grant and its connection details also return counter-key policy expressions and APIM subscription names that the portal doesn't show. A failed key reveal's error body carries the full Azure Resource Manager URL, which names the Azure subscription, resource group, APIM service and APIM subscription. When APIM refuses to list the key, it adds the service's resource ID. The portal shows its own text for these, but they're visible in the browser's network tools. From the O18 fix's review, not seen live | Decide what an end user needs to identify their usage. Return APIM names to end-user routes only where the portal uses them, and give those routes problem details without upstream URLs, resource IDs or Azure's raw text. The console keeps them. A follow-up gap, not blocking this plan |
+| O24 | End-user routes still return other API Management details. My access shows each grant's APIM product and subscription names under "Usage attribution". Since #40 it no longer shows MOSAIC's gateway record ID there, but the route still returns it. The grant and its connection details also return counter-key policy expressions and APIM subscription names that the portal doesn't show. A failed key reveal's error body carries the full Azure Resource Manager URL, which names the Azure subscription, resource group, APIM service and APIM subscription. When APIM refuses to list the key, it adds the service's resource ID. The portal shows its own text for these, but they're visible in the browser's network tools. From the O18 fix's review, not seen live | Decide what an end user needs to identify their usage. Return APIM names to end-user routes only where the portal uses them, and give those routes problem details without upstream URLs, resource IDs or Azure's raw text. The console keeps them. A follow-up gap, not blocking this plan |
 
 The Phase 3 check on whether the gateway role recommendation narrows once the account kind is
 known led to G8: it does narrow, and the check then rejects the broader role it recommended
