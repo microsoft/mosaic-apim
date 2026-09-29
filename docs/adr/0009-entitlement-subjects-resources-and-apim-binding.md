@@ -19,6 +19,10 @@ to the resource summary: the name a request recorded when it was made (see
 [ADR 0014](0014-environments.md)), then "Resource no longer available", then the resource's kind.
 It never shows a raw resource ID. Administrative responses are unchanged.
 
+**Update:** `GET /api/v1/portal/entitlements` returns each grant's runtime state without API
+Management's error text: `runtime.error` is always null there, as on the other current-user routes.
+See [ADR 0011](0011-governed-model-access.md).
+
 ## Context
 
 `Entitlement` existed in the domain but had no routes, no service, and no repository. Nothing ever

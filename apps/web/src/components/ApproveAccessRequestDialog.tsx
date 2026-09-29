@@ -14,7 +14,7 @@ import {
   Select,
   Text,
 } from '@fluentui/react-components'
-import { type FormEvent, useEffect, useState } from 'react'
+import { type FormEvent, useEffect, useRef, useState } from 'react'
 import {
   QUOTA_PERIODS,
   buildEnforcement,
@@ -101,6 +101,7 @@ export function ApproveAccessRequestDialog({
 
   function submit(event: FormEvent) {
     event.preventDefault()
+    // Approve stays focusable while pending, and a focusable submit button still submits the form.
     if (rateError || existingGrant || pending || (environmentMoved && !confirmedMove)) return
     onApprove({
       note: note.trim() || null,
@@ -108,6 +109,18 @@ export function ApproveAccessRequestDialog({
       ...(environmentMoved ? { confirmedEnvironment: currentEnvironment ?? 'unclassified' } : {}),
     })
   }
+
+  // An approval that fails shows why at the top of the dialog. Move focus there, so a screen reader reads it:
+  // the message bar doesn't announce itself. The failure only ever follows a submission, so it takes focus
+  // from a field too, such as the one Enter submitted from. Fluent places focus as the dialog opens.
+  const errorRef = useRef<HTMLDivElement>(null)
+  const shownError = useRef(error)
+  useEffect(() => {
+    const shown = shownError.current
+    shownError.current = error
+    if (!error || Object.is(error, shown)) return
+    errorRef.current?.focus()
+  }, [error])
 
   return (
     <Dialog
@@ -122,7 +135,11 @@ export function ApproveAccessRequestDialog({
           <DialogBody>
             <DialogTitle>Approve access request</DialogTitle>
             <DialogContent className={styles.dialogForm}>
-              {Boolean(error) && <ErrorState error={error} />}
+              {Boolean(error) && (
+                <div ref={errorRef} tabIndex={-1}>
+                  <ErrorState error={error} />
+                </div>
+              )}
               <dl className={styles.detailList}>
                 <div>
                   <dt>Requester</dt>
@@ -260,10 +277,12 @@ export function ApproveAccessRequestDialog({
               <Button appearance="secondary" disabled={pending} onClick={onCancel}>
                 Cancel
               </Button>
+              {/* A browser takes focus off a button that becomes disabled, so a busy button stays focusable. */}
               <Button
                 appearance="primary"
                 type="submit"
-                disabled={pending || existingGrant || Boolean(rateError) || (environmentMoved && !confirmedMove)}
+                disabled={existingGrant || Boolean(rateError) || (environmentMoved && !confirmedMove)}
+                disabledFocusable={pending}
               >
                 Approve and create grant
               </Button>

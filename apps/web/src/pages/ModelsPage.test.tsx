@@ -467,6 +467,58 @@ describe('ModelsPage', () => {
     })
   })
 
+  it('moves focus to the result once a re-planned publication is applied, where Escape closes the dialog', async () => {
+    const user = userEvent.setup()
+    api.listPublications.mockResolvedValue([publication])
+    renderPage()
+    const table = await screen.findByRole('table', { name: 'Published models' })
+    await user.click(within(table).getByRole('button', { name: 'Re-plan' }))
+    await user.click(await screen.findByRole('button', { name: 'Apply plan' }))
+
+    expect(
+      await screen.findByText('Local development service reported completion; live APIM apply is not verified.'),
+    ).toBeVisible()
+    await waitFor(() => {
+      const dialog = screen.getByRole('dialog', { name: 'Publish a model' })
+      const focused = document.activeElement as HTMLElement
+      expect(dialog).toContainElement(focused)
+      expect(focused).not.toBe(dialog)
+      expect(focused).toContainElement(screen.getByRole('table', { name: 'Publish run steps' }))
+    })
+
+    await user.keyboard('{Escape}')
+
+    // The page stays aria-hidden for a moment after a modal closes.
+    expect(await screen.findByRole('table', { name: 'Published models' })).toBeVisible()
+    expect(screen.queryByRole('dialog', { hidden: true })).not.toBeInTheDocument()
+  })
+
+  it('moves focus to why MOSAIC refused the reviewed plan, above the fresh plan it made', async () => {
+    const user = userEvent.setup()
+    const refusal =
+      'This publication changed after the plan was produced. Re-plan it and review the new changes before applying.'
+    api.listPublications.mockResolvedValue([publication])
+    api.createPublishPlan.mockResolvedValueOnce({ ...publishPlan, id: 'plan_2' }).mockResolvedValueOnce({ ...publishPlan, id: 'plan_3' })
+    api.applyPublishPlan.mockRejectedValueOnce(new TestApiError(refusal, 409))
+    renderPage()
+    const table = await screen.findByRole('table', { name: 'Published models' })
+    await user.click(within(table).getByRole('button', { name: 'Re-plan' }))
+    await user.click(await screen.findByRole('button', { name: 'Apply plan' }))
+
+    expect(
+      await screen.findByText('MOSAIC has already re-planned. Review the fresh plan below before you apply it.'),
+    ).toBeVisible()
+    await waitFor(() => {
+      const dialog = screen.getByRole('dialog', { name: 'Publish a model' })
+      const focused = document.activeElement as HTMLElement
+      expect(dialog).toContainElement(focused)
+      expect(focused).not.toBe(dialog)
+      expect(focused).toHaveTextContent("MOSAIC didn't apply the plan you reviewed")
+      expect(focused).toHaveTextContent(refusal)
+      expect(focused).not.toContainElement(screen.getByRole('table', { name: 'Publish plan steps' }))
+    })
+  })
+
   it('does not describe an interrupted apply as still running or successful', async () => {
     const user = userEvent.setup()
     api.listPublications.mockResolvedValue([publication])

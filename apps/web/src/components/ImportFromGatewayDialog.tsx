@@ -204,6 +204,21 @@ export function ImportFromGatewayDialog({
     },
   })
 
+  // An import that fails keeps the dialog open with the reason. Move focus there, so a screen reader reads
+  // it: the message bar doesn't announce itself. The failure only ever follows pressing Import, so it takes
+  // focus from a field too. An import that succeeds closes the dialog, and the page reports it. Fluent
+  // places focus as the dialog opens.
+  const failureRef = useRef<HTMLDivElement>(null)
+  const failure = importMutation.error
+  const shownFailure = useRef(failure)
+  useEffect(() => {
+    const shown = shownFailure.current
+    shownFailure.current = failure
+    // The last failure is still shown when the dialog opens again, and it isn't new.
+    if (!open || !failure || Object.is(failure, shown)) return
+    failureRef.current?.focus()
+  }, [open, failure])
+
   function toggle(apiName: string, checked: boolean) {
     setTouched(true)
     setSelected((current) => {
@@ -264,9 +279,11 @@ export function ImportFromGatewayDialog({
                 >
                   Select all
                 </Button>
+                {/* Pressing Clear leaves nothing to clear. A browser takes focus off a button that becomes
+                    disabled, so Clear stays focusable. */}
                 <Button
                   appearance="secondary"
-                  disabled={selectedCount === 0}
+                  disabledFocusable={selectedCount === 0}
                   onClick={() => {
                     setTouched(true)
                     setSelected(new Set())
@@ -298,7 +315,11 @@ export function ImportFromGatewayDialog({
               </MessageBar>
             )}
 
-            {importMutation.isError && <ErrorState error={importMutation.error} />}
+            {importMutation.isError && (
+              <div ref={failureRef} tabIndex={-1}>
+                <ErrorState error={importMutation.error} />
+              </div>
+            )}
 
             {candidatesQuery.isPending && gatewayId !== '' && (
               <Loading label={`Loading ${copy.plural}...`} />
@@ -386,9 +407,11 @@ export function ImportFromGatewayDialog({
             <Button appearance="secondary" onClick={onClose}>
               Cancel
             </Button>
+            {/* A browser takes focus off a button that becomes disabled, so a busy button stays focusable. */}
             <Button
               appearance="primary"
-              disabled={selectedCount === 0 || importMutation.isPending}
+              disabled={selectedCount === 0}
+              disabledFocusable={importMutation.isPending}
               onClick={() => importMutation.mutate([...selected])}
             >
               {importMutation.isPending ? 'Importing...' : `Import ${selectedCount}`}

@@ -459,6 +459,32 @@ function PublishModelSession({ open, onClose, onPublished, initialReview }: Publ
     }
   }, [currentRun, onPublished, open, queryClient])
 
+  // Moving to another step replaces the controls that had focus, such as the button that moved it, and a
+  // plan or apply that finishes brings an outcome with it. Focus would otherwise fall out of the dialog,
+  // where Escape no longer closes it, and a screen reader wouldn't be taken to what changed. So move focus
+  // to the new outcome, which a screen reader then reads, or else to the top of the new step. Fluent moves
+  // focus into the step the dialog opens on, and a field the administrator is typing in keeps focus.
+  const stepRef = useRef<HTMLElement>(null)
+  const outcomeRef = useRef<HTMLDivElement>(null)
+  const finishedRun = currentRun && terminalRunStatuses.includes(currentRun.status) ? currentRun : null
+  const outcome = {
+    choose: null,
+    configure: createAndPlan.error,
+    review: apply.error,
+    apply: finishedRun?.id ?? null,
+  }[step]
+  const shownRef = useRef({ step, outcome })
+  useEffect(() => {
+    if (!open) return
+    const shown = shownRef.current
+    shownRef.current = { step, outcome }
+    // Trying again clears the last outcome, and focus stays on the busy button until the next one.
+    if (step === shown.step && (outcome === null || Object.is(outcome, shown.outcome))) return
+    if (document.activeElement?.matches('input, select, textarea')) return
+    const target = outcomeRef.current ?? stepRef.current
+    target?.focus()
+  }, [open, step, outcome])
+
   const canConfigure = Boolean(gatewayId && selectedModel && isPublishable(selectedModel))
   const tokenLimits = supportsTokenLimits(selectedModel)
   const canReview = Boolean(
@@ -483,7 +509,9 @@ function PublishModelSession({ open, onClose, onPublished, initialReview }: Publ
               {runtimeConfig.authMode === 'local' && (
                 <Text>Local development mode: responses may be simulated and do not prove a live APIM change.</Text>
               )}
-              <Text size={200}>Step {['choose', 'configure', 'review', 'apply'].indexOf(step) + 1} of 4</Text>
+              <Text ref={stepRef} tabIndex={-1} size={200}>
+                Step {['choose', 'configure', 'review', 'apply'].indexOf(step) + 1} of 4
+              </Text>
             </div>
 
             {step === 'choose' && (
@@ -657,30 +685,37 @@ function PublishModelSession({ open, onClose, onPublished, initialReview }: Publ
                     />
                   </>
                 )}
-                {createEnvironmentBlocked && (
-                  <MessageBar intent="error">
-                    <MessageBarBody>
-                      <MessageBarTitle>Environment rules block this publication</MessageBarTitle>
-                      {createEnvironmentBlocked.reason}
-                    </MessageBarBody>
-                  </MessageBar>
+                {createAndPlan.isError && (
+                  <div ref={outcomeRef} tabIndex={-1}>
+                    {createEnvironmentBlocked ? (
+                      <MessageBar intent="error">
+                        <MessageBarBody>
+                          <MessageBarTitle>Environment rules block this publication</MessageBarTitle>
+                          {createEnvironmentBlocked.reason}
+                        </MessageBarBody>
+                      </MessageBar>
+                    ) : (
+                      <ErrorState error={createAndPlan.error} />
+                    )}
+                  </div>
                 )}
-                {createAndPlan.isError && !createEnvironmentBlocked && <ErrorState error={createAndPlan.error} />}
               </div>
             )}
 
             {step === 'review' && plan && (
               <div className={styles.nameCell}>
                 {reviewMessage && (
-                  <MessageBar intent="warning">
-                    <MessageBarBody>
-                      <MessageBarTitle>MOSAIC didn't apply the plan you reviewed</MessageBarTitle>
-                      {reviewMessage}
-                      {!invalidPlan && (
-                        <Text block>MOSAIC has already re-planned. Review the fresh plan below before you apply it.</Text>
-                      )}
-                    </MessageBarBody>
-                  </MessageBar>
+                  <div ref={applyError ? undefined : outcomeRef} tabIndex={-1}>
+                    <MessageBar intent="warning">
+                      <MessageBarBody>
+                        <MessageBarTitle>MOSAIC didn't apply the plan you reviewed</MessageBarTitle>
+                        {reviewMessage}
+                        {!invalidPlan && (
+                          <Text block>MOSAIC has already re-planned. Review the fresh plan below before you apply it.</Text>
+                        )}
+                      </MessageBarBody>
+                    </MessageBar>
+                  </div>
                 )}
                 {nothingToApply && (
                   <MessageBar intent="info">
@@ -742,7 +777,11 @@ function PublishModelSession({ open, onClose, onPublished, initialReview }: Publ
                     </MessageBarBody>
                   </MessageBar>
                 )}
-                {applyError && !applyEnvironmentBlocked && <ErrorState error={applyError} />}
+                {applyError && !applyEnvironmentBlocked && (
+                  <div ref={outcomeRef} tabIndex={-1}>
+                    <ErrorState error={applyError} />
+                  </div>
+                )}
                 {refreshError && <ErrorState error={refreshError} />}
               </div>
             )}
@@ -751,7 +790,11 @@ function PublishModelSession({ open, onClose, onPublished, initialReview }: Publ
               <div className={styles.nameCell}>
                 {!currentRun || currentRun.status === 'running' ? <Loading label="Applying publish plan" /> : null}
                 {run.isError && <ErrorState error={run.error} />}
-                {currentRun && <RunResult run={currentRun} />}
+                {currentRun && (
+                  <div ref={finishedRun ? outcomeRef : undefined} tabIndex={-1}>
+                    <RunResult run={currentRun} />
+                  </div>
+                )}
               </div>
             )}
           </DialogContent>
@@ -762,13 +805,24 @@ function PublishModelSession({ open, onClose, onPublished, initialReview }: Publ
             {step === 'choose' && (
               <Button appearance="primary" disabled={!canConfigure} onClick={() => setStep('configure')}>Configure</Button>
             )}
+            {/* A browser takes focus off a button that becomes disabled, so a busy button stays focusable. */}
             {step === 'configure' && (
-              <Button appearance="primary" disabled={!canReview || createAndPlan.isPending} onClick={() => createAndPlan.mutate()}>
+              <Button
+                appearance="primary"
+                disabled={!canReview}
+                disabledFocusable={createAndPlan.isPending}
+                onClick={() => createAndPlan.mutate()}
+              >
                 {createAndPlan.isPending ? 'Creating plan…' : 'Review plan'}
               </Button>
             )}
             {step === 'review' && (
-              <Button appearance="primary" disabled={apply.isPending || invalidPlan || missingAccessReview || nothingToApply} onClick={() => apply.mutate()}>
+              <Button
+                appearance="primary"
+                disabled={invalidPlan || missingAccessReview || nothingToApply}
+                disabledFocusable={apply.isPending}
+                onClick={() => apply.mutate()}
+              >
                 {apply.isPending ? 'Applying…' : 'Apply plan'}
               </Button>
             )}

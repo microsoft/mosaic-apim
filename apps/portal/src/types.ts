@@ -138,6 +138,10 @@ export interface EntitlementRuntime {
   appliedMethods: ModelAccessSettings | null
   subscriptionName: string | null
   appliedAt: string | null
+  /**
+   * API Management's raw error for the publication's last apply. The portal's routes send null.
+   * An older API may still send the text, so it is never shown: `status` explains a failed apply.
+   */
   error: string | null
 }
 
