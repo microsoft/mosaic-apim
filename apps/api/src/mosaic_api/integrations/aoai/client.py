@@ -15,7 +15,7 @@ from mosaic_api.domain import (
     SUBSCRIPTIONS_API_VERSION,
     CognitiveServicesResourceId,
 )
-from mosaic_api.errors import UpstreamAuthorizationError, UpstreamError
+from mosaic_api.errors import DomainError, UpstreamAuthorizationError, UpstreamError
 from mosaic_api.integrations.apim.client import ArmClient, JsonObject
 
 
@@ -131,6 +131,10 @@ class SubscriptionScanner:
 
     Each subscription is read independently: one inaccessible subscription records what to grant
     and is skipped, rather than failing the whole scan.
+
+    ARM filters a collection read to the resources the caller can read and still answers 200, so a
+    successful account list is not proof that the subscription was read in full.
+    :meth:`subscription_permissions` is what tells the two apart.
     """
 
     def __init__(self, arm: ArmClient) -> None:
@@ -149,3 +153,20 @@ class SubscriptionScanner:
             params={"api-version": COGNITIVE_SERVICES_API_VERSION},
             allow_not_found=True,
         )
+
+    async def subscription_permissions(self, subscription_id: str) -> list[JsonObject] | None:
+        """What MOSAIC's own identity may do across a whole subscription, or ``None`` if unknown.
+
+        Read at the subscription itself, so only roles assigned at or above it count: a role held
+        on one resource group or resource is absent here, which is exactly what reveals a partial
+        view. A 404 is not folded into an empty list, because "could not evaluate" must never read
+        as "holds nothing".
+        """
+
+        try:
+            return await self._arm.list(
+                f"/subscriptions/{subscription_id}/providers/Microsoft.Authorization/permissions",
+                params={"api-version": AUTHORIZATION_API_VERSION},
+            )
+        except DomainError:
+            return None

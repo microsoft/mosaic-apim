@@ -1,6 +1,11 @@
 """HTTP contract for model endpoint onboarding."""
 
-from aoai_double import AI_RESOURCE_ID, PARTIAL_PERMISSIONS, FakeCognitiveServices
+from aoai_double import (
+    AI_RESOURCE_ID,
+    AI_SUBSCRIPTION_ID,
+    PARTIAL_PERMISSIONS,
+    FakeCognitiveServices,
+)
 from fastapi.testclient import TestClient
 from mosaic_api.domain import READER_ROLE_ID
 
@@ -100,10 +105,34 @@ class TestModelEndpointApi:
         assert body["subscriptionsScanned"] == 1
         assert body["scanStatus"] == "scanned"
         assert body["scanRemediation"] == []
+        assert body["partialScans"] == []
         assert any(
             item["source"] == "subscriptionScan" and item["accountName"] == "contoso-aoai"
             for item in body["suggestions"]
         )
+
+    def test_suggestions_say_when_a_subscription_is_readable_only_in_part(
+        self, endpoint_client: TestClient, fake_aoai: FakeCognitiveServices
+    ) -> None:
+        fake_aoai.subscription_permissions[AI_SUBSCRIPTION_ID] = []
+
+        response = endpoint_client.get("/api/v1/model-endpoints/suggested")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["scanStatus"] == "scanned"
+        assert body["subscriptionsScanned"] == 1
+        assert body["scanIssues"] == []
+        [partial] = body["partialScans"]
+        assert partial["subscriptionId"] == AI_SUBSCRIPTION_ID
+        assert partial["displayName"] == "Contoso dev"
+        assert partial["message"].startswith(
+            "MOSAIC can read only some resources in this subscription"
+        )
+        assert partial["remediation"]["roleName"] == "Reader"
+        assert partial["remediation"]["scope"] == f"/subscriptions/{AI_SUBSCRIPTION_ID}"
+        assert partial["remediation"]["command"].startswith("az role assignment create")
+        assert any(item["accountName"] == "contoso-aoai" for item in body["suggestions"])
 
     def test_suggestions_explain_when_no_subscription_is_visible(
         self, endpoint_client: TestClient, fake_aoai: FakeCognitiveServices

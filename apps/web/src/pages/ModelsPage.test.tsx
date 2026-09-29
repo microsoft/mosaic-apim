@@ -15,6 +15,7 @@ import type {
   ModelEndpointSuggestionView,
   Publication,
   PublishPlan,
+  SubscriptionScanIssue,
 } from '../types'
 
 const RESOURCE_ID =
@@ -531,6 +532,7 @@ function suggestionView(
   return {
     suggestions: [],
     scanIssues: [],
+    partialScans: [],
     subscriptionsScanned: 0,
     scanStatus: 'notConfigured',
     scanMessage: null,
@@ -572,6 +574,34 @@ function readerAtSubscription(subscriptionId: string): AccessRemediation {
 const SCAN_EXPLANATION =
   'Endpoints can still be registered by pasting a resource ID, and granting Reader at ' +
   'subscription scope lets MOSAIC suggest them.'
+
+function partialScan(subscriptionId: string, displayName: string | null): SubscriptionScanIssue {
+  return {
+    subscriptionId,
+    displayName,
+    message:
+      'MOSAIC can read only some resources in this subscription, so any Azure AI resources it ' +
+      'cannot read are not suggested here. Endpoints can still be registered by resource ID.',
+    remediation: readerAtSubscription(subscriptionId),
+  }
+}
+
+function subscriptionSuggestion(): ModelEndpointSuggestion {
+  return {
+    source: 'subscriptionScan',
+    endpoint: 'https://contoso-aoai.openai.azure.com/',
+    azureResourceId: AI_RESOURCE_ID,
+    accountName: 'contoso-aoai',
+    resourceGroup: 'rg-contoso-ai',
+    subscriptionId: '00000000-0000-0000-0000-000000000000',
+    kind: 'OpenAI',
+    location: 'eastus2',
+    provider: 'azureOpenAi',
+    alreadyRegistered: false,
+    modelEndpointId: null,
+    reason: 'Found in subscription 00000000-0000-0000-0000-000000000000.',
+  }
+}
 
 const PROJECT_RESOURCE_ID = `${AI_RESOURCE_ID}/projects/team-a`
 const SUBSCRIPTION_SCOPE = '/subscriptions/00000000-0000-0000-0000-000000000000'
@@ -1208,6 +1238,95 @@ describe('ModelsPage model endpoints', () => {
     ).toBeVisible()
     expect(screen.getByRole('heading', { name: 'Endpoints MOSAIC found' })).toBeVisible()
   })
+
+  it("says MOSAIC can read only part of a subscription instead of 'nothing new'", async () => {
+    // Observed live: ARM answered with no accounts because it had silently left out every account
+    // MOSAIC could not read.
+    const subscriptionId = '00000000-0000-0000-0000-000000000000'
+    api.listSuggestedModelEndpoints.mockResolvedValue(
+      suggestionView({
+        scanStatus: 'scanned',
+        subscriptionsScanned: 1,
+        partialScans: [partialScan(subscriptionId, 'Contoso dev')],
+      }),
+    )
+
+    renderPage()
+
+    expect(
+      await screen.findByText(
+        'Scanned 1 subscription. MOSAIC can read only some resources in it, so any Azure AI ' +
+          "resources it can't read are missing from this list.",
+      ),
+    ).toBeVisible()
+    expect(screen.queryByText(/Nothing new to register/)).not.toBeInTheDocument()
+    const heading = screen.getByRole('heading', {
+      name: 'MOSAIC can read only part of a subscription',
+    })
+    const card = heading.closest('.fui-Card') as HTMLElement
+    expect(card).toHaveTextContent(SCAN_EXPLANATION)
+    expect(within(card).getByText('Contoso dev')).toBeVisible()
+    expect(
+      within(card).getByText(readerAtSubscription(subscriptionId).command),
+    ).toBeVisible()
+    expect(within(card).getAllByRole('button', { name: 'Copy command' })).toHaveLength(1)
+    // It was listed, so it is not among the subscriptions MOSAIC could not scan.
+    expect(
+      screen.queryByRole('heading', { name: 'Subscriptions MOSAIC could not scan' }),
+    ).not.toBeInTheDocument()
+  })
+
+  it.each([
+    [2, 1, 'in 1 of them'],
+    [3, 2, 'in 2 of them'],
+    [2, 2, 'in each of them'],
+  ])(
+    'counts %i scanned subscriptions with %i readable only in part',
+    async (scanned, partial, where) => {
+      const partialScans = [
+        partialScan('11111111-2222-3333-4444-555555555555', 'Contoso prod'),
+        partialScan('66666666-7777-8888-9999-000000000000', null),
+      ].slice(0, partial)
+      api.listSuggestedModelEndpoints.mockResolvedValue(
+        suggestionView({
+          suggestions: [subscriptionSuggestion()],
+          scanStatus: 'scanned',
+          subscriptionsScanned: scanned,
+          partialScans,
+        }),
+      )
+
+      renderPage()
+
+      expect(
+        await screen.findByText(
+          `Scanned ${scanned} subscriptions. MOSAIC can read only some resources ${where}, so ` +
+            "any Azure AI resources it can't read are missing from this list.",
+        ),
+      ).toBeVisible()
+      // What MOSAIC could read is still offered.
+      expect(screen.getByRole('button', { name: 'Register' })).toBeVisible()
+      const heading = screen.getByRole('heading', {
+        name:
+          partial === 1
+            ? 'MOSAIC can read only part of a subscription'
+            : `MOSAIC can read only part of ${partial} subscriptions`,
+      })
+      const card = heading.closest('.fui-Card') as HTMLElement
+      expect(
+        within(card)
+          .getAllByText(/az role assignment create/)
+          .map((command) => command.textContent),
+      ).toEqual(partialScans.map((scan) => scan.remediation?.command))
+      expect(within(card).getAllByRole('button', { name: 'Copy command' })).toHaveLength(
+        partial,
+      )
+      // A subscription without a display name is named by its ID.
+      if (partial === 2) {
+        expect(within(card).getByText('66666666-7777-8888-9999-000000000000')).toBeVisible()
+      }
+    },
+  )
 
   it('says nothing about subscriptions when the scan is not configured', async () => {
     api.listSuggestedModelEndpoints.mockResolvedValue(

@@ -342,6 +342,16 @@ function CommandBlock({ command }: { command: string }) {
   )
 }
 
+/** What an administrator can do about a subscription scan that cannot see everything. */
+function ScanReaderExplanation() {
+  return (
+    <Text>
+      Endpoints can still be registered by pasting a resource ID, and granting{' '}
+      <strong>Reader</strong> at subscription scope lets MOSAIC suggest them.
+    </Text>
+  )
+}
+
 function ImportedModelApis({ onRemoved }: { onRemoved: (message: string) => void }) {
   const api = useMosaicApi()
   const queryClient = useQueryClient()
@@ -790,6 +800,7 @@ function ModelEndpoints() {
     (item) => !item.alreadyRegistered,
   )
   const scanIssues = suggestions.data?.scanIssues ?? []
+  const partialScans = suggestions.data?.partialScans ?? []
   const scanStatus = suggestions.data?.scanStatus
   const scanRemediation = suggestions.data?.scanRemediation ?? []
   const scanVisibilityTitle = scanStatus ? scanVisibilityTitles[scanStatus] : undefined
@@ -799,6 +810,21 @@ function ModelEndpoints() {
     scanStatus === 'scanned' && subscriptionsScanned > 0
       ? `Scanned ${subscriptionsScanned} subscription${subscriptionsScanned === 1 ? '' : 's'}.`
       : null
+  // Azure leaves out what MOSAIC cannot read and still answers, so a partly readable
+  // subscription must never be summarised as having nothing new in it.
+  const partlyReadIn =
+    subscriptionsScanned <= 1
+      ? 'it'
+      : partialScans.length >= subscriptionsScanned
+        ? 'each of them'
+        : `${partialScans.length} of them`
+  const scanOutcome =
+    partialScans.length > 0
+      ? `MOSAIC can read only some resources in ${partlyReadIn}, so any Azure AI resources it ` +
+        "can't read are missing from this list."
+      : pending.length > 0
+        ? null
+        : 'Nothing new to register.'
 
   // The shell's "Add model endpoint" action lands here with ?register=1, so the button opens the
   // real registration form rather than dropping the administrator on the page with no next step.
@@ -946,7 +972,7 @@ function ModelEndpoints() {
           <Title3 as="h2">Endpoints MOSAIC found</Title3>
           {scanSummary && (
             <Text size={200} className={styles.muted}>
-              {pending.length > 0 ? scanSummary : `${scanSummary} Nothing new to register.`}
+              {scanOutcome ? `${scanSummary} ${scanOutcome}` : scanSummary}
             </Text>
           )}
           {pending.map((item) => (
@@ -984,6 +1010,25 @@ function ModelEndpoints() {
         </Card>
       )}
 
+      {partialScans.length > 0 && (
+        <Card className={styles.panel}>
+          <Title3 as="h2">
+            {partialScans.length === 1
+              ? 'MOSAIC can read only part of a subscription'
+              : `MOSAIC can read only part of ${partialScans.length} subscriptions`}
+          </Title3>
+          <ScanReaderExplanation />
+          {partialScans.map((scan) => (
+            <div key={scan.subscriptionId} className={styles.scanIssue}>
+              <Text size={200} weight="semibold">
+                {scan.displayName ?? scan.subscriptionId}
+              </Text>
+              {scan.remediation && <CommandBlock command={scan.remediation.command} />}
+            </div>
+          ))}
+        </Card>
+      )}
+
       {scanIssues.length > 0 && (
         <Card className={styles.panel}>
           <Title3 as="h2">Subscriptions MOSAIC could not scan</Title3>
@@ -1006,10 +1051,7 @@ function ModelEndpoints() {
               {suggestions.data.scanMessage}
             </Text>
           )}
-          <Text>
-            Endpoints can still be registered by pasting a resource ID, and granting{' '}
-            <strong>Reader</strong> at subscription scope lets MOSAIC suggest them.
-          </Text>
+          <ScanReaderExplanation />
           {scanRemediation.map((remediation) => (
             <CommandBlock key={remediation.scope} command={remediation.command} />
           ))}

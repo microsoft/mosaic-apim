@@ -580,6 +580,15 @@ never blanks the list. When MOSAIC can't see any subscription, or couldn't list 
 now says so and gives the `Reader` command for the subscription MOSAIC was deployed into and for
 each registered gateway's subscription, instead of showing an empty list.
 
+A subscription MOSAIC can list is not necessarily one it can read in full: Azure answers a
+subscription-wide list with only the resources the caller can read, and doesn't say anything was
+left out. So MOSAIC also checks the permissions it holds at each subscription itself. When those
+don't let it read every Azure AI resource there, typically because its roles are on a resource
+group or on individual resources, the Models page says MOSAIC can read only part of that
+subscription, still offers what it found, and gives the subscription-scope `Reader` command instead
+of reporting nothing new to register. If MOSAIC can't read its own permissions, it makes no claim
+either way.
+
 OpenAI-compatible endpoints are registered with a Key Vault secret identifier the operator created.
 MOSAIC stores the URI only; discovery for those endpoints is not implemented yet.
 

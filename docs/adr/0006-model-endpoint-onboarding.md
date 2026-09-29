@@ -124,6 +124,15 @@ power a convenience feature is precisely the escalation MOSAIC refuses elsewhere
 per subscription, and one it cannot read records the remediation and is skipped rather than blanking
 the whole list.
 
+A subscription that lists successfully can still be read only in part. ARM filters a collection read
+to the resources the caller can read and answers 200 either way, so an identity whose roles sit on a
+resource group or a resource gets a short (often empty) list that looks exactly like a complete one.
+After listing, the scan therefore reads MOSAIC's own permissions at the subscription scope, which
+count only roles assigned at or above it, and reports the subscription as partly read, with the same
+`Reader` remediation, when they do not grant `Microsoft.CognitiveServices/accounts/read`. Whatever
+the list did return is still suggested. When those permissions cannot be read, nothing is claimed
+either way: a partial scan is reported only when MOSAIC knows it was partial.
+
 **MCP discovery belongs to ADR 0005, not here.** An earlier draft of this work added its own
 MCP-server detection on the same preview API version. ADR 0005 landed a richer model first —
 `ObservedMcpServer` with transports and tools, plus adoption records — so that implementation is

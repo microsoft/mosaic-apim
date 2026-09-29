@@ -1685,7 +1685,7 @@ class ModelEndpointSuggestion(MosaicModel):
 
 
 class SubscriptionScanIssue(MosaicModel):
-    """One subscription MOSAIC could not enumerate, and what would fix it."""
+    """One subscription MOSAIC could not fully enumerate, and what would fix it."""
 
     subscription_id: str
     display_name: str | None = None
@@ -1708,7 +1708,18 @@ class SubscriptionScanStatus(StrEnum):
 
 class ModelEndpointSuggestionView(MosaicModel):
     suggestions: list[ModelEndpointSuggestion] = Field(default_factory=list)
-    scan_issues: list[SubscriptionScanIssue] = Field(default_factory=list)
+    scan_issues: list[SubscriptionScanIssue] = Field(
+        default_factory=list,
+        description="Subscriptions whose Azure AI resources MOSAIC could not list at all.",
+    )
+    partial_scans: list[SubscriptionScanIssue] = Field(
+        default_factory=list,
+        description=(
+            "Subscriptions MOSAIC listed without a role that reads every Azure AI resource in "
+            "them. Azure leaves out what the caller cannot read without saying so, so these still "
+            "count as scanned and whatever they yielded is still suggested."
+        ),
+    )
     subscriptions_scanned: int = 0
     scan_status: SubscriptionScanStatus
     scan_message: str | None = Field(

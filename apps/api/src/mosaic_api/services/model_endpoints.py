@@ -54,6 +54,7 @@ from mosaic_api.integrations.aoai import (
     verify_gateway_runtime_access,
 )
 from mosaic_api.integrations.apim import classify_url
+from mosaic_api.integrations.rbac import permits
 from mosaic_api.observed import (
     AiBackendKind,
     ObservedApi,
@@ -74,6 +75,14 @@ STALE_RUN_MESSAGE = "The API restarted while this sync was running; its result i
 IDENTITY_PLACEHOLDER = "<mosaic-managed-identity-object-id>"
 SUBSCRIPTION_PLACEHOLDER = "<subscription-id>"
 UNEXPECTED_LIST_FAILURE = "The request failed unexpectedly; the API log has the details."
+PARTIAL_SCAN_MESSAGE = (
+    "MOSAIC can read only some resources in this subscription, so any Azure AI resources it "
+    "cannot read are not suggested here. Endpoints can still be registered by resource ID."
+)
+
+# A subscription-wide account list returns only the accounts this action allows the caller to read,
+# so holding it at the subscription itself is what makes that list complete.
+_ACCOUNT_READ_ACTION = "Microsoft.CognitiveServices/accounts/read"
 
 # The same shape the resource ID parsers accept. A candidate scope is interpolated into a command an
 # operator will run, so anything else is left out rather than quoted into it.
@@ -134,6 +143,7 @@ class _SubscriptionScan:
     status: SubscriptionScanStatus
     scanned: int = 0
     issues: list[SubscriptionScanIssue] = field(default_factory=list)
+    partial: list[SubscriptionScanIssue] = field(default_factory=list)
     message: str | None = None
     remediation: list[AccessRemediation] = field(default_factory=list)
 
@@ -633,7 +643,8 @@ class ModelEndpointService:
 
         The three sources cost very different amounts of privilege. Backends already observed in a
         registered gateway need none at all, so they are gathered first and are always available.
-        The subscription scan needs Reader at subscription scope and degrades per subscription.
+        The subscription scan needs Reader at subscription scope and degrades per subscription,
+        including a subscription it could list but can read only in part.
         """
 
         registered = await self._repository.list_endpoints(actor.tenant_id)
@@ -676,6 +687,7 @@ class ModelEndpointService:
         return ModelEndpointSuggestionView(
             suggestions=suggestions,
             scan_issues=scan.issues,
+            partial_scans=scan.partial,
             subscriptions_scanned=scan.scanned,
             scan_status=scan.status,
             scan_message=scan.message,
@@ -744,6 +756,11 @@ class ModelEndpointService:
         skipped, so a single missing role assignment never blanks the whole suggestion list. A scan
         with no subscription to read at all says so, rather than returning an empty list that is
         indistinguishable from a clean result.
+
+        A subscription that lists successfully is not necessarily read in full: ARM leaves out
+        what MOSAIC cannot read and still answers 200. Such a subscription still counts as scanned
+        and still yields suggestions, but it is recorded as partial with the same Reader remediation
+        so the result is never presented as complete.
         """
 
         assert self._scanner is not None
@@ -778,6 +795,7 @@ class ModelEndpointService:
 
         scanned = 0
         issues: list[SubscriptionScanIssue] = []
+        partial: list[SubscriptionScanIssue] = []
         principal_id = await self._resolve_principal_id()
         for subscription_id, display_name in subscriptions:
             try:
@@ -802,9 +820,38 @@ class ModelEndpointService:
                 suggestion = self._account_suggestion(account, by_resource)
                 if suggestion is not None:
                     add(suggestion)
+            if await self._reads_only_part_of(subscription_id):
+                partial.append(
+                    SubscriptionScanIssue(
+                        subscription_id=subscription_id,
+                        display_name=display_name,
+                        message=PARTIAL_SCAN_MESSAGE,
+                        remediation=_reader_at_subscription(subscription_id, principal_id),
+                    )
+                )
         return _SubscriptionScan(
-            status=SubscriptionScanStatus.SCANNED, scanned=scanned, issues=issues
+            status=SubscriptionScanStatus.SCANNED, scanned=scanned, issues=issues, partial=partial
         )
+
+    async def _reads_only_part_of(self, subscription_id: str) -> bool:
+        """Does MOSAIC know that it cannot read every Azure AI account in this subscription?
+
+        Only the permissions MOSAIC holds at the subscription itself can answer that, since the
+        account list looks the same whether or not ARM filtered it. When they cannot be read, the
+        answer is no: MOSAIC reports a partial scan only when it knows the scan was partial.
+        """
+
+        assert self._scanner is not None
+        try:
+            permissions = await self._scanner.subscription_permissions(subscription_id)
+        except Exception:
+            logger.exception(
+                "endpoint_subscription_permissions_failed", subscription_id=subscription_id
+            )
+            return False
+        if permissions is None:
+            return False
+        return not permits(permissions, _ACCOUNT_READ_ACTION)
 
     async def _unscanned(
         self,
