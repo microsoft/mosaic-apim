@@ -6,6 +6,7 @@ import type {
   AccessRequestApproval,
   ApiErrorBody,
   CatalogVisibility,
+  ConsoleAccess,
   Entitlement,
   EntitlementBinding,
   EntitlementEnforcement,
@@ -80,6 +81,7 @@ interface RequestOptions {
 }
 
 export interface MosaicApi {
+  getConsoleAccess(): Promise<ConsoleAccess>
   listPrincipals(): Promise<Principal[]>
   createPrincipal(payload: {
     objectId: string
@@ -312,6 +314,7 @@ export function useMosaicApi(): MosaicApi {
     }
 
     return {
+      getConsoleAccess: () => request<ConsoleAccess>('/api/v1/console/me'),
       listPrincipals: () => request<Principal[]>('/api/v1/principals'),
       createPrincipal: (payload) =>
         request<Principal>('/api/v1/principals', { method: 'POST', body: payload }),

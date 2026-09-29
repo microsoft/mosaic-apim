@@ -184,13 +184,7 @@ class EntraAuthenticator:
             # Fail closed at the edge: a tenant token carrying none of MOSAIC's app roles never
             # reaches a route. Which of the accepted roles a given route needs is decided by the
             # ``require_*`` dependencies.
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=(
-                    "A MOSAIC app role is required: "
-                    f"{', '.join(sorted(self._accepted_roles))}"
-                ),
-            )
+            raise _no_mosaic_role(self._accepted_roles)
         return AuthContext(
             object_id=str(claims["oid"]),
             tenant_id=str(claims["tid"]),
@@ -206,6 +200,13 @@ def _forbidden(role: str) -> HTTPException:
     return HTTPException(
         status_code=status.HTTP_403_FORBIDDEN,
         detail=f"The {role} app role is required",
+    )
+
+
+def _no_mosaic_role(accepted: Iterable[str]) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail=f"A MOSAIC app role is required: {', '.join(sorted(accepted))}",
     )
 
 
@@ -235,4 +236,23 @@ async def require_portal_user(request: Request) -> AuthContext:
     context = await _authenticate(request)
     if not context.has_any_role(settings.portal_role, settings.required_role):
         raise _forbidden(settings.portal_role)
+    return context
+
+
+async def require_mosaic_role(request: Request) -> AuthContext:
+    """Either MOSAIC app role, for a route that only tells callers which role they hold.
+
+    The administrator console asks before it shows anything, and it must be able to ask for someone
+    holding only ``User``, so it can tell them the console is not for them. That makes this as wide
+    as portal access: nothing that returns MOSAIC data belongs behind it.
+
+    Entra authentication already refuses a token with neither role. Checking again keeps local
+    authentication, which does not, failing closed the same way and with the same message.
+    """
+
+    settings: Settings = request.app.state.settings
+    context = await _authenticate(request)
+    accepted = (settings.required_role, settings.portal_role)
+    if not context.has_any_role(*accepted):
+        raise _no_mosaic_role(accepted)
     return context

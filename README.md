@@ -41,7 +41,9 @@ flowchart LR
 The administrator console and the end-user portal are separate applications with separate
 Entra registrations and separate app roles, so they are independently governable. The portal
 reaches only `/api/v1/portal/*` and the current-user `/api/v1/me/*` routes. Every one of them is
-scoped to the caller's own token, and none accepts a subject or requester parameter. See
+scoped to the caller's own token, and none accepts a subject or requester parameter. The console
+first asks `GET /api/v1/console/me` which MOSAIC role the caller holds, and renders only for
+`Admin`; anyone else sees a single page that says what their account has and what to ask for. See
 [ADR 0008](docs/adr/0008-portal-identity-and-role-separation.md).
 
 | Concern | Source of truth | MOSAIC responsibility |
@@ -100,7 +102,9 @@ explicit local/test modes and application startup rejects them when `MOSAIC_ENVI
   only the resources that apply created
 - Async repository abstraction with explicit in-memory and Cosmos implementations
 - React/TypeScript/Vite administrator console using Fluent UI, React Router, TanStack Query, and
-  MSAL, with responsive navigation and persisted light/dark/system themes
+  MSAL, with responsive navigation and persisted light/dark/system themes. It confirms the caller
+  holds the `Admin` role before it shows any of that; a caller with only `User`, or with no MOSAIC
+  role, is told the console isn't for them and what to ask an administrator for
 - Runtime browser configuration; Azure IDs and service URLs are not baked into the web image
 - Typed APIM read and write boundaries kept in separate classes, plus Foundry import and
   deterministic policy authoring that never returns markup
@@ -325,6 +329,12 @@ measured scale, not speculation.
   `Admin` role and guards every administrative route; `require_portal_user` demands the `User`
   role, which `Admin` also satisfies. Neither role is implied by tenant membership, so an operator
   assigns `User` — usually to an Entra group — before anyone can use the portal.
+- `require_mosaic_role` admits either role and guards only `GET /api/v1/console/me`, which reports
+  the caller's MOSAIC roles from their validated token. The console uses it to decide what to show:
+  the console for `Admin`; for `User` alone, a page saying the console is for MOSAIC
+  administrators and that `User` opens the end-user portal; with no MOSAIC role, a page saying an
+  administrator must grant one. That page is presentation, not a boundary — the administrative
+  routes still refuse those callers.
 - Production uses system-assigned managed identities. Local Azure SDK access uses
   `DefaultAzureCredential`; Azure uses `ManagedIdentityCredential`.
 - Cosmos local/key authentication and ACR admin credentials are disabled.

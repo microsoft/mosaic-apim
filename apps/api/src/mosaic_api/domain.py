@@ -1292,6 +1292,21 @@ class PortalProfile(MosaicModel):
     pending_request_count: int = 0
 
 
+class ConsoleAccess(MosaicModel):
+    """Which MOSAIC role the administrator console's caller holds.
+
+    Read from the validated access token. MOSAIC's app roles are defined on the API's registration,
+    so they arrive in the API token's ``roles`` claim and in neither SPA's ID token: the console
+    asks here rather than decoding a token in the browser.
+
+    Only a caller holding a MOSAIC role gets an answer, so ``is_admin`` false means the caller holds
+    the portal role and not the administrator one.
+    """
+
+    roles: list[str] = Field(default_factory=list)
+    is_admin: bool = False
+
+
 MOSAIC_RESOURCE_PREFIX = "mosaic-"
 _SLUG_PATTERN = re.compile(r"[^a-z0-9]+")
 
