@@ -423,6 +423,21 @@ describe('ModelsPage', () => {
     })
   })
 
+  it('moves focus into the publish plan review it opens for a legacy publication', async () => {
+    const user = userEvent.setup()
+    api.listPublications.mockResolvedValue([publication])
+    renderPage()
+    const table = await screen.findByRole('table', { name: 'Published models' })
+    await user.click(within(table).getByRole('button', { name: 'Re-plan' }))
+
+    expect(await screen.findByRole('table', { name: 'Publish plan steps' })).toBeVisible()
+    await waitFor(() => {
+      expect(screen.getByRole('dialog', { name: 'Publish a model' })).toContainElement(
+        document.activeElement as HTMLElement,
+      )
+    })
+  })
+
   it('does not describe an interrupted apply as still running or successful', async () => {
     const user = userEvent.setup()
     api.listPublications.mockResolvedValue([publication])
