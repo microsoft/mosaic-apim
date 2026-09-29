@@ -25,4 +25,5 @@ npm run build
 ```
 
 Runtime values are loaded from `public/config.js` in local development and generated from
-environment variables by `40-runtime-config.sh` in the deployed container.
+environment variables by `40-runtime-config.sh` in the deployed container. The container's
+`nginx.conf` serves `config.js` with `Cache-Control: no-store`, so browsers never reuse an old copy.
