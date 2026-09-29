@@ -122,8 +122,8 @@ function ManageConsequences({ gateway, textId }: { gateway: Gateway; textId: str
         Applying a model’s plan creates these resources, or updates them if they already exist:
       </Text>
       <ul className={styles.list}>
-        <li>a policy fragment that routes calls to the model and enforces its token limit</li>
         <li>a backend that points at the model endpoint</li>
+        <li>a policy fragment that routes calls to that backend and enforces the model’s token limit</li>
         <li>an API for the model, with its operations and an API policy that includes the fragment</li>
         <li>a product that carries the API, linked to it</li>
         <li>

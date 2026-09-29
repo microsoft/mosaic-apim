@@ -24,6 +24,7 @@ import {
   TabList,
   Text,
   Title3,
+  useRestoreFocusTarget,
 } from '@fluentui/react-components'
 import { AddRegular } from '@fluentui/react-icons'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -34,6 +35,7 @@ import { EmptyState, ErrorState, Loading } from '../components/AsyncState'
 import { ImportFromGatewayDialog } from '../components/ImportFromGatewayDialog'
 import { PublishModelDialog } from '../components/PublishModelDialog'
 import { PageHeader } from '../components/PageHeader'
+import { RemovalDialog } from '../components/RemovalDialog'
 import { AI_KIND_LABELS } from '../labels'
 import { CAN_INVOKE, describeScope, findingSummary, runtimeVerdict } from '../runtime-access'
 import { runtimeConfig } from '../runtime-config'
@@ -88,6 +90,8 @@ const scanVisibilityTitles: Partial<Record<SubscriptionScanStatus, string>> = {
   listFailed: "MOSAIC couldn't list subscriptions",
 }
 
+const REGISTRATION_REFUSED = "MOSAIC didn't register this endpoint"
+
 
 const publicationStatusLabels: Record<PublicationStatus, string> = {
   draft: 'Draft',
@@ -114,7 +118,9 @@ function PublicationStatusBadge({ status }: { status: PublicationStatus }) {
 function PublishedModels({ onMessage }: { onMessage: (message: string) => void }) {
   const api = useMosaicApi()
   const queryClient = useQueryClient()
+  const restoreFocus = useRestoreFocusTarget()
   const [runIssue, setRunIssue] = useState<Error | null>(null)
+  const [removing, setRemoving] = useState<Publication | null>(null)
   const [review, setReview] = useState<{
     publication: Publication
     plan: PublishPlan
@@ -216,10 +222,19 @@ function PublishedModels({ onMessage }: { onMessage: (message: string) => void }
   const remove = useMutation({
     mutationFn: (publicationId: string) => api.deletePublication(publicationId),
     onSuccess: async () => {
+      setRemoving(null)
       await refresh()
-      onMessage('Removed the publication record.')
+      onMessage('Removed the publication record. Nothing changed in API Management.')
+    },
+    onError: async () => {
+      await refresh()
     },
   })
+
+  function confirmRemoval(publication: Publication) {
+    remove.reset()
+    setRemoving(publication)
+  }
 
   return (
     <>
@@ -230,8 +245,8 @@ function PublishedModels({ onMessage }: { onMessage: (message: string) => void }
           <Text>Model deployments MOSAIC has planned or published into API Management.</Text>
         </div>
       </div>
-      {(replan.isError || reviewPlan.isError || applyError || unpublish.isError || remove.isError || runIssue) && (
-        <ErrorState error={replan.error ?? reviewPlan.error ?? applyError ?? unpublish.error ?? remove.error ?? runIssue} />
+      {(replan.isError || reviewPlan.isError || applyError || unpublish.isError || runIssue) && (
+        <ErrorState error={replan.error ?? reviewPlan.error ?? applyError ?? unpublish.error ?? runIssue} />
       )}
       {publications.isPending && <Loading label="Loading published models" />}
       {publications.isError && <ErrorState error={publications.error} />}
@@ -288,7 +303,7 @@ function PublishedModels({ onMessage }: { onMessage: (message: string) => void }
                           Apply
                         </Button>
                         <Button appearance="secondary" disabled={unpublish.isPending} onClick={() => unpublish.mutate(publication.id)}>Unpublish</Button>
-                        <Button appearance="subtle" disabled={remove.isPending} onClick={() => remove.mutate(publication.id)}>Remove</Button>
+                        <Button appearance="subtle" disabled={remove.isPending} onClick={() => confirmRemoval(publication)} {...restoreFocus}>Remove</Button>
                       </div>
                     </TableCell>
                   </TableRow>
@@ -304,6 +319,24 @@ function PublishedModels({ onMessage }: { onMessage: (message: string) => void }
       onClose={() => setReview(null)}
       onPublished={onMessage}
     />
+    <RemovalDialog
+      open={removing !== null}
+      title={`Remove ${removing?.displayName ?? 'this publication'}?`}
+      confirmLabel="Remove publication"
+      refusalTitle="MOSAIC didn't remove this publication"
+      pending={remove.isPending}
+      error={remove.error}
+      onConfirm={() => removing && remove.mutate(removing.id)}
+      onCancel={() => setRemoving(null)}
+    >
+      <Text block>
+        MOSAIC deletes its record of this publication. Nothing changes in API Management.
+      </Text>
+      <Text block>
+        MOSAIC refuses while the publication still owns resources there. Unpublish it first so
+        MOSAIC can remove them.
+      </Text>
+    </RemovalDialog>
     </>
   )
 }
@@ -725,13 +758,17 @@ function RuntimeAccessRow({
   )
 }
 
-function ModelEndpoints() {
+function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void }) {
   const api = useMosaicApi()
   const location = useLocation()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
+  const restoreFocus = useRestoreFocusTarget()
   const hasConsumedRegisterQueryRef = useRef(false)
   const [dialogOpen, setDialogOpen] = useState(false)
+  // Where the last registration came from, so a refusal is shown next to the button that asked.
+  const [registerOrigin, setRegisterOrigin] = useState<'dialog' | 'suggestion'>('dialog')
+  const [removing, setRemoving] = useState<ModelEndpoint | null>(null)
   const [mode, setMode] = useState<'azure' | 'compatible'>('azure')
   const [resourceId, setResourceId] = useState('')
   const [endpointUrl, setEndpointUrl] = useState('')
@@ -776,20 +813,46 @@ function ModelEndpoints() {
       setSelectedId(endpoint.id)
       await refresh()
     },
+    onError: async () => {
+      // A refusal can mean the suggestions are out of date, such as an account now covered.
+      await queryClient.invalidateQueries({ queryKey: ['model-endpoint-suggestions'] })
+    },
   })
 
   const sync = useMutation({ mutationFn: api.syncModelEndpoint, onSuccess: refresh })
   const recheck = useMutation({ mutationFn: api.preflightModelEndpoint, onSuccess: refresh })
   const remove = useMutation({
-    mutationFn: api.deleteModelEndpoint,
-    onSuccess: async () => {
+    mutationFn: (endpoint: ModelEndpoint) => api.deleteModelEndpoint(endpoint.id),
+    onSuccess: async (_, endpoint) => {
+      setRemoving(null)
       setSelectedId(null)
+      onMessage(`Removed ${endpoint.name} from MOSAIC. Nothing changed in Azure.`)
       await refresh()
+      await queryClient.invalidateQueries({ queryKey: ['publications'] })
+    },
+    onError: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['publications'] })
     },
   })
 
+  function confirmRemoval(endpoint: ModelEndpoint) {
+    remove.reset()
+    setRemoving(endpoint)
+  }
+
+  function openDialog() {
+    register.reset()
+    setDialogOpen(true)
+  }
+
+  function registerSuggestion(azureResourceId: string) {
+    setRegisterOrigin('suggestion')
+    register.mutate({ azureResourceId })
+  }
+
   function submit(event: FormEvent) {
     event.preventDefault()
+    setRegisterOrigin('dialog')
     if (mode === 'azure') {
       register.mutate({
         azureResourceId: resourceId.trim(),
@@ -885,13 +948,11 @@ function ModelEndpoints() {
           <Button
             appearance="primary"
             icon={<AddRegular />}
-            onClick={() => setDialogOpen(true)}
+            onClick={openDialog}
           >
             Register endpoint
           </Button>
         </div>
-
-        {!dialogOpen && register.isError && <ErrorState error={register.error} />}
 
         {endpoints.isPending && <Loading label="Loading model endpoints" />}
         {endpoints.isError && <ErrorState error={endpoints.error} />}
@@ -957,8 +1018,9 @@ function ModelEndpoints() {
                           </Button>
                           <Button
                             appearance="subtle"
-                            onClick={() => remove.mutate(endpoint.id)}
+                            onClick={() => confirmRemoval(endpoint)}
                             disabled={remove.isPending}
+                            {...restoreFocus}
                           >
                             Remove
                           </Button>
@@ -971,7 +1033,8 @@ function ModelEndpoints() {
             </div>
             <Text size={200} className={styles.muted}>
               Removing an endpoint deletes only what MOSAIC stored about it. The Azure resource and
-              its deployments are never modified.
+              its deployments are never modified. MOSAIC refuses while a model from it is still
+              published.
             </Text>
           </>
         )}
@@ -984,6 +1047,9 @@ function ModelEndpoints() {
             <Text size={200} className={styles.muted}>
               {scanOutcome ? `${scanSummary} ${scanOutcome}` : scanSummary}
             </Text>
+          )}
+          {registerOrigin === 'suggestion' && register.isError && (
+            <ErrorState title={REGISTRATION_REFUSED} error={register.error} />
           )}
           {pending.map((item) => (
             <div
@@ -1005,7 +1071,7 @@ function ModelEndpoints() {
               {item.azureResourceId ? (
                 <Button
                   appearance="primary"
-                  onClick={() => register.mutate({ azureResourceId: item.azureResourceId! })}
+                  onClick={() => registerSuggestion(item.azureResourceId!)}
                   disabled={register.isPending}
                 >
                   Register
@@ -1195,7 +1261,9 @@ function ModelEndpoints() {
                   />
                 </Field>
 
-                {register.isError && <ErrorState error={register.error} />}
+                {registerOrigin === 'dialog' && register.isError && (
+                  <ErrorState title={REGISTRATION_REFUSED} error={register.error} />
+                )}
               </DialogContent>
               <DialogActions>
                 <Button appearance="secondary" onClick={closeDialog}>
@@ -1209,6 +1277,31 @@ function ModelEndpoints() {
           </form>
         </DialogSurface>
       </Dialog>
+
+      <RemovalDialog
+        open={removing !== null}
+        title={`Remove ${removing?.name ?? 'this endpoint'}?`}
+        confirmLabel="Remove endpoint"
+        refusalTitle="MOSAIC didn't remove this endpoint"
+        pending={remove.isPending}
+        error={remove.error}
+        statusLabel={(status) =>
+          publicationStatusLabels[status as PublicationStatus] ?? status
+        }
+        onConfirm={() => removing && remove.mutate(removing)}
+        onCancel={() => setRemoving(null)}
+      >
+        <Text block>
+          MOSAIC deletes its record of this endpoint, its{' '}
+          {removing ? plural(removing.inventory.deployments, 'synced model') : 'synced models'}{' '}
+          and its sync history. Nothing changes in Azure: the resource and its deployments stay as
+          they are.
+        </Text>
+        <Text block>
+          Publication records from this endpoint that own nothing in API Management, such as
+          drafts, are deleted with it. MOSAIC refuses while a model from it is still published.
+        </Text>
+      </RemovalDialog>
     </>
   )
 }
@@ -1281,7 +1374,7 @@ export function ModelsPage() {
 
       <ImportedModelApis onRemoved={setLiveBanner} />
 
-      <ModelEndpoints />
+      <ModelEndpoints onMessage={setLiveBanner} />
 
       <PublishModelDialog
         open={publishOpen}

@@ -42,6 +42,8 @@ _SUBSCRIPTION_PERMISSIONS = re.compile(
     r"^/subscriptions/([^/]+)/providers/Microsoft\.Authorization/permissions$"
 )
 
+# Leaves a property out of the account description entirely, as ARM does with unset values.
+OMITTED: Any = object()
 
 def role_assignment(
     role_definition_id: str,
@@ -149,6 +151,7 @@ class FakeCognitiveServices:
         kind: str = "OpenAI",
         public_network_access: str = "Enabled",
         network_acls: dict[str, Any] | None = None,
+        disable_local_auth: Any = False,
     ) -> None:
         self.permissions = READER_PERMISSIONS if permissions is None else permissions
         self.account_status = account_status
@@ -159,6 +162,8 @@ class FakeCognitiveServices:
         self.kind = kind
         self.public_network_access = public_network_access
         self.network_acls = network_acls
+        # ``OMITTED`` leaves ``disableLocalAuth`` out, as ARM does when it was never set.
+        self.disable_local_auth = disable_local_auth
         self.requests: list[str] = []
         self.persistent_failures: dict[str, int] = {}
         self.role_assignments: list[dict[str, Any]] = []
@@ -198,6 +203,8 @@ class FakeCognitiveServices:
             ]
         }
         self.forbidden_subscriptions: set[str] = set()
+        # Subscriptions whose account listing keeps failing with this status.
+        self.failing_subscriptions: dict[str, int] = {}
         # What MOSAIC's identity holds at each subscription itself, which decides whether the
         # account list above is complete. Reader unless a test says otherwise.
         self.subscription_permissions: dict[str, list[dict[str, Any]]] = {}
@@ -231,6 +238,11 @@ class FakeCognitiveServices:
             subscription_id = path.split("/")[2]
             if subscription_id in self.forbidden_subscriptions:
                 return httpx.Response(403, json={"error": {"message": "denied"}})
+            failing = self.failing_subscriptions.get(subscription_id)
+            if failing is not None:
+                return httpx.Response(
+                    failing, json={"error": {"code": "ServiceUnavailable", "message": "denied"}}
+                )
             return _collection(self.accounts_by_subscription.get(subscription_id, []))
 
         match = _SUBSCRIPTION_PERMISSIONS.match(path)
@@ -311,8 +323,9 @@ class FakeCognitiveServices:
             "provisioningState": "Succeeded",
             "endpoint": AI_ENDPOINT,
             "publicNetworkAccess": self.public_network_access,
-            "disableLocalAuth": False,
         }
+        if self.disable_local_auth is not OMITTED:
+            properties["disableLocalAuth"] = self.disable_local_auth
         if self.network_acls is not None:
             properties["networkAcls"] = self.network_acls
         return {

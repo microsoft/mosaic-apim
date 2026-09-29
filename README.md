@@ -94,8 +94,8 @@ explicit local/test modes and application startup rejects them when `MOSAIC_ENVI
   AWS Bedrock
 - MCP server discovery, and import of selected model APIs and MCP servers from a synchronised
   gateway into MOSAIC's own desired state
-- Model publishing: expose an observed deployment through a gateway by creating its policy fragment,
-  backend, API, operations, API policy, product, product link, and subscription — through a
+- Model publishing: expose an observed deployment through a gateway by creating its backend, policy
+  fragment, API, operations, API policy, product, product link, and subscription — through a
   persisted deterministic plan, an explicit apply, per-step results, and a rollback that deletes
   only the resources that apply created
 - Async repository abstraction with explicit in-memory and Cosmos implementations
@@ -191,6 +191,7 @@ npm run build
 
 az bicep build --file infra\main.bicep
 python -m unittest scripts.tests.test_mosaic_entra
+python -m unittest scripts.tests.test_spa_nginx
 ```
 
 ## Deploy with `azd`
@@ -250,6 +251,12 @@ Assign these permissions through normal Entra administration. A MOSAIC grant doe
 consent a client, create an identity, or grant Microsoft Graph permissions. The only consent
 bootstrap creates is the model client's `Models.Invoke` grant. Bootstrap exposes
 `MOSAIC_MODEL_RUNTIME_CLIENT_ID`; this must not be the MOSAIC control-plane API's client ID.
+
+The console and portal containers serve `index.html` and every SPA route with
+`Cache-Control: no-cache`, `/config.js` with `no-store`, and the content-hashed files under
+`/assets/` with `public, max-age=31536000, immutable`. After a redeploy, the next page load
+revalidates `index.html` and picks up the new bundle and runtime configuration. The policy is in
+`apps/web/nginx.conf` and `apps/portal/nginx.conf`, which are kept identical.
 
 APIM Developer is the dominant cost (currently roughly USD 51/month at continuous use) and can take
 30–60 minutes or longer to provision. The shared B1 Linux plan is roughly USD 13–15/month; Basic ACR
@@ -561,7 +568,8 @@ On the Models page, select an endpoint to open its **Access** card.
     command. MOSAIC never runs the command itself.
 - **Endpoint settings**, above the gateway verdicts, shows the resource kind, public network access,
   firewall, and key authentication. Those settings decide whether a gateway can reach the endpoint
-  at all.
+  at all. Azure omits `disableLocalAuth` from accounts where it was never set, and its default is
+  `false`, so MOSAIC shows an unset value as key authentication *Enabled*.
 
 Every role whose name begins `Cognitive Services` or `Foundry` that grants control-plane deployment
 read also grants data-plane inference, and most also grant `listKeys`. `Reader` is the only built-in
@@ -596,6 +604,36 @@ for `Reader` on its own identity to read an endpoint or to scan subscriptions, i
 OpenAI-compatible endpoints are registered with a Key Vault secret identifier the operator created.
 MOSAIC stores the URI only; discovery for those endpoints is not implemented yet.
 
+**One registration per Azure AI resource.** Deployments live on the resource (the account), never
+on a Foundry project, so a project and its parent resource list the same models. MOSAIC treats every
+registration as covering its resource:
+
+- Registering a resource whose project is already registered, a project whose resource is, or a
+  second project on the same resource is refused with a `409`. The message names the endpoint that
+  already lists those models, and `details` carries its `id` and `name`.
+- Discovery doesn't suggest a resource that a registered project already covers.
+- Registering the exact same resource ID again is refused as before.
+
+Overlapping records registered before this check are left as they are. Remove one of them to stop
+the duplicate listing.
+
+**Removing an endpoint.** Remove on the Models page asks first. The dialog says what goes: MOSAIC's
+record of the endpoint, its synced models and its sync history. Nothing changes in Azure. The API
+(`DELETE /api/v1/model-endpoints/{id}`) refuses with a `409` while any publication from the endpoint
+may still own resources in API Management, because without the endpoint that publication could
+never be planned, applied or unpublished again, and its API would keep serving traffic. A
+publication blocks when it:
+
+- recorded resources it created, including a failed apply that left some behind;
+- is applying, or its access change is applying or was interrupted (`accessState` unknown);
+- still has an enabled grant applied at the gateway;
+- is locked by a run in progress.
+
+The refusal lists the blocking publications (id, display name, status) in `details`, and the dialog
+shows them. Unpublish those models first. Publication records that own nothing — drafts, planned or
+rolled-back publications, and unpublished ones — are deleted with the endpoint and audited as
+`publication.removed`, because they could never be planned again without it.
+
 ## Publishing models
 
 Publishing takes a deployment MOSAIC observed on a registered model endpoint and exposes it through
@@ -612,14 +650,21 @@ Applying creates, in dependency order:
 
 | Order | Resource | Purpose |
 | --- | --- | --- |
-| 1 | `mosaic-*` policy fragment | Managed-identity authentication, backend routing, and, where the gateway's tier supports them, token limit and token metric |
-| 2 | Backend | The model endpoint origin, with query and fragment stripped |
+| 1 | Backend | The model endpoint origin, with query and fragment stripped |
+| 2 | `mosaic-*` policy fragment | Managed-identity authentication, routing to the backend, and, where the gateway's tier supports them, token limit and token metric |
 | 3 | API | The route, created with no `serviceUrl` so removing the fragment fails closed |
 | 4 | Operations | A curated, versioned set per API shape |
 | 5 | API policy | A thin `<include-fragment>` of the MOSAIC fragment |
 | 6 | Product | Carries the API |
 | 7 | Product/API link | |
 | 8 | Subscription | Only when the publication requires one |
+
+Each resource is created after the resources it names. API Management accepts a policy fragment and
+only then checks the backend its `set-backend-service` names, failing the write if that backend does
+not exist yet, so the backend comes first. Likewise, the API policy includes the fragment; the
+operations and the API policy belong to the API; the product link joins the product and the API;
+and the subscription is scoped to the product. A plan saved by an earlier MOSAIC release that put
+the fragment first is refused at apply; plan the publication again.
 
 Operation sets are shipped and versioned by MOSAIC rather than fetched from the provider, so a plan
 is deterministic and does not couple an APIM write to a third-party document being reachable. Each
@@ -642,16 +687,26 @@ only on v2 tiers. On a classic tier such as Developer, the publish wizard explai
 publication applies no token limits or token metrics. Governed grants on it can use call limits
 instead.
 
-Every step records whether it created the resource or found one already there. If a step fails,
-MOSAIC reverses the completed steps and deletes **only** resources that run created — ownership is
-recorded at the moment of the write, never inferred from a name, so a product that merely matches a
-MOSAIC name is never destroyed. A resource MOSAIC replaced rather than created is not reverted,
-because the previous content was never stored; those are named in the run instead. If the rollback
-itself fails, the run reports `rollbackFailed` and lists exactly what was left behind.
+Every step records whether it created the resource or found one already there. A step succeeds only
+once Azure has finished its write: API Management finishes a policy fragment or an API write
+asynchronously, on an update as well as a create, so MOSAIC waits for any write Azure answers with
+`Azure-AsyncOperation` or `Location`, whatever its status code. A failed step says why: when Azure
+explains a failed operation, or refuses a request outright, the step's error carries Azure's error
+code, message and most specific detail, such as a validation error naming the policy element, line
+and column. It is bounded in length and never includes policy markup. An update API Management
+rejects after accepting it leaves the previous content in place and fails its step, so it is never
+reported as applied: a re-applied publication rolls back, and a failed governed apply denies access,
+then restores only the last safe access. If a step fails, MOSAIC reverses the completed steps and
+deletes **only** resources that run created — ownership is recorded at the moment of the write,
+never inferred from a name, so a product that merely matches a MOSAIC name is never destroyed. A
+resource MOSAIC replaced rather than created is not reverted, because the previous content was never
+stored; those are named in the run instead. If the rollback itself fails, the run reports
+`rollbackFailed` and lists exactly what was left behind.
 
-Unpublishing runs the same machinery over the tracked resources in reverse. A publication that still
-owns API Management resources cannot be deleted, and a gateway with published models cannot be
-removed, so intent is never dropped while the resources it created keep running.
+Unpublishing runs the same machinery over the tracked resources in reverse, so a fragment is removed
+before the backend it routes to. A publication that still owns API Management resources cannot be
+deleted, and a gateway with published models cannot be removed, so intent is never dropped while
+the resources it created keep running.
 
 ## Governed model access
 
@@ -809,7 +864,7 @@ already acknowledged for imported records.
    gateway's runtime access to them, and register MCP servers directly to record the tools they
    declare.
 4. **Model publishing:** expose an observed deployment through a gateway by writing
-   its policy fragment, backend, API, operations, product and subscription, through a deterministic
+   its backend, policy fragment, API, operations, product and subscription, through a deterministic
    plan, an explicit apply, per-step results, and rollback that removes only what it created. This
    is the orchestration [ADR 0009](docs/adr/0009-entitlement-subjects-resources-and-apim-binding.md)
    defers to, for models.

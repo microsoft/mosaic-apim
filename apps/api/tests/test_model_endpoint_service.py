@@ -24,16 +24,25 @@ from mosaic_api.domain import (
     AccessEvaluation,
     CognitiveServicesResourceId,
     EndpointAuthMode,
+    EntitlementSubject,
+    EntitlementSubjectKind,
     Gateway,
     GatewayCapabilities,
     GatewayRuntimeAccess,
     GatewaySyncStatus,
+    ModelAccessGrant,
+    ModelAccessSettings,
+    ModelAccessSnapshot,
     ModelEndpointCreate,
     ModelEndpointStatus,
     ModelEndpointSyncRun,
     ModelEndpointUpdate,
     ModelProvider,
     NetworkReachability,
+    Publication,
+    PublicationStatus,
+    PublishedResource,
+    PublishedResourceKind,
     RuntimeAccessEvaluation,
     RuntimeAccessReason,
     RuntimeRoleFindingKind,
@@ -137,6 +146,93 @@ class TestRegistration:
         await endpoint_service.register(ACTOR, _create())
         with pytest.raises(ConflictError):
             await endpoint_service.register(ACTOR, _create())
+
+    @pytest.mark.asyncio
+    async def test_exact_duplicate_keeps_its_message(self, endpoint_service) -> None:
+        first = await endpoint_service.register(ACTOR, _create(azure_resource_id=AI_PROJECT_ID))
+
+        with pytest.raises(ConflictError) as refused:
+            await endpoint_service.register(
+                ACTOR, _create(azure_resource_id=AI_PROJECT_ID.upper())
+            )
+
+        assert refused.value.message == "This Azure AI resource is already registered with MOSAIC"
+        assert refused.value.details == {"id": first.id, "name": first.name}
+
+
+class TestOverlappingRegistrations:
+    """Every registration covers its account, because deployments live on the account."""
+
+    @pytest.mark.asyncio
+    async def test_account_after_its_project_is_refused(
+        self, endpoint_service, endpoint_repository: InMemoryModelEndpointRepository
+    ) -> None:
+        project = await endpoint_service.register(
+            ACTOR, _create(azure_resource_id=AI_PROJECT_ID, name="Team A project")
+        )
+
+        with pytest.raises(ConflictError) as refused:
+            await endpoint_service.register(ACTOR, _create())
+
+        assert refused.value.message == (
+            "MOSAIC already lists this resource's models through Team A project, a Foundry "
+            "project on it. A Foundry project's models are deployed on its parent resource, so "
+            "registering both would list every deployment twice."
+        )
+        assert refused.value.details == {"id": project.id, "name": "Team A project"}
+        assert list(endpoint_repository.endpoints) == [project.id]
+
+    @pytest.mark.asyncio
+    async def test_project_after_its_account_is_refused(
+        self, endpoint_service, endpoint_repository: InMemoryModelEndpointRepository
+    ) -> None:
+        account = await endpoint_service.register(ACTOR, _create(name="Contoso models"))
+
+        # ARM IDs are case-insensitive, so a differently cased project is still on this account.
+        with pytest.raises(ConflictError) as refused:
+            await endpoint_service.register(
+                ACTOR,
+                _create(azure_resource_id=AI_PROJECT_ID.replace("contoso-aoai", "Contoso-AOAI")),
+            )
+
+        assert refused.value.message == (
+            "MOSAIC already lists this project's models through Contoso models, its parent "
+            "resource. A Foundry project's models are deployed on its parent resource, so "
+            "registering both would list every deployment twice."
+        )
+        assert refused.value.details == {"id": account.id, "name": "Contoso models"}
+        assert list(endpoint_repository.endpoints) == [account.id]
+
+    @pytest.mark.asyncio
+    async def test_second_project_on_the_same_account_is_refused(
+        self, endpoint_service, endpoint_repository: InMemoryModelEndpointRepository
+    ) -> None:
+        project = await endpoint_service.register(
+            ACTOR, _create(azure_resource_id=AI_PROJECT_ID, name="Team A project")
+        )
+
+        with pytest.raises(ConflictError) as refused:
+            await endpoint_service.register(
+                ACTOR, _create(azure_resource_id=f"{AI_RESOURCE_ID}/projects/team-b")
+            )
+
+        assert refused.value.message == (
+            "MOSAIC already lists this project's models through Team A project, another project "
+            "on the same resource. Foundry projects share their parent resource's deployments, "
+            "so registering both would list every deployment twice."
+        )
+        assert refused.value.details == {"id": project.id, "name": "Team A project"}
+        assert list(endpoint_repository.endpoints) == [project.id]
+
+    @pytest.mark.asyncio
+    async def test_another_account_is_still_accepted(self, endpoint_service) -> None:
+        await endpoint_service.register(ACTOR, _create(azure_resource_id=AI_PROJECT_ID))
+        # Same resource group, and an account name that merely starts the same way.
+        other = AI_RESOURCE_ID.replace("contoso-aoai", "contoso-aoai-2")
+
+        endpoint = await endpoint_service.register(ACTOR, _create(azure_resource_id=other))
+
+        assert endpoint.azure_resource_id == other
 
     @pytest.mark.asyncio
     async def test_missing_permissions_reports_reader_remediation(
@@ -1046,6 +1142,23 @@ class TestSuggestions:
         assert "secret-token" not in view.model_dump_json()
 
     @pytest.mark.asyncio
+    async def test_a_subscription_that_fails_to_list_is_explained_in_mosaics_words(
+        self, endpoint_service, fake_aoai: FakeCognitiveServices
+    ) -> None:
+        fake_aoai.failing_subscriptions = {AI_SUBSCRIPTION_ID: 503}
+
+        view = await endpoint_service.suggestions(ACTOR)
+
+        assert view.scan_status == SubscriptionScanStatus.SCANNED
+        [issue] = view.scan_issues
+        assert issue.message.endswith(
+            "(Azure Resource Manager did not return a usable response)"
+        )
+        # An upstream error's message says what Azure said. A scan still never returns it.
+        assert "denied" not in view.model_dump_json()
+        assert "ServiceUnavailable" not in view.model_dump_json()
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize(
         "listed",
         [[], [{"displayName": "Listed without an ID"}]],
@@ -1205,6 +1318,22 @@ class TestSuggestions:
         assert scanned[0].model_endpoint_id is not None
 
     @pytest.mark.asyncio
+    async def test_account_counts_as_registered_through_its_project(
+        self, endpoint_service
+    ) -> None:
+        project = await endpoint_service.register(
+            ACTOR, _create(azure_resource_id=AI_PROJECT_ID.replace("contoso-aoai", "CONTOSO-AOAI"))
+        )
+
+        view = await endpoint_service.suggestions(ACTOR)
+
+        scanned = [s for s in view.suggestions if s.source == SuggestionSource.SUBSCRIPTION_SCAN]
+        # The project's models are the account's, so the account is not offered again.
+        assert [s.account_name for s in scanned] == ["contoso-aoai"]
+        assert scanned[0].already_registered is True
+        assert scanned[0].model_endpoint_id == project.id
+
+    @pytest.mark.asyncio
     async def test_suggests_ai_backends_observed_in_a_gateway(
         self, endpoint_service, gateway_repository: InMemoryGatewayRepository
     ) -> None:
@@ -1260,6 +1389,275 @@ class TestSuggestions:
         assert view.scan_status == SubscriptionScanStatus.NOT_CONFIGURED
         assert view.scan_message is None
         assert view.scan_remediation == []
+
+
+def _snapshot(*, enabled: bool) -> ModelAccessSnapshot:
+    return ModelAccessSnapshot(
+        version=2,
+        settings=ModelAccessSettings(),
+        grants=[
+            ModelAccessGrant(
+                entitlement_id="entitlement_1",
+                subject=EntitlementSubject(kind=EntitlementSubjectKind.USER, id="user_1"),
+                object_id="user-object-id",
+                display_name="User",
+                subscription_name="mosaic-grant-1",
+                enabled=enabled,
+                intent_digest="fixture",
+            )
+        ],
+    )
+
+
+class TestRemoval:
+    """An endpoint can't be removed while a publication from it may own anything in APIM."""
+
+    @staticmethod
+    def _publication(endpoint_id: str, deployment: str, **overrides: object) -> Publication:
+        payload: dict[str, object] = {
+            "id": new_id("publication"),
+            "tenant_id": ACTOR.tenant_id,
+            "gateway_id": "gateway_1",
+            "model_endpoint_id": endpoint_id,
+            "deployment_name": deployment,
+            "provider": ModelProvider.AZURE_OPENAI,
+            "display_name": f"Contoso {deployment}",
+            "api_name": deployment,
+            "api_path": deployment,
+            "backend_name": deployment,
+            "fragment_name": deployment,
+            "product_name": deployment,
+            "subscription_name": deployment,
+            "shape_version": "1",
+        }
+        payload.update(overrides)
+        return Publication.model_validate(payload)
+
+    @staticmethod
+    def _owned_api(name: str) -> PublishedResource:
+        return PublishedResource(
+            kind=PublishedResourceKind.API,
+            name=name,
+            resource_id=f"{RESOURCE_ID}/apis/{name}",
+            created_by_mosaic=True,
+        )
+
+    async def _endpoint_with(
+        self,
+        service,
+        gateway_repository: InMemoryGatewayRepository,
+        *publications: dict[str, object],
+    ) -> tuple[str, list[Publication]]:
+        endpoint = await service.register(ACTOR, _create(name="Contoso models"))
+        await service.sync_now(ACTOR, endpoint.id)
+        saved = []
+        for index, overrides in enumerate(publications):
+            publication = self._publication(endpoint.id, f"deployment-{index}", **overrides)
+            saved.append(await gateway_repository.record_publication_state(publication))
+        return endpoint.id, saved
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            pytest.param({"status": PublicationStatus.PUBLISHED}, id="published"),
+            pytest.param({"status": PublicationStatus.APPLYING}, id="applying"),
+            # Rollback left something behind, so the run failed with a resource still owned.
+            pytest.param({"status": PublicationStatus.FAILED}, id="failed-with-orphans"),
+            pytest.param({"status": PublicationStatus.DRAFT}, id="draft-still-owning"),
+        ],
+    )
+    async def test_publication_owning_resources_blocks_removal(
+        self,
+        endpoint_service,
+        endpoint_repository: InMemoryModelEndpointRepository,
+        gateway_repository: InMemoryGatewayRepository,
+        overrides: dict[str, object],
+    ) -> None:
+        endpoint_id, (publication,) = await self._endpoint_with(
+            endpoint_service,
+            gateway_repository,
+            {**overrides, "resources": [self._owned_api("deployment-0")]},
+        )
+
+        with pytest.raises(ConflictError) as refused:
+            await endpoint_service.delete(ACTOR, endpoint_id)
+
+        assert refused.value.message == (
+            "Unpublish the model published from Contoso models before removing it. Its API "
+            "would keep serving traffic in API Management with nothing in MOSAIC to change or "
+            "remove it."
+        )
+        assert refused.value.details == {
+            "id": endpoint_id,
+            "name": "Contoso models",
+            "publications": [
+                {
+                    "id": publication.id,
+                    "displayName": "Contoso deployment-0",
+                    "status": str(publication.status),
+                    "gatewayId": "gateway_1",
+                }
+            ],
+        }
+        assert endpoint_id in endpoint_repository.endpoints
+        assert endpoint_repository.observed
+        assert publication.id in gateway_repository.publications
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            # An apply was interrupted: MOSAIC can't know what reached APIM.
+            pytest.param(
+                {"status": PublicationStatus.FAILED, "access_state": "unknown"},
+                id="interrupted-access-unknown",
+            ),
+            pytest.param({"access_state": "applying"}, id="access-applying"),
+            pytest.param({"status": PublicationStatus.APPLYING}, id="applying-no-resources-yet"),
+            pytest.param(
+                {"applied_access": _snapshot(enabled=True), "access_state": "applied"},
+                id="enabled-grant",
+            ),
+        ],
+    )
+    async def test_publication_that_may_own_resources_blocks_removal(
+        self,
+        endpoint_service,
+        endpoint_repository: InMemoryModelEndpointRepository,
+        gateway_repository: InMemoryGatewayRepository,
+        overrides: dict[str, object],
+    ) -> None:
+        endpoint_id, (publication,) = await self._endpoint_with(
+            endpoint_service, gateway_repository, overrides
+        )
+
+        with pytest.raises(ConflictError) as refused:
+            await endpoint_service.delete(ACTOR, endpoint_id)
+
+        assert [item["id"] for item in refused.value.details["publications"]] == [
+            publication.id
+        ]
+        assert endpoint_id in endpoint_repository.endpoints
+
+    @pytest.mark.asyncio
+    async def test_lists_every_blocking_publication_and_says_so_in_the_plural(
+        self, endpoint_service, gateway_repository: InMemoryGatewayRepository
+    ) -> None:
+        endpoint_id, (first, _, third) = await self._endpoint_with(
+            endpoint_service,
+            gateway_repository,
+            {"status": PublicationStatus.PUBLISHED, "resources": [self._owned_api("a")]},
+            {},
+            {"status": PublicationStatus.FAILED, "access_state": "unknown"},
+        )
+
+        with pytest.raises(ConflictError) as refused:
+            await endpoint_service.delete(ACTOR, endpoint_id)
+
+        assert refused.value.message.startswith(
+            "Unpublish the models published from Contoso models before removing it. Their APIs"
+        )
+        assert [item["id"] for item in refused.value.details["publications"]] == [
+            first.id,
+            third.id,
+        ]
+        # A refusal removes nothing, not even the draft that would otherwise go with it.
+        assert len(gateway_repository.publications) == 3
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            pytest.param({}, id="never-applied-draft"),
+            pytest.param({"status": PublicationStatus.PLANNED}, id="planned"),
+            pytest.param({"status": PublicationStatus.ROLLED_BACK}, id="rolled-back"),
+            # What a successful unpublish leaves: a draft, nothing owned, every grant disabled.
+            pytest.param(
+                {
+                    "status": PublicationStatus.DRAFT,
+                    "access_state": "applied",
+                    "applied_access": _snapshot(enabled=False),
+                    "last_applied_at": utc_now(),
+                },
+                id="unpublished",
+            ),
+            # A governed apply that failed closed: nothing is owned and access was denied.
+            pytest.param(
+                {"status": PublicationStatus.FAILED, "access_state": "failed"},
+                id="failed-closed",
+            ),
+        ],
+    )
+    async def test_publication_owning_nothing_is_removed_with_the_endpoint(
+        self,
+        endpoint_service,
+        endpoint_repository: InMemoryModelEndpointRepository,
+        gateway_repository: InMemoryGatewayRepository,
+        overrides: dict[str, object],
+    ) -> None:
+        endpoint_id, (publication,) = await self._endpoint_with(
+            endpoint_service, gateway_repository, overrides
+        )
+        other = await gateway_repository.record_publication_state(
+            self._publication("endpoint_other", "unrelated")
+        )
+
+        await endpoint_service.delete(ACTOR, endpoint_id)
+
+        assert endpoint_id not in endpoint_repository.endpoints
+        assert endpoint_repository.observed == {}
+        # It could never be planned again without its endpoint, so it is not left behind.
+        assert list(gateway_repository.publications) == [other.id]
+        audit = [
+            event
+            for event in gateway_repository.audit_events.values()
+            if event.resource_id == publication.id
+        ]
+        assert [event.action for event in audit] == ["publication.removed"]
+        assert audit[0].details == {
+            "reason": "modelEndpoint.removed",
+            "modelEndpointId": endpoint_id,
+        }
+        assert gateway_repository.publication_locks == {}
+
+    @pytest.mark.asyncio
+    async def test_publication_locked_by_a_run_blocks_removal(
+        self,
+        endpoint_service,
+        endpoint_repository: InMemoryModelEndpointRepository,
+        gateway_repository: InMemoryGatewayRepository,
+    ) -> None:
+        endpoint_id, (draft, locked) = await self._endpoint_with(
+            endpoint_service, gateway_repository, {}, {}
+        )
+        # An apply has just claimed this draft and may be about to create resources for it.
+        await gateway_repository.acquire_publication_lock(ACTOR.tenant_id, locked.id, "run_1")
+
+        with pytest.raises(ConflictError) as refused:
+            await endpoint_service.delete(ACTOR, endpoint_id)
+
+        assert [item["id"] for item in refused.value.details["publications"]] == [locked.id]
+        assert endpoint_id in endpoint_repository.endpoints
+        assert {draft.id, locked.id} <= set(gateway_repository.publications)
+        # The locks this removal took are released; the run's own lock is untouched.
+        assert gateway_repository.publication_locks == {
+            (ACTOR.tenant_id, locked.id): "run_1"
+        }
+
+    @pytest.mark.asyncio
+    async def test_endpoint_without_publications_is_removed(
+        self,
+        endpoint_service,
+        endpoint_repository: InMemoryModelEndpointRepository,
+    ) -> None:
+        endpoint = await endpoint_service.register(ACTOR, _create())
+        await endpoint_service.sync_now(ACTOR, endpoint.id)
+
+        await endpoint_service.delete(ACTOR, endpoint.id)
+
+        assert endpoint_repository.endpoints == {}
+        assert endpoint_repository.observed == {}
 
 
 class TestStaleRuns:

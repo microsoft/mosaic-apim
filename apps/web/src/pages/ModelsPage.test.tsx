@@ -186,10 +186,16 @@ const api = {
 const { TestApiError } = vi.hoisted(() => ({
   TestApiError: class ApiError extends Error {
     readonly status: number
+    readonly body?: { message?: string; details?: Record<string, unknown> }
 
-    constructor(message: string, status: number) {
+    constructor(
+      message: string,
+      status: number,
+      body?: { message?: string; details?: Record<string, unknown> },
+    ) {
       super(message)
       this.status = status
+      this.body = body
     }
   },
 }))
@@ -417,17 +423,59 @@ describe('ModelsPage', () => {
     ).not.toBeInTheDocument()
   })
 
-  it('surfaces the conflict message when removing a publication that still owns resources', async () => {
+  it('asks before removing a publication record', async () => {
     const user = userEvent.setup()
-    api.listPublications.mockResolvedValue([publication])
-    api.deletePublication.mockRejectedValue(new Error('Unpublish before removing this publication.'))
+    api.listPublications.mockResolvedValue([{ ...publication, status: 'draft' }])
 
     renderPage()
 
     const table = await screen.findByRole('table', { name: 'Published models' })
     await user.click(within(table).getByRole('button', { name: 'Remove' }))
 
-    expect(await screen.findByText('Unpublish before removing this publication.')).toBeVisible()
+    const dialog = await screen.findByRole('alertdialog', { name: 'Remove GPT-4o production?' })
+    expect(dialog).toHaveTextContent(
+      'MOSAIC deletes its record of this publication. Nothing changes in API Management.',
+    )
+    expect(api.deletePublication).not.toHaveBeenCalled()
+
+    await user.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument())
+    expect(api.deletePublication).not.toHaveBeenCalled()
+
+    await user.click(within(table).getByRole('button', { name: 'Remove' }))
+    await user.click(
+      within(await screen.findByRole('alertdialog')).getByRole('button', {
+        name: 'Remove publication',
+      }),
+    )
+
+    await waitFor(() => expect(api.deletePublication).toHaveBeenCalledWith('pub_1'))
+    expect(
+      await screen.findByText(
+        'Removed the publication record. Nothing changed in API Management.',
+      ),
+    ).toBeVisible()
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument())
+  })
+
+  it('surfaces the conflict message when removing a publication that still owns resources', async () => {
+    const user = userEvent.setup()
+    api.listPublications.mockResolvedValue([publication])
+    api.deletePublication.mockRejectedValue(
+      new TestApiError('Unpublish before removing this publication.', 409),
+    )
+
+    renderPage()
+
+    const table = await screen.findByRole('table', { name: 'Published models' })
+    await user.click(within(table).getByRole('button', { name: 'Remove' }))
+    const dialog = await screen.findByRole('alertdialog')
+    await user.click(within(dialog).getByRole('button', { name: 'Remove publication' }))
+
+    const refusal = await within(dialog).findByRole('alert')
+    expect(refusal).toHaveTextContent("MOSAIC didn't remove this publication")
+    expect(refusal).toHaveTextContent('Unpublish before removing this publication.')
+    expect(screen.queryByText('Unable to load data')).not.toBeInTheDocument()
   })
 
   it('opens the registration dialog from the shell query and clears it when closed', async () => {
@@ -657,6 +705,156 @@ describe('ModelsPage model endpoints', () => {
     renderPage()
 
     expect(await screen.findByText('No model endpoints yet')).toBeVisible()
+  })
+
+  it('asks before removing an endpoint and says what goes with it', async () => {
+    const user = userEvent.setup()
+    api.listModelEndpoints.mockResolvedValue([
+      modelEndpoint({ inventory: { deployments: 6, availableModels: 3, succeededDeployments: 6, deprecatedDeployments: 0 } }),
+    ])
+    api.deleteModelEndpoint.mockResolvedValue(undefined)
+
+    renderPage()
+
+    const table = await screen.findByRole('table', { name: 'Registered model endpoints' })
+    await user.click(within(table).getByRole('button', { name: 'Remove' }))
+
+    const dialog = await screen.findByRole('alertdialog', { name: 'Remove Contoso models?' })
+    expect(dialog).toHaveTextContent(
+      'MOSAIC deletes its record of this endpoint, its 6 synced models and its sync history. ' +
+        'Nothing changes in Azure: the resource and its deployments stay as they are.',
+    )
+    expect(api.deleteModelEndpoint).not.toHaveBeenCalled()
+
+    await user.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument())
+    expect(api.deleteModelEndpoint).not.toHaveBeenCalled()
+
+    await user.click(within(table).getByRole('button', { name: 'Remove' }))
+    await user.click(
+      within(await screen.findByRole('alertdialog')).getByRole('button', {
+        name: 'Remove endpoint',
+      }),
+    )
+
+    await waitFor(() => expect(api.deleteModelEndpoint).toHaveBeenCalledWith('endpoint_1'))
+    expect(
+      await screen.findByText('Removed Contoso models from MOSAIC. Nothing changed in Azure.'),
+    ).toBeVisible()
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument())
+  })
+
+  it('keeps the dialog open and lists the publications when removal is refused', async () => {
+    const user = userEvent.setup()
+    const message =
+      'Unpublish the models published from Contoso models before removing it. Their APIs ' +
+      'would keep serving traffic in API Management with nothing in MOSAIC to change or ' +
+      'remove them.'
+    api.listModelEndpoints.mockResolvedValue([modelEndpoint()])
+    api.deleteModelEndpoint.mockRejectedValue(
+      new TestApiError(message, 409, {
+        message,
+        details: {
+          id: 'endpoint_1',
+          name: 'Contoso models',
+          publications: [
+            { id: 'pub_1', displayName: 'GPT-4o production', status: 'published', gatewayId: 'gateway_1' },
+            { id: 'pub_2', displayName: 'Embeddings', status: 'failed', gatewayId: 'gateway_1' },
+          ],
+        },
+      }),
+    )
+
+    renderPage()
+
+    const table = await screen.findByRole('table', { name: 'Registered model endpoints' })
+    await user.click(within(table).getByRole('button', { name: 'Remove' }))
+    const dialog = await screen.findByRole('alertdialog')
+    await user.click(within(dialog).getByRole('button', { name: 'Remove endpoint' }))
+
+    const refusal = await within(dialog).findByRole('alert')
+    expect(refusal).toHaveTextContent("MOSAIC didn't remove this endpoint")
+    expect(refusal).toHaveTextContent(message)
+    const blocking = within(dialog).getByRole('list', { name: 'Publications blocking removal' })
+    expect(
+      within(blocking)
+        .getAllByRole('listitem')
+        .map((item) => item.textContent),
+    ).toEqual(['GPT-4o production (Published)', 'Embeddings (Failed)'])
+    expect(screen.queryByText('Unable to load data')).not.toBeInTheDocument()
+    expect(screen.getByRole('table', { name: 'Registered model endpoints' })).toHaveTextContent(
+      'Contoso models',
+    )
+  })
+
+  it('shows why the Register dialog was refused', async () => {
+    const user = userEvent.setup()
+    const message =
+      "MOSAIC already lists this resource's models through Team A project, a Foundry project " +
+      "on it. A Foundry project's models are deployed on its parent resource, so registering " +
+      'both would list every deployment twice.'
+    api.registerModelEndpoint.mockRejectedValue(
+      new TestApiError(message, 409, {
+        message,
+        details: { id: 'endpoint_project', name: 'Team A project' },
+      }),
+    )
+
+    renderPage('/models?register=1')
+
+    const dialog = await screen.findByRole('dialog')
+    await user.type(within(dialog).getByLabelText(/Azure resource ID/i), AI_RESOURCE_ID)
+    await user.click(within(dialog).getByRole('button', { name: 'Register' }))
+
+    await waitFor(() => expect(api.registerModelEndpoint).toHaveBeenCalled())
+    expect(api.registerModelEndpoint.mock.calls[0][0]).toMatchObject({
+      azureResourceId: AI_RESOURCE_ID,
+    })
+    expect(await within(dialog).findByText(message)).toBeVisible()
+    expect(within(dialog).getByText("MOSAIC didn't register this endpoint")).toBeVisible()
+    expect(screen.queryByText('Unable to load data')).not.toBeInTheDocument()
+  })
+
+  it("shows why a suggestion's registration was refused next to the suggestion", async () => {
+    const user = userEvent.setup()
+    const message =
+      "MOSAIC already lists this resource's models through Team A project, a Foundry project " +
+      "on it. A Foundry project's models are deployed on its parent resource, so registering " +
+      'both would list every deployment twice.'
+    api.listSuggestedModelEndpoints.mockResolvedValue(
+      suggestionView({
+        suggestions: [
+          {
+            source: 'subscriptionScan',
+            endpoint: 'https://contoso-aoai.openai.azure.com/',
+            azureResourceId: AI_RESOURCE_ID,
+            accountName: 'contoso-aoai',
+            resourceGroup: 'rg-contoso-ai',
+            subscriptionId: '00000000-0000-0000-0000-000000000000',
+            kind: 'OpenAI',
+            location: 'eastus2',
+            provider: 'azureOpenAi',
+            alreadyRegistered: false,
+            modelEndpointId: null,
+            reason: 'Found in subscription 00000000-0000-0000-0000-000000000000.',
+          },
+        ],
+        subscriptionsScanned: 1,
+        scanStatus: 'scanned',
+      }),
+    )
+    api.registerModelEndpoint.mockRejectedValue(new TestApiError(message, 409))
+
+    renderPage()
+
+    const heading = await screen.findByRole('heading', { name: 'Endpoints MOSAIC found' })
+    const card = heading.closest('.fui-Card') as HTMLElement
+    await user.click(within(card).getByRole('button', { name: 'Register' }))
+
+    expect(await within(card).findByText(message)).toBeVisible()
+    expect(within(card).getByText("MOSAIC didn't register this endpoint")).toBeVisible()
+    expect(screen.queryByText('Unable to load data')).not.toBeInTheDocument()
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   })
 
   it('lists registered endpoints with their discovered model count', async () => {

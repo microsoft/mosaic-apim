@@ -103,6 +103,19 @@ assignment on this endpoint are not the same governance posture.
 descriptive properties, and models are enumerated on the parent account. A registered project ID is
 preserved for display and scoping but reads happen at `account_scope`.
 
+**Update:** because reads happen at `account_scope`, a project and its parent account list the same
+deployments. Registering both, or two projects on one account, listed every deployment twice and
+let each copy be published separately. Every registration now covers its account.
+
+- Registration refuses an Azure resource whose `account_scope` another endpoint already covers,
+  with a conflict that names that endpoint.
+- Discovery treats an account as registered when any endpoint's `account_scope` matches it.
+- Existing overlapping records are not migrated.
+
+Removing an endpoint is refused while a publication from it may still own API Management resources,
+since the publication cannot be planned or applied without its endpoint. Publication records that
+own nothing are deleted with the endpoint.
+
 **Credentials remain Key Vault URIs.** An OpenAI-compatible endpoint is registered with a Key Vault
 secret identifier the operator created; MOSAIC stores only the URI. No Bicep or RBAC change was
 needed, and the "MOSAIC stores no secret values" property holds. This is, however, the first place

@@ -35,10 +35,22 @@ is where the Contributor role is actually granted.
 ## Decision
 
 **MOSAIC writes to API Management.** Publishing a model deployment into a gateway creates, in
-order, a `mosaic-*` policy fragment, a backend, an API, its operations, the API policy document, a
-product, a product/API link, and a subscription. ADR 0001's read-only APIM boundary is therefore
-partially superseded. APIM remains the runtime plane and Cosmos remains desired state, but the
-control plane now performs explicit APIM writes when publishing is applied.
+order, a backend, a `mosaic-*` policy fragment that routes to it, an API, its operations, the API
+policy document, a product, a product/API link, and a subscription. ADR 0001's read-only APIM
+boundary is therefore partially superseded. APIM remains the runtime plane and Cosmos remains
+desired state, but the control plane now performs explicit APIM writes when publishing is applied.
+
+**Every resource is created after the resources it names.** API Management accepts a policy
+fragment and only then validates its `set-backend-service`, failing the write when the backend it
+names does not exist yet, so the backend is created before the fragment. Likewise, the API policy's
+`include-fragment` names the fragment; the operations and the API policy belong to the API; the
+product/API link joins the product and the API; and a subscription's scope names the product. Each
+is created after what it names. Governed access keeps the same dependency: its prepare stage writes
+the backend, and the fragment follows in its policy stage. A rollback walks the order backwards and
+unpublish reverses it, so teardown removes the fragment before the backend it routes to. The first
+release created the fragment first, which failed every publish on a real gateway at its first step.
+A plan saved in that order is refused at apply and must be planned again, because apply runs a
+plan's steps in the order they were saved and the plan digest covers intent rather than order.
 
 **The reconciliation loop is completed rather than bypassed.** ADR 0001 described desired state ->
 observed state -> deterministic plan -> explicit apply -> audited result, and stopped one step
@@ -93,11 +105,67 @@ API policy document is a thin `<include-fragment>`, and MOSAIC owns outright onl
 created. It still never rewrites a policy document authored by someone else. Raw policy XML still
 never crosses the API boundary: the plan carries semantic facets and a SHA-256 digest, not markup.
 
-**APIM writes are treated as asynchronous when Azure says they are.** Some API Management writes
-return `202 Accepted` with `Azure-AsyncOperation` or `Location`. The transport polls those
-operations to completion. Reporting success for a resource that is still provisioning would make the
-next step's failure look inexplicable, so the step is not successful until Azure's long-running
-operation has settled.
+**APIM writes are treated as asynchronous when Azure says they are.** Azure says a write is still
+running by answering it with `Azure-AsyncOperation` or `Location`. The transport polls any `200`,
+`201` or `202` write response that carries either header to completion, because an update can be
+answered `200` and still be finished later. A `200` or `201` without either header finished
+synchronously and costs no further request. Reporting success for a resource that is still
+provisioning would make the next step's failure look inexplicable, and reporting an update as
+applied while API Management still enforces the previous content would make a runtime failure
+inexplicable, so a step is not successful until Azure's long-running operation has settled. API
+Management also validates some writes only after accepting them, so an accepted write can still
+fail. A failed update leaves the previous content in place.
+
+The 2024-05-01 API Management contract MOSAIC writes against marks these of its writes as
+long-running (`x-ms-long-running-operation`, final state via `location`):
+
+| Write | Long-running | Responses |
+| --- | --- | --- |
+| Policy fragment PUT | Yes | `200` (update) and `201` (create), both with `Azure-AsyncOperation` and `Location` |
+| API PUT | Yes | `200` (update) and `201` (create), both with `Azure-AsyncOperation` and `Location` |
+| API DELETE | Yes | `202` with `Azure-AsyncOperation` and `Location`, or `204` |
+| Backend, operation, API policy, product and subscription PUT | No | `200` or `201` with an ETag |
+| Product/API link PUT | No | `200` or `201` |
+| Every other DELETE | No | `200` or `204` |
+
+So a publish costs a poll for its fragment and for its API, whether it creates or updates them, and
+a governed apply costs one for each fragment and API write in its stages. The rule in the transport
+is general rather than a list: any write Azure answers with a poll header is waited for.
+
+**A failed operation says why.** When the settled operation reports an `error`, at the top level or
+under `properties`, the failed step's error includes Azure's code and message and the most specific
+nested detail. The publish dialog shows it on the step's row in the run table, and the run's errors,
+which the dialog shows as banners, name the step's resource kind and name before it, so a fragment
+that names a missing backend fails as:
+
+```text
+policyFragment mosaic-retroburn-aoai-east-gpt-35-turbo: The Azure operation did not succeed (Failed). ValidationError: One or more fields contain incorrect values. Detail: Error in element 'set-backend-service' on line 3, column 4: Backend with id 'mosaic-retroburn-aoai-east-gpt-35-turbo' could not be found.
+```
+
+The reason is bounded in length. Any policy markup or policy expression Azure echoes is cut off, so
+ADR 0004's rule that MOSAIC-authored policy never crosses the API boundary still holds; an element
+name, a line and a column are not markup. A failed operation with no error body is reported by its
+terminal state, and says to check the Azure activity log for the resource. MOSAIC does not read
+again to find a reason: after a failed create the resource does not exist, after a failed update it
+still holds its previous content, and the activity log needs subscription-scope access MOSAIC is not
+granted.
+
+**A refused request says why too.** A request Azure refuses outright with a `4xx`, or that still
+gets a `429` or `5xx` after the transport's retries, fails with its HTTP status and Azure's reason,
+taken, bounded and stripped of policy markup exactly as an operation's is. An API policy Azure
+refused with a validation error, for example, would fail as:
+
+```text
+apiPolicy policy: Azure Resource Manager rejected the request (HTTP 400). ValidationError: One or more fields contain incorrect values. Detail: Error in element 'include-fragment' on line 3, column 6: Fragment with id 'mosaic-contoso-aoai-gpt-4o-prod' could not be found.
+```
+
+A request that keeps failing reads, for example, `Azure Resource Manager did not return a usable
+response (HTTP 503). ServiceUnavailable: The service is temporarily unavailable.`, and one whose
+body gives no reason ends at the status. Three kinds of request are exceptions. A credential
+request's message never carries Azure's text, because a credential response must never be reflected
+in an error. The `401`/`403`, `404` and `412` refusals keep their fixed messages, because the
+console keys its remediation off them. And the subscription scan behind endpoint suggestions keeps
+returning MOSAIC's own wording without Azure's text, as it always has.
 
 ## Consequences
 
@@ -119,3 +187,5 @@ operation has settled.
   Enforcement is specified per publication in the meantime.
 - Nothing detects drift in the background. Re-planning shows it, consistent with the gap ADR 0005
   already acknowledged.
+- Every fragment and API write waits for its operation, so a publish or a governed apply makes a
+  few more reads than it writes, and takes as long as API Management takes to validate the policy.
