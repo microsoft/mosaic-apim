@@ -31,7 +31,11 @@ from mosaic_api.repositories import (
 )
 from mosaic_api.services.directory import Actor
 from mosaic_api.services.entitlements import EntitlementService
-from mosaic_api.services.model_access import entitlement_intent_digest
+from mosaic_api.services.model_access import (
+    entitlement_intent_digest,
+    portal_entitlement,
+    portal_runtime,
+)
 
 logger = structlog.get_logger()
 
@@ -89,7 +93,7 @@ class PortalAccessService:
             principal = matches[0]
         expected_kind = "user" if principal.kind == "user" else "application"
         return [
-            entitlement
+            portal_entitlement(entitlement)
             for entitlement in await self._entitlements.list_entitlements(
                 actor, subject_id=principal.id
             )
@@ -170,7 +174,13 @@ class PortalAccessService:
             endpoint=f"{str(url).rstrip('/')}/{publication.api_path.strip('/')}",
             deployment_name=publication.deployment_name,
             tenant_id=actor.tenant_id,
-            runtime=context.entitlement.runtime,
+            # The route decides, not the caller's role: an administrator reading their own grant
+            # through /api/v1/me gets the end-user response.
+            runtime=(
+                context.entitlement.runtime
+                if administrator
+                else portal_runtime(context.entitlement.runtime)
+            ),
             applied_methods=snapshot.settings if snapshot else None,
             entra_audience=audience,
             entra_scope=f"api://{audience}/{scope_suffix}" if audience else None,

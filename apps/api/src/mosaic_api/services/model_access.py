@@ -184,6 +184,30 @@ def decorate_entitlement(
     return entitlement.model_copy(update={"runtime": runtime, "binding": binding})
 
 
+def portal_runtime(runtime: EntitlementRuntime | None) -> EntitlementRuntime | None:
+    """Runtime state as the end-user routes return it: everything except API Management's error.
+
+    ``error`` is the publication's last apply error as API Management reported it. It names
+    MOSAIC's internal resources, such as the policy fragment, and quotes APIM's validation text.
+    It is also stored once per publication, so every grantee on the model would see the same text,
+    and that text can describe other people's grants. ``status`` already tells the grantee that the
+    apply failed; administrators read the error on their own routes.
+    """
+
+    if runtime is None or runtime.error is None:
+        return runtime
+    return runtime.model_copy(update={"error": None})
+
+
+def portal_entitlement(entitlement: Entitlement) -> Entitlement:
+    """An entitlement as the end-user routes return it; see :func:`portal_runtime`."""
+
+    runtime = portal_runtime(entitlement.runtime)
+    if runtime is entitlement.runtime:
+        return entitlement
+    return entitlement.model_copy(update={"runtime": runtime})
+
+
 def safe_access_snapshot(
     publication: Publication, target: ModelAccessSnapshot
 ) -> ModelAccessSnapshot:
