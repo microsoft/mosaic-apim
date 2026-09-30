@@ -18,6 +18,7 @@ from mosaic_api.domain import (
     CatalogEntryKind,
     CatalogVisibility,
     PortalProfile,
+    PublicationStatus,
     ResolvedEntitlement,
 )
 from mosaic_api.repositories import DirectoryRepository, GatewayRepository
@@ -121,6 +122,19 @@ class PortalService:
         for mcp_server in await self._gateways.list_mcp_servers(actor.tenant_id):
             if mcp_server.visibility != CatalogVisibility.CATALOG:
                 continue
+            enforced = False
+            if mcp_server.publication_id is not None:
+                publication = await self._gateways.get_mcp_publication(
+                    actor.tenant_id, mcp_server.publication_id
+                )
+                enforced = bool(
+                    publication
+                    and publication.mcp_server_id == mcp_server.id
+                    and publication.gateway_id == mcp_server.gateway_id
+                    and publication.api_name == mcp_server.api_name
+                    and publication.status == PublicationStatus.PUBLISHED
+                    and publication.access_state == "applied"
+                )
             entries.append(
                 CatalogEntry(
                     kind=CatalogEntryKind.MCP_SERVER,
@@ -131,6 +145,7 @@ class PortalService:
                     gateway_name=gateways.get(mcp_server.gateway_id),
                     entitled=("mcpServer", mcp_server.id) in entitled,
                     request_state=open_requests.get(("mcpServer", mcp_server.id)),
+                    enforced=enforced,
                 )
             )
         entries.sort(key=lambda item: (item.display_name.casefold(), item.id))

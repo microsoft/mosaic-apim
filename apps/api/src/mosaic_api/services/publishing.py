@@ -1291,7 +1291,7 @@ class PublishingService:
                 details={"id": publication.id},
             )
         plan = await self._repository.get_publish_plan(actor.tenant_id, resolved)
-        if plan is None or plan.publication_id != publication.id:
+        if plan is None or plan.target != "model" or plan.publication_id != publication.id:
             raise NotFoundError("Publish plan was not found", details={"id": resolved})
 
         origin = backend_origin(publication.api_shape, str(endpoint.endpoint))
@@ -2386,17 +2386,21 @@ class PublishingService:
 
     async def get_run(self, actor: Actor, run_id: str) -> PublishRun:
         run = await self._repository.get_publish_run(actor.tenant_id, run_id)
-        if not run:
+        if not run or run.target != "model":
             raise NotFoundError("Publish run was not found", details={"id": run_id})
         return run
 
     async def list_runs(self, actor: Actor, target_id: str) -> list[PublishRun]:
         await self.get_publication(actor, target_id)
-        return await self._repository.list_publish_runs(actor.tenant_id, target_id)
+        return [
+            run
+            for run in await self._repository.list_publish_runs(actor.tenant_id, target_id)
+            if run.target == "model"
+        ]
 
     async def get_plan(self, actor: Actor, plan_id: str) -> PublishPlan:
         plan = await self._repository.get_publish_plan(actor.tenant_id, plan_id)
-        if not plan:
+        if not plan or plan.target != "model":
             raise NotFoundError("Publish plan was not found", details={"id": plan_id})
         return plan
 
@@ -2416,6 +2420,8 @@ class PublishingService:
         active = set(self._active)
         reaped = 0
         for run in stale:
+            if run.target != "model":
+                continue
             if run.publication_id in active:
                 continue
             if await self._repository.get_publication_lock(tenant_id, run.publication_id):
@@ -2506,7 +2512,12 @@ class PublishingService:
             await self._repository.save_publish_run(diagnostic)
             await self._repository.release_publication_lock(actor.tenant_id, target_id, run_id)
             return diagnostic
-        if run is None or publication is None or run.publication_id != target_id:
+        if (
+            run is None
+            or run.target != "model"
+            or publication is None
+            or run.publication_id != target_id
+        ):
             raise ConflictError(
                 "The retained lock has no matching publication/run recovery evidence"
             )

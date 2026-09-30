@@ -78,7 +78,7 @@ export function MyAccessPage() {
                     </ul>
                     <Text size={200}>
                       Publication and gateway limits may also apply. Pending changes are not yet
-                      enforced by APIM.
+                      enforced by the gateway.
                       {securityGroupGrant && ' Group access limits apply to each person individually.'}
                     </Text>
                   </section>
@@ -87,7 +87,8 @@ export function MyAccessPage() {
                     <Text>{describeBinding(resolved.entitlement)}</Text>
                   </section>
                 </div>
-                {resolved.entitlement.resource.kind === 'modelApi' && (
+                {(resolved.entitlement.resource.kind === 'modelApi' ||
+                  resolved.entitlement.resource.kind === 'mcpServer') && (
                   <ConnectionDetails resolved={resolved} />
                 )}
               </Card>

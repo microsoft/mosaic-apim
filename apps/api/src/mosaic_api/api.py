@@ -30,6 +30,7 @@ from mosaic_api.domain import (
     ImportRequest,
     KeyRevealRequest,
     KeyRevealResult,
+    McpConnection,
     McpEndpoint,
     McpEndpointCreate,
     McpEndpointSyncRun,
@@ -151,6 +152,15 @@ async def my_model_connection(
     return await _portal_access(request).connection(_actor(auth), entitlement_id)
 
 
+@portal_router.get(
+    "/entitlements/{entitlement_id}/mcp-connection", response_model=McpConnection
+)
+async def my_mcp_connection(
+    request: Request, auth: PortalUser, entitlement_id: str
+) -> McpConnection:
+    return await _portal_access(request).mcp_connection(_actor(auth), entitlement_id)
+
+
 @portal_router.post("/entitlements/{entitlement_id}/keys/reveal", response_model=KeyRevealResult)
 async def reveal_my_key(
     request: Request, auth: PortalUser, entitlement_id: str, payload: KeyRevealRequest
@@ -163,6 +173,15 @@ async def model_connection(
     request: Request, auth: Admin, entitlement_id: str
 ) -> ModelConnection:
     return await _portal_access(request).connection(
+        _actor(auth), entitlement_id, administrator=True
+    )
+
+
+@router.get("/entitlements/{entitlement_id}/mcp-connection", response_model=McpConnection)
+async def mcp_connection(
+    request: Request, auth: Admin, entitlement_id: str
+) -> McpConnection:
+    return await _portal_access(request).mcp_connection(
         _actor(auth), entitlement_id, administrator=True
     )
 

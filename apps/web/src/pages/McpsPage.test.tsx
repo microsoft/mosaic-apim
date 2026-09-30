@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event'
 import { MemoryRouter, useLocation } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { McpsPage } from './McpsPage'
-import type { Gateway, McpEndpoint, McpServer, ObservedMcpTool } from '../types'
+import type { Gateway, McpEndpoint, McpPublication, McpServer, ObservedMcpTool, PublishPlan, PublishRun } from '../types'
 
 const RESOURCE_ID =
   '/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-contoso-dev' +
@@ -97,6 +97,71 @@ const mcpServer: McpServer = {
   updatedAt: '2026-09-01T12:10:00Z',
 }
 
+const mcpPublication: McpPublication = {
+  id: 'mcp_pub_1',
+  tenantId: 'tenant-test',
+  entityType: 'mcpPublication',
+  gatewayId: 'gateway_1',
+  mcpEndpointId: 'mcpEndpoint_1',
+  displayName: 'Contoso tools',
+  apiName: 'mosaic-mcp-contoso-tools',
+  apiPath: 'mosaic/mcp/contoso-tools',
+  backendName: 'mosaic-mcp-contoso-tools',
+  fragmentName: 'mosaic-mcp-contoso-tools',
+  metadataApiName: 'mosaic-mcp-contoso-tools-prm',
+  mcpServerId: 'mcpServer_1',
+  status: 'published',
+  resources: [],
+  lastPlanId: 'mcp_plan_1',
+  lastPlanDigest: 'digest',
+  lastRunId: 'mcp_run_1',
+  lastAppliedAt: '2026-09-01T12:20:00Z',
+  lastError: null,
+  appliedAccess: null,
+  accessState: 'applied',
+  createdAt: '2026-09-01T12:00:00Z',
+  updatedAt: '2026-09-01T12:20:00Z',
+}
+
+const mcpPlan: PublishPlan = {
+  id: 'mcp_plan_1',
+  tenantId: 'tenant-test',
+  entityType: 'publishPlan',
+  publicationId: 'mcp_pub_1',
+  gatewayId: 'gateway_1',
+  digest: 'digest',
+  steps: [{ kind: 'api', name: 'mosaic-mcp-contoso-tools', action: 'noChange', reason: 'Already matches.', resourceId: '/apis/mosaic-mcp-contoso-tools', existed: true }],
+  facets: [],
+  policyContentSha256: 'policy-digest',
+  warnings: [],
+  target: 'mcp',
+  mcpAccessSnapshot: { version: 1, audience: 'runtime-client-id', delegatedScope: 'Mcp.Invoke', applicationRole: 'Mcp.Invoke.Application', grants: [] },
+  previousAccessVersion: 1,
+  createdAt: '2026-09-01T12:00:00Z',
+  updatedAt: '2026-09-01T12:00:00Z',
+}
+
+const mcpRun: PublishRun = {
+  id: 'mcp_run_2',
+  tenantId: 'tenant-test',
+  entityType: 'publishRun',
+  publicationId: 'mcp_pub_1',
+  gatewayId: 'gateway_1',
+  planId: 'mcp_plan_1',
+  planDigest: 'digest',
+  status: 'succeeded',
+  startedAt: '2026-09-01T12:20:00Z',
+  completedAt: '2026-09-01T12:21:00Z',
+  durationMs: 60000,
+  steps: [],
+  rolledBack: false,
+  orphanedResources: [],
+  errors: [],
+  target: 'mcp',
+  createdAt: '2026-09-01T12:20:00Z',
+  updatedAt: '2026-09-01T12:21:00Z',
+}
+
 function buildMcpEndpoint(overrides: Partial<McpEndpoint> = {}): McpEndpoint {
   return {
     id: 'mcpEndpoint_1',
@@ -174,11 +239,21 @@ const unannotatedTool: ObservedMcpTool = {
 
 const api = {
   listGateways: vi.fn(),
+  listMcpPublications: vi.fn(),
+  planMcpPublication: vi.fn(),
+  unpublishMcpPublication: vi.fn(),
+  deleteMcpPublication: vi.fn(),
+  getMcpPublicationLock: vi.fn(),
+  recoverMcpPublication: vi.fn(),
   listMcpServers: vi.fn(),
   deleteMcpServer: vi.fn(),
   listImportableMcpServers: vi.fn(),
   importMcpServers: vi.fn(),
   listMcpEndpoints: vi.fn(),
+  getMcpPublishingCapability: vi.fn(),
+  createMcpPublication: vi.fn(),
+  applyMcpPublication: vi.fn(),
+  getMcpPublishRun: vi.fn(),
   registerMcpEndpoint: vi.fn(),
   preflightMcpEndpoint: vi.fn(),
   syncMcpEndpoint: vi.fn(),
@@ -214,6 +289,16 @@ describe('McpsPage', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     api.listGateways.mockResolvedValue([buildGateway()])
+    api.listMcpPublications.mockResolvedValue([])
+    api.getMcpPublishingCapability.mockResolvedValue({ gatewayId: 'gateway_1', supported: true, reasons: [], warnings: [] })
+    api.planMcpPublication.mockResolvedValue(mcpPlan)
+    api.unpublishMcpPublication.mockResolvedValue(mcpRun)
+    api.deleteMcpPublication.mockResolvedValue(undefined)
+    api.getMcpPublicationLock.mockResolvedValue({ publicationId: 'mcp_pub_1', ownerId: null })
+    api.recoverMcpPublication.mockResolvedValue(mcpRun)
+    api.createMcpPublication.mockResolvedValue(mcpPublication)
+    api.applyMcpPublication.mockResolvedValue(mcpRun)
+    api.getMcpPublishRun.mockResolvedValue(mcpRun)
     api.listMcpServers.mockResolvedValue([])
     api.listImportableMcpServers.mockResolvedValue({
       gatewayId: 'gateway_1',
@@ -257,7 +342,7 @@ describe('McpsPage', () => {
     renderPage()
 
     expect(await screen.findByText('No MCP servers imported yet')).toBeVisible()
-    expect(screen.getByText(/MCP grants are recorded, not yet enforced/)).toBeVisible()
+    expect(screen.getByText(/MCP grant enforcement depends on how the server is governed/)).toBeVisible()
   })
 
   it('shows the transport and gateway of an imported server', async () => {
@@ -269,6 +354,50 @@ describe('McpsPage', () => {
     expect(within(table).getByText('Weather MCP')).toBeVisible()
     expect(within(table).getByText('Passthrough · SSE')).toBeVisible()
     expect(within(table).getByRole('link', { name: 'Development gateway' })).toBeVisible()
+  })
+
+  it('shows published MCP servers with server URL and opens plan review', async () => {
+    const user = userEvent.setup()
+    api.listMcpPublications.mockResolvedValue([mcpPublication])
+
+    renderPage()
+
+    const table = await screen.findByRole('table', { name: 'Published MCP servers' })
+    expect(within(table).getByText('Contoso tools')).toBeVisible()
+    expect(within(table).getByText('https://apim-contoso-dev.azure-api.net/mosaic/mcp/contoso-tools/mcp')).toBeVisible()
+    expect(within(table).getByText('Published')).toBeVisible()
+    expect(within(table).getByText('Access applied')).toBeVisible()
+
+    await user.click(within(table).getByRole('button', { name: 'Plan and apply' }))
+    expect(await screen.findByRole('dialog')).toBeVisible()
+    expect(api.planMcpPublication).toHaveBeenCalledWith('mcp_pub_1')
+    expect(await screen.findByRole('table', { name: 'MCP publish plan steps' })).toBeVisible()
+  })
+
+  it('confirms unpublish before calling the service', async () => {
+    const user = userEvent.setup()
+    api.listMcpPublications.mockResolvedValue([mcpPublication])
+
+    renderPage()
+    const table = await screen.findByRole('table', { name: 'Published MCP servers' })
+    await user.click(within(table).getByRole('button', { name: 'Unpublish' }))
+
+    expect(await screen.findByText(/The gateway will deny calls before the server is removed/)).toBeVisible()
+    expect(api.unpublishMcpPublication).not.toHaveBeenCalled()
+    const dialog = screen.getByRole('dialog')
+    await user.click(within(dialog).getByRole('button', { name: 'Unpublish' }))
+    await waitFor(() => expect(api.unpublishMcpPublication).toHaveBeenCalledWith('mcp_pub_1'))
+  })
+
+  it('marks MOSAIC-published imported rows and points deletion to the publication', async () => {
+    api.listMcpServers.mockResolvedValue([{ ...mcpServer, publicationId: 'mcp_pub_1' }])
+
+    renderPage()
+
+    const table = await screen.findByRole('table', { name: 'Imported MCP servers' })
+    expect(within(table).getByText('Published by MOSAIC')).toBeVisible()
+    expect(within(table).getByText('Delete the publication instead.')).toBeVisible()
+    expect(within(table).queryByRole('button', { name: 'Remove' })).not.toBeInTheDocument()
   })
 
   it('opens the import dialog from the gateway query', async () => {

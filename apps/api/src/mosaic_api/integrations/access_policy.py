@@ -15,9 +15,13 @@ import hashlib
 import json
 import re
 import xml.etree.ElementTree as ET
+from collections.abc import Sequence
+from typing import Protocol
 
 from mosaic_api.domain import (
     ApiShape,
+    EntitlementEnforcement,
+    EntitlementSubject,
     EntitlementSubjectKind,
     ModelAccessGrant,
     ModelAccessSnapshot,
@@ -75,6 +79,22 @@ _PERIOD_LABELS: dict[QuotaPeriod, str] = {
 }
 
 
+class AccessPolicyPublication(Protocol):
+    tenant_id: str
+    id: str
+
+
+class AccessPolicyGrant(Protocol):
+    entitlement_id: str
+    subject: EntitlementSubject
+    object_id: str
+    enabled: bool
+    enforcement: EntitlementEnforcement | None
+
+    @property
+    def is_group_grant(self) -> bool: ...
+
+
 def _literal(value: str) -> str:
     # C# and JSON share these string escapes. Escape braces as well so APIM cannot expand a
     # named-value reference inside an otherwise correctly quoted C# string.
@@ -104,7 +124,7 @@ def _reject(parent: ET.Element, condition: str, *, code: int = 403, message: str
     _deny(when, code=code, message=message)
 
 
-def grant_counter_identity(publication: Publication, grant: ModelAccessGrant) -> str:
+def grant_counter_identity(publication: AccessPolicyPublication, grant: AccessPolicyGrant) -> str:
     """The shared credential-independent identity, before each native policy's namespace."""
     identity = json.dumps(
         [publication.tenant_id, publication.id, grant.entitlement_id],
@@ -114,13 +134,18 @@ def grant_counter_identity(publication: Publication, grant: ModelAccessGrant) ->
     return hashlib.sha256(identity.encode("utf-8")).hexdigest()
 
 
-def governed_counter_key_expression(publication: Publication, grant: ModelAccessGrant) -> str:
+def governed_counter_key_expression(
+    publication: AccessPolicyPublication,
+    grant: AccessPolicyGrant,
+    *,
+    prefix: str = _COUNTER_PREFIX,
+) -> str:
     """The publication token counter expression for one governed grant."""
 
     identity = grant_counter_identity(publication, grant)
     if grant.is_group_grant:
-        return f'@("{_COUNTER_PREFIX}publication-tokens:{identity}:" + {_MEMBER})'
-    return f'@("{_COUNTER_PREFIX}publication-tokens:{identity}")'
+        return f'@("{prefix}publication-tokens:{identity}:" + {_MEMBER})'
+    return f'@("{prefix}publication-tokens:{identity}")'
 
 
 def _validate(publication: Publication, snapshot: ModelAccessSnapshot) -> None:
@@ -257,8 +282,8 @@ def _key_lookup(publication: Publication, grants: list[ModelAccessGrant]) -> str
 
 
 def _token_lookup(
-    publication: Publication,
-    grants: list[ModelAccessGrant],
+    publication: AccessPolicyPublication,
+    grants: Sequence[AccessPolicyGrant],
     *,
     delegated_scope: str = "Models.Invoke",
     application_role: str = "Models.Invoke.Application",
@@ -323,7 +348,9 @@ def _token_lookup(
     return _expression([*lines, 'return "";'])
 
 
-def _token_member_lookup(publication: Publication, grants: list[ModelAccessGrant]) -> str:
+def _token_member_lookup(
+    publication: AccessPolicyPublication, grants: Sequence[AccessPolicyGrant]
+) -> str:
     group_ids = {
         grant_counter_identity(publication, grant) for grant in grants if grant.is_group_grant
     }
@@ -332,9 +359,7 @@ def _token_member_lookup(publication: Publication, grants: list[ModelAccessGrant
     lines = [
         "if (",
         "    "
-        + " && ".join(
-            f"{_TOKEN_GRANT} != {_literal(identity)}" for identity in sorted(group_ids)
-        ),
+        + " && ".join(f"{_TOKEN_GRANT} != {_literal(identity)}" for identity in sorted(group_ids)),
         ') return "";',
         'var jwt = context.Variables.ContainsKey("mosaic-validated-token")'
         ' ? context.Variables["mosaic-validated-token"] as Jwt : null;',
@@ -502,15 +527,19 @@ def _operation_guard(
         )
 
 
-def _grant_counter_key(namespace: str, identity: str, *, per_member: bool) -> str:
-    key = f"{_COUNTER_PREFIX}{namespace}:{identity}"
+def _grant_counter_key(
+    namespace: str, identity: str, *, per_member: bool, prefix: str = _COUNTER_PREFIX
+) -> str:
+    key = f"{prefix}{namespace}:{identity}"
     if per_member:
         return f'@("{key}:" + {_MEMBER})'
     return key
 
 
-def _calendar_counter(identity: str, period: QuotaPeriod, *, per_member: bool) -> str:
-    prefix = _literal(f"{_COUNTER_PREFIX}grant-request-quota:{identity}:{period}:")
+def _calendar_counter(
+    identity: str, period: QuotaPeriod, *, per_member: bool, prefix: str = _COUNTER_PREFIX
+) -> str:
+    key_prefix = _literal(f"{prefix}grant-request-quota:{identity}:{period}:")
     if period == "Weekly":
         date = "now.Date.AddDays(-(((int)now.DayOfWeek + 6) % 7))"
     else:
@@ -521,9 +550,59 @@ def _calendar_counter(identity: str, period: QuotaPeriod, *, per_member: bool) -
     return _expression(
         [
             "var now = DateTime.UtcNow;",
-            f'return {prefix} + {date}.ToString("u").Substring(0, {length}){suffix};',
+            f'return {key_prefix} + {date}.ToString("u").Substring(0, {length}){suffix};',
         ]
     )
+
+
+def _grant_limits(
+    fragment: ET.Element,
+    publication: AccessPolicyPublication,
+    grants: Sequence[AccessPolicyGrant],
+    *,
+    prefix: str = _COUNTER_PREFIX,
+) -> None:
+    limited = [grant for grant in grants if grant.enforcement is not None]
+    if not limited:
+        return
+    choose = ET.SubElement(fragment, "choose")
+    for grant in limited:
+        identity = grant_counter_identity(publication, grant)
+        when = ET.SubElement(choose, "when", {"condition": f"@({_GRANT} == {_literal(identity)})"})
+        enforcement = grant.enforcement
+        assert enforcement is not None
+        if requests := enforcement.requests:
+            if requests.calls is not None:
+                ET.SubElement(
+                    when,
+                    "rate-limit-by-key",
+                    {
+                        "calls": str(requests.calls),
+                        "renewal-period": str(requests.renewal_period_seconds),
+                        "counter-key": _grant_counter_key(
+                            "grant-request-rate",
+                            identity,
+                            per_member=grant.is_group_grant,
+                            prefix=prefix,
+                        ),
+                    },
+                )
+            if requests.call_quota is not None:
+                assert requests.call_quota_period is not None
+                ET.SubElement(
+                    when,
+                    "quota-by-key",
+                    {
+                        "calls": str(requests.call_quota),
+                        "renewal-period": "0",
+                        "counter-key": _calendar_counter(
+                            identity,
+                            requests.call_quota_period,
+                            per_member=grant.is_group_grant,
+                            prefix=prefix,
+                        ),
+                    },
+                )
 
 
 def _limits(
@@ -532,47 +611,38 @@ def _limits(
     snapshot: ModelAccessSnapshot,
     grants: list[ModelAccessGrant],
 ) -> None:
-    limited = [grant for grant in grants if grant.enforcement is not None]
-    if limited:
-        choose = ET.SubElement(fragment, "choose")
-        for grant in limited:
-            identity = grant_counter_identity(publication, grant)
-            when = ET.SubElement(
-                choose, "when", {"condition": f"@({_GRANT} == {_literal(identity)})"}
-            )
+    _grant_limits(fragment, publication, grants)
+    token_limited = [grant for grant in grants if grant.enforcement is not None]
+    if token_limited:
+        choose = next(
+            (
+                element
+                for element in fragment.findall("choose")
+                if any(
+                    child.get("condition", "").startswith(f"@({_GRANT} ==")
+                    for child in element.findall("when")
+                )
+            ),
+            None,
+        )
+        if choose is None:
+            choose = ET.SubElement(fragment, "choose")
+        for grant in token_limited:
             enforcement = grant.enforcement
             assert enforcement is not None
-            if requests := enforcement.requests:
-                if requests.calls is not None:
-                    ET.SubElement(
-                        when,
-                        "rate-limit-by-key",
-                        {
-                            "calls": str(requests.calls),
-                            "renewal-period": str(requests.renewal_period_seconds),
-                            "counter-key": _grant_counter_key(
-                                "grant-request-rate",
-                                identity,
-                                per_member=grant.is_group_grant,
-                            ),
-                        },
-                    )
-                if requests.call_quota is not None:
-                    assert requests.call_quota_period is not None
-                    ET.SubElement(
-                        when,
-                        "quota-by-key",
-                        {
-                            "calls": str(requests.call_quota),
-                            "renewal-period": "0",
-                            "counter-key": _calendar_counter(
-                                identity,
-                                requests.call_quota_period,
-                                per_member=grant.is_group_grant,
-                            ),
-                        },
-                    )
             if tokens := enforcement.tokens:
+                identity = grant_counter_identity(publication, grant)
+                condition = f"@({_GRANT} == {_literal(identity)})"
+                when = next(
+                    (
+                        child
+                        for child in choose.findall("when")
+                        if child.get("condition") == condition
+                    ),
+                    None,
+                )
+                if when is None:
+                    when = ET.SubElement(choose, "when", {"condition": condition})
                 ET.SubElement(
                     when,
                     "llm-token-limit",
@@ -616,8 +686,7 @@ def _operations_facet(
         denied = "All other operations, including token counting, are denied."
     else:
         summary = (
-            "Governed token limits permit only supported chat-completions and responses "
-            "operations."
+            "Governed token limits permit only supported chat-completions and responses operations."
         )
         denied = (
             "All other operations, including embeddings, image, audio and legacy completions, "
@@ -651,8 +720,7 @@ def _facets(
     enabled_group_grants = sum(grant.enabled and grant.is_group_grant for grant in snapshot.grants)
     auth_details = [
         "Every presented credential must be enabled and valid; there is no fallback.",
-        "When a key and a token are both presented, they must resolve to the same "
-        "enabled grant.",
+        "When a key and a token are both presented, they must resolve to the same enabled grant.",
         "Keys in both header and query must be identical; ambiguous or empty credentials "
         "are denied.",
         "User tokens require Models.Invoke in scp; application tokens require "
@@ -776,9 +844,7 @@ def governed_operations(publication: Publication) -> tuple[OperationSpec, ...]:
         else _SUPPORTED_OPERATIONS
     )
     operations = tuple(
-        op
-        for op in operations_for(publication)
-        if op.name in supported and op.method == "POST"
+        op for op in operations_for(publication) if op.name in supported and op.method == "POST"
     )
     if not operations:
         raise ValidationError("This API shape has no operations supported by governed access.")
@@ -844,9 +910,7 @@ def render_governed_policy(
                 ("Publication", publication.id),
                 ("Deployment", publication.deployment_name),
             ):
-                ET.SubElement(
-                    metric, "dimension", {"name": name, "value": f"@({_literal(value)})"}
-                )
+                ET.SubElement(metric, "dimension", {"name": name, "value": f"@({_literal(value)})"})
     fragment_xml = _serialize(fragment)
     if len(fragment_xml.encode("utf-8")) > MAX_FRAGMENT_BYTES:
         raise ValidationError(

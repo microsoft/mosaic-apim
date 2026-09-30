@@ -53,6 +53,10 @@
   font-weight: 600;
 }
 
+.manualEntry {
+  justify-self: start;
+}
+
 .secondary {
   color: var(--mosaic-text-muted);
   font-size: 12px;

@@ -19,7 +19,7 @@ import { useMosaicApi } from '../api'
 import { describeAccessMethods, describeLimits } from '../entitlement-limits'
 import { PRINCIPAL_KIND_LABELS } from '../labels'
 import { runtimeConfig } from '../runtime-config'
-import type { Entitlement, KeySlot, ModelConnection } from '../types'
+import type { Entitlement, KeySlot, McpConnection, ModelConnection } from '../types'
 import { ErrorState, Loading } from './AsyncState'
 import { ModelAccessRecovery } from './ModelAccessRecovery'
 import styles from '../pages/EntitlementsPage.module.css'
@@ -62,6 +62,7 @@ function PrincipalConnectionNotice({ info }: { info: ModelConnection }) {
       </MessageBar>
     )
   }
+
   if (info.principalKind === 'agentUser') {
     return (
       <MessageBar intent="info">
@@ -94,6 +95,57 @@ function PrincipalConnectionNotice({ info }: { info: ModelConnection }) {
   )
 }
 
+function codeSnippet(info: McpConnection): string {
+  const name = info.displayName || 'mosaic-mcp'
+  return JSON.stringify({
+    servers: {
+      [name]: {
+        type: 'http',
+        url: info.serverUrl ?? '<server URL unavailable>',
+      },
+    },
+  }, null, 2)
+}
+
+function McpConnectionDetails({ info }: { info: McpConnection }) {
+  return (
+    <>
+      <MessageBar intent={info.enforced ? 'success' : 'warning'}>
+        <MessageBarBody>
+          {info.enforced ? 'Enforced by the gateway.' : 'Recorded, not enforced.'}{' '}
+          {info.statusMessage}
+        </MessageBarBody>
+      </MessageBar>
+      <dl className={styles.detailList}>
+        <div><dt>Server</dt><dd>{info.displayName}</dd></div>
+        <div><dt>Server URL</dt><dd>{info.serverUrl ?? 'Not available'}</dd></div>
+        <div><dt>Transport</dt><dd>{info.transport}</dd></div>
+        <div><dt>Tenant</dt><dd>{info.tenantId}</dd></div>
+        <div><dt>Runtime state</dt><dd>{info.runtime?.status ?? (info.enforced ? 'unknown' : 'recorded')}</dd></div>
+        {info.resourceMetadataUrl && <div><dt>Resource metadata URL</dt><dd>{info.resourceMetadataUrl}</dd></div>}
+        {info.entraAudience && <div><dt>MCP audience</dt><dd>{info.entraAudience}</dd></div>}
+        {info.delegatedScope && <div><dt>Delegated scope</dt><dd>{info.delegatedScope}</dd></div>}
+        {info.applicationScope && <div><dt>Application scope</dt><dd>{info.applicationScope}</dd></div>}
+        {info.requiredAppRole && <div><dt>Required app role</dt><dd>{info.requiredAppRole}</dd></div>}
+        {info.clientId && <div><dt>Client ID</dt><dd>{info.clientId}</dd></div>}
+        {info.viaGroupName && <div><dt>Security group</dt><dd>{info.viaGroupName}</dd></div>}
+      </dl>
+      {info.principalKind === 'securityGroup' && (
+        <MessageBar intent="warning">
+          <MessageBarBody>
+            Members sign in as themselves. People use delegated tokens; agents and applications use
+            the application scope and required app role. Limits apply to each member.
+          </MessageBarBody>
+        </MessageBar>
+      )}
+      <Text weight="semibold">Last recorded limits</Text>
+      {describeLimits({ enforcement: info.limits }).map((limit) => <Text key={limit}>{limit}</Text>)}
+      <Text weight="semibold">VS Code mcp.json</Text>
+      <pre className={styles.secretValue}>{codeSnippet(info)}</pre>
+    </>
+  )
+}
+
 function ConnectionSession({
   identity,
   entitlement,
@@ -112,19 +164,22 @@ function ConnectionSession({
   const generation = useRef(0)
   const controller = useRef<AbortController | null>(null)
   const mounted = useRef(true)
-  const connection = useQuery({
+  const isMcp = entitlement.resource.kind === 'mcpServer'
+  const connection = useQuery<ModelConnection | McpConnection>({
     queryKey: ['entitlement-connection', identity, entitlement.id],
-    queryFn: () => api.getEntitlementConnection(entitlement.id),
+    queryFn: () => isMcp ? api.getMcpConnection(entitlement.id) : api.getEntitlementConnection(entitlement.id),
   })
   const info = connection.data
+  const modelInfo = !isMcp ? (info as ModelConnection | undefined) : undefined
+  const mcpInfo = isMcp ? (info as McpConnection | undefined) : undefined
   const eligible = Boolean(
-    !closed && !connection.isError && info && info.keysAvailable !== false
+    !closed && !connection.isError && modelInfo && modelInfo.keysAvailable !== false
     && entitlement.enabled && entitlement.subject.kind !== 'group'
     && entitlement.resource.kind === 'modelApi' && entitlement.binding?.source === 'orchestrated'
     && entitlement.runtime?.status === 'applied' && entitlement.runtime.appliedMethods?.keysEnabled
-    && info.runtime?.status === 'applied' && info.appliedMethods?.keysEnabled
-    && info.entitlementId === entitlement.id
-    && info.publicationId === entitlement.runtime.publicationId,
+    && modelInfo.runtime?.status === 'applied' && modelInfo.appliedMethods?.keysEnabled
+    && modelInfo.entitlementId === entitlement.id
+    && modelInfo.publicationId === entitlement.runtime.publicationId,
   )
 
   useEffect(() => {
@@ -184,7 +239,7 @@ function ConnectionSession({
       const result = await api.revealEntitlementKey(entitlement.id, slot, abort.signal)
       if (!mounted.current || generation.current !== request) return
       if (result.entitlementId !== entitlement.id || result.slot !== slot || !result.key
-        || (info?.runtime?.subscriptionName && result.subscriptionName !== info.runtime.subscriptionName)) {
+        || (modelInfo?.runtime?.subscriptionName && result.subscriptionName !== modelInfo.runtime.subscriptionName)) {
         throw new Error('The service returned unexpected credential metadata. No key was displayed.')
       }
       setSecret({ slot, key: result.key })
@@ -219,7 +274,7 @@ function ConnectionSession({
     <Dialog open onOpenChange={(_, data) => !data.open && close()}>
       <DialogSurface>
         <DialogBody>
-          <DialogTitle>Model connection and keys</DialogTitle>
+          <DialogTitle>{isMcp ? 'MCP connection' : 'Model connection and keys'}</DialogTitle>
           <DialogContent className={styles.dialogForm}>
             <Text>Connection metadata is not proof of a successful live invocation. Allow for APIM propagation.</Text>
             {runtimeConfig.authMode === 'local' && (
@@ -229,47 +284,48 @@ function ConnectionSession({
             )}
             {connection.isPending && <Loading label="Loading connection information" />}
             {connection.isError && <ErrorState error={connection.error} />}
-            {info && (
+            {mcpInfo && <McpConnectionDetails info={mcpInfo} />}
+            {modelInfo && (
               <>
                 <dl className={styles.detailList}>
-                  <div><dt>Endpoint</dt><dd>{info.endpoint}</dd></div>
-                  <div><dt>Deployment</dt><dd>{info.deploymentName}</dd></div>
-                  <div><dt>Tenant</dt><dd>{info.tenantId}</dd></div>
-                  <div><dt>Runtime state</dt><dd>{info.runtime?.status ?? 'unknown'}</dd></div>
-                  <div><dt>Last applied methods</dt><dd>{describeAccessMethods(info.appliedMethods)}</dd></div>
-                  <div><dt>Model-runtime audience</dt><dd>{info.entraAudience ?? 'Not configured'}</dd></div>
-                  <div><dt>Model-runtime scope</dt><dd>{info.entraScope ?? 'Not configured'}</dd></div>
-                  {info.entraClientId && <div><dt>Client ID</dt><dd>{info.entraClientId}</dd></div>}
-                  {info.entraApplicationScope && <div><dt>Application scope</dt><dd>{info.entraApplicationScope}</dd></div>}
-                  {info.requiredAppRole && <div><dt>Required app role</dt><dd>{info.requiredAppRole}</dd></div>}
-                  {info.viaGroupName && <div><dt>Security group</dt><dd>{info.viaGroupName}</dd></div>}
+                  <div><dt>Endpoint</dt><dd>{modelInfo.endpoint}</dd></div>
+                  <div><dt>Deployment</dt><dd>{modelInfo.deploymentName}</dd></div>
+                  <div><dt>Tenant</dt><dd>{modelInfo.tenantId}</dd></div>
+                  <div><dt>Runtime state</dt><dd>{modelInfo.runtime?.status ?? 'unknown'}</dd></div>
+                  <div><dt>Last applied methods</dt><dd>{describeAccessMethods(modelInfo.appliedMethods)}</dd></div>
+                  <div><dt>Model-runtime audience</dt><dd>{modelInfo.entraAudience ?? 'Not configured'}</dd></div>
+                  <div><dt>Model-runtime scope</dt><dd>{modelInfo.entraScope ?? 'Not configured'}</dd></div>
+                  {modelInfo.entraClientId && <div><dt>Client ID</dt><dd>{modelInfo.entraClientId}</dd></div>}
+                  {modelInfo.entraApplicationScope && <div><dt>Application scope</dt><dd>{modelInfo.entraApplicationScope}</dd></div>}
+                  {modelInfo.requiredAppRole && <div><dt>Required app role</dt><dd>{modelInfo.requiredAppRole}</dd></div>}
+                  {modelInfo.viaGroupName && <div><dt>Security group</dt><dd>{modelInfo.viaGroupName}</dd></div>}
                 </dl>
-                <PrincipalConnectionNotice info={info} />
+                <PrincipalConnectionNotice info={modelInfo} />
                 <Text size={200}>A MOSAIC control-plane token is not a model-runtime token. Entra consent and application permissions are configured separately.</Text>
-                {info.runtime?.error && (
-                  <MessageBar intent="warning"><MessageBarBody>{info.runtime.error}</MessageBarBody></MessageBar>
+                {modelInfo.runtime?.error && (
+                  <MessageBar intent="warning"><MessageBarBody>{modelInfo.runtime.error}</MessageBarBody></MessageBar>
                 )}
-                {info.runtime?.status === 'unknown' && (
-                  <ModelAccessRecovery publicationId={info.publicationId} />
+                {modelInfo.runtime?.status === 'unknown' && (
+                  <ModelAccessRecovery publicationId={modelInfo.publicationId} />
                 )}
-                {info.operations.map((operation) => (
+                {modelInfo.operations.map((operation) => (
                   <Text key={`${operation.name}:${operation.method}:${operation.path}`}>
                     {operation.method} {operation.path} · {operation.name}
                   </Text>
                 ))}
-                {info.apiShape === 'anthropicMessages' && (
+                {modelInfo.apiShape === 'anthropicMessages' && (
                   <MessageBar intent="info">
                     <MessageBarBody>
                       This model uses the Anthropic Messages API. Set the request&apos;s model to{' '}
-                      {info.deploymentName}. The gateway adds anthropic-version when a request omits it.
-                      With an Anthropic SDK, use {info.endpoint}/anthropic as the base URL and send the
-                      key in the {info.subscriptionHeader} header; the gateway removes x-api-key.
+                      {modelInfo.deploymentName}. The gateway adds anthropic-version when a request omits it.
+                      With an Anthropic SDK, use {modelInfo.endpoint}/anthropic as the base URL and send the
+                      key in the {modelInfo.subscriptionHeader} header; the gateway removes x-api-key.
                     </MessageBarBody>
                   </MessageBar>
                 )}
                 <Text weight="semibold">Last recorded limits</Text>
-                {describeLimits({ enforcement: info.grantLimits }, info.publicationLimits).map((limit) => <Text key={limit}>{limit}</Text>)}
-                {info.keysAvailable === false ? (
+                {describeLimits({ enforcement: modelInfo.grantLimits }, modelInfo.publicationLimits).map((limit) => <Text key={limit}>{limit}</Text>)}
+                {modelInfo.keysAvailable === false ? (
                   <MessageBar intent="warning">
                     <MessageBarBody>
                       Key authentication is not available for this grant. Use an Entra token.
@@ -278,7 +334,7 @@ function ConnectionSession({
                 ) : (
                   <>
                     <Text>Use one enabled credential. Examples contain placeholders, never your actual key:</Text>
-                    <pre className={styles.secretValue}>{`${info.subscriptionHeader}: <YOUR_APIM_KEY>\n\nEntra access token: <YOUR_ENTRA_TOKEN>`}</pre>
+                    <pre className={styles.secretValue}>{`${modelInfo.subscriptionHeader}: <YOUR_APIM_KEY>\n\nEntra access token: <YOUR_ENTRA_TOKEN>`}</pre>
                   </>
                 )}
               </>
@@ -289,7 +345,7 @@ function ConnectionSession({
               Sharing a key delegates this grant&apos;s access.
             </Text>
             {!eligible && <Text>Key reveal requires an enabled, applied direct grant with key authentication and a trusted orchestrated binding.</Text>}
-            {info?.keysAvailable !== false && (
+            {modelInfo?.keysAvailable !== false && !isMcp && (
               <div className={styles.rowActions}>
                 <Button disabled={!eligible || revealing} onClick={() => void reveal('primary')}>Reveal primary key</Button>
                 <Button disabled={!eligible || revealing} onClick={() => void reveal('secondary')}>Reveal secondary key</Button>

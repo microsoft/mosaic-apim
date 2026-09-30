@@ -12,6 +12,7 @@ from mosaic_api.domain import (
     GroupMembership,
     McpEndpoint,
     McpEndpointSyncRun,
+    McpPublication,
     McpServer,
     ModelApi,
     ModelEndpoint,
@@ -182,6 +183,28 @@ class GatewayRepository(Protocol):
 
     async def delete_publication(
         self, publication: Publication, audit_event: AuditEvent
+    ) -> None: ...
+
+    async def list_mcp_publications(
+        self, tenant_id: str, *, gateway_id: str | None = None
+    ) -> list[McpPublication]: ...
+
+    async def get_mcp_publication(
+        self, tenant_id: str, publication_id: str
+    ) -> McpPublication | None: ...
+
+    async def save_mcp_publication(
+        self, publication: McpPublication, audit_event: AuditEvent
+    ) -> McpPublication:
+        """Upsert, because the publication ID is deterministic per gateway and MCP endpoint."""
+        ...
+
+    async def record_mcp_publication_state(self, publication: McpPublication) -> McpPublication:
+        """Persist apply progress without emitting a second administrator audit event."""
+        ...
+
+    async def delete_mcp_publication(
+        self, publication: McpPublication, audit_event: AuditEvent
     ) -> None: ...
 
     async def save_publish_plan(self, plan: PublishPlan) -> PublishPlan: ...

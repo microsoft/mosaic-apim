@@ -163,6 +163,6 @@ model and MCP repositories.
 ## Amendment 2026-09-29: Agent and security-group MCP grants
 
 [ADR 0014](0014-agent-identities-and-security-group-grants.md) lets MCP server grants name users,
-agent identities, agent users and Entra security groups. MOSAIC records those grants and displays
-them as governance intent, but API Management enforcement for MCP is still deferred to the next
-phase.
+agent identities, agent users and Entra security groups. [ADR 0015](0015-mcp-gateway-enforcement.md)
+adds API Management enforcement for MCP servers MOSAIC publishes. Imported servers remain recorded
+governance intent because MOSAIC does not own their gateway policy.

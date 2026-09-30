@@ -47,6 +47,19 @@ export const GRANT_OVERLAP_KIND_LABELS: Record<GrantOverlapKind, string> = {
   multipleGroups: 'Multiple security groups apply',
 }
 
+/** An Identity page tab that lists principals. The dashboard counts principals by the same tabs. */
+export type PrincipalTab = 'users' | 'agents' | 'workloads'
+
+export function principalTabForKind(kind: PrincipalKind): PrincipalTab {
+  if (kind === 'user') {
+    return 'users'
+  }
+  if (kind === 'agentIdentity' || kind === 'agentUser') {
+    return 'agents'
+  }
+  return 'workloads'
+}
+
 export function subjectKindForPrincipal(kind: PrincipalKind): Exclude<EntitlementSubjectKind, 'group'> {
   if (kind === 'user' || kind === 'agentUser') {
     return 'user'

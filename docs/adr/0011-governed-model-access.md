@@ -27,11 +27,12 @@ keep their behavior until a reviewed plan changes them. A published API has a ca
 `ModelApi` record linked to its publication, not a fabricated inventory snapshot. Import refreshes
 preserve that link and administrator-authored catalog metadata.
 
-**This slice orchestrates direct users and applications only.** A user's Entra object ID, or an
+**This slice originally orchestrated direct users and applications only.** A user's Entra object ID, or an
 application/managed identity's service-principal object ID, identifies the runtime subject.
 Application client IDs are not interchangeable with service-principal object IDs. Group
-expansion, customer-owned imported APIs, MCP enforcement, and access-request automation remain
-desired-state-only or future work.
+expansion and MCP enforcement are handled by later ADRs for MOSAIC-owned publications. Customer-owned
+imported APIs and MCP servers, and application-owner delegation, remain desired-state-only or future
+work.
 
 **Either authentication method works independently.** A governed model can enable subscription
 keys, Entra tokens, both, or neither. Neither means deny all, not anonymous access. A key is a

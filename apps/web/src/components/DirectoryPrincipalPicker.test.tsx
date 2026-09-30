@@ -90,6 +90,24 @@ describe('DirectoryPrincipalPicker', () => {
     expect(onCreated).toHaveBeenCalledWith(expect.objectContaining({ id: 'principal_new' }))
   })
 
+  it('searches the kind it is given and reports kind changes', async () => {
+    const user = userEvent.setup()
+    const onKindChange = vi.fn()
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <DirectoryPrincipalPicker kind="agent" onKindChange={onKindChange} />
+      </QueryClientProvider>,
+    )
+
+    expect(screen.getByRole('combobox', { name: 'Directory search kind' })).toHaveValue('agent')
+    await user.type(screen.getByRole('textbox', { name: 'Directory search' }), 'bot')
+    await waitFor(() => expect(mocks.api.searchDirectory).toHaveBeenCalledWith('agent', 'bot', 20))
+
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Directory search kind' }), 'group')
+    expect(onKindChange).toHaveBeenCalledWith('group')
+  })
+
   it.each([
     [new mocks.TestApiError('Directory search is off.', 409, { code: 'directory_disabled' }), 'Directory search is off. Use manual entry instead.'],
     [new mocks.TestApiError('Missing permission User.ReadBasic.All.', 403, { code: 'directory_forbidden' }), 'Missing permission User.ReadBasic.All.'],

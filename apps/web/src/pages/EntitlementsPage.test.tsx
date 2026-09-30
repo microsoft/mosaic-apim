@@ -4,7 +4,7 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type { AccessRequest, Entitlement } from '../types'
+import type { AccessRequest, Entitlement, McpPublication, McpServer } from '../types'
 import { callRateError, describeLimits, describePublicationLimits } from '../entitlement-limits'
 import { EntitlementsPage } from './EntitlementsPage'
 import { accessPlan, directGrant, modelPublication, publishedModelApi } from '../test/model-access'
@@ -35,6 +35,7 @@ const api = {
   listGroups: vi.fn(),
   listModelApis: vi.fn(),
   listMcpServers: vi.fn(),
+  listMcpPublications: vi.fn(),
   listAccessRequests: vi.fn(),
   listPublications: vi.fn(),
   resolveEntitlements: vi.fn(),
@@ -49,6 +50,7 @@ const api = {
   approveAccessRequest: vi.fn(),
   denyAccessRequest: vi.fn(),
   getGrantOverlaps: vi.fn(),
+  getMcpConnection: vi.fn(),
 }
 
 const pendingRequest: AccessRequest = {
@@ -62,6 +64,64 @@ const pendingRequest: AccessRequest = {
   state: 'pending',
   createdAt: '2026-09-01T12:00:00Z',
   updatedAt: '2026-09-01T12:00:00Z',
+}
+
+const docsServer: McpServer = {
+  id: 'mcp_1',
+  tenantId: 'tenant',
+  gatewayId: 'gateway_1',
+  apiName: 'mosaic-mcp-docs',
+  displayName: 'Docs search',
+  path: 'mosaic/mcp/docs',
+  serviceUrl: 'https://mcp.contoso.test',
+  protocols: ['https'],
+  kind: 'passthrough',
+  transportType: 'streamable',
+  endpoints: [],
+  tools: [],
+  toolCount: 0,
+  subscriptionRequired: false,
+  productNames: [],
+  visibility: 'catalog',
+  selection: 'detected',
+  importedFromSnapshotId: null,
+  importedAt: '2026-09-01T12:20:00Z',
+  importedBy: null,
+  publicationId: 'mcp_pub_1',
+  createdAt: '2026-09-01T12:10:00Z',
+  updatedAt: '2026-09-01T12:10:00Z',
+}
+
+const docsPublication: McpPublication = {
+  id: 'mcp_pub_1',
+  tenantId: 'tenant',
+  entityType: 'mcpPublication',
+  gatewayId: 'gateway_1',
+  mcpEndpointId: 'mcpEndpoint_1',
+  displayName: 'Docs search',
+  apiName: 'mosaic-mcp-docs',
+  apiPath: 'mosaic/mcp/docs',
+  backendName: 'mosaic-mcp-docs',
+  fragmentName: 'mosaic-mcp-docs',
+  metadataApiName: 'mosaic-mcp-docs-prm',
+  mcpServerId: 'mcp_1',
+  status: 'published',
+  resources: [],
+  lastPlanId: 'mcp_plan_1',
+  lastPlanDigest: 'digest',
+  lastRunId: 'mcp_run_1',
+  lastAppliedAt: '2026-09-01T12:20:00Z',
+  lastError: null,
+  appliedAccess: {
+    version: 1,
+    audience: 'runtime-client-id',
+    delegatedScope: 'Mcp.Invoke',
+    applicationRole: 'Mcp.Invoke.Application',
+    grants: [],
+  },
+  accessState: 'applied',
+  createdAt: '2026-09-01T12:00:00Z',
+  updatedAt: '2026-09-01T12:20:00Z',
 }
 
 async function openApproval(user: ReturnType<typeof userEvent.setup>) {
@@ -100,6 +160,7 @@ describe('EntitlementsPage', () => {
     }])
     api.listModelApis.mockResolvedValue([{ ...publishedModelApi, publicationId: null, importedFromSnapshotId: 'snapshot_1' }])
     api.listMcpServers.mockResolvedValue([])
+    api.listMcpPublications.mockResolvedValue([])
     api.listAccessRequests.mockResolvedValue([])
     api.listPublications.mockResolvedValue([])
     api.resolveEntitlements.mockResolvedValue([])
@@ -190,8 +251,10 @@ describe('EntitlementsPage', () => {
       { ...directGrant, id: 'mcp-grant', resource: { kind: 'mcpServer', id: 'mcp_1' }, binding: null, runtime: null },
     ])
     renderPage()
-    expect(await screen.findAllByText('Desired state only')).toHaveLength(2)
-    expect(screen.queryByRole('button', { name: 'Connection info' })).not.toBeInTheDocument()
+    expect(await screen.findByText('Desired state only')).toBeVisible()
+    expect(screen.getByText('Recorded, not enforced')).toBeVisible()
+    expect(screen.getByText(/doesn't enforce it for an imported MCP server/)).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Connection info' })).toBeVisible()
     expect(screen.queryByRole('button', { name: 'Manage model' })).not.toBeInTheDocument()
     expect(api.applyPublishPlan).not.toHaveBeenCalled()
   })
@@ -257,7 +320,45 @@ describe('EntitlementsPage', () => {
     })))
   })
 
+  it('offers only call limits for an MCP server, so no token limit is dropped on save', async () => {
+    const user = userEvent.setup()
+    api.listMcpServers.mockResolvedValue([docsServer])
+    api.createEntitlement.mockResolvedValue(directGrant)
+    renderPage()
+    const add = await screen.findByRole('button', { name: 'Add entitlement' })
+    await waitFor(() => expect(add).toBeEnabled())
+    await user.click(add)
+    const dialog = await screen.findByRole('dialog')
+    fireEvent.change(within(dialog).getByRole('combobox', { name: 'Subject' }), { target: { value: 'principal_1' } })
+    fireEvent.change(within(dialog).getByRole('combobox', { name: 'Resource' }), { target: { value: 'modelApi_1' } })
+    await user.type(within(dialog).getByRole('spinbutton', { name: 'Tokens per minute' }), '1000')
+
+    fireEvent.change(within(dialog).getByRole('combobox', { name: 'Resource' }), { target: { value: 'mcp_1' } })
+    expect(within(dialog).queryByRole('spinbutton', { name: 'Tokens per minute' })).not.toBeInTheDocument()
+    expect(within(dialog).queryByRole('spinbutton', { name: 'Token quota' })).not.toBeInTheDocument()
+    expect(within(dialog).getByText(/MCP servers are limited by calls, not tokens/)).toBeVisible()
+    await user.type(within(dialog).getByRole('spinbutton', { name: 'Calls' }), '30')
+    await user.click(within(dialog).getByRole('button', { name: 'Grant access' }))
+
+    await waitFor(() => expect(api.createEntitlement).toHaveBeenCalledWith({
+      subject: { kind: 'user', id: 'principal_1' },
+      resource: { kind: 'mcpServer', id: 'mcp_1' },
+      enforcement: {
+        requests: { counterKeyExpression: '@(context.Subscription?.Key)', calls: 30, renewalPeriodSeconds: 60 },
+      },
+      notes: null,
+    }))
+    expect(await screen.findByText(
+      'Saved grant intent. API Management is unchanged; use Plan and apply on the MCPs page to activate it on a MOSAIC-published MCP server.',
+    )).toBeVisible()
+  })
+
   it('shows overlap winners, shadowed grants, membership-unchecked notice, and the empty state', async () => {
+    const user = userEvent.setup()
+    api.listEntitlements.mockResolvedValue([
+      directGrant,
+      { ...directGrant, id: 'group_grant', subject: { kind: 'securityGroup', id: 'sg_1' }, binding: null },
+    ])
     api.getGrantOverlaps.mockResolvedValueOnce({
       membershipChecked: false,
       skipped: ['Graph membership unavailable'],
@@ -268,8 +369,19 @@ describe('EntitlementsPage', () => {
         resourceLabel: 'Chat completions',
         principalId: 'principal_1',
         principalLabel: 'Ada Lovelace',
-        winner: { entitlementId: 'direct_grant', subject: { kind: 'user', id: 'principal_1' }, subjectLabel: 'Ada Lovelace', enabled: true },
-        shadowed: [{ entitlementId: 'group_grant', subject: { kind: 'securityGroup', id: 'sg_1' }, subjectLabel: 'Security readers', enabled: true }],
+        winner: {
+          entitlementId: 'direct_grant',
+          subject: { kind: 'user', id: 'principal_1' },
+          subjectLabel: 'Ada Lovelace',
+          enabled: true,
+          enforcement: { tokens: { tokensPerMinute: 20000 } },
+        },
+        shadowed: [{
+          entitlementId: 'group_grant',
+          subject: { kind: 'securityGroup', id: 'sg_1' },
+          subjectLabel: 'Security readers',
+          enabled: true,
+        }],
         reason: 'A direct grant wins over a security-group grant.',
       }],
     })
@@ -280,8 +392,24 @@ describe('EntitlementsPage', () => {
     expect(screen.getAllByText('Ada Lovelace').length).toBeGreaterThan(0)
     expect(screen.getByText('Applies')).toBeVisible()
     expect(screen.getByText("Doesn't apply")).toBeVisible()
+    // Each side of an overlap states its own limits, so the admin can see what the winner changes.
+    expect(screen.getByText('Limits usage to 20,000 tokens per minute.')).toBeVisible()
+    expect(screen.getByText('Security readers').nextElementSibling).toHaveTextContent(
+      'No grant-specific limit is configured.',
+    )
     expect(screen.getByText(/Microsoft Graph membership was not checked/)).toBeVisible()
     expect(screen.getByText(/Graph membership unavailable/)).toBeVisible()
+
+    // Each grant links to its row in the grants table, where it can be disabled or revoked.
+    const link = await screen.findByRole('link', { name: 'Go to the Security readers grant on Chat completions' })
+    const row = document.getElementById('grant-group_grant')
+    expect(row).not.toBeNull()
+    const scrollIntoView = vi.fn()
+    row!.scrollIntoView = scrollIntoView
+    await user.click(link)
+    expect(row).toHaveFocus()
+    expect(scrollIntoView).toHaveBeenCalledWith({ block: 'center' })
+    expect(screen.getByRole('link', { name: 'Go to the Ada Lovelace grant on Chat completions' })).toBeVisible()
   })
 
   it('shows resolved access paths and whether each grant applies', async () => {
@@ -310,7 +438,7 @@ describe('EntitlementsPage', () => {
     fireEvent.change(screen.getByRole('combobox', { name: 'Principal' }), { target: { value: 'principal_1' } })
 
     await waitFor(() => expect(screen.getAllByText((_, element) => element?.textContent?.includes('Direct · Applies') ?? false).length).toBeGreaterThan(0))
-    expect(screen.getAllByText((_, element) => element?.textContent?.includes('Security group Security readers · Overridden by direct_grant') ?? false).length).toBeGreaterThan(0)
+    expect(screen.getAllByText((_, element) => element?.textContent?.includes('Security group Security readers · Overridden by the direct grant') ?? false).length).toBeGreaterThan(0)
     expect(screen.getAllByText((_, element) => element?.textContent?.includes('MOSAIC group Engineering · Disabled') ?? false).length).toBeGreaterThan(0)
   })
 
@@ -442,6 +570,43 @@ describe('EntitlementsPage', () => {
       expect(await screen.findByRole('button', { name: 'Review model changes' })).toBeVisible()
       expect(api.createPublishPlan).not.toHaveBeenCalled()
       expect(api.applyPublishPlan).not.toHaveBeenCalled()
+    })
+
+    it('approves an MCP server request with call limits only, and points to the MCP plan', async () => {
+      const user = userEvent.setup()
+      api.listMcpServers.mockResolvedValue([docsServer])
+      api.listMcpPublications.mockResolvedValue([docsPublication])
+      api.listAccessRequests.mockResolvedValue([
+        { ...pendingRequest, resource: { kind: 'mcpServer', id: 'mcp_1' } },
+      ])
+      api.approveAccessRequest.mockImplementation(async () => {
+        api.listAccessRequests.mockResolvedValue([])
+        return {
+          ...pendingRequest, resource: { kind: 'mcpServer', id: 'mcp_1' }, state: 'approved',
+          requesterPrincipalId: 'principal_1', grantedEntitlementId: 'granted_1',
+        }
+      })
+      renderPage()
+
+      const dialog = await openApproval(user)
+      expect(within(dialog).getByText('Docs search (MCP server)')).toBeVisible()
+      expect(within(dialog).getByText(
+        'Approving creates grant intent only. API Management is unchanged until this MCP server is planned and applied from the MCPs page.',
+      )).toBeVisible()
+      expect(within(dialog).queryByRole('spinbutton', { name: 'Tokens per minute' })).not.toBeInTheDocument()
+      expect(within(dialog).getByText(/MCP servers are limited by calls, not tokens/)).toBeVisible()
+      await user.type(within(dialog).getByRole('spinbutton', { name: 'Calls' }), '10')
+      await user.click(within(dialog).getByRole('button', { name: 'Approve and create grant' }))
+
+      await waitFor(() => expect(api.approveAccessRequest).toHaveBeenCalledWith(pendingRequest.id, {
+        note: null,
+        enforcement: {
+          requests: { counterKeyExpression: '@(context.Subscription.Id)', calls: 10, renewalPeriodSeconds: 60 },
+        },
+      }))
+      expect(await screen.findByText(
+        'Approved the request and created grant intent for Ada Lovelace. API Management is unchanged; use Plan and apply on the MCPs page to activate it.',
+      )).toBeVisible()
     })
 
     it('says approval registers a requester MOSAIC does not know yet', async () => {

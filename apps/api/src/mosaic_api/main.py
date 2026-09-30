@@ -21,6 +21,7 @@ from mosaic_api.integrations.apim import ApimClient, ApimWriter, ArmClient
 from mosaic_api.integrations.apim.credentials import ApimCredentialClient
 from mosaic_api.integrations.graph import DirectoryLookup, GraphDirectoryLookup
 from mosaic_api.integrations.mcp import EntraTokenProvider, KeyVaultSecretReader
+from mosaic_api.mcp_publishing_api import mcp_publishing_router
 from mosaic_api.observability import configure_logging, configure_telemetry
 from mosaic_api.repositories import (
     CosmosDirectoryRepository,
@@ -49,6 +50,7 @@ from mosaic_api.services import (
     PublishingService,
 )
 from mosaic_api.services.mcp_endpoints import build_mcp_client_factory
+from mosaic_api.services.mcp_publishing import McpPublishingService
 from mosaic_api.services.portal_access import PortalAccessService
 
 logger = structlog.get_logger()
@@ -162,6 +164,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             model_runtime_client_id=app_settings.model_runtime_client_id,
             security_group_claims=app_settings.entra_group_claims,
         )
+        mcp_publishing_service = McpPublishingService(
+            gateway_repository,
+            mcp_endpoint_repository=mcp_repository,
+            entitlement_repository=entitlement_repository,
+            directory_repository=repository,
+            client_factory=lambda resource: ApimClient(arm_client, resource),
+            writer_factory=lambda resource: ApimWriter(arm_client, resource),
+            runtime_client_id=app_settings.model_runtime_client_id,
+            security_group_claims=app_settings.entra_group_claims,
+        )
         # A dedicated client for outbound MCP calls: redirects are refused per request, and the
         # connection pool for operator-supplied hosts is kept away from the ARM one.
         mcp_http_client = httpx.AsyncClient(
@@ -171,6 +183,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         key_vault_reader = KeyVaultSecretReader(credential)
         mcp_endpoint_service = McpEndpointService(
             mcp_repository,
+            gateway_repository=gateway_repository,
+            entitlement_repository=entitlement_repository,
             client_factory=build_mcp_client_factory(mcp_http_client),
             secret_resolver=key_vault_reader.read,
             token_resolver=EntraTokenProvider(credential).token_for,
@@ -193,6 +207,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.gateway_service = gateway_service
         app.state.model_endpoint_service = model_endpoint_service
         app.state.publishing_service = publishing_service
+        app.state.mcp_publishing_service = mcp_publishing_service
         app.state.mcp_endpoint_service = mcp_endpoint_service
         entitlement_service = EntitlementService(
             entitlement_repository,
@@ -236,6 +251,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except Exception:
             logger.exception("publish_reap_failed")
         try:
+            reaped = await mcp_publishing_service.reap_stale_publish_runs(
+                app_settings.tenant_id
+            )
+            if reaped:
+                logger.warning("mcp_publish_runs_reaped", count=reaped)
+        except Exception:
+            logger.exception("mcp_publish_reap_failed")
+        try:
             reaped = await mcp_endpoint_service.reap_stale_sync_runs(app_settings.tenant_id)
             if reaped:
                 logger.warning("mcp_endpoint_sync_runs_reaped", count=reaped)
@@ -249,6 +272,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             await gateway_service.aclose()
             await model_endpoint_service.aclose()
             await publishing_service.aclose()
+            await mcp_publishing_service.aclose()
             await mcp_endpoint_service.aclose()
             if directory_lookup:
                 await directory_lookup.close()
@@ -323,6 +347,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
 
     app.include_router(router)
+    app.include_router(mcp_publishing_router)
     app.include_router(directory_router)
     app.include_router(portal_router)
     return app

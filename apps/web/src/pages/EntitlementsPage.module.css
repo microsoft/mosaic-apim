@@ -47,6 +47,12 @@
   gap: 16px;
 }
 
+.tableHeading {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
 .tableWrap {
   padding: 16px 20px 20px;
   overflow: auto;
@@ -110,6 +116,15 @@
 .detailList dd {
   margin: 0;
   color: var(--mosaic-text);
+}
+
+.overlapGrants {
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  column-gap: 24px;
+}
+
+.overlapGrants div {
+  align-content: start;
 }
 
 .noteCard {

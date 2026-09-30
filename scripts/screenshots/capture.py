@@ -76,15 +76,80 @@ REDACTION_PATTERNS = [
     r"\bdemo[0-9a-z-]*(?:key|secret|token)[0-9a-z-]*\b",
 ]
 
+# Pixels added around each blurred region, so anti-aliased glyph edges are covered too.
+BLUR_PADDING = 3
+
 FIND_SENSITIVE_TEXT = """
-({literals, patterns}) => {
+({literals, patterns, padding}) => {
   const expressions = patterns.map((source) => new RegExp(source, 'gi'))
   const needles = literals.map((literal) => literal.toLowerCase())
   const rects = []
-  const keep = (rect) => {
-    if (rect.width > 0 && rect.height > 0) {
-      rects.push({x: rect.left, y: rect.top, width: rect.width, height: rect.height})
+  // An open modal dialog covers the page behind it. Regions found on that page are cut back to
+  // the parts still visible around the dialog, so their blur doesn't smear over its content. The
+  // cut leaves room for the padding the blur adds to each region.
+  const dialogs = [...document.querySelectorAll('[role="dialog"], [role="alertdialog"]')]
+    .filter((dialog) => dialog.getAttribute('aria-modal') === 'true')
+    .filter((dialog) => dialog.getClientRects().length > 0)
+    .map((dialog) => {
+      const box = dialog.getBoundingClientRect()
+      return {
+        element: dialog,
+        left: box.left - padding,
+        top: box.top - padding,
+        right: box.right + padding,
+        bottom: box.bottom + padding,
+      }
+    })
+  const around = (piece, cover) => {
+    const right = piece.x + piece.width
+    const bottom = piece.y + piece.height
+    const apart = right <= cover.left || piece.x >= cover.right
+      || bottom <= cover.top || piece.y >= cover.bottom
+    if (apart) {
+      return [piece]
     }
+    const pieces = []
+    if (piece.y < cover.top) {
+      pieces.push({x: piece.x, y: piece.y, width: piece.width, height: cover.top - piece.y})
+    }
+    if (bottom > cover.bottom) {
+      pieces.push({x: piece.x, y: cover.bottom, width: piece.width, height: bottom - cover.bottom})
+    }
+    const top = Math.max(piece.y, cover.top)
+    const height = Math.min(bottom, cover.bottom) - top
+    if (piece.x < cover.left) {
+      pieces.push({x: piece.x, y: top, width: cover.left - piece.x, height})
+    }
+    if (right > cover.right) {
+      pieces.push({x: cover.right, y: top, width: right - cover.right, height})
+    }
+    return pieces
+  }
+  const keep = (rect, owner) => {
+    // A box with no area paints nothing, and its padded blur would only smear its neighbours.
+    if (rect.width <= 0 || rect.height <= 0) return
+    let pieces = [{x: rect.left, y: rect.top, width: rect.width, height: rect.height}]
+    for (const dialog of dialogs) {
+      if (!dialog.element.contains(owner)) {
+        pieces = pieces.flatMap((piece) => around(piece, dialog))
+      }
+    }
+    for (const piece of pieces) {
+      if (piece.width > 0 && piece.height > 0) rects.push(piece)
+    }
+  }
+  // A closed <details> paints only its summary, yet the browser still reports boxes for the rest
+  // of its content. Blurring those smears whatever sits beneath the summary.
+  const collapsed = (element) => {
+    for (
+      let details = element.closest('details:not([open])');
+      details;
+      details = details.parentElement ? details.parentElement.closest('details:not([open])') : null
+    ) {
+      const summary = details.querySelector(':scope > summary')
+      if (!summary || !summary.contains(element)) return true
+    }
+    return false
   }
   const spans = (text) => {
     const found = []
@@ -112,21 +177,23 @@ FIND_SENSITIVE_TEXT = """
   const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT)
   for (let node = walker.nextNode(); node; node = walker.nextNode()) {
     const text = node.nodeValue
-    if (!text || !text.trim() || !node.parentElement) continue
+    if (!text || !text.trim() || !node.parentElement || collapsed(node.parentElement)) continue
     for (const [start, end] of spans(text)) {
       const range = document.createRange()
       range.setStart(node, start)
       range.setEnd(node, end)
-      for (const rect of range.getClientRects()) keep(rect)
+      for (const rect of range.getClientRects()) keep(rect, node.parentElement)
     }
   }
   for (const field of document.querySelectorAll('input, textarea')) {
-    if (field.value && spans(field.value).length > 0) keep(field.getBoundingClientRect())
+    if (collapsed(field)) continue
+    if (field.value && spans(field.value).length > 0) keep(field.getBoundingClientRect(), field)
   }
   // A closed select shows its chosen option without a text node that has a layout box.
   for (const field of document.querySelectorAll('select')) {
+    if (collapsed(field)) continue
     const text = field.selectedOptions[0]?.text
-    if (text && spans(text).length > 0) keep(field.getBoundingClientRect())
+    if (text && spans(text).length > 0) keep(field.getBoundingClientRect(), field)
   }
   return rects
 }
@@ -187,6 +254,39 @@ def select_option(label: str, starts_with: str) -> Action:
     return act
 
 
+def fill_text(label: str, text: str) -> Action:
+    def act(page: Page) -> None:
+        page.get_by_label(label, exact=True).filter(visible=True).first.fill(text)
+
+    return act
+
+
+def click_card_button_matching(texts: Sequence[str], button_name: str) -> Action:
+    def act(page: Page) -> None:
+        _card_matching(page, texts).get_by_role("button", name=button_name).click()
+
+    return act
+
+
+def scroll_to_card_matching(texts: Sequence[str], margin: int = 24) -> Action:
+    """Scroll the window so the first access card with all ``texts`` sits below the top."""
+
+    def act(page: Page) -> None:
+        box = _card_matching(page, texts).bounding_box()
+        if box is None:
+            raise CaptureError(f"No access card with {texts!r} has a layout box to scroll to")
+        page.evaluate("(top) => window.scrollBy(0, top)", box["y"] - margin)
+
+    return act
+
+
+def _card_matching(page: Page, texts: Sequence[str]) -> Locator:
+    cards = page.locator(".access-card")
+    for text in texts:
+        cards = cards.filter(has_text=text)
+    return cards.first
+
+
 def wait_for_text(text: str) -> Action:
     def act(page: Page) -> None:
         _visible_text(page, text).wait_for(timeout=30_000)
@@ -212,8 +312,8 @@ OPEN_GATEWAY = (click_link("Contoso AI Gateway"), wait_for_text("Published by MO
 
 SHOTS: list[Shot] = [
     # The same view in both themes, shown side by side.
-    Shot("console-dashboard-light", "console", "/dashboard", "light", "access groups", height=1120),
-    Shot("console-dashboard-dark", "console", "/dashboard", "dark", "access groups", height=1120),
+    Shot("console-dashboard-light", "console", "/dashboard", "light", "MOSAIC groups", height=1120),
+    Shot("console-dashboard-dark", "console", "/dashboard", "dark", "MOSAIC groups", height=1120),
     Shot("portal-catalog-light", "portal", "/catalog", "light", "Docs search MCP", height=940),
     Shot("portal-catalog-dark", "portal", "/catalog", "dark", "Docs search MCP", height=940),
     # Capability galleries: light shots sit in the README's left column and dark in its right.
@@ -236,7 +336,43 @@ SHOTS: list[Shot] = [
     ),
     Shot("console-models", "console", "/models", "dark", "GPT-4o mini"),
     Shot("console-mcps", "console", "/mcps", "light", "Contoso Docs Search"),
-    Shot("console-identity", "console", "/identity?tab=users", "dark", "Megan Bowen"),
+    Shot(
+        "console-identity",
+        "console",
+        "/identity?tab=agents",
+        "dark",
+        "Market Research Agent",
+        # Tall enough for all four seeded agents, ending just below the detail panel's type field.
+        height=1012,
+    ),
+    Shot(
+        "console-directory-picker",
+        "console",
+        "/identity?tab=agents",
+        "light",
+        "Market Research Agent",
+        actions=(
+            # On the Agents tab, the dialog opens with the directory search set to agents.
+            click_button("Add agent"),
+            fill_text("Directory search", "agent"),
+            wait_for_text("Benefits Bot Agent"),
+        ),
+        height=1040,
+    ),
+    Shot(
+        "console-security-group-members",
+        "console",
+        "/identity?tab=workloads",
+        "dark",
+        "Applications and security groups",
+        actions=(
+            fill_text("Filter by label, detail, object ID, or kind", "AI Model Users"),
+            wait_for_text("Security group members"),
+            wait_for_text("Market Research Agent"),
+        ),
+        # The Graph member list sits below the local label form, so the viewport takes the page.
+        height=1776,
+    ),
     Shot(
         "console-entitlements",
         "console",
@@ -245,18 +381,54 @@ SHOTS: list[Shot] = [
         "Contoso Support Copilot",
         actions=(scroll_to_text("Desired intent and last recorded", margin=64),),
     ),
+    Shot(
+        "console-overlapping-grants",
+        "console",
+        "/entitlements",
+        "dark",
+        "Overlapping grants",
+        actions=(scroll_to_text("Overlapping grants", margin=64),),
+        # Tall enough to include the group-versus-group entries after the direct-grant ones.
+        height=1384,
+    ),
+    Shot(
+        "console-mcp-publish",
+        "console",
+        "/mcps",
+        "light",
+        "Published MCP servers",
+        actions=(
+            scroll_to_text("Published MCP servers", margin=64),
+            click_button("Plan and apply"),
+            wait_for_text("MCP access changes"),
+        ),
+        height=1040,
+    ),
     Shot("console-analytics", "console", "/analytics", "dark", "Token usage by group"),
     Shot(
         "portal-access",
         "portal",
         "/access",
         "light",
-        "Granted directly to you",
+        "My access",
         actions=(
-            click_button("Connection details"),
+            click_card_button_matching(("Model API", "Applied to APIM"), "Connection details"),
             wait_for_text("Base URL"),
             scroll_to_text("Model API", margin=90),
         ),
+    ),
+    Shot(
+        "portal-mcp-connection",
+        "portal",
+        "/access",
+        "dark",
+        "Applied to APIM",
+        actions=(
+            click_card_button_matching(("MCP server", "Applied to APIM"), "Connection details"),
+            wait_for_text("VS Code"),
+            scroll_to_card_matching(("MCP server", "Applied to APIM"), margin=72),
+        ),
+        height=1240,
     ),
     Shot("portal-requests", "portal", "/requests", "dark", "Approved for the churn analysis"),
 ]
@@ -330,7 +502,9 @@ def _config_script(api_port: int) -> str:
     )
 
 
-def _blur(image: Image.Image, rects: list[dict[str, float]], padding: int = 3) -> Image.Image:
+def _blur(
+    image: Image.Image, rects: list[dict[str, float]], padding: int = BLUR_PADDING
+) -> Image.Image:
     """Pixelate then blur each region, so no glyph shape survives to be read back."""
 
     width, height = image.size
@@ -402,7 +576,8 @@ def _capture_one(
         details = "\n".join(problems[-20:]) or "no browser errors were reported"
         raise CaptureError(f"{shot.name}: {error}\nPage at failure: {debug}\n{details}") from error
     rects: list[dict[str, float]] = page.evaluate(
-        FIND_SENSITIVE_TEXT, {"literals": literals, "patterns": REDACTION_PATTERNS}
+        FIND_SENSITIVE_TEXT,
+        {"literals": literals, "patterns": REDACTION_PATTERNS, "padding": BLUR_PADDING},
     )
     png = page.screenshot(animations="disabled", caret="hide")
     image = _blur(Image.open(io.BytesIO(png)).convert("RGB"), rects)
@@ -446,6 +621,8 @@ def capture(
                         ),
                     )
                     page = context.new_page()
+                    page.set_default_timeout(45_000)
+                    page.set_default_navigation_timeout(60_000)
                     written.append(_capture_one(page, shot, urls[shot.app], literals, output, logs))
                 except CaptureError as error:
                     failures.append(error)
@@ -490,7 +667,7 @@ def main(argv: list[str] | None = None) -> int:
             if not _port_free(port):
                 parser.error(f"port {port} is in use; pick another with the --*-port options")
 
-    logs = Path(tempfile.mkdtemp(prefix="mosaic-screenshots-"))
+    logs = Path(tempfile.mkdtemp(prefix="mosaic-screenshots-")).resolve()
     _ensure_chromium()
     api = [
         sys.executable,

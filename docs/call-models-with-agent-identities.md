@@ -100,9 +100,9 @@ client_id=<agent-identity-client-id>
 
 ## Grant access in MOSAIC
 
-In the administrator console, open **Identity** and choose **Add identity**. Use **Agents** to find
-agent identities and agent users through Microsoft Graph. After the identity is recorded, create a
-model entitlement:
+In the administrator console, open **Identity**, go to the **Agents** tab, and choose **Add agent**.
+The directory search finds agent identities and agent users through Microsoft Graph. After the
+identity is recorded, create a model entitlement:
 
 - grant an `agentIdentity` directly when the agent calls app-only;
 - grant an `agentUser` directly when the agent calls with delegated user context;

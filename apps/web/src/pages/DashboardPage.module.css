@@ -33,7 +33,7 @@
 
 .liveGrid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 12px;
 }
 
@@ -253,6 +253,12 @@
 
 .healthList > div:last-child {
   border-bottom: 0;
+}
+
+@media (max-width: 1200px) {
+  .liveGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 1050px) {

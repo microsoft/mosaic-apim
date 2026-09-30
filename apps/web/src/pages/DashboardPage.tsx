@@ -10,6 +10,7 @@ import {
 } from '@fluentui/react-components'
 import {
   ArrowTrendingRegular,
+  BotRegular,
   ChartMultipleRegular,
   CloudDatabaseRegular,
   MoneyRegular,
@@ -22,6 +23,7 @@ import { useNavigate } from 'react-router-dom'
 import { useMosaicApi } from '../api'
 import { ErrorState } from '../components/AsyncState'
 import { DataSourceBadge, PageHeader, PreviewNotice } from '../components/PageHeader'
+import { type PrincipalTab, principalTabForKind } from '../labels'
 import styles from './DashboardPage.module.css'
 
 type TimeRange = '24h' | '7d' | '30d'
@@ -77,6 +79,33 @@ function SparkMetric({
   )
 }
 
+function InventoryCard({
+  icon,
+  count,
+  loadingLabel,
+  singular,
+  plural,
+  onClick,
+}: {
+  icon: ReactNode
+  /** Leave unset while the count is loading. */
+  count?: number
+  loadingLabel: string
+  singular: string
+  plural: string
+  onClick: () => void
+}) {
+  return (
+    <button className={styles.inventoryCard} onClick={onClick}>
+      <span className={styles.inventoryIcon}>{icon}</span>
+      <span>
+        <strong>{count === undefined ? <Spinner size="tiny" label={loadingLabel} /> : count}</strong>
+        <small>{count === 1 ? singular : plural}</small>
+      </span>
+    </button>
+  )
+}
+
 export function DashboardPage() {
   const api = useMosaicApi()
   const navigate = useNavigate()
@@ -99,6 +128,13 @@ export function DashboardPage() {
       .join(' ')
   }, [timeRange])
   const liveError = principals.error ?? groups.error
+  const principalCounts = useMemo(() => {
+    const counts: Record<PrincipalTab, number> = { users: 0, agents: 0, workloads: 0 }
+    for (const principal of principals.data ?? []) {
+      counts[principalTabForKind(principal.kind)] += 1
+    }
+    return counts
+  }, [principals.data])
 
   return (
     <section className={styles.page}>
@@ -132,62 +168,38 @@ export function DashboardPage() {
           <ErrorState error={liveError} />
         ) : (
           <div className={styles.liveGrid}>
-            <button
-              className={styles.inventoryCard}
+            <InventoryCard
+              icon={<PersonAccountsRegular />}
+              count={principals.isLoading ? undefined : principalCounts.users}
+              loadingLabel="Loading people"
+              singular="person"
+              plural="people"
               onClick={() => navigate('/identity?tab=users')}
-            >
-              <span className={styles.inventoryIcon}>
-                <PersonAccountsRegular />
-              </span>
-              <span>
-                <strong>
-                  {principals.isLoading ? (
-                    <Spinner size="tiny" label="Loading principals" />
-                  ) : (
-                    (principals.data?.filter((principal) => principal.kind === 'user' || principal.kind === 'agentUser').length ?? 0)
-                  )}
-                </strong>
-                <small>people and agent users</small>
-              </span>
-            </button>
-            <button
-              className={styles.inventoryCard}
+            />
+            <InventoryCard
+              icon={<BotRegular />}
+              count={principals.isLoading ? undefined : principalCounts.agents}
+              loadingLabel="Loading agents"
+              singular="agent"
+              plural="agents"
+              onClick={() => navigate('/identity?tab=agents')}
+            />
+            <InventoryCard
+              icon={<CloudDatabaseRegular />}
+              count={principals.isLoading ? undefined : principalCounts.workloads}
+              loadingLabel="Loading applications and security groups"
+              singular="app or security group"
+              plural="apps and security groups"
               onClick={() => navigate('/identity?tab=workloads')}
-            >
-              <span className={styles.inventoryIcon}>
-                <CloudDatabaseRegular />
-              </span>
-              <span>
-                <strong>
-                  {principals.isLoading ? (
-                    <Spinner size="tiny" label="Loading workload identities" />
-                  ) : (
-                    (principals.data?.filter((principal) =>
-                      principal.kind !== 'user' && principal.kind !== 'agentUser' && principal.kind !== 'securityGroup',
-                    ).length ?? 0)
-                  )}
-                </strong>
-                <small>apps and agent identities</small>
-              </span>
-            </button>
-            <button
-              className={styles.inventoryCard}
+            />
+            <InventoryCard
+              icon={<PeopleCommunityRegular />}
+              count={groups.isLoading ? undefined : (groups.data?.length ?? 0)}
+              loadingLabel="Loading groups"
+              singular="MOSAIC group"
+              plural="MOSAIC groups"
               onClick={() => navigate('/identity?tab=groups')}
-            >
-              <span className={styles.inventoryIcon}>
-                <PeopleCommunityRegular />
-              </span>
-              <span>
-                <strong>
-                  {groups.isLoading ? (
-                    <Spinner size="tiny" label="Loading groups" />
-                  ) : (
-                    (groups.data?.length ?? 0)
-                  )}
-                </strong>
-                <small>access groups</small>
-              </span>
-            </button>
+            />
           </div>
         )}
       </div>

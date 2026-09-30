@@ -7,13 +7,14 @@ Management's AI gateway capabilities. It stores desired governance state, plans 
 should map to APIM, and presents telemetry from Azure Monitor. It does **not** proxy model traffic
 or replace APIM.
 
-This release connects model access grants to API Management enforcement. Administrators publish a
-model, grant an existing user, application, Entra Agent ID identity or Entra security group access,
-review and apply the changes, and later revoke access. Governed models accept a dedicated APIM
-subscription key for direct grants or an Entra access token, with independently configurable
-methods and shared per-grant limits. Authorized direct-grant callers can retrieve their current
-subscription key on demand; MOSAIC does not store a duplicate. Security-group grants use Entra
-tokens only and have no key path.
+This release connects model and published MCP access grants to API Management enforcement.
+Administrators publish a model or MCP server, grant an existing user, application, Entra Agent ID
+identity or Entra security group access, review and apply the changes, and later revoke access.
+Governed models accept a dedicated APIM subscription key for direct grants or an Entra access
+token, with independently configurable methods and shared per-grant limits. Published MCP servers
+accept Entra tokens only and use call limits. Authorized direct-grant model callers can retrieve
+their current subscription key on demand; MOSAIC does not store a duplicate. Security-group grants
+use Entra tokens only and have no key path.
 
 Publishing and governed access write only through a reviewed,
 deterministic plan and an explicit apply, only to a gateway an administrator has switched to
@@ -21,7 +22,8 @@ deterministic plan and an explicit apply, only to a gateway an administrator has
 See [ADR 0010](docs/adr/0010-publishing-models-into-apim.md) and
 [ADR 0011](docs/adr/0011-governed-model-access.md) for the write and credential-disclosure
 boundaries, and [ADR 0014](docs/adr/0014-agent-identities-and-security-group-grants.md) for agent
-identities and security-group grants.
+identities and security-group grants. [ADR 0015](docs/adr/0015-mcp-gateway-enforcement.md)
+documents MCP gateway enforcement.
 
 ## Screenshots
 
@@ -47,9 +49,10 @@ one under **Settings > Appearance**.
     <td><img src="docs/images/screenshots/console-dashboard-dark.png" alt="The console overview in the dark theme"></td>
   </tr>
   <tr>
-    <td colspan="2"><b>Console overview.</b> Live counts of the users, workload identities, and
-    access groups registered in MOSAIC. Below them, the telemetry, cost, model-ranking, and
-    service-health panels show labelled sample data until MOSAIC queries Azure Monitor.</td>
+    <td colspan="2"><b>Console overview.</b> Live counts of the people, agents, applications and
+    security groups, and MOSAIC groups registered in MOSAIC, each opening its tab under Identity.
+    Below them, the telemetry, cost, model-ranking, and service-health panels show labelled sample
+    data until MOSAIC queries Azure Monitor.</td>
   </tr>
   <tr>
     <td><img src="docs/images/screenshots/portal-catalog-light.png" alt="The portal catalog in the light theme"></td>
@@ -57,8 +60,8 @@ one under **Settings > Appearance**.
   </tr>
   <tr>
     <td colspan="2"><b>Portal catalog.</b> The model APIs and MCP servers published to portal
-    users. People request access with an optional justification, and can see what they already
-    hold or have asked for.</td>
+    users, including whether an MCP server is enforced by the gateway. People request access with
+    an optional justification, and can see what they already hold or have asked for.</td>
   </tr>
 </table>
 
@@ -94,23 +97,52 @@ one under **Settings > Appearance**.
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/console-mcps.png" alt="Registered MCP servers with status, authentication, and tools">
-      <p><b>MCP servers.</b> Servers registered directly or imported from a gateway, with their
-      connection status, authentication method, and tools. MOSAIC reads what a server offers and
-      never calls a tool.</p>
+      <img src="docs/images/screenshots/console-mcps.png" alt="Registered and published MCP servers with status, authentication, and tools">
+      <p><b>MCP servers.</b> Registered servers and MOSAIC-published MCP servers, with their
+      connection status, authentication method, tools, and gateway apply state. MOSAIC reads what
+      a server offers and never calls a tool.</p>
     </td>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/console-identity.png" alt="Users referenced by Entra object ID with a detail panel">
-      <p><b>Identity.</b> The users, workload identities, and groups MOSAIC references by Entra
-      object ID. Entra stays the source of truth; MOSAIC keeps only a local label and type.</p>
+      <img src="docs/images/screenshots/console-identity.png" alt="The Identity page's Agents tab listing agent identities and an agent user, with a detail panel">
+      <p><b>Identity.</b> The people, agents, applications, and security groups MOSAIC references
+      by Entra object ID, each on its own tab. The Agents tab shows each agent's blueprint or
+      parent agent; Entra stays the source of truth, and MOSAIC keeps only a local label and type.</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/images/screenshots/console-directory-picker.png" alt="The Add agent dialog with agent search results and already-added badges">
+      <p><b>Directory picker.</b> <b>Add agent</b> on the Agents tab searches Microsoft Entra for
+      agents, and the same picker finds people and security groups. Results show what is already
+      in MOSAIC and what can still be added.</p>
+    </td>
+    <td width="50%" valign="top">
+      <img src="docs/images/screenshots/console-security-group-members.png" alt="A security group detail page with members loaded from Microsoft Graph">
+      <p><b>Security group members.</b> A recorded Entra security group shows its read-only
+      Microsoft Graph member list. MOSAIC can show which members are also recorded locally for
+      direct grants.</p>
     </td>
   </tr>
   <tr>
     <td width="50%" valign="top">
       <img src="docs/images/screenshots/console-entitlements.png" alt="Grants with subjects, resources, limits, desired and applied state, and bindings">
-      <p><b>Entitlements.</b> Grants of model APIs and MCP servers to users, groups, and
-      applications, with each grant's limits, desired and applied state, and APIM binding. Model
-      grants reach APIM only through a reviewed apply.</p>
+      <p><b>Entitlements.</b> Grants of model APIs and MCP servers to people, agents,
+      applications, MOSAIC groups, and Entra security groups, with limits, desired and applied
+      state, and APIM binding. Gateway enforcement changes only through a reviewed apply.</p>
+    </td>
+    <td width="50%" valign="top">
+      <img src="docs/images/screenshots/console-overlapping-grants.png" alt="Overlapping grants showing which grant applies, each grant's limits, and links to the grants">
+      <p><b>Overlapping grants.</b> MOSAIC explains when multiple grants can reach the same
+      caller on the same resource, with each grant's limits and a link to it. Direct grants win
+      over group grants, and the most generous security-group grant wins among groups.</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/images/screenshots/console-mcp-publish.png" alt="MCP publish review with access changes and plan steps">
+      <p><b>MCP publish review.</b> A MOSAIC-owned MCP server is published through API
+      Management only after the administrator reviews the access snapshot and the exact gateway
+      resources that will change.</p>
     </td>
     <td width="50%" valign="top">
       <img src="docs/images/screenshots/console-analytics.png" alt="Analytics with request, token, success-rate, and cost summaries">
@@ -131,10 +163,19 @@ one under **Settings > Appearance**.
       and an on-demand key reveal below.</p>
     </td>
     <td width="50%" valign="top">
+      <img src="docs/images/screenshots/portal-mcp-connection.png" alt="An enforced MCP grant with VS Code mcp.json connection details">
+      <p><b>MCP connection.</b> An enforced MCP grant expands to show the server URL, protected
+      resource metadata, VS Code <code>mcp.json</code> snippet, Entra authentication values, and
+      call limits.</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
       <img src="docs/images/screenshots/portal-requests.png" alt="Approved, denied, and pending access requests">
       <p><b>My requests.</b> Access requests with their justification, state, and the
       administrator's decision note. A pending request can be withdrawn.</p>
     </td>
+    <td width="50%" valign="top"></td>
   </tr>
 </table>
 
@@ -201,6 +242,9 @@ explicit local/test modes and application startup rejects them when `MOSAIC_ENVI
   MOSAIC-published model APIs: reviewed APIM deployment, key or Entra authentication for direct
   grants, Entra-only group grants, shared token/request limits, revocation, and distinct desired
   versus applied state
+- MCP publishing and governed access for MOSAIC-registered servers: reviewed APIM deployment of a
+  passthrough MCP API, per-publication resource metadata, Entra-only direct and security-group
+  grants, call limits, credential stripping, backend managed identity and fail-closed recovery
 - Current-user entitlement and connection APIs, plus audited on-demand key retrieval, which the
   portal's My access page uses to show connection details and reveal keys for applied direct
   model grants
@@ -224,6 +268,9 @@ explicit local/test modes and application startup rejects them when `MOSAIC_ENVI
   fragment, API, operations, API policy, product, product link, and subscription — through a
   persisted deterministic plan, an explicit apply, per-step results, and a rollback that deletes
   only the resources that apply created
+- MCP publishing: expose a registered MCP server through a gateway by creating its backend, policy
+  fragment, passthrough MCP API, API policy, protected-resource-metadata API, metadata operation
+  and metadata policy — through the same reviewed plan and explicit apply model
 - Async repository abstraction with explicit in-memory and Cosmos implementations
 - React/TypeScript/Vite administrator console using Fluent UI, React Router, TanStack Query, and
   MSAL, with responsive navigation and persisted light/dark/system themes. It confirms the caller
@@ -360,8 +407,8 @@ The preprovision hook idempotently creates separate single-tenant Entra registra
   can carry Entra security-group object IDs.
 - `mosaic-dev-model-client`: a public client people sign in with to get model-runtime tokens. It
   has no secrets, certificates or app roles, and its only permission is delegated
-  `Models.Invoke`, with tenant-wide admin consent. Interactive (`http://localhost`) and device
-  code sign-in both work.
+  `Models.Invoke` and `Mcp.Invoke`, with tenant-wide admin consent. Interactive
+  (`http://localhost`) and device code sign-in both work.
 
 It assigns the deploying user the initial `Admin` role. The postprovision hook adds the deployed
 web redirect and the deployed portal redirect, the latter from the `PORTAL_APP_URL` output of
@@ -377,8 +424,9 @@ until the Graph consent exists.
 To skip the model client, run `azd env set MOSAIC_ENTRA_MODEL_CLIENT false` before provisioning.
 The hook then leaves any existing model client registration and consent alone, and keeps
 `MOSAIC_MODEL_CLIENT_ID` as set. So you can point it at a client you manage yourself, as long as
-that client is consented for `Models.Invoke`. Also set `MOSAIC_ENTRA_MODEL_CLIENT` to `false`
-before you revoke the model client's consent, or the next `azd provision` grants it again.
+that client is consented for `Models.Invoke` and `Mcp.Invoke` when it is used for both models and
+MCP. Also set `MOSAIC_ENTRA_MODEL_CLIENT` to `false` before you revoke the model client's consent,
+or the next `azd provision` grants it again.
 
 Assign the `User` app role — normally to an Entra group — to everyone who should reach the portal.
 Tenant membership alone does not grant it.
@@ -392,9 +440,14 @@ delegated client needs its own consent for that scope. Applications use the
 Agent identities use the same `.default` runtime scope through the Agent ID token flow, and agent
 users use the delegated scope through their parent agent identity. See
 [Call a published model with Microsoft Entra Agent ID](docs/call-models-with-agent-identities.md).
+For published MCP servers, people and agent users request
+`api://<model-runtime-client-id>/Mcp.Invoke`; applications and agent identities request
+`api://<model-runtime-client-id>/.default` and need `Mcp.Invoke.Application`. See
+[Connect to MCP servers published through MOSAIC](docs/connect-to-mcp-servers.md).
 Assign these permissions through normal Entra administration. A MOSAIC grant does not silently
 consent a client, create an identity, assign app roles, or grant Microsoft Graph permissions. The
-only consent bootstrap creates is the model client's `Models.Invoke` grant. Bootstrap exposes
+only delegated runtime consent bootstrap creates is for the model client's `Models.Invoke` and
+`Mcp.Invoke` grant. Bootstrap exposes
 `MOSAIC_MODEL_RUNTIME_CLIENT_ID`; this must not be the MOSAIC control-plane API's client ID.
 
 The console and portal containers serve `index.html` and every SPA route with
@@ -950,6 +1003,44 @@ Claude model, the samples call `/anthropic/v1/messages` without an `api-version`
 gives the Anthropic SDK base URL. A grant that arrives through a group shows a notice instead,
 because credentials are issued for direct grants only.
 
+## Published MCP server access
+
+Use **MCP servers** to publish a registered streamable MCP server through a managed API Management
+gateway. MOSAIC creates a passthrough MCP API, a backend, an enforcement fragment, an API policy,
+and a per-publication protected-resource-metadata API. It owns those resources under the same
+reviewed plan and explicit apply boundary as model publishing. See
+[Publish MCP servers through API Management](docs/publish-mcp-servers.md).
+
+Published MCP servers accept Entra runtime tokens only. People and agent users request
+`api://<model-runtime-client-id>/Mcp.Invoke`. Applications, managed identities and agent identities
+request `api://<model-runtime-client-id>/.default` and need `Mcp.Invoke.Application`. The gateway
+checks direct grants first, then matching Entra security-group grants from the token's `groups`
+claim, and applies call limits per direct caller or per group member. Token limits do not apply to
+MCP servers.
+
+The gateway strips caller credentials before forwarding and attaches its own managed identity when
+the registered MCP endpoint uses managed identity. It never passes the caller's bearer token or an
+APIM subscription key to the upstream server. API-key upstream MCP servers and SSE-only upstreams
+are not published in this phase.
+
+Interactive clients discover sign-in through the gateway's `WWW-Authenticate` challenge and the
+protected resource metadata document. A VS Code entry is just an HTTP MCP server with the published
+URL:
+
+```json
+{
+  "servers": {
+    "mosaic-example": {
+      "type": "http",
+      "url": "https://<gateway-host>/<api-path>/mcp"
+    }
+  }
+}
+```
+
+See [Connect to MCP servers published through MOSAIC](docs/connect-to-mcp-servers.md) for people,
+agent identities, agent users, security groups and troubleshooting.
+
 ### Recovering an interrupted operation
 
 Write locks do not expire automatically: a timeout or a new API instance does not prove an old
@@ -1026,6 +1117,31 @@ key directly in APIM and revealing it again: no MOSAIC synchronization should be
 report these live scenarios as passed when deployment, consent, credentials, or a test gateway
 are unavailable.
 
+For published MCP servers, `scripts\verify_mcp_access.py` checks the gateway's protected resource
+metadata flow and, when supplied, denied and granted runtime tokens. It never calls an MCP tool.
+Prepare a non-production published MCP server, then provide any optional tokens through environment
+variables:
+
+- `MOSAIC_SMOKE_MCP_DENIED_RUNTIME_TOKEN`: optional, a runtime token that has `Mcp.Invoke` or
+  `Mcp.Invoke.Application` but no applied MCP grant.
+- `MOSAIC_SMOKE_MCP_GRANTED_RUNTIME_TOKEN`: optional, a runtime token with an applied MCP grant.
+
+```powershell
+python scripts\verify_mcp_access.py `
+  --server-url https://<approved-apim-host>/<api-path>/mcp `
+  --tenant-id <tenant-id> `
+  --runtime-client-id <model-runtime-client-id> `
+  --check-denied-token `
+  --check-granted-token
+```
+
+The verifier confirms that an unauthenticated request receives a `401` with `resource_metadata`,
+that the metadata JSON names the server URL, tenant authorization server and
+`api://<runtime-client-id>/Mcp.Invoke`, that an ungranted token is denied with
+`insufficient_scope`, and that a granted token completes MCP `initialize` over streamable HTTP. Do
+not report live MCP interoperability as passed when the APIM preview contract, consent, credentials
+or a test server are unavailable.
+
 ## Reconciliation boundary
 
 The API contains a deterministic policy preview using current documented policies:
@@ -1035,7 +1151,7 @@ The API contains a deterministic policy preview using current documented policie
 - `llm-token-limit`
 - `llm-emit-token-metric`
 - `validate-azure-ad-token`, explicit grant authorization, `rate-limit-by-key`, and `quota-by-key`
-  for opted-in governed access
+  for opted-in governed model and MCP access
 
 The preview and the publish plan both return the same plain-language facets used for observed
 policy, plus a content digest. Generated XML stays in process and is never serialised to a caller,
@@ -1065,22 +1181,26 @@ records.
    plan, an explicit apply, per-step results, and rollback that removes only what it created. This
    is the orchestration [ADR 0009](docs/adr/0009-entitlement-subjects-resources-and-apim-binding.md)
    defers to, for models.
-5. **Governed model access (this release):** direct user/application/agent grants become APIM
+5. **Governed model access:** direct user/application/agent grants become APIM
    subscriptions and/or Entra authorization, and Entra security-group grants become token-only APIM
    authorization, with shared limits, explicit apply/revoke, trusted `orchestrated` bindings, and
    on-demand key retrieval for direct grants. Approving an access request creates the requester's
-   grant intent but does not apply it. MCP orchestration remains future work.
+   grant intent but does not apply it.
    The end-user portal now provides My access (including connection details and on-demand key
    reveal for applied direct model grants), catalog, and access-request screens, gated by the
    `User` app role and the `mosaic-<env>-portal` registration; see
    [ADR 0008](docs/adr/0008-portal-identity-and-role-separation.md).
-6. **Insights and chargeback:** Azure Monitor queries over `ApiManagementGatewayLogs` and
+6. **MCP publishing and enforcement:** publish registered streamable MCP servers through managed
+   gateways with a passthrough MCP API, per-publication resource metadata, Entra-only grants, call
+   limits and fail-closed recovery; see
+   [ADR 0015](docs/adr/0015-mcp-gateway-enforcement.md).
+7. **Insights and chargeback:** Azure Monitor queries over `ApiManagementGatewayLogs` and
    `ApiManagementGatewayLlmLog`, consumption measured against each entitlement's own enforcement
    window, per-user attribution, token/traffic/cost allocation, budgets, and portal usage views
    alongside administrator dashboards.
-7. **Catalog ecosystem:** API Center experiences, MCP tool-level governance, broader self-service
+8. **Catalog ecosystem:** API Center experiences, MCP tool-level governance, broader self-service
    workflows.
-8. **Production hardening:** private networking, multi-region/production APIM tiers, CMK where
+9. **Production hardening:** private networking, multi-region/production APIM tiers, CMK where
    required, measured partition scaling, retention and operational SLOs.
 
 See [the architecture decisions](docs/adr) for the durable rationale behind this foundation.

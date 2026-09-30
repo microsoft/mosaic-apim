@@ -150,9 +150,10 @@ const signInAgain: Problem = {
   message: 'Your sign-in has expired. Refresh the page to sign in again.',
 }
 
-export function connectionProblem(error: unknown): Problem {
+export function connectionProblem(error: unknown, resourceKind: 'modelApi' | 'mcpServer' = 'modelApi'): Problem {
   const status = errorStatus(error)
   const detail = serverMessage(error)
+  const resourceLabel = resourceKind === 'mcpServer' ? 'MCP server' : 'model'
   if (status === 401) return signInAgain
   if (status === 403) {
     return {
@@ -170,8 +171,8 @@ export function connectionProblem(error: unknown): Problem {
   }
   if (status === 409) {
     return {
-      title: 'This model is not ready to connect',
-      message: `${sentence(detail ?? 'The model is not fully set up in MOSAIC')} Ask your administrator to finish setting it up.`,
+      title: `This ${resourceLabel} is not ready to connect`,
+      message: `${sentence(detail ?? `The ${resourceLabel.toLowerCase()} is not fully set up in MOSAIC`)} Ask your administrator to finish setting it up.`,
     }
   }
   if (status === undefined) {

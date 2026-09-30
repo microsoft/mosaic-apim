@@ -44,15 +44,21 @@ function resultLabel(result: DirectoryObject) {
 }
 
 export function DirectoryPrincipalPicker({
+  kind: selectedKind,
+  onKindChange,
   onCreated,
   onManualFallback,
 }: {
+  /** What to search for. Leave it unset and the picker keeps its own choice, starting with people. */
+  kind?: DirectorySearchKind
+  onKindChange?: (kind: DirectorySearchKind) => void
   onCreated?: (principal: Principal) => void
   onManualFallback?: () => void
 }) {
   const api = useMosaicApi()
   const queryClient = useQueryClient()
-  const [kind, setKind] = useState<DirectorySearchKind>('user')
+  const [ownKind, setOwnKind] = useState<DirectorySearchKind>('user')
+  const kind = selectedKind ?? ownKind
   const [query, setQuery] = useState('')
   const [debouncedQuery, setDebouncedQuery] = useState('')
 
@@ -115,7 +121,11 @@ export function DirectoryPrincipalPicker({
           <Select
             value={kind}
             aria-label="Directory search kind"
-            onChange={(_, data) => setKind(data.value as DirectorySearchKind)}
+            onChange={(_, data) => {
+              const nextKind = data.value as DirectorySearchKind
+              setOwnKind(nextKind)
+              onKindChange?.(nextKind)
+            }}
           >
             {Object.entries(searchKindLabels).map(([value, label]) => (
               <option key={value} value={value}>
@@ -187,7 +197,12 @@ export function DirectoryPrincipalPicker({
         </ul>
       )}
 
-      <Button appearance="secondary" type="button" onClick={onManualFallback}>
+      <Button
+        appearance="secondary"
+        type="button"
+        className={styles.manualEntry}
+        onClick={onManualFallback}
+      >
         Use manual entry
       </Button>
     </div>

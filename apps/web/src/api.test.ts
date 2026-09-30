@@ -83,6 +83,7 @@ describe('useMosaicApi', () => {
     await result.current.linkPublicationModelApi('pub_1')
     await result.current.updatePublication('pub_1', { governedAccess: { keysEnabled: false, entraEnabled: false } })
     await result.current.getEntitlementConnection('grant_1')
+    await result.current.getMcpConnection('grant_1')
     await result.current.listMyEntitlements()
     await result.current.getMyEntitlementConnection('grant_1')
     await result.current.diagnosePublicationRecovery('pub_1', 'run_1')
@@ -91,6 +92,7 @@ describe('useMosaicApi', () => {
       '/api/v1/publications/pub_1/model-api',
       '/api/v1/publications/pub_1',
       '/api/v1/entitlements/grant_1/connection',
+      '/api/v1/entitlements/grant_1/mcp-connection',
       '/api/v1/me/entitlements',
       '/api/v1/me/entitlements/grant_1/connection',
       '/api/v1/publications/pub_1/recover',
@@ -100,11 +102,62 @@ describe('useMosaicApi', () => {
     expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({
       governedAccess: { keysEnabled: false, entraEnabled: false },
     })
-    expect(fetchMock.mock.calls[5][1].method).toBe('POST')
-    expect(JSON.parse(fetchMock.mock.calls[5][1].body)).toEqual({
+    expect(fetchMock.mock.calls[6][1].method).toBe('POST')
+    expect(JSON.parse(fetchMock.mock.calls[6][1].body)).toEqual({
       runId: 'run_1', confirmQuiesced: false,
     })
 
+  })
+
+  it('calls the MCP publication endpoints with the contracted paths and shapes', async () => {
+    const fetchMock = vi.fn().mockImplementation(async () => new Response(
+      JSON.stringify({ id: 'ok', supported: true, reasons: [], warnings: [] }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
+    ))
+    vi.stubGlobal('fetch', fetchMock)
+    const { result } = renderHook(() => useMosaicApi())
+
+    await result.current.getMcpPublishingCapability('gateway 1')
+    await result.current.listMcpPublications('gateway 1')
+    await result.current.createMcpPublication({ gatewayId: 'gateway_1', mcpEndpointId: 'endpoint_1' })
+    await result.current.getMcpPublication('mcp pub')
+    await result.current.updateMcpPublication('mcp pub', { displayName: 'Tools' })
+    await result.current.deleteMcpPublication('mcp pub')
+    await result.current.planMcpPublication('mcp pub')
+    await result.current.applyMcpPublication('mcp pub', 'plan 1')
+    await result.current.unpublishMcpPublication('mcp pub')
+    await result.current.listMcpPublishRuns('mcp pub')
+    await result.current.getMcpPublishRun('mcp pub', 'run 1')
+    await result.current.recoverMcpPublication('mcp pub', { runId: 'run 1', confirmQuiesced: false })
+    await result.current.getMcpPublicationLock('mcp pub')
+    await result.current.getMcpPublishPlan('plan 1')
+
+    expect(fetchMock.mock.calls.map(([url]) => String(url).replace(/^https?:\/\/[^/]+/, ''))).toEqual([
+      '/api/v1/gateways/gateway%201/mcp-publishing',
+      '/api/v1/mcp-publications?gateway=gateway%201',
+      '/api/v1/mcp-publications',
+      '/api/v1/mcp-publications/mcp%20pub',
+      '/api/v1/mcp-publications/mcp%20pub',
+      '/api/v1/mcp-publications/mcp%20pub',
+      '/api/v1/mcp-publications/mcp%20pub/plan',
+      '/api/v1/mcp-publications/mcp%20pub/apply?plan=plan%201',
+      '/api/v1/mcp-publications/mcp%20pub/unpublish',
+      '/api/v1/mcp-publications/mcp%20pub/runs',
+      '/api/v1/mcp-publications/mcp%20pub/runs/run%201',
+      '/api/v1/mcp-publications/mcp%20pub/recover',
+      '/api/v1/mcp-publications/mcp%20pub/lock',
+      '/api/v1/mcp-publish-plans/plan%201',
+    ])
+    expect(fetchMock.mock.calls[2][1]).toMatchObject({ method: 'POST' })
+    expect(JSON.parse(fetchMock.mock.calls[2][1].body)).toEqual({
+      gatewayId: 'gateway_1',
+      mcpEndpointId: 'endpoint_1',
+    })
+    expect(fetchMock.mock.calls[4][1]).toMatchObject({ method: 'PATCH' })
+    expect(JSON.parse(fetchMock.mock.calls[11][1].body)).toEqual({
+      runId: 'run 1',
+      confirmQuiesced: false,
+    })
   })
 
   it('calls the directory and overlap endpoints with the contracted query strings', async () => {

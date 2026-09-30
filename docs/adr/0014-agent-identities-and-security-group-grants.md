@@ -73,9 +73,10 @@ not `scp`; Microsoft documents `scp` as a user-token claim. Some agent app-only 
 empty or placeholder `scp` value, so MOSAIC treats missing, empty and `/` `scp` as not delegated and
 relies on `roles` for app-only model invocation.
 
-**MCP grants are recorded now.** Grants on MCP servers may name users, agent identities, agent
-users and security groups, but gateway enforcement for MCP arrives in a later phase and will be
-covered by ADR 0015.
+**MCP grants can be enforced on MOSAIC-published servers.** Grants on MCP servers may name users,
+agent identities, agent users and security groups. [ADR 0015](0015-mcp-gateway-enforcement.md)
+defines the gateway enforcement path for MCP servers MOSAIC publishes. Imported MCP servers remain
+recorded governance intent because MOSAIC does not own their gateway policy.
 
 ## Consequences
 

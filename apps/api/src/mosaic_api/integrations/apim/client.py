@@ -833,3 +833,24 @@ class ApimClient:
 
     async def get_policy_fragment_resource(self, name: str) -> JsonObject | None:
         return await self._sub_resource(f"policyFragments/{name}")
+
+    async def get_mcp_api(self, name: str) -> JsonObject | None:
+        """Read an API of any type on the preview contract, which also describes MCP servers."""
+
+        return await self._arm.get(
+            f"{self._base}/apis/{name}", params=self._mcp_params, allow_not_found=True
+        )
+
+    async def get_mcp_api_policy(self, api_name: str) -> str | None:
+        payload = await self._arm.get(
+            f"{self._base}/apis/{api_name}/policies/policy",
+            params={**self._mcp_params, "format": "rawxml"},
+            allow_not_found=True,
+        )
+        if payload is None:
+            return None
+        properties = payload.get("properties")
+        if not isinstance(properties, dict):
+            return None
+        value = properties.get("value")
+        return value if isinstance(value, str) else None

@@ -45,7 +45,6 @@ function CatalogAction({ entry }: { entry: CatalogEntry }) {
     return (
       <div className="action-stack">
         <Badge appearance="filled">Already entitled</Badge>
-        {entry.kind === 'mcpServer' && <Badge appearance="tint">Recorded, not yet enforced</Badge>}
       </div>
     )
   }
@@ -63,6 +62,7 @@ function CatalogAction({ entry }: { entry: CatalogEntry }) {
       </div>
     )
   }
+
   return (
     <div className="action-stack">
       <Textarea
@@ -77,6 +77,15 @@ function CatalogAction({ entry }: { entry: CatalogEntry }) {
       </Button>
       {create.isError && <Text className="form-error">{create.error.message}</Text>}
     </div>
+  )
+}
+
+function CatalogEnforcementBadge({ entry }: { entry: CatalogEntry }) {
+  if (entry.kind !== 'mcpServer' || entry.enforced == null) return null
+  return (
+    <Badge appearance={entry.enforced ? 'filled' : 'tint'}>
+      {entry.enforced ? 'Enforced by the gateway' : 'Recorded, not enforced'}
+    </Badge>
   )
 }
 
@@ -107,6 +116,7 @@ export function CatalogPage() {
                 action={entry.requestState && entry.requestState !== 'pending' ? <Badge appearance="tint">{requestStateLabel(entry.requestState)}</Badge> : undefined}
               />
               <Text>{entry.summary ?? 'No summary provided.'}</Text>
+              <CatalogEnforcementBadge entry={entry} />
               <CatalogAction entry={entry} />
             </Card>
           ))}

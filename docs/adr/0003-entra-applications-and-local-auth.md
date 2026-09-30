@@ -36,4 +36,5 @@ The API's managed identity also needs read-only Microsoft Graph application perm
 
 The model-runtime registration now exposes the `Mcp.Invoke` delegated scope and
 `Mcp.Invoke.Application` application role. MCP grants can be recorded for users, agents and
-security groups, with gateway enforcement deferred to a later ADR.
+security groups, and [ADR 0015](0015-mcp-gateway-enforcement.md) uses those permissions for
+gateway enforcement on MCP servers MOSAIC publishes.

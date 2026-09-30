@@ -32,6 +32,7 @@ from mosaic_api.domain import (
     AccessRequestCreate,
     AccessRequestState,
     CatalogEntryUpdate,
+    DirectoryObject,
     EntitlementCreate,
     EntitlementEnforcement,
     EntitlementResource,
@@ -41,20 +42,24 @@ from mosaic_api.domain import (
     GroupCreate,
     ImportRequest,
     McpEndpointCreate,
+    McpPublicationCreate,
     ModelAccessSettings,
     ModelEndpointCreate,
     PrincipalCreate,
+    PrincipalKind,
     PublicationCreate,
     PublishRunStatus,
     RequestEnforcement,
     TokenEnforcement,
     mcp_server_id,
     model_api_id,
+    subject_kind_for,
 )
 from mosaic_api.integrations.aoai import CognitiveServicesClient
 from mosaic_api.integrations.aoai.client import SubscriptionScanner
 from mosaic_api.integrations.apim import ApimClient, ApimWriter, ArmClient
 from mosaic_api.integrations.apim.credentials import ApimCredentialClient
+from mosaic_api.integrations.graph.fake import FakeDirectoryLookup
 from mosaic_api.main import create_app
 from mosaic_api.services import (
     DirectoryService,
@@ -66,6 +71,7 @@ from mosaic_api.services import (
 )
 from mosaic_api.services.directory import Actor
 from mosaic_api.services.mcp_endpoints import build_mcp_client_factory
+from mosaic_api.services.mcp_publishing import McpPublishingService
 from mosaic_api.services.portal_access import PortalAccessService
 
 from scripts.screenshots.demo_fakes import (
@@ -121,6 +127,36 @@ DOCS_INDEXER = Person("Docs indexer", "d3acd52e-a7c9-4eab-9a3b-4c5d6e7f8091", "m
 SALES_INSIGHTS = Person(
     "Sales insights bot", "e4bde63f-b8da-4fbc-8b4c-5d6e7f8091a2", "servicePrincipal"
 )
+MARKET_RESEARCH_AGENT = Person(
+    "Market Research Agent", "1a2b3c4d-5e6f-4789-8abc-0d1e2f3a4b5c", "agentIdentity"
+)
+INVOICE_RECONCILIATION_AGENT = Person(
+    "Invoice Reconciliation Agent", "3c4d5e6f-7081-49ab-8cde-2f3a4b5c6d7e", "agentIdentity"
+)
+SCHEDULING_ASSISTANT_AGENT = Person(
+    "Scheduling Assistant Agent", "5e6f7081-92a3-4bcd-8ef0-4b5c6d7e8f90", "agentIdentity"
+)
+SCHEDULING_ASSISTANT = Person(
+    "Scheduling Assistant", "708192a3-b4c5-4def-8012-6d7e8f901a2b", "agentUser"
+)
+AI_MODEL_USERS = Person(
+    "AI Model Users", "8192a3b4-c5d6-4ef0-9123-7e8f901a2b3c", "securityGroup"
+)
+FINANCE_AI_PILOT = Person(
+    "Finance AI Pilot", "92a3b4c5-d6e7-4f01-8234-8f901a2b3c4d", "securityGroup"
+)
+AGENT_BUILDERS = Person(
+    "Agent Builders", "a3b4c5d6-e7f8-4012-9345-901a2b3c4d5e", "securityGroup"
+)
+
+AGENT_BLUEPRINTS = {
+    MARKET_RESEARCH_AGENT.object_id: "2b3c4d5e-6f70-489a-9bcd-1e2f3a4b5c6d",
+    INVOICE_RECONCILIATION_AGENT.object_id: "4d5e6f70-8192-4abc-9def-3a4b5c6d7e8f",
+    SCHEDULING_ASSISTANT_AGENT.object_id: "6f708192-a3b4-4cde-9f01-5c6d7e8f901a",
+}
+AGENT_USER_PARENTS = {
+    SCHEDULING_ASSISTANT.object_id: SCHEDULING_ASSISTANT_AGENT.object_id,
+}
 
 PEOPLE = [
     ADELE,
@@ -137,7 +173,56 @@ PEOPLE = [
     CLAIMS_TRIAGE,
     DOCS_INDEXER,
     SALES_INSIGHTS,
+    MARKET_RESEARCH_AGENT,
+    INVOICE_RECONCILIATION_AGENT,
+    SCHEDULING_ASSISTANT_AGENT,
+    SCHEDULING_ASSISTANT,
+    AI_MODEL_USERS,
+    FINANCE_AI_PILOT,
+    AGENT_BUILDERS,
 ]
+
+EXTRA_DIRECTORY_OBJECTS = [
+    DirectoryObject(
+        object_id="b4c5d6e7-f809-4123-8456-0a1b2c3d4e5f",
+        kind=PrincipalKind.USER,
+        display_name="Henrietta Mueller",
+        detail="henrietta.mueller@contoso.com",
+    ),
+    DirectoryObject(
+        object_id="c5d6e7f8-091a-4234-9567-1b2c3d4e5f60",
+        kind=PrincipalKind.AGENT_IDENTITY,
+        display_name="Benefits Bot Agent",
+        detail="c5d6e7f8-091a-4234-9567-1b2c3d4e5f60",
+        app_id="c5d6e7f8-091a-4234-9567-1b2c3d4e5f60",
+        blueprint_id="d6e7f809-1a2b-4345-8678-2c3d4e5f6071",
+    ),
+    DirectoryObject(
+        object_id="e7f8091a-2b3c-4456-9789-3d4e5f607182",
+        kind=PrincipalKind.SECURITY_GROUP,
+        display_name="Retail AI Champions",
+        detail="retail-ai-champions",
+    ),
+]
+
+DIRECTORY_GROUP_MEMBERS = {
+    AI_MODEL_USERS.object_id: [
+        MEGAN.object_id,
+        ISAIAH.object_id,
+        LIDIA.object_id,
+        MARKET_RESEARCH_AGENT.object_id,
+    ],
+    FINANCE_AI_PILOT.object_id: [
+        DIEGO.object_id,
+        LIDIA.object_id,
+        INVOICE_RECONCILIATION_AGENT.object_id,
+    ],
+    AGENT_BUILDERS.object_id: [
+        MARKET_RESEARCH_AGENT.object_id,
+        INVOICE_RECONCILIATION_AGENT.object_id,
+        SCHEDULING_ASSISTANT_AGENT.object_id,
+    ],
+}
 
 # The administrator signed in to the console, and the end user signed in to the portal.
 ADMIN = ADELE
@@ -170,7 +255,45 @@ SENSITIVE_LITERALS = [
     MODEL_RUNTIME_CLIENT_ID,
     MODEL_CLIENT_ID,
     *(person.object_id for person in PEOPLE),
+    *(blueprint for blueprint in AGENT_BLUEPRINTS.values()),
+    *(item.object_id for item in EXTRA_DIRECTORY_OBJECTS),
+    *(
+        item.blueprint_id
+        for item in EXTRA_DIRECTORY_OBJECTS
+        if item.blueprint_id is not None
+    ),
 ]
+
+
+def _directory_detail(person: Person) -> str | None:
+    if person.kind in {"user", "agentUser"}:
+        first, last = person.label.split(" ", 1)
+        return f"{first.lower()}.{last.lower()}@contoso.com"
+    if person.kind in {"agentIdentity", "servicePrincipal", "managedIdentity"}:
+        return person.object_id
+    if person.kind == "securityGroup":
+        return person.label.lower().replace(" ", "-")
+    return None
+
+
+def _directory_object(person: Person) -> DirectoryObject:
+    kind = PrincipalKind(person.kind)
+    return DirectoryObject(
+        object_id=person.object_id,
+        kind=kind,
+        display_name=person.label,
+        detail=_directory_detail(person),
+        app_id=person.object_id if kind == PrincipalKind.AGENT_IDENTITY else None,
+        identity_parent_id=AGENT_USER_PARENTS.get(person.object_id),
+        blueprint_id=AGENT_BLUEPRINTS.get(person.object_id),
+    )
+
+
+def build_directory_lookup() -> FakeDirectoryLookup:
+    return FakeDirectoryLookup(
+        [*(_directory_object(person) for person in PEOPLE), *EXTRA_DIRECTORY_OBJECTS],
+        DIRECTORY_GROUP_MEMBERS,
+    )
 
 
 class DemoAuthenticator:
@@ -191,6 +314,7 @@ class DemoAuthenticator:
             object_id=PORTAL_USER.object_id,
             tenant_id=tenant_id,
             roles=frozenset({"User"}),
+            group_ids=frozenset({AI_MODEL_USERS.object_id.casefold()}),
         )
 
     async def authenticate(self, request: Request) -> AuthContext:
@@ -221,6 +345,7 @@ class DemoServices:
     gateways: GatewayService
     endpoints: ModelEndpointService
     publishing: PublishingService
+    mcp_publishing: McpPublishingService
     mcp_endpoints: McpEndpointService
     entitlements: EntitlementService
     clients: list[httpx.AsyncClient] = field(default_factory=list)
@@ -229,6 +354,7 @@ class DemoServices:
         await self.gateways.aclose()
         await self.endpoints.aclose()
         await self.publishing.aclose()
+        await self.mcp_publishing.aclose()
         await self.mcp_endpoints.aclose()
         for client in self.clients:
             await client.aclose()
@@ -247,6 +373,14 @@ def install_demo_services(app: FastAPI, portal_origins: Iterable[str]) -> DemoSe
     gateway_arm, gateway_http = _arm(gateway_handler(apim))
     ai_arm, ai_http = _arm(cognitive_handler(build_cognitive_accounts()))
     mcp_http = httpx.AsyncClient(transport=httpx.MockTransport(mcp_handler(build_mcp_servers())))
+    lookup = build_directory_lookup()
+    directory = DirectoryService(
+        state.repository,
+        gateway_repository=state.gateway_repository,
+        entitlement_repository=state.entitlement_repository,
+        directory_lookup=lookup,
+        group_claims_enabled=settings.entra_group_claims,
+    )
 
     gateways = GatewayService(
         state.gateway_repository,
@@ -269,17 +403,33 @@ def install_demo_services(app: FastAPI, portal_origins: Iterable[str]) -> DemoSe
         entitlement_repository=state.entitlement_repository,
         model_runtime_client_id=settings.model_runtime_client_id,
     )
+    mcp_publishing = McpPublishingService(
+        state.gateway_repository,
+        mcp_endpoint_repository=state.mcp_endpoint_repository,
+        entitlement_repository=state.entitlement_repository,
+        directory_repository=state.repository,
+        client_factory=lambda resource: ApimClient(gateway_arm, resource),
+        writer_factory=lambda resource: ApimWriter(gateway_arm, resource),
+        runtime_client_id=settings.model_runtime_client_id,
+        security_group_claims=settings.entra_group_claims,
+    )
     mcp_endpoints = McpEndpointService(
         state.mcp_endpoint_repository,
+        gateway_repository=state.gateway_repository,
+        entitlement_repository=state.entitlement_repository,
         client_factory=build_mcp_client_factory(mcp_http),
         secret_resolver=_demo_secret,
         token_resolver=_demo_token,
         require_https=True,
         allow_private_endpoints=False,
     )
+    state.directory_lookup = lookup
+    state.directory_service = directory
+    state.entitlement_service._directory_lookup = lookup
     state.gateway_service = gateways
     state.model_endpoint_service = endpoints
     state.publishing_service = publishing
+    state.mcp_publishing_service = mcp_publishing
     state.mcp_endpoint_service = mcp_endpoints
     state.portal_access_service = PortalAccessService(
         state.entitlement_service,
@@ -292,10 +442,11 @@ def install_demo_services(app: FastAPI, portal_origins: Iterable[str]) -> DemoSe
     )
     state.authenticator = DemoAuthenticator(settings.tenant_id, portal_origins)
     return DemoServices(
-        directory=state.directory_service,
+        directory=directory,
         gateways=gateways,
         endpoints=endpoints,
         publishing=publishing,
+        mcp_publishing=mcp_publishing,
         mcp_endpoints=mcp_endpoints,
         entitlements=state.entitlement_service,
         clients=[gateway_http, ai_http, mcp_http],
@@ -346,6 +497,7 @@ class Estate:
     foundry_endpoint_id: str = ""
     publications: dict[str, str] = field(default_factory=dict)
     model_apis: dict[str, str] = field(default_factory=dict)
+    mcp_endpoints: dict[str, str] = field(default_factory=dict)
     mcp_servers: dict[str, str] = field(default_factory=dict)
     principals: dict[str, str] = field(default_factory=dict)
     groups: dict[str, str] = field(default_factory=dict)
@@ -365,6 +517,17 @@ async def _publish(services: DemoServices, actor: Actor, publication_id: str, la
     finished = await services.publishing.get_run(actor, run.id)
     if finished.status != PublishRunStatus.SUCCEEDED:
         raise SeedError(f"Publishing {label} ended {finished.status}: {finished.model_dump()}")
+
+
+async def _publish_mcp(
+    services: DemoServices, actor: Actor, publication_id: str, label: str
+) -> None:
+    plan = await services.mcp_publishing.plan(actor, publication_id)
+    run = await services.mcp_publishing.apply(actor, publication_id, plan.id)
+    await services.mcp_publishing.wait_for_idle()
+    finished = await services.mcp_publishing.get_run(actor, publication_id, run.id)
+    if finished.status != PublishRunStatus.SUCCEEDED:
+        raise SeedError(f"Publishing MCP {label} ended {finished.status}: {finished.model_dump()}")
 
 
 async def seed_estate(services: DemoServices, tenant_id: str) -> Estate:
@@ -497,6 +660,7 @@ async def seed_estate(services: DemoServices, tenant_id: str) -> Estate:
         _require_synced(
             await services.mcp_endpoints.sync_now(admin, mcp_endpoint.id), mcp_endpoint.name
         )
+        estate.mcp_endpoints[mcp_endpoint.name] = mcp_endpoint.id
 
     governed = ModelAccessSettings(keys_enabled=True, entra_enabled=True)
     publications: list[tuple[str, str, str, TokenEnforcement, ModelAccessSettings | None, str]] = [
@@ -563,7 +727,7 @@ async def seed_estate(services: DemoServices, tenant_id: str) -> Estate:
         notes: str | None = None,
     ) -> None:
         if isinstance(subject, Person):
-            kind = "user" if subject.kind == "user" else "application"
+            kind = subject_kind_for(PrincipalKind(subject.kind)).value
             subject_id = estate.principals[subject.label]
         else:
             kind = "group"
@@ -580,11 +744,37 @@ async def seed_estate(services: DemoServices, tenant_id: str) -> Estate:
             ),
         )
 
+    docs_publication = await services.mcp_publishing.create(
+        admin,
+        McpPublicationCreate(
+            gateway_id=gateway.id,
+            mcp_endpoint_id=estate.mcp_endpoints["Contoso Docs Search"],
+        ),
+    )
+    await _publish_mcp(services, admin, docs_publication.id, docs_publication.display_name)
+    published_docs = await services.mcp_publishing.get_publication(admin, docs_publication.id)
+    estate.publications[published_docs.display_name] = published_docs.id
+    estate.mcp_servers[published_docs.api_name] = published_docs.mcp_server_id
+    await services.gateways.update_mcp_server_catalog(
+        admin,
+        published_docs.mcp_server_id,
+        CatalogEntryUpdate.model_validate(
+            {
+                "visibility": "catalog",
+                "summary": (
+                    "Search Contoso product and policy documentation through a governed MCP "
+                    "endpoint."
+                ),
+            }
+        ),
+    )
+
     gpt4o = estate.model_apis["GPT-4o"]
     gpt4o_mini = estate.model_apis["GPT-4o mini"]
     embeddings = estate.model_apis["Text embeddings (large)"]
     phi4 = estate.model_apis["Phi-4"]
     docs_mcp = estate.mcp_servers["docs-search-mcp"]
+    published_docs_mcp = estate.mcp_servers[published_docs.api_name]
     orders_mcp = estate.mcp_servers["orders-mcp"]
     service_desk_mcp = estate.mcp_servers["service-desk-mcp"]
 
@@ -624,6 +814,24 @@ async def seed_estate(services: DemoServices, tenant_id: str) -> Estate:
         EntitlementEnforcement(requests=_calls(per_window=60, window_seconds=60)),
     )
     await grant(
+        PORTAL_USER,
+        "mcpServer",
+        published_docs_mcp,
+        EntitlementEnforcement(requests=_calls(per_window=60, window_seconds=60)),
+    )
+    await grant(
+        AI_MODEL_USERS,
+        "mcpServer",
+        published_docs_mcp,
+        EntitlementEnforcement(requests=_calls(quota=10_000, period="Monthly")),
+    )
+    await grant(
+        MARKET_RESEARCH_AGENT,
+        "mcpServer",
+        published_docs_mcp,
+        EntitlementEnforcement(requests=_calls(per_window=120, window_seconds=60)),
+    )
+    await grant(
         "Data Science",
         "mcpServer",
         orders_mcp,
@@ -631,6 +839,41 @@ async def seed_estate(services: DemoServices, tenant_id: str) -> Estate:
     )
     await grant("Finance Analysts", "modelApi", embeddings)
     await grant("AI Platform Engineers", "mcpServer", service_desk_mcp)
+    await grant(
+        AI_MODEL_USERS,
+        "modelApi",
+        gpt4o,
+        EntitlementEnforcement(tokens=_tokens(per_minute=10_000)),
+        "Per-member access for the broad AI model user population.",
+    )
+    await grant(
+        FINANCE_AI_PILOT,
+        "modelApi",
+        gpt4o,
+        EntitlementEnforcement(tokens=_tokens(per_minute=5_000)),
+        "Finance pilot users share a smaller per-member allowance.",
+    )
+    await grant(
+        MARKET_RESEARCH_AGENT,
+        "modelApi",
+        gpt4o,
+        EntitlementEnforcement(tokens=_tokens(per_minute=30_000)),
+        "Autonomous market research workflows.",
+    )
+    await grant(
+        INVOICE_RECONCILIATION_AGENT,
+        "modelApi",
+        phi4,
+        EntitlementEnforcement(tokens=_tokens(per_minute=15_000)),
+        "Invoice extraction and reconciliation.",
+    )
+    await grant(
+        SCHEDULING_ASSISTANT,
+        "modelApi",
+        phi4,
+        EntitlementEnforcement(tokens=_tokens(per_minute=8_000)),
+        "Delegated scheduling assistant prompts.",
+    )
 
     async def request_access(
         person: Person, kind: str, resource_id: str, justification: str
@@ -688,6 +931,7 @@ async def seed_estate(services: DemoServices, tenant_id: str) -> Estate:
 
     # Apply the governed publications so their grants reach the gateway, then add one grant
     # afterwards so the console also shows a change still waiting to be applied.
+    await _publish_mcp(services, admin, published_docs.id, published_docs.display_name)
     for display_name in ("GPT-4o", "GPT-4o mini", "Phi-4"):
         await _publish(services, admin, estate.publications[display_name], display_name)
     await grant(NESTOR, "modelApi", gpt4o)
@@ -707,6 +951,7 @@ def build_settings(cors_origins: list[str]) -> Settings:
         model_runtime_client_id=MODEL_RUNTIME_CLIENT_ID,
         model_client_id=MODEL_CLIENT_ID,
         managed_identity_principal_id=MOSAIC_PRINCIPAL_ID,
+        entra_group_claims=True,
         applicationinsights_connection_string=None,
         apim_subscription_id=None,
         apim_resource_group=None,

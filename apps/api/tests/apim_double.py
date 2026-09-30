@@ -122,6 +122,7 @@ class FakeApim:
         # service rejects the version outright rather than returning an empty list.
         self.supports_mcp = supports_mcp
         self.requests: list[str] = []
+        self.http_calls: list[dict[str, Any]] = []
         self.failures: dict[str, int] = {}
         self.persistent_failures: dict[str, int] = {}
         # Writes are recorded in order so tests can assert dependency ordering and rollback
@@ -129,6 +130,7 @@ class FakeApim:
         self.writes: list[tuple[str, str]] = []
         self.written: dict[str, dict[str, Any]] = {}
         self.write_failures: dict[str, int] = {}
+        self.write_failures_after: dict[str, tuple[int, int]] = {}
         # The error object a refused write's body carries, as Azure says why it refused it.
         self.write_errors: dict[str, dict[str, Any]] = {}
         # A resource removed just before another is written, as if someone else had deleted it.
@@ -174,6 +176,11 @@ class FakeApim:
         self.write_failures[path_suffix] = status_code
         if error is not None:
             self.write_errors[path_suffix] = error
+
+    def fail_write_after(
+        self, path_suffix: str, successful_writes: int, status_code: int = 500
+    ) -> None:
+        self.write_failures_after[path_suffix] = (successful_writes, status_code)
 
     def remove_before_write(self, path_suffix: str, removed: str) -> None:
         """Delete ``removed`` when ``path_suffix`` is next written, as if someone else just had.
@@ -237,6 +244,20 @@ class FakeApim:
         if not path.startswith(RESOURCE_ID):
             return httpx.Response(404, json={"error": {"message": "unknown resource"}})
         suffix = path[len(RESOURCE_ID) :].strip("/")
+        body: Any = None
+        if request.content:
+            try:
+                body = json.loads(request.content)
+            except ValueError:
+                body = request.content.decode(errors="replace")
+        self.http_calls.append(
+            {
+                "method": request.method,
+                "path": suffix,
+                "api_version": request.url.params.get("api-version"),
+                "body": body,
+            }
+        )
         if request.method in {"PUT", "DELETE"}:
             return self._write(request, suffix)
         async_id = request.url.params.get("azure-asyncId")
@@ -294,7 +315,16 @@ class FakeApim:
         if removed is not None:
             self.written.pop(removed, None)
         failures = self.delete_failures if request.method == "DELETE" else self.write_failures
-        status_code = failures.get(suffix)
+        delayed = self.write_failures_after.get(suffix)
+        if delayed is not None and request.method == "PUT":
+            remaining, delayed_status = delayed
+            if remaining <= 0:
+                status_code = delayed_status
+            else:
+                self.write_failures_after[suffix] = (remaining - 1, delayed_status)
+                status_code = None
+        else:
+            status_code = failures.get(suffix)
         if status_code is not None:
             headers = {"Retry-After": "0"} if status_code == 429 else {}
             error = (self.write_errors.get(suffix) if request.method == "PUT" else None) or {

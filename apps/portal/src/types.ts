@@ -23,6 +23,7 @@ export interface CatalogEntry {
   gatewayName: string | null
   entitled: boolean
   requestState: AccessRequestState | null
+  enforced?: boolean | null
 }
 
 export interface EntitlementResource {
@@ -148,7 +149,7 @@ export interface ModelConnection {
    * Older APIs omit it.
    */
   entraClientId?: string | null
-   principalKind?: 'user' | 'servicePrincipal' | 'managedIdentity' | 'agentIdentity' | 'agentUser' | 'securityGroup' | null
+   principalKind?: PrincipalKind | null
    requiredAppRole?: string | null
    entraApplicationScope?: string | null
    keysAvailable?: boolean
@@ -161,6 +162,38 @@ export interface ModelConnection {
   /** Null when the gateway's tier can't apply token limits to this model's API. */
   publicationLimits: TokenEnforcement | null
   grantLimits?: EntitlementEnforcement | null
+}
+
+export type PrincipalKind =
+  | 'user'
+  | 'servicePrincipal'
+  | 'managedIdentity'
+  | 'agentIdentity'
+  | 'agentUser'
+  | 'securityGroup'
+
+export interface McpConnection {
+  entitlementId: string
+  mcpServerId: string
+  publicationId?: string | null
+  gatewayId: string
+  displayName: string
+  tenantId: string
+  serverUrl?: string | null
+  transport: string
+  enforced: boolean
+  statusMessage: string
+  runtime?: EntitlementRuntime | null
+  entraAudience?: string | null
+  delegatedScope?: string | null
+  applicationScope?: string | null
+  requiredAppRole?: string | null
+  clientId?: string | null
+  principalKind?: PrincipalKind | null
+  viaGroupId?: string | null
+  viaGroupName?: string | null
+  resourceMetadataUrl?: string | null
+  limits?: EntitlementEnforcement | null
 }
 
 export type KeySlot = 'primary' | 'secondary'

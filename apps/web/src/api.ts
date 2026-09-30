@@ -28,8 +28,13 @@ import type {
   KeySlot,
   ManagementMode,
   McpAuthMode,
+  McpConnection,
   McpEndpoint,
   McpEndpointSyncRun,
+  McpPublication,
+  McpPublicationCreate,
+  McpPublicationUpdate,
+  McpPublishingCapability,
   McpServer,
   McpServerCandidateList,
   ModelApi,
@@ -168,6 +173,20 @@ export interface MosaicApi {
   listPublishRuns(publicationId: string): Promise<PublishRun[]>
   getPublishRun(publicationId: string, runId: string): Promise<PublishRun>
   diagnosePublicationRecovery(publicationId: string, runId: string): Promise<PublishRun>
+  getMcpPublishingCapability(gatewayId: string): Promise<McpPublishingCapability>
+  listMcpPublications(gatewayId?: string): Promise<McpPublication[]>
+  createMcpPublication(payload: McpPublicationCreate): Promise<McpPublication>
+  getMcpPublication(publicationId: string): Promise<McpPublication>
+  updateMcpPublication(publicationId: string, payload: McpPublicationUpdate): Promise<McpPublication>
+  deleteMcpPublication(publicationId: string): Promise<void>
+  planMcpPublication(publicationId: string): Promise<PublishPlan>
+  applyMcpPublication(publicationId: string, planId: string): Promise<PublishRun>
+  unpublishMcpPublication(publicationId: string): Promise<PublishRun>
+  listMcpPublishRuns(publicationId: string): Promise<PublishRun[]>
+  getMcpPublishRun(publicationId: string, runId: string): Promise<PublishRun>
+  recoverMcpPublication(publicationId: string, payload: { runId: string; confirmQuiesced: boolean }): Promise<PublishRun>
+  getMcpPublicationLock(publicationId: string): Promise<PublicationLockInfo>
+  getMcpPublishPlan(planId: string): Promise<PublishPlan>
   listGatewayApis(gatewayId: string): Promise<ObservedApi[]>
   listGatewayOperations(gatewayId: string, apiName?: string): Promise<ObservedOperation[]>
   listGatewayProducts(gatewayId: string): Promise<ObservedProduct[]>
@@ -214,6 +233,7 @@ export interface MosaicApi {
   ): Promise<Entitlement>
   deleteEntitlement(entitlementId: string): Promise<void>
   getEntitlementConnection(entitlementId: string): Promise<ModelConnection>
+  getMcpConnection(entitlementId: string): Promise<McpConnection>
   revealEntitlementKey(entitlementId: string, slot: KeySlot, signal?: AbortSignal): Promise<KeyRevealResult>
   listMyEntitlements(): Promise<Entitlement[]>
   getMyEntitlementConnection(entitlementId: string): Promise<ModelConnection>
@@ -412,6 +432,55 @@ export function useMosaicApi(): MosaicApi {
           method: 'POST',
           body: { runId, confirmQuiesced: false },
         }),
+      getMcpPublishingCapability: (gatewayId) =>
+        request<McpPublishingCapability>(
+          `/api/v1/gateways/${encodeURIComponent(gatewayId)}/mcp-publishing`,
+        ),
+      listMcpPublications: (gatewayId) =>
+        request<McpPublication[]>(
+          `/api/v1/mcp-publications${gatewayId ? `?gateway=${encodeURIComponent(gatewayId)}` : ''}`,
+        ),
+      createMcpPublication: (payload) =>
+        request<McpPublication>('/api/v1/mcp-publications', { method: 'POST', body: payload }),
+      getMcpPublication: (id) =>
+        request<McpPublication>(`/api/v1/mcp-publications/${encodeURIComponent(id)}`),
+      updateMcpPublication: (id, payload) =>
+        request<McpPublication>(`/api/v1/mcp-publications/${encodeURIComponent(id)}`, {
+          method: 'PATCH',
+          body: payload,
+        }),
+      deleteMcpPublication: (id) =>
+        request<void>(`/api/v1/mcp-publications/${encodeURIComponent(id)}`, {
+          method: 'DELETE',
+        }),
+      planMcpPublication: (id) =>
+        request<PublishPlan>(`/api/v1/mcp-publications/${encodeURIComponent(id)}/plan`, {
+          method: 'POST',
+        }),
+      applyMcpPublication: (id, planId) =>
+        request<PublishRun>(
+          `/api/v1/mcp-publications/${encodeURIComponent(id)}/apply?plan=${encodeURIComponent(planId)}`,
+          { method: 'POST' },
+        ),
+      unpublishMcpPublication: (id) =>
+        request<PublishRun>(`/api/v1/mcp-publications/${encodeURIComponent(id)}/unpublish`, {
+          method: 'POST',
+        }),
+      listMcpPublishRuns: (id) =>
+        request<PublishRun[]>(`/api/v1/mcp-publications/${encodeURIComponent(id)}/runs`),
+      getMcpPublishRun: (id, runId) =>
+        request<PublishRun>(
+          `/api/v1/mcp-publications/${encodeURIComponent(id)}/runs/${encodeURIComponent(runId)}`,
+        ),
+      recoverMcpPublication: (id, payload) =>
+        request<PublishRun>(`/api/v1/mcp-publications/${encodeURIComponent(id)}/recover`, {
+          method: 'POST',
+          body: payload,
+        }),
+      getMcpPublicationLock: (id) =>
+        request<PublicationLockInfo>(`/api/v1/mcp-publications/${encodeURIComponent(id)}/lock`),
+      getMcpPublishPlan: (planId) =>
+        request<PublishPlan>(`/api/v1/mcp-publish-plans/${encodeURIComponent(planId)}`),
       listGatewayApis: (id) => request<ObservedApi[]>(`/api/v1/gateways/${id}/apis`),
       listGatewayOperations: (id, apiName) =>
         request<ObservedOperation[]>(
@@ -481,6 +550,8 @@ export function useMosaicApi(): MosaicApi {
         request<void>(`/api/v1/entitlements/${id}`, { method: 'DELETE' }),
       getEntitlementConnection: (id) =>
         request<ModelConnection>(`/api/v1/entitlements/${id}/connection`),
+      getMcpConnection: (id) =>
+        request<McpConnection>(`/api/v1/entitlements/${encodeURIComponent(id)}/mcp-connection`),
       revealEntitlementKey: (id, slot, signal) =>
         request<KeyRevealResult>(`/api/v1/entitlements/${id}/keys/reveal`, {
           method: 'POST', body: { slot }, cache: 'no-store', signal,

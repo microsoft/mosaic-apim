@@ -10,7 +10,11 @@ from mosaic_api.domain import (
     mcp_endpoint_id,
 )
 from mosaic_api.errors import ConflictError, NotFoundError, UpstreamError, ValidationError
-from mosaic_api.repositories import InMemoryMcpEndpointRepository
+from mosaic_api.repositories import (
+    InMemoryEntitlementRepository,
+    InMemoryGatewayRepository,
+    InMemoryMcpEndpointRepository,
+)
 from mosaic_api.services import McpEndpointService
 from mosaic_api.services.directory import Actor
 from mosaic_api.services.mcp_endpoints import build_mcp_client_factory
@@ -362,6 +366,8 @@ async def test_a_key_vault_outage_records_the_fault_instead_of_losing_the_regist
 
     service = McpEndpointService(
         mcp_repository,
+        gateway_repository=InMemoryGatewayRepository(),
+        entitlement_repository=InMemoryEntitlementRepository(),
         client_factory=build_mcp_client_factory(build_http_client(fake_mcp)),
         secret_resolver=unreachable_vault,
         token_resolver=None,

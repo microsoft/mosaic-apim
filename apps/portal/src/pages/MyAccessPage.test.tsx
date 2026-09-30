@@ -65,6 +65,7 @@ function renderPage(entitlements: ResolvedEntitlement[], profileOverride: Partia
     getProfile: async () => ({ ...profile, ...profileOverride }),
     listEntitlements: async () => entitlements,
     getMyEntitlementConnection: vi.fn(),
+    getMcpConnection: vi.fn(),
     revealMyEntitlementKey: vi.fn(),
   }
   mocks.api = api as unknown as PortalApi
@@ -174,7 +175,7 @@ describe('MyAccessPage', () => {
     ])
 
     expect(await screen.findByText('No additional grant limits configured')).toBeVisible()
-    expect(screen.getByText(/Publication and gateway limits may also apply/)).toBeVisible()
+    expect(screen.getByText(/Pending changes are not yet enforced by the gateway/)).toBeVisible()
     expect(screen.queryByText(/0/)).not.toBeInTheDocument()
   })
 
@@ -216,7 +217,7 @@ describe('MyAccessPage', () => {
     expect(screen.queryByText('Enabled')).not.toBeInTheDocument()
   })
 
-  it('offers collapsed connection details for model API grants only', async () => {
+  it('offers collapsed connection details for model API and MCP grants', async () => {
     const directUser = { kind: 'user' as const, id: 'user-1' }
     const api = renderPage([
       {
@@ -240,11 +241,43 @@ describe('MyAccessPage', () => {
 
     expect(await screen.findByText('Model API chat-completions')).toBeVisible()
     expect(screen.getByText('MCP server docs-mcp')).toBeVisible()
-    expect(screen.getByText('Recorded, not yet enforced')).toBeVisible()
+    expect(screen.getByText('Recorded, not enforced by MOSAIC')).toBeVisible()
     const details = screen.getAllByRole('button', { name: 'Connection details' })
-    expect(details).toHaveLength(1)
+    expect(details).toHaveLength(2)
     expect(details[0]).toHaveAttribute('aria-expanded', 'false')
     expect(api.getMyEntitlementConnection).not.toHaveBeenCalled()
+    expect(api.getMcpConnection).not.toHaveBeenCalled()
     expect(api.revealMyEntitlementKey).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['pending', 'APIM changes pending'],
+    ['applying', 'Applying to APIM'],
+    ['applied', 'Applied to APIM'],
+    ['revocationPending', 'APIM revocation pending'],
+    ['revoked', 'Runtime access revoked'],
+    ['failed', 'APIM apply failed'],
+    ['unknown', 'Runtime status unknown'],
+  ] as const)('renders MCP %s runtime state when the backend decorates it', async (status, label) => {
+    renderPage([{
+      entitlement: {
+        ...baseEntitlement,
+        subject: { kind: 'user', id: 'user-1' },
+        resource: { kind: 'mcpServer', id: 'docs-mcp', scopeId: 'gateway-1' },
+        runtime: {
+          publicationId: 'mcp-publication-1',
+          status,
+          appliedMethods: { keysEnabled: false, entraEnabled: true },
+          subscriptionName: null,
+          appliedAt: null,
+          error: null,
+        },
+      },
+      via: 'direct',
+      viaGroupId: null,
+      viaGroupName: null,
+    }])
+
+    expect(await screen.findByText(label)).toBeVisible()
   })
 })

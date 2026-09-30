@@ -28,12 +28,70 @@ import { EmptyState, ErrorState, Loading } from '../components/AsyncState'
 import { DirectoryPrincipalPicker } from '../components/DirectoryPrincipalPicker'
 import { PageHeader } from '../components/PageHeader'
 import { PrincipalKindBadge } from '../components/PrincipalKindBadge'
-import { PRINCIPAL_KIND_LABELS } from '../labels'
-import type { Principal, PrincipalKind } from '../types'
+import { PRINCIPAL_KIND_LABELS, type PrincipalTab, principalTabForKind } from '../labels'
+import type { DirectorySearchKind, Principal, PrincipalKind } from '../types'
 import styles from './IdentityPage.module.css'
 
-type IdentityTab = 'users' | 'workloads' | 'groups'
-type PrincipalDialogMode = 'identity' | null
+type IdentityTab = PrincipalTab | 'groups'
+type PrincipalDialogMode = 'search' | 'manual' | null
+
+const PRINCIPAL_TAB_TEXT: Record<
+  PrincipalTab,
+  {
+    title: string
+    add: string
+    emptyTitle: string
+    emptyHint: string
+    selectPrompt: string
+    filter: string
+  }
+> = {
+  users: {
+    title: 'People',
+    add: 'Add person',
+    emptyTitle: 'No people registered',
+    emptyHint: 'Add a person to begin.',
+    selectPrompt: 'Select a person',
+    filter: 'Filter by label or object ID',
+  },
+  agents: {
+    title: 'Agents',
+    add: 'Add agent',
+    emptyTitle: 'No agents registered',
+    emptyHint: 'Add an agent identity or agent user to begin.',
+    selectPrompt: 'Select an agent',
+    filter: 'Filter by label, detail, object ID, or kind',
+  },
+  workloads: {
+    title: 'Applications and security groups',
+    add: 'Add identity',
+    emptyTitle: 'No applications or security groups registered',
+    emptyHint: 'Add an application, managed identity, or security group to begin.',
+    selectPrompt: 'Select a record',
+    filter: 'Filter by label, detail, object ID, or kind',
+  },
+}
+
+/** What the add dialog searches for, or enters by hand, when it opens from each tab. */
+const ADD_DIALOG_DEFAULTS: Record<IdentityTab, { search: DirectorySearchKind; manual: PrincipalKind }> = {
+  users: { search: 'user', manual: 'user' },
+  agents: { search: 'agent', manual: 'agentIdentity' },
+  workloads: { search: 'group', manual: 'servicePrincipal' },
+  groups: { search: 'user', manual: 'user' },
+}
+
+/** Manual entry picks up the kind the administrator was searching for. */
+const MANUAL_KIND_FOR_SEARCH: Record<DirectorySearchKind, PrincipalKind> = {
+  user: 'user',
+  agent: 'agentIdentity',
+  group: 'securityGroup',
+}
+
+const SEARCH_DIALOG_TITLES: Record<DirectorySearchKind, string> = {
+  user: 'Add person',
+  agent: 'Add agent',
+  group: 'Add security group',
+}
 
 type ConfirmationState =
   | {
@@ -56,7 +114,7 @@ type ConfirmationState =
   | null
 
 function isIdentityTab(value: string | null): value is IdentityTab {
-  return value === 'users' || value === 'workloads' || value === 'groups'
+  return value === 'users' || value === 'agents' || value === 'workloads' || value === 'groups'
 }
 
 function matchesSearch(search: string, ...values: Array<string | undefined>) {
@@ -93,9 +151,10 @@ export function IdentityPage() {
   const activeTab: IdentityTab = isIdentityTab(rawTab) ? rawTab : 'users'
 
   const [searchQuery, setSearchQuery] = useState('')
-  const [selectedPrincipalId, setSelectedPrincipalId] = useState('')
+  const [requestedPrincipalId, setSelectedPrincipalId] = useState('')
   const [selectedGroupId, setSelectedGroupId] = useState('')
   const [principalDialogMode, setPrincipalDialogMode] = useState<PrincipalDialogMode>(null)
+  const [directoryKind, setDirectoryKind] = useState<DirectorySearchKind>('user')
   const [createPrincipalObjectId, setCreatePrincipalObjectId] = useState('')
   const [createPrincipalLabel, setCreatePrincipalLabel] = useState('')
   const [createPrincipalKind, setCreatePrincipalKind] = useState<PrincipalKind>('user')
@@ -142,17 +201,27 @@ export function IdentityPage() {
     }
   }, [activeTab, rawTab, updateTab])
 
+  // Open the tab that lists the principal, and select it there.
+  const showPrincipal = useCallback(
+    (principal: Principal) => {
+      const nextTab = principalTabForKind(principal.kind)
+      if (nextTab !== activeTab) {
+        updateTab(nextTab, true)
+      }
+      setSelectedPrincipalId(principal.id)
+    },
+    [activeTab, updateTab],
+  )
+
   const createPrincipal = useMutation({
     mutationFn: api.createPrincipal,
     onSuccess: async (principal) => {
       setCreatePrincipalObjectId('')
       setCreatePrincipalLabel('')
       setCreatePrincipalParentId('')
-      setCreatePrincipalKind(principal.kind)
       setPrincipalDialogMode(null)
-      setSelectedPrincipalId(principal.id)
       await queryClient.invalidateQueries({ queryKey: ['principals'] })
-      updateTab(principal.kind === 'user' || principal.kind === 'agentUser' ? 'users' : 'workloads', true)
+      showPrincipal(principal)
     },
   })
 
@@ -165,12 +234,8 @@ export function IdentityPage() {
       payload: { kind?: PrincipalKind; label?: string | null }
     }) => api.updatePrincipal(principalId, payload),
     onSuccess: async (principal) => {
-      setSelectedPrincipalId(principal.id)
       await queryClient.invalidateQueries({ queryKey: ['principals'] })
-      const nextTab = principal.kind === 'user' || principal.kind === 'agentUser' ? 'users' : 'workloads'
-      if (activeTab !== nextTab) {
-        updateTab(nextTab, true)
-      }
+      showPrincipal(principal)
     },
   })
 
@@ -234,33 +299,31 @@ export function IdentityPage() {
   })
 
   const normalizedSearch = searchQuery.trim().toLowerCase()
-  const users = useMemo(
-    () => principals.data?.filter((principal) => principal.kind === 'user' || principal.kind === 'agentUser') ?? [],
-    [principals.data],
-  )
-  const workloads = useMemo(
-    () => principals.data?.filter((principal) => principal.kind !== 'user' && principal.kind !== 'agentUser') ?? [],
-    [principals.data],
-  )
-  const filteredUsers = useMemo(
+  const principalsByTab = useMemo(() => {
+    const grouped: Record<PrincipalTab, Principal[]> = { users: [], agents: [], workloads: [] }
+    for (const principal of principals.data ?? []) {
+      grouped[principalTabForKind(principal.kind)].push(principal)
+    }
+    return grouped
+  }, [principals.data])
+  // The MOSAIC groups tab doesn't show principals, so the lookup only needs a valid key there.
+  const principalTab: PrincipalTab = activeTab === 'groups' ? 'users' : activeTab
+  const principalTabText = PRINCIPAL_TAB_TEXT[principalTab]
+  const tabPrincipals = principalsByTab[principalTab]
+  const visiblePrincipals = useMemo(
     () =>
-      users.filter((principal) =>
-        matchesSearch(normalizedSearch, principal.label, principal.objectId),
+      tabPrincipals.filter((principal) =>
+        principalTab === 'users'
+          ? matchesSearch(normalizedSearch, principal.label, principal.objectId)
+          : matchesSearch(
+              normalizedSearch,
+              principal.label,
+              principal.objectId,
+              principal.detail ?? undefined,
+              PRINCIPAL_KIND_LABELS[principal.kind],
+            ),
       ),
-    [normalizedSearch, users],
-  )
-  const filteredWorkloads = useMemo(
-    () =>
-      workloads.filter((principal) =>
-        matchesSearch(
-          normalizedSearch,
-          principal.label,
-          principal.objectId,
-          principal.detail ?? undefined,
-          PRINCIPAL_KIND_LABELS[principal.kind],
-        ),
-      ),
-    [normalizedSearch, workloads],
+    [normalizedSearch, principalTab, tabPrincipals],
   )
   const filteredGroups = useMemo(
     () =>
@@ -274,20 +337,12 @@ export function IdentityPage() {
     [principals.data],
   )
 
-  const visiblePrincipals = activeTab === 'users' ? filteredUsers : filteredWorkloads
-
-  useEffect(() => {
-    if (activeTab === 'groups') {
-      return
-    }
-    if (!visiblePrincipals.length) {
-      setSelectedPrincipalId('')
-      return
-    }
-    if (!visiblePrincipals.some((principal) => principal.id === selectedPrincipalId)) {
-      setSelectedPrincipalId(visiblePrincipals[0].id)
-    }
-  }, [activeTab, selectedPrincipalId, visiblePrincipals])
+  // Show the requested record while it's on this tab and passes the filter, and the first row
+  // otherwise. Deriving it, rather than resetting the request, keeps a record that was just added
+  // or moved selected even when its tab opens in a later render than the request.
+  const selectedPrincipalId = visiblePrincipals.some((principal) => principal.id === requestedPrincipalId)
+    ? requestedPrincipalId
+    : (visiblePrincipals[0]?.id ?? '')
 
   useEffect(() => {
     if (!filteredGroups.length) {
@@ -346,18 +401,21 @@ export function IdentityPage() {
     [memberships.data, normalizedSearch, principalsById],
   )
 
-  const principalCreateLabel = 'Add identity'
-  const principalCreateHint = directoryStatus.data?.lookupEnabled
-    ? 'Search Microsoft Entra for people, agents, and security groups, or use manual entry for applications and managed identities.'
-    : 'Directory lookup is off. Enter the Entra object ID and kind manually.'
+  const directoryLookupEnabled = directoryStatus.data?.lookupEnabled === true
+  const principalDialogView =
+    principalDialogMode === 'search' && directoryLookupEnabled ? 'search' : 'manual'
+  // The title names what the dialog will add, so it follows the search or type choice.
+  const principalDialogTitle =
+    principalDialogView === 'search'
+      ? SEARCH_DIALOG_TITLES[directoryKind]
+      : `Add ${PRINCIPAL_KIND_LABELS[createPrincipalKind].toLowerCase()}`
+  const principalCreateHint =
+    principalDialogView === 'search'
+      ? 'Search Microsoft Entra for people, agents, and security groups. Applications and managed identities need manual entry.'
+      : directoryLookupEnabled
+        ? 'Enter the Entra object ID and type for an application, a managed identity, or anyone the directory search does not find.'
+        : 'Directory lookup is off. Enter the Entra object ID and kind manually.'
 
-  const principalListTitle = activeTab === 'workloads' ? 'Applications and security groups' : 'People and agent users'
-  const principalEmptyTitle =
-    activeTab === 'workloads' ? 'No applications or security groups registered' : 'No people or agent users registered'
-  const principalSearchPlaceholder =
-    activeTab === 'workloads'
-      ? 'Filter by label, detail, object ID, or kind'
-      : 'Filter by label or object ID'
   const groupSearchPlaceholder = 'Filter groups or visible members'
 
   const principalDetailHasChanges =
@@ -374,12 +432,14 @@ export function IdentityPage() {
     updateGroup.error ?? deleteGroup.error ?? addMembership.error ?? removeMembership.error
 
   function openPrincipalDialog() {
+    const defaults = ADD_DIALOG_DEFAULTS[activeTab]
     createPrincipal.reset()
-    setPrincipalDialogMode('identity')
+    setPrincipalDialogMode('search')
+    setDirectoryKind(defaults.search)
     setCreatePrincipalObjectId('')
     setCreatePrincipalLabel('')
     setCreatePrincipalParentId('')
-    setCreatePrincipalKind('user')
+    setCreatePrincipalKind(defaults.manual)
   }
 
   function closePrincipalDialog() {
@@ -493,7 +553,8 @@ export function IdentityPage() {
             }
           }}
         >
-          <Tab value="users">People and agent users</Tab>
+          <Tab value="users">People</Tab>
+          <Tab value="agents">Agents</Tab>
           <Tab value="workloads">Applications and security groups</Tab>
           <Tab value="groups">MOSAIC groups</Tab>
         </TabList>
@@ -502,8 +563,8 @@ export function IdentityPage() {
           <Input
             className={styles.searchInput}
             value={searchQuery}
-            placeholder={activeTab === 'groups' ? groupSearchPlaceholder : principalSearchPlaceholder}
-            aria-label={activeTab === 'groups' ? groupSearchPlaceholder : principalSearchPlaceholder}
+            placeholder={activeTab === 'groups' ? groupSearchPlaceholder : principalTabText.filter}
+            aria-label={activeTab === 'groups' ? groupSearchPlaceholder : principalTabText.filter}
             onChange={(_, data) => setSearchQuery(data.value)}
           />
 
@@ -512,7 +573,7 @@ export function IdentityPage() {
               appearance={activeTab !== 'groups' ? 'primary' : 'secondary'}
               onClick={() => openPrincipalDialog()}
             >
-              Add identity
+              {activeTab === 'groups' ? 'Add identity' : principalTabText.add}
             </Button>
             <Button
               appearance={activeTab === 'groups' ? 'primary' : 'secondary'}
@@ -770,24 +831,19 @@ export function IdentityPage() {
           </div>
         )
       ) : principals.isLoading ? (
-        <Loading label={`Loading ${principalListTitle.toLowerCase()}`} />
+        <Loading label={`Loading ${principalTabText.title.toLowerCase()}`} />
       ) : principals.error ? (
         <ErrorState error={principals.error} />
-      ) : !(activeTab === 'users' ? users.length : workloads.length) ? (
-        <EmptyState title={principalEmptyTitle}>
-          {activeTab === 'workloads'
-            ? 'Add an application, agent identity, managed identity, or security group to begin.'
-            : 'Add a person or agent user to begin.'}
-        </EmptyState>
+      ) : !tabPrincipals.length ? (
+        <EmptyState title={principalTabText.emptyTitle}>{principalTabText.emptyHint}</EmptyState>
       ) : (
         <div className={styles.contentGrid}>
           <Card className={styles.listCard}>
             <div className={styles.cardHeader}>
               <div className={styles.cardHeaderText}>
-                <Title3 as="h2">{principalListTitle}</Title3>
+                <Title3 as="h2">{principalTabText.title}</Title3>
                 <Text className={styles.muted}>
-                  {visiblePrincipals.length} of {(activeTab === 'users' ? users : workloads).length}{' '}
-                  shown
+                  {visiblePrincipals.length} of {tabPrincipals.length} shown
                 </Text>
               </div>
             </div>
@@ -845,11 +901,19 @@ export function IdentityPage() {
                             </div>
                           </td>
                           <td>
-                            <Badge appearance="tint" className={principal.directoryVerifiedAt ? styles.liveBadge : styles.groupBadge}>
-                              {principal.directoryVerifiedAt
-                                ? `Verified in Entra ${formatTimestamp(principal.directoryVerifiedAt)}`
-                                : 'Entered by hand'}
-                            </Badge>
+                            <div className={styles.statusCell}>
+                              <Badge
+                                appearance="tint"
+                                className={`${styles.statusBadge} ${principal.directoryVerifiedAt ? styles.liveBadge : styles.groupBadge}`}
+                              >
+                                {principal.directoryVerifiedAt ? 'Verified in Entra' : 'Entered by hand'}
+                              </Badge>
+                              {principal.directoryVerifiedAt && (
+                                <span className={styles.rowSecondary}>
+                                  {formatTimestamp(principal.directoryVerifiedAt)}
+                                </span>
+                              )}
+                            </div>
                           </td>
                         </tr>
                       )
@@ -859,7 +923,7 @@ export function IdentityPage() {
               </div>
             ) : (
               <div className={styles.emptyPanel}>
-                <EmptyState title={`No matching ${principalListTitle.toLowerCase()}`}>
+                <EmptyState title={`No matching ${principalTabText.title.toLowerCase()}`}>
                   Refine the filter or add a new record.
                 </EmptyState>
               </div>
@@ -973,65 +1037,66 @@ export function IdentityPage() {
                     <Text className={styles.readOnlyLabel}>Created</Text>
                     <Text block>{formatTimestamp(selectedPrincipal.createdAt)}</Text>
                   </div>
-                  {selectedPrincipal.kind === 'securityGroup' && (
-                    <div className={styles.detailSection}>
-                      <Title3 as="h3">Security group members</Title3>
-                      <Text className={styles.helperText}>
-                        Loaded from Microsoft Graph when this group is selected. Recorded members can
-                        already be granted directly in MOSAIC.
-                      </Text>
-                      {selectedPrincipalMembers.isLoading ? (
-                        <Loading label="Loading security group members" />
-                      ) : selectedPrincipalMembers.error ? (
-                        <ErrorState
-                          title="Unable to load security group members"
-                          error={selectedPrincipalMembers.error}
-                        />
-                      ) : selectedPrincipalMembers.data ? (
-                        <>
-                          {selectedPrincipalMembers.data.truncated && (
-                            <MessageBar intent="warning">
-                              <MessageBarBody>
-                                The member list is truncated. Refine access by adding direct grants
-                                where needed.
-                              </MessageBarBody>
-                            </MessageBar>
-                          )}
-                          {!selectedPrincipalMembers.data.members.length ? (
-                            <EmptyState title="No members returned">
-                              Microsoft Graph did not return members for this security group.
-                            </EmptyState>
-                          ) : (
-                            <div className={styles.memberList}>
-                              {selectedPrincipalMembers.data.members.map((member) => (
-                                <div key={`${member.kind}:${member.objectId}`} className={styles.memberRow}>
-                                  <div className={styles.memberMeta}>
-                                    <Text className={styles.memberName}>
-                                      {member.displayName ?? member.objectId}
-                                    </Text>
-                                    <div className={styles.badgeRow}>
-                                      <PrincipalKindBadge kind={member.kind} />
-                                      {member.principalId && <Badge appearance="tint">Recorded in MOSAIC</Badge>}
-                                    </div>
-                                    {member.detail && <Text className={styles.rowSecondary}>{member.detail}</Text>}
-                                    <code className={styles.monospace}>{member.objectId}</code>
-                                  </div>
-                                </div>
-                              ))}
-                            </div>
-                          )}
-                        </>
-                      ) : null}
-                    </div>
-                  )}
                   <div className={styles.readOnlyPanel}>
                     <Text className={styles.readOnlyLabel}>Updated</Text>
                     <Text block>{formatTimestamp(selectedPrincipal.updatedAt)}</Text>
                   </div>
                 </div>
+
+                {selectedPrincipal.kind === 'securityGroup' && (
+                  <div className={styles.detailSection}>
+                    <Title3 as="h3">Security group members</Title3>
+                    <Text className={styles.helperText}>
+                      Loaded from Microsoft Graph when this group is selected. Recorded members can
+                      already be granted directly in MOSAIC.
+                    </Text>
+                    {selectedPrincipalMembers.isLoading ? (
+                      <Loading label="Loading security group members" />
+                    ) : selectedPrincipalMembers.error ? (
+                      <ErrorState
+                        title="Unable to load security group members"
+                        error={selectedPrincipalMembers.error}
+                      />
+                    ) : selectedPrincipalMembers.data ? (
+                      <>
+                        {selectedPrincipalMembers.data.truncated && (
+                          <MessageBar intent="warning">
+                            <MessageBarBody>
+                              The member list is truncated. Refine access by adding direct grants
+                              where needed.
+                            </MessageBarBody>
+                          </MessageBar>
+                        )}
+                        {!selectedPrincipalMembers.data.members.length ? (
+                          <EmptyState title="No members returned">
+                            Microsoft Graph did not return members for this security group.
+                          </EmptyState>
+                        ) : (
+                          <div className={styles.memberList}>
+                            {selectedPrincipalMembers.data.members.map((member) => (
+                              <div key={`${member.kind}:${member.objectId}`} className={styles.memberRow}>
+                                <div className={styles.memberMeta}>
+                                  <Text className={styles.memberName}>
+                                    {member.displayName ?? member.objectId}
+                                  </Text>
+                                  <div className={styles.badgeRow}>
+                                    <PrincipalKindBadge kind={member.kind} />
+                                    {member.principalId && <Badge appearance="tint">Recorded in MOSAIC</Badge>}
+                                  </div>
+                                  {member.detail && <Text className={styles.rowSecondary}>{member.detail}</Text>}
+                                  <code className={styles.monospace}>{member.objectId}</code>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </>
+                    ) : null}
+                  </div>
+                )}
               </>
             ) : (
-              <EmptyState title={`Select a ${activeTab === 'users' ? 'person or agent user' : 'record'}`}>
+              <EmptyState title={principalTabText.selectPrompt}>
                 Choose a record to inspect and edit its local metadata.
               </EmptyState>
             )}
@@ -1041,70 +1106,91 @@ export function IdentityPage() {
 
       <Dialog open={principalDialogMode !== null} onOpenChange={(_, data) => !data.open && closePrincipalDialog()}>
         <DialogSurface>
-          <DialogBody>
-            <DialogTitle>{principalCreateLabel}</DialogTitle>
-            <DialogContent>
-              {directoryStatus.data?.lookupEnabled && (
-                <div className={styles.detailSection}>
-                  <DirectoryPrincipalPicker
-                    onCreated={(principal) => {
-                      setSelectedPrincipalId(principal.id)
-                      setPrincipalDialogMode(null)
-                    }}
-                    onManualFallback={() => undefined}
-                  />
-                </div>
-              )}
-              <form className={styles.dialogForm} onSubmit={submitCreatePrincipal}>
+          {principalDialogView === 'search' ? (
+            <DialogBody>
+              <DialogTitle>{principalDialogTitle}</DialogTitle>
+              <DialogContent className={styles.dialogForm}>
                 <Text className={styles.muted}>{principalCreateHint}</Text>
+                <DirectoryPrincipalPicker
+                  kind={directoryKind}
+                  onKindChange={setDirectoryKind}
+                  onCreated={(principal) => {
+                    setPrincipalDialogMode(null)
+                    showPrincipal(principal)
+                  }}
+                  onManualFallback={() => {
+                    setCreatePrincipalKind(MANUAL_KIND_FOR_SEARCH[directoryKind])
+                    setPrincipalDialogMode('manual')
+                  }}
+                />
+              </DialogContent>
+              <DialogActions>
+                <Button appearance="secondary" type="button" onClick={closePrincipalDialog}>
+                  Cancel
+                </Button>
+              </DialogActions>
+            </DialogBody>
+          ) : (
+            <form onSubmit={submitCreatePrincipal}>
+              <DialogBody>
+                <DialogTitle>{principalDialogTitle}</DialogTitle>
+                <DialogContent className={styles.dialogForm}>
+                  <Text className={styles.muted}>{principalCreateHint}</Text>
 
-                {createPrincipal.error && (
-                  <MessageBar intent="error">
-                    <MessageBarBody>
-                      <MessageBarTitle>Unable to add principal</MessageBarTitle>
-                      {createPrincipal.error.message}
-                    </MessageBarBody>
-                  </MessageBar>
-                )}
+                  {createPrincipal.error && (
+                    <MessageBar intent="error">
+                      <MessageBarBody>
+                        <MessageBarTitle>Unable to add principal</MessageBarTitle>
+                        {createPrincipal.error.message}
+                      </MessageBarBody>
+                    </MessageBar>
+                  )}
 
-                <Field label="Entra object ID" required>
-                  <Input
-                    required
-                    value={createPrincipalObjectId}
-                    onChange={(_, data) => setCreatePrincipalObjectId(data.value)}
-                  />
-                </Field>
-
-                <Field label="Principal type">
-                  <Select
-                    value={createPrincipalKind}
-                    onChange={(event) => setCreatePrincipalKind(event.target.value as PrincipalKind)}
-                  >
-                    <option value="user">Person</option>
-                    <option value="agentIdentity">Agent</option>
-                    <option value="agentUser">Agent user</option>
-                    <option value="securityGroup">Security group</option>
-                    <option value="servicePrincipal">Application</option>
-                    <option value="managedIdentity">Managed identity</option>
-                  </Select>
-                </Field>
-
-                {createPrincipalKind === 'agentUser' && directoryStatus.data?.lookupEnabled === false && (
-                  <Field label="Parent agent object ID">
+                  <Field label="Entra object ID" required>
                     <Input
-                      value={createPrincipalParentId}
-                      onChange={(_, data) => setCreatePrincipalParentId(data.value)}
+                      required
+                      value={createPrincipalObjectId}
+                      onChange={(_, data) => setCreatePrincipalObjectId(data.value)}
                     />
                   </Field>
+
+                  <Field label="Principal type">
+                    <Select
+                      value={createPrincipalKind}
+                      onChange={(event) => setCreatePrincipalKind(event.target.value as PrincipalKind)}
+                    >
+                      <option value="user">Person</option>
+                      <option value="agentIdentity">Agent</option>
+                      <option value="agentUser">Agent user</option>
+                      <option value="securityGroup">Security group</option>
+                      <option value="servicePrincipal">Application</option>
+                      <option value="managedIdentity">Managed identity</option>
+                    </Select>
+                  </Field>
+
+                  {createPrincipalKind === 'agentUser' && directoryStatus.data?.lookupEnabled === false && (
+                    <Field label="Parent agent object ID">
+                      <Input
+                        value={createPrincipalParentId}
+                        onChange={(_, data) => setCreatePrincipalParentId(data.value)}
+                      />
+                    </Field>
+                  )}
+
+                  <Field label="Local label">
+                    <Input
+                      value={createPrincipalLabel}
+                      onChange={(_, data) => setCreatePrincipalLabel(data.value)}
+                    />
+                  </Field>
+                </DialogContent>
+                {directoryLookupEnabled && (
+                  <DialogActions position="start">
+                    <Button appearance="subtle" type="button" onClick={() => setPrincipalDialogMode('search')}>
+                      Search the directory
+                    </Button>
+                  </DialogActions>
                 )}
-
-                <Field label="Local label">
-                  <Input
-                    value={createPrincipalLabel}
-                    onChange={(_, data) => setCreatePrincipalLabel(data.value)}
-                  />
-                </Field>
-
                 <DialogActions>
                   <Button appearance="secondary" type="button" onClick={closePrincipalDialog}>
                     Cancel
@@ -1117,18 +1203,18 @@ export function IdentityPage() {
                     Save
                   </Button>
                 </DialogActions>
-              </form>
-            </DialogContent>
-          </DialogBody>
+              </DialogBody>
+            </form>
+          )}
         </DialogSurface>
       </Dialog>
 
       <Dialog open={createGroupOpen} onOpenChange={(_, data) => !data.open && closeGroupDialog()}>
         <DialogSurface>
-          <DialogBody>
-            <DialogTitle>Create group</DialogTitle>
-            <DialogContent>
-              <form className={styles.dialogForm} onSubmit={submitCreateGroup}>
+          <form onSubmit={submitCreateGroup}>
+            <DialogBody>
+              <DialogTitle>Create group</DialogTitle>
+              <DialogContent className={styles.dialogForm}>
                 <Text className={styles.muted}>
                   Create a MOSAIC access group without mirroring Entra group profiles.
                 </Text>
@@ -1156,22 +1242,21 @@ export function IdentityPage() {
                     onChange={(_, data) => setCreateGroupDescription(data.value)}
                   />
                 </Field>
-
-                <DialogActions>
-                  <Button appearance="secondary" type="button" onClick={closeGroupDialog}>
-                    Cancel
-                  </Button>
-                  <Button
-                    appearance="primary"
-                    type="submit"
-                    disabled={!createGroupName.trim() || createGroup.isPending}
-                  >
-                    Save
-                  </Button>
-                </DialogActions>
-              </form>
-            </DialogContent>
-          </DialogBody>
+              </DialogContent>
+              <DialogActions>
+                <Button appearance="secondary" type="button" onClick={closeGroupDialog}>
+                  Cancel
+                </Button>
+                <Button
+                  appearance="primary"
+                  type="submit"
+                  disabled={!createGroupName.trim() || createGroup.isPending}
+                >
+                  Save
+                </Button>
+              </DialogActions>
+            </DialogBody>
+          </form>
         </DialogSurface>
       </Dialog>
 

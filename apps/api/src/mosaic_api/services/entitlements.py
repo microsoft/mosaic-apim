@@ -56,6 +56,11 @@ from mosaic_api.repositories import (
     ModelEndpointRepository,
 )
 from mosaic_api.services.directory import Actor, DirectoryService
+from mosaic_api.services.mcp_access import (
+    decorate_mcp_entitlement,
+    entitlement_mcp_publication,
+    mcp_grant_needs_retention,
+)
 from mosaic_api.services.model_access import (
     decorate_entitlement,
     entitlement_publication,
@@ -119,6 +124,17 @@ def _existing_grant_conflict(existing: Entitlement) -> ConflictError:
         "change the existing grant instead.",
         details={"entitlementId": existing.id, "enabled": existing.enabled},
     )
+
+
+def _reject_mcp_token_limits(resource: EntitlementResource, enforcement: Any) -> None:
+    if (
+        resource.kind == "mcpServer"
+        and enforcement is not None
+        and enforcement.tokens is not None
+    ):
+        raise ValidationError(
+            "MCP servers are limited by calls, not tokens. Remove the token limits."
+        )
 
 
 class EntitlementService:
@@ -303,6 +319,7 @@ class EntitlementService:
 
     async def _decorate(self, entitlement: Entitlement) -> Entitlement:
         publication = await entitlement_publication(self._gateways, entitlement)
+        mcp_publication = await entitlement_mcp_publication(self._gateways, entitlement)
         principal = (
             await self._directory.get_principal(entitlement.tenant_id, entitlement.subject.id)
             if entitlement.subject.kind != "group"
@@ -314,15 +331,27 @@ class EntitlementService:
                 entitlement.tenant_id, publication.id
             )
         )
+        mcp_locked = bool(
+            mcp_publication
+            and await self._gateways.get_publication_lock(
+                entitlement.tenant_id, mcp_publication.id
+            )
+        )
+        if entitlement.resource.kind == "mcpServer":
+            return decorate_mcp_entitlement(
+                entitlement, mcp_publication, principal, locked=mcp_locked
+            )
         return decorate_entitlement(entitlement, publication, principal, locked=locked)
 
     @asynccontextmanager
     async def _mutation(self, entitlement: Entitlement) -> AsyncIterator[None]:
         publication = await entitlement_publication(self._gateways, entitlement)
-        if publication is None:
+        mcp_publication = await entitlement_mcp_publication(self._gateways, entitlement)
+        target = publication or mcp_publication
+        if target is None:
             yield
         else:
-            async with publication_lock(self._gateways, entitlement.tenant_id, publication.id):
+            async with publication_lock(self._gateways, entitlement.tenant_id, target.id):
                 yield
 
     async def list_entitlements(
@@ -360,6 +389,7 @@ class EntitlementService:
         await self._validate_subject(actor, request.subject)
         if descriptor is None:
             descriptor = await self._describe_resource(actor, request.resource)
+        _reject_mcp_token_limits(request.resource, request.enforcement)
         binding = request.binding
         if binding is None:
             binding = await self.infer_binding(actor, descriptor, request.subject)
@@ -406,11 +436,18 @@ class EntitlementService:
         entitlement = await self.get_entitlement(actor, entitlement_ref)
         changes = request.model_dump(exclude_unset=True)
         publication = await entitlement_publication(self._gateways, entitlement)
+        mcp_publication = await entitlement_mcp_publication(self._gateways, entitlement)
+        if "enforcement" in changes:
+            _reject_mcp_token_limits(entitlement.resource, request.enforcement)
         if "binding" in changes and (
             (entitlement.binding and entitlement.binding.source == BindingSource.ORCHESTRATED)
             or (
                 publication is not None
                 and managed_grant_needs_retention(publication, entitlement.id)
+            )
+            or (
+                mcp_publication is not None
+                and mcp_grant_needs_retention(mcp_publication, entitlement.id)
             )
             or (request.binding and request.binding.source == BindingSource.ORCHESTRATED)
         ):
@@ -447,6 +484,15 @@ class EntitlementService:
                     "it to revoke access; retain the disabled grant until its publication is "
                     "unpublished so its subscription is not orphaned.",
                     details={"publicationId": publication.id},
+                )
+            mcp_publication = await entitlement_mcp_publication(self._gateways, entitlement)
+            if mcp_publication and mcp_grant_needs_retention(
+                mcp_publication, entitlement.id
+            ):
+                raise ConflictError(
+                    "This MCP grant is still applied or its runtime state is uncertain. Disable "
+                    "the grant and apply the MCP server's access before deleting it.",
+                    details={"publicationId": mcp_publication.id},
                 )
             await self._repository.delete_entitlement(
                 entitlement,

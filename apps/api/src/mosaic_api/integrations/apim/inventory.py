@@ -201,10 +201,20 @@ def _mcp_transport(value: object) -> McpTransportType:
 
 
 def _mcp_endpoints(value: object) -> list[McpServerRoute]:
-    if not isinstance(value, list):
+    if value is None:
+        return []
+    if isinstance(value, dict):
+        entries = [
+            {"name": name, **entry}
+            for name, entry in value.items()
+            if isinstance(name, str) and isinstance(entry, dict)
+        ]
+    elif isinstance(value, list):
+        entries = value
+    else:
         return []
     endpoints: list[McpServerRoute] = []
-    for entry in value:
+    for entry in entries:
         if not isinstance(entry, dict):
             continue
         name = _text(entry.get("name"))
@@ -604,11 +614,7 @@ class InventoryCollector:
     ) -> None:
         # MCP servers are APIs of type ``mcp`` in the ARM model. They are collected separately, so
         # exclude them here rather than listing one resource twice under two different shapes.
-        entries = [
-            (name, item)
-            for name, item in _named(items)
-            if _api_type(item) != MCP_API_TYPE
-        ]
+        entries = [(name, item) for name, item in _named(items) if _api_type(item) != MCP_API_TYPE]
         operation_lists = await asyncio.gather(
             *(
                 self._guard(

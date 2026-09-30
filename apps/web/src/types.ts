@@ -425,7 +425,8 @@ export interface McpServer {
   visibility: CatalogVisibility
   summary?: string | null
   selection: ImportSelection
-  importedFromSnapshotId: string
+  importedFromSnapshotId?: string | null
+  publicationId?: string | null
   importedAt: string
   importedBy?: string | null
   createdAt: string
@@ -807,6 +808,24 @@ export interface ModelAccessSnapshot {
   grants: ModelAccessGrant[]
 }
 
+export interface McpAccessGrant {
+  entitlementId: string
+  subject: EntitlementSubject
+  objectId: string
+  displayName: string
+  enabled: boolean
+  enforcement?: EntitlementEnforcement | null
+  intentDigest: string
+}
+
+export interface McpAccessSnapshot {
+  version: number
+  audience: string
+  delegatedScope: string
+  applicationRole: string
+  grants: McpAccessGrant[]
+}
+
 export interface PublicationLockInfo {
   publicationId: string
   ownerId: string | null
@@ -847,6 +866,52 @@ export interface Publication {
   updatedAt: string
 }
 
+export interface McpPublication {
+  id: string
+  tenantId: string
+  entityType: 'mcpPublication'
+  gatewayId: string
+  mcpEndpointId: string
+  displayName: string
+  apiName: string
+  apiPath: string
+  backendName: string
+  fragmentName: string
+  metadataApiName: string
+  mcpServerId: string
+  status: PublicationStatus
+  resources: PublishedResource[]
+  lastPlanId: string | null
+  lastPlanDigest: string | null
+  lastRunId: string | null
+  lastAppliedAt: string | null
+  lastError: string | null
+  appliedAccess?: McpAccessSnapshot | null
+  accessState: 'pending' | 'applying' | 'applied' | 'failed' | 'unknown'
+  createdAt: string
+  updatedAt: string
+  etag?: string | null
+}
+
+export interface McpPublishingCapability {
+  gatewayId: string
+  supported: boolean
+  reasons: string[]
+  warnings: string[]
+}
+
+export interface McpPublicationCreate {
+  gatewayId: string
+  mcpEndpointId: string
+  displayName?: string
+  apiName?: string
+  apiPath?: string
+}
+
+export interface McpPublicationUpdate {
+  displayName?: string
+}
+
 export interface PublishPlanStep {
   kind: PublishedResourceKind
   name: string
@@ -870,7 +935,9 @@ export interface PublishPlan {
   facets: PolicyFacet[]
   policyContentSha256: string | null
   warnings: string[]
+  target?: 'model' | 'mcp'
   accessSnapshot?: ModelAccessSnapshot | null
+  mcpAccessSnapshot?: McpAccessSnapshot | null
   previousAccessVersion?: number | null
   createdAt: string
   updatedAt: string
@@ -903,7 +970,9 @@ export interface PublishRun {
   rolledBack: boolean
   orphanedResources: PublishedResource[]
   errors: string[]
+  target?: 'model' | 'mcp'
   accessSnapshot?: ModelAccessSnapshot | null
+  mcpAccessSnapshot?: McpAccessSnapshot | null
   createdAt: string
   updatedAt: string
 }
@@ -931,6 +1000,30 @@ export interface ModelConnection {
   keysAvailable: boolean
   viaGroupId?: string | null
   viaGroupName?: string | null
+}
+
+export interface McpConnection {
+  entitlementId: string
+  mcpServerId: string
+  publicationId?: string | null
+  gatewayId: string
+  displayName: string
+  tenantId: string
+  serverUrl?: string | null
+  transport: McpTransportType
+  enforced: boolean
+  statusMessage: string
+  runtime?: EntitlementRuntime | null
+  entraAudience?: string | null
+  delegatedScope?: string | null
+  applicationScope?: string | null
+  requiredAppRole?: string | null
+  clientId?: string | null
+  principalKind?: PrincipalKind | null
+  viaGroupId?: string | null
+  viaGroupName?: string | null
+  resourceMetadataUrl?: string | null
+  limits?: EntitlementEnforcement | null
 }
 
 export type DirectorySearchKind = 'user' | 'group' | 'agent'

@@ -1,6 +1,7 @@
 import type {
   Entitlement,
   KeyRevealResult,
+  McpConnection,
   ModelConnection,
   ResolvedEntitlement,
 } from '../types'
@@ -78,10 +79,141 @@ export const securityGroupResolved: ResolvedEntitlement = {
   shadowedBy: null,
 }
 
+export const mcpGrant: Entitlement = {
+  ...directGrant,
+  id: 'entitlement_mcp_person',
+  subject: { kind: 'user', id: 'principal_1' },
+  resource: { kind: 'mcpServer', id: 'mcp_weather', scopeId: null },
+  enforcement: {
+    tokens: null,
+    requests: {
+      counterKeyExpression: 'mosaic:mcp:grant',
+      calls: 120,
+      renewalPeriodSeconds: 60,
+      callQuota: 10_000,
+      callQuotaPeriod: 'Monthly',
+    },
+  },
+  binding: null,
+  runtime: {
+    publicationId: 'mcp_publication_1',
+    status: 'applied',
+    appliedMethods: { keysEnabled: false, entraEnabled: true },
+    subscriptionName: null,
+    appliedAt: timestamp,
+    error: null,
+  },
+}
+
+export const mcpResolved: ResolvedEntitlement = {
+  entitlement: mcpGrant,
+  via: 'direct',
+  viaGroupId: null,
+  viaGroupName: null,
+}
+
+export const mcpMosaicGroupResolved: ResolvedEntitlement = {
+  entitlement: {
+    ...mcpGrant,
+    id: 'entitlement_mcp_mosaic_group',
+    subject: { kind: 'group', id: 'group_1' },
+    runtime: null,
+  },
+  via: 'group',
+  viaGroupId: 'group_1',
+  viaGroupName: 'Platform engineering',
+}
+
+export const mcpServerUrl = 'https://gateway.example.test/mosaic/mcp/weather/mcp'
+export const mcpMetadataUrl = 'https://gateway.example.test/.well-known/oauth-protected-resource/mosaic/mcp/weather/mcp'
+export const modelClientId = '99999999-8888-7777-6666-555555555555'
+export const mcpConnection: McpConnection = {
+  entitlementId: mcpGrant.id,
+  mcpServerId: 'mcp_server_weather',
+  publicationId: 'mcp_publication_1',
+  gatewayId: 'gateway_1',
+  displayName: 'Weather tools',
+  tenantId: 'tenant-1',
+  serverUrl: mcpServerUrl,
+  transport: 'streamable',
+  enforced: true,
+  statusMessage: 'The gateway enforces this grant.',
+  runtime: mcpGrant.runtime,
+  entraAudience: '11111111-2222-3333-4444-555555555555',
+  delegatedScope: 'api://11111111-2222-3333-4444-555555555555/Mcp.Invoke',
+  applicationScope: null,
+  requiredAppRole: null,
+  clientId: modelClientId,
+  principalKind: 'user',
+  viaGroupId: null,
+  viaGroupName: null,
+  resourceMetadataUrl: mcpMetadataUrl,
+  limits: mcpGrant.enforcement,
+}
+
+export const mcpAgentIdentityResolved: ResolvedEntitlement = {
+  entitlement: {
+    ...mcpGrant,
+    id: 'entitlement_mcp_agent_identity',
+    subject: { kind: 'application', id: 'principal_agent_identity' },
+  },
+  via: 'direct',
+  viaGroupId: null,
+  viaGroupName: null,
+}
+
+export const mcpAgentIdentityConnection: McpConnection = {
+  ...mcpConnection,
+  entitlementId: mcpAgentIdentityResolved.entitlement.id,
+  delegatedScope: null,
+  applicationScope: 'api://11111111-2222-3333-4444-555555555555/.default',
+  requiredAppRole: 'Mcp.Invoke.Application',
+  clientId: '22222222-3333-4444-5555-666666666666',
+  principalKind: 'agentIdentity',
+}
+
+export const mcpAgentUserResolved: ResolvedEntitlement = {
+  entitlement: {
+    ...mcpGrant,
+    id: 'entitlement_mcp_agent_user',
+    subject: { kind: 'user', id: 'principal_agent_user' },
+  },
+  via: 'direct',
+  viaGroupId: null,
+  viaGroupName: null,
+}
+
+export const mcpAgentUserConnection: McpConnection = {
+  ...mcpConnection,
+  entitlementId: mcpAgentUserResolved.entitlement.id,
+  clientId: '33333333-4444-5555-6666-777777777777',
+  principalKind: 'agentUser',
+}
+
+export const mcpSecurityGroupResolved: ResolvedEntitlement = {
+  entitlement: {
+    ...mcpGrant,
+    id: 'entitlement_mcp_security_group',
+    subject: { kind: 'securityGroup', id: 'principal_group_1' },
+  },
+  via: 'securityGroup',
+  viaGroupId: 'principal_group_1',
+  viaGroupName: 'AI builders',
+}
+
+export const mcpSecurityGroupConnection: McpConnection = {
+  ...mcpConnection,
+  entitlementId: mcpSecurityGroupResolved.entitlement.id,
+  applicationScope: 'api://11111111-2222-3333-4444-555555555555/.default',
+  requiredAppRole: 'Mcp.Invoke.Application',
+  principalKind: 'securityGroup',
+  viaGroupId: 'principal_group_1',
+  viaGroupName: 'AI builders',
+}
+
 export const endpoint = 'https://gateway.example.test/models/gpt-4o'
 export const chatUrl = `${endpoint}/openai/deployments/gpt-4o/chat/completions`
 export const responsesUrl = `${endpoint}/openai/responses`
-export const modelClientId = '99999999-8888-7777-6666-555555555555'
 
 export const connection: ModelConnection = {
   entitlementId: directGrant.id,

@@ -818,7 +818,12 @@ class ModelApi(Entity):
 
 
 class McpServer(Entity):
-    """An API Management MCP server an administrator adopted."""
+    """An API Management MCP server an administrator adopted, or one MOSAIC publishes.
+
+    An adopted server comes from an observed snapshot and MOSAIC doesn't own its policy, so grants
+    on it are recorded but not enforced. A published server names its :class:`McpPublication`,
+    whose fragment enforces the grants at the gateway.
+    """
 
     entity_type: Literal["mcpServer"] = "mcpServer"
     gateway_id: str
@@ -837,9 +842,16 @@ class McpServer(Entity):
     visibility: CatalogVisibility = CatalogVisibility.CATALOG
     summary: str | None = None
     selection: ImportSelection = ImportSelection.DETECTED
-    imported_from_snapshot_id: str
+    imported_from_snapshot_id: str | None = None
+    publication_id: str | None = None
     imported_at: datetime = Field(default_factory=utc_now)
     imported_by: str | None = None
+
+    @model_validator(mode="after")
+    def validate_provenance(self) -> Self:
+        if self.imported_from_snapshot_id is None and self.publication_id is None:
+            raise ValueError("An MCP server needs an observed snapshot or a publication")
+        return self
 
 
 class CatalogEntryUpdate(MosaicModel):
@@ -857,6 +869,44 @@ def model_api_id(tenant_id: str, gateway_id: str, api_name: str) -> str:
 
 def mcp_server_id(tenant_id: str, gateway_id: str, api_name: str) -> str:
     return deterministic_id("mcpServer", tenant_id, gateway_id, api_name)
+
+
+def mcp_publication_id(tenant_id: str, gateway_id: str, mcp_endpoint_id: str) -> str:
+    """Deterministic so publishing the same MCP server through a gateway twice never forks it."""
+
+    return deterministic_id("mcpPublication", tenant_id, gateway_id, mcp_endpoint_id)
+
+
+# The runtime app registration's MCP permissions. They're distinct from the model permissions on
+# the same registration, so a model grant never opens an MCP server and an MCP grant never opens a
+# model.
+MCP_DELEGATED_SCOPE = "Mcp.Invoke"
+MCP_APPLICATION_ROLE = "Mcp.Invoke.Application"
+# API Management serves a streamable MCP server's message endpoint at ``/{api_path}/mcp``.
+MCP_MESSAGE_PATH = "mcp"
+# RFC 9728 path insertion: the metadata for a resource at ``https://host/{path}`` is served at
+# ``https://host/.well-known/oauth-protected-resource/{path}``.
+MCP_RESOURCE_METADATA_PREFIX = ".well-known/oauth-protected-resource"
+# The one operation on a published server's discovery API: ``GET /mcp``.
+MCP_METADATA_OPERATION = "metadata"
+
+
+def mcp_server_url(gateway_url: str, api_path: str) -> str:
+    """The URL MCP clients connect to for a server MOSAIC publishes at ``api_path``."""
+
+    return f"{gateway_url.rstrip('/')}/{api_path.strip('/')}/{MCP_MESSAGE_PATH}"
+
+
+def mcp_metadata_api_path(api_path: str) -> str:
+    """The path of the API that serves a published server's protected resource metadata."""
+
+    return f"{MCP_RESOURCE_METADATA_PREFIX}/{api_path.strip('/')}"
+
+
+def mcp_resource_metadata_url(gateway_url: str, api_path: str) -> str:
+    """Where a published server's protected resource metadata is served."""
+
+    return f"{gateway_url.rstrip('/')}/{mcp_metadata_api_path(api_path)}/{MCP_MESSAGE_PATH}"
 
 
 class McpAuthMode(StrEnum):
@@ -1391,6 +1441,10 @@ class CatalogEntry(MosaicModel):
     gateway_name: str | None = None
     entitled: bool = False
     request_state: AccessRequestState | None = None
+    # Whether the gateway enforces grants on this resource. Reported for MCP servers only: True
+    # when MOSAIC publishes the server and has applied its access, False for an adopted server or
+    # one not yet applied. None for other kinds.
+    enforced: bool | None = None
 
 
 class PortalProfile(MosaicModel):
@@ -1542,6 +1596,50 @@ def model_access_subscription_name(
     ).replace("_", "-")
 
 
+class McpAccessGrant(MosaicModel):
+    """One grant compiled into an MCP publication's fragment.
+
+    MCP grants authorize Entra tokens only. There's no subscription and no key, so unlike
+    :class:`ModelAccessGrant` nothing here names one. MCP servers are limited by calls, never by
+    tokens.
+    """
+
+    entitlement_id: str
+    subject: EntitlementSubject
+    # The caller's object ID for a direct grant; the group's object ID for a security-group grant,
+    # which the gateway matches against the caller token's ``groups`` claim.
+    object_id: str
+    display_name: str
+    enabled: bool
+    enforcement: EntitlementEnforcement | None = None
+    intent_digest: str
+
+    @model_validator(mode="after")
+    def enforceable_subject_only(self) -> Self:
+        if self.subject.kind == EntitlementSubjectKind.GROUP:
+            raise ValueError(
+                "MOSAIC groups are not enforced at runtime; grant an Entra security group instead"
+            )
+        if self.enforcement is not None and self.enforcement.tokens is not None:
+            raise ValueError("MCP servers are limited by calls, not tokens")
+        return self
+
+    @property
+    def is_group_grant(self) -> bool:
+        return self.subject.kind == EntitlementSubjectKind.SECURITY_GROUP
+
+
+class McpAccessSnapshot(MosaicModel):
+    """The grants an MCP publication's fragment enforces, exactly as they were applied."""
+
+    version: int = Field(ge=1)
+    # The runtime app registration's client ID: the audience MCP tokens are validated against.
+    audience: str
+    delegated_scope: str = MCP_DELEGATED_SCOPE
+    application_role: str = MCP_APPLICATION_ROLE
+    grants: list[McpAccessGrant] = Field(default_factory=list)
+
+
 class Publication(Entity):
     """An administrator's intent to expose one model deployment through one gateway.
 
@@ -1609,6 +1707,68 @@ class Publication(Entity):
                 and any(grant.enabled for grant in self.applied_access.grants)
             )
         )
+
+
+class McpPublication(Entity):
+    """An administrator's intent to publish one registered MCP server through one gateway.
+
+    Desired state, like :class:`Publication`: saving it writes only to Cosmos. An apply creates an
+    MCP API in API Management whose backend is the registered server, an enforcement fragment that
+    validates Entra tokens and matches them against the applied grants, and a discovery API that
+    serves the server's protected resource metadata (RFC 9728) so MCP clients can find where to
+    sign in.
+    """
+
+    entity_type: Literal["mcpPublication"] = "mcpPublication"
+    gateway_id: str
+    mcp_endpoint_id: str
+    display_name: str
+    api_name: str
+    api_path: str
+    backend_name: str
+    fragment_name: str
+    # The anonymous API that serves protected resource metadata at
+    # ``/.well-known/oauth-protected-resource/{api_path}/mcp``.
+    metadata_api_name: str
+    # The governed MCP server record grants name. Created with the publication, so grants can be
+    # recorded before the first apply.
+    mcp_server_id: str
+    status: PublicationStatus = PublicationStatus.DRAFT
+    resources: list[PublishedResource] = Field(default_factory=list)
+    last_plan_id: str | None = None
+    last_plan_digest: str | None = None
+    last_run_id: str | None = None
+    last_applied_at: datetime | None = None
+    last_error: str | None = None
+    applied_access: McpAccessSnapshot | None = None
+    access_state: Literal["pending", "applying", "applied", "failed", "unknown"] = "pending"
+
+    def created_resources(self) -> list[PublishedResource]:
+        """The subset rollback and unpublish are allowed to delete."""
+
+        return [resource for resource in self.resources if resource.created_by_mosaic]
+
+    def may_own_gateway_state(self) -> bool:
+        """Whether API Management may hold something this publication is responsible for."""
+
+        return bool(
+            self.created_resources()
+            or self.status == PublicationStatus.APPLYING
+            or self.access_state in {"applying", "unknown"}
+            or (
+                self.applied_access
+                and any(grant.enabled for grant in self.applied_access.grants)
+            )
+        )
+
+
+class McpPublishingCapability(MosaicModel):
+    """Whether MOSAIC can publish MCP servers through a gateway, and why not when it can't."""
+
+    gateway_id: str
+    supported: bool
+    reasons: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
 
 
 class CredentialReference(Entity):
@@ -2202,6 +2362,9 @@ class PublishPlan(Entity):
 
     entity_type: Literal["publishPlan"] = "publishPlan"
     publication_id: str
+    # Which kind of publication ``publication_id`` names. Plans saved before MCP publishing
+    # existed are model plans.
+    target: Literal["model", "mcp"] = "model"
     gateway_id: str
     digest: str
     steps: list[PublishPlanStep] = Field(default_factory=list)
@@ -2210,6 +2373,7 @@ class PublishPlan(Entity):
     warnings: list[str] = Field(default_factory=list)
     actor_object_id: str | None = None
     access_snapshot: ModelAccessSnapshot | None = None
+    mcp_access_snapshot: McpAccessSnapshot | None = None
     previous_access_version: int | None = None
 
 
@@ -2229,6 +2393,9 @@ class PublishRun(Entity):
 
     entity_type: Literal["publishRun"] = "publishRun"
     publication_id: str
+    # Which kind of publication ``publication_id`` names; runs saved before MCP publishing existed
+    # are model runs. Each publishing service reaps and recovers only its own runs.
+    target: Literal["model", "mcp"] = "model"
     gateway_id: str
     plan_id: str
     plan_digest: str
@@ -2242,6 +2409,7 @@ class PublishRun(Entity):
     errors: list[str] = Field(default_factory=list)
     actor_object_id: str | None = None
     access_snapshot: ModelAccessSnapshot | None = None
+    mcp_access_snapshot: McpAccessSnapshot | None = None
 
 
 class PublicationCreate(MosaicModel):
@@ -2291,6 +2459,31 @@ class PublicationUpdate(MosaicModel):
     governed_access: ModelAccessSettings | None = None
 
 
+class McpPublicationCreate(MosaicModel):
+    gateway_id: str = Field(min_length=1, max_length=128)
+    mcp_endpoint_id: str = Field(min_length=1, max_length=128)
+    display_name: str | None = Field(default=None, min_length=1, max_length=200)
+    api_name: str | None = Field(default=None, min_length=1, max_length=80)
+    api_path: str | None = Field(default=None, min_length=1, max_length=200)
+
+    @field_validator("api_name")
+    @classmethod
+    def validate_resource_name(cls, value: str | None) -> str | None:
+        return PublicationCreate.validate_resource_name(value)
+
+    @field_validator("api_path")
+    @classmethod
+    def validate_path(cls, value: str | None) -> str | None:
+        candidate = PublicationCreate.validate_path(value)
+        if candidate is not None and candidate.casefold().startswith(".well-known"):
+            raise ValueError("An MCP server's path can't start with .well-known")
+        return candidate
+
+
+class McpPublicationUpdate(MosaicModel):
+    display_name: str | None = Field(default=None, min_length=1, max_length=200)
+
+
 class ConnectionOperation(MosaicModel):
     name: str
     method: str
@@ -2329,6 +2522,44 @@ class ModelConnection(MosaicModel):
     keys_available: bool = True
     via_group_id: str | None = None
     via_group_name: str | None = None
+
+
+class McpConnection(MosaicModel):
+    """How a grantee connects to a governed MCP server, and whether the gateway enforces it yet.
+
+    ``enforced`` is true only for a server MOSAIC publishes whose grant is applied. Grants on an
+    adopted server, or on a published one before its first apply, are recorded but not enforced,
+    and ``status_message`` says which.
+    """
+
+    entitlement_id: str
+    mcp_server_id: str
+    publication_id: str | None = None
+    gateway_id: str
+    display_name: str
+    tenant_id: str
+    # ``https://{gateway}/{api_path}/mcp``. None until MOSAIC knows the gateway's URL.
+    server_url: str | None = None
+    transport: McpTransportType = McpTransportType.STREAMABLE
+    enforced: bool = False
+    status_message: str
+    runtime: EntitlementRuntime | None = None
+    entra_audience: str | None = None
+    # ``api://{audience}/Mcp.Invoke``, for people and agent users.
+    delegated_scope: str | None = None
+    # ``api://{audience}/.default``, for agents and applications signing in as themselves.
+    application_scope: str | None = None
+    # ``Mcp.Invoke.Application``. Entra doesn't pass app roles to service principals through
+    # group membership, so an agent needs it assigned to itself, or inherited from its blueprint
+    # through the blueprint's inheritable permissions.
+    required_app_role: str | None = None
+    client_id: str | None = None
+    principal_kind: PrincipalKind | None = None
+    via_group_id: str | None = None
+    via_group_name: str | None = None
+    # ``https://{gateway}/.well-known/oauth-protected-resource/{api_path}/mcp``.
+    resource_metadata_url: str | None = None
+    limits: EntitlementEnforcement | None = None
 
 
 class KeyRevealRequest(MosaicModel):
