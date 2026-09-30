@@ -1,10 +1,10 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { FluentProvider, webLightTheme } from '@fluentui/react-components'
+import { FluentProvider, textClassNames, webLightTheme } from '@fluentui/react-components'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type { AccessRequest, Entitlement, EnvironmentCatalogView, McpPublication, McpServer } from '../types'
+import type { AccessRequest, Entitlement, EnvironmentCatalogView, McpPublication, McpServer, Principal } from '../types'
 import { callRateError, describeLimits, describePublicationLimits } from '../entitlement-limits'
 import { EntitlementsPage } from './EntitlementsPage'
 import { accessPlan, directGrant, modelPublication, publishedModelApi } from '../test/model-access'
@@ -172,6 +172,11 @@ async function openApproval(user: ReturnType<typeof userEvent.setup>) {
 function columnCells(table: HTMLElement, header: string) {
   const column = within(table).getAllByRole('columnheader').findIndex((cell) => cell.textContent === header)
   return within(table).getAllByRole('row').slice(1).map((row) => within(row).getAllByRole('cell')[column])
+}
+
+/** Each line of text in an element, in order. */
+function textLines(element: Element) {
+  return [...element.querySelectorAll(`.${textClassNames.root}`)].map((line) => line.textContent)
 }
 
 vi.mock('../api', async (importOriginal) => {
@@ -707,6 +712,51 @@ describe('EntitlementsPage', () => {
       expect(requester).toHaveTextContent(/^USER-OBJECT-1$/)
     })
 
+    // Registered as user-object-1, while the request recorded USER-OBJECT-1.
+    const withoutLabel: Principal = {
+      id: 'principal_1', tenantId: 'tenant', objectId: 'user-object-1', kind: 'user', createdAt: '', updatedAt: '',
+    }
+
+    it.each<[shows: string, principals: Principal[], inTable: string[], inDialog: string[]]>([
+      [
+        'a registered requester by label, then the object ID the request recorded',
+        [{ ...withoutLabel, label: 'Megan Bowen' }],
+        ['Megan Bowen', 'USER-OBJECT-1'],
+        ['Megan Bowen', 'USER-OBJECT-1'],
+      ],
+      [
+        'a registered requester without a label by the recorded object ID once',
+        [withoutLabel],
+        ['USER-OBJECT-1'],
+        ['USER-OBJECT-1'],
+      ],
+      [
+        'a registered requester with a blank label by the recorded object ID once',
+        [{ ...withoutLabel, label: '' }],
+        ['USER-OBJECT-1'],
+        ['USER-OBJECT-1'],
+      ],
+      [
+        'a requester MOSAIC does not know by the object ID once, and that approving registers them',
+        [],
+        ['USER-OBJECT-1'],
+        ['USER-OBJECT-1', 'Not registered in MOSAIC yet. Approving registers them as a user principal.'],
+      ],
+    ])('shows %s, in the table and when approving', async (_, principals, inTable, inDialog) => {
+      const user = userEvent.setup()
+      api.listPrincipals.mockResolvedValue(principals)
+      api.listAccessRequests.mockResolvedValue([pendingRequest])
+      renderPage()
+
+      const requests = await screen.findByRole('table', { name: 'Pending access requests' })
+      // Approve waits for principals, so by then the table shows all it knows about the requester.
+      await waitFor(() => expect(within(requests).getByRole('button', { name: 'Approve' })).toBeEnabled())
+      expect(textLines(columnCells(requests, 'Requester')[0])).toEqual(inTable)
+
+      const dialog = await openApproval(user)
+      expect(textLines(within(dialog).getByText('Requester').nextElementSibling as HTMLElement)).toEqual(inDialog)
+    })
+
     it('approves through the limits dialog, creating linked grant intent that still needs review and apply', async () => {
       const user = userEvent.setup()
       api.listPublications.mockResolvedValue([modelPublication])
@@ -859,6 +909,21 @@ describe('EntitlementsPage', () => {
       )).toBeVisible()
       expect(within(dialog).getByRole('button', { name: 'Approve and create grant' })).toBeDisabled()
       expect(api.approveAccessRequest).not.toHaveBeenCalled()
+    })
+
+    it('names a requester without a label by the recorded object ID when they already hold a direct grant', async () => {
+      const user = userEvent.setup()
+      api.listPrincipals.mockResolvedValue([withoutLabel])
+      api.listEntitlements.mockResolvedValue([directGrant])
+      api.listPublications.mockResolvedValue([modelPublication])
+      api.listModelApis.mockResolvedValue([publishedModelApi])
+      api.listAccessRequests.mockResolvedValue([pendingRequest])
+      renderPage()
+
+      const dialog = await openApproval(user)
+      expect(within(dialog).getByText(
+        'USER-OBJECT-1 already has a direct grant for Chat completions (model API). Deny this request, or change the existing grant instead.',
+      )).toBeVisible()
     })
 
     it('denies without a dialog, and says no grant was created', async () => {
