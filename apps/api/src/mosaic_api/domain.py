@@ -65,6 +65,18 @@ FOUNDRY_PROJECT_MANAGER_ROLE_ID = "eadc314b-1a2d-4efa-be10-5d325db5065e"
 AZURE_AI_DEVELOPER_ROLE_NAME = "Azure AI Developer"
 AZURE_AI_DEVELOPER_ROLE_ID = "64702f94-c441-49e6-a78b-ef80e0188fee"
 
+# A key-authenticated endpoint's key lives in Key Vault, and both MOSAIC and each gateway read it
+# there with their own managed identities (ADR 0018). Key Vault Secrets User is the narrowest
+# built-in that grants the read; the check accepts any role whose data actions cover it.
+KEY_VAULT_API_VERSION = "2023-07-01"
+KEY_VAULT_SECRETS_USER_ROLE_NAME = "Key Vault Secrets User"
+KEY_VAULT_SECRETS_USER_ROLE_ID = "4633458b-17de-408a-b874-0445c86b69e6"
+KEY_VAULT_SECRETS_OFFICER_ROLE_NAME = "Key Vault Secrets Officer"
+KEY_VAULT_SECRETS_OFFICER_ROLE_ID = "b86a8fe4-44ce-4948-aee5-eccb2c155cd7"
+KEY_VAULT_ADMINISTRATOR_ROLE_NAME = "Key Vault Administrator"
+KEY_VAULT_ADMINISTRATOR_ROLE_ID = "00482a5a-887f-4fb3-b363-3b7fe8e74483"
+KEY_VAULT_GET_SECRET_DATA_ACTION = "Microsoft.KeyVault/vaults/secrets/getSecret/action"
+
 # MCP protocol revision MOSAIC offers when it connects to a registered MCP server.
 #
 # The current published revision, 2026-07-28, is a *stateless* protocol: it removed the
@@ -207,6 +219,211 @@ class CognitiveServicesResourceId(BaseModel):
     @property
     def dedupe_key(self) -> str:
         return self.canonical.casefold()
+
+
+# The Key Vault DNS suffixes MOSAIC reads secrets from, one per Azure cloud. The reader in
+# ``integrations/mcp/credentials.py`` accepts exactly these.
+KEY_VAULT_HOST_SUFFIXES: tuple[str, ...] = (
+    ".vault.azure.net",
+    ".vault.azure.cn",
+    ".vault.usgovcloudapi.net",
+    ".vault.microsoftazure.de",
+)
+# Key Vault's own naming rules: 3 to 24 letters, digits and hyphens, starting with a letter, ending
+# with a letter or digit, with no consecutive hyphens. A secret name is 1 to 127 letters, digits and
+# hyphens, and a version is 32 hexadecimal characters.
+_VAULT_NAME_PATTERN = re.compile(r"^(?!.*--)[a-z][a-z0-9-]{1,22}[a-z0-9]$")
+_SECRET_NAME_PATTERN = re.compile(r"^[0-9A-Za-z-]{1,127}$")
+_SECRET_VERSION_PATTERN = re.compile(r"^[0-9A-Fa-f]{32}$")
+_SECRET_IDENTIFIER_FORM = "https://<vault>.vault.azure.net/secrets/<name>"
+
+
+class KeyVaultSecretId(BaseModel):
+    """A Key Vault secret identifier, which names a secret and never carries its value.
+
+    MOSAIC stores and hands API Management the *versionless* identifier. API Management refreshes a
+    versionless reference from Key Vault within four hours, so a rotated key reaches the gateway
+    without anyone touching MOSAIC; a versioned one would pin the old key forever.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    vault_host: str
+    secret_name: str
+    version: str | None = None
+
+    @classmethod
+    def parse(cls, value: str) -> "KeyVaultSecretId":
+        candidate = value.strip()
+        try:
+            parts = urlsplit(candidate)
+            port = parts.port
+        except ValueError:
+            raise ValueError(
+                f"Expected a Key Vault secret identifier such as {_SECRET_IDENTIFIER_FORM}"
+            ) from None
+        host = (parts.hostname or "").casefold()
+        if (
+            parts.scheme.casefold() != "https"
+            or parts.username is not None
+            or parts.password is not None
+            or port is not None
+            or parts.query
+            or parts.fragment
+        ):
+            raise ValueError(
+                f"Expected a Key Vault secret identifier such as {_SECRET_IDENTIFIER_FORM}, "
+                "with no port, query or fragment"
+            )
+        suffix = next((item for item in KEY_VAULT_HOST_SUFFIXES if host.endswith(item)), None)
+        vault_name = host.removesuffix(suffix) if suffix else ""
+        if suffix is None or not _VAULT_NAME_PATTERN.fullmatch(vault_name):
+            raise ValueError(
+                "The secret must be in an Azure Key Vault, such as "
+                f"{_SECRET_IDENTIFIER_FORM}"
+            )
+        segments = parts.path.split("/")
+        if segments and segments[-1] == "":
+            segments = segments[:-1]
+        if (
+            len(segments) not in {3, 4}
+            or segments[0] != ""
+            or segments[1].casefold() != "secrets"
+            or not _SECRET_NAME_PATTERN.fullmatch(segments[2])
+            or (len(segments) == 4 and not _SECRET_VERSION_PATTERN.fullmatch(segments[3]))
+        ):
+            raise ValueError(
+                f"Expected a Key Vault secret identifier such as {_SECRET_IDENTIFIER_FORM}, "
+                "optionally followed by a version"
+            )
+        return cls(
+            vault_host=host,
+            secret_name=segments[2],
+            version=segments[3].casefold() if len(segments) == 4 else None,
+        )
+
+    @property
+    def vault_name(self) -> str:
+        return self.vault_host.split(".", 1)[0]
+
+    @property
+    def vault_uri(self) -> str:
+        return f"https://{self.vault_host}"
+
+    @property
+    def versionless(self) -> str:
+        return f"{self.vault_uri}/secrets/{self.secret_name}"
+
+
+# Every public host an Azure AI (Cognitive Services) account answers on is its custom subdomain
+# under one of these. The hostname is the only identity a resource MOSAIC reaches with a key has.
+AZURE_AI_HOST_SUFFIXES: tuple[str, ...] = (
+    ".services.ai.azure.com",
+    ".cognitiveservices.azure.com",
+    ".openai.azure.com",
+)
+_CUSTOM_SUBDOMAIN_PATTERN = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$")
+_FOUNDRY_PROJECT_PATH_PATTERN = re.compile(
+    r"^/api/projects/(?P<project>[A-Za-z0-9][A-Za-z0-9._-]{0,63})/?$"
+)
+# The base paths the Azure and Foundry portals show beside a resource's endpoint. Each is served at
+# the resource, so pasting one is the same as pasting the resource endpoint.
+_API_BASE_PATHS = frozenset({"/openai", "/openai/v1", "/models", "/anthropic", "/anthropic/v1"})
+_AZURE_AI_ENDPOINT_FORM = (
+    "https://<resource>.services.ai.azure.com, https://<resource>.cognitiveservices.azure.com, "
+    "https://<resource>.openai.azure.com, or a Foundry project endpoint "
+    "https://<resource>.services.ai.azure.com/api/projects/<project>"
+)
+
+
+def azure_ai_host_suffix(host: str | None) -> str | None:
+    """The Azure AI suffix a hostname sits under, or None for any other host."""
+
+    normalized = (host or "").casefold().rstrip(".")
+    return next((suffix for suffix in AZURE_AI_HOST_SUFFIXES if normalized.endswith(suffix)), None)
+
+
+def azure_ai_account_subdomain(url: str | None) -> str | None:
+    """The account a URL on an Azure AI host belongs to: its custom subdomain.
+
+    ``contoso.openai.azure.com``, ``contoso.cognitiveservices.azure.com`` and
+    ``contoso.services.ai.azure.com`` are one account, so this is what duplicates are judged by.
+    """
+
+    try:
+        host = (urlsplit(url or "").hostname or "").casefold().rstrip(".")
+    except ValueError:
+        return None
+    suffix = azure_ai_host_suffix(host)
+    if suffix is None:
+        return None
+    subdomain = host.removesuffix(suffix)
+    return subdomain if _CUSTOM_SUBDOMAIN_PATTERN.fullmatch(subdomain) else None
+
+
+class AzureAiEndpointUrl(BaseModel):
+    """An Azure OpenAI or Foundry endpoint MOSAIC reaches by URL and API key rather than by ID.
+
+    A Foundry project endpoint names a project, but a project isn't where models are served: the
+    inference routes and the key belong to the resource, so the project is recorded and the
+    resource's origin is what MOSAIC publishes from.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    host: str
+    subdomain: str
+    project_name: str | None = None
+
+    @classmethod
+    def parse(cls, value: str) -> "AzureAiEndpointUrl":
+        candidate = value.strip()
+        try:
+            parts = urlsplit(candidate)
+            port = parts.port
+        except ValueError:
+            raise ValueError(f"Expected {_AZURE_AI_ENDPOINT_FORM}") from None
+        host = (parts.hostname or "").casefold().rstrip(".")
+        if (
+            parts.scheme.casefold() != "https"
+            or parts.username is not None
+            or parts.password is not None
+            or port is not None
+            or parts.query
+            or parts.fragment
+        ):
+            raise ValueError(
+                f"Expected {_AZURE_AI_ENDPOINT_FORM}, over https with no port, query or fragment"
+            )
+        subdomain = azure_ai_account_subdomain(f"https://{host}")
+        if subdomain is None:
+            raise ValueError(
+                "Use the resource's own endpoint rather than a regional or custom one. Expected "
+                f"{_AZURE_AI_ENDPOINT_FORM}"
+            )
+        path = parts.path
+        project: str | None = None
+        if path not in {"", "/"} and path.rstrip("/").casefold() not in _API_BASE_PATHS:
+            match = _FOUNDRY_PROJECT_PATH_PATTERN.fullmatch(path)
+            if match is None or azure_ai_host_suffix(host) != ".services.ai.azure.com":
+                raise ValueError(
+                    "Paste the resource endpoint or the Foundry project endpoint, without an "
+                    f"operation path. Expected {_AZURE_AI_ENDPOINT_FORM}"
+                )
+            project = match.group("project")
+        return cls(host=host, subdomain=subdomain, project_name=project)
+
+    @property
+    def origin(self) -> str:
+        return f"https://{self.host}"
+
+    @property
+    def provider(self) -> "ModelProvider":
+        """The resource kind the hostname implies, which ARM would otherwise report."""
+
+        if self.host.endswith(".openai.azure.com"):
+            return ModelProvider.AZURE_OPENAI
+        return ModelProvider.AZURE_AI_FOUNDRY
 
 
 class MosaicModel(BaseModel):
@@ -683,12 +900,124 @@ class ModelInventorySummary(MosaicModel):
     deprecated_deployments: int = 0
 
 
+def _unset(value: object) -> bool:
+    """Whether a field added after release holds nothing, so it's left out of stored documents.
+
+    Every model forbids unknown fields, so a release reading a document another release wrote
+    fails on any field it doesn't know. Leaving a new field out while it's empty keeps records that
+    don't use it readable by the release before it.
+    """
+
+    return value is None or value == [] or value is False
+
+
+# Deployment names become literal operation paths and a pinned request model in the gateway policy,
+# so they are held to the characters Azure deployment names use.
+DEPLOYMENT_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+_MODEL_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,119}$")
+_MODEL_VERSION_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+MAX_DECLARED_DEPLOYMENTS = 50
+
+
+class DeclaredDeployment(MosaicModel):
+    """A deployment an administrator declared on an endpoint MOSAIC reaches with an API key.
+
+    Foundry lists a resource's deployments only to a Microsoft Entra token, and an API key can't
+    read them (ADR 0018), so these are what the administrator says is deployed. MOSAIC publishes a
+    declared deployment with the shape declared for it, and never presents it as discovered.
+    """
+
+    deployment_name: str
+    model_name: str
+    model_version: str | None = None
+    api_shape: ApiShape
+    declared_at: datetime = Field(default_factory=utc_now)
+    declared_by: str | None = None
+
+
+class DeclaredDeploymentCreate(MosaicModel):
+    deployment_name: str = Field(min_length=1, max_length=64)
+    model_name: str = Field(min_length=1, max_length=120)
+    model_version: str | None = Field(default=None, max_length=64)
+    api_shape: ApiShape
+
+    @field_validator("deployment_name")
+    @classmethod
+    def validate_deployment_name(cls, value: str) -> str:
+        value = value.strip()
+        if not DEPLOYMENT_NAME_PATTERN.fullmatch(value):
+            raise ValueError(
+                "A deployment name is up to 64 letters, digits, periods, hyphens and underscores, "
+                "starting with a letter or digit"
+            )
+        return value
+
+    @field_validator("model_name")
+    @classmethod
+    def validate_model_name(cls, value: str) -> str:
+        value = value.strip()
+        if not _MODEL_NAME_PATTERN.fullmatch(value):
+            raise ValueError(
+                "A model name is up to 120 letters, digits, periods, colons, hyphens and "
+                "underscores, starting with a letter or digit"
+            )
+        return value
+
+    @field_validator("model_version")
+    @classmethod
+    def validate_model_version(cls, value: str | None) -> str | None:
+        if value is None or not value.strip():
+            return None
+        value = value.strip()
+        if not _MODEL_VERSION_PATTERN.fullmatch(value):
+            raise ValueError(
+                "A model version is up to 64 letters, digits, periods, hyphens and underscores"
+            )
+        return value
+
+
+def shape_fits_provider(shape: str, provider: str) -> bool:
+    """Whether a resource of this kind serves an API shape at all.
+
+    Every Azure AI resource serves the Azure OpenAI routes. Only a Foundry (AI Services) resource
+    serves the Foundry Models routes and the Anthropic Messages API.
+    """
+
+    if shape == ApiShape.AZURE_OPENAI:
+        return provider in {ModelProvider.AZURE_OPENAI, ModelProvider.AZURE_AI_FOUNDRY}
+    return provider == ModelProvider.AZURE_AI_FOUNDRY
+
+
+def validate_declarations(
+    declarations: list[DeclaredDeploymentCreate], provider: str
+) -> list[DeclaredDeploymentCreate]:
+    """Refuse duplicate names and shapes the resource can't serve. Returns the declarations."""
+
+    if len(declarations) > MAX_DECLARED_DEPLOYMENTS:
+        raise ValueError(f"Declare at most {MAX_DECLARED_DEPLOYMENTS} deployments per endpoint")
+    seen: set[str] = set()
+    for declaration in declarations:
+        key = declaration.deployment_name.casefold()
+        if key in seen:
+            raise ValueError(f"Deployment {declaration.deployment_name} is declared twice")
+        seen.add(key)
+        if not shape_fits_provider(declaration.api_shape, provider):
+            raise ValueError(
+                f"An Azure OpenAI resource serves only the Azure OpenAI API, so "
+                f"{declaration.deployment_name} can't use the Foundry Models or Anthropic Messages "
+                "API. Register the Foundry resource's services.ai.azure.com endpoint instead."
+            )
+    return declarations
+
+
 class ModelEndpoint(Entity):
     """A registered provider endpoint MOSAIC reads models from.
 
-    Azure endpoints are identified by resource ID and read with MOSAIC's managed identity.
-    OpenAI-compatible endpoints are identified by URL and read with a key MOSAIC resolves from Key
-    Vault at call time; only the secret URI is ever stored.
+    Azure endpoints are identified by resource ID and read with MOSAIC's managed identity. An Azure
+    endpoint MOSAIC can't reach that way, such as one in another Microsoft Entra tenant, can be
+    identified by URL instead and authenticated with an API key held in Key Vault; its deployments
+    are declared rather than read (ADR 0018). OpenAI-compatible endpoints are identified by URL and
+    read with a key MOSAIC resolves from Key Vault at call time; only the secret URI is ever stored.
     """
 
     entity_type: Literal["modelEndpoint"] = "modelEndpoint"
@@ -709,6 +1038,10 @@ class ModelEndpoint(Entity):
     azure_environment_tag: str | None = None
     auth_mode: EndpointAuthMode = EndpointAuthMode.MANAGED_IDENTITY
     credential_reference_id: str | None = None
+    # Authored by administrators, and only on an Azure endpoint registered with an API key.
+    declared_deployments: list[DeclaredDeployment] = Field(
+        default_factory=list, exclude_if=_unset
+    )
     status: ModelEndpointStatus = ModelEndpointStatus.PENDING
     access: EndpointAccess = Field(default_factory=EndpointAccess)
     runtime_access: list[GatewayRuntimeAccess] = Field(default_factory=list)
@@ -716,6 +1049,20 @@ class ModelEndpoint(Entity):
     inventory: ModelInventorySummary = Field(default_factory=ModelInventorySummary)
     last_synced_at: datetime | None = None
     last_sync_error: str | None = None
+
+    def uses_backend_key(self) -> bool:
+        """Whether this is an Azure endpoint MOSAIC and its gateways reach with an API key."""
+
+        return (
+            self.auth_mode == EndpointAuthMode.API_KEY
+            and self.provider != ModelProvider.OPENAI_COMPATIBLE
+        )
+
+    def declared(self, deployment_name: str) -> DeclaredDeployment | None:
+        return next(
+            (item for item in self.declared_deployments if item.deployment_name == deployment_name),
+            None,
+        )
 
 
 class ModelEndpointSyncRun(Entity):
@@ -1619,6 +1966,7 @@ class PublicationStatus(StrEnum):
 class PublishedResourceKind(StrEnum):
     """The API Management resource types a publication creates, in dependency order."""
 
+    NAMED_VALUE = "namedValue"
     BACKEND = "backend"
     POLICY_FRAGMENT = "policyFragment"
     API = "api"
@@ -1766,6 +2114,9 @@ class Publication(Entity):
     fragment_name: str
     product_name: str
     subscription_name: str
+    # The Key Vault-backed named value the gateway reads the backend's API key from, when the
+    # endpoint is reached with a key rather than the gateway's managed identity (ADR 0018).
+    backend_key_name: str | None = Field(default=None, exclude_if=_unset)
     subscription_required: bool = True
     # None only when the API shape can't be token-metered on the gateway's tier (Anthropic Messages
     # on a classic tier). Publishing validates that rule; renderers simply omit token policies.
@@ -2119,10 +2470,13 @@ class GatewaySuggestion(MosaicModel):
 
 
 class ModelEndpointCreate(MosaicModel):
-    """Register an Azure endpoint by resource ID, or any other endpoint by URL.
+    """Register an Azure endpoint by resource ID, or an endpoint by URL.
 
-    ``credential_secret_uri`` is a Key Vault secret identifier, never a key. MOSAIC resolves it at
-    discovery time with the Key Vault Secrets User role it already holds, and stores only the URI.
+    ``credential_secret_uri`` is a Key Vault secret identifier, never a key. MOSAIC stores only the
+    URI. An Azure OpenAI or Foundry URL with one is registered as a key-authenticated Azure
+    endpoint (ADR 0018): the alternative for a resource MOSAIC's managed identity can't reach, such
+    as one in another Microsoft Entra tenant. Its ``deployments`` are declared, because an API key
+    can't list them. Any other URL is an OpenAI-compatible endpoint.
     """
 
     azure_resource_id: str | None = Field(default=None, max_length=512)
@@ -2137,6 +2491,9 @@ class ModelEndpointCreate(MosaicModel):
     environment: str | None = None
     provider: ModelProvider | None = None
     credential_secret_uri: AnyHttpUrl | None = None
+    deployments: list[DeclaredDeploymentCreate] | None = Field(
+        default=None, max_length=MAX_DECLARED_DEPLOYMENTS
+    )
 
     @field_validator("azure_resource_id")
     @classmethod
@@ -2152,18 +2509,47 @@ class ModelEndpointCreate(MosaicModel):
                 "Provide an Azure resource ID for an Azure AI endpoint, or a URL for an "
                 "OpenAI-compatible endpoint"
             )
-        if not self.azure_resource_id:
-            if self.provider is None:
-                self.provider = ModelProvider.OPENAI_COMPATIBLE
-            if self.provider != ModelProvider.OPENAI_COMPATIBLE:
+        if self.azure_resource_id:
+            if self.deployments:
                 raise ValueError(
-                    "Azure OpenAI and Azure AI Foundry endpoints must be registered by resource ID "
-                    "so MOSAIC can read their deployments with its managed identity"
+                    "MOSAIC reads the deployments of an endpoint registered by resource ID, so "
+                    "none can be declared"
                 )
+            return self
+        azure_host = azure_ai_host_suffix(urlsplit(str(self.endpoint)).hostname) is not None
+        azure_provider = self.provider in {
+            ModelProvider.AZURE_OPENAI,
+            ModelProvider.AZURE_AI_FOUNDRY,
+        }
+        if self.provider == ModelProvider.OPENAI_COMPATIBLE and azure_host:
+            raise ValueError(
+                "That's an Azure OpenAI or Foundry endpoint. Register it by resource ID, or by URL "
+                "with the Key Vault secret that holds its API key, so MOSAIC can publish it"
+            )
+        if azure_provider or (self.provider is None and azure_host):
             if self.credential_secret_uri is None:
                 raise ValueError(
-                    "An OpenAI-compatible endpoint needs a Key Vault secret URI holding its API key"
+                    "Register an Azure OpenAI or Foundry resource by its resource ID, so MOSAIC "
+                    "uses its managed identity. If MOSAIC can't reach the resource that way, for "
+                    "example because it's in another Microsoft Entra tenant, give the Key Vault "
+                    "secret URI that holds its API key"
                 )
+            url = AzureAiEndpointUrl.parse(str(self.endpoint))
+            if self.provider is None:
+                self.provider = url.provider
+            KeyVaultSecretId.parse(str(self.credential_secret_uri))
+            validate_declarations(self.deployments or [], self.provider)
+            return self
+        if self.deployments:
+            raise ValueError(
+                "Deployments can be declared only for an Azure OpenAI or Foundry endpoint "
+                "registered with an API key"
+            )
+        self.provider = ModelProvider.OPENAI_COMPATIBLE
+        if self.credential_secret_uri is None:
+            raise ValueError(
+                "An OpenAI-compatible endpoint needs a Key Vault secret URI holding its API key"
+            )
         return self
 
 
@@ -2826,3 +3212,5 @@ class PublishableModel(MosaicModel):
     suggested_api_path: str = ""
     runtime_access: GatewayRuntimeAccess | None = None
     environment_verdict: EnvironmentVerdict
+    # True when an administrator declared this deployment rather than MOSAIC reading it from Azure.
+    declared: bool = False

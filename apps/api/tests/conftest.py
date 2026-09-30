@@ -164,6 +164,9 @@ def build_endpoint_service(
         scanner=SubscriptionScanner(arm) if scanner else None,
         principal_id=kwargs.pop("principal_id", "mosaic-managed-identity"),
         bootstrap_subscription_id=kwargs.pop("bootstrap_subscription_id", None),
+        secret_resolver=kwargs.pop("secret_resolver", None),
+        key_probe=kwargs.pop("key_probe", None),
+        vault_locator=kwargs.pop("vault_locator", None),
     )
 
 

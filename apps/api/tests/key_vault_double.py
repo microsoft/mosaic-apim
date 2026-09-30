@@ -1,0 +1,167 @@
+"""An in-process stand-in for the ARM reads MOSAIC makes about a Key Vault.
+
+Serves the vault's own description, role assignments, role definitions and deny assignments at
+the vault's scope, and the subscription listing and resource search the vault locator uses. It
+never serves a secret: MOSAIC reads secrets through the data plane, which tests replace with a
+function.
+"""
+
+from typing import Any
+
+import httpx
+from aoai_double import deny_assignment, role_assignment, role_definition_resource
+
+VAULT_SUBSCRIPTION_ID = "00000000-0000-0000-0000-000000000000"
+VAULT_RESOURCE_GROUP = "rg-contoso-ai"
+VAULT_NAME = "kv-contoso-ai"
+VAULT_ID = (
+    f"/subscriptions/{VAULT_SUBSCRIPTION_ID}/resourceGroups/{VAULT_RESOURCE_GROUP}"
+    f"/providers/Microsoft.KeyVault/vaults/{VAULT_NAME}"
+)
+SECRET_NAME = "fabrikam-foundry-key"
+SECRET_URI = f"https://{VAULT_NAME}.vault.azure.net/secrets/{SECRET_NAME}"
+SECRET_SCOPE = f"{VAULT_ID}/secrets/{SECRET_NAME}"
+
+KEY_VAULT_SECRETS_USER_ROLE_ID = "4633458b-17de-408a-b874-0445c86b69e6"
+KEY_VAULT_SECRETS_OFFICER_ROLE_ID = "b86a8fe4-44ce-4948-aee5-eccb2c155cd7"
+KEY_VAULT_READER_ROLE_ID = "21090545-7ca7-4776-b22c-e363652d74d2"
+READER_ROLE_ID = "acdd72a7-3385-48ef-bd42-f606fba81ae7"
+
+# Taken from the built-in definitions. Key Vault Reader reads metadata, never a secret's value.
+KEY_VAULT_ROLE_DEFINITIONS: dict[str, tuple[str, list[dict[str, Any]]]] = {
+    KEY_VAULT_SECRETS_USER_ROLE_ID: (
+        "Key Vault Secrets User",
+        [
+            {
+                "actions": [],
+                "notActions": [],
+                "dataActions": [
+                    "Microsoft.KeyVault/vaults/secrets/getSecret/action",
+                    "Microsoft.KeyVault/vaults/secrets/readMetadata/action",
+                ],
+                "notDataActions": [],
+            }
+        ],
+    ),
+    KEY_VAULT_SECRETS_OFFICER_ROLE_ID: (
+        "Key Vault Secrets Officer",
+        [
+            {
+                "actions": ["Microsoft.Authorization/*/read", "Microsoft.KeyVault/vaults/*/read"],
+                "notActions": [],
+                "dataActions": ["Microsoft.KeyVault/vaults/secrets/*"],
+                "notDataActions": [],
+            }
+        ],
+    ),
+    KEY_VAULT_READER_ROLE_ID: (
+        "Key Vault Reader",
+        [
+            {
+                "actions": ["Microsoft.Authorization/*/read", "Microsoft.KeyVault/vaults/read"],
+                "notActions": [],
+                "dataActions": [
+                    "Microsoft.KeyVault/vaults/*/read",
+                    "Microsoft.KeyVault/vaults/secrets/readMetadata/action",
+                ],
+                "notDataActions": [],
+            }
+        ],
+    ),
+    READER_ROLE_ID: (
+        "Reader",
+        [{"actions": ["*/read"], "notActions": [], "dataActions": [], "notDataActions": []}],
+    ),
+}
+
+
+def vault_role_assignment(role_definition_id: str, scope: str, principal_id: str) -> dict[str, Any]:
+    return role_assignment(role_definition_id, scope, principal_id)
+
+
+def vault_deny(principal_id: str) -> dict[str, Any]:
+    return deny_assignment(
+        VAULT_ID,
+        data_actions=["Microsoft.KeyVault/vaults/secrets/*"],
+        principals=[{"id": principal_id, "type": "ServicePrincipal"}],
+        name="vault-stack-deny",
+    )
+
+
+class FakeKeyVaultArm:
+    """One vault in one subscription, as MOSAIC's ARM identity sees it."""
+
+    def __init__(self) -> None:
+        self.properties: dict[str, Any] = {
+            "tenantId": "00000000-0000-0000-0000-000000000000",
+            "enableRbacAuthorization": True,
+            "publicNetworkAccess": "Enabled",
+            "networkAcls": {"defaultAction": "Allow", "bypass": "AzureServices"},
+        }
+        self.assignments: list[dict[str, Any]] = []
+        self.deny_assignments: list[dict[str, Any]] = []
+        self.vault_readable = True
+        self.assignments_readable = True
+        self.definitions_readable = True
+        # Whether a subscription-wide resource search finds the vault, as it does only for an
+        # identity that can read it.
+        self.searchable = True
+        self.requests: list[str] = []
+
+    def handler(self, request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        self.requests.append(f"{request.method} {path}")
+        if request.method != "GET":
+            return httpx.Response(405, json={"error": {"message": "read-only double"}})
+        if path == "/subscriptions":
+            return _collection(
+                [{"subscriptionId": VAULT_SUBSCRIPTION_ID, "displayName": "Contoso AI"}]
+            )
+        if path == f"/subscriptions/{VAULT_SUBSCRIPTION_ID}/resources":
+            wanted = request.url.params.get("$filter", "")
+            found = self.searchable and f"name eq '{VAULT_NAME}'" in wanted
+            return _collection(
+                [{"id": VAULT_ID, "name": VAULT_NAME, "type": "Microsoft.KeyVault/vaults"}]
+                if found
+                else []
+            )
+        if path.casefold() == VAULT_ID.casefold():
+            if not self.vault_readable:
+                return _denied()
+            return httpx.Response(
+                200,
+                json={"id": VAULT_ID, "name": VAULT_NAME, "properties": self.properties},
+            )
+        authorization = f"{VAULT_ID}/providers/Microsoft.Authorization/"
+        if path.casefold().startswith(authorization.casefold()):
+            rest = path[len(authorization) :]
+            if rest == "roleAssignments":
+                if not self.assignments_readable:
+                    return _denied()
+                wanted = request.url.params.get("$filter", "")
+                return _collection(
+                    [
+                        item
+                        for item in self.assignments
+                        if f"'{item['properties']['principalId']}'" in wanted
+                    ]
+                )
+            if rest == "denyAssignments":
+                return _collection(self.deny_assignments)
+            if rest.startswith("roleDefinitions/"):
+                if not self.definitions_readable:
+                    return _denied()
+                guid = rest.rsplit("/", 1)[-1]
+                known = KEY_VAULT_ROLE_DEFINITIONS.get(guid)
+                if known is None:
+                    return httpx.Response(404, json={"error": {"message": "no such role"}})
+                return httpx.Response(200, json=role_definition_resource(guid, *known))
+        return httpx.Response(404, json={"error": {"message": f"unknown resource {path}"}})
+
+
+def _collection(values: list[dict[str, Any]]) -> httpx.Response:
+    return httpx.Response(200, json={"value": values})
+
+
+def _denied() -> httpx.Response:
+    return httpx.Response(403, json={"error": {"code": "AuthorizationFailed", "message": "no"}})

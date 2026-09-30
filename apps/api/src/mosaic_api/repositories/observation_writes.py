@@ -27,6 +27,7 @@ MODEL_ENDPOINT_AUTHORED_FIELDS: frozenset[str] = frozenset(
         "environment_label",
         "environment",
         "credential_reference_id",
+        "declared_deployments",
     }
 )
 

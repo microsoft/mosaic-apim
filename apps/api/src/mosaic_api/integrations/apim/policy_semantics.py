@@ -502,10 +502,12 @@ def _set_header(element: ET.Element) -> PolicyFacet:
 
 def _set_query_parameter(element: ET.Element) -> PolicyFacet:
     name = element.get("name") or "a query parameter"
+    action = (element.get("exists-action") or "override").casefold()
+    verb = "Removes" if action == "delete" else "Sets"
     return PolicyFacet(
         kind=PolicyFacetKind.TRANSFORMATION,
         element=element.tag,
-        summary=f"Sets the {name} query parameter.",
+        summary=f"{verb} the {name} query parameter.",
         attributes={"name": name},
     )
 

@@ -88,6 +88,7 @@ STATIC_RESOURCES: frozenset[str] = frozenset(
 )
 _BACKEND_REFERENCE = re.compile(r"<set-backend-service\b[^>]*?\bbackend-id=([\"'])(.*?)\1")
 _FRAGMENT_REFERENCE = re.compile(r"<include-fragment\b[^>]*?\bfragment-id=([\"'])(.*?)\1")
+_NAMED_VALUE_REFERENCE = re.compile(r"\{\{([^{}]+)\}\}")
 
 # API Management parses a multi-statement policy expression, @{ ... }, with Razor. Razor refuses a
 # control-flow statement whose body isn't a braced block, and API Management refuses the policy.
@@ -385,6 +386,11 @@ class FakeApim:
         self.outbound_public_ip_addresses: list[str] = []
         self.additional_locations: list[dict[str, Any]] = []
         self.tags: dict[str, str] | None = None
+        # What API Management reports after it last read a Key Vault-backed named value's secret,
+        # by named value. Anything but Success means its identity couldn't read the secret.
+        self.named_value_status: dict[str, str] = {}
+        # Every call that would have returned a named value's secret. MOSAIC must never make one.
+        self.list_value_calls: list[str] = []
 
     def fail_once(self, path_suffix: str, status_code: int) -> None:
         self.failures[path_suffix] = status_code
@@ -485,6 +491,9 @@ class FakeApim:
         )
         if request.method in {"PUT", "DELETE"}:
             return self._write(request, suffix)
+        if suffix.endswith("/listValue"):
+            self.list_value_calls.append(suffix)
+            return httpx.Response(403, json={"error": {"message": "listValue is not for MOSAIC"}})
         async_id = request.url.params.get("azure-asyncId")
         if async_id is not None:
             return self._location_poll(async_id)
@@ -557,6 +566,17 @@ class FakeApim:
             }
             return httpx.Response(status_code, json={"error": error}, headers=headers)
         if request.method == "DELETE":
+            if suffix.startswith("namedValues/") and self._named_value_in_use(suffix):
+                # API Management won't delete a named value a policy still refers to.
+                return httpx.Response(
+                    400,
+                    json={
+                        "error": {
+                            "code": "ValidationError",
+                            "message": "The named value is referenced by one or more policies.",
+                        }
+                    },
+                )
             existed = self.written.pop(suffix, None) is not None
             return httpx.Response(200 if existed else 204)
         try:
@@ -564,6 +584,8 @@ class FakeApim:
         except ValueError:
             body = {}
         body = body if isinstance(body, dict) else {}
+        if suffix.startswith("namedValues/"):
+            body = self._resolved_named_value(suffix, body)
         if suffix.startswith("policyFragments/"):
             return self._write_fragment(suffix, body)
         if suffix == "policies/policy" or suffix.endswith("/policies/policy"):
@@ -591,6 +613,41 @@ class FakeApim:
     def _exists(self, suffix: str) -> bool:
         return suffix in self.written or suffix in STATIC_RESOURCES
 
+    def _missing_named_value(self, xml: str) -> str | None:
+        """The first named value a policy refers to that doesn't exist, as API Management checks."""
+
+        return next(
+            (
+                name
+                for name in _NAMED_VALUE_REFERENCE.findall(xml)
+                if not self._exists(f"namedValues/{name}")
+            ),
+            None,
+        )
+
+    def _named_value_in_use(self, suffix: str) -> bool:
+        name = suffix.split("/", 1)[1]
+        return any(
+            name in _NAMED_VALUE_REFERENCE.findall(self._policy_xml(body))
+            for key, body in self.written.items()
+            if key.startswith("policyFragments/") or key.endswith("policies/policy")
+        )
+
+    def _resolved_named_value(self, suffix: str, body: dict[str, Any]) -> dict[str, Any]:
+        """Record, as API Management does, whether it could read a Key Vault reference's secret."""
+
+        properties = body.get("properties")
+        key_vault = properties.get("keyVault") if isinstance(properties, dict) else None
+        if not isinstance(key_vault, dict):
+            return body
+        code = self.named_value_status.get(suffix.split("/", 1)[1], "Success")
+        stored = json.loads(json.dumps(body))
+        stored["properties"]["keyVault"]["lastStatus"] = {
+            "code": code,
+            "timeStampUtc": "2026-01-01T00:00:00Z",
+        }
+        return stored
+
     def _record_references(self, suffix: str, body: dict[str, Any]) -> None:
         """Note each resource this write names that does not exist yet."""
 
@@ -606,6 +663,7 @@ class FakeApim:
             named.extend(
                 f"policyFragments/{m.group(2)}" for m in _FRAGMENT_REFERENCE.finditer(value)
             )
+            named.extend(f"namedValues/{name}" for name in _NAMED_VALUE_REFERENCE.findall(value))
         scope = properties.get("scope")
         if isinstance(scope, str) and scope.casefold().startswith(RESOURCE_ID.casefold()):
             named.append(scope[len(RESOURCE_ID) :].strip("/"))
@@ -628,7 +686,18 @@ class FakeApim:
 
         refusal = policy_expression_error(self._policy_xml(body))
         if refusal is None:
-            return None
+            missing = self._missing_named_value(self._policy_xml(body))
+            if missing is None:
+                return None
+            return httpx.Response(
+                400,
+                json={
+                    "error": {
+                        "code": "ValidationError",
+                        "message": f"Cannot find a property '{missing}'.",
+                    }
+                },
+            )
         element, line, column, reason = refusal
         return httpx.Response(
             400,
@@ -675,6 +744,7 @@ class FakeApim:
             ),
             None,
         )
+        missing_named_value = self._missing_named_value(xml)
         if refusal is not None:
             # As the live gateway reported it: no element, line or detail, just Razor's reason.
             self.location_operations[async_id] = {
@@ -682,6 +752,15 @@ class FakeApim:
                 "error": {
                     "code": "ValidationError",
                     "message": f"{_INVALID_FRAGMENT_EXPRESSION} {refusal[3]}",
+                },
+            }
+        elif missing_named_value is not None:
+            self.dangling_references.append((suffix, f"namedValues/{missing_named_value}"))
+            self.location_operations[async_id] = {
+                "status": "Failed",
+                "error": {
+                    "code": "ValidationError",
+                    "message": f"Cannot find a property '{missing_named_value}'.",
                 },
             }
         elif missing is None:

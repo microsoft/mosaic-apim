@@ -12,7 +12,9 @@ delete of something already gone is a no-op rather than an error that masks the 
 from typing import Any, Literal
 
 from mosaic_api.domain import APIM_API_VERSION, APIM_MCP_API_VERSION, ApimResourceId
+from mosaic_api.errors import DomainError, UpstreamError
 from mosaic_api.integrations.apim.client import ArmClient, JsonObject
+from mosaic_api.integrations.backend_keys import named_value_properties
 
 # API Management requires an If-Match header on deletes. MOSAIC sends "*" rather than a captured
 # ETag: rollback must remove what this apply created even if something touched it since, and
@@ -70,6 +72,48 @@ class ApimWriter:
 
     async def delete_backend(self, name: str) -> bool:
         return await self._delete(f"backends/{name}")
+
+    async def put_named_value(self, name: str, *, secret_identifier: str) -> JsonObject | None:
+        """Create or replace a Key Vault-backed named value and confirm the gateway resolves it.
+
+        API Management reads the secret itself, with its system-assigned managed identity. MOSAIC
+        sends only the identifier, keeps it out of any error Azure echoes it in, and never reads the
+        value back. A named value API Management couldn't resolve is removed again rather than left
+        for a policy to reference: every call through it would fail.
+        """
+
+        reference = secret_identifier.split("://", 1)[-1]
+        segment = f"namedValues/{name}"
+        written = await self._arm.put(
+            self.resource_id(segment),
+            {"properties": named_value_properties(name, secret_identifier)},
+            params=self._params,
+            redact=(reference,),
+        )
+        current = await self._arm.get(
+            self.resource_id(segment), params=self._params, allow_not_found=True
+        )
+        properties = (current or {}).get("properties")
+        key_vault = properties.get("keyVault") if isinstance(properties, dict) else None
+        status = key_vault.get("lastStatus") if isinstance(key_vault, dict) else None
+        code = status.get("code") if isinstance(status, dict) else None
+        if isinstance(code, str) and code.strip() and code.strip().casefold() != "success":
+            try:
+                await self._delete(segment)
+                outcome = "MOSAIC removed it again."
+            except DomainError:
+                outcome = "MOSAIC couldn't remove it, so delete it before trying again."
+            raise UpstreamError(
+                f"API Management created named value {name} but couldn't read the key from Key "
+                f"Vault ({code.strip()[:80]}). {outcome} Grant the gateway's managed identity Key "
+                "Vault Secrets User on the vault, and make sure the vault's firewall lets API "
+                "Management through.",
+                details={"namedValue": name, "code": code.strip()[:80]},
+            )
+        return written
+
+    async def delete_named_value(self, name: str) -> bool:
+        return await self._delete(f"namedValues/{name}")
 
     async def put_api(
         self,

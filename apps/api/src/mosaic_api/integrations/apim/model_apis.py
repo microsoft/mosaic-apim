@@ -30,6 +30,7 @@ from mosaic_api.domain import (
     default_api_shape,
     gateway_tier,
     publication_slug,
+    shape_fits_provider,
 )
 from mosaic_api.errors import ValidationError
 
@@ -490,6 +491,31 @@ def classify_deployment(
     return DeploymentCapability.UNKNOWN
 
 
+def _anthropic_fit(endpoint: str, gateway_sku: str | None) -> DeploymentFit:
+    """Whether and how a Claude deployment on a Foundry resource publishes through a gateway."""
+
+    chat = DeploymentCapability.CHAT
+    try:
+        anthropic_origin(endpoint)
+    except ValidationError as error:
+        return DeploymentFit(chat, None, error.message)
+    if gateway_tier(gateway_sku) == GatewayTier.UNKNOWN:
+        return DeploymentFit(
+            chat,
+            None,
+            "MOSAIC hasn't read this gateway's pricing tier, which decides whether API "
+            "Management can apply token limits to Anthropic models. Re-run the gateway's "
+            "access check, then try again.",
+        )
+    note = token_limits_note(ApiShape.ANTHROPIC_MESSAGES, gateway_sku)
+    return DeploymentFit(
+        chat,
+        ApiShape.ANTHROPIC_MESSAGES,
+        token_limits_supported=note is None,
+        token_limits_note=note,
+    )
+
+
 def assess_deployment(
     provider: str,
     *,
@@ -506,33 +532,14 @@ def assess_deployment(
     """
 
     if is_anthropic_model(model_format, model_name):
-        chat = DeploymentCapability.CHAT
         if provider != ModelProvider.AZURE_AI_FOUNDRY:
             return DeploymentFit(
-                chat,
+                DeploymentCapability.CHAT,
                 None,
                 "Anthropic models are served by Foundry (AI Services) resources, and MOSAIC "
                 "publishes them only from those.",
             )
-        try:
-            anthropic_origin(endpoint)
-        except ValidationError as error:
-            return DeploymentFit(chat, None, error.message)
-        if gateway_tier(gateway_sku) == GatewayTier.UNKNOWN:
-            return DeploymentFit(
-                chat,
-                None,
-                "MOSAIC hasn't read this gateway's pricing tier, which decides whether API "
-                "Management can apply token limits to Anthropic models. Re-run the gateway's "
-                "access check, then try again.",
-            )
-        note = token_limits_note(ApiShape.ANTHROPIC_MESSAGES, gateway_sku)
-        return DeploymentFit(
-            chat,
-            ApiShape.ANTHROPIC_MESSAGES,
-            token_limits_supported=note is None,
-            token_limits_note=note,
-        )
+        return _anthropic_fit(endpoint, gateway_sku)
 
     capability = classify_deployment(model_name, capabilities)
     shape = default_api_shape(provider)
@@ -545,3 +552,25 @@ def assess_deployment(
         needs = _FOUNDRY_REASONS.get(capability, "This model needs an API")
         reason = f"{needs}, which MOSAIC publishes only from Azure OpenAI resources today."
     return DeploymentFit(capability, None, reason)
+
+
+def assess_declared_deployment(
+    provider: str, shape: str, *, endpoint: str, gateway_sku: str | None
+) -> DeploymentFit:
+    """The fit of a deployment an administrator declared, with the API shape they chose for it.
+
+    A declared deployment is published as chat, the capability every curated shape's governed
+    operations serve. The shape still has to be one the resource serves, and an Anthropic
+    deployment still needs a gateway whose tier MOSAIC knows, exactly as a discovered one does.
+    """
+
+    if not shape_fits_provider(shape, provider):
+        return DeploymentFit(
+            DeploymentCapability.CHAT,
+            None,
+            "An Azure OpenAI resource serves only the Azure OpenAI API, so MOSAIC can't publish "
+            "this deployment with the API it was declared with.",
+        )
+    if shape == ApiShape.ANTHROPIC_MESSAGES:
+        return _anthropic_fit(endpoint, gateway_sku)
+    return DeploymentFit(DeploymentCapability.CHAT, ApiShape(shape))

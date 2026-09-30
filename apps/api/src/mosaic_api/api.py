@@ -14,6 +14,7 @@ from mosaic_api.domain import (
     CatalogEntry,
     CatalogEntryUpdate,
     ConsoleAccess,
+    DeclaredDeploymentCreate,
     Entitlement,
     EntitlementCreate,
     EntitlementUpdate,
@@ -634,6 +635,29 @@ async def list_model_endpoint_deployments(
     request: Request, auth: Admin, endpoint_id: str
 ) -> list[ObservedModelDeployment]:
     return await _endpoints(request).list_deployments(_actor(auth), endpoint_id)
+
+
+@router.post(
+    "/model-endpoints/{endpoint_id}/declared-deployments",
+    response_model=ModelEndpoint,
+    status_code=status.HTTP_201_CREATED,
+)
+async def declare_model_endpoint_deployment(
+    request: Request, auth: Admin, endpoint_id: str, payload: DeclaredDeploymentCreate
+) -> ModelEndpoint:
+    return await _endpoints(request).declare_deployment(_actor(auth), endpoint_id, payload)
+
+
+@router.delete(
+    "/model-endpoints/{endpoint_id}/declared-deployments/{deployment_name}",
+    response_model=ModelEndpoint,
+)
+async def remove_model_endpoint_declared_deployment(
+    request: Request, auth: Admin, endpoint_id: str, deployment_name: str
+) -> ModelEndpoint:
+    return await _endpoints(request).remove_declared_deployment(
+        _actor(auth), endpoint_id, deployment_name
+    )
 
 
 @router.get(

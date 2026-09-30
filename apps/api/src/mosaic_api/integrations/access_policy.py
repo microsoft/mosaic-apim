@@ -35,6 +35,13 @@ from mosaic_api.domain import (
 from mosaic_api.errors import ValidationError
 from mosaic_api.integrations.apim.model_apis import OperationSpec, operations_for
 from mosaic_api.integrations.apim.policy_semantics import analyze_policy
+from mosaic_api.integrations.backend_keys import (
+    describe_backend_key,
+    is_backend_key_facet,
+    named_value_reference,
+    set_backend_key,
+    strip_caller_credentials,
+)
 from mosaic_api.integrations.policy import (
     METRIC_NAMESPACE,
     PublicationPolicy,
@@ -42,6 +49,7 @@ from mosaic_api.integrations.policy import (
     _token_limit_attributes,
     add_shape_headers,
     managed_identity_resource,
+    shape_removed_headers,
 )
 
 MAX_FRAGMENT_BYTES = 512 * 1024
@@ -185,6 +193,8 @@ def _validate(publication: Publication, snapshot: ModelAccessSnapshot) -> None:
         for name in (publication.backend_name, publication.fragment_name)
     ):
         raise ValidationError("Governed policies require literal APIM backend and fragment names.")
+    if publication.backend_key_name is not None:
+        named_value_reference(publication.backend_key_name)
     if snapshot.settings.entra_enabled:
         if not _GUID.fullmatch(publication.tenant_id):
             raise ValidationError("Governed Entra access requires a specific tenant GUID.")
@@ -861,7 +871,12 @@ def _facets(
             facet.summary = "Applies the MOSAIC-managed governed model access rule set."
             facet.attributes = {"fragment-id": "[redacted]"}
         elif facet.element == "set-query-parameter":
-            facet.summary = "Removes the subscription-key query parameter before forwarding."
+            name = facet.attributes.get("name", "subscription-key")
+            facet.summary = f"Removes the {name} query parameter before forwarding."
+        elif facet.element == "set-header" and is_backend_key_facet(
+            facet, publication.api_shape
+        ) and publication.backend_key_name is not None:
+            describe_backend_key(facet)
         elif facet.element == "trace":
             describe_grant_attribution_trace(facet, has_group_grants=enabled_group_grants > 0)
         facets.append(facet)
@@ -917,7 +932,8 @@ def render_governed_policy(
         _operation_guard(fragment, publication, operations)
         append_grant_attribution_trace(fragment, grants)
         _limits(fragment, publication, snapshot, grants)
-        for name in ("Ocp-Apim-Subscription-Key", "api-key", "Authorization"):
+        removed_headers = ("Ocp-Apim-Subscription-Key", "api-key", "Authorization")
+        for name in removed_headers:
             ET.SubElement(fragment, "set-header", {"name": name, "exists-action": "delete"})
         ET.SubElement(
             fragment,
@@ -927,14 +943,26 @@ def render_governed_policy(
                 "exists-action": "delete",
             },
         )
+        key_name = publication.backend_key_name
+        if key_name is not None:
+            # A key-authenticated backend could honour a credential the managed identity path
+            # never had to remove, so every one goes before the gateway's key is set (ADR 0018).
+            strip_caller_credentials(
+                fragment,
+                removed_headers=(*removed_headers, *shape_removed_headers(publication.api_shape)),
+                removed_query_parameters=("subscription-key",),
+            )
         add_shape_headers(fragment, publication.api_shape)
-        ET.SubElement(
-            fragment,
-            "authentication-managed-identity",
-            {
-                "resource": managed_identity_resource(publication.api_shape),
-            },
-        )
+        if key_name is not None:
+            set_backend_key(fragment, shape=publication.api_shape, named_value=key_name)
+        else:
+            ET.SubElement(
+                fragment,
+                "authentication-managed-identity",
+                {
+                    "resource": managed_identity_resource(publication.api_shape),
+                },
+            )
         ET.SubElement(fragment, "set-backend-service", {"backend-id": publication.backend_name})
         if snapshot.publication_enforcement is not None:
             metric = ET.SubElement(

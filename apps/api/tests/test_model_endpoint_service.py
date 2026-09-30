@@ -365,12 +365,12 @@ class TestKeyBasedEndpoints:
         with pytest.raises(ValueError, match="Key Vault secret URI"):
             ModelEndpointCreate(endpoint="https://models.example.com/v1")
 
-    def test_rejects_azure_provider_without_resource_id(self) -> None:
-        with pytest.raises(ValueError, match="registered by resource ID"):
+    def test_azure_url_without_a_secret_is_steered_to_its_resource_id(self) -> None:
+        # An Azure resource is registered by URL only as the explicit key alternative (ADR 0018).
+        with pytest.raises(ValueError, match="by its resource ID"):
             ModelEndpointCreate(
                 endpoint="https://contoso.openai.azure.com",
                 provider=ModelProvider.AZURE_OPENAI,
-                credential_secret_uri="https://kv.vault.azure.net/secrets/k",
             )
 
     def test_rejects_endpoint_with_neither_identifier(self) -> None:
