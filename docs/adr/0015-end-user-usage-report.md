@@ -83,3 +83,72 @@ MOSAIC.
 - Usage by environment relies on ADR 0014. A grant takes its resource's current environment, so
   re-classifying a resource moves its history with it. The simulation doesn't record which
   environment a resource was in on a given day.
+
+## Amendment 2026-09-30: Linking grants to gateway telemetry
+
+Until now a row was `bound` whenever its grant had a binding, and ADR 0009 linked a grant to
+telemetry only through an APIM subscription. Entra-token grants, security-group grants, and MCP
+grants have no subscription of their own. Their rows showed "Not linked yet", so their real usage
+could never be attributed. An orchestrated binding with no subscription also counted as bound,
+although nothing in the logs identified its grant.
+
+**The gateway tags every call it authorizes with the matched grant.** The MOSAIC-managed policy of
+a model or MCP publication emits an API Management `trace`, with source `mosaic` and severity
+`information`. It runs once the caller's grant is resolved and before any limit. For models, that's
+after the operation guard. Its message is versioned key=value text,
+`mosaic-attribution v=1 g=<grant> m=<member>`:
+- `g`: the grant's stable counter identity, a SHA-256 of tenant, publication, and entitlement. The
+  policy's own rate limits and quotas count against the same identity, so key rotation, access
+  method, and snapshot revision don't change it.
+- `m`: the caller's validated Entra object ID when a security-group grant matched, because a group
+  grant's usage must be split by member. It's empty otherwise.
+
+Readers split the message on spaces and ignore keys they don't know, so a later version can add
+keys, such as the calling client. Only a change that breaks those readers bumps `v`. The trace
+repeats the values as metadata: `mosaic-grant`, and `mosaic-member` when the policy has enabled
+security-group grants. API Management documents metadata only as Application Insights properties,
+so resource logs are read from the message.
+
+Throttled calls are tagged too, so a source filters by response code. Calls the policy rejects
+before a grant matches carry no tag and belong to no grant.
+
+**Bindings record how a grant is linked.** `EntitlementBinding` gains two server-managed fields.
+An applied publication sets them for every grant in its snapshot:
+- `attributionKey`: the `g` value.
+- `attributionPerMember`: true for a security-group grant.
+
+Model publications already projected orchestrated bindings. MCP publications now project them on a
+successful apply and clear them on a successful unpublish. A manual binding can set neither field,
+because only an applied policy makes the tag real.
+
+**Each row reports `linkedBy`.**
+- `gatewayLog`: the binding has an attribution key. A real source matches it to `g`, and for a
+  per-member grant, also matches `m` to the caller's object ID. That keeps one member's
+  report from including another member's calls.
+- `subscription`: the binding names an APIM subscription. A source matches it as before. Imported
+  model APIs, imported MCP servers, products, and model deployments carry no MOSAIC policy, so this
+  is the only way to link them.
+- null: nothing links the grant.
+
+`bound` is true exactly when `linkedBy` isn't null. A binding that names only a gateway no longer
+counts as bound. The portal's Usage page shows the same fact as **Usage tracking**: At the gateway,
+By APIM subscription, or Not linked yet. My access explains it in plain language.
+
+**A real source has prerequisites.**
+- `ApiManagementGatewayLogs` records the trace's message in `TraceRecords` when the
+  gateway's Azure Monitor diagnostic logs at Information or Verbose. Token counts come from
+  `ApiManagementGatewayLlmLog`, joined on `CorrelationId`.
+- The Application Insights diagnostic that `infra/modules/apim.bicep` deploys logs at Information
+  with 100% sampling. A trace isn't subject to sampling, so each governed call adds one trace
+  record there. Setting that diagnostic's verbosity to Error stops them without affecting the
+  resource logs.
+- `m` and `mosaic-member` hold an Entra object ID, which is personal data. Both destinations need the
+  retention and access controls the tenant applies to personal data.
+
+Consequences:
+- A publication applied before this change doesn't tag calls until its next apply. Until then its
+  rows show By APIM subscription where the grant has a subscription, and Not linked yet otherwise.
+- The simulated source is unchanged. `linkedBy` changes which rows count as bound and which rows a
+  real source can attribute, not the simulated figures.
+- MOSAIC hasn't yet confirmed on a live gateway that the message reaches `TraceRecords`. The Log
+  Analytics source must verify it before relying on it.

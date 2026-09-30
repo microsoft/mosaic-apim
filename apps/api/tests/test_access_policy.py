@@ -34,6 +34,11 @@ from mosaic_api.integrations.policy import PublicationPolicy, _serialize
 TENANT = "11111111-1111-1111-1111-111111111111"
 AUDIENCE = "22222222-2222-2222-2222-222222222222"
 SUBSCRIPTION_COUNTER = "@(context.Subscription.Id)"
+# The wire format a Log Analytics source parses from TraceRecords.
+_ATTRIBUTION_MESSAGE = (
+    '@("mosaic-attribution v=1 g=" + (string)context.Variables["mosaic-grant"]'
+    ' + " m=" + (string)context.Variables["mosaic-member"])'
+)
 
 
 def _tokens(**overrides: object) -> TokenEnforcement:
@@ -278,6 +283,57 @@ def test_each_auth_method_is_independently_enabled_and_disabled_credentials_are_
             )
             assert rejection.find("return-response/set-status").attrib["code"] == "401"  # type: ignore[union-attr]
     assert "<" not in _facets_json(result)
+
+
+def test_grant_trace_is_after_operation_guard_before_limits_and_members_only_for_groups() -> None:
+    group = _group_grant(2, enforcement=_full_enforcement())
+    result = render_governed_policy(
+        _publication(),
+        _snapshot(grants=[_grant(enforcement=_full_enforcement()), group]),
+    )
+    fragment = ET.fromstring(result.fragment_xml)
+    children = list(fragment)
+    trace = fragment.find("trace")
+    assert trace is not None
+
+    limit_index = next(
+        index
+        for index, element in enumerate(children)
+        if element.tag == "choose" and element.find("when/rate-limit-by-key") is not None
+    )
+    guard_index = next(
+        index
+        for index, element in enumerate(children)
+        if element.find("when/return-response/set-body") is not None
+        and "governed token limits" in (element.findtext("when/return-response/set-body") or "")
+    )
+    assert [element.tag for element in fragment.iter()].count("trace") == 1
+    assert guard_index < children.index(trace) < limit_index
+    member_index = next(
+        index
+        for index, element in enumerate(children)
+        if element.tag == "set-variable" and element.attrib["name"] == "mosaic-member"
+    )
+    # Every call's message reads mosaic-member, so it must already exist for key callers too.
+    assert member_index < children.index(trace)
+    assert trace.findtext("message") == _ATTRIBUTION_MESSAGE
+    metadata = {item.attrib["name"]: item.attrib["value"] for item in trace.findall("metadata")}
+    assert metadata == {
+        "mosaic-grant": '@((string)context.Variables["mosaic-grant"])',
+        "mosaic-member": '@((string)context.Variables["mosaic-member"])',
+    }
+    assert any(
+        facet.element == "trace"
+        and "MOSAIC grant" in facet.summary
+        and "validated object ID" in " ".join(facet.details)
+        for facet in result.facets
+    )
+
+    direct = ET.fromstring(render_governed_policy(_publication(), _snapshot()).fragment_xml)
+    direct_trace = direct.find("trace")
+    assert direct_trace is not None
+    assert direct_trace.findtext("message") == _ATTRIBUTION_MESSAGE
+    assert [item.attrib["name"] for item in direct_trace.findall("metadata")] == ["mosaic-grant"]
 
 
 def test_presence_includes_empty_query_or_header_and_any_authorization_header() -> None:

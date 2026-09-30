@@ -42,6 +42,7 @@ function resourceRow(overrides: Partial<UsageResourceRow>): UsageResourceRow {
     viaGroupName: null,
     enabled: true,
     bound: true,
+    linkedBy: 'gatewayLog',
     attribution: 'simulated',
     model: 'gpt-4o',
     requests: 100,
@@ -89,7 +90,8 @@ function usageReport(overrides: Partial<MyUsageReport> = {}): MyUsageReport {
       totalTokens: null,
       estimatedCost: null,
       costNote: 'MCP server costs are not metered.',
-      bound: false,
+      bound: true,
+      linkedBy: 'subscription',
       quotas: [],
       rateLimits: [{ metric: 'requests', limit: 60, windowSeconds: 60 }],
     }),
@@ -108,6 +110,7 @@ function usageReport(overrides: Partial<MyUsageReport> = {}): MyUsageReport {
       environment: 'development',
       attribution: 'unattributed',
       bound: false,
+      linkedBy: null,
       requests: null,
       promptTokens: null,
       completionTokens: null,
@@ -302,8 +305,15 @@ describe('UsagePage', () => {
     renderPage()
 
     const row = await findResourceRow('Development chat')
-    expect(within(row).getByText(/Usage can't be attributed until this grant is bound/)).toBeVisible()
+    expect(within(row).getByText("Usage can't be measured for this grant yet.")).toBeVisible()
     expect(within(row).getByText('Not linked yet')).toBeVisible()
+  })
+
+  it('labels how usage is tracked for gateway and subscription rows', async () => {
+    renderPage()
+
+    expect(within(await findResourceRow('Chat completions')).getByText('At the gateway')).toBeVisible()
+    expect(within(await findResourceRow('Docs MCP')).getByText('By APIM subscription')).toBeVisible()
   })
 
   it('summarizes each environment with its cost and resource count', async () => {

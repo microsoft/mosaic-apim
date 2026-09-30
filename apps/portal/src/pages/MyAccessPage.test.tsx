@@ -113,7 +113,7 @@ describe('MyAccessPage', () => {
     expect(screen.getByText('10,000 tokens per minute')).toBeVisible()
     expect(screen.getByText('600 calls per 60 seconds')).toBeVisible()
     expect(screen.getByText('100,000 calls per month')).toBeVisible()
-    expect(screen.getByText('No usage attribution is configured yet.')).toBeVisible()
+    expect(screen.getByText("Usage can't be measured for this grant yet.")).toBeVisible()
     expect(screen.getByText('Recorded grant')).toBeVisible()
   })
 
@@ -235,9 +235,93 @@ describe('MyAccessPage', () => {
       viaGroupName: null,
     }])
     expect(await screen.findByText(label)).toBeVisible()
-    expect(screen.getByText(/Product model-product/)).toBeVisible()
-    expect(screen.getByText(/Subscription grant-subscription/)).toBeVisible()
+    expect(
+      screen.getByText('Linked through APIM subscription grant-subscription in product model-product.'),
+    ).toBeVisible()
     expect(screen.queryByText('Enabled')).not.toBeInTheDocument()
+  })
+
+  it('describes gateway and fallback usage attribution in plain language', async () => {
+    renderPage([
+      {
+        entitlement: {
+          ...baseEntitlement,
+          id: 'per-person',
+          subject: { kind: 'securityGroup', id: 'security-group-1' },
+          binding: {
+            gatewayId: 'gateway-1',
+            apimProductName: null,
+            apimSubscriptionName: null,
+            attributionKey: 'grant:per-person',
+            attributionPerMember: true,
+            source: 'orchestrated',
+          },
+        },
+        resourceSummary: { ...baseSummary, displayName: 'Team chat' },
+        via: 'securityGroup',
+        viaGroupId: 'security-group-1',
+        viaGroupName: 'AI builders',
+      },
+      {
+        entitlement: {
+          ...baseEntitlement,
+          id: 'gateway-grant',
+          binding: {
+            gatewayId: 'gateway-1',
+            apimProductName: null,
+            apimSubscriptionName: null,
+            attributionKey: 'grant:gateway',
+            attributionPerMember: false,
+            source: 'orchestrated',
+          },
+        },
+        resourceSummary: { ...baseSummary, displayName: 'Gateway chat' },
+        via: 'direct',
+        viaGroupId: null,
+        viaGroupName: null,
+      },
+      {
+        entitlement: {
+          ...baseEntitlement,
+          id: 'subscription-grant',
+          binding: {
+            gatewayId: 'gateway-1',
+            apimProductName: 'model-product',
+            apimSubscriptionName: 'grant-subscription',
+            source: 'orchestrated',
+          },
+        },
+        resourceSummary: { ...baseSummary, displayName: 'Subscription chat' },
+        via: 'direct',
+        viaGroupId: null,
+        viaGroupName: null,
+      },
+      {
+        entitlement: {
+          ...baseEntitlement,
+          id: 'gateway-only',
+          binding: {
+            gatewayId: 'gateway-1',
+            apimProductName: null,
+            apimSubscriptionName: null,
+            source: 'orchestrated',
+          },
+        },
+        resourceSummary: { ...baseSummary, displayName: 'Pending chat' },
+        via: 'direct',
+        viaGroupId: null,
+        viaGroupName: null,
+      },
+    ])
+
+    expect(await screen.findByText('Team chat')).toBeVisible()
+    expect(screen.getByText('The gateway records each call you make with this grant, so your own usage can be measured.')).toBeVisible()
+    expect(screen.getByText('The gateway records each call made with this grant, so its usage can be measured.')).toBeVisible()
+    expect(
+      screen.getByText('Linked through APIM subscription grant-subscription in product model-product.'),
+    ).toBeVisible()
+    expect(screen.getByText("Usage can't be measured for this grant yet.")).toBeVisible()
+    expect(screen.queryByText('Gateway attribution configured')).not.toBeInTheDocument()
   })
 
   it('offers collapsed connection details for model API and MCP grants', async () => {

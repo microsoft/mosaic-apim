@@ -10,6 +10,7 @@ from typing import Literal, Protocol
 
 from mosaic_api.domain import (
     Entitlement,
+    EntitlementBinding,
     EntitlementResource,
     EntitlementResourceKind,
     MosaicModel,
@@ -112,6 +113,7 @@ class UsageResourceRow(MosaicModel):
     via_group_name: str | None
     enabled: bool
     bound: bool
+    linked_by: Literal["gatewayLog", "subscription"] | None
     attribution: UsageAttribution
     model: str | None
     requests: int | None
@@ -361,7 +363,8 @@ class UsageService:
             cost_known = cost_note is None
             if not cost_known:
                 cost_excluded_resources += 1
-            bound = entitlement.binding is not None
+            linked_by = _linked_by(entitlement.binding)
+            bound = linked_by is not None
             attribution: UsageAttribution = (
                 "simulated"
                 if self._source.data_source == "simulated"
@@ -423,6 +426,7 @@ class UsageService:
                 via_group_name=resolved.via_group_name,
                 enabled=entitlement.enabled,
                 bound=bound,
+                linked_by=linked_by,
                 attribution=attribution,
                 model=model,
                 requests=resource_requests,
@@ -490,7 +494,9 @@ class UsageService:
             by_resource=rows,
             notes=_notes(
                 data_source=self._source.data_source,
-                unbound=sum(1 for item in entitlements if item.entitlement.binding is None),
+                unbound=sum(
+                    1 for item in entitlements if _linked_by(item.entitlement.binding) is None
+                ),
                 cost_excluded=cost_excluded_resources,
             ),
         )
@@ -820,6 +826,16 @@ def _environment_sort(catalog: EnvironmentCatalog, environment: str | None) -> t
     return (50_000, environment)
 
 
+def _linked_by(binding: EntitlementBinding | None) -> Literal["gatewayLog", "subscription"] | None:
+    if binding is None:
+        return None
+    if binding.attribution_key is not None:
+        return "gatewayLog"
+    if binding.apim_subscription_name is not None:
+        return "subscription"
+    return None
+
+
 def _notes(
     *,
     data_source: UsageDataSource,
@@ -830,20 +846,20 @@ def _notes(
         (
             "Usage figures are simulated from your real MOSAIC grants and limits."
             if data_source == "simulated"
-            else "Usage figures come from API Management telemetry for bound grants."
+            else "Usage figures come from API Management telemetry for linked grants."
         ),
         "Estimated costs use illustrative model rates and are not a bill.",
     ]
     if unbound:
         notes.append(
             (
-                "1 resource isn't bound to API Management yet, so its real usage will show as "
-                "unattributed."
+                "1 resource isn't linked to API Management telemetry yet, so its real usage "
+                "will show as unattributed."
             )
             if unbound == 1
             else (
-                f"{unbound} resources aren't bound to API Management yet, so their real usage "
-                "will show as unattributed."
+                f"{unbound} resources aren't linked to API Management telemetry yet, so their "
+                "real usage will show as unattributed."
             )
         )
     if cost_excluded:

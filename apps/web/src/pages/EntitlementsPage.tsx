@@ -748,7 +748,8 @@ export function EntitlementsPage() {
                               shape="rounded"
                               className={`${styles.statusReady} ${styles.bindingBadge}`}
                             >
-                              {entitlement.binding.apimSubscriptionName ?? 'Recorded'}
+                              {entitlement.binding.apimSubscriptionName ??
+                                (entitlement.binding.attributionKey ? 'Gateway log' : 'Recorded')}
                             </Badge>
                             <Text className={styles.secondaryCell}>{entitlement.binding.source}</Text>
                           </div>

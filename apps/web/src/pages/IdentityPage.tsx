@@ -33,7 +33,7 @@ import type { DirectorySearchKind, Principal, PrincipalKind } from '../types'
 import styles from './IdentityPage.module.css'
 
 type IdentityTab = PrincipalTab | 'groups'
-type PrincipalDialogMode = 'search' | 'manual' | null
+type PrincipalDialogView = 'search' | 'manual'
 
 const PRINCIPAL_TAB_TEXT: Record<
   PrincipalTab,
@@ -124,6 +124,19 @@ function matchesSearch(search: string, ...values: Array<string | undefined>) {
   return values.some((value) => value?.toLowerCase().includes(search))
 }
 
+function principalMatchesSearch(principal: Principal, tab: PrincipalTab, query: string) {
+  const search = query.trim().toLowerCase()
+  return tab === 'users'
+    ? matchesSearch(search, principal.label, principal.objectId)
+    : matchesSearch(
+        search,
+        principal.label,
+        principal.objectId,
+        principal.detail ?? undefined,
+        PRINCIPAL_KIND_LABELS[principal.kind],
+      )
+}
+
 function getPrincipalName(principal: Principal) {
   return principal.label?.trim() || principal.objectId
 }
@@ -153,7 +166,8 @@ export function IdentityPage() {
   const [searchQuery, setSearchQuery] = useState('')
   const [requestedPrincipalId, setSelectedPrincipalId] = useState('')
   const [selectedGroupId, setSelectedGroupId] = useState('')
-  const [principalDialogMode, setPrincipalDialogMode] = useState<PrincipalDialogMode>(null)
+  const [principalDialogOpen, setPrincipalDialogOpen] = useState(false)
+  const [principalDialogView, setPrincipalDialogView] = useState<PrincipalDialogView>('search')
   const [directoryKind, setDirectoryKind] = useState<DirectorySearchKind>('user')
   const [createPrincipalObjectId, setCreatePrincipalObjectId] = useState('')
   const [createPrincipalLabel, setCreatePrincipalLabel] = useState('')
@@ -205,6 +219,7 @@ export function IdentityPage() {
   const showPrincipal = useCallback(
     (principal: Principal) => {
       const nextTab = principalTabForKind(principal.kind)
+      setSearchQuery((current) => (principalMatchesSearch(principal, nextTab, current) ? current : ''))
       if (nextTab !== activeTab) {
         updateTab(nextTab, true)
       }
@@ -219,7 +234,7 @@ export function IdentityPage() {
       setCreatePrincipalObjectId('')
       setCreatePrincipalLabel('')
       setCreatePrincipalParentId('')
-      setPrincipalDialogMode(null)
+      setPrincipalDialogOpen(false)
       await queryClient.invalidateQueries({ queryKey: ['principals'] })
       showPrincipal(principal)
     },
@@ -311,18 +326,7 @@ export function IdentityPage() {
   const principalTabText = PRINCIPAL_TAB_TEXT[principalTab]
   const tabPrincipals = principalsByTab[principalTab]
   const visiblePrincipals = useMemo(
-    () =>
-      tabPrincipals.filter((principal) =>
-        principalTab === 'users'
-          ? matchesSearch(normalizedSearch, principal.label, principal.objectId)
-          : matchesSearch(
-              normalizedSearch,
-              principal.label,
-              principal.objectId,
-              principal.detail ?? undefined,
-              PRINCIPAL_KIND_LABELS[principal.kind],
-            ),
-      ),
+    () => tabPrincipals.filter((principal) => principalMatchesSearch(principal, principalTab, normalizedSearch)),
     [normalizedSearch, principalTab, tabPrincipals],
   )
   const filteredGroups = useMemo(
@@ -402,15 +406,15 @@ export function IdentityPage() {
   )
 
   const directoryLookupEnabled = directoryStatus.data?.lookupEnabled === true
-  const principalDialogView =
-    principalDialogMode === 'search' && directoryLookupEnabled ? 'search' : 'manual'
+  const effectivePrincipalDialogView =
+    principalDialogView === 'search' && directoryLookupEnabled ? 'search' : 'manual'
   // The title names what the dialog will add, so it follows the search or type choice.
   const principalDialogTitle =
-    principalDialogView === 'search'
+    effectivePrincipalDialogView === 'search'
       ? SEARCH_DIALOG_TITLES[directoryKind]
       : `Add ${PRINCIPAL_KIND_LABELS[createPrincipalKind].toLowerCase()}`
   const principalCreateHint =
-    principalDialogView === 'search'
+    effectivePrincipalDialogView === 'search'
       ? 'Search Microsoft Entra for people, agents, and security groups. Applications and managed identities need manual entry.'
       : directoryLookupEnabled
         ? 'Enter the Entra object ID and type for an application, a managed identity, or anyone the directory search does not find.'
@@ -434,7 +438,8 @@ export function IdentityPage() {
   function openPrincipalDialog() {
     const defaults = ADD_DIALOG_DEFAULTS[activeTab]
     createPrincipal.reset()
-    setPrincipalDialogMode('search')
+    setPrincipalDialogView('search')
+    setPrincipalDialogOpen(true)
     setDirectoryKind(defaults.search)
     setCreatePrincipalObjectId('')
     setCreatePrincipalLabel('')
@@ -444,7 +449,7 @@ export function IdentityPage() {
 
   function closePrincipalDialog() {
     createPrincipal.reset()
-    setPrincipalDialogMode(null)
+    setPrincipalDialogOpen(false)
   }
 
   function closeGroupDialog() {
@@ -1104,9 +1109,9 @@ export function IdentityPage() {
         </div>
       )}
 
-      <Dialog open={principalDialogMode !== null} onOpenChange={(_, data) => !data.open && closePrincipalDialog()}>
+      <Dialog open={principalDialogOpen} onOpenChange={(_, data) => !data.open && closePrincipalDialog()}>
         <DialogSurface>
-          {principalDialogView === 'search' ? (
+          {effectivePrincipalDialogView === 'search' ? (
             <DialogBody>
               <DialogTitle>{principalDialogTitle}</DialogTitle>
               <DialogContent className={styles.dialogForm}>
@@ -1115,12 +1120,12 @@ export function IdentityPage() {
                   kind={directoryKind}
                   onKindChange={setDirectoryKind}
                   onCreated={(principal) => {
-                    setPrincipalDialogMode(null)
+                    setPrincipalDialogOpen(false)
                     showPrincipal(principal)
                   }}
                   onManualFallback={() => {
                     setCreatePrincipalKind(MANUAL_KIND_FOR_SEARCH[directoryKind])
-                    setPrincipalDialogMode('manual')
+                    setPrincipalDialogView('manual')
                   }}
                 />
               </DialogContent>
@@ -1186,7 +1191,7 @@ export function IdentityPage() {
                 </DialogContent>
                 {directoryLookupEnabled && (
                   <DialogActions position="start">
-                    <Button appearance="subtle" type="button" onClick={() => setPrincipalDialogMode('search')}>
+                    <Button appearance="subtle" type="button" onClick={() => setPrincipalDialogView('search')}>
                       Search the directory
                     </Button>
                   </DialogActions>

@@ -1251,12 +1251,15 @@ class EntitlementBinding(MosaicModel):
 
     An orchestrated binding is a server-produced projection of an applied publication snapshot.
     Manual and inferred bindings remain useful metadata, but are never credential-read authority.
+    Gateway attribution fields are recorded only by the publication that applied the grant.
     """
 
     gateway_id: str
     apim_product_name: str | None = None
     apim_subscription_name: str | None = None
     counter_key_expression: str | None = None
+    attribution_key: str | None = None
+    attribution_per_member: bool = False
     source: BindingSource = BindingSource.MANUAL
     bound_at: datetime | None = None
 
@@ -1281,6 +1284,10 @@ class Entitlement(Entity):
 def _writable_binding(binding: EntitlementBinding | None) -> EntitlementBinding | None:
     if binding is not None and binding.source == BindingSource.ORCHESTRATED:
         raise ValueError("Orchestrated bindings are produced only by an applied publication")
+    if binding is not None and (
+        binding.attribution_key is not None or binding.attribution_per_member
+    ):
+        raise ValueError("Gateway attribution is recorded only by an applied publication")
     return binding
 
 

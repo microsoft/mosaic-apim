@@ -2,6 +2,13 @@
 
 **Status:** Accepted
 
+**Update:** Security-group grants can now be linked to usage. A group grant has no APIM
+subscription, so its calls couldn't be told apart in the logs. The gateway now tags each call a
+group grant authorizes with the grant and the caller's validated `oid`, and the grant's binding
+records that it's counted per member. A member's usage report can therefore include only their own
+calls. The `oid` in gateway diagnostics is personal data. See
+[ADR 0015](0015-end-user-usage-report.md).
+
 ## Context
 
 Microsoft Entra Agent ID introduces agent identities for AI agents. An agent identity is a

@@ -4,6 +4,7 @@ import type {
   GrantOverlapKind,
   ManagementMode,
   PrincipalKind,
+  EnvironmentAssignment,
 } from './types'
 
 /** A count with its noun, so a single resource reads "1 gateway" rather than "1 gateways". */
@@ -73,4 +74,14 @@ export function subjectKindForPrincipal(kind: PrincipalKind): Exclude<Entitlemen
     return 'securityGroup'
   }
   return 'application'
+}
+
+export function environmentAssignmentResourceNoun(assignments: EnvironmentAssignment[]): string {
+  const kinds = new Set(assignments.map((assignment) => assignment.resourceKind))
+  const count = assignments.length
+  if (kinds.size !== 1) return count === 1 ? 'resource' : 'resources'
+  const [kind] = kinds
+  if (kind === 'mcpEndpoint') return count === 1 ? 'MCP server' : 'MCP servers'
+  if (kind === 'modelEndpoint') return count === 1 ? 'endpoint' : 'endpoints'
+  return count === 1 ? 'resource' : 'resources'
 }

@@ -65,6 +65,9 @@ _HAS_TOKEN = '(bool)context.Variables["mosaic-has-token"]'
 _KEY_GRANT = '(string)context.Variables["mosaic-key-grant"]'
 _MEMBER = '(string)context.Variables["mosaic-member"]'
 _TOKEN_GRANT = '(string)context.Variables["mosaic-token-grant"]'
+# Readers split the message on spaces into key=value pairs and ignore keys they don't know.
+# Only a change that breaks those readers bumps the version.
+GRANT_ATTRIBUTION_TRACE_PREFIX = "mosaic-attribution v=1"
 _DENIED = "Model access denied."
 _GROUPS_OVERAGE_DENIED = (
     "Model access denied. Your token doesn't list your groups because you belong to too many; "
@@ -148,6 +151,32 @@ def governed_counter_key_expression(
     if grant.is_group_grant:
         return f'@("{prefix}publication-tokens:{identity}:" + {_MEMBER})'
     return f'@("{prefix}publication-tokens:{identity}")'
+
+
+def append_grant_attribution_trace(
+    fragment: ET.Element, grants: Sequence[AccessPolicyGrant]
+) -> None:
+    # Resource logs keep the message. APIM documents metadata only as Application Insights
+    # properties, so the message carries every value and the metadata repeats them there.
+    trace = ET.SubElement(fragment, "trace", {"source": "mosaic", "severity": "information"})
+    ET.SubElement(trace, "message").text = (
+        f'@("{GRANT_ATTRIBUTION_TRACE_PREFIX} g=" + {_GRANT} + " m=" + {_MEMBER})'
+    )
+    ET.SubElement(trace, "metadata", {"name": "mosaic-grant", "value": f"@({_GRANT})"})
+    if any(grant.enabled and grant.is_group_grant for grant in grants):
+        ET.SubElement(trace, "metadata", {"name": "mosaic-member", "value": f"@({_MEMBER})"})
+
+
+def describe_grant_attribution_trace(facet: PolicyFacet, *, has_group_grants: bool) -> None:
+    facet.summary = "Tags each authorized call with its MOSAIC grant so usage can be attributed."
+    facet.details = [
+        "The message records the grant as versioned key=value text. Resource logs keep it in "
+        "TraceRecords when the gateway's Azure Monitor diagnostic logs at Information.",
+        "Application Insights records one unsampled trace per call when its diagnostic "
+        "verbosity is Information; set it to Error to stop.",
+    ]
+    if has_group_grants:
+        facet.details.append("Security-group grants also record the caller's validated object ID.")
 
 
 def _validate(publication: Publication, snapshot: ModelAccessSnapshot) -> None:
@@ -833,6 +862,8 @@ def _facets(
             facet.attributes = {"fragment-id": "[redacted]"}
         elif facet.element == "set-query-parameter":
             facet.summary = "Removes the subscription-key query parameter before forwarding."
+        elif facet.element == "trace":
+            describe_grant_attribution_trace(facet, has_group_grants=enabled_group_grants > 0)
         facets.append(facet)
     return facets, sorted(
         set(fragment_analysis.unrecognized_elements + api_analysis.unrecognized_elements)
@@ -884,6 +915,7 @@ def render_governed_policy(
             application_role=application_role,
         )
         _operation_guard(fragment, publication, operations)
+        append_grant_attribution_trace(fragment, grants)
         _limits(fragment, publication, snapshot, grants)
         for name in ("Ocp-Apim-Subscription-Key", "api-key", "Authorization"):
             ET.SubElement(fragment, "set-header", {"name": name, "exists-action": "delete"})

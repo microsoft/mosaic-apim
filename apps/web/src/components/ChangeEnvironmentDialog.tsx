@@ -22,6 +22,7 @@ import {
   publicationsBlockedDetails,
   useEnvironmentCatalog,
 } from '../environments'
+import { environmentAssignmentResourceNoun } from '../labels'
 import type {
   EnvironmentAssignment,
   EnvironmentAssignmentResult,
@@ -86,6 +87,7 @@ export function ChangeEnvironmentDialog({
   })
   const blocked = publicationsBlockedDetails(error)
   const grants = grantsAcknowledgmentDetails(error)
+  const suggestionNoun = environmentAssignmentResourceNoun(suggested)
   useEffect(() => {
     if (blocked) setSuggested(blocked.suggestedAssignments)
   }, [blocked])
@@ -117,8 +119,8 @@ export function ChangeEnvironmentDialog({
                 disabled={mutation.isPending}
               >
                 {suggested.length === 1
-                  ? 'Also classify this endpoint'
-                  : `Also classify these ${suggested.length} endpoints`}{' '}
+                  ? `Also classify this ${suggestionNoun}`
+                  : `Also classify these ${suggested.length} ${suggestionNoun}`}{' '}
                 as {environmentLabel(catalog.data, suggested[0]?.environment)}
               </Button>
             )}

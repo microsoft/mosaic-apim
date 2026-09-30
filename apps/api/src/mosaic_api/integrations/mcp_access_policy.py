@@ -24,6 +24,7 @@ from mosaic_api.errors import ValidationError
 from mosaic_api.integrations.access_policy import (
     _TOKEN_GRANT,
     _expression,
+    _grant_counter_key,
     _grant_limits,
     _literal,
     _reject,
@@ -31,6 +32,8 @@ from mosaic_api.integrations.access_policy import (
     _token_lookup,
     _token_member_lookup,
     _variable,
+    append_grant_attribution_trace,
+    describe_grant_attribution_trace,
     grant_counter_identity,
 )
 from mosaic_api.integrations.apim.policy_semantics import analyze_policy
@@ -67,6 +70,15 @@ class McpPolicyDocuments:
 
 def mcp_grant_counter_identity(publication: McpPublication, grant: McpAccessGrant) -> str:
     return grant_counter_identity(publication, grant)
+
+
+def mcp_counter_key_expression(publication: McpPublication, grant: McpAccessGrant) -> str:
+    return _grant_counter_key(
+        "grant-request-rate",
+        mcp_grant_counter_identity(publication, grant),
+        per_member=grant.is_group_grant,
+        prefix=_COUNTER_PREFIX,
+    )
 
 
 def _validate(
@@ -503,6 +515,8 @@ def _facets(
     for analysis in analyses:
         for facet in analysis.facets:
             facet.managed_by_mosaic = True
+            if facet.element == "trace":
+                describe_grant_attribution_trace(facet, has_group_grants=enabled_group_grants > 0)
     unrecognized = sorted(
         {item for analysis in analyses for item in analysis.unrecognized_elements}
     )
@@ -535,6 +549,7 @@ def render_mcp_policy(
     grants_for_lookup = [*(grant for grant in grants if not grant.is_group_grant), *group_grants]
     fragment = ET.Element("fragment")
     _mcp_authentication(fragment, publication, snapshot, grants_for_lookup)
+    append_grant_attribution_trace(fragment, grants)
     _grant_limits(fragment, publication, grants, prefix=_COUNTER_PREFIX)
     _strip_credentials(fragment)
     if backend_auth == McpAuthMode.MANAGED_IDENTITY:

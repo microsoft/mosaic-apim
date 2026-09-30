@@ -7,6 +7,8 @@ from mosaic_api.config import Settings
 from mosaic_api.domain import (
     ApiShape,
     Gateway,
+    McpEndpoint,
+    McpPublication,
     ModelEndpoint,
     ModelProvider,
     Publication,
@@ -43,6 +45,7 @@ def environment_client(settings: Settings) -> Iterator[TestClient]:
         )
         client.gateways = gateways  # type: ignore[attr-defined]
         client.endpoints = endpoints  # type: ignore[attr-defined]
+        client.mcp = mcp  # type: ignore[attr-defined]
         yield client
 
 
@@ -282,6 +285,72 @@ async def test_draft_publication_does_not_block_catalog_edits(
     )
 
     assert response.status_code == 200, response.text
+
+
+async def test_applied_mcp_publication_blocks_require_classification(
+    environment_client: TestClient,
+) -> None:
+    gateways = environment_client.gateways  # type: ignore[attr-defined]
+    mcp = environment_client.mcp  # type: ignore[attr-defined]
+    await gateways.save_gateway(
+        Gateway(
+            id="gateway-mcp",
+            tenant_id="tenant-test",
+            name="MCP gateway",
+            azure_resource_id=(
+                "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg"
+                "/providers/Microsoft.ApiManagement/service/apim-mcp"
+            ),
+            subscription_id="00000000-0000-0000-0000-000000000000",
+            resource_group="rg",
+            service_name="apim-mcp",
+            environment="development",
+        ),
+        _audit("gateway"),
+    )
+    await mcp.save_endpoint(
+        McpEndpoint(
+            id="mcp-unclassified",
+            tenant_id="tenant-test",
+            name="Unclassified MCP",
+            endpoint="https://mcp.example.com/mcp",
+        ),
+        _audit("mcpEndpoint"),
+    )
+    await gateways.save_mcp_publication(
+        McpPublication(
+            id="mcp-publication",
+            tenant_id="tenant-test",
+            gateway_id="gateway-mcp",
+            mcp_endpoint_id="mcp-unclassified",
+            display_name="Docs MCP",
+            api_name="docs-mcp",
+            api_path="docs",
+            backend_name="docs-mcp",
+            fragment_name="docs-mcp",
+            metadata_api_name="docs-mcp-prm",
+            mcp_server_id="mcp-server-docs",
+            resources=[
+                PublishedResource(
+                    kind=PublishedResourceKind.API,
+                    name="docs-mcp",
+                    resource_id="apis/docs-mcp",
+                    created_by_mosaic=True,
+                )
+            ],
+        ),
+        _audit("mcpPublication"),
+    )
+
+    response = environment_client.patch(
+        "/api/v1/environment-catalog/settings", json={"requireClassification": True}
+    )
+
+    assert response.status_code == 409
+    details = response.json()["details"]
+    assert details["reason"] == "publicationsBlocked"
+    assert details["publications"][0]["kind"] == "mcp"
+    assert details["publications"][0]["mcpEndpointName"] == "Unclassified MCP"
 
 
 def _audit(resource: str):

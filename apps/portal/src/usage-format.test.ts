@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import type { MyUsageReport, UsageResourceRow } from './types'
-import { aggregateUsage, formatUtcDate, quotaWindowLabel, rateLimitLabel } from './usage-format'
+import {
+  aggregateUsage,
+  formatUtcDate,
+  quotaWindowLabel,
+  rateLimitLabel,
+  usageTrackingLabel,
+} from './usage-format'
 
 const summary = {
   kind: 'modelApi' as const,
@@ -23,6 +29,7 @@ function row(overrides: Partial<UsageResourceRow>): UsageResourceRow {
     viaGroupName: null,
     enabled: true,
     bound: true,
+    linkedBy: 'gatewayLog',
     attribution: 'simulated',
     model: 'gpt-4o',
     requests: 10,
@@ -118,5 +125,11 @@ describe('usage-format', () => {
     expect(quotaWindowLabel('Monthly')).toBe('this month')
     expect(rateLimitLabel('tokens', 10000, 60)).toBe('10,000 tokens per minute')
     expect(rateLimitLabel('requests', 60, 60)).toBe('60 requests per 60 seconds')
+  })
+
+  it('labels how usage is tracked', () => {
+    expect(usageTrackingLabel('gatewayLog')).toBe('At the gateway')
+    expect(usageTrackingLabel('subscription')).toBe('By APIM subscription')
+    expect(usageTrackingLabel(null)).toBe('Not linked yet')
   })
 })

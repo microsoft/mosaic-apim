@@ -12,6 +12,8 @@ from mosaic_api.domain import (
     EntitlementResource,
     EntitlementSubject,
     Gateway,
+    McpEndpoint,
+    McpPublication,
     ModelApi,
     ModelEndpoint,
     ModelProvider,
@@ -86,6 +88,21 @@ async def _seed_endpoint(
     )
 
 
+async def _seed_mcp_endpoint(
+    client: TestClient, endpoint_id: str = "mcp-1", *, environment: str | None = None
+) -> McpEndpoint:
+    endpoint = McpEndpoint(
+        id=endpoint_id,
+        tenant_id=TENANT,
+        name=f"MCP {endpoint_id}",
+        endpoint=f"https://{endpoint_id}.example.com/mcp",
+        environment=environment,
+    )
+    return await client.app.state.mcp_endpoint_repository.save_endpoint(
+        endpoint, _audit("mcpEndpoint")
+    )
+
+
 async def _seed_applied_publication(
     client: TestClient, gateway_id: str, endpoint_id: str, publication_id: str = "pub-1"
 ) -> Publication:
@@ -116,6 +133,35 @@ async def _seed_applied_publication(
     )
     return await client.app.state.gateway_repository.save_publication(
         publication, _audit("publication")
+    )
+
+
+async def _seed_applied_mcp_publication(
+    client: TestClient, gateway_id: str, endpoint_id: str, publication_id: str = "mcp-pub-1"
+) -> McpPublication:
+    publication = McpPublication(
+        id=publication_id,
+        tenant_id=TENANT,
+        gateway_id=gateway_id,
+        mcp_endpoint_id=endpoint_id,
+        display_name="Docs MCP",
+        api_name="docs-mcp",
+        api_path="docs",
+        backend_name="docs-mcp",
+        fragment_name="docs-mcp",
+        metadata_api_name="docs-mcp-prm",
+        mcp_server_id="mcp-server-docs",
+        resources=[
+            PublishedResource(
+                kind=PublishedResourceKind.API,
+                name="docs-mcp",
+                resource_id="apis/docs-mcp",
+                created_by_mosaic=True,
+            )
+        ],
+    )
+    return await client.app.state.gateway_repository.save_mcp_publication(
+        publication, _audit("mcpPublication")
     )
 
 
@@ -281,6 +327,61 @@ async def test_assignment_batch_allows_linked_gateway_and_endpoint_to_move_toget
         event for event in audits.values() if event.action == "environment.assigned"
     ]
     assert len(assignment_audits) == 1
+
+
+async def test_assignment_batch_allows_linked_gateway_and_mcp_endpoint_to_move_together(
+    assignment_client: TestClient,
+) -> None:
+    await _seed_gateway(assignment_client, "gateway-mcp")
+    await _seed_mcp_endpoint(assignment_client, "mcp-prod")
+    await _seed_applied_mcp_publication(assignment_client, "gateway-mcp", "mcp-prod")
+
+    refused = assignment_client.post(
+        "/api/v1/environment-assignments",
+        json={
+            "assignments": [
+                {
+                    "resourceKind": "gateway",
+                    "resourceId": "gateway-mcp",
+                    "environment": "production",
+                }
+            ]
+        },
+    )
+
+    assert refused.status_code == 409
+    details = refused.json()["details"]
+    assert details["reason"] == "publicationsBlocked"
+    assert details["publications"][0]["kind"] == "mcp"
+    assert details["publications"][0]["mcpEndpointName"] == "MCP mcp-prod"
+    assert details["suggestedAssignments"] == [
+        {
+            "resourceKind": "mcpEndpoint",
+            "resourceId": "mcp-prod",
+            "environment": "production",
+        }
+    ]
+
+    accepted = assignment_client.post(
+        "/api/v1/environment-assignments",
+        json={
+            "assignments": [
+                {
+                    "resourceKind": "gateway",
+                    "resourceId": "gateway-mcp",
+                    "environment": "production",
+                },
+                {
+                    "resourceKind": "mcpEndpoint",
+                    "resourceId": "mcp-prod",
+                    "environment": "production",
+                },
+            ]
+        },
+    )
+
+    assert accepted.status_code == 200, accepted.text
+    assert [item["status"] for item in accepted.json()["results"]] == ["applied", "applied"]
 
 
 async def test_gateway_grants_need_acknowledgment_when_crossing_production(

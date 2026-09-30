@@ -256,8 +256,15 @@ async def _grant(
     enforcement: EntitlementEnforcement | None = None,
     enabled: bool = True,
     bound: bool = True,
+    binding: EntitlementBinding | None = None,
     created_days_ago: int = 30,
 ) -> Entitlement:
+    if binding is None and bound:
+        binding = EntitlementBinding(
+            gateway_id="gateway-prod",
+            apim_subscription_name=f"subscription-{grant_id}",
+            source=BindingSource.MANUAL,
+        )
     entitlement = Entitlement(
         id=grant_id,
         tenant_id=TENANT,
@@ -266,9 +273,7 @@ async def _grant(
         resource=resource,
         enabled=enabled,
         enforcement=enforcement,
-        binding=EntitlementBinding(gateway_id="gateway-prod", source=BindingSource.MANUAL)
-        if bound
-        else None,
+        binding=binding if bound else None,
     )
     return await client.app.state.entitlement_repository.save_entitlement(
         entitlement, _audit("entitlement")
@@ -415,6 +420,9 @@ async def test_usage_shapes_costs_quotas_and_zero_rules(usage_client: TestClient
     assert rows["hourly-mcp"]["totalTokens"] is None
     assert rows["hourly-mcp"]["attribution"] == "simulated"
     assert rows["hourly-mcp"]["bound"] is False
+    assert rows["hourly-mcp"]["linkedBy"] is None
+    assert rows["daily-tokens"]["bound"] is True
+    assert rows["daily-tokens"]["linkedBy"] == "subscription"
     assert rows["monthly-product"]["requests"] == 0
     assert body["totals"]["costExcludedResources"] == 3
     assert body["totals"]["estimatedCost"] is not None
@@ -501,6 +509,46 @@ async def test_usage_for_a_day_is_the_same_in_every_period(usage_client: TestCli
     }
     assert quotas["7d"] == quotas["30d"] == quotas["90d"]
     assert all(quota["used"] <= quota["limit"] for quota in quotas["7d"])
+
+
+async def test_usage_reports_how_each_resource_is_linked(usage_client: TestClient) -> None:
+    await _seed_resource_catalog(usage_client)
+    principal = await _principal(usage_client)
+    await _grant(
+        usage_client,
+        principal,
+        "subscription-linked",
+        EntitlementResource(kind="modelApi", id="model-api-known"),
+    )
+    await _grant(
+        usage_client,
+        principal,
+        "manual-gateway-only",
+        EntitlementResource(kind="modelApi", id="model-api-manual"),
+        binding=EntitlementBinding(gateway_id="gateway-prod", source=BindingSource.MANUAL),
+    )
+    await _grant(
+        usage_client,
+        principal,
+        "gateway-log-linked",
+        EntitlementResource(kind="modelApi", id="model-api-gateway-log"),
+        binding=EntitlementBinding(
+            gateway_id="gateway-prod",
+            attribution_key="grant-counter",
+            source=BindingSource.ORCHESTRATED,
+        ),
+    )
+
+    body = usage_client.get("/api/v1/me/usage", params={"period": "7d"}).json()
+    rows = {row["entitlementId"]: row for row in body["byResource"]}
+
+    assert rows["subscription-linked"]["bound"] is True
+    assert rows["subscription-linked"]["linkedBy"] == "subscription"
+    assert rows["manual-gateway-only"]["bound"] is False
+    assert rows["manual-gateway-only"]["linkedBy"] is None
+    assert rows["gateway-log-linked"]["bound"] is True
+    assert rows["gateway-log-linked"]["linkedBy"] == "gatewayLog"
+    assert any("linked to API Management telemetry" in note for note in body["notes"])
 
 
 async def test_usage_shows_disabled_grants_only_where_nothing_enabled_covers_them(

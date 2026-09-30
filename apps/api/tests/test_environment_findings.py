@@ -10,6 +10,7 @@ from mosaic_api.domain import (
     AuditEvent,
     Gateway,
     McpEndpoint,
+    McpPublication,
     ModelEndpoint,
     ModelProvider,
     Publication,
@@ -295,6 +296,68 @@ async def test_mcp_canonical_url_matching(findings_client: TestClient) -> None:
     assert item["target"]["resourceKind"] == "mcpEndpoint"
 
 
+async def test_owned_mcp_publication_reports_blocked_once(findings_client: TestClient) -> None:
+    gateways = findings_client.gateways  # type: ignore[attr-defined]
+    mcp = findings_client.mcp  # type: ignore[attr-defined]
+    await _gateway(gateways, "gateway-prod", "Prod gateway", "production")
+    await _mcp_endpoint(mcp, "mcp-dev", "Dev MCP", "https://mcp.example.com/mcp", "development")
+    await _mcp_publication(
+        gateways,
+        "mcp-publication-applied",
+        "gateway-prod",
+        "mcp-dev",
+        "Docs MCP",
+        "docs-mcp",
+        applied=True,
+    )
+    await gateways.replace_observed(
+        "tenant-test",
+        "gateway-prod",
+        [
+            ObservedApi(
+                id="api-docs-mcp",
+                tenant_id="tenant-test",
+                gateway_id="gateway-prod",
+                snapshot_id="snapshot",
+                name="docs-mcp",
+                display_name="Docs MCP",
+                path="docs",
+                service_url="https://mcp.example.com/mcp",
+            ),
+            ObservedApi(
+                id="api-docs-mcp-prm",
+                tenant_id="tenant-test",
+                gateway_id="gateway-prod",
+                snapshot_id="snapshot",
+                name="docs-mcp-prm",
+                display_name="Docs MCP metadata",
+                path="docs-prm",
+                service_url="https://mcp.example.com/mcp",
+            ),
+            ObservedMcpServer(
+                id="mcp-server",
+                tenant_id="tenant-test",
+                gateway_id="gateway-prod",
+                snapshot_id="snapshot",
+                name="docs-mcp",
+                display_name="Docs MCP",
+                path="docs",
+                service_url="https://mcp.example.com/mcp",
+            ),
+        ],
+        "snapshot",
+    )
+
+    response = findings_client.get("/api/v1/environment-findings")
+
+    assert response.status_code == 200, response.text
+    items = response.json()["items"]
+    assert [item["kind"] for item in items] == ["blockedPublication"]
+    assert items[0]["target"]["resourceKind"] == "mcpEndpoint"
+    assert items[0]["target"]["resourceName"] == "Dev MCP"
+    assert items[0]["subject"]["name"] == "Docs MCP"
+
+
 async def test_gateway_filter_and_unknown_gateway(findings_client: TestClient) -> None:
     gateways = findings_client.gateways  # type: ignore[attr-defined]
     endpoints = findings_client.endpoints  # type: ignore[attr-defined]
@@ -507,6 +570,46 @@ async def _publication(
             ),
         ),
         _audit("publication", publication_id),
+    )
+
+
+async def _mcp_publication(
+    repository: InMemoryGatewayRepository,
+    publication_id: str,
+    gateway_id: str,
+    endpoint_id: str,
+    display_name: str,
+    api_name: str,
+    *,
+    applied: bool,
+) -> None:
+    await repository.save_mcp_publication(
+        McpPublication(
+            id=publication_id,
+            tenant_id="tenant-test",
+            gateway_id=gateway_id,
+            mcp_endpoint_id=endpoint_id,
+            display_name=display_name,
+            api_name=api_name,
+            api_path=api_name,
+            backend_name=api_name,
+            fragment_name=api_name,
+            metadata_api_name=f"{api_name}-prm",
+            mcp_server_id=f"mcp-server-{api_name}",
+            resources=(
+                [
+                    PublishedResource(
+                        kind=PublishedResourceKind.API,
+                        name=api_name,
+                        resource_id=f"apis/{api_name}",
+                        created_by_mosaic=True,
+                    )
+                ]
+                if applied
+                else []
+            ),
+        ),
+        _audit("mcpPublication", publication_id),
     )
 
 

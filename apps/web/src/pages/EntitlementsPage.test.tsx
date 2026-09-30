@@ -378,12 +378,15 @@ describe('EntitlementsPage', () => {
 
   it('keeps imported direct and MCP grants desired-only', async () => {
     api.listEntitlements.mockResolvedValue([
-      { ...directGrant, binding: { gatewayId: 'gateway_1', source: 'manual' }, runtime: null },
+      { ...directGrant, binding: { gatewayId: 'gateway_1', source: 'manual', attributionKey: 'grant:direct_grant' }, runtime: null },
       { ...directGrant, id: 'mcp-grant', resource: { kind: 'mcpServer', id: 'mcp_1' }, binding: null, runtime: null },
     ])
     renderPage()
     expect(await screen.findByText('Desired state only')).toBeVisible()
     expect(screen.getByText('Recorded, not enforced')).toBeVisible()
+    const [gatewayLog] = columnCells(screen.getByRole('table', { name: 'Entitlements' }), 'Binding')
+    expect(within(gatewayLog).getByText('Gateway log')).toBeVisible()
+    expect(within(gatewayLog).getByText('manual')).toBeVisible()
     expect(screen.getByText(/doesn't enforce it for an imported MCP server/)).toBeVisible()
     expect(screen.getByRole('button', { name: 'Connection info' })).toBeVisible()
     expect(screen.queryByRole('button', { name: 'Manage model' })).not.toBeInTheDocument()

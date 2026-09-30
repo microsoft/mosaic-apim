@@ -27,6 +27,11 @@ from mosaic_api.integrations.mcp_access_policy import (
 TENANT = "11111111-1111-1111-1111-111111111111"
 AUDIENCE = "22222222-2222-2222-2222-222222222222"
 SUBSCRIPTION_COUNTER = "@(context.Subscription.Id)"
+# The wire format a Log Analytics source parses from TraceRecords.
+_ATTRIBUTION_MESSAGE = (
+    '@("mosaic-attribution v=1 g=" + (string)context.Variables["mosaic-grant"]'
+    ' + " m=" + (string)context.Variables["mosaic-member"])'
+)
 
 
 def _publication(**overrides: object) -> McpPublication:
@@ -157,6 +162,52 @@ def _counters(fragment: ET.Element) -> list[str]:
         for element in fragment.iter()
         if "counter-key" in element.attrib
     ]
+
+
+def test_grant_trace_is_after_authentication_before_limits_and_members_only_for_groups() -> None:
+    group = _group_grant(2, enforcement=_enforcement())
+    result = _render(snapshot=_snapshot(grants=[_grant(enforcement=_enforcement()), group]))
+    fragment = ET.fromstring(result.fragment_xml)
+    children = list(fragment)
+    trace = fragment.find("trace")
+    assert trace is not None
+
+    grant_variable_index = next(
+        index
+        for index, element in enumerate(children)
+        if element.tag == "set-variable" and element.attrib["name"] == "mosaic-grant"
+    )
+    limit_index = next(
+        index
+        for index, element in enumerate(children)
+        if element.tag == "choose" and element.find("when/rate-limit-by-key") is not None
+    )
+    assert [element.tag for element in fragment.iter()].count("trace") == 1
+    assert grant_variable_index < children.index(trace) < limit_index
+    member_index = next(
+        index
+        for index, element in enumerate(children)
+        if element.tag == "set-variable" and element.attrib["name"] == "mosaic-member"
+    )
+    assert member_index < children.index(trace)
+    assert trace.findtext("message") == _ATTRIBUTION_MESSAGE
+    metadata = {item.attrib["name"]: item.attrib["value"] for item in trace.findall("metadata")}
+    assert metadata == {
+        "mosaic-grant": '@((string)context.Variables["mosaic-grant"])',
+        "mosaic-member": '@((string)context.Variables["mosaic-member"])',
+    }
+    assert any(
+        facet.element == "trace"
+        and "MOSAIC grant" in facet.summary
+        and "validated object ID" in " ".join(facet.details)
+        for facet in result.facets
+    )
+
+    direct = ET.fromstring(_render().fragment_xml)
+    direct_trace = direct.find("trace")
+    assert direct_trace is not None
+    assert direct_trace.findtext("message") == _ATTRIBUTION_MESSAGE
+    assert [item.attrib["name"] for item in direct_trace.findall("metadata")] == ["mosaic-grant"]
 
 
 def test_documents_parse_are_deterministic_and_digest_all_three_documents() -> None:
