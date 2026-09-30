@@ -84,7 +84,7 @@ tests and README or ADR updates wherever a decision changes.
 | G3 | The portal can't show connection details or reveal keys, so an end user can't get a credential | Add portal connection details and masked, transient key reveal ([#21](https://github.com/microsoft/mosaic-apim/pull/21)) | ✅ merged |
 | G4 | No client registration lets an end user get a `Models.Invoke` token | Optional public client registration with a tenant-wide grant for `Models.Invoke`, and its client ID in connection details. Builds on the Entra fix ([#19](https://github.com/microsoft/mosaic-apim/pull/19)) | ✅ merged |
 | G5 | Anthropic deployments get the chat-completions API shape, but Claude needs the Messages API. `llm-token-limit` supports Anthropic only on APIM v2 tiers | Publish each deployment by format: Claude gets the Anthropic Messages shape. On classic tiers, Claude publications apply no token limits, and grants use call limits instead ([#22](https://github.com/microsoft/mosaic-apim/pull/22)) | ✅ merged |
-| G6 | Only if Grok or Llama fail on `/models/chat/completions` through APIM | Add OpenAI v1 routes | ⬜ conditional |
+| G6 | Only if Grok or Llama fail on `/models/chat/completions` through APIM | Add OpenAI v1 routes | ⬜ likely unnecessary: both reached their models there with a grant key in Phase 8; R1 confirms with tokens |
 | G7 | When MOSAIC's identity can see no subscriptions, discovery shows nothing at all: no suggestions, no unreadable subscriptions and no hint. Found live in Phase 3 | Say how many subscriptions were scanned. When there are none, or the list fails, show the Reader command for the subscriptions MOSAIC already knows about ([#17](https://github.com/microsoft/mosaic-apim/pull/17)) | ✅ merged |
 | G8 | Gateway runtime readiness can disagree with what the gateway can actually call. It accepts exactly one role, so a sufficient role such as the Cognitive Services User role it recommends before it can read the account is later reported as missing. It also checks a project-registered endpoint at the project scope, although published APIs call the parent resource, where a project-scoped grant doesn't apply | Judge readiness at the account the published API calls, and accept any role whose data actions cover the published operations. Recommend only roles the check accepts: Cognitive Services OpenAI User for Azure OpenAI, and Foundry User otherwise. A deny assignment, or disabled public access with no virtual network on the gateway, means "cannot invoke". Conditions MOSAIC can't evaluate mean "not confirmed". The endpoint's Access card shows its network, firewall and key settings. Readiness covers every API MOSAIC can publish from the endpoint, including Anthropic Messages on AI Services accounts ([#23](https://github.com/microsoft/mosaic-apim/pull/23)) | ✅ merged |
 | G9 | After a redeploy, an open browser kept running the previous console build. Both web apps' nginx serve `index.html`, the SPA routes and `/config.js` with no `Cache-Control`, so browsers cache them heuristically and load the old hashed bundle. Found live in Phase 3 | Revalidate the HTML, the SPA fallback and `/config.js` on every load. Cache the hashed `/assets/` files as immutable, and return 404 for a missing asset instead of the SPA page. Keep the security headers on every response ([#29](https://github.com/microsoft/mosaic-apim/pull/29)) | ✅ merged |
@@ -176,7 +176,7 @@ On that combined tree:
   checks that the admin and portal APIs reject anonymous and malformed-token requests.
 - **Exit:** unit tests, typecheck and lint pass, and the live driver can open every persona.
 
-### Phase 2: Tenant prerequisites 🔄 the User role and the workload are done; Claude is blocked
+### Phase 2: Tenant prerequisites 🔄 the User role and the workload are done; Claude waits for the owner to deploy it
 
 Each batch runs only after approval and is recorded in the change ledger.
 
@@ -194,13 +194,13 @@ Progress (Batch 1, approved and applied):
 - ✅ The `user` persona holds the MOSAIC User role.
 - ✅ The workload app registration and its service principal exist. The service principal holds
   `Models.Invoke.Application`, and for an application permission that assignment is the admin
-  consent. The app has no credential yet. Its short-lived client secret, which R3 needs, is
-  created in Phase 8 once the environment owner approves it.
+  consent. Its short-lived client secret, which R3 needed, was created in Phase 8 with the
+  environment owner's approval, and is deleted once the sitting's runs are done.
 - ⏳ Claude: Azure refused the deployment. An Anthropic deployment must carry the customer's
   organization name, country and industry for Anthropic's terms (`properties.modelProviderData`),
-  and Azure CLI 2.83 has no option for them. The environment owner supplies those details, or
-  deploys the model in the Foundry portal, which asks for them. The model is available in the
-  region and its quota is unused. R1's Claude call and G5's live check wait for it.
+  and Azure CLI 2.83 has no option for them. The model is available in the region and its quota
+  is unused. The environment owner chose to deploy it in the Foundry portal, which asks for those
+  details, at the start of the Phase 8 sitting. R1's Claude call and G5's live check wait for it.
 
 ### Phase 3: Live, admin imports endpoints (A2 to A6) ✅ except seeing A2's partial-scan card
 
@@ -671,12 +671,13 @@ Progress:
     allows only chat completions on these publications, so their embeddings and model-info
     operations are denied by design.
 
-### Phase 8: Runtime verification (R1 to R8, A14) ⏳ verifier ready; waits for the environment owner
+### Phase 8: Runtime verification (R1 to R8, A14) 🔄 R3 and R4's additions pass; the rest runs at the owner's sitting
 
 `scripts/verify_model_access.py` now covers this phase, with unit tests against a fake gateway
 that applies the governed policy. It reads each grant's connection details from MOSAIC, calls the
 operation its publication exposes, and can sign callers in itself. The tenant batches, the
-redeploy and Phases 5 to 7 are done, so the live run waits only for the items listed below.
+redeploy and Phases 5 to 7 are done, and what remains runs at the environment owner's sitting,
+described below.
 
 | Journey | How the verifier covers it |
 | --- | --- |
@@ -689,11 +690,16 @@ redeploy and Phases 5 to 7 are done, so the live run waits only for the items li
 | R7 | `--watch-revocation <grant-id>` waits while the admin revokes the grant, which disables it, and applies the plan (A14). Rejections count only once MOSAIC reports the grant revoked, and must repeat |
 | R8 | Manual: find the calls in Application Insights and Log Analytics |
 
-Method toggles (A14) are checked by rerunning the verifier after each reviewed plan.
+Method toggles (A14) are checked by rerunning the verifier after each reviewed plan. The verifier
+reveals a grant's keys only while keys are on, so it can't show that a key stops working once keys
+are turned off. That check reads the grant's key beforehand, through Azure Resource Manager, and
+calls the model with it after the plan is applied. Its check that a token is refused while Entra
+tokens are off needs the user's token in the same run, so that run also names a second grant, for
+the same user, with Entra tokens on.
 
-Proposed addition to R4, which needs approval because it reads keys: APIM's all-access key, the
-key of the subscription APIM gave its Administrator (O12) and MOSAIC's bootstrap key must each be
-refused on a governed publication.
+R4's addition reads keys, so it needed approval. It checks that APIM's all-access key, the key of
+the subscription APIM gave its Administrator (O12) and MOSAIC's bootstrap key are each refused on
+a governed publication.
 
 The live driver's `verify` command runs the verifier for the personas. It signs the `user`
 persona, and the `admin` persona for application grants, in to MOSAIC again, and passes their
@@ -701,23 +707,56 @@ MOSAIC API tokens to the verifier without anyone copying them. It enters the ver
 codes in the right persona's browser, leaving a person to confirm the sign-in and complete MFA.
 The [runbook](runbook.md#verify-runtime-access) shows how to run it.
 
-What the live run waits for, after Phase 7:
+The environment owner decided on 2026-09-30:
 
-- **R1 and R2** need a model-runtime token for a user. Only MOSAIC's model client has consent for
-  the runtime scope, and it signs in with a device code. The driver enters the code in the `user`
-  persona's browser, and a person confirms the sign-in and completes MFA. The persona now holds
-  applied grants on five models on four endpoints, with the same limits: AOAI B `gpt-4o-mini`,
-  Foundry multi-provider `grok-4.3` (approved in P5) and `DeepSeek-V4-Pro`, Foundry project
-  `Llama-4-Maverick-17B-128E-Instruct-FP8`, and Foundry hub-connected `gpt-5.1-chat`. Each
-  Foundry model's first governed apply had 14 steps, and all succeeded. So R1 covers Azure
-  OpenAI, Foundry OpenAI, Grok, Llama and DeepSeek. Claude waits for its deployment (Phase 2).
-  Sending real model calls needs the environment owner's go-ahead, because they're billed.
-- **R3** needs the workload's client secret, the credential Batch 1 deferred. Creating it is a
-  tenant change, so it waits for approval. The workload's grant is applied and its key reveal
-  works in the console (A12).
-- **R4's proposed addition** still needs approval, because it reads keys.
-- **A call quota** (O28) can't be set in the console, so the grants above have none. A weekly
-  one adds a policy expression that API Management hasn't compiled yet.
+- Approved: real, billed model calls, and device-code sign-ins for the `user` persona and for an
+  `outsider` as the ungranted user; a short-lived client secret for the workload; reading the
+  privileged keys for R4's addition; fresh grants for R5 and R6; and revoking, disabling and
+  toggling access methods, only on those two grants and their models (A14, R7).
+- The owner deploys Claude in the Foundry portal at the start of the sitting (Phase 2).
+- The `user` persona's User role is removed once the runtime tests are done.
+- Phase 10 is deferred.
+
+Progress:
+
+- ✅ **R3**: the workload's handed-off key and its client-credentials token both reached AOAI B
+  `gpt-4o-mini`. The end user couldn't retrieve the workload's key. An anonymous call, an invalid
+  key, a MOSAIC control-plane token and an invalid token with a valid key were refused. The check
+  that the user's token fails with the workload's key needs a user token, so it runs in R1's run.
+- ✅ **R4's addition**: on AOAI B `gpt-4o-mini`, a governed publication, APIM's all-access key and
+  the Administrator's product subscription were refused with 403, and the suspended bootstrap
+  subscription with 401. Nothing reached the model. So O12's extra subscription doesn't bypass
+  governed access.
+- ✅ **R5's and R6's grants**, made in the console for the `user` persona on two models it didn't
+  hold: AOAI A `gpt-4o` with 2 calls per 300 seconds and no token limit, and AOAI C `gpt-4o` with
+  100 tokens per minute and no call limit, under the model's 12,000. They were each model's first
+  governed apply: 18 steps each, as an Azure OpenAI publication has 7 operations, and all
+  succeeded. Each suspended the model's bootstrap subscription. With **Calls** left empty, the
+  form sends no call limit, so R6's grant has only its token limit.
+- A grant's ID isn't shown in the grants table, but **Review model changes** lists
+  "Grant: entitlement_…" for every grant in the plan.
+- Output-token parameter: `gpt-5.1-chat` on `/models/chat/completions` refuses `max_tokens` with
+  400 "Use 'max_completion_tokens' instead", the verifier's default for `/models/` routes. It
+  accepts `max_completion_tokens`, and so do `grok-4.3`, `DeepSeek-V4-Pro` and
+  `Llama-4-Maverick`, checked with each grant's key. R1's run passes
+  `--chat-token-parameter max_completion_tokens`. The portal's samples don't set the parameter
+  for chat completions, so they aren't affected.
+- The same key calls show Grok and Llama reach their models through `/models/chat/completions`,
+  so G6 looks unnecessary. R1 confirms it with Entra tokens.
+
+The sitting runs, in order: Claude's import, publication and grant; R1, R2 and R4's cross-subject
+checks in one run, with an `outsider` as the ungranted user; R5's proof; R6's proof; A14's method
+toggles on R5's and R6's models; and a last run that checks the toggled methods and watches R6's
+revocation (R7). Each run needs one device-code sign-in for the `user` persona, and R1's run
+another for the `outsider`. R8 is checked in
+Application Insights and Log Analytics afterwards. R1 covers the persona's applied grants on five
+models on four endpoints, with the same limits: AOAI B `gpt-4o-mini`, Foundry multi-provider
+`grok-4.3` and `DeepSeek-V4-Pro`, Foundry project `Llama-4-Maverick-17B-128E-Instruct-FP8`, and
+Foundry hub-connected `gpt-5.1-chat`, plus Claude once it's published. Each Foundry model's first
+governed apply had 14 steps, and all succeeded.
+
+A call quota (O28) can't be set in the console, so these grants have none. A weekly one adds a
+policy expression that API Management hasn't compiled yet.
 
 ### Phase 9: Codify, document, clean up 🔄 deferred findings filed as issues
 
@@ -727,26 +766,29 @@ What the live run waits for, after Phase 7:
     [#43](https://github.com/microsoft/mosaic-apim/issues/43), O20 as
     [#44](https://github.com/microsoft/mosaic-apim/issues/44), O17 as
     [#45](https://github.com/microsoft/mosaic-apim/issues/45), O24 as
-    [#46](https://github.com/microsoft/mosaic-apim/issues/46), O28 as
-    [#52](https://github.com/microsoft/mosaic-apim/issues/52), O27 as
-    [#53](https://github.com/microsoft/mosaic-apim/issues/53) and O29 as
-    [#55](https://github.com/microsoft/mosaic-apim/issues/55).
+    [#46](https://github.com/microsoft/mosaic-apim/issues/46) and O28 as
+    [#52](https://github.com/microsoft/mosaic-apim/issues/52).
+  - O27 as [#53](https://github.com/microsoft/mosaic-apim/issues/53) and O29 as
+    [#55](https://github.com/microsoft/mosaic-apim/issues/55), both fixed since, in
+    [#58](https://github.com/microsoft/mosaic-apim/pull/58) and
+    [#57](https://github.com/microsoft/mosaic-apim/pull/57).
   - O30 as a [comment](https://github.com/microsoft/mosaic-apim/issues/45#issuecomment-5902625270)
-    on O17's issue.
+    on O17's issue, fixed since in [#58](https://github.com/microsoft/mosaic-apim/pull/58).
   - O1 and O5 together as [#47](https://github.com/microsoft/mosaic-apim/issues/47).
   - #33's two test follow-ups as [#48](https://github.com/microsoft/mosaic-apim/issues/48).
   - The follow-ups to O19 and O23 as [#49](https://github.com/microsoft/mosaic-apim/issues/49),
     with O25 and O26 added in a
     [comment](https://github.com/microsoft/mosaic-apim/issues/49#issuecomment-5901935028).
 
-  O11's and O12's product suggestions wait for their Phase 8 checks, and G6 waits for Phase 8's
-  calls to Grok and Llama.
+  O11's product suggestion waits for its Phase 8 check. O12's check passed (Phase 8), and its
+  product suggestion stands for publications without governed access. G6 looks unnecessary, and
+  R1 confirms it.
 - Unpublish a disposable publication (A15) and confirm that only MOSAIC-created resources are
   removed.
 - Roll back test-only tenant changes from the ledger. Imported and published models stay, since
   they're the goal.
 
-### Phase 10 (later): Gemini and AWS Bedrock ⬜
+### Phase 10 (later): Gemini and AWS Bedrock ⬜ deferred by the environment owner (2026-09-30)
 
 The console can already register an OpenAI-compatible endpoint, storing a Key Vault secret URI
 rather than the key. MOSAIC doesn't discover that endpoint's models, though, and it refuses to
@@ -804,8 +846,8 @@ has passed, and ❌ means the latest run failed on the product gap named.
 | --- | --- | --- | --- |
 | R1 | A granted user reaches every provider by key: Azure OpenAI, Foundry OpenAI, Grok, Llama, DeepSeek and Claude (after G5) | 8 | ⬜ |
 | R2 | A granted user's Entra token works (G4); a token without a grant and a wrong-audience token are denied | 8 | ⬜ |
-| R3 | The workload's client-credentials token and its handed-off key both work | 8 | ⬜ |
-| R4 | Anonymous, invalid-key and cross-subject calls are denied | 8 | ⬜ |
+| R3 | The workload's client-credentials token and its handed-off key both work | 8 | ✅ |
+| R4 | Anonymous, invalid-key and cross-subject calls are denied | 8 | 🔄 |
 | R5 | A shared budget of 2 calls per 300 seconds, spent by primary key and token, returns 429 for the secondary key | 8 | ⬜ |
 | R6 | The tokens-per-minute limit returns 429 with `Retry-After` | 8 | ⬜ |
 | R7 | After revocation propagates, calls fail | 8 | ⬜ |
@@ -829,7 +871,7 @@ be confirmed, or fixed, once the journeys that exercise them have run.
 | O9 | With the Foundry project registered, discovery still suggested its parent account, and registering it succeeded. The second endpoint had the same URL, and syncing it listed the project's six deployments again, each publishable on its own. Registration rejects only an exact resource ID match, and discovery compares exact IDs | G11 refuses overlapping registrations and stops suggesting covered accounts. The duplicate was removed. After Batch 3b, the parent account is no longer suggested, and pasting its ID is refused with a message naming the project |
 | O10 | **Remove** on an endpoint deleted it and its synced models at once, with no confirmation. From the code: the server doesn't check publications, and a publication whose endpoint is gone can't be re-planned or applied ("Model endpoint was not found"), so its access can't change while its API keeps serving. Registering the same resource again restores the same endpoint ID | G11 confirms first and refuses while publications depend on the endpoint. After Batch 3b, **Remove** asks first, lists what goes with the endpoint, and says MOSAIC refuses while a model from it is still published |
 | O11 | A published API exposes every operation of its API shape, whatever the deployment can serve. The Azure OpenAI shape gives `gpt-35-turbo` seven operations: chat completions, completions, embeddings, image generation, audio transcription and translation, and responses. MOSAIC already syncs each deployment's capabilities (A5) but doesn't use them to choose operations | In Phase 8, confirm that a call to an operation the model can't serve fails cleanly at the model. Consider publishing only the operations that match the synced capabilities |
-| O12 | When MOSAIC creates a product, APIM subscribes its own Administrator to it. So each publication without governed access has a second subscription whose key can call the model, besides APIM's all-access key. The activity log shows MOSAIC wrote only its own subscription. APIM's two built-in products got the same subscription when the gateway was created | Governed access already accepts only direct-grant subscriptions, and unpublishing deletes the product with all its subscriptions. In Phase 8, check that APIM's all-access key, the Administrator's key and MOSAIC's bootstrap key are all refused on a governed publication. Reading those keys is a secret read, so it needs approval. MOSAIC could also disable the automatic subscription, or show it in the plan |
+| O12 | When MOSAIC creates a product, APIM subscribes its own Administrator to it. So each publication without governed access has a second subscription whose key can call the model, besides APIM's all-access key. The activity log shows MOSAIC wrote only its own subscription. APIM's two built-in products got the same subscription when the gateway was created | Checked in Phase 8, with approval to read the keys: on a governed publication, APIM's all-access key and the Administrator's subscription are refused with 403, and MOSAIC's suspended bootstrap subscription with 401. Governed access accepts only direct-grant subscriptions, and unpublishing deletes the product with all its subscriptions. The Administrator's key still works on a publication without governed access, so MOSAIC could disable the automatic subscription, or show it in the plan |
 | O13 | When a plan saved in the old order is refused, the review repeats the refusal, "…Re-plan this publication and review the new order before applying.", above a plan the console has already re-planned | G16 titles the refusal "MOSAIC didn't apply the plan you reviewed", keeps the server's reason, and adds "MOSAIC has already re-planned. Review the fresh plan below before you apply it." Its tests cover this. No plan saved in the old order is left to refuse, so a live run sees it only if another refusal happens |
 | O14 | Every model in the portal catalog reads "No summary provided." The API accepts a summary for each catalog entry, and the portal shows it, but the console offers only the visibility select | Let the admin write a summary in the console, or fill a default from the endpoint, model and API shape. Filed as [#42](https://github.com/microsoft/mosaic-apim/issues/42) |
 | O15 | The portal's My requests page heads each request "Model API" and an internal ID, where the catalog shows the model's name. Someone with several requests can't tell them apart. My access heads each grant the same way. The console's list of pending requests does show the name | Fixed in [#35](https://github.com/microsoft/mosaic-apim/pull/35), merged and deployed in Batch 3c. The API names each of the caller's own requests and grants in a new optional field, and both pages show that name, with the kind beside it and the old heading as a fallback. It changes the API and the portal only, so it shipped in an image-only deploy |
@@ -844,10 +886,12 @@ be confirmed, or fixed, once the journeys that exercise them have run.
 | O24 | End-user routes still return other API Management details. My access shows each grant's APIM product and subscription names under "Usage attribution". Since #40 it no longer shows MOSAIC's gateway record ID there, but the route still returns it. The grant and its connection details also return counter-key policy expressions and APIM subscription names that the portal doesn't show. A failed key reveal's error body carries the full Azure Resource Manager URL, which names the Azure subscription, resource group, APIM service and APIM subscription. When APIM refuses to list the key, it adds the service's resource ID. The portal shows its own text for these, but they're visible in the browser's network tools. From the O18 fix's review, not seen live | Decide what an end user needs to identify their usage. Return APIM names to end-user routes only where the portal uses them, and give those routes problem details without upstream URLs, resource IDs or Azure's raw text. The console keeps them. A follow-up gap, not blocking this plan. Filed as [#46](https://github.com/microsoft/mosaic-apim/issues/46) |
 | O25 | More dialogs disable their buttons while they work, as O23's did. In **Review environment suggestions**, **Close** and **Submit selections** are `disabled` while the submission runs, and **Submit selections** stays disabled once it succeeds, because no rows are left. Seen live in A16 after submitting 8 rows: nothing had focus, and Escape didn't close the dialog until Tab brought focus back to **Close**. Nothing announces the success message either, because nothing provides an `AnnounceProvider`. Settings' add, edit and delete environment dialogs do the same in the code; not seen live | O23's fix applies: a busy button keeps focus and is `aria-disabled`, and the outcome takes focus. Added to [#49](https://github.com/microsoft/mosaic-apim/issues/49#issuecomment-5901935028) |
 | O26 | Closing a dialog doesn't return focus to the button that opened it. Console dialogs open from page state, and none uses a `DialogTrigger`, so Fluent returns focus only to an element marked with `useRestoreFocusTarget()`. Only 2 of the console's 18 dialogs have marked openers: the Models page's removal confirmations and the gateway's management-mode dialog. Seen live on the Batch 3d build: closing **Connection info** on Entitlements leaves nothing focused. Closing **Change environment** on an endpoint, or **Import from gateway**, moves focus to **Remove** on the first published model, in another section, because it was the last marked element that had focus. In P5, approving an access request closed the dialog with its opener gone, and nothing had focus. The portal has no dialogs | Mark each opener with `useRestoreFocusTarget()`, and give focus a sensible place when the dialog's action removes its opener, as approving an access request or removing a published model does. Landing on a destructive button nobody chose is worse than losing focus. Added to [#49](https://github.com/microsoft/mosaic-apim/issues/49#issuecomment-5901935028) |
-| O27 | In the Grants table on Entitlements, the Binding badge, a `mosaic-grant-…` subscription name and its source, doesn't wrap. It runs under **Revoke** in the next column. Seen live at 1440 pixels wide with three applied grants, and the README's `console-entitlements` screenshot shows it in its last row | Wrap or truncate the name and show it in full on hover and focus, or give the column a minimum width. A fix changes a pictured page, so it regenerates `console-entitlements`. Filed as [#53](https://github.com/microsoft/mosaic-apim/issues/53) |
+| O27 | In the Grants table on Entitlements, the Binding badge, a `mosaic-grant-…` subscription name and its source, doesn't wrap. It runs under **Revoke** in the next column. Seen live at 1440 pixels wide with three applied grants, and the README's `console-entitlements` screenshot shows it in its last row | Fixed in [#58](https://github.com/microsoft/mosaic-apim/pull/58), not yet deployed. The badge holds only the subscription name and wraps inside its column, with the source on a line of its own beneath. Every binding stays inside its cell at 1280, 1440 and 1920 pixels, in both themes. The regenerated `console-entitlements` screenshot is tall enough to show a bound grant. Filed as [#53](https://github.com/microsoft/mosaic-apim/issues/53) |
 | O28 | A grant's call quota, a number of calls per hour, day, week, month or year, can be set only through the API. The console and the portal display it, but neither **Add entitlement** nor **Approve access request** has a field for it. A weekly call quota's counter key finds the start of the week with `(int)now.DayOfWeek`. API Management's list of types allowed in policy expressions includes the `DateTime.DayOfWeek` property but doesn't name the `System.DayOfWeek` enum it returns, and the APIM fake in the tests doesn't check types. If API Management refuses it, every apply for that model fails and rolls back, as G17's did. From the code and the policy docs, not seen live | Add the call quota to the console's forms, or say there that it's set through the API. Apply a weekly call quota once on a disposable publication, and if API Management refuses it, find the start of the week without `DayOfWeek`. Filed as [#52](https://github.com/microsoft/mosaic-apim/issues/52) |
-| O29 | The portal's header counts the caller's access as "1 entitlements · 0 pending requests", with no singular, and one open request reads "1 pending requests". It's also the only visible place in the portal that says "entitlements"; every page says "grant". Seen in P3 and P5 | Use the singular for one, and the portal's word, such as "1 grant · 1 pending request". A fix changes the portal's pictured pages, so it regenerates their screenshots. Filed as [#55](https://github.com/microsoft/mosaic-apim/issues/55) |
-| O30 | The console's **Pending access requests** table lists each requester by object ID, even one MOSAIC has registered with a label. **Approve** and the banner after it look the requester up and show the label. Seen in P5 | Use the same lookup in the table, with the object ID as secondary text. Unregistered requesters still need O17's fix. Added to [#45](https://github.com/microsoft/mosaic-apim/issues/45#issuecomment-5902625270) |
+| O29 | The portal's header counts the caller's access as "1 entitlements · 0 pending requests", with no singular, and one open request reads "1 pending requests". It's also the only visible place in the portal that says "entitlements"; every page says "grant". Seen in P3 and P5 | Fixed in [#57](https://github.com/microsoft/mosaic-apim/pull/57), not yet deployed. The header says "grant" and "request", in the singular for one, such as "1 grant · 1 pending request". The portal's screenshots are regenerated. Filed as [#55](https://github.com/microsoft/mosaic-apim/issues/55) |
+| O30 | The console's **Pending access requests** table lists each requester by object ID, even one MOSAIC has registered with a label. **Approve** and the banner after it look the requester up and show the label. Seen in P5 | Fixed in [#58](https://github.com/microsoft/mosaic-apim/pull/58), not yet deployed. The table uses Approve's lookup and shows a registered requester's label, with the object ID beneath. Unregistered requesters still need O17's fix. Added to [#45](https://github.com/microsoft/mosaic-apim/issues/45#issuecomment-5902625270) |
+| O31 | In the console's **Pending access requests** table, **Approve** and **Deny** stick out about 15 pixels past the table's right edge at 1280 pixels wide. Found in #58's width checks on the demo estate | Keep the actions inside the table at every width. A fix is in progress |
+| O32 | **Approve access request** shows the requester's object ID twice when the matching principal has no label and its recorded object ID differs in letter case from the request's, because the dialog compares the two case-sensitively. Found in #58's review | Compare object IDs without regard to case, as the table's lookup does. A fix is in progress |
 The Phase 3 check on whether the gateway role recommendation narrows once the account kind is
 known led to G8: it does narrow, and the check then rejects the broader role it recommended
 before.
