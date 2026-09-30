@@ -69,6 +69,7 @@ import type {
   QuotaPeriod,
   Publication,
   PublishPlan,
+  Principal,
   PrincipalKind,
   ResolvedEntitlement,
 } from '../types'
@@ -105,6 +106,18 @@ interface Banner {
   text: string
   /** A published model whose plan must be reviewed and applied before the change takes effect. */
   review?: { publicationId: string; displayName: string }
+}
+
+/**
+ * The registered principal who made a request: the one the request recorded, or the one with the
+ * requester's Entra object ID in any letter case. Undefined for a requester MOSAIC doesn't know,
+ * and while principals are loading or failed to load.
+ */
+function requestingPrincipal(accessRequest: AccessRequest, principals: Principal[] = []) {
+  const objectId = accessRequest.requesterObjectId.toLowerCase()
+  return principals.find(
+    (item) => item.id === accessRequest.requesterPrincipalId || item.objectId.toLowerCase() === objectId,
+  )
 }
 
 function requestResourceLabel(accessRequest: AccessRequest, fallback?: string) {
@@ -379,10 +392,7 @@ export function EntitlementsPage() {
   }
 
   function openApproval(accessRequest: AccessRequest) {
-    const objectId = accessRequest.requesterObjectId.toLowerCase()
-    const principal = (principals.data ?? []).find(
-      (item) => item.id === accessRequest.requesterPrincipalId || item.objectId.toLowerCase() === objectId,
-    )
+    const principal = requestingPrincipal(accessRequest, principals.data)
     const subject: EntitlementSubject = {
       kind: principal ? subjectKindForPrincipal(principal.kind) : 'user',
       id: principal?.id ?? accessRequest.requesterObjectId,
@@ -732,10 +742,16 @@ export function EntitlementsPage() {
                       <TableCell><EntitlementAccessState entitlement={entitlement} /></TableCell>
                       <TableCell>
                         {entitlement.binding ? (
-                          <Badge appearance="tint" className={styles.statusReady}>
-                            {entitlement.binding.apimSubscriptionName ?? 'Recorded'} ·{' '}
-                            {entitlement.binding.source}
-                          </Badge>
+                          <div className={styles.cellStack}>
+                            <Badge
+                              appearance="tint"
+                              shape="rounded"
+                              className={`${styles.statusReady} ${styles.bindingBadge}`}
+                            >
+                              {entitlement.binding.apimSubscriptionName ?? 'Recorded'}
+                            </Badge>
+                            <Text className={styles.secondaryCell}>{entitlement.binding.source}</Text>
+                          </div>
                         ) : (
                           <Badge appearance="tint" className={styles.statusAttention}>
                             Not bound
@@ -903,9 +919,21 @@ export function EntitlementsPage() {
                     {accessRequests.data.map((accessRequest) => (
                       <TableRow key={accessRequest.id}>
                         <TableCell>
-                          <Text className={styles.codeValue}>
-                            {accessRequest.requesterObjectId}
-                          </Text>
+                          {(() => {
+                            const label = requestingPrincipal(accessRequest, principals.data)?.label
+                            return label ? (
+                              <div className={styles.cellStack}>
+                                <Text className={styles.primaryCell}>{label}</Text>
+                                <Text className={styles.secondaryCell}>
+                                  {accessRequest.requesterObjectId}
+                                </Text>
+                              </div>
+                            ) : (
+                              <Text className={styles.codeValue}>
+                                {accessRequest.requesterObjectId}
+                              </Text>
+                            )
+                          })()}
                         </TableCell>
                         <TableCell>
                           <div className={styles.cellStack}>
