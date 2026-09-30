@@ -39,6 +39,68 @@ export interface JourneyRoles {
   outsider?: string
 }
 
+/** A model deployment named by its manifest endpoint key and deployment name. */
+export interface SuiteModel {
+  endpoint: string
+  deployment: string
+}
+
+/** A grant on a model, held by a persona. */
+export interface SuiteGrant extends SuiteModel {
+  persona: string
+}
+
+export interface SuiteLimits {
+  tokensPerMinute?: number
+  calls?: number
+  perSeconds?: number
+}
+
+/** The grants the runtime journeys check. They already exist; the suite only reads them. */
+export interface SuiteRuntime {
+  /** Grants held by roles.user, on models the manifest publishes. */
+  userGrants: SuiteModel[]
+  /** The workload's grant. */
+  applicationGrant?: SuiteModel
+  /** A grant held by someone other than roles.user, which the user must not be able to read. */
+  foreignGrant?: SuiteGrant
+  apiVersion?: string
+  modelsApiVersion?: string
+  chatTokenParameter?: 'max_tokens' | 'max_completion_tokens'
+}
+
+/** A deployment the suite publishes, grants, unpublishes and removes again. It is never one the manifest keeps. */
+export interface SuiteDisposablePublication extends SuiteModel {
+  /** Requests access to it in the portal and gets the throwaway grant. Defaults to roles.user. */
+  requester: string
+  limits: SuiteLimits
+}
+
+/** R5's throwaway grant: exactly the verifier's shared budget of 2 calls per 300 seconds. */
+export interface SuiteSharedBudget extends SuiteGrant {
+  calls: number
+  perSeconds: number
+}
+
+/** R6's throwaway grant: a tokens-per-minute limit no higher than the verifier's ceiling. */
+export interface SuiteTokenLimit extends SuiteGrant {
+  tokensPerMinute: number
+}
+
+export interface SuiteDisposables {
+  publication?: SuiteDisposablePublication
+  sharedBudget?: SuiteSharedBudget
+  tokenLimit?: SuiteTokenLimit
+}
+
+/** What the ordered specs act on. Journeys whose part is missing are skipped. */
+export interface SuiteTargets {
+  /** The MOSAIC gateway, by name, that the suite publishes through. */
+  gateway: string
+  runtime?: SuiteRuntime
+  disposable?: SuiteDisposables
+}
+
 export interface Targets {
   environment: string
   tenantId: string
@@ -48,6 +110,7 @@ export interface Targets {
   workload?: { displayName: string; appId?: string }
   endpoints: Record<string, EndpointTarget>
   negatives?: Record<string, NegativeTarget>
+  suite?: SuiteTargets
 }
 
 export class TargetsError extends Error {}
@@ -150,6 +213,195 @@ function parseEndpoint(value: unknown, path: string): EndpointTarget {
   }
 }
 
+/** The verifier's shared-budget proof needs exactly this call limit (BUDGET_CALLS and BUDGET_PERIOD_SECONDS). */
+export const sharedBudgetCalls = 2
+export const sharedBudgetSeconds = 300
+/** The verifier's token-limit proof refuses a higher limit (TOKEN_LIMIT_CEILING). */
+export const tokenLimitCeiling = 100
+
+const apiVersionPattern = /^[A-Za-z0-9][A-Za-z0-9.-]{0,31}$/
+
+function positiveInteger(value: unknown, path: string, max = 1_000_000_000): number {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > max) {
+    throw new TargetsError(`${path} must be a whole number from 1 to ${max}`)
+  }
+  return value
+}
+
+function optionalPositiveInteger(value: unknown, path: string): number | undefined {
+  return value === undefined ? undefined : positiveInteger(value, path)
+}
+
+export function sameModel(first: SuiteModel, second: SuiteModel): boolean {
+  return first.endpoint === second.endpoint && first.deployment === second.deployment
+}
+
+export function modelLabel(model: SuiteModel): string {
+  return `${model.endpoint}/${model.deployment}`
+}
+
+interface SuiteContext {
+  endpoints: Record<string, EndpointTarget>
+  personas: Record<string, PersonaTarget>
+  roles: Partial<JourneyRoles>
+  workload?: Targets['workload']
+}
+
+function suiteModel(value: unknown, path: string, context: SuiteContext): SuiteModel {
+  const ref = requireObject(value, path)
+  const endpoint = requireString(ref.endpoint, `${path}.endpoint`)
+  if (!Object.hasOwn(context.endpoints, endpoint)) {
+    throw new TargetsError(`${path}.endpoint references unknown endpoint "${endpoint}"`)
+  }
+  return { endpoint, deployment: requireString(ref.deployment, `${path}.deployment`) }
+}
+
+function publishedModel(value: unknown, path: string, context: SuiteContext): SuiteModel {
+  const model = suiteModel(value, path, context)
+  if (!context.endpoints[model.endpoint].publish.includes(model.deployment)) {
+    throw new TargetsError(`${path}.deployment must be one of targets.endpoints.${model.endpoint}.publish`)
+  }
+  return model
+}
+
+function suitePersona(value: unknown, path: string, context: SuiteContext, needsRole = true): string {
+  const key = requireString(value, path)
+  if (!Object.hasOwn(context.personas, key)) throw new TargetsError(`${path} references unknown persona "${key}"`)
+  if (needsRole && context.personas[key].expectedRole === 'None') {
+    throw new TargetsError(`${path} must be a persona with a MOSAIC role, not "${key}"`)
+  }
+  return key
+}
+
+function parseSuiteRuntime(value: unknown, path: string, context: SuiteContext): SuiteRuntime {
+  const runtime = requireObject(value, path)
+  if (!Array.isArray(runtime.userGrants) || runtime.userGrants.length === 0) {
+    throw new TargetsError(`${path}.userGrants must be a non-empty array`)
+  }
+  const userGrants = runtime.userGrants.map((item, index) => publishedModel(item, `${path}.userGrants[${index}]`, context))
+  userGrants.forEach((model, index) => {
+    if (userGrants.findIndex((other) => sameModel(other, model)) !== index) {
+      throw new TargetsError(`${path}.userGrants lists ${modelLabel(model)} more than once`)
+    }
+  })
+  let applicationGrant: SuiteModel | undefined
+  if (runtime.applicationGrant !== undefined) {
+    if (!context.workload) throw new TargetsError(`${path}.applicationGrant needs targets.workload`)
+    applicationGrant = publishedModel(runtime.applicationGrant, `${path}.applicationGrant`, context)
+  }
+  let foreignGrant: SuiteGrant | undefined
+  if (runtime.foreignGrant !== undefined) {
+    const grantPath = `${path}.foreignGrant`
+    const persona = suitePersona(requireObject(runtime.foreignGrant, grantPath).persona, `${grantPath}.persona`, context, false)
+    const user = context.roles.user as string
+    if (persona === user || context.personas[persona].upn.toLowerCase() === context.personas[user].upn.toLowerCase()) {
+      throw new TargetsError(`${grantPath}.persona must be someone other than roles.user`)
+    }
+    foreignGrant = { persona, ...publishedModel(runtime.foreignGrant, grantPath, context) }
+  }
+  const version = (name: 'apiVersion' | 'modelsApiVersion') => {
+    const value = optionalString(runtime[name], `${path}.${name}`)
+    if (value !== undefined && !apiVersionPattern.test(value)) throw new TargetsError(`${path}.${name} must be an API version`)
+    return value
+  }
+  return {
+    userGrants,
+    applicationGrant,
+    foreignGrant,
+    apiVersion: version('apiVersion'),
+    modelsApiVersion: version('modelsApiVersion'),
+    chatTokenParameter: runtime.chatTokenParameter === undefined
+      ? undefined
+      : requireOneOf(runtime.chatTokenParameter, ['max_tokens', 'max_completion_tokens'] as const, `${path}.chatTokenParameter`),
+  }
+}
+
+function parseSuiteLimits(value: unknown, path: string): SuiteLimits {
+  if (value === undefined) return {}
+  const limits = requireObject(value, path)
+  const parsed = {
+    tokensPerMinute: optionalPositiveInteger(limits.tokensPerMinute, `${path}.tokensPerMinute`),
+    calls: optionalPositiveInteger(limits.calls, `${path}.calls`),
+    perSeconds: optionalPositiveInteger(limits.perSeconds, `${path}.perSeconds`),
+  }
+  if ((parsed.calls === undefined) !== (parsed.perSeconds === undefined)) {
+    throw new TargetsError(`${path}.calls and ${path}.perSeconds go together`)
+  }
+  return parsed
+}
+
+function parseSuiteDisposables(value: unknown, path: string, context: SuiteContext, runtime?: SuiteRuntime): SuiteDisposables {
+  const input = requireObject(value, path)
+  const disposables: SuiteDisposables = {}
+  if (input.publication !== undefined) {
+    const publicationPath = `${path}.publication`
+    const publication = requireObject(input.publication, publicationPath)
+    const model = suiteModel(publication, publicationPath, context)
+    // The suite unpublishes and removes this one, so it must never be a model the environment keeps.
+    if (context.endpoints[model.endpoint].publish.includes(model.deployment)) {
+      throw new TargetsError(`${publicationPath}.deployment must not be in targets.endpoints.${model.endpoint}.publish`)
+    }
+    disposables.publication = {
+      ...model,
+      requester: publication.requester === undefined
+        ? suitePersona(context.roles.user, `${publicationPath}.requester`, context)
+        : suitePersona(publication.requester, `${publicationPath}.requester`, context),
+      limits: parseSuiteLimits(publication.limits, `${publicationPath}.limits`),
+    }
+  }
+  const grant = (name: 'sharedBudget' | 'tokenLimit'): { grant: SuiteGrant; input: Json } => {
+    const grantPath = `${path}.${name}`
+    const grantInput = requireObject(input[name], grantPath)
+    return {
+      grant: { persona: suitePersona(grantInput.persona, `${grantPath}.persona`, context), ...publishedModel(grantInput, grantPath, context) },
+      input: grantInput,
+    }
+  }
+  if (input.sharedBudget !== undefined) {
+    const { grant: sharedBudget, input: grantInput } = grant('sharedBudget')
+    const calls = positiveInteger(grantInput.calls, `${path}.sharedBudget.calls`)
+    const perSeconds = positiveInteger(grantInput.perSeconds, `${path}.sharedBudget.perSeconds`)
+    if (calls !== sharedBudgetCalls || perSeconds !== sharedBudgetSeconds) {
+      throw new TargetsError(`${path}.sharedBudget must allow ${sharedBudgetCalls} calls per ${sharedBudgetSeconds} seconds, the verifier's proof`)
+    }
+    disposables.sharedBudget = { ...sharedBudget, calls, perSeconds }
+  }
+  if (input.tokenLimit !== undefined) {
+    const { grant: tokenLimit, input: grantInput } = grant('tokenLimit')
+    disposables.tokenLimit = {
+      ...tokenLimit,
+      tokensPerMinute: positiveInteger(grantInput.tokensPerMinute, `${path}.tokenLimit.tokensPerMinute`, tokenLimitCeiling),
+    }
+  }
+  const { sharedBudget, tokenLimit } = disposables
+  if (sharedBudget && tokenLimit && sameModel(sharedBudget, tokenLimit)) {
+    throw new TargetsError(`${path}.sharedBudget and ${path}.tokenLimit must be on different models`)
+  }
+  // Each run re-enables and revokes these grants and applies their models' plans, and every apply briefly refuses
+  // calls to the model, so they mustn't be models the runtime journeys rely on.
+  const relied = [...(runtime?.userGrants ?? []), runtime?.applicationGrant, runtime?.foreignGrant].filter(
+    (model): model is SuiteModel => model !== undefined,
+  )
+  for (const [name, throwaway] of [['sharedBudget', sharedBudget], ['tokenLimit', tokenLimit]] as const) {
+    if (throwaway && relied.some((model) => sameModel(model, throwaway))) {
+      throw new TargetsError(`${path}.${name} must be on a model that suite.runtime doesn't use, because the suite applies its plan on every run`)
+    }
+  }
+  return disposables
+}
+
+function parseSuite(value: unknown, context: SuiteContext): SuiteTargets {
+  const suite = requireObject(value, 'targets.suite')
+  const runtime = suite.runtime === undefined ? undefined : parseSuiteRuntime(suite.runtime, 'targets.suite.runtime', context)
+  return {
+    gateway: requireString(suite.gateway, 'targets.suite.gateway'),
+    runtime,
+    disposable: suite.disposable === undefined
+      ? undefined
+      : parseSuiteDisposables(suite.disposable, 'targets.suite.disposable', context, runtime),
+  }
+}
+
 export function parseTargets(input: unknown): Targets {
   const root = requireObject(input, 'targets')
   const tenantId = requireString(root.tenantId, 'targets.tenantId')
@@ -222,6 +474,7 @@ export function parseTargets(input: unknown): Targets {
     workload,
     endpoints,
     negatives,
+    suite: root.suite === undefined ? undefined : parseSuite(root.suite, { endpoints, personas, roles, workload }),
   }
 }
 

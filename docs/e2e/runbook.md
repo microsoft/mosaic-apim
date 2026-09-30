@@ -34,6 +34,8 @@ Edit `targets.local.json`, which git ignores:
 - `roles`: maps the journey roles (`admin`, `user`, `guest`, `noRole`, `outsider`) to persona keys.
 - `endpoints` and `negatives`: resource IDs for Azure OpenAI or Foundry accounts, how each one is
   registered (`paste` or `suggestion`), and the deployments to publish.
+- `suite` (optional): what the ordered specs act on, described in
+  [Run the ordered suite](#run-the-ordered-suite).
 
 The manifest is checked on load. The error names the field to fix if an origin isn't a bare
 origin, a persona key is invalid, a role points to a missing persona, or a resource ID isn't a
@@ -137,13 +139,138 @@ $env:MOSAIC_E2E_ALLOW_WRITES = '1'; npm test
 | `MOSAIC_E2E_BROWSER_CHANNEL` | Default browser channel for personas that don't set one |
 | `MOSAIC_E2E_TARGETS` | Path to a manifest other than `targets.local.json` |
 | `MOSAIC_E2E_STATE_DIR`, `MOSAIC_E2E_ARTIFACTS_DIR` | Move profiles, driver state or artifacts |
-| `MOSAIC_E2E_PYTHON` | The Python that the live driver's `verify` runs the verifier with. Defaults to `python`, which needs `httpx` |
+| `MOSAIC_E2E_PYTHON` | The Python that runs the verifier, for the live driver's `verify` and the suite's runtime journeys. Defaults to `python`, which needs `httpx` |
 
 Specs run serially with a single worker, because journeys build on each other and share
 profiles. Traces and video are off. On failure, the suite attaches a masked screenshot of each
 open persona page and, for MOSAIC pages, a redacted accessibility snapshot. It also redacts the
 test's errors before Playwright writes them to `error-context.md` and the console. Playwright's
 own page snapshot is turned off (`PLAYWRIGHT_NO_COPY_PROMPT`), because it isn't redacted.
+
+## Run the ordered suite
+
+The specs in `specs/` turn the live run's journeys into tests that can run again and again against
+the same environment. Playwright runs them in file order. The journey IDs come from the
+[journey matrix](roadmap.md#journey-matrix):
+
+| Spec | Journeys | Tags |
+| --- | --- | --- |
+| `00-smoke` | S1, S2, A0, A1, P0 and P1: the apps and the API answer, and turn away who they should | `@smoke` |
+| `10-endpoints` | A2 to A6: discovery, registration, synced models, and whether MOSAIC and the gateway can reach each endpoint | `@console` |
+| `20-publish` | A7 to A9: the managed gateway, publishing, and catalog visibility | `@console` |
+| `30-access` | A10 to A12 and A16: identities, governed access, the workload's key handoff, and environments | `@console` |
+| `40-portal` | P0 to P9 and A13: the catalog, My access, keys, requests, isolation between people, and usage | `@portal` |
+| `50-runtime` | R1 to R6, through the runtime verifier | `@runtime` |
+| `60-lifecycle` | A14 and R7: turning a method off and on, revoking a grant and enabling it again, and the gateway refusing a revoked grant | `@console`, `@writes` |
+| `90-cleanup` | A15, and putting back everything else the suite changed | `@console`, `@writes`, `@cleanup` |
+
+A test that changes MOSAIC or Azure is also tagged `@writes`, and one that runs the runtime
+verifier `@runtime`, whichever spec it's in. Pick what to run with a path, `--grep` or
+`--grep-invert`:
+
+```powershell
+npm test -- --grep-invert "@writes"         # only reads; changes nothing
+npm test -- --grep-invert "@runtime"        # runs no verifier and sends no model requests
+npm test -- --grep "@portal"
+npm test -- specs/60-lifecycle.spec.ts
+```
+
+**Gates.** A test that isn't allowed to run skips, and names the variable it needs:
+
+- Writes need `MOSAIC_E2E_ALLOW_WRITES=1`.
+- `@runtime` tests run `scripts\verify_model_access.py` the way the live driver's `verify` does (see
+  [Verify runtime access](#verify-runtime-access)): the MOSAIC API tokens come from the personas'
+  browsers, device codes are entered in the right persona's browser, and every line is redacted.
+  All of them except P7's isolation check send billed model requests, so they need
+  `MOSAIC_E2E_SEND_MODEL_REQUESTS=1`.
+- A grant that accepts Microsoft Entra tokens needs its holder's model token. With
+  `MOSAIC_E2E_INTERACTIVE=1` the verifier signs the holder in with a device code, and a person
+  confirms it there. Otherwise set `MOSAIC_SMOKE_USER_RUNTIME_TOKEN` to the holder's token; a token
+  that belongs to someone else isn't passed on. R1's ungranted-user check signs in `roles.outsider`,
+  or `roles.noRole`, the same way, or uses `MOSAIC_SMOKE_UNGRANTED_USER_RUNTIME_TOKEN`. A check the
+  verifier can't make is left out and noted in the report, never counted as passed.
+- R3 needs the workload's token when its grant accepts Entra tokens: set
+  `MOSAIC_SMOKE_APPLICATION_CLIENT_ID` and `MOSAIC_SMOKE_APPLICATION_CLIENT_SECRET`, or
+  `MOSAIC_SMOKE_APPLICATION_RUNTIME_TOKEN`.
+
+**The manifest's `suite` section** names what the specs act on, and `targets.example.json` shows
+every field. Each part is optional: a journey whose part is missing skips, and names the field.
+
+| Field | Journeys | What it names |
+| --- | --- | --- |
+| `gateway` | Most tests in 10 to 90 | The MOSAIC gateway, by name, that the suite publishes through |
+| `runtime.userGrants` | A11, P3, P6, R1, R2, R4 | Models on which `roles.user` already holds an applied grant. Only read |
+| `runtime.applicationGrant` | A11, A12, R3 | The model on which the workload in `targets.workload` holds its grant. Only read |
+| `runtime.foreignGrant` | A11, P7 | A grant that a persona other than `roles.user` holds, and the user must not be able to reach. Only read |
+| `runtime.apiVersion`, `runtime.modelsApiVersion`, `runtime.chatTokenParameter` | R1 to R7, P7 | The verifier's flags of the same names |
+| `disposable.publication` | The `@writes` tests of 20 to 60, and A15 | A deployment that is **not** in its endpoint's `publish` list, with a `requester` persona and the `limits` of the grant they're given |
+| `disposable.sharedBudget` | R5 | A persona and a published model for a throwaway grant of exactly 2 calls per 300 seconds |
+| `disposable.tokenLimit` | R6 | A persona and a published model for a throwaway grant of at most 100 tokens per minute |
+
+The manifest is checked on load. `sharedBudget` and `tokenLimit` must be on different models, and
+on neither of the `runtime` models, because each run applies their models' access plans, and every
+apply briefly refuses calls to the model.
+
+**How a run stays repeatable:**
+
+- Tests over what the environment keeps, such as the registered endpoints, the models in each
+  endpoint's `publish` list and the grants in `runtime`, only read. The suite never re-plans or
+  unpublishes a kept model, and never deletes an identity.
+- Write tests act only on the disposable publication and the throwaway grants. Each one checks the
+  state first, and either resets what an earlier run left half done, or skips and says to run
+  `90-cleanup` first.
+- Every change goes through "Review model changes" or the publish plan, and "Apply plan". The test
+  stops before applying if the plan, or the console's list of steps, reaches beyond the model and
+  grant being changed. Unpublishing goes through its own review in the same way, and stops before
+  "Unpublish model" unless the plan deletes exactly what MOSAIC created for the disposable model. A
+  call that should be refused but gets a 2xx response fails the test.
+- The disposable model is published by 20, governed by 30, requested and granted in 40, changed
+  and revoked in 60, and unpublished by 90.
+- The throwaway grants for R5 and R6 are made once and reused. Each run enables the grant and
+  applies it, runs the proof, then revokes the grant and applies that, even if the proof failed.
+  Between runs they stay disabled and revoked.
+- What the suite makes is named or noted so that cleanup can find it: requests start with
+  `E2E suite` and end with "Safe to deny.", grants carry a note naming the suite, and the
+  disposable publication and its model API are named `E2E suite …`. Access requests stay in
+  MOSAIC's history.
+
+**Cleanup and recovery.** `90-cleanup` puts back what the suite changed. It denies the suite's
+open requests and unpublishes the disposable model (A15). Before it confirms with "Unpublish
+model", the unpublish review must list only the API Management resources MOSAIC created for that
+model, and afterwards the model's row must read "Unpublished". Cleanup then removes its
+publication, grants and model API. It also revokes any suite grant that isn't at rest, and
+removes any endpoint registration named `E2E suite …`. Two things stay by design: the access
+requests in MOSAIC's history, and the R5 and R6 grants, disabled and revoked, because MOSAIC keeps
+a disabled grant until its model is unpublished. The next run enables them again. Cleanup fails,
+rather than deleting, if an identity named `E2E suite …` is left: that one shares its object ID
+with a real person, so delete it on the Identity page by hand. Its tests don't depend on each
+other, so it can run on its own after a failed run:
+
+```powershell
+$env:MOSAIC_E2E_ALLOW_WRITES = '1'
+npm test -- specs/90-cleanup.spec.ts        # or: npm test -- --grep "@cleanup"
+```
+
+If a model's access is still applying, cleanup stops and says so. Let the apply finish, or
+recover it on the Entitlements page, then run it again.
+
+**Timing:**
+
+- The suite waits up to 20 minutes for MOSAIC to apply a plan, and up to 5 more for the model's
+  access and each grant to settle. A test that applies has 45 minutes in all, and a runtime test
+  adds the verifier's own time limit to that.
+- R5's budget is per 300 seconds, so leave 5 minutes before running R5 again.
+- R7 starts the verifier's revocation watch, then revokes the grant and applies the revocation.
+  The watch lasts 15 minutes, so the apply must finish within that.
+
+**Left for a person:**
+
+- R8, the calls in Application Insights and Log Analytics.
+- The parts of A4, A6 and A7 that need an Azure role to be missing first, and A16's step of
+  classifying both sides of a pairing. The suite checks the state after them.
+- P2 needs a persona with the User role, other than `roles.user`, who holds no grant. In a steady
+  environment each one holds some, so P2 usually skips. P4 checks the same empty state on the
+  disposable model before its requester asks for it.
 
 ## Verify runtime access
 
@@ -252,6 +379,7 @@ won't last until the timeout, the run stops before waiting and names the token, 
 | `Could not run the verifier with "python"` | Install `httpx` for that Python, or set `MOSAIC_E2E_PYTHON` to one that has it |
 | `The MOSAIC API token <persona>'s browser sent is for a different account` | That profile is signed in as someone else. Delete its profile and sign in again as the right account |
 | `The MOSAIC API token … expires in N seconds` | Entra issues the token when the driver signs the persona in again, so this comes from a short token lifetime policy or a long revocation watch. Lower `--revocation-timeout` |
+| `Stopped before Apply on …` or `Stopped before Unpublish model on …` | The plan, or the review dialog, reached beyond the model and grant the test was changing, so the suite closed it without running the plan. Before Apply, something else is saved on that model and not yet applied. Review it on the Entitlements page, and apply or undo it by hand before running the test again. Before Unpublish model, the unpublish review didn't match what MOSAIC created for the disposable model. Open Unpublish on its row on the Models page, read the review and cancel it, and don't run `90-cleanup` again until the review lists only that model's resources |
 
 ## Quality checks
 

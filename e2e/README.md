@@ -11,9 +11,11 @@ npm run login -- admin                              # sign in once per persona
 npm test
 ```
 
-- [Runbook](../docs/e2e/runbook.md): setup, persona sign-in, the live driver, flags, secret hygiene,
-  and troubleshooting.
+- [Runbook](../docs/e2e/runbook.md): setup, persona sign-in, the live driver, flags, the ordered
+  suite and its cleanup, secret hygiene, and troubleshooting.
 - [Roadmap](../docs/e2e/roadmap.md): the phases, the journey matrix, and the product gaps.
 
-Layout: `src/` holds the shared library, `tools/` the live driver, drive and login CLIs, `specs/`
-the Playwright journeys, and `tests/` the harness unit tests.
+Layout: `src/` holds the shared library, with the console and portal page objects in `src/pages/`,
+the journeys the specs share in `src/journeys.ts`, and the runtime verifier runner in
+`src/runtime.ts`. `tools/` holds the live driver, drive and login CLIs, `specs/` the ordered
+Playwright journeys from `00-smoke` to `90-cleanup`, and `tests/` the harness unit tests.

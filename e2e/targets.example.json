@@ -73,5 +73,29 @@
       "resourceId": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-private/providers/Microsoft.CognitiveServices/accounts/aoai-private",
       "reason": "Public network access is disabled, so the gateway cannot reach it."
     }
+  },
+  "suite": {
+    "gateway": "contoso-apim",
+    "runtime": {
+      "userGrants": [
+        { "endpoint": "aoai-east", "deployment": "gpt-4.1-mini" },
+        { "endpoint": "foundry-partners", "deployment": "grok-4.3" }
+      ],
+      "applicationGrant": { "endpoint": "aoai-east", "deployment": "gpt-4.1-mini" },
+      "foreignGrant": { "persona": "guest", "endpoint": "aoai-west", "deployment": "o4-mini" },
+      "apiVersion": "2024-10-21",
+      "modelsApiVersion": "2024-05-01-preview",
+      "chatTokenParameter": "max_completion_tokens"
+    },
+    "disposable": {
+      "publication": {
+        "endpoint": "aoai-west",
+        "deployment": "gpt-4.1-nano",
+        "requester": "guest",
+        "limits": { "tokensPerMinute": 1000, "calls": 10, "perSeconds": 60 }
+      },
+      "sharedBudget": { "persona": "user-a", "endpoint": "aoai-east", "deployment": "gpt-4o", "calls": 2, "perSeconds": 300 },
+      "tokenLimit": { "persona": "user-a", "endpoint": "foundry-partners", "deployment": "Llama-3.3-70B-Instruct", "tokensPerMinute": 100 }
+    }
   }
 }
