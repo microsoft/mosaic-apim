@@ -390,6 +390,8 @@ SHOTS: list[Shot] = [
         "light",
         "Contoso Support Copilot",
         actions=(scroll_to_text("Desired intent and last recorded", margin=96),),
+        # Tall enough to include the first APIM binding, on the eighth grant, beside its actions.
+        height=1384,
     ),
     Shot(
         "console-overlapping-grants",

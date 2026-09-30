@@ -32,6 +32,7 @@ import { MyRequestsPage } from './pages/MyRequestsPage'
 import { UsagePage } from './pages/UsagePage'
 import { runtimeConfig } from './runtime-config'
 import { MosaicThemeProvider } from './theme'
+import { formatCount } from './usage-format'
 import './index.css'
 
 interface NavigationItem {
@@ -68,6 +69,8 @@ function PortalShell() {
   const profile = useQuery({ queryKey: ['portal', 'profile'], queryFn: api.getProfile })
   const accountName = profile.data?.displayLabel ?? accounts[0]?.name ?? 'MOSAIC user'
   const initials = useMemo(() => initialsFor(accountName), [accountName])
+  const grants = formatCount(profile.data?.entitlementCount ?? 0, 'grant')
+  const pendingRequests = formatCount(profile.data?.pendingRequestCount ?? 0, 'pending request')
   const closeNavigation = () => setMobileNavigationOpen(false)
   const signOut = () => void instance.logoutRedirect()
 
@@ -122,9 +125,7 @@ function PortalShell() {
           <span className="topbar-avatar">{initials}</span>
           <span>
             <strong>{accountName}</strong>
-            <small>
-              {profile.isLoading ? 'Checking access' : `${profile.data?.entitlementCount ?? 0} entitlements · ${profile.data?.pendingRequestCount ?? 0} pending requests`}
-            </small>
+            <small>{profile.isLoading ? 'Checking access' : `${grants} · ${pendingRequests}`}</small>
           </span>
           {profile.data?.isAdmin && <Badge appearance="tint">Admin allowed</Badge>}
         </div>

@@ -33,8 +33,12 @@ import { ErrorState } from './AsyncState'
 import styles from '../pages/EntitlementsPage.module.css'
 
 export interface ApprovalRequester {
-  /** The principal's label when MOSAIC knows the requester, otherwise their Entra object ID. */
+  /**
+   * The registered principal's label. Otherwise `objectId`: the requester isn't registered, or their
+   * principal has no label.
+   */
   label: string
+  /** The requester's Entra object ID, as the request recorded it. */
   objectId: string
   registered: boolean
 }
@@ -146,7 +150,8 @@ export function ApproveAccessRequestDialog({
                 <div>
                   <dt>Requester</dt>
                   <dd className={styles.cellStack}>
-                    {requester.label !== requester.objectId && (
+                    {/* Entra object IDs are GUIDs, so a label that matches the ID in any letter case is the ID again. */}
+                    {requester.label.toLowerCase() !== requester.objectId.toLowerCase() && (
                       <Text className={styles.primaryCell}>{requester.label}</Text>
                     )}
                     <Text className={styles.codeValue}>{requester.objectId}</Text>

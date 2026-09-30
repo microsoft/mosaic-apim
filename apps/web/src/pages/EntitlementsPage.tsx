@@ -69,6 +69,7 @@ import type {
   QuotaPeriod,
   Publication,
   PublishPlan,
+  Principal,
   PrincipalKind,
   ResolvedEntitlement,
 } from '../types'
@@ -105,6 +106,18 @@ interface Banner {
   text: string
   /** A published model whose plan must be reviewed and applied before the change takes effect. */
   review?: { publicationId: string; displayName: string }
+}
+
+/**
+ * The registered principal who made a request: the one the request recorded, or the one with the
+ * requester's Entra object ID in any letter case. Undefined for a requester MOSAIC doesn't know,
+ * and while principals are loading or failed to load.
+ */
+function requestingPrincipal(accessRequest: AccessRequest, principals: Principal[] = []) {
+  const objectId = accessRequest.requesterObjectId.toLowerCase()
+  return principals.find(
+    (item) => item.id === accessRequest.requesterPrincipalId || item.objectId.toLowerCase() === objectId,
+  )
 }
 
 function requestResourceLabel(accessRequest: AccessRequest, fallback?: string) {
@@ -379,10 +392,7 @@ export function EntitlementsPage() {
   }
 
   function openApproval(accessRequest: AccessRequest) {
-    const objectId = accessRequest.requesterObjectId.toLowerCase()
-    const principal = (principals.data ?? []).find(
-      (item) => item.id === accessRequest.requesterPrincipalId || item.objectId.toLowerCase() === objectId,
-    )
+    const principal = requestingPrincipal(accessRequest, principals.data)
     const subject: EntitlementSubject = {
       kind: principal ? subjectKindForPrincipal(principal.kind) : 'user',
       id: principal?.id ?? accessRequest.requesterObjectId,
@@ -393,7 +403,7 @@ export function EntitlementsPage() {
     setApproving({
       accessRequest,
       requester: {
-        label: principal?.label ?? principal?.objectId ?? accessRequest.requesterObjectId,
+        label: principal?.label || accessRequest.requesterObjectId,
         objectId: accessRequest.requesterObjectId,
         registered: Boolean(principal),
       },
@@ -735,12 +745,13 @@ export function EntitlementsPage() {
                           <div className={styles.cellStack}>
                             <Badge
                               appearance="tint"
-                              className={`${styles.stateBadge} ${styles.statusReady}`}
+                              shape="rounded"
+                              className={`${styles.statusReady} ${styles.bindingBadge}`}
                             >
                               {entitlement.binding.apimSubscriptionName ??
-                                (entitlement.binding.attributionKey ? 'Gateway log' : 'Recorded')}{' '}
-                              · {entitlement.binding.source}
+                                (entitlement.binding.attributionKey ? 'Gateway log' : 'Recorded')}
                             </Badge>
+                            <Text className={styles.secondaryCell}>{entitlement.binding.source}</Text>
                           </div>
                         ) : (
                           <Badge appearance="tint" className={styles.statusAttention}>
@@ -909,9 +920,21 @@ export function EntitlementsPage() {
                     {accessRequests.data.map((accessRequest) => (
                       <TableRow key={accessRequest.id}>
                         <TableCell>
-                          <Text className={styles.codeValue}>
-                            {accessRequest.requesterObjectId}
-                          </Text>
+                          {(() => {
+                            const label = requestingPrincipal(accessRequest, principals.data)?.label
+                            return label ? (
+                              <div className={styles.cellStack}>
+                                <Text className={styles.primaryCell}>{label}</Text>
+                                <Text className={styles.secondaryCell}>
+                                  {accessRequest.requesterObjectId}
+                                </Text>
+                              </div>
+                            ) : (
+                              <Text className={styles.codeValue}>
+                                {accessRequest.requesterObjectId}
+                              </Text>
+                            )
+                          })()}
                         </TableCell>
                         <TableCell>
                           <div className={styles.cellStack}>
@@ -953,9 +976,11 @@ export function EntitlementsPage() {
                           </Text>
                         </TableCell>
                         <TableCell>
+                          {/* Small: at 1280 px this column is narrower than a medium button's 96 px minimum width. */}
                           <div className={styles.rowActions}>
                             <Button
                               appearance="primary"
+                              size="small"
                               disabled={!approvalReady || approveMutation.isPending || denyMutation.isPending}
                               onClick={() => openApproval(accessRequest)}
                             >
@@ -963,6 +988,7 @@ export function EntitlementsPage() {
                             </Button>
                             <Button
                               appearance="subtle"
+                              size="small"
                               disabled={approveMutation.isPending || denyMutation.isPending}
                               onClick={() => denyMutation.mutate(accessRequest.id)}
                             >

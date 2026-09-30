@@ -1,10 +1,10 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { FluentProvider, webLightTheme } from '@fluentui/react-components'
+import { FluentProvider, textClassNames, webLightTheme } from '@fluentui/react-components'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type { AccessRequest, Entitlement, EnvironmentCatalogView, McpPublication, McpServer } from '../types'
+import type { AccessRequest, Entitlement, EnvironmentCatalogView, McpPublication, McpServer, Principal } from '../types'
 import { callRateError, describeLimits, describePublicationLimits } from '../entitlement-limits'
 import { EntitlementsPage } from './EntitlementsPage'
 import { accessPlan, directGrant, modelPublication, publishedModelApi } from '../test/model-access'
@@ -168,6 +168,17 @@ async function openApproval(user: ReturnType<typeof userEvent.setup>) {
   return screen.findByRole('dialog')
 }
 
+/** Each body row's cell under the named column header, in row order. */
+function columnCells(table: HTMLElement, header: string) {
+  const column = within(table).getAllByRole('columnheader').findIndex((cell) => cell.textContent === header)
+  return within(table).getAllByRole('row').slice(1).map((row) => within(row).getAllByRole('cell')[column])
+}
+
+/** Each line of text in an element, in order. */
+function textLines(element: Element) {
+  return [...element.querySelectorAll(`.${textClassNames.root}`)].map((line) => line.textContent)
+}
+
 vi.mock('../api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api')>()
   return { ...actual, useMosaicApi: () => api }
@@ -231,6 +242,30 @@ describe('EntitlementsPage', () => {
     expect(screen.getByText('Not bound')).toBeVisible()
     expect(screen.getByText('Live data')).toBeVisible()
     expect(screen.queryByText('Sample data')).not.toBeInTheDocument()
+  })
+
+  it('keeps the whole APIM subscription name in the binding cell, with its source on a line of its own', async () => {
+    // A managed subscription name is long and has no spaces. Administrators look the subscription
+    // up by this name, so the cell must hold all of it rather than a shortened form.
+    const subscriptionName = 'mosaic-grant-0123456789abcdef0123456789abcdef'
+    api.listEntitlements.mockResolvedValue([
+      {
+        ...directGrant,
+        binding: { gatewayId: 'gateway_1', source: 'orchestrated', apimSubscriptionName: subscriptionName },
+      },
+      { ...entitlement, id: 'recorded_grant', binding: { gatewayId: 'gateway_1', source: 'manual' } },
+      entitlement,
+    ])
+    renderPage()
+
+    const table = await screen.findByRole('table', { name: 'Entitlements' })
+    const [named, recorded, unbound] = columnCells(table, 'Binding')
+    expect(within(named).getByText(subscriptionName)).toBeVisible()
+    expect(within(named).getByText('orchestrated')).toBeVisible()
+    expect(named).toHaveAccessibleName(`${subscriptionName} orchestrated`)
+    expect(within(recorded).getByText('Recorded')).toBeVisible()
+    expect(within(recorded).getByText('manual')).toBeVisible()
+    expect(unbound).toHaveTextContent(/^Not bound$/)
   })
 
   it('filters grants by environment, including deployment grants from their endpoint', async () => {
@@ -349,7 +384,9 @@ describe('EntitlementsPage', () => {
     renderPage()
     expect(await screen.findByText('Desired state only')).toBeVisible()
     expect(screen.getByText('Recorded, not enforced')).toBeVisible()
-    expect(screen.getByText('Gateway log · manual')).toBeVisible()
+    const [gatewayLog] = columnCells(screen.getByRole('table', { name: 'Entitlements' }), 'Binding')
+    expect(within(gatewayLog).getByText('Gateway log')).toBeVisible()
+    expect(within(gatewayLog).getByText('manual')).toBeVisible()
     expect(screen.getByText(/doesn't enforce it for an imported MCP server/)).toBeVisible()
     expect(screen.getByRole('button', { name: 'Connection info' })).toBeVisible()
     expect(screen.queryByRole('button', { name: 'Manage model' })).not.toBeInTheDocument()
@@ -617,6 +654,112 @@ describe('EntitlementsPage', () => {
   })
 
   describe('access requests', () => {
+    it('names a registered requester above their object ID, found by recorded principal or by object ID', async () => {
+      const user = userEvent.setup()
+      api.listPrincipals.mockResolvedValue([
+        {
+          id: 'principal_1', tenantId: 'tenant', objectId: 'user-object-1', kind: 'user',
+          label: 'Ada Lovelace', createdAt: '', updatedAt: '',
+        },
+        {
+          id: 'principal_2', tenantId: 'tenant', objectId: 'user-object-2', kind: 'user',
+          label: 'Grace Hopper', createdAt: '', updatedAt: '',
+        },
+      ])
+      api.listAccessRequests.mockResolvedValue([
+        // Matched by object ID alone, in a different letter case.
+        pendingRequest,
+        // Matched by the principal the request recorded, whatever its object ID.
+        { ...pendingRequest, id: 'request_2', requesterObjectId: 'other-object-2', requesterPrincipalId: 'principal_2' },
+      ])
+      renderPage()
+
+      const requests = await screen.findByRole('table', { name: 'Pending access requests' })
+      await within(requests).findByText('Grace Hopper')
+      const [byObjectId, byPrincipal] = columnCells(requests, 'Requester')
+      expect(within(byObjectId).getByText('Ada Lovelace')).toBeVisible()
+      expect(within(byObjectId).getByText('USER-OBJECT-1')).toBeVisible()
+      expect(within(byPrincipal).getByText('Grace Hopper')).toBeVisible()
+      expect(within(byPrincipal).getByText('other-object-2')).toBeVisible()
+
+      // Approve names the same person the table does.
+      const approve = within(requests).getAllByRole('button', { name: 'Approve' })[1]
+      await waitFor(() => expect(approve).toBeEnabled())
+      await user.click(approve)
+      const dialog = await screen.findByRole('dialog')
+      expect(within(dialog).getByText('Grace Hopper')).toBeVisible()
+      expect(within(dialog).queryByText(/Not registered in MOSAIC/)).not.toBeInTheDocument()
+    })
+
+    it('shows only the object ID for a requester MOSAIC does not know', async () => {
+      api.listAccessRequests.mockResolvedValue([
+        pendingRequest,
+        { ...pendingRequest, id: 'request_2', requesterObjectId: 'new-object-1' },
+      ])
+      renderPage()
+
+      const requests = await screen.findByRole('table', { name: 'Pending access requests' })
+      await within(requests).findByText('Ada Lovelace')
+      const [, unregistered] = columnCells(requests, 'Requester')
+      expect(unregistered).toHaveTextContent(/^new-object-1$/)
+    })
+
+    it('shows only the object ID while principals cannot be loaded', async () => {
+      api.listPrincipals.mockRejectedValue(new Error('Principals are unavailable.'))
+      api.listAccessRequests.mockResolvedValue([pendingRequest])
+      renderPage()
+
+      expect(await screen.findByText('Principals are unavailable.')).toBeVisible()
+      const requests = await screen.findByRole('table', { name: 'Pending access requests' })
+      const [requester] = columnCells(requests, 'Requester')
+      expect(requester).toHaveTextContent(/^USER-OBJECT-1$/)
+    })
+
+    // Registered as user-object-1, while the request recorded USER-OBJECT-1.
+    const withoutLabel: Principal = {
+      id: 'principal_1', tenantId: 'tenant', objectId: 'user-object-1', kind: 'user', createdAt: '', updatedAt: '',
+    }
+
+    it.each<[shows: string, principals: Principal[], inTable: string[], inDialog: string[]]>([
+      [
+        'a registered requester by label, then the object ID the request recorded',
+        [{ ...withoutLabel, label: 'Megan Bowen' }],
+        ['Megan Bowen', 'USER-OBJECT-1'],
+        ['Megan Bowen', 'USER-OBJECT-1'],
+      ],
+      [
+        'a registered requester without a label by the recorded object ID once',
+        [withoutLabel],
+        ['USER-OBJECT-1'],
+        ['USER-OBJECT-1'],
+      ],
+      [
+        'a registered requester with a blank label by the recorded object ID once',
+        [{ ...withoutLabel, label: '' }],
+        ['USER-OBJECT-1'],
+        ['USER-OBJECT-1'],
+      ],
+      [
+        'a requester MOSAIC does not know by the object ID once, and that approving registers them',
+        [],
+        ['USER-OBJECT-1'],
+        ['USER-OBJECT-1', 'Not registered in MOSAIC yet. Approving registers them as a user principal.'],
+      ],
+    ])('shows %s, in the table and when approving', async (_, principals, inTable, inDialog) => {
+      const user = userEvent.setup()
+      api.listPrincipals.mockResolvedValue(principals)
+      api.listAccessRequests.mockResolvedValue([pendingRequest])
+      renderPage()
+
+      const requests = await screen.findByRole('table', { name: 'Pending access requests' })
+      // Approve waits for principals, so by then the table shows all it knows about the requester.
+      await waitFor(() => expect(within(requests).getByRole('button', { name: 'Approve' })).toBeEnabled())
+      expect(textLines(columnCells(requests, 'Requester')[0])).toEqual(inTable)
+
+      const dialog = await openApproval(user)
+      expect(textLines(within(dialog).getByText('Requester').nextElementSibling as HTMLElement)).toEqual(inDialog)
+    })
+
     it('approves through the limits dialog, creating linked grant intent that still needs review and apply', async () => {
       const user = userEvent.setup()
       api.listPublications.mockResolvedValue([modelPublication])
@@ -769,6 +912,21 @@ describe('EntitlementsPage', () => {
       )).toBeVisible()
       expect(within(dialog).getByRole('button', { name: 'Approve and create grant' })).toBeDisabled()
       expect(api.approveAccessRequest).not.toHaveBeenCalled()
+    })
+
+    it('names a requester without a label by the recorded object ID when they already hold a direct grant', async () => {
+      const user = userEvent.setup()
+      api.listPrincipals.mockResolvedValue([withoutLabel])
+      api.listEntitlements.mockResolvedValue([directGrant])
+      api.listPublications.mockResolvedValue([modelPublication])
+      api.listModelApis.mockResolvedValue([publishedModelApi])
+      api.listAccessRequests.mockResolvedValue([pendingRequest])
+      renderPage()
+
+      const dialog = await openApproval(user)
+      expect(within(dialog).getByText(
+        'USER-OBJECT-1 already has a direct grant for Chat completions (model API). Deny this request, or change the existing grant instead.',
+      )).toBeVisible()
     })
 
     it('denies without a dialog, and says no grant was created', async () => {

@@ -1,4 +1,4 @@
-import { FluentProvider, webLightTheme } from '@fluentui/react-components'
+import { FluentProvider, textClassNames, webLightTheme } from '@fluentui/react-components'
 import { QueryClient, QueryClientProvider, useMutation } from '@tanstack/react-query'
 import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -7,7 +7,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { modelPublication } from '../test/model-access'
 import { ApiError } from '../api'
 import type { AccessRequest, AccessRequestApproval, EnvironmentCatalogView } from '../types'
-import { ApproveAccessRequestDialog } from './ApproveAccessRequestDialog'
+import { ApproveAccessRequestDialog, type ApprovalRequester } from './ApproveAccessRequestDialog'
 
 const accessRequest: AccessRequest = {
   id: 'request_1',
@@ -127,6 +127,12 @@ function focused() {
   return element
 }
 
+// Each line of the open dialog's Requester entry, in order.
+function requesterLines() {
+  const entry = within(screen.getByRole('dialog')).getByText('Requester').nextElementSibling as HTMLElement
+  return [...entry.querySelectorAll(`.${textClassNames.root}`)].map((line) => line.textContent)
+}
+
 describe('ApproveAccessRequestDialog', () => {
   it('shows who asked for what and why, with limits prefilled from the publication', async () => {
     renderDialog()
@@ -145,6 +151,29 @@ describe('ApproveAccessRequestDialog', () => {
     )).toBeVisible()
     expect(within(dialog).queryByText(/Not registered in MOSAIC/)).not.toBeInTheDocument()
     expect(within(dialog).getByRole('button', { name: 'Approve and create grant' })).toBeEnabled()
+  })
+
+  it.each<[shows: string, requester: ApprovalRequester, lines: string[]]>([
+    [
+      'a registered requester by label, then object ID',
+      { label: 'Megan Bowen', objectId: 'user-object-1', registered: true },
+      ['Megan Bowen', 'user-object-1'],
+    ],
+    [
+      'the object ID once when the label is that ID in another letter case',
+      { label: 'USER-OBJECT-1', objectId: 'user-object-1', registered: true },
+      ['user-object-1'],
+    ],
+    [
+      'an unregistered requester by object ID once, and that approving registers them',
+      { label: 'user-object-1', objectId: 'user-object-1', registered: false },
+      ['user-object-1', 'Not registered in MOSAIC yet. Approving registers them as a user principal.'],
+    ],
+  ])('shows %s', async (_, requester, lines) => {
+    renderDialog({ requester })
+
+    await screen.findByRole('dialog')
+    expect(requesterLines()).toEqual(lines)
   })
 
   it('sends the confirmed limits on the governed counter, with the decision note', async () => {
