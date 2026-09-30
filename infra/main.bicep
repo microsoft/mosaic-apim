@@ -183,6 +183,10 @@ var apiAppSettings = [
     value: keyVault.outputs.vaultUri
   }
   {
+    name: 'MOSAIC_KEY_VAULT_RESOURCE_ID'
+    value: keyVault.outputs.id
+  }
+  {
     name: 'MOSAIC_CORS_ORIGINS'
     value: string(apiCorsAllowedOrigins)
   }
@@ -445,6 +449,40 @@ resource apiKeyVaultSecretsUser 'Microsoft.Authorization/roleAssignments@2022-04
     principalId: apiApp.outputs.principalId
     principalType: 'ServicePrincipal'
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '4633458b-17de-408a-b874-0445c86b69e6')
+  }
+  dependsOn: [
+    #disable-next-line no-unnecessary-dependson
+    keyVault
+  ]
+}
+
+// An endpoint MOSAIC reaches with an API key keeps that key in Key Vault, and API Management reads
+// it there itself, through a Key Vault-backed named value, with its system-assigned identity. See
+// ADR 0018. The key never passes through MOSAIC.
+resource apimKeyVaultSecretsUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(keyVaultName, apimName, 'KeyVaultSecretsUser')
+  scope: keyVaultResource
+  properties: {
+    principalId: apimResource.identity.principalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '4633458b-17de-408a-b874-0445c86b69e6')
+  }
+  dependsOn: [
+    apim
+    #disable-next-line no-unnecessary-dependson
+    keyVault
+  ]
+}
+
+// Reader on the vault lets MOSAIC read its role assignments and network rules, so it can check
+// which gateways can read a key stored there. It grants no access to any secret.
+resource apiKeyVaultReader 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(keyVaultName, apiWebAppName, 'Reader')
+  scope: keyVaultResource
+  properties: {
+    principalId: apiApp.outputs.principalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'acdd72a7-3385-48ef-bd42-f606fba81ae7')
   }
   dependsOn: [
     #disable-next-line no-unnecessary-dependson
