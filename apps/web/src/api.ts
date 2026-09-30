@@ -16,6 +16,14 @@ import type {
   EntitlementEnforcement,
   EntitlementResource,
   EntitlementSubject,
+  EnvironmentAssignmentRequest,
+  EnvironmentAssignmentResult,
+  EnvironmentCatalogView,
+  EnvironmentCreate,
+  EnvironmentFindingList,
+  EnvironmentSettingsUpdate,
+  EnvironmentSuggestionList,
+  EnvironmentUpdate,
   GrantOverlapReport,
   Gateway,
   GatewayPolicyView,
@@ -92,6 +100,14 @@ interface RequestOptions {
 
 export interface MosaicApi {
   getConsoleAccess(): Promise<ConsoleAccess>
+  getEnvironmentCatalog(): Promise<EnvironmentCatalogView>
+  createEnvironment(payload: EnvironmentCreate): Promise<EnvironmentCatalogView>
+  updateEnvironment(key: string, payload: EnvironmentUpdate): Promise<EnvironmentCatalogView>
+  deleteEnvironment(key: string): Promise<EnvironmentCatalogView>
+  updateEnvironmentSettings(payload: EnvironmentSettingsUpdate): Promise<EnvironmentCatalogView>
+  listEnvironmentSuggestions(): Promise<EnvironmentSuggestionList>
+  assignEnvironments(payload: EnvironmentAssignmentRequest): Promise<EnvironmentAssignmentResult>
+  listEnvironmentFindings(gatewayId?: string): Promise<EnvironmentFindingList>
   listPrincipals(): Promise<Principal[]>
   createPrincipal(payload: {
     objectId: string
@@ -123,6 +139,7 @@ export interface MosaicApi {
     azureResourceId: string
     name?: string
     environmentLabel?: string
+    environment?: string | null
   }): Promise<Gateway>
   getGateway(gatewayId: string): Promise<Gateway>
   updateGateway(
@@ -254,6 +271,7 @@ export interface MosaicApi {
     name?: string
     environmentLabel?: string
     credentialSecretUri?: string
+    environment?: string | null
   }): Promise<ModelEndpoint>
   getModelEndpoint(endpointId: string): Promise<ModelEndpoint>
   updateModelEndpoint(
@@ -280,6 +298,7 @@ export interface MosaicApi {
     authMode?: McpAuthMode
     credentialSecretUri?: string
     resourceAudience?: string
+    environment?: string | null
   }): Promise<McpEndpoint>
   getMcpEndpoint(endpointId: string): Promise<McpEndpoint>
   updateMcpEndpoint(
@@ -346,6 +365,38 @@ export function useMosaicApi(): MosaicApi {
 
     return {
       getConsoleAccess: () => request<ConsoleAccess>('/api/v1/console/me'),
+      getEnvironmentCatalog: () => request<EnvironmentCatalogView>('/api/v1/environment-catalog'),
+      createEnvironment: (payload) =>
+        request<EnvironmentCatalogView>('/api/v1/environment-catalog/environments', {
+          method: 'POST',
+          body: payload,
+        }),
+      updateEnvironment: (key, payload) =>
+        request<EnvironmentCatalogView>(
+          `/api/v1/environment-catalog/environments/${encodeURIComponent(key)}`,
+          { method: 'PATCH', body: payload },
+        ),
+      deleteEnvironment: (key) =>
+        request<EnvironmentCatalogView>(
+          `/api/v1/environment-catalog/environments/${encodeURIComponent(key)}`,
+          { method: 'DELETE' },
+        ),
+      updateEnvironmentSettings: (payload) =>
+        request<EnvironmentCatalogView>('/api/v1/environment-catalog/settings', {
+          method: 'PATCH',
+          body: payload,
+        }),
+      listEnvironmentSuggestions: () =>
+        request<EnvironmentSuggestionList>('/api/v1/environment-suggestions'),
+      assignEnvironments: (payload) =>
+        request<EnvironmentAssignmentResult>('/api/v1/environment-assignments', {
+          method: 'POST',
+          body: payload,
+        }),
+      listEnvironmentFindings: (gatewayId) =>
+        request<EnvironmentFindingList>(
+          `/api/v1/environment-findings${gatewayId ? `?gatewayId=${encodeURIComponent(gatewayId)}` : ''}`,
+        ),
       listPrincipals: () => request<Principal[]>('/api/v1/principals'),
       createPrincipal: (payload) =>
         request<Principal>('/api/v1/principals', { method: 'POST', body: payload }),

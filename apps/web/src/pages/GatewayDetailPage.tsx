@@ -18,10 +18,14 @@ import { useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useMosaicApi } from '../api'
 import { EmptyState, ErrorState, Loading } from '../components/AsyncState'
+import { ChangeEnvironmentDialog } from '../components/ChangeEnvironmentDialog'
+import { EnvironmentBadge } from '../components/EnvironmentBadge'
+import { EnvironmentFindings } from '../components/EnvironmentFindings'
 import { GatewayManagementMode } from '../components/GatewayManagementMode'
 import { AI_KIND_LABELS, MANAGEMENT_MODE_LABELS } from '../labels'
 import { PolicyDocumentCard, PolicyFragmentCard } from '../components/PolicyFacets'
 import type { AiBackendKind, Gateway, PublicationStatus } from '../types'
+import { environmentLabel, invalidateEnvironmentQueries, useEnvironmentCatalog } from '../environments'
 import { PageHeader } from '../components/PageHeader'
 import { AccessPanel, GatewayStatusBadge } from './GatewaysPage'
 import styles from './GatewayDetailPage.module.css'
@@ -104,8 +108,10 @@ function AiBadge({ kind }: { kind: AiBackendKind }) {
   )
 }
 
-function Overview({ gateway }: { gateway: Gateway }) {
+function Overview({ gateway, onChanged }: { gateway: Gateway; onChanged: (message: string) => void }) {
   const { inventory, capabilities } = gateway
+  const catalog = useEnvironmentCatalog()
+  const [changeOpen, setChangeOpen] = useState(false)
   return (
     <>
       <div className={styles.metricGrid}>
@@ -147,6 +153,18 @@ function Overview({ gateway }: { gateway: Gateway }) {
         </Card>
       </div>
       <Card className={styles.detailCard}>
+        <div className={styles.apiHeader}>
+          <Title3 as="h3">Environment</Title3>
+          <Button appearance="secondary" onClick={() => setChangeOpen(true)}>Change</Button>
+        </div>
+        <EnvironmentBadge environment={gateway.environment} catalog={catalog.data} />
+        {gateway.azureEnvironmentTag && <Text block size={200}>Azure tag: {gateway.azureEnvironmentTag}</Text>}
+        {gateway.environmentLabel && <Text block size={200}>Legacy label: {gateway.environmentLabel}</Text>}
+        <Text block size={200}>
+          Use {environmentLabel(catalog.data, gateway.environment)} consistently for endpoints published through this gateway.
+        </Text>
+      </Card>
+      <Card className={styles.detailCard}>
         <Title3 as="h3">Service</Title3>
         <Text block>
           {gateway.serviceName} · {capabilities.skuName ?? 'unknown tier'}
@@ -171,6 +189,20 @@ function Overview({ gateway }: { gateway: Gateway }) {
       </Card>
       <AccessPanel gateway={gateway} />
       <GatewayManagementMode key={gateway.id} gateway={gateway} />
+      <ChangeEnvironmentDialog
+        resource={{
+          resourceKind: 'gateway',
+          resourceId: gateway.id,
+          resourceName: gateway.name,
+          environment: gateway.environment,
+        }}
+        open={changeOpen}
+        onClose={() => setChangeOpen(false)}
+        onChanged={() => {
+          setChangeOpen(false)
+          onChanged(`Updated ${gateway.name}'s environment.`)
+        }}
+      />
     </>
   )
 }
@@ -609,6 +641,8 @@ export function GatewayDetailPage() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const [tab, setTab] = useState<TabKey>('overview')
+  const [message, setMessage] = useState<string | null>(null)
+  const catalog = useEnvironmentCatalog()
 
   const gateway = useQuery({
     queryKey: ['gateway', gatewayId],
@@ -619,6 +653,12 @@ export function GatewayDetailPage() {
     mutationFn: () => api.syncGateway(gatewayId),
     onSuccess: () => queryClient.invalidateQueries(),
   })
+
+  async function environmentChanged(messageText: string) {
+    setMessage(messageText)
+    await queryClient.invalidateQueries({ queryKey: ['gateway', gatewayId] })
+    invalidateEnvironmentQueries(queryClient)
+  }
 
   if (gateway.isPending) return <Loading label="Loading gateway" />
   if (gateway.isError) return <ErrorState error={gateway.error} />
@@ -632,11 +672,12 @@ export function GatewayDetailPage() {
         title={gateway.data.name}
         description={`${gateway.data.serviceName} · ${
           MANAGEMENT_MODE_LABELS[gateway.data.managementMode]
-        } mode${gateway.data.environmentLabel ? ` · ${gateway.data.environmentLabel}` : ''}`}
+        } mode`}
         source="live"
         actions={
           <div className={styles.headerActions}>
             <GatewayStatusBadge status={gateway.data.status} />
+            <EnvironmentBadge environment={gateway.data.environment} catalog={catalog.data} />
             <Menu>
               <MenuTrigger disableButtonEnhancement>
                 <MenuButton appearance="secondary" disabled={!gateway.data.lastSyncedAt}>
@@ -671,6 +712,7 @@ export function GatewayDetailPage() {
           Last sync reported: {gateway.data.lastSyncError}
         </Text>
       )}
+      {message && <Text block size={200} className={styles.syncError}>{message}</Text>}
 
       <TabList
         className={styles.tabs}
@@ -690,7 +732,8 @@ export function GatewayDetailPage() {
       <div className={styles.tabPanel}>
         {tab === 'overview' && (
           <>
-            <Overview gateway={gateway.data} />
+            <Overview gateway={gateway.data} onChanged={(text) => void environmentChanged(text)} />
+            <EnvironmentFindings gatewayId={gatewayId} hideWhenEmpty />
             <PublishedModelsSection gatewayId={gatewayId} />
           </>
         )}

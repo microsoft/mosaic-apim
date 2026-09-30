@@ -212,7 +212,7 @@ def _authorization_shape_invalid() -> str:
     return _expression(
         [
             'var values = context.Request.Headers["Authorization"];',
-            "if (values == null || values.Length != 1) return true;",
+            "if (values == null || values.Length != 1) { return true; }",
             "var authorization = values[0];",
             "return String.IsNullOrWhiteSpace(authorization)"
             ' || !authorization.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)'

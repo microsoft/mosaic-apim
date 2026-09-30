@@ -22,6 +22,7 @@ from mosaic_api.domain import (
     PublishPlan,
     PublishRun,
 )
+from mosaic_api.environments import EnvironmentCatalog, EnvironmentUsage
 from mosaic_api.observed import ObservedEndpointEntity, ObservedEntity
 
 
@@ -79,6 +80,30 @@ class DirectoryRepository(Protocol):
     ) -> None: ...
 
 
+class EnvironmentRepository(Protocol):
+    """Persistence for tenant environment catalogs and resource usage counts."""
+
+    async def ready(self) -> bool: ...
+
+    async def close(self) -> None: ...
+
+    async def get_environment_catalog(self, tenant_id: str) -> EnvironmentCatalog | None: ...
+
+    async def save_environment_catalog(
+        self, catalog: EnvironmentCatalog, audit_event: AuditEvent
+    ) -> EnvironmentCatalog: ...
+
+    async def count_resources_by_environment(
+        self, tenant_id: str
+    ) -> dict[str | None, EnvironmentUsage]: ...
+
+    async def save_environment_assignments(
+        self,
+        resources: Sequence[Gateway | ModelEndpoint | McpEndpoint],
+        audit_event: AuditEvent,
+    ) -> list[Gateway | ModelEndpoint | McpEndpoint]: ...
+
+
 class GatewayRepository(Protocol):
     """Persistence for registered gateways and the state MOSAIC observed in them."""
 
@@ -98,8 +123,8 @@ class GatewayRepository(Protocol):
 
     async def save_gateway(self, gateway: Gateway, audit_event: AuditEvent) -> Gateway: ...
 
-    async def record_gateway_state(self, gateway: Gateway) -> Gateway:
-        """Persist observation results without emitting an administrator audit event."""
+    async def record_gateway_state(self, gateway: Gateway) -> Gateway | None:
+        """Merge observation results, preserving authored fields; return None if deleted."""
         ...
 
     async def delete_gateway(self, gateway: Gateway, audit_event: AuditEvent) -> None: ...
@@ -237,6 +262,22 @@ class GatewayRepository(Protocol):
         """Release only the named owner's lock, with a storage precondition."""
         ...
 
+    async def acquire_scope_lease(
+        self, tenant_id: str, scope: str, owner_id: str, *, lease_seconds: float
+    ) -> None:
+        """Acquire an expiring lease on a scope that guards only MOSAIC's own records.
+
+        Unlike a publication lock, a lease expires. It is for short critical sections that make
+        no Azure Resource Manager calls, so an expired lease can't let an old writer resume
+        against API Management. Their writes are conditional, so a stalled holder can't overwrite
+        a newer one either. Raises ``ConflictError`` while another owner holds an unexpired lease.
+        """
+        ...
+
+    async def release_scope_lease(self, tenant_id: str, scope: str, owner_id: str) -> None:
+        """Release the lease if this owner still holds it; otherwise leave the current holder."""
+        ...
+
 
 class EndpointStateRepository(Protocol):
     """The endpoint-scoped observed store, shared by model endpoints and MCP endpoints.
@@ -301,8 +342,8 @@ class ModelEndpointRepository(EndpointStateRepository, Protocol):
         self, endpoint: ModelEndpoint, audit_event: AuditEvent
     ) -> ModelEndpoint: ...
 
-    async def record_endpoint_state(self, endpoint: ModelEndpoint) -> ModelEndpoint:
-        """Persist observation results without emitting an administrator audit event."""
+    async def record_endpoint_state(self, endpoint: ModelEndpoint) -> ModelEndpoint | None:
+        """Merge observation results, preserving authored fields; return None if deleted."""
         ...
 
     async def delete_endpoint(self, endpoint: ModelEndpoint, audit_event: AuditEvent) -> None: ...
@@ -355,8 +396,8 @@ class McpEndpointRepository(EndpointStateRepository, Protocol):
         self, endpoint: McpEndpoint, audit_event: AuditEvent
     ) -> McpEndpoint: ...
 
-    async def record_endpoint_state(self, endpoint: McpEndpoint) -> McpEndpoint:
-        """Persist observation results without emitting an administrator audit event."""
+    async def record_endpoint_state(self, endpoint: McpEndpoint) -> McpEndpoint | None:
+        """Merge observation results, preserving authored fields; return None if deleted."""
         ...
 
     async def delete_endpoint(self, endpoint: McpEndpoint, audit_event: AuditEvent) -> None: ...

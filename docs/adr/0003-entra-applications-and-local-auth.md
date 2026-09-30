@@ -28,7 +28,7 @@ local/test environment settings; startup rejects either when the environment is 
 
 ## Amendment 2026-09-29: Runtime group claims, Graph lookup and MCP permissions
 
-[ADR 0014](0014-agent-identities-and-security-group-grants.md) adds Entra security-group grants
+[ADR 0016](0016-agent-identities-and-security-group-grants.md) adds Entra security-group grants
 and agent identities. Bootstrap now configures `groupMembershipClaims: SecurityGroup` on the
 model-runtime and control-plane API registrations so validated tokens can carry group object IDs.
 The API's managed identity also needs read-only Microsoft Graph application permissions:
@@ -36,5 +36,5 @@ The API's managed identity also needs read-only Microsoft Graph application perm
 
 The model-runtime registration now exposes the `Mcp.Invoke` delegated scope and
 `Mcp.Invoke.Application` application role. MCP grants can be recorded for users, agents and
-security groups, and [ADR 0015](0015-mcp-gateway-enforcement.md) uses those permissions for
+security groups, and [ADR 0017](0017-mcp-gateway-enforcement.md) uses those permissions for
 gateway enforcement on MCP servers MOSAIC publishes.

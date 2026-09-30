@@ -474,14 +474,6 @@ function RuntimeSummary({
     <div className="connection-status" ref={summary} tabIndex={-1}>
       <Badge appearance={runtime.applied ? 'filled' : 'tint'}>{runtime.label}</Badge>
       <Text>{runtime.explanation}</Text>
-      {connection.runtime?.error && (
-        <MessageBar intent="warning" className="connection-status-error">
-          <MessageBarBody>
-            <MessageBarTitle>Last APIM error</MessageBarTitle>
-            {connection.runtime.error}
-          </MessageBarBody>
-        </MessageBar>
-      )}
     </div>
   )
 }

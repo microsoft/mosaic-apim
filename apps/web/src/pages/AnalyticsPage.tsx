@@ -13,7 +13,9 @@ import {
   Title3,
 } from '@fluentui/react-components'
 import { useMemo, useState } from 'react'
+import { EnvironmentBadge } from '../components/EnvironmentBadge'
 import { PageHeader, PreviewNotice } from '../components/PageHeader'
+import { environmentLabel, useEnvironmentCatalog } from '../environments'
 import styles from './AnalyticsPage.module.css'
 
 type TimeRange = '24h' | '7d' | '30d'
@@ -21,6 +23,8 @@ type ModelName = 'gpt-4o' | 'gpt-4o-mini' | 'text-embedding-3-small' | 'mistral-
 type ModelFilter = 'all' | ModelName
 type ErrorSeverity = 'Critical' | 'Warning' | 'Info'
 type IntegrationState = 'Healthy' | 'Delayed' | 'Planned'
+type EnvironmentKey = 'development' | 'test' | 'qc' | 'staging' | 'production' | 'sandbox'
+type EnvironmentFilter = 'all' | EnvironmentKey
 
 interface TimelinePoint {
   label: string
@@ -31,6 +35,7 @@ interface TimelinePoint {
 interface GroupUsage {
   group: string
   owner: string
+  environment?: EnvironmentKey
   tokensByModel: Record<ModelName, number>
   requestsByModel: Record<ModelName, number>
 }
@@ -44,6 +49,7 @@ interface EndpointModelLatency {
 interface EndpointLatency {
   endpoint: string
   operation: string
+  environment?: EnvironmentKey
   byModel: Record<ModelName, EndpointModelLatency>
 }
 
@@ -55,6 +61,7 @@ interface ErrorRecord {
   message: string
   endpoint: string
   model: ModelName
+  environment?: EnvironmentKey
   count: number
   impact: string
   correlationId: string
@@ -98,12 +105,20 @@ interface DerivedAnalytics {
   filteredGroups: FilteredGroupUsage[]
   filteredEndpoints: FilteredEndpointLatency[]
   filteredErrors: ErrorRecord[]
+  environmentBreakdown: EnvironmentBreakdown[]
   totalRequests: number
   totalTokens: number
   estimatedCost: number
   successRate: number
   p95Latency: number
   criticalErrors: number
+}
+
+interface EnvironmentBreakdown {
+  environment: EnvironmentKey
+  requests: number
+  tokens: number
+  cost: number
 }
 
 const modelOptions: ModelFilter[] = [
@@ -113,6 +128,34 @@ const modelOptions: ModelFilter[] = [
   'text-embedding-3-small',
   'mistral-large',
 ]
+
+const environmentOptions: EnvironmentKey[] = ['development', 'test', 'qc', 'staging', 'production', 'sandbox']
+const environmentWeight: Record<EnvironmentKey, number> = {
+  development: 0.08,
+  test: 0.1,
+  qc: 0.12,
+  staging: 0.18,
+  production: 0.42,
+  sandbox: 0.1,
+}
+const groupEnvironments: Record<string, EnvironmentKey> = {
+  'Customer Support': 'production',
+  'Finance Insights': 'production',
+  'Search Enrichment': 'staging',
+  'Copilot Prototyping': 'development',
+}
+const endpointEnvironments: Record<string, EnvironmentKey> = {
+  '/chat/completions': 'production',
+  '/embeddings': 'staging',
+  '/responses': 'development',
+}
+
+function recordEnvironment(record: { group?: string; endpoint?: string; environment?: EnvironmentKey }) {
+  if (record.environment) return record.environment
+  if (record.group) return groupEnvironments[record.group] ?? 'production'
+  if (record.endpoint) return endpointEnvironments[record.endpoint] ?? 'production'
+  return 'production'
+}
 
 const sampleDatasets: Record<TimeRange, RangeDataset> = {
   '24h': {
@@ -302,19 +345,23 @@ function KpiCard({
 export function AnalyticsPage() {
   const [timeRange, setTimeRange] = useState<TimeRange>('24h')
   const [modelFilter, setModelFilter] = useState<ModelFilter>('all')
+  const [environmentFilter, setEnvironmentFilter] = useState<EnvironmentFilter>('all')
   const [selectedError, setSelectedError] = useState<ErrorRecord | null>(null)
   const [exportStatus, setExportStatus] = useState('Ready to export current sample view.')
+  const environmentCatalog = useEnvironmentCatalog()
 
   const dataset = sampleDatasets[timeRange]
 
   const derived = useMemo<DerivedAnalytics>(() => {
+    const environmentMultiplier = environmentFilter === 'all' ? 1 : environmentWeight[environmentFilter]
     const filteredTimeline = dataset.timeline.map((point) => ({
       label: point.label,
-      requests: sumByModel(point.requestsByModel, modelFilter),
-      tokens: sumByModel(point.tokensByModel, modelFilter),
+      requests: Math.round(sumByModel(point.requestsByModel, modelFilter) * environmentMultiplier),
+      tokens: Math.round(sumByModel(point.tokensByModel, modelFilter) * environmentMultiplier),
     }))
 
     const filteredGroups = dataset.groups
+      .filter((group) => environmentFilter === 'all' || recordEnvironment(group) === environmentFilter)
       .map<FilteredGroupUsage>((group) => ({
         group: group.group,
         owner: group.owner,
@@ -325,6 +372,7 @@ export function AnalyticsPage() {
       .sort((left, right) => right.tokens - left.tokens)
 
     const filteredEndpoints = dataset.endpoints
+      .filter((endpoint) => environmentFilter === 'all' || recordEnvironment(endpoint) === environmentFilter)
       .map<FilteredEndpointLatency>((endpoint) => {
         if (modelFilter === 'all') {
           const metrics = Object.values(endpoint.byModel).filter((item) => item.p95 > 0)
@@ -351,9 +399,10 @@ export function AnalyticsPage() {
       .sort((left, right) => right.p95 - left.p95)
 
     const filteredErrors =
-      modelFilter === 'all'
-        ? dataset.errors
-        : dataset.errors.filter((error) => error.model === modelFilter)
+      dataset.errors.filter((error) =>
+        (modelFilter === 'all' || error.model === modelFilter) &&
+        (environmentFilter === 'all' || recordEnvironment(error) === environmentFilter),
+      )
 
     const totalRequests = filteredTimeline.reduce((total, point) => total + point.requests, 0)
     const totalTokens = filteredTimeline.reduce((total, point) => total + point.tokens, 0)
@@ -361,6 +410,7 @@ export function AnalyticsPage() {
       modelFilter === 'all'
         ? Object.values(dataset.estimatedCostUsdByModel).reduce((total, value) => total + value, 0)
         : dataset.estimatedCostUsdByModel[modelFilter]
+    const estimatedCostInEnvironment = estimatedCost * environmentMultiplier
     const successRate =
       modelFilter === 'all'
         ? Object.values(dataset.successRateByModel).reduce((total, value) => total + value, 0) /
@@ -372,20 +422,35 @@ export function AnalyticsPage() {
     const criticalErrors = filteredErrors
       .filter((error) => error.severity === 'Critical')
       .reduce((total, error) => total + error.count, 0)
+    const environmentBreakdown = environmentOptions.map<EnvironmentBreakdown>((environment) => {
+      const requests = dataset.groups
+        .filter((group) => recordEnvironment(group) === environment)
+        .reduce((total, group) => total + sumByModel(group.requestsByModel, modelFilter), 0)
+      const tokens = dataset.groups
+        .filter((group) => recordEnvironment(group) === environment)
+        .reduce((total, group) => total + sumByModel(group.tokensByModel, modelFilter), 0)
+      return {
+        environment,
+        requests,
+        tokens,
+        cost: estimatedCost * environmentWeight[environment],
+      }
+    }).filter((item) => environmentFilter === 'all' || item.environment === environmentFilter)
 
     return {
       filteredTimeline,
       filteredGroups,
       filteredEndpoints,
       filteredErrors,
+      environmentBreakdown,
       totalRequests,
       totalTokens,
-      estimatedCost,
+      estimatedCost: estimatedCostInEnvironment,
       successRate,
       p95Latency,
       criticalErrors,
     }
-  }, [dataset, modelFilter])
+  }, [dataset, environmentFilter, modelFilter])
 
   const requestPoints = useMemo(
     () => buildPolylinePoints(derived.filteredTimeline.map((point) => point.requests)),
@@ -397,6 +462,10 @@ export function AnalyticsPage() {
     1,
   )
   const largestGroupToken = Math.max(...derived.filteredGroups.map((group) => group.tokens), 1)
+  const largestEnvironmentRequests = Math.max(
+    ...derived.environmentBreakdown.map((environment) => environment.requests),
+    1,
+  )
   const highestEndpointLatency = Math.max(
     ...derived.filteredEndpoints.map((endpoint) => endpoint.p95),
     1,
@@ -436,26 +505,56 @@ export function AnalyticsPage() {
         .join(','),
     )
     rows.push('')
-    rows.push('Timeline label,Requests,Tokens')
+    rows.push('Timeline label,Environment,Requests,Tokens')
     derived.filteredTimeline.forEach((point) => {
-      rows.push([point.label, point.requests, point.tokens].map(escapeCsvValue).join(','))
+      rows.push([
+        point.label,
+        environmentFilter === 'all'
+          ? 'All environments'
+          : environmentLabel(environmentCatalog.data, environmentFilter),
+        point.requests,
+        point.tokens,
+      ].map(escapeCsvValue).join(','))
     })
     rows.push('')
-    rows.push('Group,Owner,Requests,Tokens')
+    rows.push('Group,Owner,Environment,Requests,Tokens')
     derived.filteredGroups.forEach((group) => {
-      rows.push([group.group, group.owner, group.requests, group.tokens].map(escapeCsvValue).join(','))
+      rows.push([
+        group.group,
+        group.owner,
+        environmentLabel(environmentCatalog.data, recordEnvironment(group)),
+        group.requests,
+        group.tokens,
+      ].map(escapeCsvValue).join(','))
     })
     rows.push('')
-    rows.push('Endpoint,Operation,P50 ms,P95 ms,Error rate %')
+    rows.push('Environment,Requests,Tokens,Estimated cost')
+    derived.environmentBreakdown.forEach((environment) => {
+      rows.push([
+        environmentLabel(environmentCatalog.data, environment.environment),
+        environment.requests,
+        environment.tokens,
+        environment.cost.toFixed(2),
+      ].map(escapeCsvValue).join(','))
+    })
+    rows.push('')
+    rows.push('Endpoint,Operation,Environment,P50 ms,P95 ms,Error rate %')
     derived.filteredEndpoints.forEach((endpoint) => {
       rows.push(
-        [endpoint.endpoint, endpoint.operation, endpoint.p50, endpoint.p95, endpoint.errorRate]
+        [
+          endpoint.endpoint,
+          endpoint.operation,
+          environmentLabel(environmentCatalog.data, recordEnvironment(endpoint)),
+          endpoint.p50,
+          endpoint.p95,
+          endpoint.errorRate,
+        ]
           .map(escapeCsvValue)
           .join(','),
       )
     })
     rows.push('')
-    rows.push('Error ID,Timestamp,Severity,Code,Endpoint,Model,Count,Message')
+    rows.push('Error ID,Timestamp,Severity,Code,Endpoint,Model,Environment,Count,Message')
     derived.filteredErrors.forEach((error) => {
       rows.push(
         [
@@ -465,6 +564,7 @@ export function AnalyticsPage() {
           error.code,
           error.endpoint,
           error.model,
+          environmentLabel(environmentCatalog.data, recordEnvironment(error)),
           error.count,
           error.message,
         ]
@@ -486,8 +586,9 @@ export function AnalyticsPage() {
     const objectUrl = URL.createObjectURL(blob)
     const link = document.createElement('a')
     const fileModel = modelFilter === 'all' ? 'all-models' : modelFilter
+    const fileEnvironment = environmentFilter === 'all' ? 'all-environments' : environmentFilter
     link.href = objectUrl
-    link.download = `mosaic-analytics-${timeRange}-${fileModel}.csv`
+    link.download = `mosaic-analytics-${timeRange}-${fileModel}-${fileEnvironment}.csv`
     document.body.append(link)
     link.click()
     link.remove()
@@ -527,6 +628,20 @@ export function AnalyticsPage() {
                 ))}
               </Select>
             </label>
+            <label className={styles.filterControl}>
+              <span>Environment</span>
+              <Select
+                value={environmentFilter}
+                onChange={(event) => setEnvironmentFilter(event.target.value as EnvironmentFilter)}
+              >
+                <option value="all">All environments</option>
+                {environmentOptions.map((option) => (
+                  <option key={option} value={option}>
+                    {environmentLabel(environmentCatalog.data, option)}
+                  </option>
+                ))}
+              </Select>
+            </label>
             <Button
               appearance="primary"
               onClick={exportCsv}
@@ -550,7 +665,11 @@ export function AnalyticsPage() {
         <KpiCard
           label="Requests"
           value={formatCompactNumber(derived.totalRequests)}
-          detail={`${timeRange} · ${modelFilter === 'all' ? 'all models' : modelFilter}`}
+          detail={`${timeRange} · ${modelFilter === 'all' ? 'all models' : modelFilter} · ${
+            environmentFilter === 'all'
+              ? 'all environments'
+              : environmentLabel(environmentCatalog.data, environmentFilter)
+          }`}
         />
         <KpiCard
           label="Token usage"
@@ -649,6 +768,32 @@ export function AnalyticsPage() {
                 ))}
               </tbody>
             </table>
+          </div>
+        </div>
+
+        <div className={`panel ${styles.environmentsPanel}`}>
+          <div className="panel-header">
+            <div>
+              <Title3 as="h2">Usage by environment</Title3>
+              <Text size={200}>Sample requests, tokens, and cost by classified environment</Text>
+            </div>
+            <Badge appearance="outline">Sample data</Badge>
+          </div>
+          <div className={styles.environmentBreakdown} role="list" aria-label="Usage by environment">
+            {derived.environmentBreakdown.map((item) => (
+              <div key={item.environment} className={styles.environmentUsageRow} role="listitem">
+                <div className={styles.environmentUsageHeader}>
+                  <EnvironmentBadge environment={item.environment} catalog={environmentCatalog.data} />
+                  <span>
+                    {formatCompactNumber(item.requests)} requests · {formatTokenCount(item.tokens)} ·{' '}
+                    {formatCurrency(item.cost)}
+                  </span>
+                </div>
+                <div className={styles.progressTrack} aria-hidden="true">
+                  <span style={{ width: `${(item.requests / largestEnvironmentRequests) * 100}%` }} />
+                </div>
+              </div>
+            ))}
           </div>
         </div>
 

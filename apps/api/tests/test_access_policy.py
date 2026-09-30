@@ -6,6 +6,7 @@ import re
 import xml.etree.ElementTree as ET
 
 import pytest
+from apim_double import expression_error, policy_expression_error
 from mosaic_api.domain import (
     ApiShape,
     EntitlementEnforcement,
@@ -300,7 +301,7 @@ def test_keys_require_native_validation_and_exact_enabled_allowlist() -> None:
     group = _group_grant(3)
     fragment = _fragment(_snapshot(grants=[_grant(), _grant(2, enabled=False), group]))
     lookup = _variable_values(fragment, "mosaic-key-grant")[-1]
-    assert 'if (context.Subscription == null) return "";' in lookup
+    assert 'if (context.Subscription == null) { return ""; }' in lookup
     assert "var subscription = context.Subscription.Id;" in lookup
     assert (
         'String.Equals(subscription, "mosaic-grant-1", StringComparison.OrdinalIgnoreCase)'
@@ -1023,8 +1024,8 @@ def test_nondeployment_routes_reject_missing_malformed_and_different_model_bodie
     pin = next(
         condition for condition in _conditions(fragment) if "preserveContent: true" in condition
     )
-    assert f'if (!(context.Operation.Id == "{operation}")) return false;' in pin
-    assert "if (context.Request.Body == null) return true;" in pin
+    assert f'if (!(context.Operation.Id == "{operation}")) {{ return false; }}' in pin
+    assert "if (context.Request.Body == null) { return true; }" in pin
     assert 'body == null ? null : body["model"]' in pin
     assert "model == null || model.Type != JTokenType.String" in pin
     assert '!String.Equals((string)model, "gpt-4o-prod", StringComparison.Ordinal)' in pin
@@ -1074,7 +1075,7 @@ def test_anthropic_governed_access_permits_only_messages_and_pins_the_model() ->
     pin = next(
         condition for condition in _conditions(fragment) if "preserveContent: true" in condition
     )
-    assert 'if (!(context.Operation.Id == "messages")) return false;' in pin
+    assert 'if (!(context.Operation.Id == "messages")) { return false; }' in pin
     assert '!String.Equals((string)model, "claude-sonnet-4-5", StringComparison.Ordinal)' in pin
     facet = next(facet for facet in result.facets if "allowed-operations" in facet.attributes)
     assert facet.attributes["allowed-operations"] == "messages"
@@ -1130,6 +1131,136 @@ def test_token_grants_are_refused_when_the_publication_cannot_be_token_metered()
     )
 
 
+def _users_and_application(enforcement: EntitlementEnforcement | None) -> list[ModelAccessGrant]:
+    """Two user grants and an application grant, all limited by ``enforcement`` but the second."""
+
+    application = EntitlementSubject(kind=EntitlementSubjectKind.APPLICATION, id="application-3")
+    return [
+        _grant(1, enforcement=enforcement),
+        _grant(2),
+        _grant(3, subject=application, enforcement=enforcement),
+    ]
+
+
+def _parsable_expressions(result: PublicationPolicy) -> list[str]:
+    """Every multi-statement expression in the documents, after checking API Management parses it.
+
+    API Management parses each ``@{ ... }`` with Razor and refuses the whole policy if one of them
+    has a control-flow body that isn't a braced block.
+    """
+
+    expressions = [
+        value
+        for element in ET.fromstring(result.fragment_xml).iter()
+        for value in (*element.attrib.values(), element.text or "")
+        if value.startswith("@{")
+    ]
+    assert expressions
+    errors = {expression: expression_error(expression) for expression in expressions}
+    assert errors == dict.fromkeys(expressions)
+    assert policy_expression_error(result.fragment_xml) is None
+    assert policy_expression_error(result.api_policy_xml) is None
+    return expressions
+
+
+@pytest.mark.parametrize(
+    ("keys", "entra"), [(True, False), (False, True), (True, True)], ids=["keys", "entra", "both"]
+)
+@pytest.mark.parametrize(
+    "enforcement",
+    [
+        None,
+        EntitlementEnforcement(tokens=_tokens(token_quota=20000, token_quota_period="Daily")),
+        EntitlementEnforcement(requests=_requests(call_quota=100, call_quota_period="Weekly")),
+        _full_enforcement(),
+    ],
+    ids=["unlimited", "token-limits", "request-limits", "all-limits"],
+)
+def test_governed_expressions_are_ones_api_management_can_parse(
+    keys: bool, entra: bool, enforcement: EntitlementEnforcement | None
+) -> None:
+    snapshot = _snapshot(
+        settings=ModelAccessSettings(keys_enabled=keys, entra_enabled=entra),
+        audience=AUDIENCE if entra else None,
+        grants=_users_and_application(enforcement),
+    )
+
+    expressions = _parsable_expressions(render_governed_policy(_publication(), snapshot))
+
+    # The responses operation isn't scoped to a deployment, so the body's model is checked.
+    assert any("preserveContent: true" in expression for expression in expressions)
+    assert any("mosaic-validated-token" in expression for expression in expressions) == entra
+    assert any("context.Subscription.Id;" in expression for expression in expressions) == keys
+
+
+@pytest.mark.parametrize(
+    ("publication", "snapshot"),
+    [
+        pytest.param(
+            _publication(provider=ModelProvider.AZURE_AI_FOUNDRY),
+            _snapshot(grants=_users_and_application(_full_enforcement())),
+            id="foundry",
+        ),
+        pytest.param(_anthropic(), _unmetered(), id="anthropic-unmetered"),
+        pytest.param(
+            _anthropic(enforcement=_tokens(tokens_per_minute=9000)),
+            _snapshot(grants=_users_and_application(_full_enforcement())),
+            id="anthropic-metered",
+        ),
+        pytest.param(_publication(), _snapshot(grants=[]), id="no-grants"),
+        pytest.param(_publication(), _snapshot(grants=[_grant(enabled=False)]), id="disabled"),
+        *(
+            pytest.param(
+                _publication(),
+                _snapshot(
+                    grants=[
+                        _grant(
+                            enforcement=EntitlementEnforcement(
+                                requests=_requests(
+                                    calls=None,
+                                    renewal_period_seconds=None,
+                                    call_quota=100,
+                                    call_quota_period=period,
+                                )
+                            )
+                        )
+                    ]
+                ),
+                id=f"{period.lower()}-call-quota",
+            )
+            for period in ("Hourly", "Daily", "Weekly", "Monthly", "Yearly")
+        ),
+    ],
+)
+def test_governed_expressions_for_every_api_shape_and_quota_period_can_be_parsed(
+    publication: Publication, snapshot: ModelAccessSnapshot
+) -> None:
+    _parsable_expressions(render_governed_policy(publication, snapshot))
+
+
+@pytest.mark.parametrize(
+    "enforcement", [None, _full_enforcement()], ids=["unlimited", "all-limits"]
+)
+def test_security_group_expressions_can_be_parsed(
+    enforcement: EntitlementEnforcement | None,
+) -> None:
+    snapshot = _snapshot(
+        settings=ModelAccessSettings(keys_enabled=True, entra_enabled=True),
+        grants=[
+            *_users_and_application(enforcement),
+            _group_grant(4, enforcement=enforcement),
+            _group_grant(5),
+        ],
+    )
+
+    expressions = _parsable_expressions(render_governed_policy(_publication(), snapshot))
+
+    # The group lookup, the per-member counter and the overage check are all multi-statement.
+    assert any('jwt.Claims["groups"]' in expression for expression in expressions)
+    assert any("ToLowerInvariant()" in expression for expression in expressions)
+    assert any('"_claim_names"' in expression for expression in expressions)
+
+
 @pytest.mark.parametrize(
     "literal",
     [
@@ -1153,6 +1284,8 @@ def test_csharp_literals_round_trip_without_xml_or_named_value_injection(literal
     fragment = ET.fromstring(result.fragment_xml)
     assert encoded in _variable_values(fragment, "mosaic-key-grant")[-1]
     assert encoded in _variable_values(fragment, "mosaic-token-grant")[-1]
+    # A quote, brace or keyword inside a literal ends nothing, so the expressions still parse.
+    _parsable_expressions(result)
     assert fragment.find(".//set-body").text == "Model access denied."  # type: ignore[union-attr]
     assert "{{runtime-secret}}" not in result.fragment_xml
     assert result.unrecognized_elements == []

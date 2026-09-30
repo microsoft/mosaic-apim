@@ -19,6 +19,7 @@ import argparse
 from collections.abc import AsyncIterator, Iterable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from typing import Any, cast
 
 import httpx
@@ -54,16 +55,20 @@ from mosaic_api.domain import (
     mcp_server_id,
     model_api_id,
     subject_kind_for,
+    utc_now,
 )
+from mosaic_api.environments import EnvironmentColor, EnvironmentCreate
 from mosaic_api.integrations.aoai import CognitiveServicesClient
 from mosaic_api.integrations.aoai.client import SubscriptionScanner
 from mosaic_api.integrations.apim import ApimClient, ApimWriter, ArmClient
 from mosaic_api.integrations.apim.credentials import ApimCredentialClient
 from mosaic_api.integrations.graph.fake import FakeDirectoryLookup
 from mosaic_api.main import create_app
+from mosaic_api.repositories import InMemoryEntitlementRepository
 from mosaic_api.services import (
     DirectoryService,
     EntitlementService,
+    EnvironmentService,
     GatewayService,
     McpEndpointService,
     ModelEndpointService,
@@ -76,6 +81,7 @@ from mosaic_api.services.portal_access import PortalAccessService
 
 from scripts.screenshots.demo_fakes import (
     AI_RESOURCE_ID,
+    DEV_GATEWAY_RESOURCE_ID,
     FOUNDRY_RESOURCE_ID,
     GATEWAY_RESOURCE_ID,
     PARTNER_GATEWAY_RESOURCE_ID,
@@ -348,6 +354,9 @@ class DemoServices:
     mcp_publishing: McpPublishingService
     mcp_endpoints: McpEndpointService
     entitlements: EntitlementService
+    environments: EnvironmentService
+    # The seed dates its grants in the past, which only the in-memory store lets it do.
+    entitlement_repository: InMemoryEntitlementRepository
     clients: list[httpx.AsyncClient] = field(default_factory=list)
 
     async def aclose(self) -> None:
@@ -369,8 +378,12 @@ def _arm(handler: Any) -> tuple[ArmClient, httpx.AsyncClient]:
 def install_demo_services(app: FastAPI, portal_origins: Iterable[str]) -> DemoServices:
     state = app.state
     settings: Settings = state.settings
+    entitlement_repository = state.entitlement_repository
+    if not isinstance(entitlement_repository, InMemoryEntitlementRepository):
+        raise SeedError("The demo estate needs the in-memory entitlement repository")
     apim = DemoApim()
-    gateway_arm, gateway_http = _arm(gateway_handler(apim))
+    dev_apim = DemoApim(DEV_GATEWAY_RESOURCE_ID, public_ip="203.0.113.25")
+    gateway_arm, gateway_http = _arm(gateway_handler(apim, dev_apim))
     ai_arm, ai_http = _arm(cognitive_handler(build_cognitive_accounts()))
     mcp_http = httpx.AsyncClient(transport=httpx.MockTransport(mcp_handler(build_mcp_servers())))
     lookup = build_directory_lookup()
@@ -382,10 +395,12 @@ def install_demo_services(app: FastAPI, portal_origins: Iterable[str]) -> DemoSe
         group_claims_enabled=settings.entra_group_claims,
     )
 
+    # Built as create_app builds them, with only the Azure-facing clients swapped for fakes.
     gateways = GatewayService(
         state.gateway_repository,
         client_factory=lambda resource: ApimClient(gateway_arm, resource),
         principal_id=MOSAIC_PRINCIPAL_ID,
+        environment_repository=state.environment_repository,
     )
     endpoints = ModelEndpointService(
         state.model_endpoint_repository,
@@ -393,6 +408,7 @@ def install_demo_services(app: FastAPI, portal_origins: Iterable[str]) -> DemoSe
         client_factory=lambda resource: CognitiveServicesClient(ai_arm, resource),
         scanner=SubscriptionScanner(ai_arm),
         principal_id=MOSAIC_PRINCIPAL_ID,
+        environment_repository=state.environment_repository,
     )
     publishing = PublishingService(
         state.gateway_repository,
@@ -402,6 +418,7 @@ def install_demo_services(app: FastAPI, portal_origins: Iterable[str]) -> DemoSe
         directory_repository=state.repository,
         entitlement_repository=state.entitlement_repository,
         model_runtime_client_id=settings.model_runtime_client_id,
+        environment_repository=state.environment_repository,
     )
     mcp_publishing = McpPublishingService(
         state.gateway_repository,
@@ -422,6 +439,7 @@ def install_demo_services(app: FastAPI, portal_origins: Iterable[str]) -> DemoSe
         token_resolver=_demo_token,
         require_https=True,
         allow_private_endpoints=False,
+        environment_repository=state.environment_repository,
     )
     state.directory_lookup = lookup
     state.directory_service = directory
@@ -449,6 +467,8 @@ def install_demo_services(app: FastAPI, portal_origins: Iterable[str]) -> DemoSe
         mcp_publishing=mcp_publishing,
         mcp_endpoints=mcp_endpoints,
         entitlements=state.entitlement_service,
+        environments=state.environment_service,
+        entitlement_repository=entitlement_repository,
         clients=[gateway_http, ai_http, mcp_http],
     )
 
@@ -492,11 +512,13 @@ class Estate:
     """What the seed created, by the names the capture script and a reader care about."""
 
     gateway_id: str = ""
+    dev_gateway_id: str = ""
     partner_gateway_id: str = ""
     aoai_endpoint_id: str = ""
     foundry_endpoint_id: str = ""
     publications: dict[str, str] = field(default_factory=dict)
     model_apis: dict[str, str] = field(default_factory=dict)
+    dev_model_apis: dict[str, str] = field(default_factory=dict)
     mcp_endpoints: dict[str, str] = field(default_factory=dict)
     mcp_servers: dict[str, str] = field(default_factory=dict)
     principals: dict[str, str] = field(default_factory=dict)
@@ -530,6 +552,41 @@ async def _publish_mcp(
         raise SeedError(f"Publishing MCP {label} ended {finished.status}: {finished.model_dump()}")
 
 
+# How long ago the estate's grants were made, other than those that came from a request.
+GRANT_AGE = timedelta(days=120)
+
+
+def _date_history(
+    repository: InMemoryEntitlementRepository, decisions: dict[str, timedelta]
+) -> None:
+    """Move the grants and decisions seeded so far into the past.
+
+    MOSAIC stamps each record with the time it's written, and the usage report simulates a grant's
+    traffic only from the day it was made, so an estate seeded a moment ago would chart a month of
+    nothing and then one busy day. ``decisions`` says how long ago each decided request was
+    decided; the grant it produced dates from then, and every other grant from ``GRANT_AGE`` ago.
+    Pending requests keep today's date.
+    """
+    now = utc_now()
+    granted: dict[str, datetime] = {}
+    for request_id, age in decisions.items():
+        request = repository.access_requests[request_id]
+        decided_at = now - age
+        repository.access_requests[request_id] = request.model_copy(
+            update={
+                "created_at": decided_at - timedelta(days=1),
+                "updated_at": decided_at,
+                "decided_at": decided_at,
+            }
+        )
+        if request.granted_entitlement_id:
+            granted[request.granted_entitlement_id] = decided_at
+    for entitlement_id, entitlement in list(repository.entitlements.items()):
+        repository.entitlements[entitlement_id] = entitlement.model_copy(
+            update={"created_at": granted.get(entitlement_id, now - GRANT_AGE)}
+        )
+
+
 async def seed_estate(services: DemoServices, tenant_id: str) -> Estate:
     """Build the Contoso estate through MOSAIC's own services, in the order an operator would."""
 
@@ -554,12 +611,26 @@ async def seed_estate(services: DemoServices, tenant_id: str) -> Estate:
                 admin, group.id, estate.principals[member.label]
             )
 
+    # A custom environment beside the built-in ones. It faces partners, so it is production-class,
+    # and its gateways may front the production model endpoints.
+    await services.environments.create_environment(
+        admin,
+        EnvironmentCreate(
+            key="partner",
+            display_name="Partner",
+            description="Gateways that serve Contoso's external partners.",
+            color=EnvironmentColor.SEVERE,
+            production=True,
+            accepts_endpoints_from=["production"],
+        ),
+    )
+
     gateway = await services.gateways.register(
         admin,
         GatewayCreate(
             azure_resource_id=GATEWAY_RESOURCE_ID,
             name="Contoso AI Gateway",
-            environment_label="Production",
+            environment="production",
         ),
     )
     estate.gateway_id = gateway.id
@@ -570,7 +641,7 @@ async def seed_estate(services: DemoServices, tenant_id: str) -> Estate:
         GatewayCreate(
             azure_resource_id=PARTNER_GATEWAY_RESOURCE_ID,
             name="Partner Gateway",
-            environment_label="Partner",
+            environment="partner",
         ),
     )
     estate.partner_gateway_id = partner.id
@@ -607,12 +678,39 @@ async def seed_estate(services: DemoServices, tenant_id: str) -> Estate:
             CatalogEntryUpdate.model_validate({"visibility": visibility, "summary": summary}),
         )
 
+    # The development copy of the gateway, which MOSAIC only observes. Its model APIs share their
+    # production twins' names, so the portal offers each environment's access separately.
+    dev_gateway = await services.gateways.register(
+        admin,
+        GatewayCreate(
+            azure_resource_id=DEV_GATEWAY_RESOURCE_ID,
+            name="Contoso AI Dev Gateway",
+            environment="development",
+        ),
+    )
+    estate.dev_gateway_id = dev_gateway.id
+    _require_synced(await services.gateways.sync_now(admin, dev_gateway.id), dev_gateway.name)
+    for model in await services.gateways.import_model_apis(
+        admin, dev_gateway.id, ImportRequest(api_names=["azure-openai", "foundry-inference"])
+    ):
+        estate.dev_model_apis[model.api_name] = model.id
+    dev_summaries = {
+        "azure-openai": "Azure OpenAI for building and testing, before you ask for production.",
+        "foundry-inference": "Foundry models for building and testing, before production.",
+    }
+    for api_name, summary in dev_summaries.items():
+        await services.gateways.update_model_api_catalog(
+            admin,
+            model_api_id(tenant_id, dev_gateway.id, api_name),
+            CatalogEntryUpdate(summary=summary),
+        )
+
     aoai = await services.endpoints.register(
         admin,
         ModelEndpointCreate(
             azure_resource_id=AI_RESOURCE_ID,
             name="Contoso Azure OpenAI",
-            environment_label="Production",
+            environment="production",
         ),
     )
     estate.aoai_endpoint_id = aoai.id
@@ -621,26 +719,27 @@ async def seed_estate(services: DemoServices, tenant_id: str) -> Estate:
         ModelEndpointCreate(
             azure_resource_id=FOUNDRY_RESOURCE_ID,
             name="Contoso AI Foundry",
-            environment_label="Production",
+            environment="production",
         ),
     )
     estate.foundry_endpoint_id = foundry.id
     for endpoint in (aoai, foundry):
         _require_synced(await services.endpoints.sync_now(admin, endpoint.id), endpoint.name)
 
+    # Sales CRM keeps only a legacy free-text label, so Settings has one resource to classify.
     mcp_endpoints = [
         McpEndpointCreate.model_validate(
             {
                 "endpoint": "https://mcp.contoso.com/docs/mcp",
                 "name": "Contoso Docs Search",
-                "environment_label": "Production",
+                "environment": "production",
             }
         ),
         McpEndpointCreate.model_validate(
             {
                 "endpoint": "https://servicedesk.contoso.com/mcp",
                 "name": "IT Service Desk",
-                "environment_label": "Production",
+                "environment": "production",
                 "resource_audience": "api://contoso-servicedesk",
             }
         ),
@@ -915,11 +1014,26 @@ async def seed_estate(services: DemoServices, tenant_id: str) -> Estate:
         state=AccessRequestState.DENIED,
         note="Limited to the AI Platform Engineers group. Use the service desk portal instead.",
     )
+    # Megan builds against the development gateway first, then asks for production.
+    prototype = await request_access(
+        PORTAL_USER,
+        "modelApi",
+        estate.dev_model_apis["foundry-inference"],
+        "Prototyping claims summarization with Phi-4 and Mistral Large.",
+    )
+    await services.entitlements.approve_access_request(
+        admin,
+        prototype,
+        AccessRequestApproval(
+            note="Approved for development. Ask for production when the prototype is ready.",
+            enforcement=EntitlementEnforcement(tokens=_tokens(per_minute=10_000)),
+        ),
+    )
     await request_access(
         PORTAL_USER,
         "modelApi",
         estate.model_apis["foundry-inference"],
-        "Comparing Phi-4 and Mistral Large for claims summarization.",
+        "Taking the claims summarization prototype to production.",
     )
     await request_access(ISAIAH, "modelApi", gpt4o_mini, "Prototype for customer email triage.")
     await request_access(
@@ -927,6 +1041,10 @@ async def seed_estate(services: DemoServices, tenant_id: str) -> Estate:
     )
     await request_access(
         PRADEEP, "mcpServer", orders_mcp, "Agent that answers order-status questions in Teams."
+    )
+    _date_history(
+        services.entitlement_repository,
+        {approved: timedelta(days=52), denied: timedelta(days=33), prototype: timedelta(days=16)},
     )
 
     # Apply the governed publications so their grants reach the gateway, then add one grant

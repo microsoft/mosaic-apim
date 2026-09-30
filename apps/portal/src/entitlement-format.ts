@@ -6,6 +6,7 @@ import type {
   EntitlementResource,
   EntitlementRuntime,
   QuotaPeriod,
+  ResourceSummary,
   ResolvedEntitlement,
   TokenEnforcement,
 } from './types'
@@ -64,8 +65,45 @@ export function requestStateLabel(state: AccessRequest['state']) {
   return stateLabels[state]
 }
 
-export function resourceLabel(resource: EntitlementResource) {
-  return `${resourceKindLabel(resource.kind)} ${resource.id}`
+function usableName(displayName: string | null | undefined) {
+  const name = displayName?.trim()
+  return name ? name : null
+}
+
+/**
+ * Names a resource without its ID: the summary's name, then whether it is gone, then its kind.
+ * End users never see a raw resource ID, so this is the last resort for every title below.
+ */
+export function resourceLabel(resource: EntitlementResource, summary?: ResourceSummary | null) {
+  const name = usableName(summary?.displayName)
+  if (name) return name
+  if (summary?.available === false) return 'Resource no longer available'
+  return `${resourceKindLabel(resource.kind)} resource`
+}
+
+/**
+ * Heads a grant or request with the name the catalog shows for its resource. When that name is
+ * missing (an older API), null (a resource the API can't resolve), or blank, it falls back to
+ * {@link resourceLabel}, so the heading is never a raw ID.
+ */
+export function resourceTitle(
+  resource: EntitlementResource,
+  displayName: string | null | undefined,
+  summary?: ResourceSummary | null,
+) {
+  return usableName(displayName) ?? resourceLabel(resource, summary)
+}
+
+/** Secondary text for a card, led by the resource's kind unless the title already states it. */
+export function withResourceKind(
+  resource: EntitlementResource,
+  displayName: string | null | undefined,
+  detail: string,
+  summary?: ResourceSummary | null,
+) {
+  const titleIsKind =
+    !usableName(displayName) && !usableName(summary?.displayName) && summary?.available !== false
+  return titleIsKind ? detail : `${resourceKindLabel(resource.kind)} · ${detail}`
 }
 
 export function formatNumber(value: number) {
@@ -74,15 +112,10 @@ export function formatNumber(value: number) {
 
 export function describeAttribution(resolved: ResolvedEntitlement) {
   if (resolved.via === 'direct') {
-    return null
+    return 'Granted directly to you'
   }
-  const groupName =
-    resolved.viaGroupName ??
-    resolved.viaGroupId ??
-    (resolved.entitlement.subject.kind === 'securityGroup' || resolved.entitlement.subject.kind === 'group'
-      ? resolved.entitlement.subject.id
-      : 'an assigned group')
-  return `Through ${groupName}`
+  const groupName = resolved.viaGroupName ?? resolved.viaGroupId ?? 'an assigned group'
+  return `Granted through ${groupName}`
 }
 
 export function isSecurityGroupGrant(resolved: ResolvedEntitlement) {
@@ -96,9 +129,13 @@ export function describeBinding(entitlement: Entitlement) {
   const pieces = [
     entitlement.binding.apimProductName ? `Product ${entitlement.binding.apimProductName}` : null,
     entitlement.binding.apimSubscriptionName ? `Subscription ${entitlement.binding.apimSubscriptionName}` : null,
-    entitlement.binding.gatewayId ? `Gateway ${entitlement.binding.gatewayId}` : null,
+    entitlement.binding.gatewayId ? 'Gateway attribution configured' : null,
   ].filter(Boolean)
   return pieces.length > 0 ? pieces.join(' · ') : 'Usage attribution is configured.'
+}
+
+export function gatewayLabel(summary: ResourceSummary | null | undefined, fallback?: string | null) {
+  return summary?.gatewayName ?? fallback ?? 'Gateway not available'
 }
 
 export function describeTokenLimits(tokens: TokenEnforcement | null | undefined) {

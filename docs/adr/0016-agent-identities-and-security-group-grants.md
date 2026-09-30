@@ -1,4 +1,4 @@
-# ADR 0014: Agent identities and security-group grants
+# ADR 0016: Agent identities and security-group grants
 
 **Status:** Accepted
 
@@ -74,7 +74,7 @@ empty or placeholder `scp` value, so MOSAIC treats missing, empty and `/` `scp` 
 relies on `roles` for app-only model invocation.
 
 **MCP grants can be enforced on MOSAIC-published servers.** Grants on MCP servers may name users,
-agent identities, agent users and security groups. [ADR 0015](0015-mcp-gateway-enforcement.md)
+agent identities, agent users and security groups. [ADR 0017](0017-mcp-gateway-enforcement.md)
 defines the gateway enforcement path for MCP servers MOSAIC publishes. Imported MCP servers remain
 recorded governance intent because MOSAIC does not own their gateway policy.
 

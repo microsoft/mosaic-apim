@@ -24,6 +24,7 @@ import {
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMosaicApi } from '../api'
+import { environmentFindingsQueryKey } from '../environments'
 import { AI_KIND_LABELS } from '../labels'
 import type { Gateway } from '../types'
 import { ErrorState, Loading } from './AsyncState'
@@ -160,6 +161,20 @@ export function ImportFromGatewayDialog({
     () => candidatesQuery.data?.candidates ?? [],
     [candidatesQuery.data],
   )
+  const findingsQuery = useQuery({
+    queryKey: environmentFindingsQueryKey(gatewayId),
+    queryFn: () => api.listEnvironmentFindings(gatewayId),
+    enabled: open && gatewayId !== '',
+  })
+  const findingsByApiName = useMemo(() => {
+    const map = new Map<string, string[]>()
+    for (const finding of findingsQuery.data?.items ?? []) {
+      if ((finding.subject.kind === 'api' || finding.subject.kind === 'mcpServer') && finding.subject.apiName) {
+        map.set(finding.subject.apiName, [...(map.get(finding.subject.apiName) ?? []), finding.message])
+      }
+    }
+    return map
+  }, [findingsQuery.data])
 
   useEffect(() => {
     // Detection pre-checks; it does not decide. Reset only when a fresh list arrives, so an
@@ -188,6 +203,21 @@ export function ImportFromGatewayDialog({
       onClose()
     },
   })
+
+  // An import that fails keeps the dialog open with the reason. Move focus there, so a screen reader reads
+  // it: the message bar doesn't announce itself. The failure only ever follows pressing Import, so it takes
+  // focus from a field too. An import that succeeds closes the dialog, and the page reports it. Fluent
+  // places focus as the dialog opens.
+  const failureRef = useRef<HTMLDivElement>(null)
+  const failure = importMutation.error
+  const shownFailure = useRef(failure)
+  useEffect(() => {
+    const shown = shownFailure.current
+    shownFailure.current = failure
+    // The last failure is still shown when the dialog opens again, and it isn't new.
+    if (!open || !failure || Object.is(failure, shown)) return
+    failureRef.current?.focus()
+  }, [open, failure])
 
   function toggle(apiName: string, checked: boolean) {
     setTouched(true)
@@ -249,9 +279,11 @@ export function ImportFromGatewayDialog({
                 >
                   Select all
                 </Button>
+                {/* Pressing Clear leaves nothing to clear. A browser takes focus off a button that becomes
+                    disabled, so Clear stays focusable. */}
                 <Button
                   appearance="secondary"
-                  disabled={selectedCount === 0}
+                  disabledFocusable={selectedCount === 0}
                   onClick={() => {
                     setTouched(true)
                     setSelected(new Set())
@@ -283,7 +315,11 @@ export function ImportFromGatewayDialog({
               </MessageBar>
             )}
 
-            {importMutation.isError && <ErrorState error={importMutation.error} />}
+            {importMutation.isError && (
+              <div ref={failureRef} tabIndex={-1}>
+                <ErrorState error={importMutation.error} />
+              </div>
+            )}
 
             {candidatesQuery.isPending && gatewayId !== '' && (
               <Loading label={`Loading ${copy.plural}...`} />
@@ -333,6 +369,11 @@ export function ImportFromGatewayDialog({
                                   ))}
                                 </div>
                               )}
+                              {(findingsByApiName.get(candidate.apiName) ?? []).map((message) => (
+                                <MessageBar key={message} intent="warning">
+                                  <MessageBarBody>{message}</MessageBarBody>
+                                </MessageBar>
+                              ))}
                             </div>
                           </TableCell>
                           <TableCell>
@@ -366,9 +407,11 @@ export function ImportFromGatewayDialog({
             <Button appearance="secondary" onClick={onClose}>
               Cancel
             </Button>
+            {/* A browser takes focus off a button that becomes disabled, so a busy button stays focusable. */}
             <Button
               appearance="primary"
-              disabled={selectedCount === 0 || importMutation.isPending}
+              disabled={selectedCount === 0}
+              disabledFocusable={importMutation.isPending}
               onClick={() => importMutation.mutate([...selected])}
             >
               {importMutation.isPending ? 'Importing...' : `Import ${selectedCount}`}

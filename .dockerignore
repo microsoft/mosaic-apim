@@ -16,3 +16,5 @@
 **/.mypy_cache
 **/.ruff_cache
 infra/main.json
+# No image uses the e2e harness, and its local targets and test results hold tenant details.
+e2e

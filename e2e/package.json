@@ -1,0 +1,25 @@
+{
+  "name": "mosaic-e2e",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Live, human-in-the-loop end-to-end tests for a deployed MOSAIC environment.",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "live": "node tools/live.ts",
+    "drive": "node tools/drive.ts",
+    "login": "node tools/login.ts",
+    "test": "playwright test",
+    "test:unit": "node --test \"tests/**/*.test.ts\"",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "lint": "oxlint"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.63.0",
+    "@types/node": "^24.13.6",
+    "oxlint": "^1.84.0",
+    "typescript": "~6.0.2"
+  }
+}

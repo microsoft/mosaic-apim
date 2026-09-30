@@ -102,6 +102,8 @@ def _literal(value: str) -> str:
 
 
 def _expression(lines: list[str]) -> str:
+    # APIM parses multi-statement expressions with Razor, which refuses the whole policy unless
+    # every if, else and loop body is a braced block, even a single return.
     return "@{\n" + "\n".join(lines) + "\n}"
 
 
@@ -248,17 +250,17 @@ def _key_shape_check() -> str:
             'if (headers.ContainsKey("Ocp-Apim-Subscription-Key")) {',
             '    var values = headers["Ocp-Apim-Subscription-Key"];',
             "    if (values == null || values.Length != 1 || String.IsNullOrWhiteSpace(values[0]))"
-            " return true;",
+            " { return true; }",
             "    header = values[0];",
             "}",
             'if (query.ContainsKey("subscription-key")) {',
             '    var values = query["subscription-key"];',
             "    if (values == null || values.Length != 1 || String.IsNullOrWhiteSpace(values[0]))"
-            " return true;",
+            " { return true; }",
             "    parameter = values[0];",
             "}",
             "if (header != null && parameter != null &&"
-            " !String.Equals(header, parameter, StringComparison.Ordinal)) return true;",
+            " !String.Equals(header, parameter, StringComparison.Ordinal)) { return true; }",
             "return context.Subscription == null || String.IsNullOrEmpty(context.Subscription.Id);",
         ]
     )
@@ -266,7 +268,7 @@ def _key_shape_check() -> str:
 
 def _key_lookup(publication: Publication, grants: list[ModelAccessGrant]) -> str:
     lines = [
-        'if (context.Subscription == null) return "";',
+        'if (context.Subscription == null) { return ""; }',
         "var subscription = context.Subscription.Id;",
     ]
     for grant in grants:
@@ -276,7 +278,7 @@ def _key_lookup(publication: Publication, grants: list[ModelAccessGrant]) -> str
         lines.append(
             f"if (String.Equals(subscription, {_literal(grant.subscription_name)}, "
             "StringComparison.OrdinalIgnoreCase)) "
-            f"return {_literal(grant_counter_identity(publication, grant))};"
+            f"{{ return {_literal(grant_counter_identity(publication, grant))}; }}"
         )
     return _expression([*lines, 'return "";'])
 
@@ -296,10 +298,10 @@ def _token_lookup(
     lines = [
         'var jwt = context.Variables.ContainsKey("mosaic-validated-token")'
         ' ? context.Variables["mosaic-validated-token"] as Jwt : null;',
-        'if (jwt == null || jwt.Claims == null || !jwt.Claims.ContainsKey("oid")) return "";',
+        'if (jwt == null || jwt.Claims == null || !jwt.Claims.ContainsKey("oid")) { return ""; }',
         'var objects = jwt.Claims["oid"];',
         "if (objects == null || objects.Length != 1 || String.IsNullOrWhiteSpace(objects[0]))"
-        ' return "";',
+        ' { return ""; }',
         "var oid = objects[0];",
         "bool delegated = false;",
         "bool application = false;",
@@ -308,10 +310,10 @@ def _token_lookup(
         '    var scopes = jwt.Claims["scp"];',
         "    if (scopes != null && scopes.Length == 1 && scopes[0] != null) {",
         "        foreach (var scope in scopes[0].Split(' ')) {",
-        '            if (String.IsNullOrWhiteSpace(scope) || scope == "/") continue;',
+        '            if (String.IsNullOrWhiteSpace(scope) || scope == "/") { continue; }',
         "            hasRealScopes = true;",
         f"            if (String.Equals(scope, {_literal(delegated_scope)}, "
-        "StringComparison.Ordinal)) delegated = true;",
+        "StringComparison.Ordinal)) { delegated = true; }",
         "        }",
         "    }",
         "}",
@@ -325,7 +327,7 @@ def _token_lookup(
         lines.append(
             f"if ({kind} && String.Equals(oid, {_literal(grant.object_id)}, "
             "StringComparison.OrdinalIgnoreCase)) "
-            f"return {_literal(grant_counter_identity(publication, grant))};"
+            f"{{ return {_literal(grant_counter_identity(publication, grant))}; }}"
         )
     if group_grants:
         lines.extend(
@@ -340,7 +342,7 @@ def _token_lookup(
                     "    foreach (var group in groups) {",
                     f"        if (String.Equals(group, {_literal(grant.object_id.lower())}, "
                     "StringComparison.OrdinalIgnoreCase)) "
-                    f"return {_literal(grant_counter_identity(publication, grant))};",
+                    f"{{ return {_literal(grant_counter_identity(publication, grant))}; }}",
                     "    }",
                 ]
             )
@@ -360,13 +362,13 @@ def _token_member_lookup(
         "if (",
         "    "
         + " && ".join(f"{_TOKEN_GRANT} != {_literal(identity)}" for identity in sorted(group_ids)),
-        ') return "";',
+        ') { return ""; }',
         'var jwt = context.Variables.ContainsKey("mosaic-validated-token")'
         ' ? context.Variables["mosaic-validated-token"] as Jwt : null;',
-        'if (jwt == null || jwt.Claims == null || !jwt.Claims.ContainsKey("oid")) return "";',
+        'if (jwt == null || jwt.Claims == null || !jwt.Claims.ContainsKey("oid")) { return ""; }',
         'var objects = jwt.Claims["oid"];',
         "if (objects == null || objects.Length != 1 || String.IsNullOrWhiteSpace(objects[0]))"
-        ' return "";',
+        ' { return ""; }',
         "return objects[0].ToLowerInvariant();",
     ]
     return _expression(lines)
@@ -380,18 +382,18 @@ def _token_groups_overage() -> str:
 
     return _expression(
         [
-            f"if (!String.IsNullOrEmpty({_TOKEN_GRANT})) return false;",
+            f"if (!String.IsNullOrEmpty({_TOKEN_GRANT})) {{ return false; }}",
             'var jwt = context.Variables.ContainsKey("mosaic-validated-token")'
             ' ? context.Variables["mosaic-validated-token"] as Jwt : null;',
-            "if (jwt == null || jwt.Claims == null) return false;",
-            'if (jwt.Claims.ContainsKey("hasgroups")) return true;',
+            "if (jwt == null || jwt.Claims == null) { return false; }",
+            'if (jwt.Claims.ContainsKey("hasgroups")) { return true; }',
             "try {",
-            '    if (!jwt.Claims.ContainsKey("_claim_names")) return false;',
+            '    if (!jwt.Claims.ContainsKey("_claim_names")) { return false; }',
             '    var values = jwt.Claims["_claim_names"];',
-            "    if (values == null) return false;",
+            "    if (values == null) { return false; }",
             "    foreach (var value in values) {",
             "        if (value != null && "
-            'value.IndexOf("groups", StringComparison.OrdinalIgnoreCase) >= 0) return true;',
+            'value.IndexOf("groups", StringComparison.OrdinalIgnoreCase) >= 0) { return true; }',
             "    }",
             "} catch { return false; }",
             "return false;",
@@ -443,7 +445,7 @@ def _authentication(
             _expression(
                 [
                     'var values = context.Request.Headers["Authorization"];',
-                    "if (values == null || values.Length != 1) return true;",
+                    "if (values == null || values.Length != 1) { return true; }",
                     "var authorization = values[0];",
                     "return String.IsNullOrWhiteSpace(authorization)"
                     ' || !authorization.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)'
@@ -512,8 +514,8 @@ def _operation_guard(
             fragment,
             _expression(
                 [
-                    f"if (!({needs_model})) return false;",
-                    "if (context.Request.Body == null) return true;",
+                    f"if (!({needs_model})) {{ return false; }}",
+                    "if (context.Request.Body == null) { return true; }",
                     "try {",
                     "    var body = context.Request.Body.As<JObject>(preserveContent: true);",
                     '    var model = body == null ? null : body["model"];',

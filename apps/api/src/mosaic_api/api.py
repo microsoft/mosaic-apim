@@ -10,6 +10,7 @@ from mosaic_api.domain import (
     AccessRequestCreate,
     AccessRequestDecision,
     AccessRequestState,
+    AdminAccessRequestListItem,
     CatalogEntry,
     CatalogEntryUpdate,
     ConsoleAccess,
@@ -47,7 +48,9 @@ from mosaic_api.domain import (
     ModelEndpointUpdate,
     PolicyPreview,
     PolicyPreviewRequest,
+    PortalAccessRequest,
     PortalProfile,
+    PortalResolvedEntitlement,
     Principal,
     PrincipalCreate,
     PrincipalUpdate,
@@ -60,6 +63,16 @@ from mosaic_api.domain import (
     PublishRecoveryRequest,
     PublishRun,
     ResolvedEntitlement,
+)
+from mosaic_api.environments import (
+    EnvironmentAssignmentRequest,
+    EnvironmentAssignmentResult,
+    EnvironmentCatalogView,
+    EnvironmentCreate,
+    EnvironmentSettingsUpdate,
+    EnvironmentSuggestionList,
+    EnvironmentUpdate,
+    PortalEnvironment,
 )
 from mosaic_api.integrations.policy import render_policy_preview
 from mosaic_api.observed import (
@@ -81,14 +94,19 @@ from mosaic_api.observed import (
 from mosaic_api.services import (
     DirectoryService,
     EntitlementService,
+    EnvironmentFindingsService,
+    EnvironmentService,
     GatewayService,
     McpEndpointService,
     ModelEndpointService,
     PortalService,
     PublishingService,
+    UsageService,
 )
 from mosaic_api.services.directory import Actor
+from mosaic_api.services.environment_findings import EnvironmentFindingList
 from mosaic_api.services.portal_access import PortalAccessService
+from mosaic_api.services.usage import MyUsageReport, UsagePeriod
 
 Admin = Annotated[AuthContext, Depends(require_admin)]
 PortalUser = Annotated[AuthContext, Depends(require_portal_user)]
@@ -111,6 +129,14 @@ def _entitlements(request: Request) -> EntitlementService:
     return cast(EntitlementService, request.app.state.entitlement_service)
 
 
+def _environments(request: Request) -> EnvironmentService:
+    return cast(EnvironmentService, request.app.state.environment_service)
+
+
+def _environment_findings(request: Request) -> EnvironmentFindingsService:
+    return cast(EnvironmentFindingsService, request.app.state.environment_findings_service)
+
+
 def _publishing(request: Request) -> PublishingService:
     return cast(PublishingService, request.app.state.publishing_service)
 
@@ -121,6 +147,10 @@ def _portal_access(request: Request) -> PortalAccessService:
 
 def _portal(request: Request) -> PortalService:
     return cast(PortalService, request.app.state.portal_service)
+
+
+def _usage(request: Request) -> UsageService:
+    return cast(UsageService, request.app.state.usage_service)
 
 
 def _mcp_endpoints(request: Request) -> McpEndpointService:
@@ -143,6 +173,13 @@ portal_router = APIRouter(prefix="/api/v1/me", tags=["portal"])
 @portal_router.get("/entitlements", response_model=list[Entitlement])
 async def my_entitlements(request: Request, auth: PortalUser) -> list[Entitlement]:
     return await _portal_access(request).list_for_caller(_actor(auth))
+
+
+@portal_router.get("/usage", response_model=MyUsageReport)
+async def my_usage(
+    request: Request, auth: PortalUser, period: Annotated[UsagePeriod, Query()] = "30d"
+) -> MyUsageReport:
+    return await _usage(request).my_usage(_actor(auth), period)
 
 
 @portal_router.get("/entitlements/{entitlement_id}/connection", response_model=ModelConnection)
@@ -312,6 +349,75 @@ async def remove_membership(
 @router.post("/policies/preview", response_model=PolicyPreview)
 async def preview_policy(payload: PolicyPreviewRequest, _auth: Admin) -> PolicyPreview:
     return render_policy_preview(payload)
+
+
+@router.get("/environment-catalog", response_model=EnvironmentCatalogView)
+async def environment_catalog(request: Request, auth: Admin) -> EnvironmentCatalogView:
+    return await _environments(request).view(_actor(auth))
+
+
+@router.post(
+    "/environment-catalog/environments",
+    response_model=EnvironmentCatalogView,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_environment(
+    request: Request, auth: Admin, payload: EnvironmentCreate
+) -> EnvironmentCatalogView:
+    return await _environments(request).create_environment(_actor(auth), payload)
+
+
+@router.patch(
+    "/environment-catalog/environments/{key}",
+    response_model=EnvironmentCatalogView,
+)
+async def update_environment(
+    request: Request, auth: Admin, key: str, payload: EnvironmentUpdate
+) -> EnvironmentCatalogView:
+    return await _environments(request).update_environment(_actor(auth), key, payload)
+
+
+@router.delete(
+    "/environment-catalog/environments/{key}",
+    response_model=EnvironmentCatalogView,
+)
+async def delete_environment(
+    request: Request, auth: Admin, key: str
+) -> EnvironmentCatalogView:
+    return await _environments(request).delete_environment(_actor(auth), key)
+
+
+@router.patch(
+    "/environment-catalog/settings",
+    response_model=EnvironmentCatalogView,
+)
+async def update_environment_settings(
+    request: Request, auth: Admin, payload: EnvironmentSettingsUpdate
+) -> EnvironmentCatalogView:
+    return await _environments(request).update_settings(_actor(auth), payload)
+
+
+@router.get("/environment-suggestions", response_model=EnvironmentSuggestionList)
+async def list_environment_suggestions(
+    request: Request, auth: Admin
+) -> EnvironmentSuggestionList:
+    return await _environments(request).suggestions(_actor(auth))
+
+
+@router.post("/environment-assignments", response_model=EnvironmentAssignmentResult)
+async def assign_environments(
+    request: Request, auth: Admin, payload: EnvironmentAssignmentRequest
+) -> EnvironmentAssignmentResult:
+    return await _environments(request).assign_environments(_actor(auth), payload)
+
+
+@router.get("/environment-findings", response_model=EnvironmentFindingList)
+async def list_environment_findings(
+    request: Request,
+    auth: Admin,
+    gateway_id: Annotated[str | None, Query(alias="gatewayId")] = None,
+) -> EnvironmentFindingList:
+    return await _environment_findings(request).list_findings(_actor(auth), gateway_id=gateway_id)
 
 
 @router.get("/gateways", response_model=list[Gateway])
@@ -766,11 +872,11 @@ async def delete_entitlement(request: Request, auth: Admin, entitlement_id: str)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-@router.get("/access-requests", response_model=list[AccessRequest])
+@router.get("/access-requests", response_model=list[AdminAccessRequestListItem])
 async def list_access_requests(
     request: Request, auth: Admin, state: str | None = None
-) -> list[AccessRequest]:
-    return await _entitlements(request).list_access_requests(_actor(auth), state=state)
+) -> list[AdminAccessRequestListItem]:
+    return await _entitlements(request).list_access_request_items(_actor(auth), state=state)
 
 
 @router.post("/access-requests/{request_id}/approve", response_model=AccessRequest)
@@ -915,10 +1021,10 @@ async def portal_profile(request: Request, auth: PortalUser) -> PortalProfile:
     )
 
 
-@router.get("/portal/entitlements", response_model=list[ResolvedEntitlement], tags=["portal"])
+@router.get("/portal/entitlements", response_model=list[PortalResolvedEntitlement], tags=["portal"])
 async def portal_entitlements(
     request: Request, auth: PortalUser
-) -> list[ResolvedEntitlement]:
+) -> list[PortalResolvedEntitlement]:
     return await _portal(request).my_entitlements(_actor(auth))
 
 
@@ -927,29 +1033,34 @@ async def portal_catalog(request: Request, auth: PortalUser) -> list[CatalogEntr
     return await _portal(request).catalog(_actor(auth))
 
 
-@router.get("/portal/access-requests", response_model=list[AccessRequest], tags=["portal"])
-async def portal_access_requests(request: Request, auth: PortalUser) -> list[AccessRequest]:
+@router.get("/portal/environments", response_model=list[PortalEnvironment], tags=["portal"])
+async def portal_environments(request: Request, auth: PortalUser) -> list[PortalEnvironment]:
+    return await _environments(request).portal_environments(_actor(auth))
+
+
+@router.get("/portal/access-requests", response_model=list[PortalAccessRequest], tags=["portal"])
+async def portal_access_requests(request: Request, auth: PortalUser) -> list[PortalAccessRequest]:
     return await _portal(request).my_access_requests(_actor(auth))
 
 
 @router.post(
     "/portal/access-requests",
-    response_model=AccessRequest,
+    response_model=PortalAccessRequest,
     status_code=status.HTTP_201_CREATED,
     tags=["portal"],
 )
 async def create_portal_access_request(
     request: Request, auth: PortalUser, payload: AccessRequestCreate
-) -> AccessRequest:
+) -> PortalAccessRequest:
     return await _portal(request).create_access_request(_actor(auth), payload)
 
 
 @router.post(
     "/portal/access-requests/{request_id}/withdraw",
-    response_model=AccessRequest,
+    response_model=PortalAccessRequest,
     tags=["portal"],
 )
 async def withdraw_portal_access_request(
     request: Request, auth: PortalUser, request_id: str
-) -> AccessRequest:
+) -> PortalAccessRequest:
     return await _portal(request).withdraw_access_request(_actor(auth), request_id)

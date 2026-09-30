@@ -284,17 +284,26 @@ describe('ConnectionDetails', () => {
     expect(screen.getByRole('button', { name: 'Show secondary key' })).toBeDisabled()
   })
 
-  it('reports the last APIM error for a grant that failed to apply', async () => {
+  it('explains a failed apply without showing the raw APIM error an older API still sends', async () => {
     const user = userEvent.setup()
     renderDetails()
+    const apimError =
+      'policyFragment mosaic-contoso-chat: The Azure operation did not succeed (Failed). ValidationError: Subscription mosaic-grant-contoso-other is not valid for this API.'
     await openDetails(user, {
       ...connection,
-      runtime: { ...connection.runtime!, status: 'failed', error: 'The subscription could not be created.' },
+      runtime: { ...connection.runtime!, status: 'failed', error: apimError },
     })
 
     expect(screen.getByText('APIM apply failed')).toBeVisible()
-    expect(screen.getByText('Last APIM error')).toBeVisible()
-    expect(screen.getByText('The subscription could not be created.')).toBeVisible()
+    expect(
+      screen.getByText('The last attempt to apply this grant to APIM failed. Ask your administrator to retry it.'),
+    ).toBeVisible()
+    expect(
+      screen.getByText('Keys are available only while this grant is applied to APIM. Current status: APIM apply failed.'),
+    ).toBeVisible()
+    expect(screen.queryByText('Last APIM error')).not.toBeInTheDocument()
+    expect(screen.queryByText(apimError)).not.toBeInTheDocument()
+    expect(document.body).not.toHaveTextContent(/mosaic-contoso|ValidationError/)
   })
 
   it('explains a model whose governed access is not set up yet', async () => {

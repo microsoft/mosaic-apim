@@ -95,7 +95,7 @@ reruns converge rather than duplicate.
 
 ## Amendment 2026-09-29: Portal group-claim awareness
 
-[ADR 0014](0014-agent-identities-and-security-group-grants.md) adds Entra security-group grants.
+[ADR 0016](0016-agent-identities-and-security-group-grants.md) adds Entra security-group grants.
 The portal resolves the signed-in caller from the validated token only; it still never accepts a
 subject or requester parameter. The current-user APIs read the caller's `groups` claim to show
 access that arrives through an Entra security group, and the portal reports group overage when the

@@ -43,7 +43,11 @@ from mosaic_api.repositories import (
 from mosaic_api.services.directory import Actor
 from mosaic_api.services.entitlements import EntitlementService
 from mosaic_api.services.mcp_access import entitlement_mcp_publication
-from mosaic_api.services.model_access import entitlement_intent_digest
+from mosaic_api.services.model_access import (
+    entitlement_intent_digest,
+    portal_entitlement,
+    portal_runtime,
+)
 
 logger = structlog.get_logger()
 
@@ -198,10 +202,13 @@ class PortalAccessService:
                 ) < grant_precedence_key(winner.enforcement, winner.id):
                     winners[key] = entitlement
             effective = {item.id for item in winners.values()}
-        return sorted(
-            [*direct, *[item for item in group_candidates if item.id in effective]],
-            key=lambda item: item.id,
-        )
+        return [
+            portal_entitlement(item)
+            for item in sorted(
+                [*direct, *[item for item in group_candidates if item.id in effective]],
+                key=lambda item: item.id,
+            )
+        ]
 
     async def _context(
         self, actor: Actor, entitlement_id: str, *, administrator: bool
@@ -300,7 +307,13 @@ class PortalAccessService:
             endpoint=f"{str(url).rstrip('/')}/{publication.api_path.strip('/')}",
             deployment_name=publication.deployment_name,
             tenant_id=actor.tenant_id,
-            runtime=context.entitlement.runtime,
+            # The route decides, not the caller's role: an administrator reading their own grant
+            # through /api/v1/me gets the end-user response.
+            runtime=(
+                context.entitlement.runtime
+                if administrator
+                else portal_runtime(context.entitlement.runtime)
+            ),
             applied_methods=snapshot.settings if snapshot else None,
             entra_audience=audience,
             entra_scope=f"api://{audience}/{scope_suffix}" if audience else None,
@@ -369,11 +382,11 @@ class PortalAccessService:
             actor, entitlement_id, administrator=administrator
         )
         if context.publication is None:
-            return self._adopted_mcp_connection(actor, context)
-        return self._published_mcp_connection(actor, context)
+            return self._adopted_mcp_connection(actor, context, administrator=administrator)
+        return self._published_mcp_connection(actor, context, administrator=administrator)
 
     def _adopted_mcp_connection(
-        self, actor: Actor, context: _McpAccessContext
+        self, actor: Actor, context: _McpAccessContext, *, administrator: bool
     ) -> McpConnection:
         gateway_url = context.gateway.capabilities.gateway_url
         route_name = (
@@ -403,13 +416,18 @@ class PortalAccessService:
                 "MOSAIC records this grant but doesn't enforce it. This MCP server was imported "
                 "from the gateway, so its own policy decides who can call it."
             ),
-            runtime=context.entitlement.runtime,
+            # The route decides, as it does for model connections: see portal_runtime.
+            runtime=(
+                context.entitlement.runtime
+                if administrator
+                else portal_runtime(context.entitlement.runtime)
+            ),
             principal_kind=context.principal.kind,
             limits=context.entitlement.enforcement,
         )
 
     def _published_mcp_connection(
-        self, actor: Actor, context: _McpAccessContext
+        self, actor: Actor, context: _McpAccessContext, *, administrator: bool
     ) -> McpConnection:
         publication = context.publication
         assert publication is not None
@@ -463,7 +481,7 @@ class PortalAccessService:
             transport=context.server.transport_type,
             enforced=enforced,
             status_message=_mcp_status_message(runtime.status if runtime else "pending"),
-            runtime=runtime,
+            runtime=runtime if administrator else portal_runtime(runtime),
             entra_audience=audience,
             delegated_scope=delegated_scope,
             application_scope=application_scope,

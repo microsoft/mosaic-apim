@@ -3,6 +3,7 @@ import re
 import xml.etree.ElementTree as ET
 
 import pytest
+from apim_double import expression_error, policy_expression_error
 from mosaic_api.domain import (
     EntitlementEnforcement,
     EntitlementSubject,
@@ -175,6 +176,25 @@ def test_documents_parse_are_deterministic_and_digest_all_three_documents() -> N
     assert "Body" not in first.fragment_xml + first.api_policy_xml + first.metadata_policy_xml
     assert "set-backend-service" not in first.fragment_xml
     assert first.unrecognized_elements == []
+
+
+def test_expressions_are_ones_api_management_can_parse() -> None:
+    result = _render(snapshot=_snapshot(grants=[_grant(), _group_grant(3), _app_grant()]))
+    documents = (result.fragment_xml, result.api_policy_xml, result.metadata_policy_xml)
+
+    expressions = [
+        value
+        for document in documents
+        for element in ET.fromstring(document).iter()
+        for value in (*element.attrib.values(), element.text or "")
+        if value.startswith("@{")
+    ]
+
+    # API Management parses each @{ ... } with Razor, which refuses an unbraced control-flow body.
+    assert expressions
+    errors = {expression: expression_error(expression) for expression in expressions}
+    assert errors == dict.fromkeys(expressions)
+    assert all(policy_expression_error(document) is None for document in documents)
 
 
 def test_fragment_order_and_authenticate_challenges_match_contract() -> None:

@@ -28,6 +28,7 @@ import {
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMosaicApi } from '../api'
+import { environmentBlockedVerdict, useEnvironmentCatalog } from '../environments'
 import { CANNOT_INVOKE, NOT_CONFIRMED, runtimeVerdict } from '../runtime-access'
 import { runtimeConfig } from '../runtime-config'
 import type {
@@ -44,6 +45,7 @@ import type {
   TokenEnforcement,
 } from '../types'
 import { ErrorState, Loading } from './AsyncState'
+import { EnvironmentBadge } from './EnvironmentBadge'
 import { PolicyFacetItem } from './PolicyFacets'
 import { ModelAccessReview } from './ModelAccessReview'
 import { ModelAccessRecovery } from './ModelAccessRecovery'
@@ -279,33 +281,55 @@ function RunResult({ run }: { run: PublishRun }) {
   )
 }
 
-export function PublishModelDialog({
-  open,
-  onClose,
-  onPublished,
-  initialReview,
-}: {
+type ModelReview = {
+  publication: Publication
+  plan: PublishPlan
+  message?: string
+}
+
+type PublishModelDialogProps = {
   open: boolean
   onClose: () => void
   onPublished: (message: string) => void
-  initialReview?: {
-    publication: Publication
-    plan: PublishPlan
-    message?: string
-  } | null
-}) {
+  initialReview?: ModelReview | null
+}
+
+// Every opening starts a new session, so the first frame the dialog commits is already the step it opens on,
+// and Fluent moves focus into that step. Closing keeps the session, with the review it opened, until the
+// dialog next opens, so nothing in it changes while Fluent animates the dialog out.
+export function PublishModelDialog({ open, onClose, onPublished, initialReview }: PublishModelDialogProps) {
+  const review = initialReview ?? null
+  const [session, setSession] = useState({ open, review, key: 0 })
+  if (open && (!session.open || review !== session.review)) {
+    setSession({ open, review, key: session.key + 1 })
+  } else if (!open && session.open) {
+    setSession({ ...session, open })
+  }
+  return (
+    <PublishModelSession
+      key={session.key}
+      open={open}
+      initialReview={session.review}
+      onClose={onClose}
+      onPublished={onPublished}
+    />
+  )
+}
+
+function PublishModelSession({ open, onClose, onPublished, initialReview }: PublishModelDialogProps) {
   const api = useMosaicApi()
   const queryClient = useQueryClient()
-  const [step, setStep] = useState<Step>('choose')
-  const [gatewayId, setGatewayId] = useState('')
+  const [step, setStep] = useState<Step>(initialReview ? 'review' : 'choose')
+  const [gatewayId, setGatewayId] = useState(initialReview?.publication.gatewayId ?? '')
   const [modelKey, setModelKey] = useState('')
   const [form, setForm] = useState<FormState>(() => initialForm(null))
-  const [publication, setPublication] = useState<Publication | null>(null)
-  const [plan, setPlan] = useState<PublishPlan | null>(null)
-  const [reviewMessage, setReviewMessage] = useState('')
+  const [publication, setPublication] = useState<Publication | null>(initialReview?.publication ?? null)
+  const [plan, setPlan] = useState<PublishPlan | null>(initialReview?.plan ?? null)
+  const [reviewMessage, setReviewMessage] = useState(initialReview?.message ?? '')
   const [runId, setRunId] = useState('')
   const [refreshError, setRefreshError] = useState<Error | null>(null)
   const [invalidPlan, setInvalidPlan] = useState(false)
+  const [showEnvironmentBlocked, setShowEnvironmentBlocked] = useState(false)
   const appliedGatewayRef = useRef(false)
   const notifiedRunRef = useRef('')
   const reviewingExistingPlan = Boolean(initialReview)
@@ -317,6 +341,8 @@ export function PublishModelDialog({
   })
 
   const gatewayOptions: Gateway[] = useMemo(() => gateways.data ?? [], [gateways.data])
+  const catalog = useEnvironmentCatalog()
+  const selectedGateway = gatewayOptions.find((gateway) => gateway.id === gatewayId)
 
   useEffect(() => {
     if (!open || reviewingExistingPlan) {
@@ -336,21 +362,13 @@ export function PublishModelDialog({
   })
 
   const models = publishable.data ?? []
+  const environmentBlockedModels = models.filter((model) => model.environmentVerdict.level === 'blocked')
+  const visibleModels = showEnvironmentBlocked
+    ? models
+    : models.filter((model) => model.environmentVerdict.level !== 'blocked')
   const selectedModel = models.find(
     (model) => `${model.modelEndpointId}:${model.deploymentName}` === modelKey,
   ) ?? null
-
-  useEffect(() => {
-    if (!open || !initialReview) return
-    setPublication(initialReview.publication)
-    setPlan(initialReview.plan)
-    setReviewMessage(initialReview.message ?? '')
-    setRunId('')
-    setInvalidPlan(false)
-    setRefreshError(null)
-    setGatewayId(initialReview.publication.gatewayId)
-    setStep('review')
-  }, [open, initialReview])
 
   useEffect(() => {
     if (!selectedModel) return
@@ -424,6 +442,9 @@ export function PublishModelDialog({
   const currentRun = run.data ?? apply.data ?? null
 
   useEffect(() => {
+    // A closed session stays mounted until the dialog next opens. Don't announce an apply that finishes
+    // after the dialog closed.
+    if (!open) return
     if (currentRun && terminalRunStatuses.includes(currentRun.status) && notifiedRunRef.current !== currentRun.id) {
       notifiedRunRef.current = currentRun.id
       void queryClient.invalidateQueries({ queryKey: ['publications'] })
@@ -436,24 +457,33 @@ export function PublishModelDialog({
           : 'The service reports the model plan applied. Allow for APIM propagation; live invocation is not verified.')
       }
     }
-  }, [currentRun, onPublished, queryClient])
+  }, [currentRun, onPublished, open, queryClient])
 
-  function resetAndClose() {
-    setStep('choose')
-    setGatewayId('')
-    setModelKey('')
-    setForm(initialForm(null))
-    setPublication(null)
-    setPlan(null)
-    setReviewMessage('')
-    setRunId('')
-    setRefreshError(null)
-    setInvalidPlan(false)
-    notifiedRunRef.current = ''
-    apply.reset()
-    createAndPlan.reset()
-    onClose()
-  }
+  // Moving to another step replaces the controls that had focus, such as the button that moved it, and a
+  // plan or apply that finishes brings an outcome with it. Focus would otherwise fall out of the dialog,
+  // where Escape no longer closes it, and a screen reader wouldn't be taken to what changed. So move focus
+  // to the new outcome, which a screen reader then reads, or else to the top of the new step. Fluent moves
+  // focus into the step the dialog opens on, and a field the administrator is typing in keeps focus.
+  const stepRef = useRef<HTMLElement>(null)
+  const outcomeRef = useRef<HTMLDivElement>(null)
+  const finishedRun = currentRun && terminalRunStatuses.includes(currentRun.status) ? currentRun : null
+  const outcome = {
+    choose: null,
+    configure: createAndPlan.error,
+    review: apply.error,
+    apply: finishedRun?.id ?? null,
+  }[step]
+  const shownRef = useRef({ step, outcome })
+  useEffect(() => {
+    if (!open) return
+    const shown = shownRef.current
+    shownRef.current = { step, outcome }
+    // Trying again clears the last outcome, and focus stays on the busy button until the next one.
+    if (step === shown.step && (outcome === null || Object.is(outcome, shown.outcome))) return
+    if (document.activeElement?.matches('input, select, textarea')) return
+    const target = outcomeRef.current ?? stepRef.current
+    target?.focus()
+  }, [open, step, outcome])
 
   const canConfigure = Boolean(gatewayId && selectedModel && isPublishable(selectedModel))
   const tokenLimits = supportsTokenLimits(selectedModel)
@@ -461,13 +491,15 @@ export function PublishModelDialog({
     form.apiName.trim() && form.apiPath.trim() && (!tokenLimits || form.counterKeyExpression.trim()),
   )
   const missingAccessReview = Boolean(publication?.governedAccess && !plan?.accessSnapshot)
+  const createEnvironmentBlocked = environmentBlockedVerdict(createAndPlan.error)
+  const applyEnvironmentBlocked = environmentBlockedVerdict(apply.error)
   // Applying writes every step, unchanged ones included, so a plan that changes nothing can't be applied.
   const nothingToApply = Boolean(
     plan && plan.steps.length > 0 && plan.steps.every((planStep) => planStep.action === 'noChange'),
   )
 
   return (
-    <Dialog open={open} onOpenChange={(_, data) => !data.open && resetAndClose()}>
+    <Dialog open={open} onOpenChange={(_, data) => !data.open && onClose()}>
       <DialogSurface>
         <DialogBody>
           <DialogTitle>{initialReview?.plan.accessSnapshot ? 'Review model access' : 'Publish a model'}</DialogTitle>
@@ -477,7 +509,9 @@ export function PublishModelDialog({
               {runtimeConfig.authMode === 'local' && (
                 <Text>Local development mode: responses may be simulated and do not prove a live APIM change.</Text>
               )}
-              <Text size={200}>Step {['choose', 'configure', 'review', 'apply'].indexOf(step) + 1} of 4</Text>
+              <Text ref={stepRef} tabIndex={-1} size={200}>
+                Step {['choose', 'configure', 'review', 'apply'].indexOf(step) + 1} of 4
+              </Text>
             </div>
 
             {step === 'choose' && (
@@ -503,12 +537,28 @@ export function PublishModelDialog({
                     ))}
                   </Select>
                 </Field>
+                {selectedGateway && (
+                  <Text size={200}>
+                    Gateway environment:{' '}
+                    <EnvironmentBadge environment={selectedGateway.environment} catalog={catalog.data} size="small" />
+                  </Text>
+                )}
                 {gateways.isPending && <Loading label="Loading gateways" />}
                 {gateways.isError && <ErrorState error={gateways.error} />}
                 {publishable.isPending && gatewayId && <Loading label="Loading publishable models" />}
                 {publishable.isError && <ErrorState error={publishable.error} />}
                 {publishable.isSuccess && models.length === 0 && (
                   <Text>No publishable models were found for this gateway.</Text>
+                )}
+                {environmentBlockedModels.length > 0 && (
+                  <Button
+                    appearance="secondary"
+                    aria-expanded={showEnvironmentBlocked}
+                    onClick={() => setShowEnvironmentBlocked((current) => !current)}
+                  >
+                    {showEnvironmentBlocked ? 'Hide' : 'Show'} {environmentBlockedModels.length}{' '}
+                    {environmentBlockedModels.length === 1 ? 'deployment' : 'deployments'} blocked by environment rules
+                  </Button>
                 )}
                 {models.length > 0 && (
                   <div className={styles.tableScroll}>
@@ -521,16 +571,27 @@ export function PublishModelDialog({
                         </TableRow>
                       </TableHeader>
                       <TableBody>
-                        {models.map((model) => {
+                        {visibleModels.map((model) => {
                           const key = `${model.modelEndpointId}:${model.deploymentName}`
                           const publishableRow = isPublishable(model)
+                          const environmentBlocked = model.environmentVerdict.level === 'blocked'
+                          const environmentWarning = model.environmentVerdict.level === 'warning'
+                          const blockedReasons = [
+                            !publishableRow
+                              ? (model.unpublishableReason ??
+                                "MOSAIC can't publish this deployment yet.")
+                              : null,
+                            environmentBlocked ? model.environmentVerdict.reason : null,
+                          ]
+                            .filter(Boolean)
+                            .join(' ')
                           return (
                             <TableRow key={key}>
                               <TableCell>
                                 <Checkbox
                                   aria-label={`Publish ${model.deploymentName}`}
                                   checked={modelKey === key}
-                                  disabled={!publishableRow}
+                                  disabled={!publishableRow || environmentBlocked}
                                   onChange={(_, data) => setModelKey(data.checked ? key : '')}
                                 />
                               </TableCell>
@@ -544,14 +605,15 @@ export function PublishModelDialog({
                                   <Text size={200}>/{model.suggestedApiPath}</Text>
                                   {model.apiShape && <Badge appearance="outline">{shapeLabels[model.apiShape]}</Badge>}
                                   {model.publicationStatus && <Badge appearance="tint">{model.publicationStatus}</Badge>}
-                                  {!publishableRow && (
+                                  {(!publishableRow || environmentBlocked) && (
                                     <>
                                       <Badge appearance="tint" color="warning">Not publishable</Badge>
                                       <Text size={200}>
-                                        {model.unpublishableReason ?? "MOSAIC can't publish this deployment yet."}
+                                        {blockedReasons}
                                       </Text>
                                     </>
                                   )}
+                                  {environmentWarning && <Text size={200}>{model.environmentVerdict.reason}</Text>}
                                 </div>
                               </TableCell>
                               <TableCell><RuntimeAccessNote model={model} /></TableCell>
@@ -623,22 +685,37 @@ export function PublishModelDialog({
                     />
                   </>
                 )}
-                {createAndPlan.isError && <ErrorState error={createAndPlan.error} />}
+                {createAndPlan.isError && (
+                  <div ref={outcomeRef} tabIndex={-1}>
+                    {createEnvironmentBlocked ? (
+                      <MessageBar intent="error">
+                        <MessageBarBody>
+                          <MessageBarTitle>Environment rules block this publication</MessageBarTitle>
+                          {createEnvironmentBlocked.reason}
+                        </MessageBarBody>
+                      </MessageBar>
+                    ) : (
+                      <ErrorState error={createAndPlan.error} />
+                    )}
+                  </div>
+                )}
               </div>
             )}
 
             {step === 'review' && plan && (
               <div className={styles.nameCell}>
                 {reviewMessage && (
-                  <MessageBar intent="warning">
-                    <MessageBarBody>
-                      <MessageBarTitle>MOSAIC didn't apply the plan you reviewed</MessageBarTitle>
-                      {reviewMessage}
-                      {!invalidPlan && (
-                        <Text block>MOSAIC has already re-planned. Review the fresh plan below before you apply it.</Text>
-                      )}
-                    </MessageBarBody>
-                  </MessageBar>
+                  <div ref={applyError ? undefined : outcomeRef} tabIndex={-1}>
+                    <MessageBar intent="warning">
+                      <MessageBarBody>
+                        <MessageBarTitle>MOSAIC didn't apply the plan you reviewed</MessageBarTitle>
+                        {reviewMessage}
+                        {!invalidPlan && (
+                          <Text block>MOSAIC has already re-planned. Review the fresh plan below before you apply it.</Text>
+                        )}
+                      </MessageBarBody>
+                    </MessageBar>
+                  </div>
                 )}
                 {nothingToApply && (
                   <MessageBar intent="info">
@@ -692,7 +769,19 @@ export function PublishModelDialog({
                     </ul>
                   </>
                 )}
-                {applyError && <ErrorState error={applyError} />}
+                {applyEnvironmentBlocked && (
+                  <MessageBar intent="error">
+                    <MessageBarBody>
+                      <MessageBarTitle>Environment rules block this publication</MessageBarTitle>
+                      {applyEnvironmentBlocked.reason}
+                    </MessageBarBody>
+                  </MessageBar>
+                )}
+                {applyError && !applyEnvironmentBlocked && (
+                  <div ref={outcomeRef} tabIndex={-1}>
+                    <ErrorState error={applyError} />
+                  </div>
+                )}
                 {refreshError && <ErrorState error={refreshError} />}
               </div>
             )}
@@ -701,24 +790,39 @@ export function PublishModelDialog({
               <div className={styles.nameCell}>
                 {!currentRun || currentRun.status === 'running' ? <Loading label="Applying publish plan" /> : null}
                 {run.isError && <ErrorState error={run.error} />}
-                {currentRun && <RunResult run={currentRun} />}
+                {currentRun && (
+                  <div ref={finishedRun ? outcomeRef : undefined} tabIndex={-1}>
+                    <RunResult run={currentRun} />
+                  </div>
+                )}
               </div>
             )}
           </DialogContent>
           <DialogActions>
-            <Button appearance="secondary" onClick={resetAndClose}>Close</Button>
+            <Button appearance="secondary" onClick={onClose}>Close</Button>
             {step === 'configure' && <Button appearance="secondary" onClick={() => setStep('choose')}>Back</Button>}
             {step === 'review' && !reviewingExistingPlan && <Button appearance="secondary" onClick={() => setStep('configure')}>Back</Button>}
             {step === 'choose' && (
               <Button appearance="primary" disabled={!canConfigure} onClick={() => setStep('configure')}>Configure</Button>
             )}
+            {/* A browser takes focus off a button that becomes disabled, so a busy button stays focusable. */}
             {step === 'configure' && (
-              <Button appearance="primary" disabled={!canReview || createAndPlan.isPending} onClick={() => createAndPlan.mutate()}>
+              <Button
+                appearance="primary"
+                disabled={!canReview}
+                disabledFocusable={createAndPlan.isPending}
+                onClick={() => createAndPlan.mutate()}
+              >
                 {createAndPlan.isPending ? 'Creating plan…' : 'Review plan'}
               </Button>
             )}
             {step === 'review' && (
-              <Button appearance="primary" disabled={apply.isPending || invalidPlan || missingAccessReview || nothingToApply} onClick={() => apply.mutate()}>
+              <Button
+                appearance="primary"
+                disabled={invalidPlan || missingAccessReview || nothingToApply}
+                disabledFocusable={apply.isPending}
+                onClick={() => apply.mutate()}
+              >
                 {apply.isPending ? 'Applying…' : 'Apply plan'}
               </Button>
             )}

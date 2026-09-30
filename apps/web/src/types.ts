@@ -89,6 +89,221 @@ export interface EntitlementResource {
   scopeId?: string | null
 }
 
+
+export type EnvironmentColor =
+  'brand' | 'danger' | 'important' | 'informative' | 'severe' | 'subtle' | 'success' | 'warning'
+export type EnvironmentResourceKind = 'gateway' | 'modelEndpoint' | 'mcpEndpoint'
+export type VerdictLevel = 'allowed' | 'warning' | 'blocked'
+
+export interface EnvironmentDefinition {
+  key: string
+  displayName: string
+  description?: string | null
+  color: EnvironmentColor
+  production: boolean
+  aliases: string[]
+  acceptsEndpointsFrom: string[]
+  order: number
+  builtIn: boolean
+}
+
+export interface EnvironmentUsage {
+  gateways: number
+  modelEndpoints: number
+  mcpEndpoints: number
+}
+
+export interface EnvironmentWithUsage extends EnvironmentDefinition {
+  usage: EnvironmentUsage
+}
+
+export interface EnvironmentVerdict {
+  level: VerdictLevel
+  reason: string
+  gatewayEnvironment: string | null
+  endpointEnvironment: string | null
+  viaException: boolean
+}
+
+export interface EnvironmentCompatibilityCell extends EnvironmentVerdict {}
+
+export interface EnvironmentCatalogView {
+  environments: EnvironmentWithUsage[]
+  requireClassification: boolean
+  unclassified: EnvironmentUsage
+  compatibility: EnvironmentCompatibilityCell[]
+  updatedAt?: string | null
+}
+
+export interface EnvironmentCreate {
+  key: string
+  displayName: string
+  description?: string | null
+  color: EnvironmentColor
+  production?: boolean
+  aliases?: string[]
+  acceptsEndpointsFrom?: string[]
+  order?: number
+}
+
+export interface EnvironmentUpdate {
+  displayName?: string
+  description?: string | null
+  color?: EnvironmentColor
+  production?: boolean
+  aliases?: string[]
+  acceptsEndpointsFrom?: string[]
+  order?: number
+}
+
+export interface EnvironmentSettingsUpdate {
+  requireClassification: boolean
+}
+
+export interface EnvironmentSuggestion {
+  resourceKind: EnvironmentResourceKind
+  resourceId: string
+  resourceName: string
+  suggestedEnvironment: string | null
+  source: 'azureTag' | 'legacyLabel' | null
+  evidence: string | null
+}
+
+export interface EnvironmentSuggestionList {
+  items: EnvironmentSuggestion[]
+}
+
+export interface EnvironmentAssignment {
+  resourceKind: EnvironmentResourceKind
+  resourceId: string
+  environment: string | null
+}
+
+export interface EnvironmentAssignmentRequest {
+  assignments: EnvironmentAssignment[]
+  acknowledgeGrants?: boolean
+}
+
+export interface EnvironmentAssignmentOutcome extends EnvironmentAssignment {
+  resourceName: string
+  previousEnvironment: string | null
+  status: 'applied' | 'unchanged' | 'failed'
+  message?: string | null
+}
+
+export interface EnvironmentAssignmentResult {
+  results: EnvironmentAssignmentOutcome[]
+  grantsCarried: number
+  warnings: string[]
+}
+
+export interface BlockedPublication {
+  publicationId: string
+  status: string
+  gatewayId: string
+  gatewayName: string
+  gatewayEnvironment: string | null
+  modelEndpointId?: string | null
+  modelEndpointName?: string | null
+  endpointEnvironment: string | null
+  deploymentName?: string | null
+  verdict: EnvironmentVerdict
+}
+
+export interface PublicationsBlockedDetails {
+  reason: 'publicationsBlocked'
+  publications: BlockedPublication[]
+  suggestedAssignments: EnvironmentAssignment[]
+}
+
+export interface AffectedGrant {
+  entitlementId: string
+  subject: EntitlementSubject
+  subjectLabel?: string | null
+  resource: EntitlementResource
+  resourceName?: string | null
+  movedResource: {
+    resourceKind: EnvironmentResourceKind
+    resourceId: string
+    resourceName: string
+  }
+  fromEnvironment: string | null
+  toEnvironment: string | null
+}
+
+export interface GrantsAcknowledgmentRequiredDetails {
+  reason: 'grantsAcknowledgmentRequired'
+  grants: AffectedGrant[]
+  grantCount: number
+  principalCount: number
+  truncated: boolean
+}
+
+export interface EnvironmentInUseDetails {
+  reason: 'environmentInUse'
+  environment: string
+  usage: EnvironmentUsage
+  resources: Array<{ resourceKind: EnvironmentResourceKind; resourceId: string; resourceName: string }>
+  referencedBy: string[]
+}
+
+export interface EnvironmentChangedDetails {
+  reason: 'environmentChanged'
+  requestedEnvironment: string | null
+  currentEnvironment: string | null
+}
+
+export interface EnvironmentFinding {
+  id: string
+  kind:
+    | 'blockedPublication'
+    | 'backendCrossesEnvironments'
+    | 'apiCrossesEnvironments'
+    | 'mcpServerCrossesEnvironments'
+  confidence: 'certain' | 'high' | 'medium'
+  gatewayId: string
+  gatewayName: string
+  gatewayEnvironment: string | null
+  subject: {
+    kind: 'publication' | 'backend' | 'api' | 'mcpServer'
+    id: string
+    name: string
+    apiName: string | null
+  }
+  target: {
+    resourceKind: EnvironmentResourceKind
+    resourceId: string
+    resourceName: string
+    environment: string | null
+  }
+  verdict: EnvironmentVerdict
+  evidence: string
+  message: string
+}
+
+export interface EnvironmentFindingList {
+  items: EnvironmentFinding[]
+  limitations: string[]
+  generatedAt: string
+}
+
+export interface ResourceSummary {
+  kind: EntitlementResourceKind
+  id: string
+  scopeId?: string | null
+  displayName: string | null
+  gatewayId: string | null
+  gatewayName: string | null
+  environment: string | null
+  available: boolean
+}
+
+export interface AccessRequestResourceSnapshot {
+  displayName: string | null
+  gatewayId: string | null
+  gatewayName: string | null
+}
+
 export type BindingSource = 'inferred' | 'manual' | 'orchestrated'
 
 export interface EntitlementBinding {
@@ -145,6 +360,9 @@ export interface AccessRequest {
   requesterObjectId: string
   requesterPrincipalId?: string | null
   resource: EntitlementResource
+  requestedEnvironment?: string | null
+  resourceSnapshot?: AccessRequestResourceSnapshot | null
+  resourceSummary?: ResourceSummary | null
   justification?: string | null
   state: AccessRequestState
   decidedByObjectId?: string | null
@@ -159,6 +377,7 @@ export interface AccessRequest {
 export interface AccessRequestApproval {
   note?: string | null
   enforcement?: EntitlementEnforcement | null
+  confirmedEnvironment?: string
 }
 
 export interface PolicyPreview {
@@ -298,6 +517,9 @@ export interface Gateway {
   subscriptionId: string
   resourceGroup: string
   serviceName: string
+  environment: string | null
+  azureEnvironmentTag?: string | null
+  /** @deprecated Use environment. Legacy display-only data. */
   environmentLabel?: string | null
   managementMode: ManagementMode
   status: GatewayStatus
@@ -333,6 +555,8 @@ export interface GatewaySuggestion {
   alreadyRegistered: boolean
   gatewayId?: string | null
   reason: string
+  azureEnvironmentTag?: string | null
+  suggestedEnvironment?: string | null
 }
 
 export interface ObservedApi {
@@ -701,6 +925,9 @@ export interface ModelEndpoint {
   resourceGroup?: string | null
   accountName?: string | null
   projectName?: string | null
+  environment: string | null
+  azureEnvironmentTag?: string | null
+  /** @deprecated Use environment. Legacy display-only data. */
   environmentLabel?: string | null
   authMode: EndpointAuthMode
   credentialReferenceId?: string | null
@@ -786,6 +1013,7 @@ export interface PublishableModel {
   suggestedApiName: string
   suggestedApiPath: string
   runtimeAccess: GatewayRuntimeAccess | null
+  environmentVerdict: EnvironmentVerdict
 }
 
 export interface ModelAccessGrant {
@@ -1145,6 +1373,8 @@ export interface ModelEndpointSuggestion {
   alreadyRegistered: boolean
   modelEndpointId?: string | null
   reason: string
+  azureEnvironmentTag?: string | null
+  suggestedEnvironment?: string | null
 }
 
 export interface SubscriptionScanIssue {
@@ -1240,6 +1470,8 @@ export interface McpEndpoint {
   tenantId: string
   name: string
   endpoint: string
+  environment: string | null
+  /** @deprecated Use environment. Legacy display-only data. */
   environmentLabel?: string | null
   authMode: McpAuthMode
   credentialReferenceId?: string | null

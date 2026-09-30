@@ -6,6 +6,11 @@ import type {
   PrincipalKind,
 } from './types'
 
+/** A count with its noun, so a single resource reads "1 gateway" rather than "1 gateways". */
+export function plural(count: number, noun: string): string {
+  return `${count} ${noun}${count === 1 ? '' : 's'}`
+}
+
 /** Names for a gateway's management mode, shared by the gateway header and its mode control. */
 export const MANAGEMENT_MODE_LABELS: Record<ManagementMode, string> = {
   observe: 'Observe',

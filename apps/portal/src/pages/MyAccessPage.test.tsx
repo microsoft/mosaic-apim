@@ -1,9 +1,9 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { render, screen } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { describe, expect, it, vi } from 'vitest'
 import type { PortalApi } from '../api'
-import type { Entitlement, PortalProfile, ResolvedEntitlement } from '../types'
+import type { Entitlement, PortalProfile, ResolvedEntitlement, ResourceSummary } from '../types'
 import { MyAccessPage } from './MyAccessPage'
 
 const mocks = vi.hoisted(() => ({
@@ -60,10 +60,24 @@ const profile: PortalProfile = {
   groupsOverage: false,
 }
 
+const baseSummary: ResourceSummary = {
+  kind: 'modelApi',
+  id: 'chat-completions',
+  scopeId: 'gateway-1',
+  displayName: 'Chat completions',
+  gatewayId: 'gateway-1',
+  gatewayName: 'Production gateway',
+  environment: 'production',
+  available: true,
+}
+
 function renderPage(entitlements: ResolvedEntitlement[], profileOverride: Partial<PortalProfile> = {}) {
   const api = {
     getProfile: async () => ({ ...profile, ...profileOverride }),
     listEntitlements: async () => entitlements,
+    listEnvironments: async () => [
+      { key: 'production', displayName: 'Production', description: null, color: 'danger', production: true, order: 50 },
+    ],
     getMyEntitlementConnection: vi.fn(),
     getMcpConnection: vi.fn(),
     revealMyEntitlementKey: vi.fn(),
@@ -85,14 +99,17 @@ describe('MyAccessPage', () => {
     renderPage([
       {
         entitlement: baseEntitlement,
+        resourceSummary: baseSummary,
         via: 'group',
         viaGroupId: 'group-1',
         viaGroupName: 'Platform engineering',
       },
     ])
 
-    expect(await screen.findByText('Model API chat-completions')).toBeVisible()
-    expect(screen.getByText('Through Platform engineering')).toBeVisible()
+    expect(await screen.findByText('Chat completions')).toBeVisible()
+    expect(screen.getByText('Model API · Granted through Platform engineering')).toBeVisible()
+    expect(screen.getByText('Production')).toBeVisible()
+    expect(screen.getByText('Production gateway')).toBeVisible()
     expect(screen.getByText('10,000 tokens per minute')).toBeVisible()
     expect(screen.getByText('600 calls per 60 seconds')).toBeVisible()
     expect(screen.getByText('100,000 calls per month')).toBeVisible()
@@ -107,37 +124,41 @@ describe('MyAccessPage', () => {
           ...baseEntitlement,
           subject: { kind: 'securityGroup', id: 'principal-group-1' },
         },
+        resourceSummary: baseSummary,
         via: 'securityGroup',
         viaGroupId: 'principal-group-1',
         viaGroupName: 'AI builders',
       },
     ])
 
-    expect(await screen.findByText('Model API chat-completions')).toBeVisible()
-    expect(screen.getByText('Through AI builders')).toBeVisible()
+    expect(await screen.findByText('Chat completions')).toBeVisible()
+    expect(screen.getByText('Model API · Granted through AI builders')).toBeVisible()
     expect(screen.getByText(/Group access limits apply to each person individually\./)).toBeVisible()
   })
 
-  it('uses the security-group subject when no via group name is returned', async () => {
+  it('names an unnamed security group generically, never by its ID', async () => {
     renderPage([
       {
         entitlement: {
           ...baseEntitlement,
           subject: { kind: 'securityGroup', id: 'principal-group-1' },
         },
+        resourceSummary: null,
         via: 'securityGroup',
         viaGroupId: null,
         viaGroupName: null,
       },
     ])
 
-    expect(await screen.findByText('Through principal-group-1')).toBeVisible()
+    expect(await screen.findByText('Granted through an assigned group')).toBeVisible()
+    expect(screen.queryByText(/principal-group-1/)).not.toBeInTheDocument()
   })
 
   it('does not render defensive shadowed rows', async () => {
     renderPage([
       {
         entitlement: baseEntitlement,
+        resourceSummary: baseSummary,
         via: 'group',
         viaGroupId: 'group-1',
         viaGroupName: 'Platform engineering',
@@ -147,7 +168,7 @@ describe('MyAccessPage', () => {
     ])
 
     expect(await screen.findByText('No access granted yet')).toBeVisible()
-    expect(screen.queryByText('Model API chat-completions')).not.toBeInTheDocument()
+    expect(screen.queryByText('Chat completions')).not.toBeInTheDocument()
   })
 
   it('shows the groups-overage warning from the profile', async () => {
@@ -168,6 +189,7 @@ describe('MyAccessPage', () => {
     renderPage([
       {
         entitlement: { ...baseEntitlement, enforcement: null },
+        resourceSummary: baseSummary,
         via: 'direct',
         viaGroupId: null,
         viaGroupName: null,
@@ -207,6 +229,7 @@ describe('MyAccessPage', () => {
           error: null,
         },
       },
+      resourceSummary: baseSummary,
       via: 'direct',
       viaGroupId: null,
       viaGroupName: null,
@@ -222,6 +245,7 @@ describe('MyAccessPage', () => {
     const api = renderPage([
       {
         entitlement: { ...baseEntitlement, id: 'model-grant', subject: directUser },
+        resourceSummary: baseSummary,
         via: 'direct',
         viaGroupId: null,
         viaGroupName: null,
@@ -233,14 +257,20 @@ describe('MyAccessPage', () => {
           subject: directUser,
           resource: { kind: 'mcpServer', id: 'docs-mcp', scopeId: 'gateway-1' },
         },
+        resourceSummary: {
+          ...baseSummary,
+          kind: 'mcpServer',
+          id: 'docs-mcp',
+          displayName: 'Docs MCP',
+        },
         via: 'direct',
         viaGroupId: null,
         viaGroupName: null,
       },
     ])
 
-    expect(await screen.findByText('Model API chat-completions')).toBeVisible()
-    expect(screen.getByText('MCP server docs-mcp')).toBeVisible()
+    expect(await screen.findByText('Chat completions')).toBeVisible()
+    expect(screen.getByText('Docs MCP')).toBeVisible()
     expect(screen.getByText('Recorded, not enforced by MOSAIC')).toBeVisible()
     const details = screen.getAllByRole('button', { name: 'Connection details' })
     expect(details).toHaveLength(2)
@@ -273,6 +303,7 @@ describe('MyAccessPage', () => {
           error: null,
         },
       },
+      resourceSummary: null,
       via: 'direct',
       viaGroupId: null,
       viaGroupName: null,
@@ -280,4 +311,92 @@ describe('MyAccessPage', () => {
 
     expect(await screen.findByText(label)).toBeVisible()
   })
+
+  it('uses live summaries for removed resources without rendering raw resource IDs', async () => {
+    renderPage([{
+      entitlement: {
+        ...baseEntitlement,
+        resource: { kind: 'modelApi', id: 'modelApi_removed_123', scopeId: 'gateway-1' },
+      },
+      resourceSummary: {
+        ...baseSummary,
+        id: 'modelApi_removed_123',
+        displayName: 'Retired chat',
+        available: false,
+      },
+      via: 'direct',
+      viaGroupId: null,
+      viaGroupName: null,
+      resourceDisplayName: null,
+    }])
+
+    const card = (await screen.findByText('Retired chat')).closest('.access-card')
+    expect(card).not.toBeNull()
+    expect(within(card as HTMLElement).getByText('No longer available')).toBeVisible()
+    expect(within(card as HTMLElement).getByText('Model API · Granted directly to you')).toBeVisible()
+    expect(screen.queryByText(/modelApi_removed_123/)).not.toBeInTheDocument()
+  })
+
+  it('heads each grant with the name the catalog shows and keeps its kind visible', async () => {
+    renderPage([
+      {
+        entitlement: baseEntitlement,
+        resourceSummary: { ...baseSummary, displayName: 'Chat model' },
+        via: 'group',
+        viaGroupId: 'group-1',
+        viaGroupName: 'Platform engineering',
+        resourceDisplayName: 'Chat model',
+      },
+      {
+        entitlement: {
+          ...baseEntitlement,
+          id: 'mcp-grant',
+          subject: { kind: 'user', id: 'user-1' },
+          resource: { kind: 'mcpServer', id: 'docs-mcp', scopeId: 'gateway-1' },
+        },
+        resourceSummary: {
+          ...baseSummary,
+          kind: 'mcpServer',
+          id: 'docs-mcp',
+          displayName: 'Docs search',
+        },
+        via: 'direct',
+        viaGroupId: null,
+        viaGroupName: null,
+        resourceDisplayName: 'Docs search',
+      },
+    ])
+
+    expect(await screen.findByRole('heading', { level: 2, name: 'Chat model' })).toBeVisible()
+    expect(screen.getByText('Model API · Granted through Platform engineering')).toBeVisible()
+    expect(screen.getByRole('heading', { level: 2, name: 'Docs search' })).toBeVisible()
+    expect(screen.getByText('MCP server · Granted directly to you')).toBeVisible()
+    expect(screen.queryByText(/chat-completions|docs-mcp/)).not.toBeInTheDocument()
+  })
+
+  it.each([
+    ['an older API omits the name', {}],
+    ['the API cannot resolve the name', { resourceDisplayName: null }],
+    ['the API sends a blank name', { resourceDisplayName: '  ' }],
+  ] satisfies [string, Partial<ResolvedEntitlement>][])(
+    'falls back to the kind, never the ID, when %s',
+    async (_, name) => {
+      renderPage([
+        {
+          entitlement: baseEntitlement,
+          resourceSummary: null,
+          via: 'group',
+          viaGroupId: 'group-1',
+          viaGroupName: 'Platform engineering',
+          ...name,
+        },
+      ])
+
+      expect(
+        await screen.findByRole('heading', { level: 2, name: 'Model API resource' }),
+      ).toBeVisible()
+      expect(screen.getByText('Granted through Platform engineering')).toBeVisible()
+      expect(screen.queryByText(/chat-completions/)).not.toBeInTheDocument()
+    },
+  )
 })

@@ -46,6 +46,7 @@ from mosaic_api.domain import (
     new_id,
     utc_now,
 )
+from mosaic_api.environments import EnvironmentCatalog, azure_environment_tag, suggest_environment
 from mosaic_api.errors import ConflictError, DomainError, NotFoundError, ValidationError
 from mosaic_api.integrations.aoai import (
     CognitiveServicesClient,
@@ -64,9 +65,19 @@ from mosaic_api.observed import (
     ObservedBackend,
     ObservedModelDeployment,
 )
-from mosaic_api.repositories import GatewayRepository, ModelEndpointRepository
+from mosaic_api.repositories import (
+    EnvironmentRepository,
+    GatewayRepository,
+    ModelEndpointRepository,
+)
 from mosaic_api.services.directory import Actor
-from mosaic_api.services.model_access import publication_lock
+from mosaic_api.services.environments import load_environment_catalog
+from mosaic_api.services.model_access import (
+    ENVIRONMENTS_SCOPE,
+    endpoint_mutation_scope,
+    publication_lock,
+    scope_lease,
+)
 
 logger = structlog.get_logger()
 
@@ -82,6 +93,14 @@ PARTIAL_SCAN_MESSAGE = (
     "MOSAIC can read only some resources in this subscription, so any Azure AI resources it "
     "cannot read are not suggested here. Endpoints can still be registered by resource ID."
 )
+
+
+def _validate_environment_key(catalog_keys: set[str], value: str) -> None:
+    if value not in catalog_keys:
+        raise ValidationError(
+            f"Environment {value!r} is not defined in Settings → Environments.",
+            details={"reason": "unknownEnvironment", "environment": value},
+        )
 
 # A subscription-wide account list returns only the accounts this action allows the caller to read,
 # so holding it at the subscription itself is what makes that list complete.
@@ -197,6 +216,7 @@ class ModelEndpointService:
         principal_id: str | None = None,
         identity_resolver: IdentityResolver | None = None,
         bootstrap_subscription_id: str | None = None,
+        environment_repository: EnvironmentRepository | None = None,
     ) -> None:
         self._repository = repository
         self._gateways = gateway_repository
@@ -206,6 +226,8 @@ class ModelEndpointService:
         self._identity_resolver = identity_resolver
         self._identity_resolved = principal_id is not None
         self._bootstrap_subscription_id = bootstrap_subscription_id
+        # None only in tests that don't exercise environments; the built-in seeds apply then.
+        self._environments = environment_repository
         self._active: set[str] = set()
         self._tasks: set[asyncio.Task[None]] = set()
 
@@ -294,6 +316,17 @@ class ModelEndpointService:
             auth_mode=EndpointAuthMode.MANAGED_IDENTITY,
         )
         endpoint = await self._apply_preflight(endpoint)
+        if request.environment is not None:
+            async with scope_lease(self._gateways, actor.tenant_id, ENVIRONMENTS_SCOPE):
+                catalog = await load_environment_catalog(self._environments, actor.tenant_id)
+                _validate_environment_key(
+                    {environment.key for environment in catalog.environments},
+                    request.environment,
+                )
+                endpoint = endpoint.model_copy(update={"environment": request.environment})
+                return await self._repository.create_endpoint(
+                    endpoint, self._audit(actor, "modelEndpoint.registered", endpoint.id)
+                )
         return await self._repository.create_endpoint(
             endpoint, self._audit(actor, "modelEndpoint.registered", endpoint.id)
         )
@@ -333,9 +366,6 @@ class ModelEndpointService:
             name=f"{host} API key",
             secret_uri=request.credential_secret_uri,
         )
-        await self._repository.save_credential(
-            credential, self._audit(actor, "credentialReference.recorded", credential.id)
-        )
         endpoint = ModelEndpoint(
             id=deterministic_id("endpoint", actor.tenant_id, url.casefold()),
             tenant_id=actor.tenant_id,
@@ -352,6 +382,23 @@ class ModelEndpointService:
                     "itself is read at discovery time and never persisted.",
                 ]
             ),
+        )
+        if request.environment is not None:
+            async with scope_lease(self._gateways, actor.tenant_id, ENVIRONMENTS_SCOPE):
+                catalog = await load_environment_catalog(self._environments, actor.tenant_id)
+                _validate_environment_key(
+                    {environment.key for environment in catalog.environments},
+                    request.environment,
+                )
+                endpoint = endpoint.model_copy(update={"environment": request.environment})
+                await self._repository.save_credential(
+                    credential, self._audit(actor, "credentialReference.recorded", credential.id)
+                )
+                return await self._repository.create_endpoint(
+                    endpoint, self._audit(actor, "modelEndpoint.registered", endpoint.id)
+                )
+        await self._repository.save_credential(
+            credential, self._audit(actor, "credentialReference.recorded", credential.id)
         )
         return await self._repository.create_endpoint(
             endpoint, self._audit(actor, "modelEndpoint.registered", endpoint.id)
@@ -408,16 +455,19 @@ class ModelEndpointService:
         between the check and the delete.
         """
 
-        endpoint = await self.get_endpoint(actor, endpoint_id)
-        publications = [
-            publication
-            for publication in await self._gateways.list_publications(actor.tenant_id)
-            if publication.model_endpoint_id == endpoint.id
-        ]
-        self._refuse_while_published(
-            endpoint, [item for item in publications if item.may_own_gateway_state()]
-        )
         async with AsyncExitStack() as stack:
+            await stack.enter_async_context(
+                scope_lease(self._gateways, actor.tenant_id, endpoint_mutation_scope(endpoint_id))
+            )
+            endpoint = await self.get_endpoint(actor, endpoint_id)
+            publications = [
+                publication
+                for publication in await self._gateways.list_publications(actor.tenant_id)
+                if publication.model_endpoint_id == endpoint.id
+            ]
+            self._refuse_while_published(
+                endpoint, [item for item in publications if item.may_own_gateway_state()]
+            )
             forgettable: list[Publication] = []
             blocking: list[Publication] = []
             for publication in publications:
@@ -482,7 +532,10 @@ class ModelEndpointService:
     async def preflight(self, actor: Actor, endpoint_id: str) -> ModelEndpoint:
         endpoint = await self.get_endpoint(actor, endpoint_id)
         checked = await self._apply_preflight(endpoint)
-        return await self._repository.record_endpoint_state(checked)
+        recorded = await self._repository.record_endpoint_state(checked)
+        if recorded is None:
+            raise NotFoundError("Model endpoint was not found", details={"id": endpoint_id})
+        return recorded
 
     async def _apply_preflight(self, endpoint: ModelEndpoint) -> ModelEndpoint:
         """Verify MOSAIC's control-plane access, then report each gateway's runtime access."""
@@ -506,6 +559,12 @@ class ModelEndpointService:
             "runtime_access": runtime,
             "status": result.status,
             "provider": provider,
+            # A failed read leaves the tag as last seen rather than claiming it was removed.
+            "azure_environment_tag": (
+                azure_environment_tag(result.tags)
+                if result.tags is not None
+                else endpoint.azure_environment_tag
+            ),
             "updated_at": utc_now(),
         }
         if result.endpoint_url:
@@ -785,6 +844,7 @@ class ModelEndpointService:
         """
 
         registered = await self._repository.list_endpoints(actor.tenant_id)
+        catalog = await load_environment_catalog(self._environments, actor.tenant_id)
         # Keyed on the account, because every registration covers its whole account: a Foundry
         # project's deployments live on its parent resource, so suggesting that resource once the
         # project is registered would offer the same models a second time.
@@ -823,7 +883,7 @@ class ModelEndpointService:
                 suggestions=suggestions, scan_status=SubscriptionScanStatus.NOT_CONFIGURED
             )
 
-        scan = await self._scan_subscriptions(by_account, add, gateways)
+        scan = await self._scan_subscriptions(catalog, by_account, add, gateways)
         return ModelEndpointSuggestionView(
             suggestions=suggestions,
             scan_issues=scan.issues,
@@ -886,6 +946,7 @@ class ModelEndpointService:
 
     async def _scan_subscriptions(
         self,
+        catalog: EnvironmentCatalog,
         by_account: dict[str, ModelEndpoint],
         add: Callable[[ModelEndpointSuggestion], None],
         gateways: list[Gateway],
@@ -957,7 +1018,7 @@ class ModelEndpointService:
 
             scanned += 1
             for account in accounts:
-                suggestion = self._account_suggestion(account, by_account)
+                suggestion = self._account_suggestion(catalog, account, by_account)
                 if suggestion is not None:
                     add(suggestion)
             if await self._reads_only_part_of(subscription_id):
@@ -1029,7 +1090,9 @@ class ModelEndpointService:
 
     @staticmethod
     def _account_suggestion(
-        account: dict[str, object], by_account: dict[str, ModelEndpoint]
+        catalog: EnvironmentCatalog,
+        account: dict[str, object],
+        by_account: dict[str, ModelEndpoint],
     ) -> ModelEndpointSuggestion | None:
         resource_id = account.get("id")
         if not isinstance(resource_id, str) or not resource_id:
@@ -1050,6 +1113,9 @@ class ModelEndpointService:
             endpoint = candidate if isinstance(candidate, str) and candidate else None
         location = account.get("location")
         existing = by_account.get(resource.account_scope.casefold())
+        tags = account.get("tags")
+        tag = azure_environment_tag(tags if isinstance(tags, dict) else None)
+        suggested = suggest_environment(catalog, tag)
         return ModelEndpointSuggestion(
             source=SuggestionSource.SUBSCRIPTION_SCAN,
             endpoint=endpoint,
@@ -1060,6 +1126,8 @@ class ModelEndpointService:
             kind=kind,
             location=location if isinstance(location, str) else None,
             provider=provider_for(kind, endpoint),
+            azure_environment_tag=tag,
+            suggested_environment=suggested.key if suggested is not None else None,
             already_registered=existing is not None,
             model_endpoint_id=existing.id if existing else None,
             reason=f"Found in subscription {resource.subscription_id}.",

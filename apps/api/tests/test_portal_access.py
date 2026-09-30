@@ -1,5 +1,7 @@
-from collections.abc import Awaitable, Callable
-from typing import Literal
+from collections.abc import Awaitable, Callable, Iterator
+from contextlib import contextmanager
+from datetime import UTC, datetime
+from typing import Any, Literal, NoReturn
 
 import pytest
 from apim_double import RESOURCE_GROUP, RESOURCE_ID, SERVICE_NAME, SUBSCRIPTION_ID
@@ -8,6 +10,7 @@ from fastapi.testclient import TestClient
 from mosaic_api.auth import AuthContext
 from mosaic_api.config import AuthMode, Environment, RepositoryBackend, Settings
 from mosaic_api.domain import (
+    ApimResourceId,
     ApiShape,
     AuditEvent,
     BindingSource,
@@ -43,8 +46,11 @@ from mosaic_api.repositories import (
 from mosaic_api.services.directory import Actor
 from mosaic_api.services.entitlements import EntitlementService
 from mosaic_api.services.model_access import entitlement_intent_digest
+from mosaic_api.services.portal import PortalService
 from mosaic_api.services.portal_access import PortalAccessService
+from mosaic_api.services.publishing import PublishingService
 from pydantic import SecretStr
+from test_mcp_entitlements import PORTAL_MCP_RUNTIME_ROUTES
 
 TENANT = "tenant-test"
 USER = "11111111-1111-1111-1111-111111111111"
@@ -585,3 +591,192 @@ async def test_portal_and_credential_routes_share_the_live_entitlement_service(
     assert client.get("/api/v1/portal/me").json()["entitlementCount"] == 1
     assert client.get("/api/v1/portal/catalog").json()[0]["entitled"] is True
     assert client.get("/api/v1/entitlements").status_code == 403
+
+
+# API Management's words for a failed apply, as the publication records them. Fictional, but shaped
+# like the real thing: it names MOSAIC's policy fragment and another grantee's subscription.
+FAILED_APPLY = (
+    "policyFragment mosaic-contoso-chat: The Azure operation did not succeed (Failed). "
+    "ValidationError: Subscription mosaic-grant-contoso-other is not valid for this API."
+)
+APPLIED_AT = datetime(2026, 1, 15, 9, 30, tzinfo=UTC)
+
+
+async def test_a_failed_apply_reaches_the_grantee_as_a_status_without_apims_error(
+    harness: Harness,
+) -> None:
+    await harness.save_publication(
+        access_state="failed", last_error=FAILED_APPLY, last_applied_at=APPLIED_AT
+    )
+    portal = PortalService(
+        harness.entitlements,
+        directory_repository=harness.directory,
+        gateway_repository=harness.gateways,
+    )
+
+    [listed] = await harness.service.list_for_caller(ACTOR)
+    connection = await harness.service.connection(ACTOR, "grant")
+    [resolved] = await portal.my_entitlements(ACTOR)
+
+    for runtime in (listed.runtime, connection.runtime, resolved.entitlement.runtime):
+        assert runtime is not None
+        assert runtime.status == "failed"
+        assert runtime.error is None
+        # Everything else about the runtime state is still reported.
+        assert runtime.publication_id == "publication"
+        assert runtime.subscription_name == harness.subscription
+        assert runtime.applied_methods == ModelAccessSettings()
+        assert runtime.applied_at == APPLIED_AT
+    # The administrator's view of the same grant keeps API Management's words.
+    administrator = await harness.service.connection(ACTOR, "grant", administrator=True)
+    assert administrator.runtime is not None
+    assert administrator.runtime.error == FAILED_APPLY
+    decorated = await harness.entitlements.get_entitlement(ACTOR, "grant")
+    assert decorated.runtime is not None
+    assert decorated.runtime.error == FAILED_APPLY
+
+
+def _no_apim(_resource: ApimResourceId) -> NoReturn:
+    raise AssertionError("Reading a publication never calls API Management")
+
+
+@contextmanager
+def _routes(harness: Harness, caller: Caller) -> Iterator[TestClient]:
+    """The real routes, reading the harness's records."""
+
+    settings = Settings(
+        environment=Environment.TEST, auth_mode=AuthMode.LOCAL,
+        repository_backend=RepositoryBackend.MEMORY, tenant_id=TENANT,
+    )
+    app = create_app(settings)
+    with TestClient(app) as client:
+        app.state.authenticator = caller
+        app.state.entitlement_service = harness.entitlements
+        app.state.portal_access_service = harness.service
+        app.state.portal_service = PortalService(
+            harness.entitlements,
+            directory_repository=harness.directory,
+            gateway_repository=harness.gateways,
+        )
+        app.state.publishing_service = PublishingService(
+            harness.gateways,
+            endpoint_repository=InMemoryModelEndpointRepository(),
+            client_factory=_no_apim,
+            writer_factory=_no_apim,
+        )
+        yield client
+
+
+# Every end-user route whose response carries a grant's runtime state: the path it is published
+# under, a request for the harness's grant, and where the runtime state sits in the response.
+PORTAL_RUNTIME_ROUTES: dict[str, tuple[str, Callable[[Any], Any]]] = {
+    "/api/v1/me/entitlements": ("/api/v1/me/entitlements", lambda body: body[0]["runtime"]),
+    "/api/v1/me/entitlements/{entitlement_id}/connection": (
+        "/api/v1/me/entitlements/grant/connection",
+        lambda body: body["runtime"],
+    ),
+    "/api/v1/portal/entitlements": (
+        "/api/v1/portal/entitlements",
+        lambda body: body[0]["entitlement"]["runtime"],
+    ),
+}
+ADMIN_RUNTIME_ROUTES: dict[str, Callable[[Any], Any]] = {
+    "/api/v1/entitlements": lambda body: body[0]["runtime"],
+    "/api/v1/entitlements/grant": lambda body: body["runtime"],
+    "/api/v1/entitlements/grant/connection": lambda body: body["runtime"],
+    "/api/v1/entitlements/resolve?principalId=principal": (
+        lambda body: body[0]["entitlement"]["runtime"]
+    ),
+}
+
+
+@pytest.mark.parametrize("roles", [("User",), ("Admin", "User")], ids=["user", "admin"])
+@pytest.mark.parametrize("route", sorted(PORTAL_RUNTIME_ROUTES))
+async def test_portal_routes_report_a_failed_apply_without_apims_error(
+    harness: Harness, route: str, roles: tuple[str, ...]
+) -> None:
+    """The route decides, not the role: an administrator reading their own grant here gets null."""
+
+    await harness.save_publication(
+        access_state="failed", last_error=FAILED_APPLY, last_applied_at=APPLIED_AT
+    )
+    path, runtime_of = PORTAL_RUNTIME_ROUTES[route]
+    with _routes(harness, Caller(roles=roles)) as client:
+        response = client.get(path)
+
+    assert response.status_code == 200
+    runtime = runtime_of(response.json())
+    assert runtime["status"] == "failed"
+    # Still sent, as null, so the response keeps its shape.
+    assert "error" in runtime
+    assert runtime["error"] is None
+    assert runtime["publicationId"] == "publication"
+    assert runtime["subscriptionName"] == harness.subscription
+    assert runtime["appliedMethods"] == {"keysEnabled": True, "entraEnabled": True}
+    assert datetime.fromisoformat(runtime["appliedAt"]) == APPLIED_AT
+    assert FAILED_APPLY not in response.text
+
+
+@pytest.mark.parametrize("path", sorted(ADMIN_RUNTIME_ROUTES))
+async def test_admin_routes_keep_apims_error_for_a_failed_apply(
+    harness: Harness, path: str
+) -> None:
+    await harness.save_publication(access_state="failed", last_error=FAILED_APPLY)
+    with _routes(harness, Caller(roles=("Admin", "User"))) as client:
+        response = client.get(path)
+
+    assert response.status_code == 200
+    runtime = ADMIN_RUNTIME_ROUTES[path](response.json())
+    assert runtime["status"] == "failed"
+    assert runtime["error"] == FAILED_APPLY
+
+
+async def test_the_publication_keeps_apims_error_for_administrators(harness: Harness) -> None:
+    await harness.save_publication(access_state="failed", last_error=FAILED_APPLY)
+    with _routes(harness, Caller(roles=("Admin",))) as client:
+        response = client.get("/api/v1/publications/publication")
+
+    assert response.status_code == 200
+    assert response.json()["accessState"] == "failed"
+    assert response.json()["lastError"] == FAILED_APPLY
+
+
+def _refers_to(schema: object, name: str, schemas: dict[str, Any], seen: set[str]) -> bool:
+    if isinstance(schema, list):
+        return any(_refers_to(item, name, schemas, seen) for item in schema)
+    if not isinstance(schema, dict):
+        return False
+    reference = schema.get("$ref")
+    if isinstance(reference, str):
+        target = reference.rsplit("/", 1)[-1]
+        if target == name or target.startswith(f"{name}-"):
+            return True
+        if target in seen:
+            return False
+        seen.add(target)
+        return _refers_to(schemas[target], name, schemas, seen)
+    return any(_refers_to(value, name, schemas, seen) for value in schema.values())
+
+
+def test_every_portal_route_that_returns_runtime_state_is_redacted(settings: Settings) -> None:
+    """A new end-user route that returns runtime state fails here until it is redacted and tested.
+
+    Read from the published schema, so a route is caught however its response nests the state.
+    """
+
+    openapi = create_app(settings).openapi()
+    schemas = openapi["components"]["schemas"]
+    carrying = {
+        (method.upper(), path)
+        for path, operations in openapi["paths"].items()
+        if path.startswith(("/api/v1/me/", "/api/v1/portal/"))
+        for method, operation in operations.items()
+        if _refers_to(
+            {code: body for code, body in operation["responses"].items() if code.startswith("2")},
+            "EntitlementRuntime",
+            schemas,
+            set(),
+        )
+    }
+    tested = (*PORTAL_RUNTIME_ROUTES, *PORTAL_MCP_RUNTIME_ROUTES)
+    assert carrying == {("GET", route) for route in tested}

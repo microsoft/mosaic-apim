@@ -1,0 +1,7 @@
+# Tenant-specific targets never leave the machine.
+targets.local.json
+
+# Playwright output can contain tenant identifiers; keep it out of the repository.
+test-results/
+playwright-report/
+.artifacts/

@@ -1,11 +1,11 @@
-# ADR 0015: Enforce grants on MCP servers published through API Management
+# ADR 0017: Enforce grants on MCP servers published through API Management
 
 **Status:** Accepted
 
 ## Context
 
 ADR 0007 let MOSAIC register MCP servers directly and record the tools they declare. ADR 0005 let
-administrators import MCP servers that already exist in API Management. ADR 0014 then let MCP
+administrators import MCP servers that already exist in API Management. ADR 0016 then let MCP
 server grants name users, agent identities, agent users and Entra security groups, but those grants
 were governance intent only.
 

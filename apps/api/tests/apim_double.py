@@ -8,6 +8,7 @@ import json
 import re
 import time
 from typing import Any
+from xml.parsers import expat
 
 import httpx
 from azure.core.credentials import AccessToken
@@ -88,6 +89,228 @@ STATIC_RESOURCES: frozenset[str] = frozenset(
 _BACKEND_REFERENCE = re.compile(r"<set-backend-service\b[^>]*?\bbackend-id=([\"'])(.*?)\1")
 _FRAGMENT_REFERENCE = re.compile(r"<include-fragment\b[^>]*?\bfragment-id=([\"'])(.*?)\1")
 
+# API Management parses a multi-statement policy expression, @{ ... }, with Razor. Razor refuses a
+# control-flow statement whose body isn't a braced block, and API Management refuses the policy.
+_SINGLE_STATEMENT = (
+    'Expected a "{{" but found a "{found}". Block statements must be enclosed in "{{" and "}}". '
+    "You cannot use single-statement control-flow statements in CSHTML pages. For example, the "
+    "following is not allowed:\r\n\r\n@if(isLoggedIn)\r\n    <p>Hello, @user</p>\r\n\r\n"
+    'Instead, wrap the contents of the block in "{{}}":\r\n\r\n@if(isLoggedIn) {{\r\n'
+    "    <p>Hello, @user</p>\r\n}}"
+)
+_INVALID_FRAGMENT_EXPRESSION = "The policy fragment contains invalid policy expression."
+# Statements whose parenthesized condition, when present, must be followed by a braced body.
+_CONDITIONED_STATEMENTS = frozenset({"if", "for", "foreach", "while", "switch", "lock"})
+_BRACKETS = {"(": ")", "[": "]", "{": "}"}
+# Verbatim strings (@"..." with "" for a quote), then regular strings and characters, whose escapes
+# are a backslash and the character after it. Interpolated strings are read as plain ones.
+_CSHARP_LITERAL = re.compile(
+    r'(?:\$@|@\$?)"(?:[^"]|"")*"|\$?"(?:[^"\\\r\n]|\\.)*"|\'(?:[^\'\\\r\n]|\\.)+\''
+)
+_CSHARP_LITERAL_START = re.compile(r"(?:\$@|@\$?|\$)?[\"']")
+# Identifiers, keywords and numbers. A verbatim identifier such as @if keeps its @, so it is never
+# mistaken for the keyword.
+_CSHARP_WORD = re.compile(r"@?[A-Za-z_][A-Za-z0-9_]*|[0-9][A-Za-z0-9_.]*")
+
+
+class _Refused(Exception):
+    """Why Razor refuses an expression."""
+
+
+def _csharp_tokens(code: str) -> list[str]:
+    """C# tokens, with literals read whole and whitespace and comments dropped, as Razor reads them.
+
+    A string or character literal is a single token, so a keyword, bracket or brace inside one is
+    never read as code.
+    """
+
+    tokens: list[str] = []
+    index = 0
+    while index < len(code):
+        if code[index].isspace():
+            index += 1
+        elif code.startswith("//", index):
+            end = code.find("\n", index)
+            index = len(code) if end < 0 else end + 1
+        elif code.startswith("/*", index):
+            end = code.find("*/", index + 2)
+            if end < 0:
+                raise _Refused(
+                    "End of file was reached before the end of the block comment. All comments "
+                    'started with "/*" sequence must be terminated with a matching "*/" sequence.'
+                )
+            index = end + 2
+        elif literal := _CSHARP_LITERAL.match(code, index):
+            tokens.append(literal.group())
+            index = literal.end()
+        elif _CSHARP_LITERAL_START.match(code, index):
+            raise _Refused(
+                'Unterminated string literal. Strings that start with a quotation mark (") must '
+                "be terminated before the end of the line."
+            )
+        elif word := _CSHARP_WORD.match(code, index):
+            tokens.append(word.group())
+            index = word.end()
+        else:
+            tokens.append(code[index])
+            index += 1
+    return tokens
+
+
+class _RazorCodeBlock:
+    """Just enough of Razor's C# code parser to find a control-flow body that isn't a block.
+
+    Like Razor, it reads statements only at the start of a statement: a lambda or initializer inside
+    a statement, or inside a condition, is balanced and skipped rather than parsed.
+    """
+
+    def __init__(self, tokens: list[str]) -> None:
+        self._tokens = tokens
+        self._index = 0
+
+    def _peek(self) -> str:
+        return self._tokens[self._index] if self._index < len(self._tokens) else ""
+
+    def _accept(self, token: str) -> bool:
+        if self._peek() != token:
+            return False
+        self._index += 1
+        return True
+
+    def block(self) -> None:
+        if not self._accept("{"):
+            raise _Refused(_SINGLE_STATEMENT.format(found=self._peek()))
+        while self._peek() not in {"}", ""}:
+            self._statement()
+        if not self._accept("}"):
+            raise _Refused('The code block is missing a closing "}" character.')
+
+    def _statement(self) -> None:
+        token = self._peek()
+        if token == "{":
+            self.block()
+        elif token in _CONDITIONED_STATEMENTS or (token == "using" and self._next_is("(")):
+            self._conditioned()
+            while token == "if" and self._accept("else"):
+                if self._peek() != "if":
+                    self.block()
+                    break
+                self._conditioned()
+        elif self._accept("do"):
+            self.block()
+            if self._accept("while"):
+                self._condition()
+                self._accept(";")
+        elif self._accept("try"):
+            self.block()
+            # An exception filter, catch (...) when (...), is refused as System.Web.Razor refuses
+            # it. Newer Razor reads one, but which parser API Management runs isn't documented.
+            while self._peek() == "catch":
+                self._conditioned()
+            if self._accept("finally"):
+                self.block()
+        elif token in {"case", "default"}:
+            # A switch label is read to its colon, so the statement after it is read as one.
+            while self._peek() not in {":", "}", ""}:
+                self._index += 1
+            self._accept(":")
+        else:
+            while self._peek() not in {";", "}", ""}:
+                if self._peek() in _BRACKETS:
+                    self._balance()
+                else:
+                    self._index += 1
+            self._accept(";")
+
+    def _conditioned(self) -> None:
+        """A keyword and its condition, then the braced body Razor requires after the condition.
+
+        Razor leaves a keyword without a condition, such as a general ``catch``, to the C# compiler,
+        so whatever follows it is read as the next statement.
+        """
+
+        self._index += 1
+        if self._peek() == "(":
+            self._balance()
+            self.block()
+
+    def _next_is(self, token: str) -> bool:
+        return self._index + 1 < len(self._tokens) and self._tokens[self._index + 1] == token
+
+    def _condition(self) -> None:
+        if self._peek() == "(":
+            self._balance()
+
+    def _balance(self) -> None:
+        left = self._peek()
+        right = _BRACKETS[left]
+        depth = 0
+        while self._index < len(self._tokens):
+            token = self._tokens[self._index]
+            self._index += 1
+            depth += (token == left) - (token == right)
+            if depth == 0:
+                return
+        raise _Refused(f'An opening "{left}" is missing the corresponding closing "{right}".')
+
+
+def expression_error(expression: str) -> str | None:
+    """Why API Management refuses a multi-statement ``@{ ... }`` expression, or None.
+
+    Razor requires the body of ``if (...)``, ``else``, ``for (...)``, ``foreach (...)``,
+    ``while (...)``, ``do``, ``switch (...)``, ``lock (...)``, ``using (...)``, ``try``,
+    ``catch (...)`` and ``finally`` to be a braced block: ``if (x) return y;`` is refused and
+    ``if (x) { return y; }`` is not. Only Razor's parse is modelled, not the C# compiler that runs
+    after it.
+    """
+
+    code = expression.strip()
+    if not code.startswith("@{"):
+        return None
+    try:
+        _RazorCodeBlock(_csharp_tokens(code[1:])).block()
+    except _Refused as refused:
+        return str(refused)
+    return None
+
+
+def policy_expression_error(xml: str) -> tuple[str, int, int, str] | None:
+    """The first multi-statement expression in a policy that API Management refuses, if any.
+
+    Returns the element holding it, the line and column where that element's name starts, and
+    Razor's reason. A document that isn't well-formed XML is not examined.
+    """
+
+    found: list[tuple[str, int, int, str]] = []
+    open_elements: list[tuple[str, int, int, list[str]]] = []
+    parser = expat.ParserCreate()
+
+    def start(name: str, attributes: dict[str, str]) -> None:
+        line, column = parser.CurrentLineNumber, parser.CurrentColumnNumber + 2
+        open_elements.append((name, line, column, []))
+        found.extend((name, line, column, value) for value in attributes.values())
+
+    def text(data: str) -> None:
+        if open_elements:
+            open_elements[-1][3].append(data)
+
+    def end(_name: str) -> None:
+        name, line, column, parts = open_elements.pop()
+        found.append((name, line, column, "".join(parts)))
+
+    parser.StartElementHandler = start
+    parser.CharacterDataHandler = text
+    parser.EndElementHandler = end
+    try:
+        parser.Parse(xml, True)
+    except expat.ExpatError:
+        return None
+    for name, line, column, value in sorted(found, key=lambda item: item[1:3]):
+        reason = expression_error(value)
+        if reason is not None:
+            return name, line, column, reason
+    return None
+
 
 class FakeCredential:
     def __init__(self) -> None:
@@ -161,6 +384,7 @@ class FakeApim:
         # Set when a NAT gateway carries the service's outbound calls instead.
         self.outbound_public_ip_addresses: list[str] = []
         self.additional_locations: list[dict[str, Any]] = []
+        self.tags: dict[str, str] | None = None
 
     def fail_once(self, path_suffix: str, status_code: int) -> None:
         self.failures[path_suffix] = status_code
@@ -208,7 +432,8 @@ class FakeApim:
 
         ``error`` is the ``error`` object the settled operation reports, as Azure says why an
         operation failed. Policy fragments ignore this: they always answer through a Location
-        poll, and fail it only when their routing names a missing backend.
+        poll, and fail it only when their routing names a missing backend or a policy expression
+        is one API Management refuses.
         """
 
         self.async_writes.add(path_suffix)
@@ -341,6 +566,10 @@ class FakeApim:
         body = body if isinstance(body, dict) else {}
         if suffix.startswith("policyFragments/"):
             return self._write_fragment(suffix, body)
+        if suffix == "policies/policy" or suffix.endswith("/policies/policy"):
+            refused = self._refused_policy(body)
+            if refused is not None:
+                return refused
         self._record_references(suffix, body)
         self.written[suffix] = body
         if suffix in self.async_writes:
@@ -384,22 +613,60 @@ class FakeApim:
             (suffix, reference) for reference in named if not self._exists(reference)
         )
 
+    @staticmethod
+    def _policy_xml(body: dict[str, Any]) -> str:
+        properties = body.get("properties")
+        value = properties.get("value") if isinstance(properties, dict) else None
+        return value if isinstance(value, str) else ""
+
+    def _refused_policy(self, body: dict[str, Any]) -> httpx.Response | None:
+        """Refuse a policy document with an expression API Management can't parse, as it does.
+
+        A policy is validated as it is written, so the PUT itself fails with a ValidationError
+        naming the element, and nothing is stored.
+        """
+
+        refusal = policy_expression_error(self._policy_xml(body))
+        if refusal is None:
+            return None
+        element, line, column, reason = refusal
+        return httpx.Response(
+            400,
+            json={
+                "error": {
+                    "code": "ValidationError",
+                    "message": "One or more fields contain incorrect values:",
+                    "details": [
+                        {
+                            "code": "ValidationError",
+                            "target": element,
+                            "message": (
+                                f"Error in element '{element}' on line {line}, column {column}: "
+                                f"{reason}"
+                            ),
+                        }
+                    ],
+                }
+            },
+        )
+
     def _write_fragment(self, suffix: str, body: dict[str, Any]) -> httpx.Response:
         """Accept a policy fragment as API Management does, then validate it.
 
         API Management answers 201, or 200 when replacing, with only a Location header and checks
-        the policy afterwards. A ``set-backend-service`` naming a backend that does not exist fails
-        the operation: the Location poll reports ``Failed`` with the ValidationError Azure returns,
-        and the new content is not stored. A failed create leaves no fragment, and a failed update
-        leaves the previous one in place. The line and column are where the element's name starts.
+        the policy afterwards. A multi-statement expression Razor can't parse, or a
+        ``set-backend-service`` naming a backend that does not exist, fails the operation: the
+        Location poll reports ``Failed`` with the ValidationError Azure returns, and the new content
+        is not stored. A failed create leaves no fragment, and a failed update leaves the previous
+        one in place. A missing backend's error gives the line and column where the element's name
+        starts.
         """
 
         existed = self._exists(suffix)
         self._async_ids += 1
         async_id = f"{self._async_ids:024x}"
-        properties = body.get("properties")
-        value = properties.get("value") if isinstance(properties, dict) else None
-        xml = value if isinstance(value, str) else ""
+        xml = self._policy_xml(body)
+        refusal = policy_expression_error(xml)
         missing = next(
             (
                 match
@@ -408,7 +675,16 @@ class FakeApim:
             ),
             None,
         )
-        if missing is None:
+        if refusal is not None:
+            # As the live gateway reported it: no element, line or detail, just Razor's reason.
+            self.location_operations[async_id] = {
+                "status": "Failed",
+                "error": {
+                    "code": "ValidationError",
+                    "message": f"{_INVALID_FRAGMENT_EXPRESSION} {refusal[3]}",
+                },
+            }
+        elif missing is None:
             self._record_references(suffix, body)
             self.written[suffix] = body
             self.location_operations[async_id] = self._written_resource(suffix)
@@ -552,6 +828,8 @@ class FakeApim:
             service["sku"] = {"name": self.sku_name, "capacity": 1}
         if self.identity is not None:
             service["identity"] = self.identity
+        if self.tags is not None:
+            service["tags"] = self.tags
         return service
 
     def _paged_apis(self, page: str | None) -> httpx.Response:

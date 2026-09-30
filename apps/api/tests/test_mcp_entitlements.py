@@ -636,6 +636,48 @@ async def test_mcp_connection_routes_for_admin_and_portal(
     assert McpConnection.model_validate(portal.json()).enforced is True
 
 
+# API Management's words for a failed apply, as the publication records them. Fictional, but shaped
+# like the real thing: it names MOSAIC's policy fragment and another publication's named value.
+FAILED_APPLY = (
+    "policyFragment mosaic-mcp-tools: The Azure operation did not succeed (Failed). "
+    "ValidationError: Named value mosaic-mcp-other-audience is not valid for this API."
+)
+# Every end-user route whose response carries an MCP grant's runtime state, as it is published.
+# test_portal_access reads the schema and fails when a route is missing here or from its own list.
+PORTAL_MCP_RUNTIME_ROUTES = ("/api/v1/me/entitlements/{entitlement_id}/mcp-connection",)
+
+
+@pytest.mark.parametrize("roles", [("User",), ("Admin", "User")], ids=["user", "admin"])
+@pytest.mark.parametrize("route", PORTAL_MCP_RUNTIME_ROUTES)
+async def test_portal_mcp_routes_report_a_failed_apply_without_apims_error(
+    harness: Harness, http_client: TestClient, route: str, roles: tuple[str, ...]
+) -> None:
+    """The route decides, not the role: an administrator reading their own grant here gets null."""
+
+    principal = await harness.principal(USER_OID)
+    entitlement = await harness.grant(principal)
+    await harness.apply_grant(entitlement, principal, access_state="failed")
+    harness.publication = harness.publication.model_copy(update={"last_error": FAILED_APPLY})
+    await harness.gateways.save_mcp_publication(harness.publication, _audit())
+
+    http_client.app.state.authenticator = Caller(USER_OID, roles=roles)
+    response = http_client.get(route.format(entitlement_id=entitlement.id))
+
+    assert response.status_code == 200, response.text
+    runtime = response.json()["runtime"]
+    assert runtime["status"] == "failed"
+    # Still sent, as null, so the response keeps its shape.
+    assert "error" in runtime
+    assert runtime["error"] is None
+    assert runtime["publicationId"] == harness.publication.id
+    assert FAILED_APPLY not in response.text
+
+    http_client.app.state.authenticator = Caller(USER_OID, roles=("Admin",))
+    administrator = http_client.get(f"/api/v1/entitlements/{entitlement.id}/mcp-connection")
+    assert administrator.status_code == 200, administrator.text
+    assert administrator.json()["runtime"]["error"] == FAILED_APPLY
+
+
 async def test_security_group_mcp_connection_route_is_visible_only_to_members(
     harness: Harness, http_client: TestClient
 ) -> None:

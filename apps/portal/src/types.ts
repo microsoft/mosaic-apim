@@ -1,5 +1,24 @@
 export type QuotaPeriod = 'Hourly' | 'Daily' | 'Weekly' | 'Monthly' | 'Yearly'
 
+export type EnvironmentColor =
+  | 'brand'
+  | 'danger'
+  | 'important'
+  | 'informative'
+  | 'severe'
+  | 'subtle'
+  | 'success'
+  | 'warning'
+
+export interface PortalEnvironment {
+  key: string
+  displayName: string
+  description: string | null
+  color: EnvironmentColor
+  production: boolean
+  order: number
+}
+
 export interface PortalProfile {
   objectId: string
   tenantId: string
@@ -21,6 +40,7 @@ export interface CatalogEntry {
   summary: string | null
   gatewayId: string
   gatewayName: string | null
+  environment: string | null
   entitled: boolean
   requestState: AccessRequestState | null
   enforced?: boolean | null
@@ -35,6 +55,23 @@ export interface EntitlementResource {
 export interface AccessRequestCreate {
   resource: EntitlementResource
   justification?: string
+}
+
+export interface ResourceSummary {
+  kind: EntitlementResource['kind']
+  id: string
+  scopeId: string | null
+  displayName: string | null
+  gatewayId: string | null
+  gatewayName: string | null
+  environment: string | null
+  available: boolean
+}
+
+export interface AccessRequestResourceSnapshot {
+  displayName: string | null
+  gatewayId: string | null
+  gatewayName: string | null
 }
 
 export type AccessRequestState = 'pending' | 'approved' | 'denied' | 'withdrawn'
@@ -52,8 +89,16 @@ export interface AccessRequest {
   decidedAt: string | null
   decisionNote: string | null
   grantedEntitlementId: string | null
+  requestedEnvironment: string | null
+  resourceSnapshot: AccessRequestResourceSnapshot | null
+  resourceSummary?: ResourceSummary | null
   createdAt: string
   updatedAt: string
+  /**
+   * The name the catalog shows for the requested resource. Null when the API can't resolve it,
+   * for example because the resource was deleted. Older APIs omit it.
+   */
+  resourceDisplayName?: string | null
 }
 
 export interface TokenEnforcement {
@@ -95,6 +140,10 @@ export interface EntitlementRuntime {
   appliedMethods: ModelAccessSettings | null
   subscriptionName: string | null
   appliedAt: string | null
+  /**
+   * API Management's raw error for the publication's last apply. The portal's routes send null.
+   * An older API may still send the text, so it is never shown: `status` explains a failed apply.
+   */
   error: string | null
 }
 
@@ -115,11 +164,103 @@ export interface Entitlement {
 
 export interface ResolvedEntitlement {
   entitlement: Entitlement
+  resourceSummary: ResourceSummary | null
   via: 'direct' | 'group' | 'securityGroup'
   viaGroupId: string | null
   viaGroupName: string | null
   effective?: boolean
   shadowedBy?: string | null
+  /**
+   * The name the catalog shows for the granted resource. Null when the API can't resolve it,
+   * for example because the resource was deleted. Older APIs omit it.
+   */
+  resourceDisplayName?: string | null
+}
+
+export type UsagePeriod = '7d' | '30d' | '90d'
+export type UsageDataSource = 'simulated' | 'logAnalytics'
+export type UsageAttribution = 'simulated' | 'measured' | 'unattributed'
+
+export interface UsageTotals {
+  requests: number
+  promptTokens: number
+  completionTokens: number
+  totalTokens: number
+  estimatedCost: number | null
+  costExcludedResources: number
+}
+
+export interface UsageTimelinePoint {
+  date: string
+  entitlementId: string
+  environment: string | null
+  requests: number | null
+  promptTokens: number | null
+  completionTokens: number | null
+  totalTokens: number | null
+  estimatedCost: number | null
+}
+
+export interface UsageEnvironmentBreakdown {
+  environment: string | null
+  resources: number
+  requests: number
+  promptTokens: number
+  completionTokens: number
+  totalTokens: number
+  estimatedCost: number | null
+  costExcludedResources: number
+}
+
+export interface UsageQuota {
+  metric: 'tokens' | 'requests'
+  limit: number
+  period: QuotaPeriod
+  windowStart: string
+  windowEnd: string
+  used: number | null
+  utilization: number | null
+}
+
+export interface UsageRateLimit {
+  metric: 'tokens' | 'requests'
+  limit: number
+  windowSeconds: number
+}
+
+export interface UsageResourceRow {
+  entitlementId: string
+  resource: EntitlementResource
+  resourceSummary: ResourceSummary
+  environment: string | null
+  via: 'direct' | 'group' | 'securityGroup'
+  viaGroupName: string | null
+  enabled: boolean
+  bound: boolean
+  attribution: UsageAttribution
+  model: string | null
+  requests: number | null
+  promptTokens: number | null
+  completionTokens: number | null
+  totalTokens: number | null
+  estimatedCost: number | null
+  costNote: string | null
+  quotas: UsageQuota[]
+  rateLimits: UsageRateLimit[]
+}
+
+export interface MyUsageReport {
+  dataSource: UsageDataSource
+  period: UsagePeriod
+  start: string
+  end: string
+  generatedAt: string
+  currency: 'USD'
+  totals: UsageTotals
+  timeline: UsageTimelinePoint[]
+  byEnvironment: UsageEnvironmentBreakdown[]
+  byResource: UsageResourceRow[]
+  notes: string[]
 }
 
 export interface ConnectionOperation {

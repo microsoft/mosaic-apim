@@ -20,6 +20,8 @@ function buildGateway(overrides: Partial<Gateway> = {}): Gateway {
     subscriptionId: '00000000-0000-0000-0000-000000000000',
     resourceGroup: 'rg-contoso-dev',
     serviceName: 'apim-contoso-dev',
+    environment: null,
+    azureEnvironmentTag: null,
     environmentLabel: 'dev',
     managementMode: 'observe',
     status: 'connected',
@@ -168,6 +170,7 @@ function buildMcpEndpoint(overrides: Partial<McpEndpoint> = {}): McpEndpoint {
     tenantId: 'tenant-test',
     name: 'Contoso tools',
     endpoint: 'https://mcp.contoso.com/mcp',
+    environment: null,
     environmentLabel: 'prod',
     authMode: 'none',
     credentialReferenceId: null,
@@ -238,6 +241,8 @@ const unannotatedTool: ObservedMcpTool = {
 }
 
 const api = {
+  getEnvironmentCatalog: vi.fn(),
+  listEnvironmentFindings: vi.fn(),
   listGateways: vi.fn(),
   listMcpPublications: vi.fn(),
   planMcpPublication: vi.fn(),
@@ -288,6 +293,31 @@ function renderPage(entry = '/mcps') {
 describe('McpsPage', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    api.getEnvironmentCatalog.mockResolvedValue({
+      environments: [
+        {
+          key: 'development',
+          displayName: 'Development',
+          description: null,
+          color: 'brand',
+          production: false,
+          aliases: [],
+          acceptsEndpointsFrom: [],
+          order: 10,
+          builtIn: true,
+          usage: { gateways: 0, modelEndpoints: 0, mcpEndpoints: 0 },
+        },
+      ],
+      requireClassification: false,
+      unclassified: { gateways: 0, modelEndpoints: 0, mcpEndpoints: 0 },
+      compatibility: [],
+      updatedAt: null,
+    })
+    api.listEnvironmentFindings.mockResolvedValue({
+      items: [],
+      limitations: [],
+      generatedAt: '2026-09-01T12:00:00Z',
+    })
     api.listGateways.mockResolvedValue([buildGateway()])
     api.listMcpPublications.mockResolvedValue([])
     api.getMcpPublishingCapability.mockResolvedValue({ gatewayId: 'gateway_1', supported: true, reasons: [], warnings: [] })
@@ -404,9 +434,9 @@ describe('McpsPage', () => {
     renderPage('/mcps?import=gateway_1')
 
     expect(await screen.findByRole('dialog')).toBeVisible()
-    expect(
-      await screen.findByRole('checkbox', { name: 'Import Orders MCP' }),
-    ).toBeChecked()
+    const orders = await screen.findByRole('checkbox', { name: 'Import Orders MCP' })
+    // Detection pre-checks the list once it arrives, so the check lands a render later.
+    await waitFor(() => expect(orders).toBeChecked())
   })
 
   it('does not offer a server that is already governed', async () => {
@@ -426,6 +456,7 @@ describe('McpsPage', () => {
     const user = userEvent.setup()
     renderPage('/mcps?import=gateway_1')
 
+    await screen.findByRole('checkbox', { name: 'Import Orders MCP' })
     await user.click(await screen.findByRole('button', { name: 'Import 1' }))
 
     await waitFor(() => {

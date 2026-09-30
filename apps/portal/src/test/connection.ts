@@ -3,6 +3,7 @@ import type {
   KeyRevealResult,
   McpConnection,
   ModelConnection,
+  ResourceSummary,
   ResolvedEntitlement,
 } from '../types'
 
@@ -44,8 +45,20 @@ export const directGrant: Entitlement = {
   updatedAt: timestamp,
 }
 
+export const directSummary: ResourceSummary = {
+  kind: 'modelApi',
+  id: 'modelApi_chat',
+  scopeId: null,
+  displayName: 'Chat model API',
+  gatewayId: 'gateway_1',
+  gatewayName: 'Production gateway',
+  environment: 'production',
+  available: true,
+}
+
 export const directResolved: ResolvedEntitlement = {
   entitlement: directGrant,
+  resourceSummary: directSummary,
   via: 'direct',
   viaGroupId: null,
   viaGroupName: null,
@@ -59,6 +72,7 @@ export const groupResolved: ResolvedEntitlement = {
     binding: null,
     runtime: null,
   },
+  resourceSummary: directSummary,
   via: 'group',
   viaGroupId: 'group_1',
   viaGroupName: 'Platform engineering',
@@ -72,6 +86,7 @@ export const securityGroupResolved: ResolvedEntitlement = {
     binding: null,
     runtime: null,
   },
+  resourceSummary: directSummary,
   via: 'securityGroup',
   viaGroupId: 'principal_group_1',
   viaGroupName: 'AI builders',
@@ -105,8 +120,20 @@ export const mcpGrant: Entitlement = {
   },
 }
 
+export const mcpSummary: ResourceSummary = {
+  kind: 'mcpServer',
+  id: 'mcp_weather',
+  scopeId: null,
+  displayName: 'Weather tools',
+  gatewayId: 'gateway_1',
+  gatewayName: 'Production gateway',
+  environment: 'production',
+  available: true,
+}
+
 export const mcpResolved: ResolvedEntitlement = {
   entitlement: mcpGrant,
+  resourceSummary: mcpSummary,
   via: 'direct',
   viaGroupId: null,
   viaGroupName: null,
@@ -119,6 +146,7 @@ export const mcpMosaicGroupResolved: ResolvedEntitlement = {
     subject: { kind: 'group', id: 'group_1' },
     runtime: null,
   },
+  resourceSummary: mcpSummary,
   via: 'group',
   viaGroupId: 'group_1',
   viaGroupName: 'Platform engineering',
@@ -157,6 +185,7 @@ export const mcpAgentIdentityResolved: ResolvedEntitlement = {
     id: 'entitlement_mcp_agent_identity',
     subject: { kind: 'application', id: 'principal_agent_identity' },
   },
+  resourceSummary: mcpSummary,
   via: 'direct',
   viaGroupId: null,
   viaGroupName: null,
@@ -178,6 +207,7 @@ export const mcpAgentUserResolved: ResolvedEntitlement = {
     id: 'entitlement_mcp_agent_user',
     subject: { kind: 'user', id: 'principal_agent_user' },
   },
+  resourceSummary: mcpSummary,
   via: 'direct',
   viaGroupId: null,
   viaGroupName: null,
@@ -196,6 +226,7 @@ export const mcpSecurityGroupResolved: ResolvedEntitlement = {
     id: 'entitlement_mcp_security_group',
     subject: { kind: 'securityGroup', id: 'principal_group_1' },
   },
+  resourceSummary: mcpSummary,
   via: 'securityGroup',
   viaGroupId: 'principal_group_1',
   viaGroupName: 'AI builders',

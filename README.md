@@ -21,8 +21,8 @@ deterministic plan and an explicit apply, only to a gateway an administrator has
 `manage`. Existing publications remain unchanged until explicitly opted into governed access.
 See [ADR 0010](docs/adr/0010-publishing-models-into-apim.md) and
 [ADR 0011](docs/adr/0011-governed-model-access.md) for the write and credential-disclosure
-boundaries, and [ADR 0014](docs/adr/0014-agent-identities-and-security-group-grants.md) for agent
-identities and security-group grants. [ADR 0015](docs/adr/0015-mcp-gateway-enforcement.md)
+boundaries, and [ADR 0016](docs/adr/0016-agent-identities-and-security-group-grants.md) for agent
+identities and security-group grants. [ADR 0017](docs/adr/0017-mcp-gateway-enforcement.md)
 documents MCP gateway enforcement.
 
 ## Screenshots
@@ -51,6 +51,7 @@ one under **Settings > Appearance**.
   <tr>
     <td colspan="2"><b>Console overview.</b> Live counts of the people, agents, applications and
     security groups, and MOSAIC groups registered in MOSAIC, each opening its tab under Identity.
+    An Environments card counts the gateways, model endpoints, and MCP servers in each environment.
     Below them, the telemetry, cost, model-ranking, and service-health panels show labelled sample
     data until MOSAIC queries Azure Monitor.</td>
   </tr>
@@ -60,8 +61,9 @@ one under **Settings > Appearance**.
   </tr>
   <tr>
     <td colspan="2"><b>Portal catalog.</b> The model APIs and MCP servers published to portal
-    users, including whether an MCP server is enforced by the gateway. People request access with
-    an optional justification, and can see what they already hold or have asked for.</td>
+    users, each labelled with its environment and, for an MCP server, whether the gateway enforces
+    it. People request the development or production copy with an optional justification, and can
+    see what they already hold or have asked for.</td>
   </tr>
 </table>
 
@@ -70,16 +72,16 @@ one under **Settings > Appearance**.
 <table>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/console-gateways.png" alt="Registered gateways with their status, AI API counts, and last sync">
-      <p><b>Gateways.</b> Existing API Management services registered by resource ID. MOSAIC
-      reports whether it can read each one, how many APIs front Azure AI backends, and when it
-      last synced.</p>
+      <img src="docs/images/screenshots/console-gateways.png" alt="Registered gateways with their environment, status, AI API counts, and last sync">
+      <p><b>Gateways.</b> Existing API Management services registered by resource ID, each in one
+      environment. MOSAIC reports whether it can read each one, how many APIs front Azure AI
+      backends, and when it last synced.</p>
     </td>
     <td width="50%" valign="top">
       <img src="docs/images/screenshots/console-gateway-overview.png" alt="A gateway overview with inventory counts and service details">
       <p><b>Gateway overview.</b> One gateway at a glance: its AI APIs, operations, MCP servers,
-      access paths, and policy rules, with its mode and service details. Tabs open its APIs, MCP
-      servers, products, subscriptions, users and groups, policies, and backends.</p>
+      access paths, and policy rules, with its environment, mode, and service details. Tabs open
+      its APIs, MCP servers, products, subscriptions, users and groups, policies, and backends.</p>
     </td>
   </tr>
   <tr>
@@ -97,10 +99,11 @@ one under **Settings > Appearance**.
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/console-mcps.png" alt="Registered and published MCP servers with status, authentication, and tools">
-      <p><b>MCP servers.</b> Registered servers and MOSAIC-published MCP servers, with their
-      connection status, authentication method, tools, and gateway apply state. MOSAIC reads what
-      a server offers and never calls a tool.</p>
+      <img src="docs/images/screenshots/console-mcps.png" alt="Registered and published MCP servers with environment, status, authentication, and tools">
+      <p><b>MCP servers.</b> Servers registered directly or imported from a gateway, with their
+      environment, connection status, authentication method, and tools, and the servers MOSAIC
+      publishes, with their gateway apply state. MOSAIC reads what a server offers and never calls
+      a tool.</p>
     </td>
     <td width="50%" valign="top">
       <img src="docs/images/screenshots/console-identity.png" alt="The Identity page's Agents tab listing agent identities and an agent user, with a detail panel">
@@ -125,10 +128,11 @@ one under **Settings > Appearance**.
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/console-entitlements.png" alt="Grants with subjects, resources, limits, desired and applied state, and bindings">
+      <img src="docs/images/screenshots/console-entitlements.png" alt="Grants with subjects, resources, environments, limits, desired and applied state, and bindings">
       <p><b>Entitlements.</b> Grants of model APIs and MCP servers to people, agents,
-      applications, MOSAIC groups, and Entra security groups, with limits, desired and applied
-      state, and APIM binding. Gateway enforcement changes only through a reviewed apply.</p>
+      applications, MOSAIC groups, and Entra security groups, with each grant's environment,
+      limits, desired and applied state, and APIM binding. Gateway enforcement changes only
+      through a reviewed apply.</p>
     </td>
     <td width="50%" valign="top">
       <img src="docs/images/screenshots/console-overlapping-grants.png" alt="Overlapping grants showing which grant applies, each grant's limits, and links to the grants">
@@ -146,8 +150,24 @@ one under **Settings > Appearance**.
     </td>
     <td width="50%" valign="top">
       <img src="docs/images/screenshots/console-analytics.png" alt="Analytics with request, token, success-rate, and cost summaries">
-      <p><b>Analytics.</b> A preview of the usage, token, cost, and chargeback views. It shows
-      labelled sample data until MOSAIC queries Azure Monitor and Log Analytics.</p>
+      <p><b>Analytics.</b> A preview of the usage, token, cost, and chargeback views, filtered by
+      time range, model, and environment. It shows labelled sample data until MOSAIC queries Azure
+      Monitor and Log Analytics.</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/images/screenshots/console-environments.png" alt="The environment catalog in Settings with usage counts and one unclassified resource">
+      <p><b>Environments.</b> The catalog administrators define in Settings: the built-in
+      environments plus custom ones such as Partner, each with a color and a production-class
+      flag. Gateways, model endpoints, and MCP servers are each classified into one, and any not
+      yet classified wait below with suggestions to review.</p>
+    </td>
+    <td width="50%" valign="top">
+      <img src="docs/images/screenshots/console-environment-findings.png" alt="Findings where a development gateway routes to production endpoints">
+      <p><b>Environment findings.</b> Pairings already in API Management that break the
+      environment rules, such as a development gateway routing to production endpoints, with the
+      evidence and how confident the match is. Findings are advisory and never block anything.</p>
     </td>
   </tr>
 </table>
@@ -157,10 +177,10 @@ one under **Settings > Appearance**.
 <table>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/portal-access.png" alt="A model grant with its limits and expanded connection details">
-      <p><b>My access.</b> Each grant with its limits and APIM state. A direct model grant expands
-      to show its endpoint, operations, accepted credentials, and Entra details, with code samples
-      and an on-demand key reveal below.</p>
+      <img src="docs/images/screenshots/portal-access.png" alt="A model grant with its environment, limits, and expanded connection details">
+      <p><b>My access.</b> Each grant with its environment, limits, and APIM state. A direct model
+      grant expands to show its endpoint, operations, accepted credentials, and Entra details, with
+      code samples and an on-demand key reveal below.</p>
     </td>
     <td width="50%" valign="top">
       <img src="docs/images/screenshots/portal-mcp-connection.png" alt="An enforced MCP grant with VS Code mcp.json connection details">
@@ -171,11 +191,24 @@ one under **Settings > Appearance**.
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/portal-requests.png" alt="Approved, denied, and pending access requests">
-      <p><b>My requests.</b> Access requests with their justification, state, and the
+      <img src="docs/images/screenshots/portal-requests.png" alt="Approved, denied, and pending access requests with their environments">
+      <p><b>My requests.</b> Access requests with their environment, justification, state, and the
       administrator's decision note. A pending request can be withdrawn.</p>
     </td>
     <td width="50%" valign="top"></td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/images/screenshots/portal-usage.png" alt="Usage and cost totals with a daily trend per environment">
+      <p><b>Usage and cost.</b> A person's requests, tokens, and estimated cost across everything
+      they hold, with a daily trend per environment. It shows labelled sample data, simulated from
+      their real grants and limits, until MOSAIC queries Log Analytics.</p>
+    </td>
+    <td width="50%" valign="top">
+      <img src="docs/images/screenshots/portal-usage-resources.png" alt="Usage broken down by environment and by resource">
+      <p><b>Usage by resource.</b> The same figures by environment and by granted resource, with
+      each grant's quotas, rate limits, and whether its APIM subscription is linked yet.</p>
+    </td>
   </tr>
 </table>
 
@@ -282,17 +315,30 @@ explicit local/test modes and application startup rejects them when `MOSAIC_ENVI
 - Separate non-root frontend/backend containers
 - End-user portal: a separate SPA on its own Entra registration and the `User` app role, where
   a non-administrator sees what they are entitled to, how each grant reached them, the catalog
-  of governed resources, and can request access to something they cannot yet use. For an applied
-  direct model grant, the portal also shows the endpoint, operations, accepted credentials, limits,
-  and placeholder code samples, and reveals a key on request
+  of governed resources, and can request access to something they cannot yet use. My access and
+  My requests head each grant and request with its resource's name, as the catalog shows it, and
+  keep its kind visible, including for a resource since made private. They never show a raw
+  resource ID. For an applied direct model grant, the portal also shows the endpoint, operations,
+  accepted credentials, limits, and placeholder code samples, and reveals a key on request
+- Environments: an administrator-defined catalog (Development, Test, QC, Staging, Production,
+  Sandbox, and custom environments) that classifies gateways, model endpoints, and MCP servers.
+  Compatibility rules are enforced when models are published, and Azure `environment` tags and
+  legacy labels become suggestions an administrator confirms. Re-classification is guarded, and
+  advisory findings flag mismatched pairings MOSAIC didn't create. The portal shows each catalog
+  entry's and grant's environment, so people request development and production access separately
+- End-user usage report: a caller-scoped `/me/usage` contract and the portal's **Usage & cost**
+  page. Until Log Analytics is wired in, it reports simulated usage built from the caller's real
+  grants and limits
 - ACR remote builds for every image, so deployment does not depend on a local Docker daemon
 - `azd` and modular Bicep for three Linux Web Apps on one plan, ACR, Cosmos, Key Vault, APIM,
   Log Analytics, Application Insights, diagnostics, managed identities, and narrow RBAC
 - Idempotent Entra application/service-principal setup through `azd` hooks
 
 The Gateways workspace, the Identity workspace, the Models and MCPs workspaces, the Entitlements
-workspace, model publishing, the end-user portal, and the deterministic policy preview use live
-API contracts. Analytics, policy metadata, and other future operational experiences are
+workspace, Settings → Environments, model publishing, the end-user portal, and the deterministic
+policy preview use live API contracts. The portal's **Usage & cost** page also uses a live API
+contract, but the figures it reports are simulated from the caller's real grants and labeled
+**Sample data**. Analytics, policy metadata, and other future operational experiences are
 interactive frontend previews labeled
 **Sample data** or **Local preview**. They never claim to mutate Azure, query Azure Monitor, or
 substitute sample data for a failed API request.
@@ -372,6 +418,12 @@ npm run typecheck
 npm run lint
 npm run test
 npm run build
+
+Set-Location ..\..\e2e
+npm run test:unit
+npm run typecheck
+npm run lint
+Set-Location ..
 
 az bicep build --file infra\main.bicep
 python -m unittest scripts.tests.test_mosaic_entra scripts.tests.test_verify_model_access
@@ -479,6 +531,9 @@ not. The domain distinguishes:
 - `ModelDeployment`: callable deployed endpoint
 - `Principal` (users, applications, managed identities, agent identities, agent users and Entra
   security groups), `Group`, `GroupMembership`
+- `EnvironmentCatalog`: the tenant's environments, which are production-class, which other
+  environments each one's gateways also accept endpoints from, and whether classification is
+  required
 - `Gateway`: a registered API Management service, its verified access, and its inventory summary
 - `GatewaySyncRun`: the outcome of one inventory synchronisation
 - `ModelApi`: an API Management API an administrator adopted as a governed model endpoint
@@ -583,6 +638,7 @@ measured scale, not speculation.
 A gateway is an existing Azure API Management service that an administrator registers with MOSAIC by
 resource ID. MOSAIC supports several across subscriptions and environments; the APIM that `azd`
 deploys is registered automatically on first startup and also appears as a one-click suggestion.
+Each gateway belongs to one environment, or is Unclassified; see [Environments](#environments).
 
 Onboarding runs a preflight against Azure Resource Manager with MOSAIC's managed identity. It reads
 effective permissions at the resource scope, and when they are missing it reports the exact role,
@@ -976,6 +1032,7 @@ Administrators can explicitly reveal/copy an applied grant's key. Portal clients
 | GET | `/me/entitlements` | The caller's own direct grants and deployment state; no keys |
 | GET | `/me/entitlements/{id}/connection` | Endpoint, operations, runtime audience/scope, model client ID, and limits |
 | POST | `/me/entitlements/{id}/keys/reveal` | The requested key; body `{"slot":"primary"}` or `{"slot":"secondary"}` |
+| GET | `/me/usage?period=30d` | The caller's usage and estimated cost per grant, simulated for now; see [Usage and cost in the portal](#usage-and-cost-in-the-portal) |
 
 People use the connection's `tenantId`, `entraClientId` and `entraScope` to get a runtime token.
 See [Call a published model with an Entra token](docs/call-models-with-entra-tokens.md).
@@ -989,10 +1046,16 @@ The administrator equivalents omit `/me` and require `Admin`. Knowing another en
 application ID does not authorize a reveal. Application-owner delegation remains future work.
 A current-user route always uses the token's identity, never a caller-supplied user ID.
 
+When an apply fails, the `/me` and `/portal` routes report it through `runtime.status` alone and
+return `runtime.error` as null, even to an administrator. That field holds API Management's raw
+error, which names MOSAIC's internal resources and is shared by every grant on the model, so only
+the administrator routes return it.
+
 In the portal, each model grant on **My access** has a **Connection details** button. The
 connection loads only when it is expanded, and it shows the endpoint, full operation URLs,
 deployment, key header, accepted methods, Entra tenant, client ID, scope and audience, limits, and
-whether the grant is applied to APIM. When the connection has an `entraClientId`, a **Get a token
+whether the grant is applied to APIM. If the last apply failed, the panel says so and asks the
+person to have an administrator retry it. When the connection has an `entraClientId`, a **Get a token
 (Python)** sample signs the person in with the model client using a device code. Without one, the
 panel asks them to get the client ID from an administrator. **Show primary key** and **Show
 secondary key** reveal one key for 60 seconds. The key is also hidden by **Hide key**, when the
@@ -1069,53 +1132,239 @@ token or can reach its model. `scripts\verify_model_access.py` is an opt-in veri
 it calls the actual APIM endpoint and does not proxy through MOSAIC, provision resources, change
 grants, or save credentials.
 
-Deploy the feature and bootstrap its runtime registration, then prepare an isolated non-production
-published chat model with an applied user grant and an applied application grant. Obtain tokens
-using authorized clients and place them in these process environment variables, not source files:
+Deploy the feature and bootstrap its runtime registration. Then publish the models to check, in a
+non-production environment, and apply grants for them: any number of user grants held by one
+person, and application grants held by one workload. The script reads each grant's connection
+details from MOSAIC and calls the operation its publication exposes:
 
-- `MOSAIC_SMOKE_USER_CONTROL_TOKEN`: the entitled user's token for the MOSAIC API, with `User`.
-- `MOSAIC_SMOKE_ADMIN_CONTROL_TOKEN`: an administrator's MOSAIC API token for application-key handoff.
+- Azure OpenAI chat completions under `/openai/`, with `--api-version`.
+- Foundry Models chat completions under `/models/`, with `--models-api-version`.
+- Anthropic Messages at `/anthropic/v1/messages`, which takes no API version.
+
+Credentials come from process environment variables, not source files:
+
+- `MOSAIC_SMOKE_USER_CONTROL_TOKEN`: the granted user's token for the MOSAIC API, with `User`.
+  Needed for user grants and for grants held by someone else. For application grants, it also
+  lets the script check that the user can't reveal the application's key.
+- `MOSAIC_SMOKE_ADMIN_CONTROL_TOKEN`: an administrator's MOSAIC API token for application-key
+  handoff. Needed for application, agent identity, and security-group grants, and to confirm whose
+  grants the user must not reach.
 - `MOSAIC_SMOKE_USER_RUNTIME_TOKEN`: that user's delegated model-runtime token. The user can get
   one by signing in with the model client, as in
   [Call a published model with an Entra token](docs/call-models-with-entra-tokens.md).
 - `MOSAIC_SMOKE_APPLICATION_RUNTIME_TOKEN`: the granted application's model-runtime token.
-- `MOSAIC_SMOKE_AGENT_RUNTIME_TOKEN`: optional, an app-only model-runtime token for a granted
-  agent identity.
-- `MOSAIC_SMOKE_GROUP_MEMBER_RUNTIME_TOKEN`: optional, a model-runtime token for a user,
-  application or agent that is a member of a granted Entra security group.
+- `MOSAIC_SMOKE_UNGRANTED_USER_RUNTIME_TOKEN`: for `--check-ungranted-user`, a model-runtime token
+  for a different user who holds none of the grants.
+- `MOSAIC_SMOKE_AGENT_RUNTIME_TOKEN`: for `--agent-entitlement`, an app-only model-runtime token
+  for the granted agent identity.
+- `MOSAIC_SMOKE_GROUP_MEMBER_RUNTIME_TOKEN`: for `--group-entitlement`, a model-runtime token for a
+  user, application or agent that is a member of the granted Entra security group.
+
+The script can sign in instead of reading runtime tokens. With `--user-token-source device-code`
+it uses the model client that MOSAIC names in the connection details, and prints a code for the
+user to enter at the sign-in page. With `--application-token-source client-credentials` it reads
+the workload's `MOSAIC_SMOKE_APPLICATION_CLIENT_ID` and `MOSAIC_SMOKE_APPLICATION_CLIENT_SECRET`.
+Use a short-lived secret and delete it afterward.
 
 ```powershell
 python scripts\verify_model_access.py `
   --api-base-url https://<mosaic-api-host> `
   --gateway-origin https://<approved-apim-host> `
   --user-entitlement <user-grant-id> `
+  --user-entitlement <another-user-grant-id> `
   --application-entitlement <application-grant-id> `
   --agent-entitlement <agent-grant-id> `
   --group-entitlement <security-group-grant-id> `
-  --api-version <model-api-version> `
+  --api-version <azure-openai-api-version> `
+  --models-api-version <foundry-models-api-version> `
+  --user-token-source device-code `
+  --check-ungranted-user `
   --send-model-requests
 ```
 
-The explicit flag acknowledges actual inference requests and their consumption. The script
-verifies each required direct subject with key-only and token-only calls, rejects
-anonymous/invalid/mismatched audience calls, checks cross-subject key denial, and refuses redirects
-or an unexpected gateway origin. When `--agent-entitlement` is supplied, it checks that connection
-details report `principalKind: agentIdentity`, a `.default` scope and `requiredAppRole`, then calls
-the model with the agent token. When `--group-entitlement` is supplied, it checks that keys are
-unavailable, key reveal returns 409, warns if the supplied member token lacks `groups` or signals
-overage, and calls the model with that member token. It prints neither keys, tokens, full claims,
-nor model output. Set `MOSAIC_SMOKE_PAYLOAD` to a bounded chat request JSON object if the deployment
-needs a different token-limit parameter.
+The explicit flag acknowledges actual inference requests and their consumption; each asks for at
+most 8 output tokens. Every sign-in happens before the first model call. For each grant, the
+gateway must first reject an anonymous call and an invalid key. Token validation must refuse a
+MOSAIC control-plane token, and an invalid token sent with a valid key, with 401. When the run has
+a token for the other kind of subject, the gateway must refuse it with the grant's key with 403,
+because the two name different grants. With `--check-ungranted-user`, the grant lookup must also
+refuse the ungranted user's token with 403. When Entra tokens are off, every token must get 401. A
+rejection with the other status came from a different rule, so the check fails. Then the grant
+must reach its model with its own key and its own Entra token, whichever methods are applied.
 
-For the shared-counter check, use fresh isolated grants configured for **2 requests per 300
-seconds**, with no other callers, and add `--prove-shared-budget`. Two successful calls using the
-primary key and Entra token must exhaust the budget for the secondary key too.
+The script refuses redirects or an unexpected gateway origin. Before using a token, it checks the
+token's audience, permission and expiry, and that Entra issued it in the version 2.0 format the
+gateway accepts. The run fails if the grant subject's own token or the ungranted user's token
+doesn't pass, or expires within a minute. A check that only borrows a token, such as the other
+subject's token with this grant's key, is skipped with the reason instead, because token
+validation would refuse that token before the rule under test. The script prints neither keys,
+tokens, nor model output. Sign-in failures show only their error and `AADSTS` codes, which the
+[troubleshooting table](docs/call-models-with-entra-tokens.md#troubleshooting) explains. Chat
+requests cap output with `max_completion_tokens` on Azure OpenAI routes and `max_tokens` on
+Foundry Models routes; `--chat-token-parameter` overrides that for API versions that differ. Set
+`MOSAIC_SMOKE_PAYLOAD` to a bounded request JSON object to send instead of the default; the script
+still sets its `model` to each grant's deployment.
 
-Separately exercise method toggles and revocation through reviewed plans, allowing APIM to
-propagate each change before checking both paths. Verify rotation by changing a test subscription
-key directly in APIM and revealing it again: no MOSAIC synchronization should be needed. Do not
-report these live scenarios as passed when deployment, consent, credentials, or a test gateway
-are unavailable.
+`--agent-entitlement` and `--group-entitlement` each name a grant to check with the
+administrator's token, after the user and application grants. Repeat either flag for each such
+grant. An agent identity grant's connection details must name an agent identity, a `.default`
+runtime scope, the `Models.Invoke.Application` app role, and Entra tokens applied with nothing
+pending. A security-group grant must report that it has no keys, and MOSAIC must refuse to reveal
+one with 409. The script warns when the group member's token has no `groups` claim or signals
+group overage, because the gateway can't then match the caller to the group. Then each grant must
+reach its model with `MOSAIC_SMOKE_AGENT_RUNTIME_TOKEN` or
+`MOSAIC_SMOKE_GROUP_MEMBER_RUNTIME_TOKEN`, which the script reads rather than signing in. These
+grants don't take part in the rejection checks, the proofs, or `--watch-revocation`.
+
+Each run can add one proof, using fresh isolated grants with no other callers. Only the gateway's
+own limit counts: a 429 from the model deployment, or from a different limit, fails the proof as
+inconclusive.
+
+- `--prove-shared-budget`: for grants limited to **2 requests per 300 seconds**, with keys and Entra
+  tokens applied. Two successful calls using the primary key and Entra token must exhaust the
+  budget for the secondary key too, which then gets the gateway's call-limit 429.
+- `--prove-token-limit`: for grants limited to at most **100 tokens per minute**, without call
+  limits. The model's own token limit for each grant must be higher than the grant's. Further
+  calls must reach the gateway's token-limit 429 with `Retry-After`. Classic-tier gateways can't
+  limit an Anthropic model's tokens, so this proof doesn't apply to Claude there, and the script
+  refuses it before calling the model.
+
+`--watch-revocation <grant-id>` ends the run by waiting while you revoke that grant in the console,
+which disables it, and apply its model's access plan. Don't delete the grant: the script follows
+its status in MOSAIC. Every apply briefly refuses all calls to the model, so rejections count only
+after MOSAIC reports the grant revoked. Then the gateway must reject the grant's key, and its Entra
+token with 403 from the grant lookup (401 if the plan also turned Entra tokens off), twice in a
+row. The watch polls every `--revocation-interval` seconds (30 by default) and fails after
+`--revocation-timeout` seconds (900 by default). The tokens it uses must stay valid for the whole
+watch plus a minute; otherwise it stops before waiting.
+
+`--foreign-user-entitlement <grant-id>` checks that the user can't reach a grant someone else
+holds. Repeat it for each such grant. With the administrator's token, the script first confirms
+that the grant exists and that a different user holds it, so a mistyped ID or one of the user's
+own grants can't pass as a refusal. Then, with the user's token, MOSAIC must leave the grant out
+of the user's lists, including the portal's **My access**, and out of the user's 90-day usage
+report, both its rows and its timeline. It must also refuse the grant's connection details and
+its key with 403 or 404. A MOSAIC from before the usage report (ADR 0015) answers its route with
+404, and the script says it skipped that part. These checks call only MOSAIC's API, before any
+model call, and each refused key request is recorded in MOSAIC's audit log. A run that names only
+grants held by someone else sends no model requests, so it doesn't need `--send-model-requests`.
+
+Separately exercise method toggles through reviewed plans, allowing APIM to propagate each change
+before rerunning the script. Verify rotation by changing a test subscription key directly in APIM
+and revealing it again: no MOSAIC synchronization should be needed. Do not report these live
+scenarios as passed when deployment, consent, credentials, or a test gateway are unavailable.
+
+### End-to-end UI testing
+
+[`e2e/`](e2e) holds a live, human-in-the-loop Playwright harness. People sign in their own test
+accounts, and the harness drives the web console and portal to:
+
+- Import Azure OpenAI and Foundry endpoints, publish their models, and grant them.
+- Check that each end user or workload can call its model, and that others are denied.
+
+The [roadmap](docs/e2e/roadmap.md) tracks the phases and the journey matrix. The
+[runbook](docs/e2e/runbook.md) covers setup, personas, flags and secret hygiene. Its `verify`
+command runs `scripts\verify_model_access.py` with the personas' own MOSAIC API tokens, and
+enters its device codes in their browsers.
+
+## Environments
+
+Every gateway, model endpoint, and registered MCP server belongs to one environment, or is
+**Unclassified**. Administrators manage environments in **Settings → Environments**. MOSAIC
+seeds Development, Test, QC, Staging, Production, and Sandbox. Administrators can rename or
+recolor them and add their own.
+
+Each environment has:
+- a key that never changes;
+- optionally, the **production-class** flag;
+- optionally, a list of other environments whose endpoints its gateways may also front.
+
+A production-class environment may list only other production-class environments.
+
+Whenever a model is published, MOSAIC judges the pairing of gateway and endpoint:
+- **Allowed:** both are in the same environment, or the gateway's environment lists the
+  endpoint's as an exception.
+- **Blocked:** two different classified environments without an exception.
+- **Blocked:** a production-class resource paired with an unclassified one, in either direction.
+- **Warning:** any other pairing that involves an unclassified resource. Once **Require
+  classification** is on, these are blocked too.
+
+The publish dialog disables blocked deployments and says why. Creating, planning, and applying a
+publication each check again. A plan also records the verdict it was reviewed under. If either
+environment, a production-class flag, the exception, or Require classification changes before
+apply, apply asks for a fresh plan.
+
+**Classifying resources**
+- Registration asks for an environment.
+- To change it later, use **Change environment** on the resource's page. To classify many
+  resources at once, use the **Unclassified** card in Settings. Both go through
+  `POST /environment-assignments`. The gateway, model endpoint, and MCP server update routes don't
+  accept an environment, so every change passes the same checks.
+- MOSAIC suggests an environment, but never applies one without confirmation. It suggests from
+  either:
+  - an Azure `environment` or `env` tag it read during preflight or the subscription scan; or
+  - the legacy environment label.
+- MCP servers are registered by URL, so they have no Azure tag.
+
+**Changes that are refused**
+
+MOSAIC refuses any change that would leave an applied publication blocked:
+- re-classifying a gateway or endpoint;
+- editing or deleting an environment;
+- turning on Require classification.
+
+The refusal names the publications. Sometimes a gateway and its endpoints must move together, for
+example to classify an unclassified pair as Production. The console then submits them as one
+batch, which MOSAIC validates as a whole and writes atomically.
+
+**Grants follow their resource.** Moving a resource with enabled grants into or out of a
+production-class environment lists the people and applications affected, and requires
+confirmation. The audit event records the grants.
+
+**In the portal**
+- Every catalog entry and grant shows its environment, and the catalog can be filtered by it.
+- People request each environment separately, so development access doesn't imply production
+  access.
+- A request records the environment it was made for. If the resource has moved since, approval
+  asks the administrator to confirm the new environment.
+
+**Findings** point out blocked pairings that exist in API Management but that MOSAIC didn't
+publish. They cover:
+- a gateway backend or API that calls a registered model endpoint in an incompatible environment;
+- a gateway MCP server whose URL is a registered MCP endpoint's URL.
+
+Findings are advisory, and each shows its evidence and confidence. They appear on the gateway, in
+Settings, and in the import dialog. MOSAIC doesn't inspect backends referenced only from policy.
+
+| Method | Route under `/api/v1` | Result |
+| --- | --- | --- |
+| GET | `/environment-catalog` | Environments with usage counts, the compatibility matrix, and Require classification |
+| POST | `/environment-catalog/environments` | Add an environment |
+| PATCH, DELETE | `/environment-catalog/environments/{key}` | Edit or delete an environment |
+| PATCH | `/environment-catalog/settings` | Turn Require classification on or off |
+| GET | `/environment-suggestions` | Unclassified resources and the environment suggested for each |
+| POST | `/environment-assignments` | Classify or re-classify resources as one validated batch |
+| GET | `/environment-findings?gatewayId=` | Advisory findings, optionally for one gateway |
+| GET | `/portal/environments` | The environments, for portal users |
+
+[ADR 0014](docs/adr/0014-environments.md) records these rules.
+
+### Usage and cost in the portal
+
+The portal's **Usage & cost** page shows a person the requests, tokens, and estimated cost of each
+grant they hold. It breaks them down by day, by environment, and by resource, and shows each
+quota's utilization within that quota's own window. It reads
+`GET /api/v1/me/usage?period=7d|30d|90d`, which returns only the caller's own usage.
+
+Until MOSAIC reads Log Analytics, the report is simulated:
+- The figures are deterministic, built from the caller's real grants and limits, and never exceed
+  a quota. A given day shows the same figures whichever period is selected.
+- A disabled grant shows no usage.
+- The page is labeled **Sample data**.
+- Costs are estimates at illustrative rates, only for models MOSAIC knows, and never a bill.
+
+Once a real source is configured, a failure is reported, never replaced with simulated data. See
+[ADR 0015](docs/adr/0015-end-user-usage-report.md).
 
 For published MCP servers, `scripts\verify_mcp_access.py` checks the gateway's protected resource
 metadata flow and, when supplied, denied and granted runtime tokens. It never calls an MCP tool.
@@ -1193,13 +1442,14 @@ records.
 6. **MCP publishing and enforcement:** publish registered streamable MCP servers through managed
    gateways with a passthrough MCP API, per-publication resource metadata, Entra-only grants, call
    limits and fail-closed recovery; see
-   [ADR 0015](docs/adr/0015-mcp-gateway-enforcement.md).
+   [ADR 0017](docs/adr/0017-mcp-gateway-enforcement.md).
 7. **Insights and chargeback:** Azure Monitor queries over `ApiManagementGatewayLogs` and
    `ApiManagementGatewayLlmLog`, consumption measured against each entitlement's own enforcement
    window, per-user attribution, token/traffic/cost allocation, budgets, and portal usage views
-   alongside administrator dashboards.
+   alongside administrator dashboards. The portal's Usage & cost page and its `/me/usage`
+   contract already exist on simulated data; this phase supplies measured figures.
 8. **Catalog ecosystem:** API Center experiences, MCP tool-level governance, broader self-service
-   workflows.
+   workflows, and environment chains that relate the same model across environments and clouds.
 9. **Production hardening:** private networking, multi-region/production APIM tiers, CMK where
    required, measured partition scaling, retention and operational SLOs.
 

@@ -16,6 +16,7 @@ from mosaic_api.domain import (
     EntitlementResourceKind,
     EntitlementSubject,
     EntitlementSubjectKind,
+    Gateway,
     GatewayCreate,
     GatewayUpdate,
     ImportRequest,
@@ -125,6 +126,20 @@ class Harness:
                 action="mcpEndpoint.updated",
                 resource_type="mcpEndpoint",
                 resource_id=updated.id,
+                actor_object_id=ACTOR.object_id,
+            ),
+        )
+
+    async def save_gateway(self, gateway: Gateway) -> None:
+        # Management mode is authored, so an observation write would keep the stored value.
+        await self.gateway_repository.save_gateway(
+            gateway,
+            AuditEvent(
+                id=new_id("audit"),
+                tenant_id=gateway.tenant_id,
+                action="gateway.updated",
+                resource_type="gateway",
+                resource_id=gateway.id,
                 actor_object_id=ACTOR.object_id,
             ),
         )
@@ -254,7 +269,7 @@ async def test_capability_reports_every_reason_and_happy_path(harness: Harness) 
             ),
         }
     )
-    await harness.gateway_repository.record_gateway_state(unwritable)
+    await harness.save_gateway(unwritable)
     no_runtime = build_mcp_publishing_service(
         harness.apim,
         harness.gateway_repository,
@@ -319,7 +334,7 @@ async def test_create_refuses_unsupported_endpoint_shapes(
 async def test_create_refuses_unmanaged_gateway(harness: Harness) -> None:
     gateway = await harness.gateway_repository.get_gateway(TENANT_ID, harness.gateway_id)
     assert gateway is not None
-    await harness.gateway_repository.record_gateway_state(
+    await harness.save_gateway(
         gateway.model_copy(update={"management_mode": ManagementMode.OBSERVE})
     )
 

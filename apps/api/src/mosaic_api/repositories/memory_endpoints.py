@@ -1,6 +1,12 @@
 from mosaic_api.domain import AuditEvent, ModelEndpoint, ModelEndpointSyncRun
 from mosaic_api.errors import ConflictError
 from mosaic_api.repositories.memory_endpoint_state import InMemoryEndpointStateBase
+from mosaic_api.repositories.observation_writes import (
+    MODEL_ENDPOINT_AUTHORED_FIELDS,
+    merge_observation,
+)
+
+OBSERVATION_WRITE_ATTEMPTS = 3
 
 
 class InMemoryModelEndpointRepository(InMemoryEndpointStateBase):
@@ -9,6 +15,7 @@ class InMemoryModelEndpointRepository(InMemoryEndpointStateBase):
     def __init__(self) -> None:
         super().__init__()
         self.endpoints: dict[str, ModelEndpoint] = {}
+        self._endpoint_versions: dict[str, int] = {}
 
     async def list_endpoints(self, tenant_id: str) -> list[ModelEndpoint]:
         return sorted(
@@ -57,17 +64,35 @@ class InMemoryModelEndpointRepository(InMemoryEndpointStateBase):
         self, endpoint: ModelEndpoint, audit_event: AuditEvent
     ) -> ModelEndpoint:
         self.endpoints[endpoint.id] = endpoint
+        self._endpoint_versions[endpoint.id] = self._endpoint_versions.get(endpoint.id, 0) + 1
         self.audit_events[audit_event.id] = audit_event
         return endpoint
 
-    async def record_endpoint_state(self, endpoint: ModelEndpoint) -> ModelEndpoint:
-        self.endpoints[endpoint.id] = endpoint
-        return endpoint
+    async def record_endpoint_state(self, endpoint: ModelEndpoint) -> ModelEndpoint | None:
+        for _ in range(OBSERVATION_WRITE_ATTEMPTS):
+            stored = await self.get_endpoint(endpoint.tenant_id, endpoint.id)
+            if stored is None:
+                return None
+            version = self._endpoint_versions.get(endpoint.id, 0)
+            await self._before_observation_replace()
+            if await self.get_endpoint(endpoint.tenant_id, endpoint.id) is None:
+                return None
+            if self._endpoint_versions.get(endpoint.id, 0) != version:
+                continue
+            merged = merge_observation(stored, endpoint, MODEL_ENDPOINT_AUTHORED_FIELDS)
+            self.endpoints[endpoint.id] = merged
+            self._endpoint_versions[endpoint.id] = version + 1
+            return merged
+        raise ConflictError("The model endpoint changed while MOSAIC was recording observations")
+
+    async def _before_observation_replace(self) -> None:
+        return None
 
     async def delete_endpoint(self, endpoint: ModelEndpoint, audit_event: AuditEvent) -> None:
         await self.delete_observed_for_endpoint(endpoint.tenant_id, endpoint.id)
         self._delete_runs_for_endpoint(endpoint.tenant_id, endpoint.id)
         self.endpoints.pop(endpoint.id, None)
+        self._endpoint_versions.pop(endpoint.id, None)
         self.audit_events[audit_event.id] = audit_event
 
     async def save_endpoint_sync_run(self, run: ModelEndpointSyncRun) -> ModelEndpointSyncRun:

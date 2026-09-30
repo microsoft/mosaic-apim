@@ -1,0 +1,27 @@
+.badge { width: fit-content; }
+.badgeContent { display: inline-flex; align-items: center; gap: 4px; }
+.pickerOption { display: inline-flex; align-items: center; gap: 8px; }
+.hint { color: var(--mosaic-text-muted);
+}
+
+.findingsCard {
+padding: 18px;
+display: grid;
+gap: 12px;
+border: 1px solid var(--mosaic-border-soft);
+background: var(--mosaic-surface);
+box-shadow: var(--mosaic-shadow);
+}
+
+.findingsList,
+.findingDetails {
+display: grid;
+gap: 8px; }
+.findingDetails { justify-items: start; }
+.dialogContent { display: grid; gap: 16px; min-width: min(720px, calc(100vw - 64px)); }
+.stack { display: grid; gap: 12px; }
+.actionsRow { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.tableWrap { overflow-x: auto; }
+.swatches { display: flex; flex-wrap: wrap; gap: 8px; }
+.swatchLabel { display: inline-flex; align-items: center; gap: 6px; padding: 6px 8px; border: 1px solid var(--mosaic-border); border-radius: 8px; }
+.swatch { width: 16px; height: 16px; border-radius: 999px; border: 1px solid var(--mosaic-border); display: inline-block; }

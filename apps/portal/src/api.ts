@@ -10,8 +10,11 @@ import type {
   KeySlot,
   McpConnection,
   ModelConnection,
+  MyUsageReport,
   PortalProfile,
+  PortalEnvironment,
   ResolvedEntitlement,
+  UsagePeriod,
 } from './types'
 
 export class ApiError extends Error {
@@ -45,10 +48,12 @@ function entitlementPath(entitlementId: string) {
 export interface PortalApi {
   getProfile(): Promise<PortalProfile>
   listEntitlements(): Promise<ResolvedEntitlement[]>
+  listEnvironments(): Promise<PortalEnvironment[]>
   listCatalog(): Promise<CatalogEntry[]>
   listAccessRequests(): Promise<AccessRequest[]>
   createAccessRequest(payload: AccessRequestCreate): Promise<AccessRequest>
   withdrawAccessRequest(requestId: string): Promise<AccessRequest>
+  getMyUsage(period: UsagePeriod): Promise<MyUsageReport>
   /** Connection metadata for one of the caller's own direct model grants. Contains no secret. */
   getMyEntitlementConnection(entitlementId: string): Promise<ModelConnection>
   /** Connection metadata for one of the caller's own MCP grants. Contains no secret. */
@@ -103,6 +108,7 @@ export function usePortalApi(): PortalApi {
     return {
       getProfile: () => request<PortalProfile>('/api/v1/portal/me'),
       listEntitlements: () => request<ResolvedEntitlement[]>('/api/v1/portal/entitlements'),
+      listEnvironments: () => request<PortalEnvironment[]>('/api/v1/portal/environments'),
       listCatalog: () => request<CatalogEntry[]>('/api/v1/portal/catalog'),
       listAccessRequests: () => request<AccessRequest[]>('/api/v1/portal/access-requests'),
       createAccessRequest: (payload) =>
@@ -111,6 +117,8 @@ export function usePortalApi(): PortalApi {
         request<AccessRequest>(`/api/v1/portal/access-requests/${requestId}/withdraw`, {
           method: 'POST',
         }),
+      getMyUsage: (period) =>
+        request<MyUsageReport>(`/api/v1/me/usage?period=${encodeURIComponent(period)}`),
       getMyEntitlementConnection: (entitlementId) =>
         request<ModelConnection>(`${entitlementPath(entitlementId)}/connection`),
       getMcpConnection: (entitlementId) =>
