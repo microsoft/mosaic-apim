@@ -192,3 +192,18 @@ Entra tokens produce the same grant identity. A usage source can therefore attri
 grants that have no subscription. The tag doesn't change authorization, routing, or limits.
 [ADR 0015](0015-end-user-usage-report.md) records the contract and the diagnostic settings it
 needs.
+
+## Amendment 2026-09-30: Unpublishing shows whose access ends
+
+Unpublishing a governed model cuts off every grantee at once, so its review names them. The review
+lists every enabled grant in the publication's applied snapshot, because those are exactly the
+grants the gateway honours. For each it says what stops working: the grant's subscription key, when
+keys are on and the grant has one, and its Entra tokens, when Entra is on. For a security-group
+grant, every member's Entra tokens stop working. See the ADR 0010 amendment for the plan itself.
+
+Grants stay in MOSAIC after an unpublish. Their runtime state is revoked and their orchestrated
+bindings are cleared, as before, and publishing the model again and applying its plan restores
+them. While the model is unpublished, the connection routes, current-user and administrator alike,
+refuse with `409` and reason `notPublished` rather than describe an endpoint that no longer exists,
+so key reveal is refused too. [ADR 0009](0009-entitlement-subjects-resources-and-apim-binding.md)
+records how the catalog and access requests treat an unpublished model.

@@ -37,7 +37,8 @@ phase.
    another interactive client to have consent for `api://<runtime-client-id>/Mcp.Invoke`, the
    gateway managed identity's required upstream access, and an environment pairing that involves
    an unclassified resource.
-6. Choose **Apply**. MOSAIC runs the reviewed plan asynchronously and records each step.
+6. Choose **Apply**. MOSAIC runs the reviewed plan asynchronously and records each step. Once the
+   MCP API is in API Management, the portal lists the server in its catalog.
 7. Create or update MCP entitlements for users, agent identities, agent users or Entra security
    groups.
 8. Re-plan and re-apply the publication so the gateway receives the new grant snapshot. Saving a
@@ -94,8 +95,16 @@ apply it after you understand the failure.
 
 ## Unpublish and delete
 
-**Unpublish** removes the APIM resources after first denying the MCP API. The MCP server record
-stays in MOSAIC so you can publish it again later.
+**Unpublish** opens a review before anything changes. MOSAIC plans the unpublish, which removes
+nothing, and the review lists the grants whose Entra tokens the gateway stops accepting and every
+APIM resource MOSAIC deletes, in order. Only **Unpublish MCP server** in the review runs that plan.
+If the publication changed since the plan was made, MOSAIC refuses it and the review shows a fresh
+one. Unpublishing denies the MCP API before it deletes it.
+
+The MCP server record and its grants stay in MOSAIC so you can publish it again later, and the
+Published MCP servers table shows the publication as **Unpublished**, with when. While it's
+unpublished, and before its first apply, the portal doesn't list the server, refuses access requests
+for it, and gives no connection details.
 
 **Delete** removes the publication record and its MOSAIC-owned MCP server record only after the
 publication no longer owns APIM resources and no entitlement points at the published server. If a

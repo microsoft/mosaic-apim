@@ -154,3 +154,17 @@ existing MCP publications aren't grandfathered.
 
 Live verification should also confirm that the trace's message reaches
 `ApiManagementGatewayLogs.TraceRecords` for an MCP API.
+
+## Amendment 2026-09-30: Reviewed unpublish, and the catalog
+
+- **Unpublish is planned and reviewed**, as the ADR 0010 amendment records for models.
+  `POST /api/v1/mcp-publications/{id}/unpublish-plan` returns the plan, and
+  `POST /api/v1/mcp-publications/{id}/unpublish?plan={planId}` runs exactly that plan. It refuses a
+  missing, foreign, or stale plan. The review lists every enabled grant in the applied snapshot,
+  whose Entra tokens the gateway stops accepting.
+- **The portal lists a published MCP server only while its MCP API is in API Management.** The
+  server record exists from the moment the publication is created, so grants can be recorded before
+  the first apply. Until that apply succeeds, and after an unpublish, the portal leaves the server
+  out of the catalog, refuses requests for it with `409`, and gives no connection details. Before,
+  a draft's server was listed as "Recorded, not enforced", which describes an adopted server whose
+  own policy decides, not one with no API at all.

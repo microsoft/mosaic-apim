@@ -204,6 +204,7 @@ shows both themes. Keep new shots in that pattern.
 | `console-entitlements` | Console | `/entitlements`, scrolled to **Grants** | Light | Entitlements |
 | `console-overlapping-grants` | Console | `/entitlements`, scrolled to **Overlapping grants** | Dark | Overlapping grants |
 | `console-mcp-publish` | Console | `/mcps`, **Plan and apply** review for the published Docs MCP server | Light | MCP publish review |
+| `console-unpublish-review` | Console | `/models`, **Unpublish** review for GPT-4o, never confirmed | Light | Unpublish review |
 | `console-analytics` | Console | `/analytics`, which shows sample data | Dark | Analytics |
 | `console-environments` | Console | `/settings` | Light | Environments |
 | `console-environment-findings` | Console | `/settings`, scrolled to **Findings** | Dark | Environment findings |

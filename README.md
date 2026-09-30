@@ -170,6 +170,15 @@ one under **Settings > Appearance**.
       evidence and how confident the match is. Findings are advisory and never block anything.</p>
     </td>
   </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/images/screenshots/console-unpublish-review.png" alt="The unpublish review listing the grants that lose access and the resources MOSAIC deletes">
+      <p><b>Unpublish review.</b> Before MOSAIC removes a model from API Management, the
+      administrator sees which grants lose access, what stops working for each, and every resource
+      MOSAIC deletes. Only confirming this review unpublishes it.</p>
+    </td>
+    <td width="50%" valign="top"></td>
+  </tr>
 </table>
 
 ### End-user portal
@@ -316,8 +325,9 @@ explicit local/test modes and application startup rejects them when `MOSAIC_ENVI
 - Separate non-root frontend/backend containers
 - End-user portal: a separate SPA on its own Entra registration and the `User` app role, where
   a non-administrator sees what they are entitled to, how each grant reached them, the catalog
-  of governed resources, and can request access to something they cannot yet use. My access and
-  My requests head each grant and request with its resource's name, as the catalog shows it, and
+  of governed resources, and can request access to something they cannot yet use. A model or MCP
+  server MOSAIC publishes is in the catalog only while it's published into API Management. My access
+  and My requests head each grant and request with its resource's name, as the catalog shows it, and
   keep its kind visible, including for a resource since made private. They never show a raw
   resource ID. For an applied direct model grant, the portal also shows the endpoint, operations,
   accepted credentials, limits, and placeholder code samples, and reveals a key on request
@@ -666,8 +676,8 @@ Administrators switch modes with **Management mode** on the gateway's Overview t
 direction. The switch itself changes nothing in API Management; it only records the mode in MOSAIC.
 **Manage** stays disabled until the access check confirms write access. Until then, the page shows the
 role, scope and identity to grant, and **Check access** runs the preflight again. In `manage`,
-MOSAIC writes to the gateway only when an administrator applies a reviewed publish plan, unpublishes
-a model, or confirms recovery of an interrupted apply. Switching back to `observe` leaves published
+MOSAIC writes to the gateway only when an administrator applies a reviewed publish or unpublish
+plan, or confirms recovery of an interrupted apply. Switching back to `observe` leaves published
 models in API Management, where they keep serving calls. MOSAIC then refuses to plan, apply or
 unpublish them, so grant and access changes saved in MOSAIC wait until the gateway is managed again.
 Either switch is refused while an apply or unpublish on one of the gateway's publications is still
@@ -994,6 +1004,39 @@ before the backend it routes to. A publication that still owns API Management re
 deleted, and a gateway with published models cannot be removed, so intent is never dropped while
 the resources it created keep running.
 
+### Unpublishing
+
+Unpublishing is reviewed like publishing, because it cuts people off. **Unpublish** in the Published
+models table asks MOSAIC for an unpublish plan, which deletes nothing, and opens it in a review:
+
+- **Who loses access**: every enabled grant in the access the gateway applied last, with what stops
+  working for each. Subscription keys stop working, and the gateway refuses Entra tokens. A model
+  without governed access has no such list, so the review says that anyone calling it with a key
+  for its product loses access.
+- **What MOSAIC deletes**: every resource MOSAIC created, in the order it deletes them. Anything
+  MOSAIC found already in API Management stays, and the review names it. Deleting the product
+  also deletes every subscription to it, including ones API Management added.
+
+Only the review's **Unpublish model** runs the plan. MOSAIC runs exactly the reviewed steps and
+refuses a plan that no longer matches the publication, for example because access was applied or a
+resource recorded since the review. The review then says why and shows a fresh plan in its place.
+With governed access, MOSAIC denies every call and suspends each grant's subscription before it
+deletes anything, and deletes the API first.
+
+| Method | Route under `/api/v1` | Result |
+| --- | --- | --- |
+| POST | `/publications/{id}/unpublish-plan` | The unpublish plan to review. Removes nothing and changes nothing on the publication |
+| POST | `/publications/{id}/unpublish?plan={planId}` | Runs that plan, `202` with the run. Without a plan, `409` with reason `planRequired`; with a plan the publication has outgrown, `409` with reason `stalePlan` |
+
+Apply runs only publish plans, and unpublish only unpublish plans. Grants stay in MOSAIC, and a
+governed grant shows its runtime access as revoked. The Published models table shows the publication
+as **Unpublished**, with when, and **Re-plan** publishes it again; applying that plan restores its
+grants' access. While a model is
+unpublished, the portal leaves it out of the catalog, refuses a new access request for it with a
+`409` and reason `notPublished`, marks grants and requests for it as no longer available, and
+gives no connection details for it. A model API imported from a gateway MOSAIC didn't publish is
+unaffected.
+
 ## Governed model access
 
 Use **Entitlements** to link a previously published model if necessary, opt it into governed
@@ -1108,6 +1151,12 @@ URL:
 
 See [Connect to MCP servers published through MOSAIC](docs/connect-to-mcp-servers.md) for people,
 agent identities, agent users, security groups and troubleshooting.
+
+**Unpublish** on the MCP servers page opens the same review as for models, and its routes are
+`POST /mcp-publications/{id}/unpublish-plan` and `POST /mcp-publications/{id}/unpublish?plan={planId}`.
+The review lists the grants whose Entra tokens the gateway stops accepting. The portal lists a
+published MCP server only once its first apply has put its MCP API in API Management, and not after
+it is unpublished.
 
 ### Recovering an interrupted operation
 

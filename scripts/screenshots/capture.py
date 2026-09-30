@@ -416,6 +416,17 @@ SHOTS: list[Shot] = [
         ),
         height=1040,
     ),
+    Shot(
+        "console-unpublish-review",
+        "console",
+        "/models",
+        "light",
+        "GPT-4o mini",
+        # Unpublish on the first row, GPT-4o, plans the unpublish and opens its review. The shot
+        # never confirms it.
+        actions=(click_button("Unpublish"), wait_for_text("What MOSAIC deletes")),
+        height=1200,
+    ),
     Shot("console-analytics", "console", "/analytics", "dark", "Token usage by group"),
     Shot(
         "console-environments", "console", "/settings", "light", "needs classification", height=1178
