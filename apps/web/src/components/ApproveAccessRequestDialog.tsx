@@ -78,6 +78,8 @@ export function ApproveAccessRequestDialog({
     () => accessRequest.resourceSummary?.environment ?? null,
   )
   const rateError = callRateError(limits)
+  // MCP servers are limited by calls, never tokens, so their grants offer no token limits.
+  const mcp = accessRequest.resource.kind === 'mcpServer'
   const prefilled = Boolean(
     publication?.enforcement?.tokensPerMinute || publication?.enforcement?.tokenQuota,
   )
@@ -206,49 +208,60 @@ export function ApproveAccessRequestDialog({
                 </MessageBar>
               )}
               <Text>
-                {governed && publication
-                  ? `Approving creates grant intent only. API Management is unchanged until the ${publication.displayName} model plan is reviewed and applied.`
-                  : 'Approving creates grant intent only. MOSAIC does not apply grants for this resource to API Management, so the grant stays desired state.'}
+                {governed && mcp
+                  ? 'Approving creates grant intent only. API Management is unchanged until this MCP server is planned and applied from the MCPs page.'
+                  : governed && publication
+                    ? `Approving creates grant intent only. API Management is unchanged until the ${publication.displayName} model plan is reviewed and applied.`
+                    : 'Approving creates grant intent only. MOSAIC does not apply grants for this resource to API Management, so the grant stays desired state.'}
               </Text>
-              <Text size={200}>
-                {prefilled && publication
-                  ? `Limits are prefilled from the ${publication.displayName} publication's token limit. Change or clear them before approving.`
-                  : 'This resource has no default limits to prefill.'}{' '}
-                Leave a limit empty to add no grant-specific restriction. Inherited publication
-                safeguards still apply; this does not mean unrestricted gateway access.
-              </Text>
-              <div className={styles.dialogGrid}>
-                <Field label="Tokens per minute">
-                  <Input
-                    type="number"
-                    min={1}
-                    value={limits.tokensPerMinute}
-                    onChange={(_, data) => setLimits({ ...limits, tokensPerMinute: data.value })}
-                  />
-                </Field>
-                <Field label="Token quota">
-                  <Input
-                    type="number"
-                    min={1}
-                    value={limits.tokenQuota}
-                    onChange={(_, data) => setLimits({ ...limits, tokenQuota: data.value })}
-                  />
-                </Field>
-                <Field label="Quota period">
-                  <Select
-                    value={limits.tokenQuotaPeriod}
-                    onChange={(_, data) =>
-                      setLimits({ ...limits, tokenQuotaPeriod: data.value as QuotaPeriod })
-                    }
-                  >
-                    {QUOTA_PERIODS.map((period) => (
-                      <option key={period} value={period}>
-                        {period}
-                      </option>
-                    ))}
-                  </Select>
-                </Field>
-              </div>
+              {mcp ? (
+                <Text size={200}>
+                  MCP servers are limited by calls, not tokens. Leave the call rate empty to add no
+                  grant-specific limit.
+                </Text>
+              ) : (
+                <>
+                  <Text size={200}>
+                    {prefilled && publication
+                      ? `Limits are prefilled from the ${publication.displayName} publication's token limit. Change or clear them before approving.`
+                      : 'This resource has no default limits to prefill.'}{' '}
+                    Leave a limit empty to add no grant-specific restriction. Inherited publication
+                    safeguards still apply; this does not mean unrestricted gateway access.
+                  </Text>
+                  <div className={styles.dialogGrid}>
+                    <Field label="Tokens per minute">
+                      <Input
+                        type="number"
+                        min={1}
+                        value={limits.tokensPerMinute}
+                        onChange={(_, data) => setLimits({ ...limits, tokensPerMinute: data.value })}
+                      />
+                    </Field>
+                    <Field label="Token quota">
+                      <Input
+                        type="number"
+                        min={1}
+                        value={limits.tokenQuota}
+                        onChange={(_, data) => setLimits({ ...limits, tokenQuota: data.value })}
+                      />
+                    </Field>
+                    <Field label="Quota period">
+                      <Select
+                        value={limits.tokenQuotaPeriod}
+                        onChange={(_, data) =>
+                          setLimits({ ...limits, tokenQuotaPeriod: data.value as QuotaPeriod })
+                        }
+                      >
+                        {QUOTA_PERIODS.map((period) => (
+                          <option key={period} value={period}>
+                            {period}
+                          </option>
+                        ))}
+                      </Select>
+                    </Field>
+                  </div>
+                </>
+              )}
               <div className={styles.switchGrid}>
                 <Field label="Calls" validationMessage={rateError ?? undefined}>
                   <Input

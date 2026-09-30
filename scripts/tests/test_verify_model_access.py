@@ -22,6 +22,8 @@ STRANGER_OID = "66666666-6666-4666-8666-666666666666"
 APP_OID = "77777777-7777-4777-8777-777777777777"
 ADMIN_OID = "88888888-8888-4888-8888-888888888888"
 OTHER_OID = "99999999-9999-4999-8999-999999999999"
+AGENT_OID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+GROUP_ID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
 APP_SECRET = "fixture-client-secret"
 MODEL_OUTPUT = "MODEL-OUTPUT-FIXTURE"
 ECHO = "ECHOED-REQUEST-FIXTURE"
@@ -80,6 +82,8 @@ ENV = {
     verifier.USER_RUNTIME_TOKEN: user_token(USER_OID),
     verifier.APPLICATION_RUNTIME_TOKEN: app_token(),
     verifier.UNGRANTED_USER_RUNTIME_TOKEN: user_token(STRANGER_OID),
+    verifier.AGENT_RUNTIME_TOKEN: app_token(oid=AGENT_OID),
+    verifier.GROUP_MEMBER_RUNTIME_TOKEN: user_token(USER_OID, groups=[GROUP_ID]),
 }
 BASE_ARGS = [
     "--api-base-url",
@@ -125,6 +129,9 @@ class FakeGrant:
     # When an administrator disables the grant (Revoke in the console) and when it's deleted.
     revoke_at: float | None = None
     deleted_at: float | None = None
+    principal_kind: str | None = None
+    required_app_role: str = "Models.Invoke.Application"
+    keys_available: bool | None = None
     calls: dict[str, list[float]] = field(default_factory=dict)
     tokens_used: int = 0
 
@@ -276,6 +283,8 @@ class FakeWorld:
         else:
             return httpx.Response(401)
         if grant is not None and parts[2:] == ["keys", "reveal"]:
+            if not mine and grant.kind == "securityGroup":
+                return httpx.Response(409)
             if mine and grant.kind == "application":
                 return httpx.Response(self.foreign_reveal_status, json={"key": grant.primary})
             if mine and foreign and "key" in self.foreign_user_leaks:
@@ -352,21 +361,29 @@ class FakeWorld:
         path, deployment, operation, operation_path = PUBLICATIONS[grant.publication]
         methods = self.methods[grant.publication]
         user = grant.kind == "user"
+        keys_enabled = methods["keys"] and grant.kind != "securityGroup"
+        principal_kind = grant.principal_kind or grant.kind
+        keys_available = grant.keys_available
+        if keys_available is None:
+            keys_available = keys_enabled
         return {
             "entitlementId": grant.id,
             "publicationId": grant.publication,
+            "principalKind": principal_kind,
             "gatewayId": "gateway",
             "endpoint": f"{ORIGIN}{path}",
             "deploymentName": deployment,
             "tenantId": TENANT,
             "runtime": {"publicationId": grant.publication, "status": self.phase(grant)},
             "appliedMethods": {
-                "keysEnabled": methods["keys"],
+                "keysEnabled": keys_enabled,
                 "entraEnabled": self.entra_applied(grant.publication),
             },
+            "keysAvailable": keys_available,
             "entraAudience": AUDIENCE,
             "entraScope": f"api://{AUDIENCE}/{'Models.Invoke' if user else '.default'}",
             "entraClientId": self.model_client if user else None,
+            "requiredAppRole": grant.required_app_role,
             "subscriptionHeader": verifier.SUBSCRIPTION_HEADER,
             "operations": [{"name": operation, "method": "POST", "path": operation_path}],
             "publicationLimits": self.publication_limits,
@@ -430,9 +447,30 @@ class FakeWorld:
                 kind = "application"
             else:
                 return httpx.Response(403)
-            token_grant = next(
-                (g for g in live if g.oid == claims.get("oid") and g.kind == kind), None
-            )
+            if kind == "user":
+                groups = claims.get("groups")
+                token_grant = next(
+                    (
+                        g
+                        for g in live
+                        if (g.oid == claims.get("oid") and g.kind == "user")
+                        or (
+                            g.kind == "securityGroup"
+                            and isinstance(groups, list)
+                            and g.oid in groups
+                        )
+                    ),
+                    None,
+                )
+            else:
+                token_grant = next(
+                    (
+                        g
+                        for g in live
+                        if g.oid == claims.get("oid") and g.kind in {"application", "agentIdentity"}
+                    ),
+                    None,
+                )
             if token_grant is None:
                 revoked = any(
                     g.oid == claims.get("oid") and g.kind == kind and self.phase(g) == "revoked"
@@ -1556,6 +1594,124 @@ class ModelAccessVerifierTests(unittest.TestCase):
             "are off",
             out,
         )
+
+    def test_agent_entitlement_check_reaches_the_model(self) -> None:
+        world = FakeWorld(FakeGrant("agent-aoai", "agentIdentity", "aoai", AGENT_OID))
+        code, out, err = self.verify(world, ["--agent-entitlement", "agent-aoai"])
+        self.assertEqual(code, 0, err)
+        self.assertIn("PASS: Agent identity token reached the model", out)
+        self.assertIn("Live checks passed for 1 grant(s)", out)
+        self.assertEqual(len(world.model_calls), 1)
+        self.assert_nothing_secret(world, out + err)
+
+    def test_agent_entitlement_requires_agent_identity_application_role_and_applied_access(
+        self,
+    ) -> None:
+        cases = (
+            (
+                FakeGrant(
+                    "agent-aoai",
+                    "agentIdentity",
+                    "aoai",
+                    AGENT_OID,
+                    principal_kind="application",
+                ),
+                "principalKind was not agentIdentity",
+            ),
+            (
+                FakeGrant(
+                    "agent-aoai",
+                    "agentIdentity",
+                    "aoai",
+                    AGENT_OID,
+                    required_app_role="Models.Read",
+                ),
+                "required app role",
+            ),
+            (
+                FakeGrant("agent-aoai", "agentIdentity", "aoai", AGENT_OID, status="applying"),
+                "status: applying",
+            ),
+        )
+        for grant, message in cases:
+            with self.subTest(message=message):
+                world = FakeWorld(grant)
+                code, _, err = self.verify(world, ["--agent-entitlement", "agent-aoai"])
+                self.assertEqual(code, 1)
+                self.assertIn(message, err)
+                self.assertEqual(world.model_calls, [])
+
+    def test_group_entitlement_warns_refuses_keys_and_reaches_the_model(self) -> None:
+        world = FakeWorld(FakeGrant("group-aoai", "securityGroup", "aoai", GROUP_ID))
+        code, out, err = self.verify(world, ["--group-entitlement", "group-aoai"])
+        self.assertEqual(code, 0, err)
+        self.assertIn("PASS: Security-group member token reached the model", out)
+        self.assertNotIn("WARN:", err)
+        self.assertEqual(
+            [
+                (request.method, request.url.path)
+                for request in world.requests
+                if request.url.host == "mosaic.example"
+            ],
+            [
+                ("GET", "/api/v1/entitlements/group-aoai/connection"),
+                ("POST", "/api/v1/entitlements/group-aoai/keys/reveal"),
+            ],
+        )
+        self.assertEqual(len(world.model_calls), 1)
+        self.assert_nothing_secret(world, out + err)
+
+    def test_group_entitlement_warns_on_missing_groups_claim_and_overage(self) -> None:
+        for claims, warning in (
+            ({}, "has no groups claim"),
+            ({"_claim_names": {"groups": "src1"}}, "signals group overage"),
+            ({"hasgroups": True}, "signals group overage"),
+            ({"groups:src1": "fixture"}, "signals group overage"),
+        ):
+            with self.subTest(claims=claims):
+                world = FakeWorld(FakeGrant("group-aoai", "securityGroup", "aoai", GROUP_ID))
+                token = user_token(USER_OID, groups=[GROUP_ID], **claims)
+                if claims == {}:
+                    token = user_token(USER_OID)
+                code, _, err = self.verify(
+                    world,
+                    ["--group-entitlement", "group-aoai"],
+                    {**ENV, verifier.GROUP_MEMBER_RUNTIME_TOKEN: token},
+                )
+                if claims != {}:
+                    self.assertEqual(code, 0, err)
+                self.assertIn(warning, err)
+
+    def test_group_entitlement_requires_no_keys_and_reveal_refusal(self) -> None:
+        for keys_available, reveal_status, message in (
+            (True, 409, "keysAvailable false"),
+            (False, 200, "key reveal refusal"),
+        ):
+            with self.subTest(message=message):
+                grant = FakeGrant(
+                    "group-aoai",
+                    "securityGroup",
+                    "aoai",
+                    GROUP_ID,
+                    keys_available=keys_available,
+                )
+                world = FakeWorld(grant)
+                if reveal_status == 200:
+                    grant.kind = "application"
+                    grant.principal_kind = "securityGroup"
+                    grant.oid = GROUP_ID
+                code, _, err = self.verify(world, ["--group-entitlement", "group-aoai"])
+                self.assertEqual(code, 1)
+                self.assertIn(message, err)
+                self.assertEqual(world.model_calls, [])
+
+    def test_agent_and_group_options_are_optional(self) -> None:
+        world = standard_world()
+        env = without(verifier.AGENT_RUNTIME_TOKEN, verifier.GROUP_MEMBER_RUNTIME_TOKEN)
+        code, out, err = self.verify(world, ["--user-entitlement", "user-aoai"], env)
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("Agent identity", out)
+        self.assertNotIn("Security-group", out)
 
     def test_arguments_are_checked_before_network(self) -> None:
         for message, arguments in (

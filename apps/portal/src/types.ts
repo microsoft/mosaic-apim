@@ -28,6 +28,7 @@ export interface PortalProfile {
   displayLabel: string | null
   entitlementCount: number
   pendingRequestCount: number
+  groupsOverage: boolean
 }
 
 export type PortalResourceKind = 'modelApi' | 'mcpServer'
@@ -42,6 +43,7 @@ export interface CatalogEntry {
   environment: string | null
   entitled: boolean
   requestState: AccessRequestState | null
+  enforced?: boolean | null
 }
 
 export interface EntitlementResource {
@@ -149,7 +151,7 @@ export interface Entitlement {
   id: string
   tenantId: string
   entityType: 'entitlement'
-  subject: { kind: 'user' | 'group' | 'application'; id: string }
+  subject: { kind: 'user' | 'group' | 'application' | 'securityGroup'; id: string }
   resource: EntitlementResource
   enabled: boolean
   enforcement: EntitlementEnforcement | null
@@ -163,9 +165,11 @@ export interface Entitlement {
 export interface ResolvedEntitlement {
   entitlement: Entitlement
   resourceSummary: ResourceSummary | null
-  via: 'direct' | 'group'
+  via: 'direct' | 'group' | 'securityGroup'
   viaGroupId: string | null
   viaGroupName: string | null
+  effective?: boolean
+  shadowedBy?: string | null
   /**
    * The name the catalog shows for the granted resource. Null when the API can't resolve it,
    * for example because the resource was deleted. Older APIs omit it.
@@ -229,7 +233,7 @@ export interface UsageResourceRow {
   resource: EntitlementResource
   resourceSummary: ResourceSummary
   environment: string | null
-  via: 'direct' | 'group'
+  via: 'direct' | 'group' | 'securityGroup'
   viaGroupName: string | null
   enabled: boolean
   bound: boolean
@@ -286,13 +290,51 @@ export interface ModelConnection {
    * Older APIs omit it.
    */
   entraClientId?: string | null
-  subscriptionHeader: string
+   principalKind?: PrincipalKind | null
+   requiredAppRole?: string | null
+   entraApplicationScope?: string | null
+   keysAvailable?: boolean
+   viaGroupId?: string | null
+   viaGroupName?: string | null
+   subscriptionHeader: string
   /** Older APIs omit it. */
   apiShape?: ApiShape | null
   operations: ConnectionOperation[]
   /** Null when the gateway's tier can't apply token limits to this model's API. */
   publicationLimits: TokenEnforcement | null
   grantLimits?: EntitlementEnforcement | null
+}
+
+export type PrincipalKind =
+  | 'user'
+  | 'servicePrincipal'
+  | 'managedIdentity'
+  | 'agentIdentity'
+  | 'agentUser'
+  | 'securityGroup'
+
+export interface McpConnection {
+  entitlementId: string
+  mcpServerId: string
+  publicationId?: string | null
+  gatewayId: string
+  displayName: string
+  tenantId: string
+  serverUrl?: string | null
+  transport: string
+  enforced: boolean
+  statusMessage: string
+  runtime?: EntitlementRuntime | null
+  entraAudience?: string | null
+  delegatedScope?: string | null
+  applicationScope?: string | null
+  requiredAppRole?: string | null
+  clientId?: string | null
+  principalKind?: PrincipalKind | null
+  viaGroupId?: string | null
+  viaGroupName?: string | null
+  resourceMetadataUrl?: string | null
+  limits?: EntitlementEnforcement | null
 }
 
 export type KeySlot = 'primary' | 'secondary'

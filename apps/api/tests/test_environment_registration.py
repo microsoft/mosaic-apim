@@ -19,6 +19,7 @@ from mosaic_api.integrations.aoai import CognitiveServicesClient
 from mosaic_api.integrations.aoai.client import SubscriptionScanner
 from mosaic_api.integrations.apim import ApimClient
 from mosaic_api.repositories import (
+    InMemoryEntitlementRepository,
     InMemoryEnvironmentRepository,
     InMemoryGatewayRepository,
     InMemoryMcpEndpointRepository,
@@ -88,6 +89,7 @@ def _mcp_service(
         client_factory=build_mcp_client_factory(build_http_client(server)),
         environment_repository=environments,
         gateway_repository=gateways,
+        entitlement_repository=InMemoryEntitlementRepository(),
     )
 
 

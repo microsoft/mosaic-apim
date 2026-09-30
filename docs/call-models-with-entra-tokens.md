@@ -29,6 +29,27 @@ If `entraClientId` is empty, either your deployment doesn't use the MOSAIC model
 (`MOSAIC_ENTRA_MODEL_CLIENT=false`) or the model's access was applied for an earlier runtime
 registration. Ask an administrator for the client ID to use, or to reapply the model's access plan.
 
+### Access through a security group
+
+If the model grant is to an Entra security group you belong to, you still call the same gateway
+endpoint with an Entra runtime token. The token must be for the model-runtime audience shown in
+connection details, not for the MOSAIC API, Azure CLI or Microsoft Graph.
+
+- People and agent users request the delegated scope
+  `api://<model-runtime-client-id>/Models.Invoke`.
+- Applications, managed identities and agent identities request
+  `api://<model-runtime-client-id>/.default` and need the `Models.Invoke.Application` app role.
+- Security-group grants have no subscription key. `keysAvailable` is `false`, and key reveal is
+  refused.
+
+Membership changes are not immediate at the gateway. Microsoft Entra includes group IDs when it
+issues the token, so adding or removing a member takes effect when that member gets a new token.
+Access tokens commonly live for about an hour.
+
+If the caller is in too many groups, Entra omits the `groups` list and marks the token as an
+overage token. MOSAIC can show this in the portal, but APIM cannot call Microsoft Graph during a
+model request. Ask an administrator for a direct grant if your token has group overage.
+
 Install the libraries used below:
 
 ```powershell
@@ -146,4 +167,5 @@ header, never in `api_key`.
 | `AADSTS500011` (resource principal not found) | The scope doesn't match a registration in this tenant. Copy `entraScope` and `tenantId` exactly. |
 | `AADSTS50105` | The model client requires user assignment. Ask an administrator to assign you. |
 | HTTP 401 from the gateway | The gateway couldn't validate the credential. The token might be expired, or be for another audience, such as a MOSAIC portal or Azure CLI token. Or the model doesn't accept the method you used. |
-| HTTP 403 from the gateway | The token is valid but doesn't match an applied grant. The grant might not be applied yet or has been revoked. You might be signed in as a different user. Or a key you also sent belongs to a different grant. |
+| HTTP 403 from the gateway | The token is valid but doesn't match an applied grant. The grant might not be applied yet or has been revoked. You might be signed in as a different user, your application might be missing `Models.Invoke.Application`, your token might not include the granted group's ID, or a key you also sent belongs to a different grant. |
+| A group grant is visible in MOSAIC but the gateway denies it | Get a fresh runtime token and check that it has a `groups` claim containing the granted security-group object ID. If Entra emitted group overage instead, use a direct grant. |

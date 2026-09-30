@@ -11,7 +11,7 @@ const auth = vi.hoisted(() => ({
   accounts: [{ homeAccountId: 'actor-a', localAccountId: 'actor-a', tenantId: 'tenant' }],
 }))
 vi.mock('@azure/msal-react', () => ({ useMsal: () => auth }))
-const api = { getEntitlementConnection: vi.fn(), revealEntitlementKey: vi.fn() }
+const api = { getEntitlementConnection: vi.fn(), getMcpConnection: vi.fn(), revealEntitlementKey: vi.fn() }
 vi.mock('../api', () => ({ useMosaicApi: () => api }))
 
 const revealed: KeyRevealResult = {
@@ -75,6 +75,27 @@ describe('EntitlementConnectionDialog', () => {
     vi.resetAllMocks()
     auth.accounts = [{ homeAccountId: 'actor-a', localAccountId: 'actor-a', tenantId: 'tenant' }]
     api.getEntitlementConnection.mockResolvedValue(connectionInfo)
+    api.getMcpConnection.mockResolvedValue({
+      entitlementId: 'mcp-grant',
+      mcpServerId: 'mcp_1',
+      publicationId: 'mcp_pub_1',
+      gatewayId: 'gateway_1',
+      displayName: 'Weather MCP',
+      tenantId: 'tenant',
+      serverUrl: 'https://gateway.example.test/mosaic/mcp/weather/mcp',
+      transport: 'streamable',
+      enforced: true,
+      statusMessage: 'The gateway enforces this grant.',
+      runtime: { publicationId: 'mcp_pub_1', status: 'applied', appliedMethods: { keysEnabled: false, entraEnabled: true } },
+      entraAudience: 'runtime-client-id',
+      delegatedScope: 'api://runtime-client-id/Mcp.Invoke',
+      applicationScope: 'api://runtime-client-id/.default',
+      requiredAppRole: 'Mcp.Invoke.Application',
+      clientId: 'runtime-client-id',
+      principalKind: 'user',
+      resourceMetadataUrl: 'https://gateway.example.test/.well-known/oauth-protected-resource/mosaic/mcp/weather/mcp',
+      limits: { requests: { counterKeyExpression: '@(context.Subscription.Id)', calls: 60, renewalPeriodSeconds: 60 } },
+    })
     api.revealEntitlementKey.mockResolvedValue(revealed)
   })
 
@@ -250,6 +271,76 @@ describe('EntitlementConnectionDialog', () => {
     renderDialog()
     expect(await screen.findByText('POST /chat/completions · chat')).toBeVisible()
     expect(screen.queryByText(/uses the Anthropic Messages API/)).not.toBeInTheDocument()
+  })
+
+  it('explains agent identity connection requirements', async () => {
+    api.getEntitlementConnection.mockResolvedValue({
+      ...connectionInfo,
+      principalKind: 'agentIdentity',
+      entraClientId: 'agent-client-id',
+      entraScope: 'api://model-runtime/.default',
+      requiredAppRole: 'Models.Invoke.Application',
+    })
+    renderDialog()
+
+    expect(await screen.findByText(/Agent identity signs in as itself/)).toBeVisible()
+    expect(screen.getByText('agent-client-id')).toBeVisible()
+    expect(screen.getByText('api://model-runtime/.default')).toBeVisible()
+    expect(screen.getByText('Models.Invoke.Application')).toBeVisible()
+  })
+
+  it('explains agent user delegated tokens', async () => {
+    api.getEntitlementConnection.mockResolvedValue({
+      ...connectionInfo,
+      principalKind: 'agentUser',
+      entraClientId: 'parent-agent-client',
+      entraScope: 'api://model-runtime/Models.Invoke',
+    })
+    renderDialog()
+
+    expect(await screen.findByText(/parent agent identity parent-agent-client requests a delegated token/)).toBeVisible()
+  })
+
+  it('hides key reveal for security-group grants', async () => {
+    api.getEntitlementConnection.mockResolvedValue({
+      ...connectionInfo,
+      principalKind: 'securityGroup',
+      entraScope: 'api://model-runtime/Models.Invoke',
+      entraApplicationScope: 'api://model-runtime/.default',
+      requiredAppRole: 'Models.Invoke.Application',
+      keysAvailable: false,
+      viaGroupId: 'sg_1',
+      viaGroupName: 'Security readers',
+    })
+    renderDialog({ ...directGrant, subject: { kind: 'securityGroup', id: 'sg_1' } })
+
+    expect(await screen.findByText(/Members sign in as themselves/)).toBeVisible()
+    expect(screen.getByText(/Keys are not available/)).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Reveal primary key' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Reveal secondary key' })).not.toBeInTheDocument()
+    expect(api.revealEntitlementKey).not.toHaveBeenCalled()
+  })
+
+  it('shows MCP connection metadata and VS Code configuration without key reveal', async () => {
+    renderDialog({
+      ...directGrant,
+      id: 'mcp-grant',
+      resource: { kind: 'mcpServer', id: 'mcp_1' },
+      binding: null,
+      runtime: null,
+    })
+
+    expect(await screen.findByText('MCP connection')).toBeVisible()
+    expect(await screen.findByText('Weather MCP')).toBeVisible()
+    expect(screen.getByText('https://gateway.example.test/mosaic/mcp/weather/mcp')).toBeVisible()
+    expect(screen.getByText('https://gateway.example.test/.well-known/oauth-protected-resource/mosaic/mcp/weather/mcp')).toBeVisible()
+    expect(screen.getByText('api://runtime-client-id/Mcp.Invoke')).toBeVisible()
+    expect(screen.getByText('Mcp.Invoke.Application')).toBeVisible()
+    expect(screen.getByText(/"type": "http"/)).toBeVisible()
+    expect(screen.getByText('Limits traffic to 60 calls per minute.')).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Reveal primary key' })).not.toBeInTheDocument()
+    expect(api.getMcpConnection).toHaveBeenCalledWith('mcp-grant')
+    expect(api.revealEntitlementKey).not.toHaveBeenCalled()
   })
 
   it('marks the revealed key, and nothing else, as a secret', async () => {

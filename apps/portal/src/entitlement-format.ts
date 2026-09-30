@@ -48,6 +48,11 @@ export function runtimeStatusLabel(status: EntitlementRuntime['status']) {
 }
 
 export function describeRuntime(entitlement: Entitlement) {
+  if (entitlement.resource.kind === 'mcpServer') {
+    return entitlement.runtime
+      ? runtimeStatusLabel(entitlement.runtime.status)
+      : 'Recorded, not enforced by MOSAIC'
+  }
   if (entitlement.runtime) return runtimeStatusLabel(entitlement.runtime.status)
   return entitlement.enabled ? 'Recorded grant' : 'Disabled grant'
 }
@@ -113,6 +118,10 @@ export function describeAttribution(resolved: ResolvedEntitlement) {
   return `Granted through ${groupName}`
 }
 
+export function isSecurityGroupGrant(resolved: ResolvedEntitlement) {
+  return resolved.via === 'securityGroup' || resolved.entitlement.subject.kind === 'securityGroup'
+}
+
 export function describeBinding(entitlement: Entitlement) {
   if (!entitlement.binding) {
     return 'No usage attribution is configured yet.'
@@ -138,6 +147,24 @@ export function describeTokenLimits(tokens: TokenEnforcement | null | undefined)
     limits.push(`${formatNumber(tokens.tokenQuota)} tokens per ${periodLabels[tokens.tokenQuotaPeriod]}`)
   }
   return limits
+}
+
+export function describeRequestLimits(enforcement: EntitlementEnforcement | null | undefined) {
+  const limits: string[] = []
+  if (
+    enforcement?.requests?.calls != null &&
+    enforcement.requests.renewalPeriodSeconds != null
+  ) {
+    limits.push(
+      `${formatNumber(enforcement.requests.calls)} calls per ${formatNumber(enforcement.requests.renewalPeriodSeconds)} seconds`,
+    )
+  }
+  if (enforcement?.requests?.callQuota != null && enforcement.requests.callQuotaPeriod) {
+    limits.push(
+      `${formatNumber(enforcement.requests.callQuota)} calls per ${periodLabels[enforcement.requests.callQuotaPeriod]}`,
+    )
+  }
+  return limits.length > 0 ? limits : ['No call limits configured']
 }
 
 export function describeEnforcementLimits(enforcement: EntitlementEnforcement | null | undefined) {

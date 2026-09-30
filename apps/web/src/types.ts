@@ -1,4 +1,10 @@
-export type PrincipalKind = 'user' | 'servicePrincipal' | 'managedIdentity'
+export type PrincipalKind =
+  | 'user'
+  | 'servicePrincipal'
+  | 'managedIdentity'
+  | 'agentIdentity'
+  | 'agentUser'
+  | 'securityGroup'
 
 /** The caller's MOSAIC roles, from `GET /api/v1/console/me`. Only a caller with a MOSAIC role gets
  * one, so `isAdmin` false means the caller holds the User role alone. */
@@ -13,6 +19,10 @@ export interface Principal {
   objectId: string
   kind: PrincipalKind
   label?: string
+  detail?: string | null
+  identityParentId?: string | null
+  blueprintId?: string | null
+  directoryVerifiedAt?: string | null
   createdAt: string
   updatedAt: string
 }
@@ -60,7 +70,7 @@ export interface EntitlementEnforcement {
   requests?: RequestEnforcement | null
 }
 
-export type EntitlementSubjectKind = 'user' | 'group' | 'application'
+export type EntitlementSubjectKind = 'user' | 'group' | 'application' | 'securityGroup'
 
 export type EntitlementResourceKind =
   | 'modelApi'
@@ -335,9 +345,11 @@ export interface Entitlement {
 
 export interface ResolvedEntitlement {
   entitlement: Entitlement
-  via: 'direct' | 'group'
+  via: 'direct' | 'group' | 'securityGroup'
   viaGroupId?: string | null
   viaGroupName?: string | null
+  effective: boolean
+  shadowedBy?: string | null
 }
 
 export type AccessRequestState = 'pending' | 'approved' | 'denied' | 'withdrawn'
@@ -637,7 +649,8 @@ export interface McpServer {
   visibility: CatalogVisibility
   summary?: string | null
   selection: ImportSelection
-  importedFromSnapshotId: string
+  importedFromSnapshotId?: string | null
+  publicationId?: string | null
   importedAt: string
   importedBy?: string | null
   createdAt: string
@@ -1008,7 +1021,7 @@ export interface ModelAccessGrant {
   subject: EntitlementSubject
   objectId: string
   displayName: string
-  subscriptionName: string
+  subscriptionName?: string | null
   enabled: boolean
   enforcement?: EntitlementEnforcement | null
   intentDigest: string
@@ -1021,6 +1034,24 @@ export interface ModelAccessSnapshot {
   /** Null when the publication's shape can't be token-metered on its gateway's tier. */
   publicationEnforcement: TokenEnforcement | null
   grants: ModelAccessGrant[]
+}
+
+export interface McpAccessGrant {
+  entitlementId: string
+  subject: EntitlementSubject
+  objectId: string
+  displayName: string
+  enabled: boolean
+  enforcement?: EntitlementEnforcement | null
+  intentDigest: string
+}
+
+export interface McpAccessSnapshot {
+  version: number
+  audience: string
+  delegatedScope: string
+  applicationRole: string
+  grants: McpAccessGrant[]
 }
 
 export interface PublicationLockInfo {
@@ -1063,6 +1094,52 @@ export interface Publication {
   updatedAt: string
 }
 
+export interface McpPublication {
+  id: string
+  tenantId: string
+  entityType: 'mcpPublication'
+  gatewayId: string
+  mcpEndpointId: string
+  displayName: string
+  apiName: string
+  apiPath: string
+  backendName: string
+  fragmentName: string
+  metadataApiName: string
+  mcpServerId: string
+  status: PublicationStatus
+  resources: PublishedResource[]
+  lastPlanId: string | null
+  lastPlanDigest: string | null
+  lastRunId: string | null
+  lastAppliedAt: string | null
+  lastError: string | null
+  appliedAccess?: McpAccessSnapshot | null
+  accessState: 'pending' | 'applying' | 'applied' | 'failed' | 'unknown'
+  createdAt: string
+  updatedAt: string
+  etag?: string | null
+}
+
+export interface McpPublishingCapability {
+  gatewayId: string
+  supported: boolean
+  reasons: string[]
+  warnings: string[]
+}
+
+export interface McpPublicationCreate {
+  gatewayId: string
+  mcpEndpointId: string
+  displayName?: string
+  apiName?: string
+  apiPath?: string
+}
+
+export interface McpPublicationUpdate {
+  displayName?: string
+}
+
 export interface PublishPlanStep {
   kind: PublishedResourceKind
   name: string
@@ -1086,7 +1163,9 @@ export interface PublishPlan {
   facets: PolicyFacet[]
   policyContentSha256: string | null
   warnings: string[]
+  target?: 'model' | 'mcp'
   accessSnapshot?: ModelAccessSnapshot | null
+  mcpAccessSnapshot?: McpAccessSnapshot | null
   previousAccessVersion?: number | null
   createdAt: string
   updatedAt: string
@@ -1119,7 +1198,9 @@ export interface PublishRun {
   rolledBack: boolean
   orphanedResources: PublishedResource[]
   errors: string[]
+  target?: 'model' | 'mcp'
   accessSnapshot?: ModelAccessSnapshot | null
+  mcpAccessSnapshot?: McpAccessSnapshot | null
   createdAt: string
   updatedAt: string
 }
@@ -1135,11 +1216,95 @@ export interface ModelConnection {
   appliedMethods?: ModelAccessSettings | null
   entraAudience?: string | null
   entraScope?: string | null
+  entraClientId?: string | null
   subscriptionHeader: 'Ocp-Apim-Subscription-Key'
   apiShape?: ApiShape | null
   operations: { name: string; method: string; path: string }[]
   publicationLimits: TokenEnforcement | null
   grantLimits?: EntitlementEnforcement | null
+  principalKind?: PrincipalKind | null
+  requiredAppRole?: string | null
+  entraApplicationScope?: string | null
+  keysAvailable: boolean
+  viaGroupId?: string | null
+  viaGroupName?: string | null
+}
+
+export interface McpConnection {
+  entitlementId: string
+  mcpServerId: string
+  publicationId?: string | null
+  gatewayId: string
+  displayName: string
+  tenantId: string
+  serverUrl?: string | null
+  transport: McpTransportType
+  enforced: boolean
+  statusMessage: string
+  runtime?: EntitlementRuntime | null
+  entraAudience?: string | null
+  delegatedScope?: string | null
+  applicationScope?: string | null
+  requiredAppRole?: string | null
+  clientId?: string | null
+  principalKind?: PrincipalKind | null
+  viaGroupId?: string | null
+  viaGroupName?: string | null
+  resourceMetadataUrl?: string | null
+  limits?: EntitlementEnforcement | null
+}
+
+export type DirectorySearchKind = 'user' | 'group' | 'agent'
+
+export interface DirectoryObject {
+  objectId: string
+  kind: PrincipalKind
+  displayName?: string | null
+  detail?: string | null
+  appId?: string | null
+  identityParentId?: string | null
+  blueprintId?: string | null
+  principalId?: string | null
+}
+
+export interface DirectoryMemberPage {
+  groupObjectId: string
+  members: DirectoryObject[]
+  truncated: boolean
+}
+
+export interface DirectoryStatus {
+  lookupEnabled: boolean
+  groupClaimsEnabled: boolean
+  message?: string | null
+}
+
+export type GrantOverlapKind = 'groups' | 'directAndGroup' | 'multipleGroups'
+
+export interface OverlapGrant {
+  entitlementId: string
+  subject: EntitlementSubject
+  subjectLabel: string
+  enabled: boolean
+  enforcement?: EntitlementEnforcement | null
+}
+
+export interface GrantOverlap {
+  kind: GrantOverlapKind
+  resource: EntitlementResource
+  resourceLabel: string
+  principalId?: string | null
+  principalLabel?: string | null
+  winner: OverlapGrant
+  shadowed: OverlapGrant[]
+  reason: string
+}
+
+export interface GrantOverlapReport {
+  overlaps: GrantOverlap[]
+  membershipChecked: boolean
+  skipped: string[]
+  generatedAt: string
 }
 
 export type KeySlot = 'primary' | 'secondary'

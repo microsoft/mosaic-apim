@@ -41,6 +41,8 @@ captures every shot, and stops the servers again. A full run takes about a minut
 Playwright and Pillow are needed only here, so `uv run --with` supplies them for the run rather
 than adding them to `uv.lock`.
 
+If `uv` is available only as a Python module, use `python -m uv run ...` with the same arguments.
+
 | Option | Effect |
 | --- | --- |
 | `--list` | Print each shot's name, app, theme, and route, then exit |
@@ -195,13 +197,18 @@ shows both themes. Keep new shots in that pattern.
 | `console-gateway-overview` | Console | Contoso AI Gateway, **Overview** tab | Dark | Gateway overview |
 | `console-gateway-apis` | Console | Contoso AI Gateway, **APIs and endpoints** tab | Light | APIs and endpoints |
 | `console-models` | Console | `/models` | Dark | Models |
-| `console-mcps` | Console | `/mcps` | Light | MCP servers |
-| `console-identity` | Console | `/identity?tab=users` | Dark | Identity |
+| `console-mcps` | Console | `/mcps`, showing published and registered MCP servers | Light | MCP servers |
+| `console-identity` | Console | `/identity?tab=agents` | Dark | Identity |
+| `console-directory-picker` | Console | `/identity?tab=agents`, **Add agent** dialog with query `agent` | Light | Directory picker |
+| `console-security-group-members` | Console | `/identity?tab=workloads`, filtered to **AI Model Users** | Dark | Security group members |
 | `console-entitlements` | Console | `/entitlements`, scrolled to **Grants** | Light | Entitlements |
+| `console-overlapping-grants` | Console | `/entitlements`, scrolled to **Overlapping grants** | Dark | Overlapping grants |
+| `console-mcp-publish` | Console | `/mcps`, **Plan and apply** review for the published Docs MCP server | Light | MCP publish review |
 | `console-analytics` | Console | `/analytics`, which shows sample data | Dark | Analytics |
 | `console-environments` | Console | `/settings` | Light | Environments |
 | `console-environment-findings` | Console | `/settings`, scrolled to **Findings** | Dark | Environment findings |
 | `portal-access` | Portal | `/access`, with a grant's **Connection details** open | Light | My access |
+| `portal-mcp-connection` | Portal | `/access`, with an enforced MCP grant's **Connection details** open | Dark | MCP connection |
 | `portal-requests` | Portal | `/requests` | Dark | My requests |
 | `portal-usage` | Portal | `/usage`, which shows sample data | Light | Usage and cost |
 | `portal-usage-resources` | Portal | `/usage`, scrolled to **By resource** | Dark | Usage by resource |

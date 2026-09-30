@@ -27,6 +27,7 @@ from mosaic_api.domain import (
     PortalAccessRequest,
     PortalProfile,
     PortalResolvedEntitlement,
+    PublicationStatus,
     ResolvedEntitlement,
 )
 from mosaic_api.repositories import DirectoryRepository, GatewayRepository
@@ -64,6 +65,7 @@ class PortalService:
             display_label=principal.label if principal else None,
             entitlement_count=len(entitlements),
             pending_request_count=len(pending),
+            groups_overage=actor.groups_overage,
         )
 
     async def _resolved(
@@ -74,7 +76,11 @@ class PortalService:
         records: GovernedRecords | None = None,
     ) -> list[ResolvedEntitlement]:
         return await self._entitlements.resolve_for_object_id(
-            actor, actor.object_id, include_disabled=include_disabled, records=records
+            actor,
+            actor.object_id,
+            group_object_ids=actor.group_ids,
+            include_disabled=include_disabled,
+            records=records,
         )
 
     async def _requests(self, actor: Actor) -> list[AccessRequest]:
@@ -217,6 +223,19 @@ class PortalService:
             gateway = gateways.get(mcp_server.gateway_id)
             if gateway is None:
                 continue
+            enforced = False
+            if mcp_server.publication_id is not None:
+                publication = await self._gateways.get_mcp_publication(
+                    actor.tenant_id, mcp_server.publication_id
+                )
+                enforced = bool(
+                    publication
+                    and publication.mcp_server_id == mcp_server.id
+                    and publication.gateway_id == mcp_server.gateway_id
+                    and publication.api_name == mcp_server.api_name
+                    and publication.status == PublicationStatus.PUBLISHED
+                    and publication.access_state == "applied"
+                )
             entries.append(
                 CatalogEntry(
                     kind=CatalogEntryKind.MCP_SERVER,
@@ -228,6 +247,7 @@ class PortalService:
                     environment=gateway.environment,
                     entitled=("mcpServer", mcp_server.id) in entitled,
                     request_state=open_requests.get(("mcpServer", mcp_server.id)),
+                    enforced=enforced,
                 )
             )
         entries.sort(key=lambda item: (item.display_name.casefold(), item.id))

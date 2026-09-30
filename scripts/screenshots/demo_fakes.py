@@ -625,7 +625,15 @@ class DemoApim(FakeApim):
             return self._policy(GLOBAL_POLICY)
         if suffix == "apis":
             if api_filter and "mcp" in api_filter:
-                return self._collection(MCP_SERVERS)
+                written = [
+                    item
+                    for item in self._written_children("apis")
+                    if item.get("properties", {}).get("type") == "mcp"
+                ]
+                names = {item["name"] for item in written}
+                return self._collection(
+                    [item for item in MCP_SERVERS if item["name"] not in names] + written
+                )
             return self._merged("apis", [*APIS, *MCP_SERVERS])
         parts = suffix.split("/")
         collections: dict[str, list[dict[str, Any]]] = {

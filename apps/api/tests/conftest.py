@@ -14,19 +14,24 @@ from mosaic_api.domain import ApimResourceId
 from mosaic_api.integrations.aoai import CognitiveServicesClient
 from mosaic_api.integrations.aoai.client import SubscriptionScanner
 from mosaic_api.integrations.apim import ApimClient, ApimWriter, ArmClient
+from mosaic_api.integrations.graph import DirectoryLookup
 from mosaic_api.main import create_app
 from mosaic_api.repositories import (
+    InMemoryDirectoryRepository,
+    InMemoryEntitlementRepository,
     InMemoryGatewayRepository,
     InMemoryMcpEndpointRepository,
     InMemoryModelEndpointRepository,
 )
 from mosaic_api.services import (
+    DirectoryService,
     GatewayService,
     McpEndpointService,
     ModelEndpointService,
     PublishingService,
 )
 from mosaic_api.services.mcp_endpoints import build_mcp_client_factory
+from mosaic_api.services.mcp_publishing import McpPublishingService
 
 
 async def _no_sleep(_seconds: float) -> None:
@@ -48,6 +53,26 @@ def settings() -> Settings:
 def client(settings: Settings) -> Iterator[TestClient]:
     with TestClient(create_app(settings)) as test_client:
         yield test_client
+
+
+@pytest.fixture
+def directory_client(settings: Settings) -> Iterator[TestClient]:
+    app: FastAPI = create_app(settings)
+    with TestClient(app) as test_client:
+        yield test_client
+
+
+def install_directory_lookup(app: FastAPI, lookup: DirectoryLookup) -> None:
+    app.state.directory_lookup = lookup
+    app.state.directory_service = DirectoryService(
+        app.state.repository,
+        gateway_repository=app.state.gateway_repository,
+        entitlement_repository=app.state.entitlement_repository,
+        directory_lookup=lookup,
+        group_claims_enabled=app.state.settings.entra_group_claims,
+    )
+    # The portal services hold this same instance, so swap its lookup rather than rebuild it.
+    app.state.entitlement_service._directory_lookup = lookup
 
 
 @pytest.fixture
@@ -192,6 +217,29 @@ def build_publishing_service(
     )
 
 
+def build_mcp_publishing_service(
+    fake: FakeApim,
+    gateway_repository: InMemoryGatewayRepository,
+    mcp_repository: InMemoryMcpEndpointRepository,
+    *,
+    directory_repository: InMemoryDirectoryRepository | None = None,
+    entitlement_repository: InMemoryEntitlementRepository | None = None,
+    runtime_client_id: str | None = "22222222-2222-2222-2222-222222222222",
+    security_group_claims: bool = True,
+) -> McpPublishingService:
+    arm = build_arm_client(fake)
+    return McpPublishingService(
+        gateway_repository,
+        mcp_endpoint_repository=mcp_repository,
+        entitlement_repository=entitlement_repository or InMemoryEntitlementRepository(),
+        directory_repository=directory_repository or InMemoryDirectoryRepository(),
+        client_factory=lambda resource: ApimClient(arm, resource),
+        writer_factory=lambda resource: ApimWriter(arm, resource),
+        runtime_client_id=runtime_client_id,
+        security_group_claims=security_group_claims,
+    )
+
+
 @pytest.fixture
 def fake_mcp() -> FakeMcpServer:
     return FakeMcpServer()
@@ -201,6 +249,8 @@ def build_mcp_service(
     server: FakeMcpServer,
     *,
     repository: InMemoryMcpEndpointRepository | None = None,
+    gateway_repository: InMemoryGatewayRepository | None = None,
+    entitlement_repository: InMemoryEntitlementRepository | None = None,
     secret: str = "vault-token",
     token: str = "entra-token",
 ) -> McpEndpointService:
@@ -212,6 +262,8 @@ def build_mcp_service(
 
     return McpEndpointService(
         repository or InMemoryMcpEndpointRepository(),
+        gateway_repository=gateway_repository or InMemoryGatewayRepository(),
+        entitlement_repository=entitlement_repository or InMemoryEntitlementRepository(),
         client_factory=build_mcp_client_factory(build_http_client(server)),
         secret_resolver=read_secret,
         token_resolver=issue_token,

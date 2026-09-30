@@ -222,6 +222,12 @@ class GatewayService:
                 await stack.enter_async_context(
                     publication_lock(self._repository, actor.tenant_id, publication.id)
                 )
+            for mcp_publication in await self._repository.list_mcp_publications(
+                actor.tenant_id, gateway_id=gateway_id
+            ):
+                await stack.enter_async_context(
+                    publication_lock(self._repository, actor.tenant_id, mcp_publication.id)
+                )
             return await self._update(actor, gateway_id, request)
 
     async def _update(self, actor: Actor, gateway_id: str, request: GatewayUpdate) -> Gateway:
@@ -267,6 +273,12 @@ class GatewayService:
                 await stack.enter_async_context(
                     publication_lock(self._repository, actor.tenant_id, publication.id)
                 )
+            for mcp_publication in await self._repository.list_mcp_publications(
+                actor.tenant_id, gateway_id=gateway_id
+            ):
+                await stack.enter_async_context(
+                    publication_lock(self._repository, actor.tenant_id, mcp_publication.id)
+                )
             await self._delete(actor, gateway_id)
 
     async def _delete(self, actor: Actor, gateway_id: str) -> None:
@@ -288,6 +300,21 @@ class GatewayService:
                 "MOSAIC published models into this gateway. Unpublish them first, so their API "
                 "Management resources are removed rather than orphaned.",
                 details={"publications": [item.display_name for item in published]},
+            )
+        mcp_published = [
+            item
+            for item in await self._repository.list_mcp_publications(
+                actor.tenant_id, gateway_id=gateway_id
+            )
+            if item.created_resources()
+            or item.status == PublicationStatus.APPLYING
+            or item.access_state in {"applying", "unknown"}
+        ]
+        if mcp_published:
+            raise ConflictError(
+                "MOSAIC published MCP servers into this gateway. Unpublish them first, so their "
+                "API Management resources are removed rather than orphaned.",
+                details={"publications": [item.display_name for item in mcp_published]},
             )
         await self._repository.delete_gateway(
             gateway, self._audit(actor, "gateway.removed", gateway.id)
@@ -856,6 +883,21 @@ class GatewayService:
     async def import_mcp_servers(
         self, actor: Actor, gateway_id: str, request: ImportRequest
     ) -> list[McpServer]:
+        async with AsyncExitStack() as stack:
+            publications = await self._repository.list_mcp_publications(
+                actor.tenant_id, gateway_id=gateway_id
+            )
+            requested = {name.casefold() for name in request.api_names}
+            for publication in sorted(publications, key=lambda item: item.id):
+                if publication.api_name.casefold() in requested:
+                    await stack.enter_async_context(
+                        publication_lock(self._repository, actor.tenant_id, publication.id)
+                    )
+            return await self._import_mcp_servers(actor, gateway_id, request)
+
+    async def _import_mcp_servers(
+        self, actor: Actor, gateway_id: str, request: ImportRequest
+    ) -> list[McpServer]:
         await self._synced_gateway(actor, gateway_id)
         observed = await self._repository.list_observed(
             ObservedMcpServer, actor.tenant_id, gateway_id, "observedMcpServer"
@@ -889,6 +931,7 @@ class GatewayService:
                 ),
                 summary=existing_server.summary if existing_server else None,
                 imported_from_snapshot_id=server.snapshot_id,
+                publication_id=existing_server.publication_id if existing_server else None,
                 imported_by=actor.object_id,
             )
             imported.append(
@@ -953,6 +996,11 @@ class GatewayService:
         record = await self._repository.get_mcp_server(actor.tenant_id, mcp_server_record_id)
         if not record:
             raise NotFoundError("MCP server was not found", details={"id": mcp_server_record_id})
+        if record.publication_id:
+            raise ConflictError(
+                "Delete its MCP publication instead.",
+                details={"publicationId": record.publication_id},
+            )
         await self._repository.delete_mcp_server(
             record,
             self._audit(actor, "mcpServer.removed", record.id, resource_type="mcpServer"),

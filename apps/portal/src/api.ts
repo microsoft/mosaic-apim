@@ -8,6 +8,7 @@ import type {
   CatalogEntry,
   KeyRevealResult,
   KeySlot,
+  McpConnection,
   ModelConnection,
   MyUsageReport,
   PortalProfile,
@@ -55,6 +56,8 @@ export interface PortalApi {
   getMyUsage(period: UsagePeriod): Promise<MyUsageReport>
   /** Connection metadata for one of the caller's own direct model grants. Contains no secret. */
   getMyEntitlementConnection(entitlementId: string): Promise<ModelConnection>
+  /** Connection metadata for one of the caller's own MCP grants. Contains no secret. */
+  getMcpConnection(entitlementId: string): Promise<McpConnection>
   /** Reads one current key from APIM. Callers must keep the result out of caches and storage. */
   revealMyEntitlementKey(
     entitlementId: string,
@@ -118,6 +121,8 @@ export function usePortalApi(): PortalApi {
         request<MyUsageReport>(`/api/v1/me/usage?period=${encodeURIComponent(period)}`),
       getMyEntitlementConnection: (entitlementId) =>
         request<ModelConnection>(`${entitlementPath(entitlementId)}/connection`),
+      getMcpConnection: (entitlementId) =>
+        request<McpConnection>(`${entitlementPath(entitlementId)}/mcp-connection`),
       revealMyEntitlementKey: (entitlementId, slot, signal) =>
         request<KeyRevealResult>(`${entitlementPath(entitlementId)}/keys/reveal`, {
           method: 'POST',

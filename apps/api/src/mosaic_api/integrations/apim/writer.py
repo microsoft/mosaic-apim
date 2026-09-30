@@ -11,7 +11,7 @@ delete of something already gone is a no-op rather than an error that masks the 
 
 from typing import Any, Literal
 
-from mosaic_api.domain import APIM_API_VERSION, ApimResourceId
+from mosaic_api.domain import APIM_API_VERSION, APIM_MCP_API_VERSION, ApimResourceId
 from mosaic_api.integrations.apim.client import ArmClient, JsonObject
 
 # API Management requires an If-Match header on deletes. MOSAIC sends "*" rather than a captured
@@ -32,6 +32,7 @@ class ApimWriter:
         self._resource = resource
         self._base = resource.canonical
         self._params = {"api-version": APIM_API_VERSION}
+        self._mcp_params = {"api-version": APIM_MCP_API_VERSION}
 
     @property
     def resource(self) -> ApimResourceId:
@@ -135,6 +136,61 @@ class ApimWriter:
 
     async def delete_api_policy(self, api_name: str) -> bool:
         return await self._delete(f"apis/{api_name}/policies/policy")
+
+    async def put_mcp_api(
+        self,
+        name: str,
+        *,
+        display_name: str,
+        path: str,
+        backend_name: str,
+        subscription_required: bool,
+        description: str,
+    ) -> JsonObject | None:
+        """Create or replace a passthrough MCP server that forwards to ``backend_name``.
+
+        Written on the preview contract, the only one that knows the ``mcp`` API type. The
+        ``endpoints`` map is left out so API Management serves the streamable message endpoint at
+        its default, ``/mcp``: the published schema and the live service disagree about its shape.
+        """
+
+        return await self._arm.put(
+            self.resource_id(f"apis/{name}"),
+            {
+                "properties": {
+                    "type": "mcp",
+                    "displayName": display_name,
+                    "description": description,
+                    "path": path,
+                    "protocols": ["https"],
+                    "backendId": backend_name,
+                    "subscriptionRequired": subscription_required,
+                    "mcpProperties": {"transportType": "streamable"},
+                }
+            },
+            params=self._mcp_params,
+        )
+
+    async def delete_mcp_api(self, name: str) -> bool:
+        return await self._arm.delete(
+            self.resource_id(f"apis/{name}"),
+            params=self._mcp_params,
+            if_match=DELETE_IF_MATCH,
+        )
+
+    async def put_mcp_api_policy(self, api_name: str, value: str) -> JsonObject | None:
+        return await self._arm.put(
+            self.resource_id(f"apis/{api_name}/policies/policy"),
+            {"properties": {"format": "rawxml", "value": value}},
+            params=self._mcp_params,
+        )
+
+    async def delete_mcp_api_policy(self, api_name: str) -> bool:
+        return await self._arm.delete(
+            self.resource_id(f"apis/{api_name}/policies/policy"),
+            params=self._mcp_params,
+            if_match=DELETE_IF_MATCH,
+        )
 
     async def put_product(
         self,

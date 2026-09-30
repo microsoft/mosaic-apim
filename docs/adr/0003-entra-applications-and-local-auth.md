@@ -25,3 +25,16 @@ local/test environment settings; startup rejects either when the environment is 
 - Browser and resource permissions remain independently governable.
 - A deployment cannot silently become unauthenticated because identity setup failed.
 - Local behavior is intentionally different and visibly opt-in.
+
+## Amendment 2026-09-29: Runtime group claims, Graph lookup and MCP permissions
+
+[ADR 0016](0016-agent-identities-and-security-group-grants.md) adds Entra security-group grants
+and agent identities. Bootstrap now configures `groupMembershipClaims: SecurityGroup` on the
+model-runtime and control-plane API registrations so validated tokens can carry group object IDs.
+The API's managed identity also needs read-only Microsoft Graph application permissions:
+`User.ReadBasic.All`, `GroupMember.Read.All` and `AgentIdentity.Read.All`.
+
+The model-runtime registration now exposes the `Mcp.Invoke` delegated scope and
+`Mcp.Invoke.Application` application role. MCP grants can be recorded for users, agents and
+security groups, and [ADR 0017](0017-mcp-gateway-enforcement.md) uses those permissions for
+gateway enforcement on MCP servers MOSAIC publishes.

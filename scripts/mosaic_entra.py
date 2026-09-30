@@ -15,7 +15,8 @@ from typing import Any
 
 GRAPH_ROOT = "https://graph.microsoft.com/v1.0"
 APPLICATION_SELECT = (
-    "id,appId,displayName,tags,spa,publicClient,isFallbackPublicClient,api,requiredResourceAccess"
+    "id,appId,displayName,tags,spa,publicClient,isFallbackPublicClient,api,requiredResourceAccess,"
+    "appRoles,groupMembershipClaims"
 )
 DEFAULT_LOCATION = "eastus2"
 DEFAULT_LOCALHOST_REDIRECTS = (
@@ -31,12 +32,23 @@ APP_ROLE_VALUE = "Admin"
 PORTAL_ROLE_VALUE = "User"
 MODEL_RUNTIME_SCOPE_VALUE = "Models.Invoke"
 MODEL_RUNTIME_ROLE_VALUE = "Models.Invoke.Application"
+MCP_RUNTIME_SCOPE_VALUE = "Mcp.Invoke"
+MCP_RUNTIME_ROLE_VALUE = "Mcp.Invoke.Application"
+MODEL_RUNTIME_SCOPE_VALUES = (MODEL_RUNTIME_SCOPE_VALUE, MCP_RUNTIME_SCOPE_VALUE)
+GRAPH_APP_ID = "00000003-0000-0000-c000-000000000000"
+GRAPH_APPLICATION_PERMISSION_VALUES = (
+    "User.ReadBasic.All",
+    "GroupMember.Read.All",
+    "AgentIdentity.Read.All",
+)
 PORTAL_APP_NOTES = "MOSAIC end-user portal application registration managed by azd hooks."
 MODEL_CLIENT_NOTES = (
     "MOSAIC public client application registration managed by azd hooks. People sign in with "
     "it to get delegated model-runtime tokens."
 )
 MODEL_CLIENT_TOGGLE = "MOSAIC_ENTRA_MODEL_CLIENT"
+DIRECTORY_LOOKUP_TOGGLE = "MOSAIC_ENTRA_DIRECTORY_LOOKUP"
+GROUP_CLAIMS_TOGGLE = "MOSAIC_ENTRA_GROUP_CLAIMS"
 # Loopback redirect; Entra accepts any port for http://localhost on public clients.
 MODEL_CLIENT_REDIRECT_URI = "http://localhost"
 CONSENT_RETRY_DELAYS_SECONDS = (2, 4, 8, 16)
@@ -163,12 +175,147 @@ def model_runtime_role_id() -> str:
     return deterministic_guid("entra/model-runtime/role/models-invoke")
 
 
+def mcp_runtime_scope_id() -> str:
+    return deterministic_guid("entra/model-runtime/scope/mcp-invoke")
+
+
+def mcp_runtime_role_id() -> str:
+    return deterministic_guid("entra/model-runtime/role/mcp-invoke")
+
+
+def model_runtime_scope_definitions() -> list[dict[str, Any]]:
+    return [
+        {
+            "adminConsentDescription": (
+                "Allow the application to invoke MOSAIC-published models on behalf of "
+                "the signed-in user, subject to model access grants."
+            ),
+            "adminConsentDisplayName": "Invoke MOSAIC-published models",
+            "id": model_runtime_scope_id(),
+            "isEnabled": True,
+            "type": "Admin",
+            "value": MODEL_RUNTIME_SCOPE_VALUE,
+        },
+        {
+            "adminConsentDescription": (
+                "Allow the application to call MCP servers published through MOSAIC on behalf "
+                "of the signed-in user."
+            ),
+            "adminConsentDisplayName": "Call MCP servers published through MOSAIC",
+            "id": mcp_runtime_scope_id(),
+            "isEnabled": True,
+            "type": "Admin",
+            "userConsentDescription": "Call MCP servers published through MOSAIC.",
+            "userConsentDisplayName": "Call MCP servers published through MOSAIC",
+            "value": MCP_RUNTIME_SCOPE_VALUE,
+        },
+    ]
+
+
+def model_runtime_role_definitions() -> list[dict[str, Any]]:
+    return [
+        {
+            "allowedMemberTypes": ["Application"],
+            "description": (
+                "Invoke MOSAIC-published models as an application, subject to model "
+                "access grants."
+            ),
+            "displayName": MODEL_RUNTIME_ROLE_VALUE,
+            "id": model_runtime_role_id(),
+            "isEnabled": True,
+            "value": MODEL_RUNTIME_ROLE_VALUE,
+        },
+        {
+            "allowedMemberTypes": ["Application"],
+            "description": "Call MCP servers published through MOSAIC as an application.",
+            "displayName": MCP_RUNTIME_ROLE_VALUE,
+            "id": mcp_runtime_role_id(),
+            "isEnabled": True,
+            "value": MCP_RUNTIME_ROLE_VALUE,
+        },
+    ]
+
+
+def merge_named_items(
+    existing_items: Iterable[dict[str, Any]] | None, required_items: Iterable[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    merged = [dict(item) for item in existing_items or ()]
+    for required in required_items:
+        existing = next(
+            (
+                item
+                for item in merged
+                if item.get("id") == required["id"] or item.get("value") == required["value"]
+            ),
+            None,
+        )
+        if existing is None:
+            merged.append(dict(required))
+            continue
+        preserved_id = existing.get("id")
+        existing.update(required)
+        if preserved_id:
+            existing["id"] = preserved_id
+    return merged
+
+
+def parse_default_true_toggle(name: str) -> bool:
+    raw_value = os.environ.get(name, "")
+    value = raw_value.strip().casefold()
+    if value in ("", "true"):
+        return True
+    if value == "false":
+        return False
+    raise OperationFailed(
+        f"Operation read {name} failed: expected true or false but got '{raw_value}'. "
+        f"Remediation: run `azd env set {name} true` to enable it (the default), or "
+        f"`azd env set {name} false` to skip it, then rerun."
+    )
+
+
+def model_client_enabled() -> bool:
+    return parse_default_true_toggle(MODEL_CLIENT_TOGGLE)
+
+
+def directory_lookup_enabled() -> bool:
+    return parse_default_true_toggle(DIRECTORY_LOOKUP_TOGGLE)
+
+
+def group_claims_enabled() -> bool:
+    return parse_default_true_toggle(GROUP_CLAIMS_TOGGLE)
+
+
+def group_membership_claims_patch(
+    existing_value: Any, *, display_name: str, operation_name: str
+) -> str | None:
+    if not group_claims_enabled():
+        return None
+    if existing_value is None:
+        return "SecurityGroup"
+    value = str(existing_value).strip()
+    if value == "" or value.casefold() == "none":
+        return "SecurityGroup"
+    values = {part.strip().casefold() for part in value.split(",") if part.strip()}
+    if value.casefold() == "all" or "securitygroup" in values:
+        return value
+    print(
+        f"WARNING: {display_name} has groupMembershipClaims set to '{value}'. Microsoft Learn "
+        "documents groupMembershipClaims as a single value: None, SecurityGroup, "
+        "ApplicationGroup, DirectoryRole, or All. MOSAIC did not change it. Set it to "
+        "'SecurityGroup' or 'All' if this application should emit security-group object IDs "
+        "in access tokens.",
+        file=sys.stderr,
+    )
+    return None
+
+
 def build_api_app_payload(
     display_name: str,
     identifier_uri: str,
     tags: list[str],
     preauthorized_client_ids: Iterable[str] | None = None,
     existing_api: dict[str, Any] | None = None,
+    existing_group_membership_claims: Any = None,
 ) -> dict[str, Any]:
     preauthorized_applications = [
         {
@@ -188,7 +335,7 @@ def build_api_app_payload(
             )
         elif api_scope_id() not in existing["delegatedPermissionIds"]:
             existing["delegatedPermissionIds"].append(api_scope_id())
-    return {
+    payload: dict[str, Any] = {
         "displayName": display_name,
         "identifierUris": [identifier_uri],
         "notes": "MOSAIC API application registration managed by azd hooks.",
@@ -236,6 +383,14 @@ def build_api_app_payload(
             },
         ],
     }
+    group_claims = group_membership_claims_patch(
+        existing_group_membership_claims,
+        display_name=display_name,
+        operation_name="configure MOSAIC API group claims",
+    )
+    if group_claims is not None:
+        payload["groupMembershipClaims"] = group_claims
+    return payload
 
 
 def build_model_runtime_app_payload(
@@ -243,8 +398,10 @@ def build_model_runtime_app_payload(
     identifier_uri: str,
     tags: list[str],
     existing_api: dict[str, Any] | None = None,
+    existing_app_roles: Iterable[dict[str, Any]] | None = None,
+    existing_group_membership_claims: Any = None,
 ) -> dict[str, Any]:
-    return {
+    payload: dict[str, Any] = {
         "displayName": display_name,
         "identifierUris": [identifier_uri],
         "notes": "MOSAIC model-runtime API application registration managed by azd hooks.",
@@ -255,34 +412,21 @@ def build_model_runtime_app_payload(
             # separate, revocable tenant-wide grant instead (see ensure_model_client_consent).
             **(existing_api or {}),
             "requestedAccessTokenVersion": 2,
-            "oauth2PermissionScopes": [
-                {
-                    "adminConsentDescription": (
-                        "Allow the application to invoke MOSAIC-published models on behalf of "
-                        "the signed-in user, subject to model access grants."
-                    ),
-                    "adminConsentDisplayName": "Invoke MOSAIC-published models",
-                    "id": model_runtime_scope_id(),
-                    "isEnabled": True,
-                    "type": "Admin",
-                    "value": MODEL_RUNTIME_SCOPE_VALUE,
-                }
-            ],
+            "oauth2PermissionScopes": merge_named_items(
+                (existing_api or {}).get("oauth2PermissionScopes"),
+                model_runtime_scope_definitions(),
+            ),
         },
-        "appRoles": [
-            {
-                "allowedMemberTypes": ["Application"],
-                "description": (
-                    "Invoke MOSAIC-published models as an application, subject to model "
-                    "access grants."
-                ),
-                "displayName": MODEL_RUNTIME_ROLE_VALUE,
-                "id": model_runtime_role_id(),
-                "isEnabled": True,
-                "value": MODEL_RUNTIME_ROLE_VALUE,
-            }
-        ],
+        "appRoles": merge_named_items(existing_app_roles, model_runtime_role_definitions()),
     }
+    group_claims = group_membership_claims_patch(
+        existing_group_membership_claims,
+        display_name=display_name,
+        operation_name="configure model-runtime group claims",
+    )
+    if group_claims is not None:
+        payload["groupMembershipClaims"] = group_claims
+    return payload
 
 
 def normalize_client_ids(client_ids: Iterable[str] | None) -> list[str]:
@@ -299,6 +443,18 @@ def merge_required_scope(
     resource_app_id: str,
     scope_id: str,
 ) -> list[dict[str, Any]]:
+    return merge_required_scopes(
+        existing_required_resource_access,
+        resource_app_id=resource_app_id,
+        scope_ids=[scope_id],
+    )
+
+
+def merge_required_scopes(
+    existing_required_resource_access: Iterable[dict[str, Any]] | None,
+    resource_app_id: str,
+    scope_ids: Iterable[str],
+) -> list[dict[str, Any]]:
     required_resource_access = [
         {**resource, "resourceAccess": list(resource.get("resourceAccess", []))}
         for resource in existing_required_resource_access or ()
@@ -311,13 +467,15 @@ def merge_required_scope(
         ),
         None,
     )
-    scope = {"id": scope_id, "type": "Scope"}
+    scopes = [{"id": scope_id, "type": "Scope"} for scope_id in scope_ids]
     if resource_access is None:
         required_resource_access.append(
-            {"resourceAppId": resource_app_id, "resourceAccess": [scope]}
+            {"resourceAppId": resource_app_id, "resourceAccess": scopes}
         )
-    elif scope not in resource_access["resourceAccess"]:
-        resource_access["resourceAccess"].append(scope)
+    else:
+        for scope in scopes:
+            if scope not in resource_access["resourceAccess"]:
+                resource_access["resourceAccess"].append(scope)
     return required_resource_access
 
 
@@ -364,29 +522,14 @@ def build_model_client_app_payload(
                 [MODEL_CLIENT_REDIRECT_URI, *(existing_redirect_uris or ())]
             ),
         },
-        "requiredResourceAccess": merge_required_scope(
+        "requiredResourceAccess": merge_required_scopes(
             existing_required_resource_access,
             resource_app_id=model_runtime_client_id,
-            scope_id=model_runtime_scope_id(),
+            scope_ids=[model_runtime_scope_id(), mcp_runtime_scope_id()],
         ),
         "signInAudience": "AzureADMyOrg",
         "tags": tags,
     }
-
-
-def model_client_enabled() -> bool:
-    raw_value = os.environ.get(MODEL_CLIENT_TOGGLE, "")
-    value = raw_value.strip().casefold()
-    if value in ("", "true"):
-        return True
-    if value == "false":
-        return False
-    raise OperationFailed(
-        f"Operation read {MODEL_CLIENT_TOGGLE} failed: expected true or false but got "
-        f"'{raw_value}'. Remediation: run `azd env set {MODEL_CLIENT_TOGGLE} true` to manage "
-        f"the MOSAIC model client registration (the default), or `azd env set "
-        f"{MODEL_CLIENT_TOGGLE} false` to skip it, then rerun."
-    )
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -432,6 +575,7 @@ def preprovision(runner: CliRunner, environment_name_override: str | None) -> No
             identifier_uri=f"api://{existing['appId']}",
             tags=context.app_tags,
             existing_api=application_api_settings(existing),
+            existing_group_membership_claims=existing.get("groupMembershipClaims"),
         ),
         operation_name="create-or-update API application registration",
     )
@@ -511,6 +655,7 @@ def preprovision(runner: CliRunner, environment_name_override: str | None) -> No
             tags=context.app_tags,
             preauthorized_client_ids=[spa_app["appId"], portal_app["appId"]],
             existing_api=application_api_settings(api_app),
+            existing_group_membership_claims=api_app.get("groupMembershipClaims"),
         ),
         operation_name="pre-authorize SPA and portal delegated access to API",
     )
@@ -528,6 +673,8 @@ def preprovision(runner: CliRunner, environment_name_override: str | None) -> No
             identifier_uri=f"api://{existing['appId']}",
             tags=context.app_tags,
             existing_api=application_api_settings(existing),
+            existing_app_roles=existing.get("appRoles"),
+            existing_group_membership_claims=existing.get("groupMembershipClaims"),
         ),
         operation_name="create-or-update model-runtime API application registration",
     )
@@ -625,6 +772,13 @@ def preprovision(runner: CliRunner, environment_name_override: str | None) -> No
     )
     set_azd_env(runner, "MOSAIC_MODEL_RUNTIME_SCOPE_ID", model_runtime_scope_id())
     set_azd_env(runner, "MOSAIC_MODEL_RUNTIME_ROLE_ID", model_runtime_role_id())
+    set_azd_env(
+        runner,
+        "MOSAIC_MCP_RUNTIME_SCOPE",
+        f"api://{model_runtime_app['appId']}/{MCP_RUNTIME_SCOPE_VALUE}",
+    )
+    set_azd_env(runner, "MOSAIC_MCP_RUNTIME_SCOPE_ID", mcp_runtime_scope_id())
+    set_azd_env(runner, "MOSAIC_MCP_RUNTIME_ROLE_ID", mcp_runtime_role_id())
     if model_client_app is not None and model_client_sp is not None:
         set_azd_env(runner, "MOSAIC_MODEL_CLIENT_APP_OBJECT_ID", model_client_app["id"])
         set_azd_env(runner, "MOSAIC_MODEL_CLIENT_ID", model_client_app["appId"])
@@ -681,6 +835,30 @@ def postprovision(
         print(
             "PORTAL_APP_URL was not set; the MOSAIC portal registration keeps only its localhost "
             "redirects until the portal web app is deployed.",
+            file=sys.stderr,
+        )
+
+    if directory_lookup_enabled():
+        api_managed_identity_principal_id = os.environ.get("API_APP_PRINCIPAL_ID")
+        if runner.dry_run and not api_managed_identity_principal_id:
+            api_managed_identity_principal_id = deterministic_guid(
+                f"dry-run/api-managed-identity/{context.environment_name}"
+            )
+        if not api_managed_identity_principal_id:
+            raise OperationFailed(
+                "Operation grant Microsoft Graph application permissions failed: "
+                "API_APP_PRINCIPAL_ID was not available from the azd environment. "
+                "Remediation: ensure infra/main.bicep outputs API_APP_PRINCIPAL_ID and rerun "
+                "`azd provision`."
+            )
+        ensure_api_managed_identity_graph_permissions(
+            runner,
+            managed_identity_principal_id=api_managed_identity_principal_id,
+        )
+    else:
+        print(
+            f"{DIRECTORY_LOOKUP_TOGGLE} is false; skipping Microsoft Graph application "
+            "permission grants for the MOSAIC API managed identity.",
             file=sys.stderr,
         )
 
@@ -896,6 +1074,128 @@ def ensure_user_admin_role_assignment(
     )
 
 
+def ensure_api_managed_identity_graph_permissions(
+    runner: CliRunner, *, managed_identity_principal_id: str
+) -> None:
+    operation_name = "grant Microsoft Graph application permissions to API managed identity"
+    graph_sp = resolve_graph_service_principal(runner, operation_name)
+    role_ids_by_value = {
+        role["value"]: role["id"]
+        for role in graph_sp.get("appRoles", [])
+        if isinstance(role, dict)
+        and role.get("value") in GRAPH_APPLICATION_PERMISSION_VALUES
+        and "Application" in role.get("allowedMemberTypes", [])
+        and role.get("isEnabled", True)
+    }
+    assignments = graph_items(
+        graph_request(
+            runner,
+            "GET",
+            f"/servicePrincipals/{managed_identity_principal_id}/appRoleAssignments"
+            "?$select=appRoleId,resourceId",
+            operation_name=operation_name,
+        ),
+        operation_name,
+    )
+    assigned_role_ids = {
+        item.get("appRoleId")
+        for item in assignments
+        if item.get("resourceId") == graph_sp["id"] and isinstance(item.get("appRoleId"), str)
+    }
+    missing: list[tuple[str, str]] = []
+    for role_value in GRAPH_APPLICATION_PERMISSION_VALUES:
+        role_id = role_ids_by_value.get(role_value)
+        if role_id is None:
+            print(
+                f"WARNING: Microsoft Graph in this tenant does not offer the {role_value} "
+                "application permission. MOSAIC skipped that grant and deployment continues.",
+                file=sys.stderr,
+            )
+            continue
+        if role_id in assigned_role_ids:
+            continue
+        missing.append((role_value, role_id))
+    for role_value, role_id in missing:
+        try:
+            graph_request(
+                runner,
+                "POST",
+                f"/servicePrincipals/{managed_identity_principal_id}/appRoleAssignments",
+                body={
+                    "principalId": managed_identity_principal_id,
+                    "resourceId": graph_sp["id"],
+                    "appRoleId": role_id,
+                },
+                operation_name=operation_name,
+            )
+        except DirectoryPermissionDenied:
+            print(
+                graph_application_permission_warning(
+                    managed_identity_principal_id,
+                    graph_sp["id"],
+                    [(value, app_role_id) for value, app_role_id in missing],
+                ),
+                file=sys.stderr,
+            )
+            return
+        print(
+            f"Granted Microsoft Graph application permission {role_value} to the MOSAIC API "
+            "managed identity.",
+            file=sys.stderr,
+        )
+
+
+def resolve_graph_service_principal(
+    runner: CliRunner, operation_name: str
+) -> dict[str, Any]:
+    query = urllib.parse.urlencode(
+        {
+            "$filter": f"appId eq '{GRAPH_APP_ID}'",
+            "$select": "id,appId,displayName,appRoles",
+        }
+    )
+    items = graph_items(
+        graph_request(
+            runner,
+            "GET",
+            f"/servicePrincipals?{query}",
+            operation_name=operation_name,
+        ),
+        operation_name,
+    )
+    if len(items) != 1:
+        raise OperationFailed(
+            "Operation grant Microsoft Graph application permissions failed: Microsoft Graph "
+            f"service principal {GRAPH_APP_ID} was not found uniquely in this tenant."
+        )
+    return items[0]
+
+
+def graph_application_permission_warning(
+    managed_identity_principal_id: str,
+    graph_service_principal_id: str,
+    missing_permissions: Iterable[tuple[str, str]],
+) -> str:
+    permissions = list(missing_permissions)
+    commands = "\n".join(
+        "  az rest --method POST "
+        f"--url {GRAPH_ROOT}/servicePrincipals/{managed_identity_principal_id}/appRoleAssignments "
+        "--headers Content-Type=application/json "
+        "--body "
+        f"'{{\"principalId\":\"{managed_identity_principal_id}\","
+        f"\"resourceId\":\"{graph_service_principal_id}\",\"appRoleId\":\"{role_id}\"}}'"
+        for _, role_id in permissions
+    )
+    values = ", ".join(value for value, _ in permissions)
+    return (
+        "WARNING: Microsoft Graph denied application permission assignment for the MOSAIC API "
+        f"managed identity. Missing permissions: {values}. Deployment continues, but directory "
+        "lookup will fail until a Privileged Role Administrator or Global Administrator grants "
+        "them. Run these commands:\n"
+        f"{commands}"
+    )
+
+
 def ensure_model_client_consent(
     runner: CliRunner,
     *,
@@ -908,7 +1208,7 @@ def ensure_model_client_consent(
     # A deploying user who can't grant consent gets the admin command instead of a failed hook.
     operation_name = (
         f"grant tenant-wide consent for {client_display_name} to request "
-        f"{MODEL_RUNTIME_SCOPE_VALUE}"
+        f"{' and '.join(MODEL_RUNTIME_SCOPE_VALUES)}"
     )
     retry_delays = iter(CONSENT_RETRY_DELAYS_SECONDS)
     while True:
@@ -917,7 +1217,7 @@ def ensure_model_client_consent(
                 runner,
                 client_service_principal_id=client_service_principal_id,
                 resource_service_principal_id=runtime_service_principal_id,
-                scope=MODEL_RUNTIME_SCOPE_VALUE,
+                scopes=MODEL_RUNTIME_SCOPE_VALUES,
                 operation_name=operation_name,
             )
         except DirectoryPermissionDenied:
@@ -941,7 +1241,7 @@ def ensure_model_client_consent(
         if change is not None:
             print(
                 f"{change} tenant-wide admin consent for {client_display_name} to request "
-                f"{MODEL_RUNTIME_SCOPE_VALUE} from the model runtime.",
+                f"{' and '.join(MODEL_RUNTIME_SCOPE_VALUES)} from the model runtime.",
                 file=sys.stderr,
             )
         return True
@@ -952,9 +1252,10 @@ def ensure_all_principals_scope_grant(
     *,
     client_service_principal_id: str,
     resource_service_principal_id: str,
-    scope: str,
+    scopes: Iterable[str],
     operation_name: str,
 ) -> str | None:
+    required_scopes = list(scopes)
     grants = graph_items(
         graph_request(
             runner,
@@ -983,20 +1284,21 @@ def ensure_all_principals_scope_grant(
                 "clientId": client_service_principal_id,
                 "consentType": "AllPrincipals",
                 "resourceId": resource_service_principal_id,
-                "scope": scope,
+                "scope": " ".join(required_scopes),
             },
             operation_name=operation_name,
         )
         return "Granted"
-    scopes = str(tenant_grant.get("scope") or "").split()
-    if scope in scopes:
+    existing_scopes = str(tenant_grant.get("scope") or "").split()
+    missing_scopes = [scope for scope in required_scopes if scope not in existing_scopes]
+    if not missing_scopes:
         return None
     # PATCH replaces the scope list, so keep the scopes an administrator already granted.
     graph_request(
         runner,
         "PATCH",
         f"/oauth2PermissionGrants/{tenant_grant['id']}",
-        body={"scope": " ".join([*scopes, scope])},
+        body={"scope": " ".join([*existing_scopes, *missing_scopes])},
         operation_name=operation_name,
     )
     return "Extended"
@@ -1007,13 +1309,14 @@ def model_client_consent_warning(
 ) -> str:
     return (
         f"WARNING: Microsoft Graph denied the tenant-wide consent for {client_display_name} to "
-        f"request {MODEL_RUNTIME_SCOPE_VALUE}. The registration exists, but people can't get "
+        f"request {' and '.join(MODEL_RUNTIME_SCOPE_VALUES)}. The registration exists, but "
+        "people can't get "
         "model-runtime tokens with it until an administrator grants consent. Deployment "
         "continues.\n"
         "Remediation: a Privileged Role Administrator, Cloud Application Administrator or "
         "Application Administrator can run:\n"
         f"  az ad app permission grant --id {client_app_id} --api {runtime_app_id} "
-        f"--scope {MODEL_RUNTIME_SCOPE_VALUE}\n"
+        f"--scope \"{' '.join(MODEL_RUNTIME_SCOPE_VALUES)}\"\n"
         "or open Microsoft Entra admin center > App registrations > "
         f"{client_display_name} > API permissions > Grant admin consent. Rerunning "
         "`azd provision` as one of those roles also grants it."
@@ -1157,6 +1460,21 @@ class CliRunner:
             "applications": {},
             "servicePrincipals": {},
             "oauth2PermissionGrants": {},
+        }
+        graph_sp_id = deterministic_guid("dry-run/servicePrincipals/microsoft-graph")
+        self._dry_run_objects["servicePrincipals"][graph_sp_id] = {
+            "id": graph_sp_id,
+            "appId": GRAPH_APP_ID,
+            "displayName": "Microsoft Graph",
+            "appRoles": [
+                {
+                    "id": deterministic_guid(f"dry-run/graph-app-role/{value}"),
+                    "value": value,
+                    "allowedMemberTypes": ["Application"],
+                    "isEnabled": True,
+                }
+                for value in GRAPH_APPLICATION_PERMISSION_VALUES
+            ],
         }
         self._dry_run_role_assignments: dict[str, list[dict[str, Any]]] = {}
 

@@ -25,9 +25,37 @@ class AuthContext:
     object_id: str
     tenant_id: str
     roles: frozenset[str]
+    # Security-group object IDs from the token's ``groups`` claim, lowercased. Present only when
+    # the API's app registration emits group claims (``groupMembershipClaims``).
+    group_ids: frozenset[str] = frozenset()
+    # Entra leaves ``groups`` out and points to Graph instead when the caller is in too many
+    # groups for a token. Then ``group_ids`` is empty or incomplete and must not be trusted.
+    groups_overage: bool = False
 
     def has_any_role(self, *roles: str) -> bool:
         return any(role in self.roles for role in roles)
+
+
+def token_groups(claims: dict[str, Any]) -> tuple[frozenset[str], bool]:
+    """The security-group IDs a validated token lists, and whether the list overflowed.
+
+    Overage shows up as ``groups`` named in ``_claim_names`` (access tokens) or as ``hasgroups``
+    (some ID tokens). Group IDs are lowercased so they compare equal to object IDs Graph returns.
+    """
+
+    raw = claims.get("groups")
+    groups = (
+        frozenset(str(item).strip().casefold() for item in raw if str(item).strip())
+        if isinstance(raw, list)
+        else frozenset()
+    )
+    claim_names = claims.get("_claim_names")
+    overage = bool(
+        (isinstance(claim_names, dict) and "groups" in claim_names)
+        or claims.get("hasgroups") is True
+        or str(claims.get("hasgroups", "")).casefold() == "true"
+    )
+    return groups, overage
 
 
 class Authenticator(Protocol):
@@ -185,10 +213,13 @@ class EntraAuthenticator:
             # reaches a route. Which of the accepted roles a given route needs is decided by the
             # ``require_*`` dependencies.
             raise _no_mosaic_role(self._accepted_roles)
+        group_ids, groups_overage = token_groups(claims)
         return AuthContext(
             object_id=str(claims["oid"]),
             tenant_id=str(claims["tid"]),
             roles=roles,
+            group_ids=group_ids,
+            groups_overage=groups_overage,
         )
 
     async def close(self) -> None:

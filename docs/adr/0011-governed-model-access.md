@@ -34,11 +34,12 @@ keep their behavior until a reviewed plan changes them. A published API has a ca
 `ModelApi` record linked to its publication, not a fabricated inventory snapshot. Import refreshes
 preserve that link and administrator-authored catalog metadata.
 
-**This slice orchestrates direct users and applications only.** A user's Entra object ID, or an
+**This slice originally orchestrated direct users and applications only.** A user's Entra object ID, or an
 application/managed identity's service-principal object ID, identifies the runtime subject.
 Application client IDs are not interchangeable with service-principal object IDs. Group
-expansion, customer-owned imported APIs, MCP enforcement, and access-request automation remain
-desired-state-only or future work.
+expansion and MCP enforcement are handled by later ADRs for MOSAIC-owned publications. Customer-owned
+imported APIs and MCP servers, and application-owner delegation, remain desired-state-only or future
+work.
 
 **Either authentication method works independently.** A governed model can enable subscription
 keys, Entra tokens, both, or neither. Neither means deny all, not anonymous access. A key is a
@@ -168,3 +169,16 @@ Azure RBAC inability to read secrets.
   applies it. The grant joins the model's next reviewed plan like any other saved change.
 - Mocked policy and API checks cannot establish live Entra/APIM interoperability. The opt-in
   live verifier and actual gateway checks must report unavailable prerequisites honestly.
+
+## Amendment 2026-09-29: Security-group branch and agent token handling
+
+[ADR 0016](0016-agent-identities-and-security-group-grants.md) extends governed model access to
+Entra security groups. The APIM policy first honors an enabled direct grant, then checks enabled
+security-group grants against the validated token's `groups` claim and chooses the most generous
+matching group grant. Group grants have no subscription and no key path; subscription keys never
+match them. Their rate and quota counters are keyed by the member's `oid`, while direct-grant
+counter keys remain unchanged.
+
+The policy treats missing, empty and `/` `scp` values on agent app-only tokens as not delegated,
+and authorizes application/agent callers through `roles`. If Entra signals group overage instead of
+emitting `groups`, the policy denies group-grant access and tells the caller to use a direct grant.

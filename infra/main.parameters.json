@@ -26,6 +26,12 @@
     "modelClientId": {
       "value": "${MOSAIC_MODEL_CLIENT_ID}"
     },
+    "entraDirectoryLookup": {
+      "value": "${MOSAIC_ENTRA_DIRECTORY_LOOKUP=true}"
+    },
+    "entraGroupClaims": {
+      "value": "${MOSAIC_ENTRA_GROUP_CLAIMS=true}"
+    },
     "apiServicePrincipalObjectId": {
       "value": "${MOSAIC_API_SERVICE_PRINCIPAL_OBJECT_ID}"
     },

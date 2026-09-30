@@ -7,24 +7,33 @@ import styles from '../pages/EntitlementsPage.module.css'
 export function ModelAccessRecovery({
   publicationId,
   runId,
+  target = 'model',
 }: {
   publicationId: string
   runId?: string | null
+  target?: 'model' | 'mcp'
 }) {
   const api = useMosaicApi()
   const queryClient = useQueryClient()
   const diagnostic = useMutation({
     mutationFn: async () => {
-      const lock = await api.getPublicationLock(publicationId)
+      const lock = target === 'mcp'
+        ? await api.getMcpPublicationLock(publicationId)
+        : await api.getPublicationLock(publicationId)
       if (!lock.ownerId) return { run: null }
-      const run = await api.diagnosePublicationRecovery(publicationId, lock.ownerId)
+      const run = target === 'mcp'
+        ? await api.recoverMcpPublication(publicationId, {
+          runId: lock.ownerId,
+          confirmQuiesced: false,
+        })
+        : await api.diagnosePublicationRecovery(publicationId, lock.ownerId)
       return { run }
     },
     onSuccess: async () => {
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['publications'] }),
+        queryClient.invalidateQueries({ queryKey: [target === 'mcp' ? 'mcp-publications' : 'publications'] }),
         queryClient.invalidateQueries({ queryKey: ['entitlements'] }),
-        queryClient.invalidateQueries({ queryKey: ['publish-run', publicationId, runId] }),
+        queryClient.invalidateQueries({ queryKey: [target === 'mcp' ? 'mcp-publish-run' : 'publish-run', publicationId, runId] }),
       ])
     },
   })
@@ -33,7 +42,7 @@ export function ModelAccessRecovery({
     <div className={styles.cellStack}>
       <MessageBar intent="warning">
         <MessageBarBody>
-          The model&apos;s apply lock may still be retained. An interrupted run status alone does
+          The publication&apos;s apply lock may still be retained. An interrupted run status alone does
           not establish recovery or lock release; refresh the publication state after operator
           recovery. Before explicitly confirming recovery, an operator must stop the original
           worker and verify that all submitted ARM operations are terminal. Follow the operator

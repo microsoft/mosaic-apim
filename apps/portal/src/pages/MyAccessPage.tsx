@@ -1,4 +1,12 @@
-import { Badge, Card, CardHeader, Text } from '@fluentui/react-components'
+import {
+  Badge,
+  Card,
+  CardHeader,
+  MessageBar,
+  MessageBarBody,
+  MessageBarTitle,
+  Text,
+} from '@fluentui/react-components'
 import { useQuery } from '@tanstack/react-query'
 import { usePortalApi } from '../api'
 import { EmptyState, ErrorState, Loading } from '../components/AsyncState'
@@ -11,6 +19,7 @@ import {
   describeLimits,
   describeRuntime,
   gatewayLabel,
+  isSecurityGroupGrant,
   resourceTitle,
   withResourceKind,
 } from '../entitlement-format'
@@ -18,10 +27,12 @@ import { usePortalEnvironments } from '../environments'
 
 export function MyAccessPage() {
   const api = usePortalApi()
+  const profile = useQuery({ queryKey: ['portal', 'profile'], queryFn: api.getProfile })
   const entitlements = useQuery({
     queryKey: ['portal', 'entitlements'],
     queryFn: api.listEntitlements,
   })
+  const visibleEntitlements = entitlements.data?.filter((resolved) => resolved.effective !== false) ?? []
   const environments = usePortalEnvironments()
 
   return (
@@ -30,16 +41,25 @@ export function MyAccessPage() {
         title="My access"
         description="Your recorded grants and their last reported APIM deployment state. Applied configuration is not proof of a successful model call."
       />
+      {profile.data?.groupsOverage && (
+        <MessageBar intent="warning" className="access-overage-notice">
+          <MessageBarBody>
+            <MessageBarTitle>Group access may be missing</MessageBarTitle>
+            You belong to too many groups for your sign-in token to list them, so access granted to
+            your groups can&apos;t be applied. Ask an administrator for a direct grant.
+          </MessageBarBody>
+        </MessageBar>
+      )}
       {entitlements.isLoading && <Loading label="Loading your access" />}
       {entitlements.isError && <ErrorState error={entitlements.error} />}
-      {entitlements.isSuccess && entitlements.data.length === 0 && (
+      {entitlements.isSuccess && visibleEntitlements.length === 0 && (
         <EmptyState title="No access granted yet">
           Your account has the portal role, but no model APIs or MCP servers are entitled to you yet.
         </EmptyState>
       )}
-      {entitlements.isSuccess && entitlements.data.length > 0 && (
+      {entitlements.isSuccess && visibleEntitlements.length > 0 && (
         <div className="access-list">
-          {entitlements.data.map((resolved) => (
+          {visibleEntitlements.map((resolved) => (
             <Card key={resolved.entitlement.id} className="access-card">
               <CardHeader
                 header={
@@ -81,7 +101,8 @@ export function MyAccessPage() {
                   </ul>
                   <Text size={200}>
                     Publication and gateway limits may also apply. Pending changes are not yet
-                    enforced by APIM.
+                    enforced by the gateway.
+                    {isSecurityGroupGrant(resolved) && ' Group access limits apply to each person individually.'}
                   </Text>
                 </section>
                 <section>
@@ -95,7 +116,8 @@ export function MyAccessPage() {
                   </dl>
                 </section>
               </div>
-              {resolved.entitlement.resource.kind === 'modelApi' && (
+              {(resolved.entitlement.resource.kind === 'modelApi' ||
+                resolved.entitlement.resource.kind === 'mcpServer') && (
                 <ConnectionDetails resolved={resolved} />
               )}
             </Card>

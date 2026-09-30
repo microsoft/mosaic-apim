@@ -3,7 +3,7 @@ import { render, screen, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { describe, expect, it, vi } from 'vitest'
 import type { PortalApi } from '../api'
-import type { Entitlement, ResolvedEntitlement, ResourceSummary } from '../types'
+import type { Entitlement, PortalProfile, ResolvedEntitlement, ResourceSummary } from '../types'
 import { MyAccessPage } from './MyAccessPage'
 
 const mocks = vi.hoisted(() => ({
@@ -48,6 +48,18 @@ const baseEntitlement: Entitlement = {
   updatedAt: '2026-01-01T00:00:00Z',
 }
 
+const profile: PortalProfile = {
+  objectId: 'user-object-1',
+  tenantId: 'tenant-1',
+  roles: ['User'],
+  isAdmin: false,
+  principalId: 'principal-1',
+  displayLabel: 'Ada Lovelace',
+  entitlementCount: 0,
+  pendingRequestCount: 0,
+  groupsOverage: false,
+}
+
 const baseSummary: ResourceSummary = {
   kind: 'modelApi',
   id: 'chat-completions',
@@ -59,25 +71,27 @@ const baseSummary: ResourceSummary = {
   available: true,
 }
 
-function renderPage(entitlements: ResolvedEntitlement[]) {
+function renderPage(entitlements: ResolvedEntitlement[], profileOverride: Partial<PortalProfile> = {}) {
   const api = {
+    getProfile: async () => ({ ...profile, ...profileOverride }),
     listEntitlements: async () => entitlements,
     listEnvironments: async () => [
       { key: 'production', displayName: 'Production', description: null, color: 'danger', production: true, order: 50 },
     ],
     getMyEntitlementConnection: vi.fn(),
+    getMcpConnection: vi.fn(),
     revealMyEntitlementKey: vi.fn(),
   }
   mocks.api = api as unknown as PortalApi
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  render(
+  const rendered = render(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={['/access']}>
         <MyAccessPage />
       </MemoryRouter>
     </QueryClientProvider>,
   )
-  return api
+  return { ...api, ...rendered }
 }
 
 describe('MyAccessPage', () => {
@@ -103,6 +117,74 @@ describe('MyAccessPage', () => {
     expect(screen.getByText('Recorded grant')).toBeVisible()
   })
 
+  it('renders security group attribution and per-person limit guidance', async () => {
+    renderPage([
+      {
+        entitlement: {
+          ...baseEntitlement,
+          subject: { kind: 'securityGroup', id: 'principal-group-1' },
+        },
+        resourceSummary: baseSummary,
+        via: 'securityGroup',
+        viaGroupId: 'principal-group-1',
+        viaGroupName: 'AI builders',
+      },
+    ])
+
+    expect(await screen.findByText('Chat completions')).toBeVisible()
+    expect(screen.getByText('Model API · Granted through AI builders')).toBeVisible()
+    expect(screen.getByText(/Group access limits apply to each person individually\./)).toBeVisible()
+  })
+
+  it('names an unnamed security group generically, never by its ID', async () => {
+    renderPage([
+      {
+        entitlement: {
+          ...baseEntitlement,
+          subject: { kind: 'securityGroup', id: 'principal-group-1' },
+        },
+        resourceSummary: null,
+        via: 'securityGroup',
+        viaGroupId: null,
+        viaGroupName: null,
+      },
+    ])
+
+    expect(await screen.findByText('Granted through an assigned group')).toBeVisible()
+    expect(screen.queryByText(/principal-group-1/)).not.toBeInTheDocument()
+  })
+
+  it('does not render defensive shadowed rows', async () => {
+    renderPage([
+      {
+        entitlement: baseEntitlement,
+        resourceSummary: baseSummary,
+        via: 'group',
+        viaGroupId: 'group-1',
+        viaGroupName: 'Platform engineering',
+        effective: false,
+        shadowedBy: 'entitlement-direct',
+      },
+    ])
+
+    expect(await screen.findByText('No access granted yet')).toBeVisible()
+    expect(screen.queryByText('Chat completions')).not.toBeInTheDocument()
+  })
+
+  it('shows the groups-overage warning from the profile', async () => {
+    renderPage([], { groupsOverage: true })
+
+    expect(await screen.findByText('Group access may be missing')).toBeVisible()
+    expect(screen.getByText(/too many groups for your sign-in token/)).toBeVisible()
+  })
+
+  it('hides the groups-overage warning when the profile is not overage', async () => {
+    renderPage([], { groupsOverage: false })
+
+    expect(await screen.findByText('No access granted yet')).toBeVisible()
+    expect(screen.queryByText('Group access may be missing')).not.toBeInTheDocument()
+  })
+
   it('distinguishes absent grant limits from inherited publication limits', async () => {
     renderPage([
       {
@@ -115,7 +197,7 @@ describe('MyAccessPage', () => {
     ])
 
     expect(await screen.findByText('No additional grant limits configured')).toBeVisible()
-    expect(screen.getByText(/Publication and gateway limits may also apply/)).toBeVisible()
+    expect(screen.getByText(/Pending changes are not yet enforced by the gateway/)).toBeVisible()
     expect(screen.queryByText(/0/)).not.toBeInTheDocument()
   })
 
@@ -158,7 +240,7 @@ describe('MyAccessPage', () => {
     expect(screen.queryByText('Enabled')).not.toBeInTheDocument()
   })
 
-  it('offers collapsed connection details for model API grants only', async () => {
+  it('offers collapsed connection details for model API and MCP grants', async () => {
     const directUser = { kind: 'user' as const, id: 'user-1' }
     const api = renderPage([
       {
@@ -189,11 +271,45 @@ describe('MyAccessPage', () => {
 
     expect(await screen.findByText('Chat completions')).toBeVisible()
     expect(screen.getByText('Docs MCP')).toBeVisible()
+    expect(screen.getByText('Recorded, not enforced by MOSAIC')).toBeVisible()
     const details = screen.getAllByRole('button', { name: 'Connection details' })
-    expect(details).toHaveLength(1)
+    expect(details).toHaveLength(2)
     expect(details[0]).toHaveAttribute('aria-expanded', 'false')
     expect(api.getMyEntitlementConnection).not.toHaveBeenCalled()
+    expect(api.getMcpConnection).not.toHaveBeenCalled()
     expect(api.revealMyEntitlementKey).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['pending', 'APIM changes pending'],
+    ['applying', 'Applying to APIM'],
+    ['applied', 'Applied to APIM'],
+    ['revocationPending', 'APIM revocation pending'],
+    ['revoked', 'Runtime access revoked'],
+    ['failed', 'APIM apply failed'],
+    ['unknown', 'Runtime status unknown'],
+  ] as const)('renders MCP %s runtime state when the backend decorates it', async (status, label) => {
+    renderPage([{
+      entitlement: {
+        ...baseEntitlement,
+        subject: { kind: 'user', id: 'user-1' },
+        resource: { kind: 'mcpServer', id: 'docs-mcp', scopeId: 'gateway-1' },
+        runtime: {
+          publicationId: 'mcp-publication-1',
+          status,
+          appliedMethods: { keysEnabled: false, entraEnabled: true },
+          subscriptionName: null,
+          appliedAt: null,
+          error: null,
+        },
+      },
+      resourceSummary: null,
+      via: 'direct',
+      viaGroupId: null,
+      viaGroupName: null,
+    }])
+
+    expect(await screen.findByText(label)).toBeVisible()
   })
 
   it('uses live summaries for removed resources without rendering raw resource IDs', async () => {

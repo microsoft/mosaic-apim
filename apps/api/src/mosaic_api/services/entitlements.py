@@ -32,6 +32,7 @@ from mosaic_api.domain import (
     EntitlementSubjectKind,
     EntitlementUpdate,
     Gateway,
+    GrantOverlapReport,
     GrantPath,
     McpServer,
     ModelApi,
@@ -42,10 +43,13 @@ from mosaic_api.domain import (
     ResourceSummary,
     deterministic_id,
     entitlement_id,
+    grant_precedence_key,
     new_id,
+    subject_kind_for,
     utc_now,
 )
-from mosaic_api.errors import ConflictError, NotFoundError, ValidationError
+from mosaic_api.errors import ConflictError, DirectoryError, NotFoundError, ValidationError
+from mosaic_api.integrations.graph import DirectoryLookup
 from mosaic_api.observed import (
     ObservedApimUser,
     ObservedModelDeployment,
@@ -59,6 +63,11 @@ from mosaic_api.repositories import (
     ModelEndpointRepository,
 )
 from mosaic_api.services.directory import Actor, DirectoryService
+from mosaic_api.services.mcp_access import (
+    decorate_mcp_entitlement,
+    entitlement_mcp_publication,
+    mcp_grant_needs_retention,
+)
 from mosaic_api.services.model_access import (
     decorate_entitlement,
     entitlement_publication,
@@ -139,17 +148,39 @@ def _resource_key(resource: EntitlementResource) -> tuple[str, str, str]:
     return (str(resource.kind), resource.id, resource.scope_id or "")
 
 
+def _outranks(item: ResolvedEntitlement, current: ResolvedEntitlement) -> bool:
+    """Whether ``item`` decides access to its resource ahead of ``current``.
+
+    An enabled grant beats a disabled one. Then a direct grant beats any group grant, and a
+    security-group grant beats a MOSAIC group grant. Among security-group grants the most generous
+    wins, and among MOSAIC group grants the lowest ID, so the choice never depends on read order.
+    """
+
+    if item.entitlement.enabled != current.entitlement.enabled:
+        return item.entitlement.enabled
+    if item.via == GrantPath.DIRECT:
+        return current.via != GrantPath.DIRECT
+    if item.via == GrantPath.SECURITY_GROUP:
+        if current.via == GrantPath.GROUP:
+            return True
+        if current.via == GrantPath.SECURITY_GROUP:
+            return grant_precedence_key(
+                item.entitlement.enforcement, item.entitlement.id
+            ) < grant_precedence_key(current.entitlement.enforcement, current.entitlement.id)
+        return False
+    return current.via == GrantPath.GROUP and item.entitlement.id < current.entitlement.id
+
+
 def _environment_confirmation_value(environment: str | None) -> str:
     return environment if environment is not None else "unclassified"
 
 
 def _subject_for(principal: Principal) -> EntitlementSubject:
-    kind = (
-        EntitlementSubjectKind.USER
-        if principal.kind == PrincipalKind.USER
-        else EntitlementSubjectKind.APPLICATION
-    )
-    return EntitlementSubject(kind=kind, id=principal.id)
+    return EntitlementSubject(kind=subject_kind_for(principal.kind), id=principal.id)
+
+
+def _principal_label(principal: Principal) -> str:
+    return principal.label or principal.object_id
 
 
 def _approved_with_grant(access_request: AccessRequest) -> bool:
@@ -169,6 +200,17 @@ def _existing_grant_conflict(existing: Entitlement) -> ConflictError:
     )
 
 
+def _reject_mcp_token_limits(resource: EntitlementResource, enforcement: Any) -> None:
+    if (
+        resource.kind == "mcpServer"
+        and enforcement is not None
+        and enforcement.tokens is not None
+    ):
+        raise ValidationError(
+            "MCP servers are limited by calls, not tokens. Remove the token limits."
+        )
+
+
 class EntitlementService:
     def __init__(
         self,
@@ -177,11 +219,13 @@ class EntitlementService:
         directory_repository: DirectoryRepository,
         gateway_repository: GatewayRepository,
         endpoint_repository: ModelEndpointRepository,
+        directory_lookup: DirectoryLookup | None = None,
     ) -> None:
         self._repository = repository
         self._directory = directory_repository
         self._gateways = gateway_repository
         self._endpoints = endpoint_repository
+        self._directory_lookup = directory_lookup
 
     def governed_records(self, tenant_id: str) -> GovernedRecords:
         """Records to share across the lookups that serve one response."""
@@ -222,11 +266,18 @@ class EntitlementService:
                 "The principal named by this entitlement does not exist",
                 details={"subjectId": subject.id},
             )
-        expected = "application" if principal.kind != "user" else "user"
+        expected = subject_kind_for(principal.kind)
         if subject.kind != expected:
             raise ValidationError(
                 f"This principal is a {principal.kind}, so the entitlement subject must be "
                 f"{expected!r}",
+                details={"subjectId": subject.id, "principalKind": str(principal.kind)},
+            )
+        if subject.kind == EntitlementSubjectKind.SECURITY_GROUP and (
+            principal.kind != PrincipalKind.SECURITY_GROUP
+        ):
+            raise ValidationError(
+                "A securityGroup entitlement subject must name a securityGroup principal",
                 details={"subjectId": subject.id, "principalKind": str(principal.kind)},
             )
 
@@ -639,6 +690,7 @@ class EntitlementService:
 
     async def _decorate(self, entitlement: Entitlement) -> Entitlement:
         publication = await entitlement_publication(self._gateways, entitlement)
+        mcp_publication = await entitlement_mcp_publication(self._gateways, entitlement)
         principal = (
             await self._directory.get_principal(entitlement.tenant_id, entitlement.subject.id)
             if entitlement.subject.kind != "group"
@@ -650,15 +702,27 @@ class EntitlementService:
                 entitlement.tenant_id, publication.id
             )
         )
+        mcp_locked = bool(
+            mcp_publication
+            and await self._gateways.get_publication_lock(
+                entitlement.tenant_id, mcp_publication.id
+            )
+        )
+        if entitlement.resource.kind == "mcpServer":
+            return decorate_mcp_entitlement(
+                entitlement, mcp_publication, principal, locked=mcp_locked
+            )
         return decorate_entitlement(entitlement, publication, principal, locked=locked)
 
     @asynccontextmanager
     async def _mutation(self, entitlement: Entitlement) -> AsyncIterator[None]:
         publication = await entitlement_publication(self._gateways, entitlement)
-        if publication is None:
+        mcp_publication = await entitlement_mcp_publication(self._gateways, entitlement)
+        target = publication or mcp_publication
+        if target is None:
             yield
         else:
-            async with publication_lock(self._gateways, entitlement.tenant_id, publication.id):
+            async with publication_lock(self._gateways, entitlement.tenant_id, target.id):
                 yield
 
     async def list_entitlements(
@@ -696,6 +760,7 @@ class EntitlementService:
         await self._validate_subject(actor, request.subject)
         if descriptor is None:
             descriptor = await self._describe_resource(actor, request.resource)
+        _reject_mcp_token_limits(request.resource, request.enforcement)
         binding = request.binding
         if binding is None:
             binding = await self.infer_binding(actor, descriptor, request.subject)
@@ -742,11 +807,18 @@ class EntitlementService:
         entitlement = await self.get_entitlement(actor, entitlement_ref)
         changes = request.model_dump(exclude_unset=True)
         publication = await entitlement_publication(self._gateways, entitlement)
+        mcp_publication = await entitlement_mcp_publication(self._gateways, entitlement)
+        if "enforcement" in changes:
+            _reject_mcp_token_limits(entitlement.resource, request.enforcement)
         if "binding" in changes and (
             (entitlement.binding and entitlement.binding.source == BindingSource.ORCHESTRATED)
             or (
                 publication is not None
                 and managed_grant_needs_retention(publication, entitlement.id)
+            )
+            or (
+                mcp_publication is not None
+                and mcp_grant_needs_retention(mcp_publication, entitlement.id)
             )
             or (request.binding and request.binding.source == BindingSource.ORCHESTRATED)
         ):
@@ -784,6 +856,15 @@ class EntitlementService:
                     "unpublished so its subscription is not orphaned.",
                     details={"publicationId": publication.id},
                 )
+            mcp_publication = await entitlement_mcp_publication(self._gateways, entitlement)
+            if mcp_publication and mcp_grant_needs_retention(
+                mcp_publication, entitlement.id
+            ):
+                raise ConflictError(
+                    "This MCP grant is still applied or its runtime state is uncertain. Disable "
+                    "the grant and apply the MCP server's access before deleting it.",
+                    details={"publicationId": mcp_publication.id},
+                )
             await self._repository.delete_entitlement(
                 entitlement,
                 self._audit(actor, "entitlement.deleted", "entitlement", entitlement_ref),
@@ -796,20 +877,57 @@ class EntitlementService:
         actor: Actor,
         object_id: str,
         *,
+        group_object_ids: frozenset[str] | None = None,
         include_disabled: bool = False,
         records: GovernedRecords | None = None,
     ) -> list[ResolvedEntitlement]:
-        """Effective access for an Entra object ID.
+        """Effective access for an Entra object ID: one grant per resource.
 
-        A principal MOSAIC has never seen has no entitlements, which is an empty list rather than
-        an error: the portal renders that as "nothing has been granted to you yet".
+        A principal MOSAIC has never seen has no grants of their own, which is an empty list rather
+        than an error: the portal renders that as "nothing has been granted to you yet". They can
+        still reach grants made to the security groups in ``group_object_ids``. Disabled grants
+        are left out unless ``include_disabled`` is set, as :meth:`resolve_for_principal` explains.
         """
 
         principal = await self._directory.find_principal_by_object_id(actor.tenant_id, object_id)
-        if not principal:
+        if principal:
+            return await self.resolve_for_principal(
+                actor,
+                principal.id,
+                group_object_ids=group_object_ids,
+                only_effective=True,
+                include_disabled=include_disabled,
+                records=records,
+            )
+        if not group_object_ids:
             return []
-        return await self.resolve_for_principal(
-            actor, principal.id, include_disabled=include_disabled, records=records
+        groups = {
+            item.id: item
+            for item in await self._directory.list_principals(actor.tenant_id)
+            if item.kind == PrincipalKind.SECURITY_GROUP
+            and item.object_id.casefold() in group_object_ids
+        }
+        winners: dict[tuple[str, str, str], ResolvedEntitlement] = {}
+        for entitlement in await self._repository.list_entitlements(actor.tenant_id):
+            if (
+                entitlement.subject.kind != EntitlementSubjectKind.SECURITY_GROUP
+                or entitlement.subject.id not in groups
+                or not (entitlement.enabled or include_disabled)
+            ):
+                continue
+            item = ResolvedEntitlement(
+                entitlement=await self._decorate(entitlement),
+                via=GrantPath.SECURITY_GROUP,
+                via_group_id=groups[entitlement.subject.id].id,
+                via_group_name=_principal_label(groups[entitlement.subject.id]),
+                effective=entitlement.enabled,
+            )
+            key = _resource_key(entitlement.resource)
+            current = winners.get(key)
+            if current is None or _outranks(item, current):
+                winners[key] = item
+        return await self._with_resource_summaries(
+            actor, sorted(winners.values(), key=lambda item: item.entitlement.id), records
         )
 
     async def resolve_for_principal(
@@ -817,32 +935,35 @@ class EntitlementService:
         actor: Actor,
         principal_id: str,
         *,
+        group_object_ids: frozenset[str] | None = None,
+        only_effective: bool = False,
         include_disabled: bool = False,
         records: GovernedRecords | None = None,
     ) -> list[ResolvedEntitlement]:
-        """One entitlement per resource: direct over group, and enabled over disabled.
+        """Every grant that reaches a principal, each marked with whether it decides their access.
 
-        Disabled grants are left out unless ``include_disabled`` is set; then a resource covered
-        only by disabled grants resolves to one of them, so a report can show the grant as off.
+        A grant reaches a principal directly, through a MOSAIC group they belong to, or through a
+        security group they belong to. One grant per resource is effective: a direct grant wins,
+        then a security-group grant over a MOSAIC group grant, then the most generous of several
+        security-group grants. The others are marked with the grant that shadows them.
+
+        ``only_effective`` keeps just the grant that decides each resource. Disabled grants never
+        decide access; with ``include_disabled`` a resource that only disabled grants cover keeps
+        one of them, not effective, so a report can show that the grant exists but is off.
         """
 
-        # Keyed on the resource, not the entitlement: a direct grant and a group grant over the
-        # same resource are different entitlements, and returning both would leave a consumer
-        # choosing arbitrarily between two contradictory limits.
-        resolved: dict[tuple[str, str, str], ResolvedEntitlement] = {}
-        disabled: dict[tuple[str, str, str], ResolvedEntitlement] = {}
+        principal = await self._directory.get_principal(actor.tenant_id, principal_id)
+        if principal is None:
+            raise NotFoundError("Principal was not found", details={"id": principal_id})
+        reached: list[ResolvedEntitlement] = []
         for entitlement in await self._repository.list_entitlements(
             actor.tenant_id, subject_id=principal_id
         ):
-            if entitlement.subject.kind == "group":
-                continue
-            if entitlement.enabled:
-                resolved[_resource_key(entitlement.resource)] = ResolvedEntitlement(
-                    entitlement=await self._decorate(entitlement), via=GrantPath.DIRECT
-                )
-            elif include_disabled:
-                disabled[_resource_key(entitlement.resource)] = ResolvedEntitlement(
-                    entitlement=await self._decorate(entitlement), via=GrantPath.DIRECT
+            if entitlement.subject.kind == subject_kind_for(principal.kind):
+                reached.append(
+                    ResolvedEntitlement(
+                        entitlement=await self._decorate(entitlement), via=GrantPath.DIRECT
+                    )
                 )
 
         memberships = await self._directory.list_memberships(
@@ -857,20 +978,109 @@ class EntitlementService:
                     continue
                 if not entitlement.enabled and not include_disabled:
                     continue
-                # A direct grant is the more specific statement about this person, so it wins over
-                # anything a group contributes for the same resource.
-                target = resolved if entitlement.enabled else disabled
-                if _resource_key(entitlement.resource) in target:
-                    continue
-                target[_resource_key(entitlement.resource)] = ResolvedEntitlement(
-                    entitlement=entitlement,
-                    via=GrantPath.GROUP,
-                    via_group_id=membership.group_id,
-                    via_group_name=group.name if group else None,
+                reached.append(
+                    ResolvedEntitlement(
+                        entitlement=entitlement,
+                        via=GrantPath.GROUP,
+                        via_group_id=membership.group_id,
+                        via_group_name=group.name if group else None,
+                    )
                 )
-        for key, item in disabled.items():
-            resolved.setdefault(key, item)
-        items = sorted(resolved.values(), key=lambda item: item.entitlement.id)
+        security_group_principals = [
+            item
+            for item in await self._directory.list_principals(actor.tenant_id)
+            if item.kind == PrincipalKind.SECURITY_GROUP
+        ]
+        security_groups_by_principal_id = {item.id: item for item in security_group_principals}
+        group_grants = [
+            item
+            for item in await self._repository.list_entitlements(actor.tenant_id)
+            if item.subject.kind == EntitlementSubjectKind.SECURITY_GROUP
+            and item.subject.id in security_groups_by_principal_id
+        ]
+        if principal.kind != PrincipalKind.SECURITY_GROUP:
+            matched_group_object_ids = group_object_ids
+            if matched_group_object_ids is None and group_grants:
+                if self._directory_lookup is None:
+                    logger.warning(
+                        "security_group_resolution_skipped",
+                        tenant_id=actor.tenant_id,
+                        principal_id=principal_id,
+                        reason="directory_lookup_not_configured",
+                    )
+                    matched_group_object_ids = frozenset()
+                else:
+                    try:
+                        matched_group_object_ids = frozenset(
+                            object_id.casefold()
+                            for object_id in await self._directory_lookup.member_groups(
+                                principal.object_id,
+                                [
+                                    security_groups_by_principal_id[
+                                        entitlement.subject.id
+                                    ].object_id
+                                    for entitlement in group_grants
+                                ],
+                            )
+                        )
+                    except DirectoryError as error:
+                        logger.warning(
+                            "security_group_resolution_failed",
+                            tenant_id=actor.tenant_id,
+                            principal_id=principal_id,
+                            error_code=error.code,
+                        )
+                        matched_group_object_ids = frozenset()
+            matched_group_object_ids = matched_group_object_ids or frozenset()
+            for entitlement in group_grants:
+                security_group = security_groups_by_principal_id[entitlement.subject.id]
+                if security_group.object_id.casefold() not in matched_group_object_ids:
+                    continue
+                reached.append(
+                    ResolvedEntitlement(
+                        entitlement=await self._decorate(entitlement),
+                        via=GrantPath.SECURITY_GROUP,
+                        via_group_id=security_group.id,
+                        via_group_name=_principal_label(security_group),
+                    )
+                )
+
+        winners: dict[tuple[str, str, str], ResolvedEntitlement] = {}
+        for item in reached:
+            if not item.entitlement.enabled and not include_disabled:
+                continue
+            key = _resource_key(item.entitlement.resource)
+            current = winners.get(key)
+            if current is None or _outranks(item, current):
+                winners[key] = item
+
+        resolved: list[ResolvedEntitlement] = []
+        for item in reached:
+            winner = winners.get(_resource_key(item.entitlement.resource))
+            decides = winner is not None and winner.entitlement.id == item.entitlement.id
+            if only_effective and not decides:
+                continue
+            effective = item.entitlement.enabled and decides
+            resolved.append(
+                item.model_copy(
+                    update={
+                        "effective": effective,
+                        "shadowed_by": None
+                        if effective or not item.entitlement.enabled or winner is None
+                        else winner.entitlement.id,
+                    }
+                )
+            )
+        return await self._with_resource_summaries(
+            actor, sorted(resolved, key=lambda item: item.entitlement.id), records
+        )
+
+    async def _with_resource_summaries(
+        self,
+        actor: Actor,
+        items: list[ResolvedEntitlement],
+        records: GovernedRecords | None,
+    ) -> list[ResolvedEntitlement]:
         summaries = await self.resource_summaries(
             actor.tenant_id,
             [item.entitlement.resource for item in items],
@@ -881,6 +1091,18 @@ class EntitlementService:
             item.model_copy(update={"resource_summary": summaries[index]})
             for index, item in enumerate(items)
         ]
+
+    async def list_overlaps(
+        self, actor: Actor, resource_id: str | None = None
+    ) -> GrantOverlapReport:
+        from mosaic_api.services.overlaps import GrantOverlapService
+
+        return await GrantOverlapService(
+            self._repository,
+            directory_repository=self._directory,
+            gateway_repository=self._gateways,
+            directory_lookup=self._directory_lookup,
+        ).list_overlaps(actor, resource_id=resource_id)
 
     # ------------------------------------------------------------------ access requests
 

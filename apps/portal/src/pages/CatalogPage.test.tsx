@@ -27,6 +27,7 @@ const catalogEntry: CatalogEntry = {
   environment: 'production',
   entitled: false,
   requestState: null,
+  enforced: false,
 }
 
 const pendingRequest: AccessRequest = {
@@ -106,6 +107,32 @@ describe('CatalogPage', () => {
     expect(await screen.findByText('A request is already open.')).toBeVisible()
     await waitFor(() => expect(screen.getByRole('button', { name: 'Withdraw' })).toBeEnabled())
     expect(screen.queryByRole('button', { name: 'Request access' })).not.toBeInTheDocument()
+  })
+
+  it.each([
+    [true, 'Enforced by the gateway'],
+    [false, 'Recorded, not enforced'],
+  ])('labels MCP catalog entries with enforced=%s', async (enforced, label) => {
+    renderPage([{ ...catalogEntry, enforced }], [])
+
+    expect(await screen.findByText('Weather tools')).toBeVisible()
+    expect(screen.getByText(label)).toBeVisible()
+  })
+
+  it('omits the MCP enforcement badge when the value is null', async () => {
+    renderPage([{ ...catalogEntry, enforced: null }], [])
+
+    expect(await screen.findByText('Weather tools')).toBeVisible()
+    expect(screen.queryByText('Enforced by the gateway')).not.toBeInTheDocument()
+    expect(screen.queryByText('Recorded, not enforced')).not.toBeInTheDocument()
+  })
+
+  it('does not show enforcement badges for models', async () => {
+    renderPage([{ ...catalogEntry, kind: 'modelApi', enforced: true }], [])
+
+    expect(await screen.findByText('Weather tools')).toBeVisible()
+    expect(screen.queryByText('Enforced by the gateway')).not.toBeInTheDocument()
+    expect(screen.queryByText('Recorded, not enforced')).not.toBeInTheDocument()
   })
 
   it('shows environment badges and filters by environment and resource type', async () => {

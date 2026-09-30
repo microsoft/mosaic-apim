@@ -37,6 +37,7 @@ import { PageHeader } from '../components/PageHeader'
 import { EntitlementAccessState } from '../components/EntitlementAccessState'
 import { EntitlementConnectionDialog } from '../components/EntitlementConnectionDialog'
 import { EnvironmentBadge } from '../components/EnvironmentBadge'
+import { PrincipalKindBadge } from '../components/PrincipalKindBadge'
 import { ModelAccessSettingsPanel } from '../components/ModelAccessSettingsPanel'
 import { PublishModelDialog } from '../components/PublishModelDialog'
 import {
@@ -50,6 +51,12 @@ import {
 import { entitlementResourceEnvironment } from '../entitlement-environment'
 import { environmentLabel, useEnvironmentCatalog } from '../environments'
 import { runtimeConfig } from '../runtime-config'
+import {
+  ENTITLEMENT_SUBJECT_KIND_LABELS,
+  GRANT_OVERLAP_KIND_LABELS,
+  PRINCIPAL_KIND_LABELS,
+  subjectKindForPrincipal,
+} from '../labels'
 import type {
   AccessRequest,
   AccessRequestApproval,
@@ -62,6 +69,8 @@ import type {
   QuotaPeriod,
   Publication,
   PublishPlan,
+  PrincipalKind,
+  ResolvedEntitlement,
 } from '../types'
 import styles from './EntitlementsPage.module.css'
 
@@ -69,6 +78,8 @@ interface SubjectOption {
   id: string
   kind: EntitlementSubjectKind
   label: string
+  group: 'People' | 'Agents' | 'Security groups' | 'Applications' | 'MOSAIC groups'
+  principalKind?: PrincipalKind
 }
 
 interface ResourceOption {
@@ -116,10 +127,15 @@ interface ApprovalContext {
   existingGrant: boolean
 }
 
-function approvalBanner({ requester, publication, reviewable, governed }: ApprovalContext): Banner {
+function approvalBanner({ accessRequest, requester, publication, reviewable, governed }: ApprovalContext): Banner {
   const lead = requester.registered
     ? `Approved the request and created grant intent for ${requester.label}.`
     : `Approved the request, registered ${requester.label} as a user principal, and created their grant intent.`
+  if (governed && accessRequest.resource.kind === 'mcpServer') {
+    return {
+      text: `${lead} API Management is unchanged; use Plan and apply on the MCPs page to activate it.`,
+    }
+  }
   if (governed && reviewable) {
     return {
       text: `${lead} API Management is unchanged; review and apply the ${reviewable.displayName} model plan to activate it.`,
@@ -136,6 +152,23 @@ function approvalBanner({ requester, publication, reviewable, governed }: Approv
   }
 }
 
+const grantRowId = (entitlementId: string) => `grant-${entitlementId}`
+
+function grantPathLabel(item: ResolvedEntitlement): string {
+  const group = item.viaGroupName ?? item.viaGroupId ?? ''
+  if (item.via === 'direct') return 'Direct'
+  return item.via === 'securityGroup' ? `Security group ${group}` : `MOSAIC group ${group}`
+}
+
+function overriddenByLabel(winner: ResolvedEntitlement | undefined): string {
+  if (!winner) return 'Overridden by another grant'
+  if (winner.via === 'direct') return 'Overridden by the direct grant'
+  const group = winner.viaGroupName ?? winner.viaGroupId ?? ''
+  return winner.via === 'securityGroup'
+    ? `Overridden by security group ${group}`
+    : `Overridden by MOSAIC group ${group}`
+}
+
 export function EntitlementsPage() {
   const api = useMosaicApi()
   const queryClient = useQueryClient()
@@ -148,6 +181,7 @@ export function EntitlementsPage() {
   const [environmentFilter, setEnvironmentFilter] = useState('all')
   const [directModelId, setDirectModelId] = useState<string | null>(null)
   const [connectionGrantId, setConnectionGrantId] = useState<string | null>(null)
+  const [highlightedGrantId, setHighlightedGrantId] = useState<string | null>(null)
   const [review, setReview] = useState<{ publication: Publication; plan: PublishPlan } | null>(null)
   const [approving, setApproving] = useState<ApprovalContext | null>(null)
   const governedCardRef = useRef<HTMLDivElement>(null)
@@ -168,26 +202,44 @@ export function EntitlementsPage() {
   })
   const environmentCatalog = useEnvironmentCatalog()
   const publications = useQuery({ queryKey: ['publications'], queryFn: () => api.listPublications() })
+  const mcpPublications = useQuery({ queryKey: ['mcp-publications'], queryFn: () => api.listMcpPublications() })
   const accessRequests = useQuery({
     queryKey: ['access-requests', 'pending'],
     queryFn: () => api.listAccessRequests('pending'),
   })
+  const overlaps = useQuery({
+    queryKey: ['entitlements', 'overlaps'],
+    queryFn: () => api.getGrantOverlaps(),
+  })
 
   const subjectOptions = useMemo<SubjectOption[]>(
     () => [
+      ...(principals.data ?? []).map<SubjectOption>((principal) => {
+        const kind = subjectKindForPrincipal(principal.kind)
+        const principalLabel = principal.label ?? principal.objectId
+        const group: SubjectOption['group'] =
+          principal.kind === 'user'
+            ? 'People'
+            : principal.kind === 'agentIdentity' || principal.kind === 'agentUser'
+              ? 'Agents'
+              : principal.kind === 'securityGroup'
+                ? 'Security groups'
+                : 'Applications'
+        return {
+          id: principal.id,
+          kind,
+          label: `${principalLabel} (${PRINCIPAL_KIND_LABELS[principal.kind]})`,
+          group,
+          principalKind: principal.kind,
+        }
+      }),
       ...(groups.data ?? []).map<SubjectOption>((group) => ({
         id: group.id,
         kind: 'group',
-        label: `${group.name} (group)`,
+        label: `${group.name} (MOSAIC group)`,
+        group: 'MOSAIC groups',
       })),
-      ...(principals.data ?? []).map<SubjectOption>((principal) => ({
-        id: principal.id,
-        kind: principal.kind === 'user' ? 'user' : 'application',
-        label: `${principal.label ?? principal.objectId} (${
-          principal.kind === 'user' ? 'user' : 'application'
-        })`,
-      })),
-    ],
+    ].sort((left, right) => left.group.localeCompare(right.group) || left.label.localeCompare(right.label)),
     [groups.data, principals.data],
   )
 
@@ -228,13 +280,15 @@ export function EntitlementsPage() {
       enforcement: EntitlementEnforcement | null
       notes: string | null
     }) => api.createEntitlement(payload),
-    onSuccess: async () => {
+    onSuccess: async (_, variables) => {
       await queryClient.invalidateQueries({ queryKey: ['entitlements'] })
       setDialogOpen(false)
       setForm(emptyForm)
       setDirectModelId(null)
       await queryClient.invalidateQueries({ queryKey: ['publications'] })
-      announce('Saved grant intent. API Management is unchanged; review and apply the model plan to activate a supported direct grant.')
+      announce(variables.resource.kind === 'mcpServer'
+        ? 'Saved grant intent. API Management is unchanged; use Plan and apply on the MCPs page to activate it on a MOSAIC-published MCP server.'
+        : 'Saved grant intent. API Management is unchanged; review and apply the model plan to activate a supported direct grant.')
     },
   })
 
@@ -307,8 +361,19 @@ export function EntitlementsPage() {
     )
   }
 
+  function mcpPublicationFor(entitlement: Pick<Entitlement, 'resource'>) {
+    if (entitlement.resource.kind !== 'mcpServer') return undefined
+    const server = mcpServers.data?.find((item) => item.id === entitlement.resource.id)
+    return mcpPublications.data?.find(
+      (publication) => publication.mcpServerId === entitlement.resource.id || publication.id === server?.publicationId,
+    )
+  }
+
   function managedGrant(entitlement: Pick<Entitlement, 'resource' | 'subject' | 'runtime'>) {
     const publication = publicationFor(entitlement)
+    if (entitlement.resource.kind === 'mcpServer') {
+      return entitlement.subject.kind !== 'group' && Boolean(entitlement.runtime || mcpPublicationFor(entitlement)?.appliedAccess)
+    }
     return entitlement.resource.kind === 'modelApi' && entitlement.subject.kind !== 'group'
       && Boolean(entitlement.runtime || publication?.governedAccess || publication?.appliedAccess)
   }
@@ -319,7 +384,7 @@ export function EntitlementsPage() {
       (item) => item.id === accessRequest.requesterPrincipalId || item.objectId.toLowerCase() === objectId,
     )
     const subject: EntitlementSubject = {
-      kind: principal && principal.kind !== 'user' ? 'application' : 'user',
+      kind: principal ? subjectKindForPrincipal(principal.kind) : 'user',
       id: principal?.id ?? accessRequest.requesterObjectId,
     }
     const { resource } = accessRequest
@@ -350,6 +415,14 @@ export function EntitlementsPage() {
     setConnectionGrantId(null)
     governedCardRef.current?.scrollIntoView?.({ block: 'start' })
     publishedModelSelectRef.current?.focus({ preventScroll: true })
+  }
+
+  /** Brings a grant's row into view so its actions (disable, revoke, manage) are one step away. */
+  function showGrant(entitlementId: string) {
+    setHighlightedGrantId(entitlementId)
+    const row = document.getElementById(grantRowId(entitlementId))
+    row?.scrollIntoView?.({ block: 'center' })
+    row?.focus({ preventScroll: true })
   }
 
   function addDirectGrant(modelApiId: string) {
@@ -399,6 +472,7 @@ export function EntitlementsPage() {
     })
   const unbound = rows.filter((item) => !item.binding).length
   const rateError = callRateError(form)
+  const mcpSelected = resourceOptions.find((option) => option.id === form.resource)?.kind === 'mcpServer'
   const connectionGrant = rows.find((entitlement) => entitlement.id === connectionGrantId)
   // The approval dialog reports whether the requester is registered and already holds a grant,
   // and prefills limits from the publication, so it waits until those are known.
@@ -409,7 +483,7 @@ export function EntitlementsPage() {
     <section className={styles.page}>
       <PageHeader
         title="Entitlements"
-        description="Save desired grants and limits, then review and explicitly apply model-wide changes for MOSAIC-published models. Saving alone never changes API Management. Group, MCP, and imported-only grants remain desired state."
+        description="Save desired grants and limits, then explicitly review and apply them: model grants below, MCP server grants with Plan and apply on the MCPs page. Saving alone never changes API Management. MOSAIC-group and imported-only grants remain desired state."
         source="live"
         actions={
           <Button
@@ -467,9 +541,10 @@ export function EntitlementsPage() {
 
       <Card className={styles.detailCard} id="governed-model-access" ref={governedCardRef}>
         <Title3 as="h2">Governed model access</Title3>
-        <Text>Choose a successfully published MOSAIC model. Direct users and applications are supported; groups, MCP servers, and imported-only APIs are not orchestrated.</Text>
+        <Text>Choose a successfully published MOSAIC model. Direct grants to people, agents, and applications, and Entra security-group grants, are applied; MOSAIC groups and imported-only APIs are not orchestrated.</Text>
         {publications.isPending && <Loading label="Loading published models..." />}
         {publications.isError && <ErrorState error={publications.error} />}
+        {mcpPublications.isError && <ErrorState error={mcpPublications.error} />}
         <Field label="Published model">
           <Select
             ref={publishedModelSelectRef}
@@ -524,7 +599,7 @@ export function EntitlementsPage() {
 
       <Card className={styles.tableCard}>
         <div className={styles.tableHeader}>
-          <div>
+          <div className={styles.tableHeading}>
             <Title3 as="h2" block>
               Grants
             </Title3>
@@ -578,18 +653,43 @@ export function EntitlementsPage() {
                 <TableBody>
                   {grantRows.map(({ entitlement, environment }) => {
                     const relatedPublication = publicationFor(entitlement)
+                    const relatedMcpPublication = mcpPublicationFor(entitlement)
                     const appliedGrant = relatedPublication?.appliedAccess?.grants.find(
+                      (grant) => grant.entitlementId === entitlement.id,
+                    )
+                    const appliedMcpGrant = relatedMcpPublication?.appliedAccess?.grants.find(
                       (grant) => grant.entitlementId === entitlement.id,
                     )
                     const managed = managedGrant(entitlement)
                     return (
-                      <TableRow key={entitlement.id}>
+                      <TableRow
+                        key={entitlement.id}
+                        id={grantRowId(entitlement.id)}
+                        tabIndex={-1}
+                        className={entitlement.id === highlightedGrantId ? styles.selectedRow : undefined}
+                      >
                       <TableCell>
                         <div className={styles.cellStack}>
                           <Text className={styles.primaryCell}>
                             {labels.get(entitlement.subject.id) ?? entitlement.subject.id}
                           </Text>
-                          <Text className={styles.secondaryCell}>{entitlement.subject.kind}</Text>
+                          <div className={styles.rowActions}>
+                            {(() => {
+                              const principal = principals.data?.find((item) => item.id === entitlement.subject.id)
+                              return principal ? (
+                                <PrincipalKindBadge kind={principal.kind} />
+                              ) : (
+                                <Badge appearance="tint">
+                                  {ENTITLEMENT_SUBJECT_KIND_LABELS[entitlement.subject.kind]}
+                                </Badge>
+                              )
+                            })()}
+                          </div>
+                          {entitlement.subject.kind === 'securityGroup' && (
+                            <Text className={styles.secondaryCell}>
+                              Entra tokens only · limits apply to each member
+                            </Text>
+                          )}
                         </div>
                       </TableCell>
                       <TableCell>
@@ -616,6 +716,14 @@ export function EntitlementsPage() {
                               <Text size={200} weight="semibold">Last applied limits {appliedGrant.enabled ? '' : '(grant disabled)'}</Text>
                               {describeLimits(appliedGrant, relatedPublication?.appliedAccess?.publicationEnforcement).map((sentence) => (
                                 <Text key={`applied:${sentence}`} className={styles.secondaryCell}>{sentence}</Text>
+                              ))}
+                            </>
+                          )}
+                          {appliedMcpGrant && (
+                            <>
+                              <Text size={200} weight="semibold">Last applied MCP limits {appliedMcpGrant.enabled ? '' : '(grant disabled)'}</Text>
+                              {describeLimits(appliedMcpGrant).map((sentence) => (
+                                <Text key={`mcp-applied:${sentence}`} className={styles.secondaryCell}>{sentence}</Text>
                               ))}
                             </>
                           )}
@@ -666,9 +774,9 @@ export function EntitlementsPage() {
                           {managed && relatedPublication && (
                             <Button appearance="subtle" onClick={() => setSelectedPublicationId(relatedPublication.id)}>Manage model</Button>
                           )}
-                          {managed && entitlement.runtime && (
+                          {(managed && entitlement.runtime) || entitlement.resource.kind === 'mcpServer' ? (
                             <Button onClick={() => setConnectionGrantId(entitlement.id)}>Connection info</Button>
-                          )}
+                          ) : null}
                         </div>
                       </TableCell>
                       </TableRow>
@@ -680,10 +788,89 @@ export function EntitlementsPage() {
         </div>
       </Card>
 
+      <Card className={styles.tableCard}>
+        <div className={styles.tableHeader}>
+          <div className={styles.tableHeading}>
+            <Title3 as="h2">Overlapping grants</Title3>
+            <Text size={200}>
+              When more than one grant can reach the same caller on the same resource, MOSAIC shows
+              which grant applies and which grants are shadowed.
+            </Text>
+          </div>
+        </div>
+        <div className={styles.tableWrap}>
+          {overlaps.isPending && <Loading label="Loading overlapping grants..." />}
+          {overlaps.isError && <ErrorState error={overlaps.error} />}
+          {overlaps.data && !overlaps.data.membershipChecked && (
+            <MessageBar intent="warning">
+              <MessageBarBody>
+                Microsoft Graph membership was not checked. Group-only overlaps are shown, but
+                principal-specific overlaps may be missing.
+                {overlaps.data.skipped.length > 0 && (
+                  <> Skipped: {overlaps.data.skipped.join(', ')}.</>
+                )}
+              </MessageBarBody>
+            </MessageBar>
+          )}
+          {overlaps.data && overlaps.data.overlaps.length === 0 && (
+            <EmptyState title="No overlapping grants.">
+              No saved grants currently overlap for the selected scope.
+            </EmptyState>
+          )}
+          {overlaps.data && overlaps.data.overlaps.length > 0 && (
+            <div className={styles.accessPanel}>
+              {overlaps.data.overlaps.map((overlap) => (
+                <Card key={`${overlap.kind}:${overlap.resource.kind}:${overlap.resource.id}:${overlap.winner.entitlementId}`} className={styles.noteCard}>
+                  <div className={styles.cellStack}>
+                    <div className={styles.rowActions}>
+                      <Badge appearance="tint">{GRANT_OVERLAP_KIND_LABELS[overlap.kind]}</Badge>
+                      <Badge appearance="outline">{overlap.resourceLabel}</Badge>
+                    </div>
+                    {overlap.principalLabel && (
+                      <Text>
+                        Affected principal: <strong>{overlap.principalLabel}</strong>
+                      </Text>
+                    )}
+                    <Text>{overlap.reason}</Text>
+                    <dl className={`${styles.detailList} ${styles.overlapGrants}`}>
+                      {[overlap.winner, ...overlap.shadowed].map((grant, index) => (
+                        <div key={grant.entitlementId}>
+                          <dt>{index === 0 ? 'Applies' : "Doesn't apply"}</dt>
+                          <dd>{grant.subjectLabel}</dd>
+                          {describeLimits({ enforcement: grant.enforcement }).map((sentence) => (
+                            <dd key={sentence} className={styles.secondaryCell}>
+                              {sentence}
+                            </dd>
+                          ))}
+                          {rows.some((row) => row.id === grant.entitlementId) && (
+                            <dd>
+                              <Link
+                                href={`#${grantRowId(grant.entitlementId)}`}
+                                aria-label={`Go to the ${grant.subjectLabel} grant on ${overlap.resourceLabel}`}
+                                onClick={(event) => {
+                                  event.preventDefault()
+                                  showGrant(grant.entitlementId)
+                                }}
+                              >
+                                Go to grant
+                              </Link>
+                            </dd>
+                          )}
+                        </div>
+                      ))}
+                    </dl>
+                  </div>
+                </Card>
+              ))}
+            </div>
+          )}
+        </div>
+      </Card>
+
       <div className={styles.contentGrid}>
         <Card className={styles.tableCard}>
           <div className={styles.tableHeader}>
-            <div>
+            <div className={styles.tableHeading}>
               <Title3 as="h2">Access requests</Title3>
               <Text size={200}>
                 What portal users asked for. Approving creates the requester&apos;s grant intent
@@ -790,8 +977,8 @@ export function EntitlementsPage() {
             <Title3 as="h2">Resolved desired access</Title3>
           </div>
           <Text size={200}>
-            Recorded direct and group intent for a principal. This is not proof of active gateway
-            access; group grants remain desired state only.
+            Recorded direct, MOSAIC group, and security-group intent for a principal. Access through
+            security groups is found with Microsoft Graph.
           </Text>
           <Field label="Principal">
             <Select
@@ -818,9 +1005,15 @@ export function EntitlementsPage() {
                       {labels.get(item.entitlement.resource.id) ?? item.entitlement.resource.id}
                     </dt>
                     <dd>
-                      {item.via === 'direct'
-                        ? 'Granted directly'
-                        : `Granted through ${item.viaGroupName ?? 'a group'}`}
+                      {grantPathLabel(item)}
+                      {' · '}
+                      {!item.entitlement.enabled
+                        ? 'Disabled'
+                        : item.effective
+                          ? 'Applies'
+                          : overriddenByLabel(
+                            resolved.data.find((other) => other.entitlement.id === item.shadowedBy),
+                          )}
                     </dd>
                   </div>
                 ))}
@@ -843,18 +1036,34 @@ export function EntitlementsPage() {
                     onChange={(_, data) => setForm({ ...form, subject: data.value })}
                   >
                     <option value="">Select a user, group, or application</option>
-                    {subjectOptions.filter((option) => !directModelId || option.kind !== 'group').map((option) => (
-                      <option key={option.id} value={option.id}>
-                        {option.label}
-                      </option>
-                    ))}
+                    {(['People', 'Agents', 'Security groups', 'Applications', 'MOSAIC groups'] as const).map((group) => {
+                    const grouped = subjectOptions.filter(
+                      (option) => option.group === group && (!directModelId || option.kind !== 'group'),
+                    )
+                    return grouped.length ? (
+                      <optgroup key={group} label={group}>
+                        {grouped.map((option) => (
+                          <option key={option.id} value={option.id}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </optgroup>
+                    ) : null
+                    })}
                   </Select>
                 </Field>
                 <Field label="Resource" required>
                   <Select
                     value={form.resource}
                     disabled={Boolean(directModelId)}
-                    onChange={(_, data) => setForm({ ...form, resource: data.value })}
+                    onChange={(_, data) => {
+                      const mcp = resourceOptions.find((option) => option.id === data.value)?.kind === 'mcpServer'
+                      // MCP servers are limited by calls, never tokens. Clear token limits the
+                      // form no longer shows, so none are sent or silently dropped.
+                      setForm(mcp
+                        ? { ...form, resource: data.value, tokensPerMinute: '', tokenQuota: '' }
+                        : { ...form, resource: data.value })
+                    }}
                   >
                     <option value="">Select a model API or MCP server</option>
                     {resourceOptions.map((option) => (
@@ -864,42 +1073,51 @@ export function EntitlementsPage() {
                     ))}
                   </Select>
                 </Field>
-                <Text size={200}>
-                  Leave a limit empty to add no grant-specific restriction. Inherited publication
-                  safeguards still apply; this does not mean unrestricted gateway access.
-                </Text>
-                <div className={styles.dialogGrid}>
-                  <Field label="Tokens per minute">
-                    <Input
-                      type="number"
-                      min={1}
-                      value={form.tokensPerMinute}
-                      onChange={(_, data) => setForm({ ...form, tokensPerMinute: data.value })}
-                    />
-                  </Field>
-                  <Field label="Token quota">
-                    <Input
-                      type="number"
-                      min={1}
-                      value={form.tokenQuota}
-                      onChange={(_, data) => setForm({ ...form, tokenQuota: data.value })}
-                    />
-                  </Field>
-                  <Field label="Quota period">
-                    <Select
-                      value={form.tokenQuotaPeriod}
-                      onChange={(_, data) =>
-                        setForm({ ...form, tokenQuotaPeriod: data.value as QuotaPeriod })
-                      }
-                    >
-                      {QUOTA_PERIODS.map((period) => (
-                        <option key={period} value={period}>
-                          {period}
-                        </option>
-                      ))}
-                    </Select>
-                  </Field>
-                </div>
+                {mcpSelected ? (
+                  <Text size={200}>
+                    MCP servers are limited by calls, not tokens. Leave the call rate empty to add
+                    no grant-specific limit.
+                  </Text>
+                ) : (
+                  <>
+                    <Text size={200}>
+                      Leave a limit empty to add no grant-specific restriction. Inherited publication
+                      safeguards still apply; this does not mean unrestricted gateway access.
+                    </Text>
+                    <div className={styles.dialogGrid}>
+                      <Field label="Tokens per minute">
+                        <Input
+                          type="number"
+                          min={1}
+                          value={form.tokensPerMinute}
+                          onChange={(_, data) => setForm({ ...form, tokensPerMinute: data.value })}
+                        />
+                      </Field>
+                      <Field label="Token quota">
+                        <Input
+                          type="number"
+                          min={1}
+                          value={form.tokenQuota}
+                          onChange={(_, data) => setForm({ ...form, tokenQuota: data.value })}
+                        />
+                      </Field>
+                      <Field label="Quota period">
+                        <Select
+                          value={form.tokenQuotaPeriod}
+                          onChange={(_, data) =>
+                            setForm({ ...form, tokenQuotaPeriod: data.value as QuotaPeriod })
+                          }
+                        >
+                          {QUOTA_PERIODS.map((period) => (
+                            <option key={period} value={period}>
+                              {period}
+                            </option>
+                          ))}
+                        </Select>
+                      </Field>
+                    </div>
+                  </>
+                )}
                 <div className={styles.switchGrid}>
                   <Field label="Calls" validationMessage={rateError ?? undefined}>
                     <Input

@@ -7,6 +7,8 @@ import { ModelAccessRecovery } from './ModelAccessRecovery'
 const api = {
   getPublicationLock: vi.fn(),
   diagnosePublicationRecovery: vi.fn(),
+  getMcpPublicationLock: vi.fn(),
+  recoverMcpPublication: vi.fn(),
   applyPublishPlan: vi.fn(),
 }
 vi.mock('../api', () => ({ useMosaicApi: () => api }))
@@ -25,7 +27,11 @@ describe('ModelAccessRecovery', () => {
   beforeEach(() => {
     vi.resetAllMocks()
     api.getPublicationLock.mockResolvedValue({ publicationId: 'pub_1', ownerId: 'run_1' })
+    api.getMcpPublicationLock.mockResolvedValue({ publicationId: 'mcp_pub_1', ownerId: 'run_1' })
     api.diagnosePublicationRecovery.mockResolvedValue({
+      id: 'run_1', status: 'interrupted', errors: ['Original worker may still own ARM operations.'],
+    })
+    api.recoverMcpPublication.mockResolvedValue({
       id: 'run_1', status: 'interrupted', errors: ['Original worker may still own ARM operations.'],
     })
   })
@@ -75,6 +81,22 @@ describe('ModelAccessRecovery', () => {
     renderRecovery()
     await user.click(screen.getByRole('button', { name: 'Check recovery status (diagnostic only)' }))
     expect(await screen.findByText('No publication write lock is currently held.')).toBeVisible()
+    expect(api.diagnosePublicationRecovery).not.toHaveBeenCalled()
+  })
+
+  it('uses MCP recovery endpoints for MCP publications without confirming quiescence', async () => {
+    const user = userEvent.setup()
+    render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <ModelAccessRecovery publicationId="mcp_pub_1" runId="run_1" target="mcp" />
+      </QueryClientProvider>,
+    )
+    await user.click(screen.getByRole('button', { name: 'Check recovery status (diagnostic only)' }))
+    expect(api.getMcpPublicationLock).toHaveBeenCalledWith('mcp_pub_1')
+    expect(api.recoverMcpPublication).toHaveBeenCalledWith('mcp_pub_1', {
+      runId: 'run_1',
+      confirmQuiesced: false,
+    })
     expect(api.diagnosePublicationRecovery).not.toHaveBeenCalled()
   })
 })

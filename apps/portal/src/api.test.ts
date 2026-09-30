@@ -42,6 +42,19 @@ describe('usePortalApi', () => {
     expect(options.body).toBeUndefined()
   })
 
+  it('reads MCP connection details from the owner-scoped API', async () => {
+    const fetchMock = stubFetch(() => jsonResponse({ entitlementId: 'grant/1', serverUrl: 'https://gateway/mcp/weather' }))
+    const { result } = renderHook(() => usePortalApi())
+
+    const connection = await result.current.getMcpConnection('grant/1')
+
+    expect(connection.serverUrl).toBe('https://gateway/mcp/weather')
+    const [url, options] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(url).toBe('http://localhost:8000/api/v1/me/entitlements/grant%2F1/mcp-connection')
+    expect(options.method).toBe('GET')
+    expect(options.body).toBeUndefined()
+  })
+
   it('lists portal environments from the portal-scoped API', async () => {
     const fetchMock = stubFetch(() => jsonResponse([
       { key: 'production', displayName: 'Production', description: null, color: 'danger', production: true, order: 50 },

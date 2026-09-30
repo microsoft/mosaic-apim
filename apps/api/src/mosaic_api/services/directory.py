@@ -1,21 +1,29 @@
 from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
+from uuid import UUID
 
 from mosaic_api.domain import (
     AuditEvent,
+    DirectoryMemberPage,
+    DirectoryObject,
+    DirectorySearchKind,
+    DirectoryStatus,
     Group,
     GroupCreate,
     GroupMembership,
     GroupUpdate,
     Principal,
     PrincipalCreate,
+    PrincipalKind,
     PrincipalUpdate,
     deterministic_id,
     new_id,
+    subject_kind_for,
     utc_now,
 )
-from mosaic_api.errors import ConflictError, NotFoundError
+from mosaic_api.errors import ConflictError, DirectoryDisabledError, NotFoundError, ValidationError
+from mosaic_api.integrations.graph import DirectoryLookup
 from mosaic_api.repositories import DirectoryRepository, EntitlementRepository, GatewayRepository
 from mosaic_api.services.model_access import entitlement_publication, publication_lock
 
@@ -24,6 +32,12 @@ from mosaic_api.services.model_access import entitlement_publication, publicatio
 class Actor:
     object_id: str
     tenant_id: str
+    # The caller's Entra security-group object IDs, lowercased, as the validated token listed them.
+    # Only meaningful for the caller's own portal requests; empty for local authentication.
+    group_ids: frozenset[str] = frozenset()
+    # True when the caller is in more groups than a token can list, so ``group_ids`` is incomplete
+    # and the gateway can't match any group grant for them.
+    groups_overage: bool = False
 
 
 class DirectoryService:
@@ -33,10 +47,14 @@ class DirectoryService:
         *,
         gateway_repository: GatewayRepository | None = None,
         entitlement_repository: EntitlementRepository | None = None,
+        directory_lookup: DirectoryLookup | None = None,
+        group_claims_enabled: bool = True,
     ) -> None:
         self._repository = repository
         self._gateways = gateway_repository
         self._entitlements = entitlement_repository
+        self._directory = directory_lookup
+        self._group_claims_enabled = group_claims_enabled
 
     @asynccontextmanager
     async def _principal_mutation(self, actor: Actor, principal_id: str) -> AsyncIterator[None]:
@@ -76,6 +94,57 @@ class DirectoryService:
     async def list_principals(self, actor: Actor) -> list[Principal]:
         return await self._repository.list_principals(actor.tenant_id)
 
+    async def directory_status(self, _actor: Actor) -> DirectoryStatus:
+        if not self._directory:
+            message = "Directory search is off, so enter Entra object IDs by hand."
+        elif not self._group_claims_enabled:
+            message = (
+                "Security-group grants are recorded, but the gateway can't match them until "
+                "group claims are configured."
+            )
+        else:
+            message = None
+        return DirectoryStatus(
+            lookup_enabled=self._directory is not None,
+            group_claims_enabled=self._group_claims_enabled,
+            message=message,
+        )
+
+    async def search_directory(
+        self, actor: Actor, kind: DirectorySearchKind, query: str, limit: int
+    ) -> list[DirectoryObject]:
+        if not self._directory:
+            raise DirectoryDisabledError("Directory search is off, so enter object IDs by hand.")
+        return await self._annotate_directory_objects(
+            actor, await self._directory.search(kind, query, limit=limit)
+        )
+
+    async def get_directory_object(self, actor: Actor, object_id: str) -> DirectoryObject:
+        if not self._directory:
+            raise DirectoryDisabledError("Directory search is off, so enter object IDs by hand.")
+        item = await self._directory.get_object(object_id)
+        if not item:
+            raise NotFoundError("Directory object was not found", details={"objectId": object_id})
+        return (await self._annotate_directory_objects(actor, [item]))[0]
+
+    async def security_group_members(
+        self, actor: Actor, principal_id: str, limit: int
+    ) -> DirectoryMemberPage:
+        principal = await self.get_principal(actor, principal_id)
+        if principal.kind != PrincipalKind.SECURITY_GROUP:
+            raise ConflictError(
+                "Only Entra security-group principals have directory members",
+                details={"principalId": principal_id},
+            )
+        if not self._directory:
+            raise DirectoryDisabledError("Directory search is off, so enter object IDs by hand.")
+        page = await self._directory.group_members(principal.object_id, limit=limit)
+        return DirectoryMemberPage(
+            group_object_id=page.group_object_id,
+            members=await self._annotate_directory_objects(actor, page.members),
+            truncated=page.truncated,
+        )
+
     async def get_principal(self, actor: Actor, principal_id: str) -> Principal:
         principal = await self._repository.get_principal(actor.tenant_id, principal_id)
         if not principal:
@@ -83,9 +152,50 @@ class DirectoryService:
         return principal
 
     async def create_principal(self, actor: Actor, request: PrincipalCreate) -> Principal:
+        object_id = _normalize_object_id(
+            request.object_id,
+            request.kind,
+            require_guid=(
+                self._directory is not None
+                or request.kind
+                in {
+                    PrincipalKind.AGENT_USER,
+                    PrincipalKind.AGENT_IDENTITY,
+                    PrincipalKind.SECURITY_GROUP,
+                }
+            ),
+        )
+        identity_parent_id = request.identity_parent_id
+        verified = await self._verify_principal_request(request.kind, object_id)
+        if verified:
+            request = PrincipalCreate(
+                object_id=object_id,
+                kind=request.kind,
+                label=request.label or verified.display_name,
+                identity_parent_id=verified.identity_parent_id,
+            )
+        elif request.kind == PrincipalKind.AGENT_USER and identity_parent_id:
+            identity_parent_id = _canonical_guid(identity_parent_id, "identityParentId")
+            request = PrincipalCreate(
+                object_id=object_id,
+                kind=request.kind,
+                label=request.label,
+                identity_parent_id=identity_parent_id,
+            )
+        else:
+            request = PrincipalCreate(
+                object_id=object_id,
+                kind=request.kind,
+                label=request.label,
+                identity_parent_id=None,
+            )
         existing = await self._repository.find_principal_by_object_id(
             actor.tenant_id, request.object_id
         )
+        if not existing:
+            existing = await self._find_principal_by_object_id_casefold(
+                actor.tenant_id, request.object_id
+            )
         if existing:
             raise ConflictError(
                 "A principal with this Entra object ID already exists",
@@ -94,7 +204,13 @@ class DirectoryService:
         principal = Principal(
             id=deterministic_id("principal", actor.tenant_id, request.object_id),
             tenant_id=actor.tenant_id,
-            **request.model_dump(),
+            **request.model_dump(by_alias=False, exclude={"identity_parent_id"}),
+            detail=verified.detail if verified else None,
+            identity_parent_id=(
+                verified.identity_parent_id if verified else request.identity_parent_id
+            ),
+            blueprint_id=verified.blueprint_id if verified else None,
+            directory_verified_at=utc_now() if verified else None,
         )
         saved = await self._repository.create_principal(
             principal,
@@ -112,9 +228,21 @@ class DirectoryService:
         self, actor: Actor, principal_id: str, request: PrincipalUpdate
     ) -> Principal:
         principal = await self.get_principal(actor, principal_id)
-        changes = request.model_dump(exclude_unset=True)
+        changes = request.model_dump(by_alias=False, exclude_unset=True)
         if changes.get("kind") not in {None, principal.kind}:
-            await self._require_no_grants(actor, principal_id, active_only=True)
+            new_kind = changes["kind"]
+            if subject_kind_for(new_kind) != subject_kind_for(principal.kind):
+                await self._require_no_grants(actor, principal_id, active_only=True)
+            verified = await self._verify_principal_request(new_kind, principal.object_id)
+            if verified:
+                changes.update(
+                    {
+                        "detail": verified.detail,
+                        "identity_parent_id": verified.identity_parent_id,
+                        "blueprint_id": verified.blueprint_id,
+                        "directory_verified_at": utc_now(),
+                    }
+                )
         updated = Principal.model_validate(
             {
                 **principal.model_dump(by_alias=False),
@@ -245,6 +373,11 @@ class DirectoryService:
     ) -> tuple[GroupMembership, bool]:
         group = await self.get_group(actor, group_id)
         principal = await self.get_principal(actor, principal_id)
+        if principal.kind == PrincipalKind.SECURITY_GROUP:
+            raise ValidationError(
+                "A MOSAIC group can't contain an Entra security group; grant the security group "
+                "directly."
+            )
         existing = await self._repository.get_membership(actor.tenant_id, group_id, principal_id)
         if existing:
             return existing, False
@@ -291,3 +424,82 @@ class DirectoryService:
                 membership.id,
             ),
         )
+
+    async def _annotate_directory_objects(
+        self, actor: Actor, objects: list[DirectoryObject]
+    ) -> list[DirectoryObject]:
+        principals = await self._repository.list_principals(actor.tenant_id)
+        by_object_id = {principal.object_id.casefold(): principal.id for principal in principals}
+        return [
+            item.model_copy(
+                update={"principal_id": by_object_id.get(item.object_id.casefold())}
+            )
+            for item in objects
+        ]
+
+    async def _verify_principal_request(
+        self, expected_kind: PrincipalKind, object_id: str
+    ) -> DirectoryObject | None:
+        if not self._directory or expected_kind in {
+            PrincipalKind.SERVICE_PRINCIPAL,
+            PrincipalKind.MANAGED_IDENTITY,
+        }:
+            return None
+        found = await self._directory.get_object(object_id)
+        if not found:
+            raise ValidationError(
+                "That object was not found in Entra.",
+                details={"objectId": object_id},
+            )
+        if found.kind is not expected_kind:
+            raise ValidationError(
+                f"That object is a {_kind_label(found.kind)} in Entra; add it as "
+                f"{_kind_article(found.kind)} {_kind_label(found.kind)}.",
+                details={"objectId": object_id, "actualKind": found.kind},
+            )
+        return found
+
+    async def _find_principal_by_object_id_casefold(
+        self, tenant_id: str, object_id: str
+    ) -> Principal | None:
+        wanted = object_id.casefold()
+        for principal in await self._repository.list_principals(tenant_id):
+            if principal.object_id.casefold() == wanted:
+                return principal
+        return None
+
+
+def _canonical_guid(value: str, field_name: str) -> str:
+    try:
+        return str(UUID(value.strip()))
+    except ValueError as exc:
+        raise ValidationError(f"{field_name} must be a GUID") from exc
+
+
+def _normalize_object_id(value: str, kind: PrincipalKind, *, require_guid: bool) -> str:
+    if require_guid and kind in {
+        PrincipalKind.USER,
+        PrincipalKind.AGENT_USER,
+        PrincipalKind.AGENT_IDENTITY,
+        PrincipalKind.SECURITY_GROUP,
+    }:
+        return _canonical_guid(value, "objectId")
+    try:
+        return str(UUID(value.strip()))
+    except ValueError:
+        return value.strip()
+
+
+def _kind_label(kind: PrincipalKind) -> str:
+    return {
+        PrincipalKind.USER: "user",
+        PrincipalKind.AGENT_USER: "agent user",
+        PrincipalKind.AGENT_IDENTITY: "agent identity",
+        PrincipalKind.SECURITY_GROUP: "security group",
+        PrincipalKind.SERVICE_PRINCIPAL: "service principal",
+        PrincipalKind.MANAGED_IDENTITY: "managed identity",
+    }[kind]
+
+
+def _kind_article(kind: PrincipalKind) -> str:
+    return "an" if kind in {PrincipalKind.AGENT_USER, PrincipalKind.AGENT_IDENTITY} else "a"

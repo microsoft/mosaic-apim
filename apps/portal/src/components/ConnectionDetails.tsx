@@ -9,7 +9,7 @@ import {
   Spinner,
   Text,
 } from '@fluentui/react-components'
-import { ChevronDownRegular, ChevronUpRegular } from '@fluentui/react-icons'
+import { ChevronDownRegular, ChevronUpRegular, CopyRegular } from '@fluentui/react-icons'
 import { useQuery } from '@tanstack/react-query'
 import { useId, useRef, useState } from 'react'
 import { useLocation } from 'react-router-dom'
@@ -22,17 +22,26 @@ import {
   isClientError,
   operationUrl,
 } from '../connection-format'
-import { describeEnforcementLimits, describeTokenLimits } from '../entitlement-format'
+import {
+  describeEnforcementLimits,
+  describeRequestLimits,
+  describeTokenLimits,
+  isSecurityGroupGrant,
+} from '../entitlement-format'
 import { useFocusHandoff, useFocusHandoffSource, type FocusHandoff } from '../focus-handoff'
 import { runtimeConfig } from '../runtime-config'
-import type { Entitlement, ModelConnection, ResolvedEntitlement } from '../types'
+import type { Entitlement, McpConnection, ModelConnection, ResolvedEntitlement } from '../types'
 import { KeyReveal } from './KeyReveal'
 
 /** Expandable connection panel for one model grant. Nothing is fetched until it is opened. */
 export function ConnectionDetails({ resolved }: { resolved: ResolvedEntitlement }) {
   const [expanded, setExpanded] = useState(false)
   const panelId = useId()
-  const viaGroup = resolved.via === 'group' || resolved.entitlement.subject.kind === 'group'
+  // MOSAIC groups live only in MOSAIC and the gateway never enforces them, so there's nothing to
+  // connect with; the API answers 404 for them.
+  const mosaicGroup = resolved.via === 'group' || resolved.entitlement.subject.kind === 'group'
+  const securityGroup = isSecurityGroupGrant(resolved)
+  const resourceKind = resolved.entitlement.resource.kind === 'mcpServer' ? 'mcpServer' : 'modelApi'
 
   return (
     <div className="connection-details">
@@ -48,14 +57,30 @@ export function ConnectionDetails({ resolved }: { resolved: ResolvedEntitlement 
       </Button>
       {expanded && (
         <div id={panelId} className="connection-panel">
-          {viaGroup ? <GroupGrantNotice /> : <DirectGrantConnection entitlement={resolved.entitlement} />}
+          {mosaicGroup && !securityGroup ? (
+            <GroupGrantNotice resourceKind={resourceKind} />
+          ) : (
+            <DirectGrantConnection entitlement={resolved.entitlement} />
+          )}
         </div>
       )}
     </div>
   )
 }
 
-function GroupGrantNotice() {
+function GroupGrantNotice({ resourceKind }: { resourceKind: 'modelApi' | 'mcpServer' }) {
+  if (resourceKind === 'mcpServer') {
+    return (
+      <MessageBar intent="info">
+        <MessageBarBody>
+          <MessageBarTitle>Connection details are for direct and Entra group grants</MessageBarTitle>
+          You have this access through a MOSAIC group, which the gateway doesn&apos;t enforce. Ask
+          an administrator for a direct grant, or a grant to a Microsoft Entra security group
+          you&apos;re in, if you need to call this MCP server.
+        </MessageBarBody>
+      </MessageBar>
+    )
+  }
   return (
     <MessageBar intent="info">
       <MessageBarBody>
@@ -72,10 +97,15 @@ function DirectGrantConnection({ entitlement }: { entitlement: Entitlement }) {
   const { accounts } = useMsal()
   const location = useLocation()
   const account = accounts[0]
+  const resourceKind: 'modelApi' | 'mcpServer' =
+    entitlement.resource.kind === 'mcpServer' ? 'mcpServer' : 'modelApi'
   const identity = `${runtimeConfig.authMode}:${account?.homeAccountId ?? ''}:${account?.tenantId ?? ''}:${account?.localAccountId ?? ''}`
-  const connection = useQuery({
-    queryKey: ['portal', 'connection', identity, entitlement.id],
-    queryFn: () => api.getMyEntitlementConnection(entitlement.id),
+  const connection = useQuery<ModelConnection | McpConnection>({
+    queryKey: ['portal', 'connection', resourceKind, identity, entitlement.id],
+    queryFn: () =>
+      resourceKind === 'mcpServer'
+        ? api.getMcpConnection(entitlement.id)
+        : api.getMyEntitlementConnection(entitlement.id),
     // A 4xx answer describes the grant's state; asking again will not change it.
     retry: (failureCount, error) => !isClientError(error) && failureCount < 1,
   })
@@ -91,39 +121,45 @@ function DirectGrantConnection({ entitlement }: { entitlement: Entitlement }) {
         error={connection.error}
         onRetry={() => void connection.refetch()}
         focusHandoff={focusHandoff}
+        resourceKind={resourceKind}
       />
     )
   }
 
   const info = connection.data
+  if (resourceKind === 'mcpServer') {
+    return <McpConnectionPanel connection={info as McpConnection} focusHandoff={focusHandoff} />
+  }
+  const model = info as ModelConnection
   // Any change to who is signed in, the route, the grant, or its applied state discards a key.
   const keySession = [
     identity,
     location.key,
     entitlement.id,
     entitlement.updatedAt,
-    info.entitlementId,
-    info.publicationId,
-    info.runtime?.status ?? 'none',
-    info.runtime?.subscriptionName ?? '',
-    String(info.appliedMethods?.keysEnabled),
-    String(info.runtime?.appliedMethods?.keysEnabled),
+    model.entitlementId,
+    model.publicationId,
+    model.runtime?.status ?? 'none',
+    model.runtime?.subscriptionName ?? '',
+    String(model.appliedMethods?.keysEnabled),
+    String(model.runtime?.appliedMethods?.keysEnabled),
+    String(model.keysAvailable),
   ].join('|')
 
   return (
     <>
-      <RuntimeSummary connection={info} focusHandoff={focusHandoff} />
-      <EndpointSection connection={info} />
-      <AuthenticationSection connection={info} />
+      <RuntimeSummary connection={model} focusHandoff={focusHandoff} />
+      <EndpointSection connection={model} />
+      <AuthenticationSection connection={model} />
       <KeyReveal
         key={keySession}
         entitlementId={entitlement.id}
-        connection={info}
+        connection={model}
         onConflict={() => void connection.refetch()}
         focusHandoff={focusHandoff}
       />
-      <SamplesSection connection={info} />
-      <LimitsSection connection={info} />
+      <SamplesSection connection={model} />
+      <LimitsSection connection={model} />
     </>
   )
 }
@@ -132,15 +168,17 @@ function ConnectionError({
   error,
   onRetry,
   focusHandoff,
+  resourceKind = 'modelApi',
 }: {
   error: Error
   onRetry: () => void
   focusHandoff: FocusHandoff
+  resourceKind?: 'modelApi' | 'mcpServer'
 }) {
   const bar = useRef<HTMLDivElement | null>(null)
   const retry = useRef<HTMLButtonElement | HTMLAnchorElement | null>(null)
   useFocusHandoff(focusHandoff, bar, retry, bar)
-  const problem = connectionProblem(error)
+  const problem = connectionProblem(error, resourceKind)
   return (
     <MessageBar intent="error" ref={bar} tabIndex={-1}>
       <MessageBarBody>
@@ -155,6 +193,270 @@ function ConnectionError({
         </MessageBarActions>
       )}
     </MessageBar>
+  )
+}
+
+function McpConnectionPanel({
+  connection,
+  focusHandoff,
+}: {
+  connection: McpConnection
+  focusHandoff: FocusHandoff
+}) {
+  const summary = useRef<HTMLDivElement | null>(null)
+  useFocusHandoff(focusHandoff, summary, summary)
+  return (
+    <>
+      <div className="connection-status" ref={summary} tabIndex={-1}>
+        <Badge appearance={connection.enforced ? 'filled' : 'tint'}>
+          {connection.enforced ? 'Enforced by the gateway' : 'Recorded, not enforced'}
+        </Badge>
+        <Text>{connection.statusMessage}</Text>
+        {connection.runtime?.error && (
+          <MessageBar intent="warning" className="connection-status-error">
+            <MessageBarBody>
+              <MessageBarTitle>Last gateway error</MessageBarTitle>
+              {connection.runtime.error}
+            </MessageBarBody>
+          </MessageBar>
+        )}
+      </div>
+      <McpEndpointSection connection={connection} />
+      <McpAuthenticationSection connection={connection} />
+      <McpLimitsSection connection={connection} />
+      <McpAdvancedSection connection={connection} />
+    </>
+  )
+}
+
+function CopyButton({ value, label }: { value: string; label: string }) {
+  const [notice, setNotice] = useState<string | null>(null)
+  const [failed, setFailed] = useState(false)
+  async function copy() {
+    setNotice(null)
+    setFailed(false)
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error('Clipboard unavailable')
+      await navigator.clipboard.writeText(value)
+      setNotice(`${label} copied.`)
+    } catch {
+      setFailed(true)
+    }
+  }
+  return (
+    <>
+      <Button icon={<CopyRegular />} onClick={() => void copy()}>
+        Copy {label}
+      </Button>
+      <Text as="span" size={200} role="status" aria-live="polite" className="key-status">
+        {notice}
+      </Text>
+      {failed && (
+        <MessageBar intent="warning">
+          <MessageBarBody>
+            Could not copy {label.toLowerCase()}. Your browser may require clipboard permission; copy it
+            manually or try again.
+          </MessageBarBody>
+        </MessageBar>
+      )}
+    </>
+  )
+}
+
+function CopyableCode({ value, label }: { value: string; label: string }) {
+  return (
+    <div className="copyable-value">
+      <code>{value}</code>
+      <div className="key-actions">
+        <CopyButton value={value} label={label} />
+      </div>
+    </div>
+  )
+}
+
+function mcpSnippet(connection: McpConnection) {
+  if (!connection.serverUrl) return null
+  return JSON.stringify(
+    {
+      servers: {
+        [connection.displayName]: {
+          type: 'http',
+          url: connection.serverUrl,
+        },
+      },
+    },
+    null,
+    2,
+  )
+}
+
+function McpEndpointSection({ connection }: { connection: McpConnection }) {
+  const headingId = useId()
+  const snippet = mcpSnippet(connection)
+  const showVsCode =
+    Boolean(snippet) &&
+    (connection.principalKind === 'user' ||
+      connection.principalKind === 'agentUser' ||
+      connection.principalKind === 'securityGroup' ||
+      Boolean(connection.delegatedScope))
+  return (
+    <section className="connection-section" aria-labelledby={headingId}>
+      <h3 id={headingId}>Server</h3>
+      <dl className="fact-list">
+        <div>
+          <dt>Server URL</dt>
+          <dd>
+            {connection.serverUrl ? (
+              <CopyableCode value={connection.serverUrl} label="Server URL" />
+            ) : (
+              "The gateway URL isn't known yet."
+            )}
+          </dd>
+        </div>
+        <div>
+          <dt>Transport</dt>
+          <dd>{connection.transport}</dd>
+        </div>
+      </dl>
+      {showVsCode && snippet && (
+        <>
+          <h4>VS Code</h4>
+          <Text as="p" size={200} className="connection-note">
+            Add this entry to <code>.vscode/mcp.json</code>. VS Code signs in with Microsoft Entra
+            ID and discovers the resource metadata from the server URL. Your tenant may need an
+            administrator to consent to{' '}
+            {connection.delegatedScope ? <code>{connection.delegatedScope}</code> : 'the delegated scope'}.
+          </Text>
+          <pre className="code-sample"><code>{snippet}</code></pre>
+          <div className="key-actions">
+            <CopyButton value={snippet} label="VS Code snippet" />
+          </div>
+        </>
+      )}
+    </section>
+  )
+}
+
+function McpAuthenticationSection({ connection }: { connection: McpConnection }) {
+  const headingId = useId()
+  const isAppCaller =
+    connection.principalKind === 'agentIdentity' ||
+    connection.principalKind === 'servicePrincipal' ||
+    connection.principalKind === 'managedIdentity'
+  return (
+    <section className="connection-section" aria-labelledby={headingId}>
+      <h3 id={headingId}>Authentication</h3>
+      <dl className="fact-list">
+        <div>
+          <dt>Tenant ID</dt>
+          <dd><code>{connection.tenantId}</code></dd>
+        </div>
+        {connection.entraAudience && (
+          <div>
+            <dt>Audience</dt>
+            <dd><code>{connection.entraAudience}</code></dd>
+          </div>
+        )}
+        {connection.delegatedScope && (
+          <div>
+            <dt>Delegated scope</dt>
+            <dd><code>{connection.delegatedScope}</code></dd>
+          </div>
+        )}
+        {connection.applicationScope && (
+          <div>
+            <dt>Application scope</dt>
+            <dd><code>{connection.applicationScope}</code></dd>
+          </div>
+        )}
+        {connection.requiredAppRole && (
+          <div>
+            <dt>Required app role</dt>
+            <dd><code>{connection.requiredAppRole}</code></dd>
+          </div>
+        )}
+        {connection.clientId && (
+          <div>
+            <dt>Client ID</dt>
+            <dd><code>{connection.clientId}</code></dd>
+          </div>
+        )}
+      </dl>
+      {connection.principalKind === 'agentUser' && connection.clientId && (
+        <Text as="p" size={200} className="connection-note">
+          This is the parent agent identity client ID. Use it when the agent user signs in for the
+          delegated scope.
+        </Text>
+      )}
+      {(isAppCaller || connection.applicationScope || connection.requiredAppRole) && (
+        <Text as="p" size={200} className="connection-note">
+          Agent identities and applications request the application scope with client credentials.
+          Assign <code>{connection.requiredAppRole ?? 'Mcp.Invoke.Application'}</code> to the agent,
+          application, or agent blueprint before it calls this server.
+        </Text>
+      )}
+      {(connection.viaGroupId || connection.principalKind === 'securityGroup') && (
+        <MessageBar intent="info">
+          <MessageBarBody>
+            <MessageBarTitle>Access is via group</MessageBarTitle>
+            {connection.viaGroupName ?? connection.viaGroupId ?? 'This group'} grants this access.
+            Each member gets the group&apos;s limits separately. App roles are not inherited through
+            groups, so agents and apps need the required app role assigned directly or through their
+            blueprint.
+          </MessageBarBody>
+        </MessageBar>
+      )}
+    </section>
+  )
+}
+
+function McpLimitsSection({ connection }: { connection: McpConnection }) {
+  const headingId = useId()
+  return (
+    <section className="connection-section" aria-labelledby={headingId}>
+      <h3 id={headingId}>Call limits</h3>
+      <ul className="plain-list">
+        {describeRequestLimits(connection.limits).map((limit) => (
+          <li key={limit}>{limit}</li>
+        ))}
+      </ul>
+      <Text as="p" size={200} className="connection-note">
+        MCP grants are limited by calls, not tokens.
+      </Text>
+    </section>
+  )
+}
+
+function McpAdvancedSection({ connection }: { connection: McpConnection }) {
+  const headingId = useId()
+  return (
+    <section className="connection-section" aria-labelledby={headingId}>
+      <details>
+        <summary id={headingId}>Advanced details</summary>
+        <dl className="fact-list">
+          <div>
+            <dt>Resource metadata URL</dt>
+            <dd>
+              {connection.resourceMetadataUrl ? (
+                <CopyableCode value={connection.resourceMetadataUrl} label="Resource metadata URL" />
+              ) : (
+                'Not available yet'
+              )}
+            </dd>
+          </div>
+          <div>
+            <dt>MCP server ID</dt>
+            <dd><code>{connection.mcpServerId}</code></dd>
+          </div>
+          {connection.publicationId && (
+            <div>
+              <dt>Publication ID</dt>
+              <dd><code>{connection.publicationId}</code></dd>
+            </div>
+          )}
+        </dl>
+      </details>
+    </section>
   )
 }
 
@@ -190,10 +492,12 @@ function EndpointSection({ connection }: { connection: ModelConnection }) {
           <dt>Deployment</dt>
           <dd><code>{connection.deploymentName}</code></dd>
         </div>
-        <div>
-          <dt>Key header</dt>
-          <dd><code>{connection.subscriptionHeader}</code></dd>
-        </div>
+        {connection.keysAvailable !== false && (
+          <div>
+            <dt>Key header</dt>
+            <dd><code>{connection.subscriptionHeader}</code></dd>
+          </div>
+        )}
       </dl>
       <h4>Operations</h4>
       {connection.operations.length > 0 ? (
@@ -216,6 +520,8 @@ function EndpointSection({ connection }: { connection: ModelConnection }) {
 function AuthenticationSection({ connection }: { connection: ModelConnection }) {
   const headingId = useId()
   const methods = connection.appliedMethods
+  const keysAccepted = connection.keysAvailable === false ? false : methods?.keysEnabled
+  const groupGrant = connection.principalKind === 'securityGroup' || connection.keysAvailable === false
   return (
     <section className="connection-section" aria-labelledby={headingId}>
       <h3 id={headingId}>Authentication</h3>
@@ -223,7 +529,7 @@ function AuthenticationSection({ connection }: { connection: ModelConnection }) 
         <dl className="fact-list">
           <div>
             <dt>Subscription key</dt>
-            <dd>{methods.keysEnabled ? 'Accepted' : 'Not accepted'}</dd>
+            <dd>{keysAccepted ? 'Accepted' : 'Not accepted'}</dd>
           </div>
           <div>
             <dt>Microsoft Entra ID token</dt>
@@ -268,6 +574,29 @@ function AuthenticationSection({ connection }: { connection: ModelConnection }) 
               : 'Request an access token for the scope above.'}{' '}
             Send it as a bearer token; your portal sign-in is not a model token.
           </Text>
+          {groupGrant && (connection.entraApplicationScope || connection.requiredAppRole) && (
+            <details className="connection-note">
+              <summary>Agents and apps in this group</summary>
+              <Text as="p" size={200}>
+                Request the application scope
+                {connection.entraApplicationScope ? (
+                  <>
+                    {' '}<code>{connection.entraApplicationScope}</code>
+                  </>
+                ) : (
+                  ' configured for this model'
+                )}
+                {connection.requiredAppRole ? (
+                  <>
+                    {' '}and make sure <code>{connection.requiredAppRole}</code> is assigned to the
+                    agent or app itself.
+                  </>
+                ) : (
+                  ' and make sure the required app role is assigned to the agent or app itself.'
+                )}
+              </Text>
+            </details>
+          )}
           {!connection.entraClientId && (
             <Text as="p" size={200} className="connection-note">
               MOSAIC has no client ID for you to sign in with for this grant. Ask an administrator
@@ -285,6 +614,7 @@ function SamplesSection({ connection }: { connection: ModelConnection }) {
   const methods = connection.appliedMethods
   const samples = buildSamples(connection)
   const tokenSample = buildTokenSample(connection)
+  const keysAccepted = connection.keysAvailable === false ? false : methods?.keysEnabled
   const tokenBlock = tokenSample && (
     <>
       <h4>Get a token (Python)</h4>
@@ -323,7 +653,7 @@ function SamplesSection({ connection }: { connection: ModelConnection }) {
               adds the <code>anthropic-version</code> header when a request omits it. With an
               Anthropic SDK, use <code>{operationUrl(connection.endpoint, 'anthropic')}</code> as the
               base URL
-              {methods?.keysEnabled && (
+              {keysAccepted && (
                 <>
                   . The gateway removes <code>x-api-key</code>, so send a key in the{' '}
                   <code>{connection.subscriptionHeader}</code> header
@@ -331,7 +661,7 @@ function SamplesSection({ connection }: { connection: ModelConnection }) {
               )}
               {methods?.entraEnabled && (
                 <>
-                  {methods.keysEnabled ? ', or' : ' and'} pass a token as <code>auth_token</code>
+                  {keysAccepted ? ', or' : ' and'} pass a token as <code>auth_token</code>
                 </>
               )}
               .
@@ -370,6 +700,7 @@ function SamplesSection({ connection }: { connection: ModelConnection }) {
 function LimitsSection({ connection }: { connection: ModelConnection }) {
   const headingId = useId()
   const publicationLimits = describeTokenLimits(connection.publicationLimits)
+  const keySubject = connection.keysAvailable === false ? 'Entra tokens share' : 'Your primary key, secondary key, and Entra tokens share'
   return (
     <section className="connection-section" aria-labelledby={headingId}>
       <h3 id={headingId}>Limits</h3>
@@ -400,8 +731,9 @@ function LimitsSection({ connection }: { connection: ModelConnection }) {
         </div>
       </dl>
       <Text as="p" size={200} className="connection-note">
-        Your primary key, secondary key, and Entra tokens share this grant&apos;s limits.
+        {keySubject} this grant&apos;s limits.
         {connection.publicationLimits && ' Publication limits apply as well and are counted separately.'}
+        {connection.keysAvailable === false && ' Each person or app that uses this group grant is counted separately.'}
       </Text>
     </section>
   )

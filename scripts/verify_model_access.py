@@ -54,6 +54,8 @@ ADMIN_CONTROL_TOKEN = "MOSAIC_SMOKE_ADMIN_CONTROL_TOKEN"
 USER_RUNTIME_TOKEN = "MOSAIC_SMOKE_USER_RUNTIME_TOKEN"
 APPLICATION_RUNTIME_TOKEN = "MOSAIC_SMOKE_APPLICATION_RUNTIME_TOKEN"
 UNGRANTED_USER_RUNTIME_TOKEN = "MOSAIC_SMOKE_UNGRANTED_USER_RUNTIME_TOKEN"
+AGENT_RUNTIME_TOKEN = "MOSAIC_SMOKE_AGENT_RUNTIME_TOKEN"
+GROUP_MEMBER_RUNTIME_TOKEN = "MOSAIC_SMOKE_GROUP_MEMBER_RUNTIME_TOKEN"
 APPLICATION_CLIENT_ID = "MOSAIC_SMOKE_APPLICATION_CLIENT_ID"
 APPLICATION_CLIENT_SECRET = "MOSAIC_SMOKE_APPLICATION_CLIENT_SECRET"
 PAYLOAD = "MOSAIC_SMOKE_PAYLOAD"
@@ -864,6 +866,117 @@ def verify_grant(
         prove_token_limit(call, grant, next(iter(ways.values())), grant.tokens_per_minute)
 
 
+def connection_route(entitlement_id: str) -> str:
+    return f"entitlements/{entitlement_id}"
+
+
+def route_from_connection(connection: dict[str, Any], options: Options) -> ModelRoute:
+    return model_route(
+        connection,
+        options.origin,
+        api_version=options.api_version,
+        models_api_version=options.models_api_version,
+        token_parameter=options.token_parameter,
+        payload=options.payload,
+    )
+
+
+def require_applied(connection: dict[str, Any], label: str) -> None:
+    status = mapping(connection.get("runtime")).get("status")
+    if status != "applied":
+        shown = status if status in RUNTIME_STATUSES else "not set up"
+        raise VerificationFailed(
+            f"{label}: access must be applied to APIM with nothing pending (status: {shown})"
+        )
+
+
+def verify_agent_entitlement(
+    client: httpx.Client,
+    base: str,
+    entitlement_id: str,
+    control_token: str,
+    runtime_token: str,
+    options: Options,
+) -> None:
+    label = "Agent identity grant"
+    route = connection_route(entitlement_id)
+    response = client.get(f"{base}/{route}/connection", headers=bearer(control_token))
+    expect(response, {200}, f"{label} connection details")
+    connection = object_body(response, f"{label} connection details")
+    if connection.get("principalKind") != "agentIdentity":
+        raise VerificationFailed(f"{label}: principalKind was not agentIdentity")
+    scope = connection.get("entraScope")
+    if not (isinstance(scope, str) and SCOPE.fullmatch(scope) and scope.endswith("/.default")):
+        raise VerificationFailed(f"{label}: connection did not report a .default runtime scope")
+    if connection.get("requiredAppRole") != "Models.Invoke.Application":
+        raise VerificationFailed(f"{label}: connection did not report the required app role")
+    if mapping(connection.get("appliedMethods")).get("entraEnabled") is not True:
+        raise VerificationFailed(f"{label}: Entra tokens are not applied")
+    require_applied(connection, label)
+    route_to_model = route_from_connection(connection, options)
+    response = client.post(
+        route_to_model.url,
+        headers={**route_to_model.headers, **bearer(runtime_token)},
+        json=route_to_model.payload,
+    )
+    expect(response, {200}, "Agent model call")
+    if not route_to_model.reached_model(object_body(response, "Agent model call")):
+        raise VerificationFailed("Agent token did not return a model response")
+    say("PASS: Agent identity token reached the model")
+
+
+def warn_group_claim_diagnostics(token: str) -> None:
+    claims = token_claims(token)
+    claim_names = mapping(claims.get("_claim_names"))
+    groups = claims.get("groups")
+    if not isinstance(groups, list) or not groups:
+        print(
+            "WARN: group member runtime token has no groups claim; "
+            "security-group grants cannot match without it.",
+            file=sys.stderr,
+        )
+    if "groups" in claim_names or claims.get("hasgroups") is True or "groups:src1" in claims:
+        print(
+            "WARN: group member runtime token signals group overage; "
+            "use a direct grant for this caller.",
+            file=sys.stderr,
+        )
+
+
+def verify_group_entitlement(
+    client: httpx.Client,
+    base: str,
+    entitlement_id: str,
+    control_token: str,
+    runtime_token: str,
+    options: Options,
+) -> None:
+    warn_group_claim_diagnostics(runtime_token)
+    label = "Security-group grant"
+    route = connection_route(entitlement_id)
+    response = client.get(f"{base}/{route}/connection", headers=bearer(control_token))
+    expect(response, {200}, f"{label} connection details")
+    connection = object_body(response, f"{label} connection details")
+    if connection.get("keysAvailable") is not False:
+        raise VerificationFailed(f"{label}: connection must report keysAvailable false")
+    reveal_response = client.post(
+        f"{base}/{route}/keys/reveal",
+        headers=bearer(control_token),
+        json={"slot": "primary"},
+    )
+    expect(reveal_response, {409}, "Security-group key reveal refusal")
+    route_to_model = route_from_connection(connection, options)
+    response = client.post(
+        route_to_model.url,
+        headers={**route_to_model.headers, **bearer(runtime_token)},
+        json=route_to_model.payload,
+    )
+    expect(response, {200}, "Group member model call")
+    if not route_to_model.reached_model(object_body(response, "Group member model call")):
+        raise VerificationFailed("Group member token did not return a model response")
+    say("PASS: Security-group member token reached the model")
+
+
 def prove_token_limit(
     call: Callable[[dict[str, str]], httpx.Response],
     grant: Grant,
@@ -1139,6 +1252,20 @@ def parse_arguments(argv: list[str] | None) -> argparse.Namespace:
         help="A grant held by someone other than the user, which the user must not list, read "
         "or retrieve a key for. Repeat it for each grant",
     )
+    parser.add_argument(
+        "--agent-entitlement",
+        action="append",
+        default=[],
+        metavar="ID",
+        help="An Entra Agent ID grant to verify with MOSAIC_SMOKE_AGENT_RUNTIME_TOKEN",
+    )
+    parser.add_argument(
+        "--group-entitlement",
+        action="append",
+        default=[],
+        metavar="ID",
+        help="A security-group grant to verify with MOSAIC_SMOKE_GROUP_MEMBER_RUNTIME_TOKEN",
+    )
     parser.add_argument("--api-version", help="Azure OpenAI API version, for /openai/ routes")
     parser.add_argument(
         "--models-api-version", help="Foundry Models API version, for /models/ routes"
@@ -1156,7 +1283,7 @@ def parse_arguments(argv: list[str] | None) -> argparse.Namespace:
         "--send-model-requests",
         action="store_true",
         help="Acknowledge that the checks send real, billed model requests. Needed when the run "
-        "names a --user-entitlement or --application-entitlement",
+        "names a model-calling entitlement",
     )
     parser.add_argument(
         "--check-ungranted-user",
@@ -1185,7 +1312,9 @@ def parse_arguments(argv: list[str] | None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def validate(args: argparse.Namespace) -> tuple[Options, str | None, str | None]:
+def validate(
+    args: argparse.Namespace,
+) -> tuple[Options, str | None, str | None, str | None, str | None]:
     """Check arguments and credentials before any network call."""
     https_origin(args.api_base_url)
     if urlsplit(args.api_base_url).query:
@@ -1193,12 +1322,17 @@ def validate(args: argparse.Namespace) -> tuple[Options, str | None, str | None]
     origin = https_origin(args.gateway_origin)
     if urlsplit(args.gateway_origin).path not in {"", "/"}:
         raise VerificationFailed("Supply the gateway origin without an API path")
-    identifiers = [*args.user_entitlement, *args.application_entitlement]
+    standard_identifiers = [*args.user_entitlement, *args.application_entitlement]
+    identifiers = [
+        *standard_identifiers,
+        *args.agent_entitlement,
+        *args.group_entitlement,
+    ]
     listed = [*identifiers, *args.foreign_user_entitlement]
     if not listed:
         raise VerificationFailed(
-            "Supply at least one --user-entitlement, --application-entitlement or "
-            "--foreign-user-entitlement"
+            "Supply at least one --user-entitlement, --application-entitlement, "
+            "--agent-entitlement, --group-entitlement or --foreign-user-entitlement"
         )
     if not all(ENTITLEMENT.fullmatch(identifier) for identifier in listed):
         raise VerificationFailed("Supply an entitlement identifier, not a URL")
@@ -1213,11 +1347,11 @@ def validate(args: argparse.Namespace) -> tuple[Options, str | None, str | None]
         raise VerificationFailed(
             "--check-ungranted-user needs a --user-entitlement in the same run"
         )
-    if (args.prove_shared_budget or args.prove_token_limit) and not identifiers:
+    if (args.prove_shared_budget or args.prove_token_limit) and not standard_identifiers:
         raise VerificationFailed(
             "A proof needs a --user-entitlement or --application-entitlement to run on"
         )
-    if args.watch_revocation is not None and args.watch_revocation not in identifiers:
+    if args.watch_revocation is not None and args.watch_revocation not in standard_identifiers:
         raise VerificationFailed(
             "--watch-revocation must name a --user-entitlement or --application-entitlement in "
             "this run"
@@ -1232,9 +1366,16 @@ def validate(args: argparse.Namespace) -> tuple[Options, str | None, str | None]
         user_control = optional_credential(USER_CONTROL_TOKEN)
     admin_control = (
         credential(ADMIN_CONTROL_TOKEN)
-        if args.application_entitlement or args.foreign_user_entitlement
+        if (
+            args.application_entitlement
+            or args.foreign_user_entitlement
+            or args.agent_entitlement
+            or args.group_entitlement
+        )
         else None
     )
+    agent_runtime = credential(AGENT_RUNTIME_TOKEN) if args.agent_entitlement else None
+    group_runtime = credential(GROUP_MEMBER_RUNTIME_TOKEN) if args.group_entitlement else None
     if args.application_entitlement and args.application_token_source == "client-credentials":
         if guid(credential(APPLICATION_CLIENT_ID)) is None:
             raise VerificationFailed(f"{APPLICATION_CLIENT_ID} must be the application's client ID")
@@ -1252,7 +1393,7 @@ def validate(args: argparse.Namespace) -> tuple[Options, str | None, str | None]
         payload=custom_payload(),
         proof=proof,
     )
-    return options, user_control, admin_control
+    return options, user_control, admin_control, agent_runtime, group_runtime
 
 
 def run(
@@ -1261,6 +1402,8 @@ def run(
     options: Options,
     user_control: str | None,
     admin_control: str | None,
+    agent_runtime: str | None,
+    group_runtime: str | None,
 ) -> tuple[int, int]:
     base = f"{args.api_base_url.rstrip('/')}/api/v1"
     # Isolation needs no model call, so it runs first and can fail before any is billed.
@@ -1300,6 +1443,14 @@ def run(
     stranger = tokens.stranger(grants) if args.check_ungranted_user else None
     for grant in grants:
         verify_grant(client, grant, tokens, stranger, options.proof)
+    for identifier in args.agent_entitlement:
+        verify_agent_entitlement(
+            client, base, identifier, admin_control or "", agent_runtime or "", options
+        )
+    for identifier in args.group_entitlement:
+        verify_group_entitlement(
+            client, base, identifier, admin_control or "", group_runtime or "", options
+        )
     if args.watch_revocation is not None:
         watched = next(grant for grant in grants if grant.entitlement_id == args.watch_revocation)
         watch_revocation(
@@ -1310,15 +1461,20 @@ def run(
             timeout=args.revocation_timeout,
             interval=args.revocation_interval,
         )
-    return len(grants), len(args.foreign_user_entitlement)
+    return (
+        len(grants) + len(args.agent_entitlement) + len(args.group_entitlement),
+        len(args.foreign_user_entitlement),
+    )
 
 
 def main(argv: list[str] | None = None, *, transport: httpx.BaseTransport | None = None) -> int:
     args = parse_arguments(argv)
     try:
-        options, user_control, admin_control = validate(args)
+        options, user_control, admin_control, agent_runtime, group_runtime = validate(args)
         with httpx.Client(timeout=30, follow_redirects=False, transport=transport) as client:
-            count, foreign = run(client, args, options, user_control, admin_control)
+            count, foreign = run(
+                client, args, options, user_control, admin_control, agent_runtime, group_runtime
+            )
     except KeyboardInterrupt:
         print("STOPPED: interrupted before the checks finished", file=sys.stderr)
         return 130

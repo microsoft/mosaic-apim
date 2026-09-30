@@ -13,11 +13,24 @@ import {
   directResolved,
   endpoint,
   groupResolved,
+  mcpAgentIdentityConnection,
+  mcpAgentIdentityResolved,
+  mcpAgentUserConnection,
+  mcpAgentUserResolved,
+  mcpConnection,
+  mcpMetadataUrl,
+  mcpMosaicGroupResolved,
+  mcpResolved,
+  mcpSecurityGroupConnection,
+  mcpSecurityGroupResolved,
+  mcpServerUrl,
   messagesUrl,
   modelClientId,
   persistedText,
   responsesUrl,
   revealedPrimary,
+  securityGroupConnection,
+  securityGroupResolved,
 } from '../test/connection'
 import type { KeyRevealResult, ModelConnection, ResolvedEntitlement } from '../types'
 import { ConnectionDetails } from './ConnectionDetails'
@@ -28,6 +41,7 @@ const auth = vi.hoisted(() => ({
 vi.mock('@azure/msal-react', () => ({ useMsal: () => auth }))
 const api = vi.hoisted(() => ({
   getMyEntitlementConnection: vi.fn(),
+  getMcpConnection: vi.fn(),
   revealMyEntitlementKey: vi.fn(),
 }))
 vi.mock('../api', () => ({ usePortalApi: () => api }))
@@ -66,6 +80,13 @@ async function openDetails(user: UserEvent, info: ModelConnection = connection) 
   api.getMyEntitlementConnection.mockResolvedValue(info)
   await user.click(toggle())
   expect(await screen.findByText(info.endpoint)).toBeVisible()
+}
+
+async function openMcpDetails(user: UserEvent, info = mcpConnection, resolved: ResolvedEntitlement = mcpResolved) {
+  api.getMcpConnection.mockResolvedValue(info)
+  renderDetails(resolved)
+  await user.click(toggle())
+  expect(await screen.findByText(info.statusMessage)).toBeVisible()
 }
 
 function section(name: string) {
@@ -365,6 +386,149 @@ describe('ConnectionDetails', () => {
     expect(screen.getByText(/You have this access through a group/)).toBeVisible()
     expect(screen.queryByRole('button', { name: 'Show primary key' })).not.toBeInTheDocument()
     expect(api.getMyEntitlementConnection).not.toHaveBeenCalled()
+  })
+
+  it('explains that MOSAIC group grants on an MCP server have no connection details, without calling the API', async () => {
+    const user = userEvent.setup()
+    renderDetails(mcpMosaicGroupResolved)
+
+    await user.click(toggle())
+
+    expect(screen.getByText('Connection details are for direct and Entra group grants')).toBeVisible()
+    expect(screen.getByText(/through a MOSAIC group, which the gateway doesn't enforce/)).toBeVisible()
+    expect(api.getMcpConnection).not.toHaveBeenCalled()
+    expect(api.getMyEntitlementConnection).not.toHaveBeenCalled()
+  })
+
+  it('loads security-group grant connection details with Entra-only authentication', async () => {
+    const user = userEvent.setup()
+    renderDetails(securityGroupResolved)
+    await openDetails(user, securityGroupConnection)
+
+    const authentication = section('Authentication')
+    expect(fact(authentication, 'Subscription key')).toHaveTextContent(/^Not accepted$/)
+    expect(fact(authentication, 'Microsoft Entra ID token')).toHaveTextContent(/^Accepted$/)
+    expect(fact(authentication, 'Client ID')).toHaveTextContent(new RegExp(`^${modelClientId}$`))
+    expect(fact(authentication, 'Scope')).toHaveTextContent(securityGroupConnection.entraScope!)
+    expect(
+      screen.getByText(
+        "Access granted to a group uses Microsoft Entra sign-in only, so there's no key. Sign in with your own account to get a token.",
+      ),
+    ).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Show primary key' })).not.toBeInTheDocument()
+    expect(sampleHeadings()).toEqual(['Get a token (Python)', 'curl (bash)', 'Python'])
+    expect(samples().join('\n')).toContain('MOSAIC_ACCESS_TOKEN')
+    expect(samples().join('\n')).not.toContain('MOSAIC_API_KEY')
+    expect(api.getMyEntitlementConnection).toHaveBeenCalledExactlyOnceWith(securityGroupResolved.entitlement.id)
+    expect(api.revealMyEntitlementKey).not.toHaveBeenCalled()
+  })
+
+  it('shows the collapsed agent and app note for security-group grants', async () => {
+    const user = userEvent.setup()
+    renderDetails(securityGroupResolved)
+    await openDetails(user, securityGroupConnection)
+
+    const note = screen.getByText('Agents and apps in this group')
+    expect(note).toBeVisible()
+    expect(note.closest('details')).not.toHaveAttribute('open')
+    expect(screen.getByText(securityGroupConnection.entraApplicationScope!)).toBeInTheDocument()
+    expect(screen.getByText(securityGroupConnection.requiredAppRole!)).toBeInTheDocument()
+  })
+
+  it('shows MCP connection details for a person, including copyable URL, VS Code snippet, limits, and metadata', async () => {
+    const user = userEvent.setup()
+    const copy = vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue(undefined)
+    await openMcpDetails(user)
+
+    expect(api.getMcpConnection).toHaveBeenCalledExactlyOnceWith(mcpResolved.entitlement.id)
+    expect(api.getMyEntitlementConnection).not.toHaveBeenCalled()
+    expect(api.revealMyEntitlementKey).not.toHaveBeenCalled()
+    expect(screen.getByText('Enforced by the gateway')).toBeVisible()
+    const server = section('Server')
+    expect(fact(server, 'Server URL')).toHaveTextContent(mcpServerUrl)
+    expect(fact(server, 'Transport')).toHaveTextContent('streamable')
+    expect(screen.getByText('VS Code')).toBeVisible()
+    expect(screen.getByText(/VS Code signs in with Microsoft Entra ID/)).toHaveTextContent(
+      mcpConnection.delegatedScope!,
+    )
+    const snippet = samples()[0]
+    expect(snippet).toContain('"Weather tools"')
+    expect(snippet).toContain(`"url": "${mcpServerUrl}"`)
+    expect(fact(section('Authentication'), 'Delegated scope')).toHaveTextContent(mcpConnection.delegatedScope!)
+    expect(fact(section('Authentication'), 'Client ID')).toHaveTextContent(modelClientId)
+    expect(section('Call limits')).toHaveTextContent('120 calls per 60 seconds')
+    expect(section('Call limits')).toHaveTextContent('10,000 calls per month')
+    expect(section('Call limits')).toHaveTextContent('MCP grants are limited by calls, not tokens.')
+
+    await user.click(screen.getByText('Advanced details'))
+    expect(fact(section('Advanced details'), 'Resource metadata URL')).toHaveTextContent(mcpMetadataUrl)
+
+    await user.click(screen.getByRole('button', { name: 'Copy Server URL' }))
+    expect(copy).toHaveBeenCalledWith(mcpServerUrl)
+    expect(await screen.findByText('Server URL copied.')).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Copy VS Code snippet' }))
+    expect(copy).toHaveBeenLastCalledWith(snippet)
+  })
+
+  it('shows MCP client-credentials guidance for an agent identity', async () => {
+    const user = userEvent.setup()
+    await openMcpDetails(user, mcpAgentIdentityConnection, mcpAgentIdentityResolved)
+
+    const authentication = section('Authentication')
+    expect(fact(authentication, 'Application scope')).toHaveTextContent(mcpAgentIdentityConnection.applicationScope!)
+    expect(fact(authentication, 'Required app role')).toHaveTextContent(mcpAgentIdentityConnection.requiredAppRole!)
+    expect(fact(authentication, 'Client ID')).toHaveTextContent(mcpAgentIdentityConnection.clientId!)
+    expect(screen.getByText(/Agent identities and applications request the application scope/)).toHaveTextContent(
+      /Assign Mcp\.Invoke\.Application to the agent, application, or agent blueprint/,
+    )
+    expect(screen.queryByText('VS Code')).not.toBeInTheDocument()
+  })
+
+  it('shows MCP delegated guidance for an agent user with the parent agent client ID', async () => {
+    const user = userEvent.setup()
+    await openMcpDetails(user, mcpAgentUserConnection, mcpAgentUserResolved)
+
+    expect(fact(section('Authentication'), 'Client ID')).toHaveTextContent(mcpAgentUserConnection.clientId!)
+    expect(screen.getByText(/This is the parent agent identity client ID/)).toBeVisible()
+    expect(screen.getByText('VS Code')).toBeVisible()
+  })
+
+  it('shows MCP security-group grants as via group with separate member limits and direct app-role guidance', async () => {
+    const user = userEvent.setup()
+    await openMcpDetails(user, mcpSecurityGroupConnection, mcpSecurityGroupResolved)
+
+    expect(screen.getByText('Access is via group')).toBeVisible()
+    expect(screen.getByText(/AI builders grants this access/)).toHaveTextContent(
+      /Each member gets the group's limits separately/,
+    )
+    expect(screen.getByText(/AI builders grants this access/)).toHaveTextContent(
+      /App roles are not inherited through groups/,
+    )
+    expect(fact(section('Authentication'), 'Application scope')).toHaveTextContent(mcpSecurityGroupConnection.applicationScope!)
+    expect(fact(section('Authentication'), 'Required app role')).toHaveTextContent(mcpSecurityGroupConnection.requiredAppRole!)
+  })
+
+  it('explains an MCP connection whose server URL is not known yet', async () => {
+    const user = userEvent.setup()
+    await openMcpDetails(user, { ...mcpConnection, serverUrl: null, resourceMetadataUrl: null, enforced: false })
+
+    expect(screen.getByText('Recorded, not enforced')).toBeVisible()
+    expect(fact(section('Server'), 'Server URL')).toHaveTextContent("The gateway URL isn't known yet.")
+    expect(screen.queryByText('VS Code')).not.toBeInTheDocument()
+    await user.click(screen.getByText('Advanced details'))
+    expect(fact(section('Advanced details'), 'Resource metadata URL')).toHaveTextContent('Not available yet')
+  })
+
+  it('explains an MCP connection error without showing model credentials', async () => {
+    const user = userEvent.setup()
+    api.getMcpConnection.mockRejectedValue(apiFailure(409, 'Apply this MCP server before connecting'))
+    renderDetails(mcpResolved)
+
+    await user.click(toggle())
+
+    expect(await screen.findByText('This MCP server is not ready to connect')).toBeVisible()
+    expect(screen.getByText('Apply this MCP server before connecting. Ask your administrator to finish setting it up.')).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Show primary key' })).not.toBeInTheDocument()
   })
 
   it('builds key samples from placeholders', async () => {

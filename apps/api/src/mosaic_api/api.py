@@ -23,6 +23,7 @@ from mosaic_api.domain import (
     GatewaySuggestion,
     GatewaySyncRun,
     GatewayUpdate,
+    GrantOverlapReport,
     Group,
     GroupCreate,
     GroupMembership,
@@ -30,6 +31,7 @@ from mosaic_api.domain import (
     ImportRequest,
     KeyRevealRequest,
     KeyRevealResult,
+    McpConnection,
     McpEndpoint,
     McpEndpointCreate,
     McpEndpointSyncRun,
@@ -156,7 +158,12 @@ def _mcp_endpoints(request: Request) -> McpEndpointService:
 
 
 def _actor(auth: AuthContext) -> Actor:
-    return Actor(object_id=auth.object_id, tenant_id=auth.tenant_id)
+    return Actor(
+        object_id=auth.object_id,
+        tenant_id=auth.tenant_id,
+        group_ids=auth.group_ids,
+        groups_overage=auth.groups_overage,
+    )
 
 
 router = APIRouter(prefix="/api/v1", tags=["admin"])
@@ -182,6 +189,15 @@ async def my_model_connection(
     return await _portal_access(request).connection(_actor(auth), entitlement_id)
 
 
+@portal_router.get(
+    "/entitlements/{entitlement_id}/mcp-connection", response_model=McpConnection
+)
+async def my_mcp_connection(
+    request: Request, auth: PortalUser, entitlement_id: str
+) -> McpConnection:
+    return await _portal_access(request).mcp_connection(_actor(auth), entitlement_id)
+
+
 @portal_router.post("/entitlements/{entitlement_id}/keys/reveal", response_model=KeyRevealResult)
 async def reveal_my_key(
     request: Request, auth: PortalUser, entitlement_id: str, payload: KeyRevealRequest
@@ -194,6 +210,15 @@ async def model_connection(
     request: Request, auth: Admin, entitlement_id: str
 ) -> ModelConnection:
     return await _portal_access(request).connection(
+        _actor(auth), entitlement_id, administrator=True
+    )
+
+
+@router.get("/entitlements/{entitlement_id}/mcp-connection", response_model=McpConnection)
+async def mcp_connection(
+    request: Request, auth: Admin, entitlement_id: str
+) -> McpConnection:
+    return await _portal_access(request).mcp_connection(
         _actor(auth), entitlement_id, administrator=True
     )
 
@@ -816,6 +841,15 @@ async def resolve_entitlements(
     """Effective access for one principal, including what a group grant contributes."""
 
     return await _entitlements(request).resolve_for_principal(_actor(auth), principal_id)
+
+
+@router.get("/entitlements/overlaps", response_model=GrantOverlapReport)
+async def grant_overlaps(
+    request: Request,
+    auth: Admin,
+    resource: str | None = None,
+) -> GrantOverlapReport:
+    return await _entitlements(request).list_overlaps(_actor(auth), resource_id=resource)
 
 
 @router.get("/entitlements/{entitlement_id}", response_model=Entitlement)

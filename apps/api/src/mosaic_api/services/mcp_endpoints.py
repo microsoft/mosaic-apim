@@ -11,6 +11,7 @@ MOSAIC never calls a tool, and creates nothing in Azure or API Management.
 
 import asyncio
 from collections.abc import Awaitable, Callable
+from contextlib import AsyncExitStack
 from datetime import datetime
 
 import httpx
@@ -33,6 +34,7 @@ from mosaic_api.domain import (
     McpEndpointSyncRun,
     McpEndpointUpdate,
     McpInventorySummary,
+    McpPublication,
     canonical_mcp_url,
     deterministic_id,
     mcp_endpoint_id,
@@ -54,13 +56,14 @@ from mosaic_api.integrations.mcp import (
 )
 from mosaic_api.observed import ObservedMcpTool
 from mosaic_api.repositories import (
+    EntitlementRepository,
     EnvironmentRepository,
     GatewayRepository,
     McpEndpointRepository,
 )
 from mosaic_api.services.directory import Actor
 from mosaic_api.services.environments import load_environment_catalog
-from mosaic_api.services.model_access import ENVIRONMENTS_SCOPE, scope_lease
+from mosaic_api.services.model_access import ENVIRONMENTS_SCOPE, publication_lock, scope_lease
 
 logger = structlog.get_logger()
 
@@ -131,24 +134,27 @@ class McpEndpointService:
         self,
         repository: McpEndpointRepository,
         *,
+        gateway_repository: GatewayRepository,
+        entitlement_repository: EntitlementRepository,
         client_factory: McpClientFactory,
         secret_resolver: SecretResolver | None = None,
         token_resolver: TokenResolver | None = None,
         require_https: bool = True,
         allow_private_endpoints: bool = False,
         environment_repository: EnvironmentRepository | None = None,
-        gateway_repository: GatewayRepository | None = None,
     ) -> None:
         self._repository = repository
+        # The gateway repository holds the tenant's environment scope lease, so a catalog edit
+        # can't race a write, and the MCP publications a deleted endpoint leaves behind.
+        self._gateways = gateway_repository
+        self._entitlements = entitlement_repository
         self._client_factory = client_factory
         self._secret_resolver = secret_resolver
         self._token_resolver = token_resolver
         self._require_https = require_https
         self._allow_private = allow_private_endpoints
-        # None only in tests that don't exercise environments. The gateway repository is used
-        # only for the tenant's environment scope lease, so a catalog edit can't race a write.
+        # None only in tests that don't exercise environments; the built-in seeds apply then.
         self._environments = environment_repository
-        self._gateways = gateway_repository
         self._active: set[str] = set()
         self._tasks: set[asyncio.Task[None]] = set()
 
@@ -234,7 +240,7 @@ class McpEndpointService:
             capabilities=McpEndpointCapabilities(notes=notes),
         )
         endpoint = await self._apply_preflight(endpoint)
-        if request.environment is None or self._gateways is None:
+        if request.environment is None:
             return await self._create(actor, endpoint, request.environment)
         # The key is validated and saved under the tenant's environments lease, so the catalog
         # can't drop it in between.
@@ -300,9 +306,111 @@ class McpEndpointService:
         )
 
     async def delete(self, actor: Actor, endpoint_id: str) -> None:
+        """Forget a server, refusing while a publication of it may own anything in APIM.
+
+        A publication that may own gateway state blocks removal: once the server is gone it can no
+        longer be planned, applied or unpublished, while the MCP API it created keeps forwarding
+        calls for every grant it last applied. One that owns nothing (a never-applied draft, or
+        one already unpublished) could never be planned again either, so it is deleted with the
+        server, unless grants still point at it. Each publication is locked while it is checked
+        and removed, so an apply can't start between the check and the delete.
+        """
+
         endpoint = await self.get_endpoint(actor, endpoint_id)
-        await self._repository.delete_endpoint(
-            endpoint, self._audit(actor, "mcpEndpoint.removed", endpoint.id)
+        publications = [
+            publication
+            for publication in await self._gateways.list_mcp_publications(actor.tenant_id)
+            if publication.mcp_endpoint_id == endpoint.id
+        ]
+        self._refuse_while_published(
+            endpoint, [item for item in publications if item.may_own_gateway_state()]
+        )
+        async with AsyncExitStack() as stack:
+            forgettable: list[McpPublication] = []
+            blocking: list[McpPublication] = []
+            for publication in publications:
+                try:
+                    await stack.enter_async_context(
+                        publication_lock(self._gateways, actor.tenant_id, publication.id)
+                    )
+                except ConflictError:
+                    # Another run or mutation holds it, so it may be about to own something.
+                    blocking.append(publication)
+                    continue
+                current = await self._gateways.get_mcp_publication(actor.tenant_id, publication.id)
+                if current is None:
+                    continue
+                if current.may_own_gateway_state():
+                    blocking.append(current)
+                else:
+                    forgettable.append(current)
+            self._refuse_while_published(endpoint, blocking)
+            granted: dict[str, list[str]] = {}
+            for publication in forgettable:
+                entitlements = await self._entitlements.list_entitlements(
+                    actor.tenant_id, resource_id=publication.mcp_server_id
+                )
+                if entitlements:
+                    granted[publication.id] = [item.id for item in entitlements]
+            if granted:
+                raise ConflictError(
+                    f"Remove the grants for {endpoint.name} before removing it. They point at its "
+                    "unpublished MCP server, which is removed with it.",
+                    details={"id": endpoint.id, "name": endpoint.name, "entitlements": granted},
+                )
+            for publication in forgettable:
+                server = await self._gateways.get_mcp_server(
+                    actor.tenant_id, publication.mcp_server_id
+                )
+                if server is not None and server.publication_id == publication.id:
+                    await self._gateways.delete_mcp_server(
+                        server, self._forget_audit(actor, "mcpServer", server.id, endpoint.id)
+                    )
+                await self._gateways.delete_mcp_publication(
+                    publication,
+                    self._forget_audit(actor, "mcpPublication", publication.id, endpoint.id),
+                )
+            await self._repository.delete_endpoint(
+                endpoint, self._audit(actor, "mcpEndpoint.removed", endpoint.id)
+            )
+
+    @staticmethod
+    def _forget_audit(
+        actor: Actor, resource_type: str, resource_id: str, endpoint_id: str
+    ) -> AuditEvent:
+        return AuditEvent(
+            id=new_id("audit"),
+            tenant_id=actor.tenant_id,
+            action=f"{resource_type}.removed",
+            resource_type=resource_type,
+            resource_id=resource_id,
+            actor_object_id=actor.object_id,
+            details={"reason": "mcpEndpoint.removed", "mcpEndpointId": endpoint_id},
+        )
+
+    @staticmethod
+    def _refuse_while_published(endpoint: McpEndpoint, blocking: list[McpPublication]) -> None:
+        if not blocking:
+            return
+        one = len(blocking) == 1
+        raise ConflictError(
+            f"Unpublish {endpoint.name} from {'its gateway' if one else 'every gateway'} before "
+            f"removing it. {'Its MCP API' if one else 'Their MCP APIs'} would keep forwarding "
+            "calls in API Management with nothing in MOSAIC to change or remove "
+            f"{'it' if one else 'them'}.",
+            details={
+                "id": endpoint.id,
+                "name": endpoint.name,
+                "publications": [
+                    {
+                        "id": publication.id,
+                        "displayName": publication.display_name,
+                        "status": str(publication.status),
+                        "gatewayId": publication.gateway_id,
+                    }
+                    for publication in blocking
+                ],
+            },
         )
 
     async def preflight(self, actor: Actor, endpoint_id: str) -> McpEndpoint:

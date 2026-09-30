@@ -15,13 +15,20 @@ const statusLabels: Record<EntitlementRuntime['status'], string> = {
 
 export function EntitlementAccessState({ entitlement }: { entitlement: Entitlement }) {
   const runtime = entitlement.runtime
+  const recordedMcp = entitlement.resource.kind === 'mcpServer' && !runtime
   return (
     <div className={styles.cellStack}>
       <Text size={200}>Desired: {entitlement.enabled ? 'enabled' : 'disabled'}</Text>
-      <Badge appearance="tint">
-        {runtime ? statusLabels[runtime.status] : 'Desired state only'}
+      <Badge appearance="tint" className={styles.stateBadge}>
+        {runtime ? statusLabels[runtime.status] : recordedMcp ? 'Recorded, not enforced' : 'Desired state only'}
       </Badge>
-      {!runtime && <Text size={200}>No runtime orchestration. APIM is unchanged by this grant.</Text>}
+      {!runtime && (
+        <Text size={200}>
+          {recordedMcp
+            ? "MOSAIC records this grant but doesn't enforce it for an imported MCP server."
+            : 'No runtime orchestration. APIM is unchanged by this grant.'}
+        </Text>
+      )}
       {runtime?.appliedMethods && (
         <Text size={200}>Last applied methods: {describeAccessMethods(runtime.appliedMethods)}</Text>
       )}

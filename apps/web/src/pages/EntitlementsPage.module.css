@@ -52,6 +52,12 @@
   margin: 0 0 4px;
 }
 
+/* The heading and its description stack; the heading's own margin spaces them. */
+.tableHeading {
+  display: flex;
+  flex-direction: column;
+}
+
 .tableWrap {
   padding: 16px 20px 20px;
   overflow: auto;
@@ -117,6 +123,15 @@
   color: var(--mosaic-text);
 }
 
+.overlapGrants {
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  column-gap: 24px;
+}
+
+.overlapGrants div {
+  align-content: start;
+}
+
 .noteCard {
   padding: 12px 14px;
   border: 1px solid var(--mosaic-border-soft);
@@ -162,6 +177,14 @@
 .cellStack {
   display: grid;
   gap: 4px;
+}
+
+/* Long states wrap in the narrow column, so the badge grows with them. */
+.cellStack > .stateBadge {
+  height: auto;
+  min-height: 20px;
+  padding-block: 2px;
+  text-align: center;
 }
 
 .codeValue {

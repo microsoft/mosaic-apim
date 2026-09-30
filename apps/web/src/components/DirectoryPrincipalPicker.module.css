@@ -1,0 +1,81 @@
+.picker {
+  display: grid;
+  gap: 12px;
+}
+
+.searchRow {
+  display: grid;
+  grid-template-columns: minmax(160px, 220px) minmax(220px, 1fr);
+  gap: 12px;
+}
+
+.results {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.resultButton {
+  width: 100%;
+  padding: 12px 14px;
+  display: grid;
+  gap: 6px;
+  border: 1px solid var(--mosaic-border-soft);
+  border-radius: 10px;
+  background: var(--mosaic-surface);
+  color: var(--mosaic-text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.resultButton:hover,
+.resultButton:focus-visible {
+  border-color: var(--mosaic-primary);
+  background: var(--mosaic-surface-subtle);
+}
+
+.resultButton:disabled {
+  cursor: default;
+  opacity: 0.75;
+}
+
+.resultHeader,
+.badgeRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.resultName {
+  font-weight: 600;
+}
+
+.manualEntry {
+  justify-self: start;
+}
+
+.secondary {
+  color: var(--mosaic-text-muted);
+  font-size: 12px;
+}
+
+.liveRegion {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+@media (max-width: 700px) {
+  .searchRow {
+    grid-template-columns: 1fr;
+  }
+}

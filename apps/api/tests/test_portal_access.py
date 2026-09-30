@@ -50,6 +50,7 @@ from mosaic_api.services.portal import PortalService
 from mosaic_api.services.portal_access import PortalAccessService
 from mosaic_api.services.publishing import PublishingService
 from pydantic import SecretStr
+from test_mcp_entitlements import PORTAL_MCP_RUNTIME_ROUTES
 
 TENANT = "tenant-test"
 USER = "11111111-1111-1111-1111-111111111111"
@@ -569,7 +570,7 @@ async def test_portal_and_credential_routes_share_the_live_entitlement_service(
         audit.model_copy(update={"id": new_id("audit")}),
     )
     principal = client.post(
-        "/api/v1/principals", json={"objectId": "local-admin", "kind": "user"}
+        "/api/v1/principals", json={"objectId": USER, "kind": "user"}
     )
     assert principal.status_code == 201
     grant = client.post(
@@ -581,7 +582,7 @@ async def test_portal_and_credential_routes_share_the_live_entitlement_service(
     )
     assert grant.status_code == 201
 
-    client.app.state.authenticator = Caller("local-admin")
+    client.app.state.authenticator = Caller(USER)
     portal = client.get("/api/v1/portal/entitlements")
     current_user = client.get("/api/v1/me/entitlements")
     assert portal.status_code == current_user.status_code == 200
@@ -777,4 +778,5 @@ def test_every_portal_route_that_returns_runtime_state_is_redacted(settings: Set
             set(),
         )
     }
-    assert carrying == {("GET", route) for route in PORTAL_RUNTIME_ROUTES}
+    tested = (*PORTAL_RUNTIME_ROUTES, *PORTAL_MCP_RUNTIME_ROUTES)
+    assert carrying == {("GET", route) for route in tested}

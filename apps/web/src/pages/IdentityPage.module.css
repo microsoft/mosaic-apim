@@ -256,6 +256,16 @@
   gap: 4px;
 }
 
+.statusCell {
+  display: grid;
+  justify-items: start;
+  gap: 4px;
+}
+
+.statusBadge {
+  white-space: nowrap;
+}
+
 .memberName {
   font-weight: 600;
 }

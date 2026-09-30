@@ -11,6 +11,7 @@ from mosaic_api.domain import (
     Gateway,
     GatewaySyncRun,
     GatewaySyncStatus,
+    McpPublication,
     McpServer,
     ModelApi,
     Publication,
@@ -139,6 +140,10 @@ class CosmosGatewayRepository(CosmosRepositoryBase):
         )
         adopted.extend(
             item.id for item in await self.list_publications(tenant_id, gateway_id=gateway_id)
+        )
+        adopted.extend(
+            item.id
+            for item in await self.list_mcp_publications(tenant_id, gateway_id=gateway_id)
         )
         for item_id in adopted:
             try:
@@ -364,6 +369,39 @@ class CosmosGatewayRepository(CosmosRepositoryBase):
             audit_event,
             "delete",
             conflict_message="The publication changed; reload it and try again",
+        )
+
+    async def list_mcp_publications(
+        self, tenant_id: str, *, gateway_id: str | None = None
+    ) -> list[McpPublication]:
+        extra, parameters = self._gateway_filter(gateway_id)
+        items = await self._query(McpPublication, tenant_id, "mcpPublication", extra, parameters)
+        return sorted(items, key=lambda item: item.display_name.casefold())
+
+    async def get_mcp_publication(
+        self, tenant_id: str, publication_id: str
+    ) -> McpPublication | None:
+        return await self._read(McpPublication, tenant_id, publication_id)
+
+    async def save_mcp_publication(
+        self, publication: McpPublication, audit_event: AuditEvent
+    ) -> McpPublication:
+        await self._mutate(publication, None, audit_event, "upsert")
+        return publication
+
+    async def record_mcp_publication_state(self, publication: McpPublication) -> McpPublication:
+        await self._desired.upsert_item(self._document(publication))
+        return publication
+
+    async def delete_mcp_publication(
+        self, publication: McpPublication, audit_event: AuditEvent
+    ) -> None:
+        await self._mutate(
+            publication,
+            publication.id,
+            audit_event,
+            "delete",
+            conflict_message="The MCP publication changed; reload it and try again",
         )
 
     # Plans and runs are reconciliation records rather than administrator-authored intent, so they

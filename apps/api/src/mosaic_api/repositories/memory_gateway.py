@@ -5,6 +5,7 @@ from mosaic_api.domain import (
     Gateway,
     GatewaySyncRun,
     GatewaySyncStatus,
+    McpPublication,
     McpServer,
     ModelApi,
     Publication,
@@ -30,6 +31,7 @@ class InMemoryGatewayRepository:
         self.model_apis: dict[str, ModelApi] = {}
         self.mcp_servers: dict[str, McpServer] = {}
         self.publications: dict[str, Publication] = {}
+        self.mcp_publications: dict[str, McpPublication] = {}
         self.publish_plans: dict[str, PublishPlan] = {}
         self.publish_runs: dict[str, PublishRun] = {}
         self.publication_locks: dict[tuple[str, str], str] = {}
@@ -132,6 +134,12 @@ class InMemoryGatewayRepository:
             if item.tenant_id == gateway.tenant_id and item.gateway_id == gateway.id
         ]:
             self.publications.pop(publication_key, None)
+        for publication_key in [
+            item.id
+            for item in self.mcp_publications.values()
+            if item.tenant_id == gateway.tenant_id and item.gateway_id == gateway.id
+        ]:
+            self.mcp_publications.pop(publication_key, None)
         self.gateways.pop(gateway.id, None)
         self._gateway_versions.pop(gateway.id, None)
         self._deleted_gateways.add(gateway.id)
@@ -290,6 +298,40 @@ class InMemoryGatewayRepository:
         self, publication: Publication, audit_event: AuditEvent
     ) -> None:
         self.publications.pop(publication.id, None)
+        self.audit_events[audit_event.id] = audit_event
+
+    async def list_mcp_publications(
+        self, tenant_id: str, *, gateway_id: str | None = None
+    ) -> list[McpPublication]:
+        items = [
+            item
+            for item in self.mcp_publications.values()
+            if item.tenant_id == tenant_id
+            and (gateway_id is None or item.gateway_id == gateway_id)
+        ]
+        return sorted(items, key=lambda item: item.display_name.casefold())
+
+    async def get_mcp_publication(
+        self, tenant_id: str, publication_id: str
+    ) -> McpPublication | None:
+        item = self.mcp_publications.get(publication_id)
+        return item if item and item.tenant_id == tenant_id else None
+
+    async def save_mcp_publication(
+        self, publication: McpPublication, audit_event: AuditEvent
+    ) -> McpPublication:
+        self.mcp_publications[publication.id] = publication
+        self.audit_events[audit_event.id] = audit_event
+        return publication
+
+    async def record_mcp_publication_state(self, publication: McpPublication) -> McpPublication:
+        self.mcp_publications[publication.id] = publication
+        return publication
+
+    async def delete_mcp_publication(
+        self, publication: McpPublication, audit_event: AuditEvent
+    ) -> None:
+        self.mcp_publications.pop(publication.id, None)
         self.audit_events[audit_event.id] = audit_event
 
     async def save_publish_plan(self, plan: PublishPlan) -> PublishPlan:

@@ -5,6 +5,7 @@ from .environments import EnvironmentService
 from .gateways import GatewayService
 from .mcp_endpoints import McpEndpointService
 from .model_endpoints import ModelEndpointService
+from .overlaps import GrantOverlapService
 from .portal import PortalService
 from .publishing import PublishingService
 from .usage import UsageService
@@ -16,6 +17,7 @@ __all__ = [
     "EnvironmentFindingsService",
     "EnvironmentService",
     "GatewayService",
+    "GrantOverlapService",
     "McpEndpointService",
     "ModelEndpointService",
     "PortalService",

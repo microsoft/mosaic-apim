@@ -56,6 +56,24 @@ class Settings(BaseSettings):
     apim_resource_group: str | None = None
     apim_service_name: str | None = None
     mcp_discovery_timeout_seconds: float = Field(default=20.0, gt=0, le=120)
+    entra_directory_lookup: bool = Field(
+        default=True,
+        description=(
+            "MOSAIC reads Microsoft Graph with its managed identity, read-only, to search the "
+            "directory and verify principals."
+        ),
+    )
+    entra_group_claims: bool = Field(
+        default=True,
+        description=(
+            "Records whether bootstrap configured groupMembershipClaims. Informational, and "
+            "drives warnings."
+        ),
+    )
+    graph_endpoint: AnyHttpUrl = Field(
+        default=AnyHttpUrl("https://graph.microsoft.com"),
+        description="Microsoft Graph endpoint for public or sovereign clouds.",
+    )
     mcp_allow_private_endpoints: bool = Field(
         default=False,
         description=(
@@ -85,6 +103,8 @@ class Settings(BaseSettings):
                 raise ValueError("Azure deployments must use Entra authentication")
             if self.repository_backend is not RepositoryBackend.COSMOS:
                 raise ValueError("Azure deployments must use Cosmos persistence")
+            if str(self.graph_endpoint).casefold().startswith("https://") is False:
+                raise ValueError("MOSAIC_GRAPH_ENDPOINT must use https in Azure")
             if self.mcp_allow_private_endpoints:
                 raise ValueError(
                     "Private MCP endpoints are a local development affordance and must not be "

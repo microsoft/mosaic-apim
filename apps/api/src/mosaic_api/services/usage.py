@@ -108,7 +108,7 @@ class UsageResourceRow(MosaicModel):
     resource: EntitlementResource
     resource_summary: ResourceSummary
     environment: str | None
-    via: Literal["direct", "group"]
+    via: Literal["direct", "group", "securityGroup"]
     via_group_name: str | None
     enabled: bool
     bound: bool
