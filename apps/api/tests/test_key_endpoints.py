@@ -134,6 +134,7 @@ class KeyWorld:
         self.gateway_repository = InMemoryGatewayRepository()
         self.endpoint_repository = InMemoryModelEndpointRepository()
         self.secret_reads: list[str] = []
+        self.secret_value = KEY
         self.probes: list[tuple[str, bool]] = []
         self.secret_error: Exception | None = None
         self.outcome = KeyCheckResult(KeyCheckOutcome.ACCEPTED, 200)
@@ -161,7 +162,7 @@ class KeyWorld:
         self.secret_reads.append(uri)
         if self.secret_error is not None:
             raise self.secret_error
-        return KEY
+        return self.secret_value
 
     async def check_key(self, origin: str, key: str) -> KeyCheckResult:
         self.probes.append((origin, key == KEY))
@@ -460,6 +461,18 @@ class TestRegistration:
         endpoint = await world.register()
         assert endpoint.status == ModelEndpointStatus.UNREACHABLE
         assert "isn't a denial" in (endpoint.access.message or "")
+
+    @pytest.mark.parametrize("stored", [f"{KEY}\n", f"{KEY}\r\n", f" {KEY}"])
+    async def test_a_key_stored_with_a_line_break_is_never_sent(
+        self, world: KeyWorld, stored: str
+    ) -> None:
+        world.secret_value = stored
+        endpoint = await world.register()
+        assert endpoint.status == ModelEndpointStatus.DEGRADED
+        assert endpoint.access.can_read is False
+        assert "line break" in (endpoint.access.message or "")
+        assert world.probes == []
+        assert KEY not in endpoint.model_dump_json()
 
     async def test_without_key_vault_access_nothing_is_claimed(self) -> None:
         service = build_endpoint_service(FakeCognitiveServices())

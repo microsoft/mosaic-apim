@@ -92,6 +92,7 @@ raised, so a vault that was briefly unreachable doesn't lose the registration:
 | Secret read, key accepted | `connected` | The endpoint accepts the key |
 | Secret not readable | `unauthorized` | The `az role assignment create` command for Key Vault Secrets User on the vault |
 | Secret missing or empty | `degraded` | Store the key there, or set the secret URI |
+| Key starts or ends with a space or line break | `degraded` | Store the key alone; nothing is sent |
 | Key refused (401 or 403) | `unauthorized` | Store the current key, and check key authentication is allowed |
 | Vault or resource unreachable, or an answer that settles nothing | `unreachable` or `degraded` | Not evaluated; this isn't a denial |
 

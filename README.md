@@ -941,7 +941,8 @@ its API key. [ADR 0018](docs/adr/0018-key-authenticated-backends.md) records the
    and the environment's API Management read secrets, so a key stored there is ready to publish.
    Add it as a secret in the Azure portal, or with
    `az keyvault secret set --vault-name <vault> --name <name> --file <file holding the key>`, which
-   keeps the key out of your shell history.
+   keeps the key out of your shell history. The file must hold the key alone, with no line break
+   at its end: MOSAIC reports a key that starts or ends with one and never sends it.
 
    For another vault, grant Key Vault Secrets User on it to MOSAIC's API identity and to each
    gateway that publishes from the endpoint. The endpoint's **Access** card gives the exact

@@ -1062,6 +1062,21 @@ class ModelEndpointService:
                 ModelEndpointStatus.UNREACHABLE,
             )
         try:
+            if key != key.strip():
+                # A key stored from a file often keeps the file's final line break. No Azure key
+                # has one, and the gateway would send it as it is, so it's caught here.
+                return (
+                    EndpointAccess(
+                        can_read=False,
+                        evaluation=AccessEvaluation.PROBE,
+                        message=(
+                            f"The API key in Key Vault {secret.vault_name} starts or ends with a "
+                            "space or a line break, which no Azure key has. Store the key alone, "
+                            "and if you store it from a file, without a line break at its end."
+                        ),
+                    ),
+                    ModelEndpointStatus.DEGRADED,
+                )
             result = await self._key_probe(str(endpoint.endpoint).rstrip("/"), key)
         finally:
             del key
