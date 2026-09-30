@@ -28,7 +28,11 @@ from PIL import Image, ImageFilter
 from playwright.sync_api import Locator, Page, sync_playwright
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
-from scripts.screenshots.demo_api import SENSITIVE_LITERALS
+from scripts.screenshots.demo_api import (
+    PARTNER_FOUNDRY_SECRET_URI,
+    PARTNER_FOUNDRY_URL,
+    SENSITIVE_LITERALS,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 OUTPUT_DIR = REPO_ROOT / "docs" / "images" / "screenshots"
@@ -51,6 +55,8 @@ RESOURCE_NAMES = [
     "contoso-foundry",
     "contoso-safety",
     "kv-contoso-ai",
+    "fabrikam-foundry",
+    "partner-models",
     "api://contoso-servicedesk",
 ]
 
@@ -263,6 +269,15 @@ def fill_text(label: str, text: str) -> Action:
     return act
 
 
+def fill_textbox(name: str, text: str) -> Action:
+    """Fill the text box with this accessible name, which leaves out a required field's marker."""
+
+    def act(page: Page) -> None:
+        page.get_by_role("textbox", name=name, exact=True).filter(visible=True).first.fill(text)
+
+    return act
+
+
 def click_card_button_matching(texts: Sequence[str], button_name: str) -> Action:
     def act(page: Page) -> None:
         _card_matching(page, texts).get_by_role("button", name=button_name).click()
@@ -337,6 +352,42 @@ SHOTS: list[Shot] = [
         actions=(*OPEN_GATEWAY, click_tab("APIs and endpoints")),
     ),
     Shot("console-models", "console", "/models", "dark", "GPT-4o mini"),
+    Shot(
+        "console-register-key-endpoint",
+        "console",
+        "/models?register=1",
+        "light",
+        "Register model endpoint",
+        # Filled in and never submitted, so the estate is unchanged for the shots after it.
+        actions=(
+            click_tab("Azure AI with an API key"),
+            fill_textbox("Endpoint URL", PARTNER_FOUNDRY_URL),
+            fill_textbox("Key Vault secret URI", PARTNER_FOUNDRY_SECRET_URI),
+            fill_text("Deployment 1 name", "claude-sonnet-4-5"),
+            fill_text("Deployment 1 model", "claude-sonnet-4-5"),
+            click_button("Add a deployment"),
+            fill_text("Deployment 2 name", "gpt-4-1-mini"),
+            fill_text("Deployment 2 model", "gpt-4.1-mini"),
+            select_option("Deployment 2 API", "Azure OpenAI"),
+            fill_textbox("Display name", "Fabrikam partner Foundry"),
+        ),
+        height=1240,
+    ),
+    Shot(
+        "console-key-endpoint",
+        "console",
+        "/models",
+        "dark",
+        "Fabrikam partner Foundry",
+        actions=(
+            click_button("Fabrikam partner Foundry"),
+            wait_for_text("The endpoint accepts the key"),
+            scroll_to_text("The endpoint accepts the key", margin=140),
+        ),
+        # Tall enough for the key check, each gateway's verdict, and the declared deployments, and
+        # short enough to scroll the endpoints MOSAIC found out of view.
+        height=1100,
+    ),
     Shot(
         "console-mcps",
         "console",

@@ -16,7 +16,9 @@ from mosaic_api.config import AuthMode, Environment, RepositoryBackend, Settings
 from mosaic_api.directory_api import directory_router
 from mosaic_api.errors import DomainError, domain_error_handler
 from mosaic_api.integrations.aoai import CognitiveServicesClient
+from mosaic_api.integrations.aoai.backend_key_access import KeyVaultLocator
 from mosaic_api.integrations.aoai.client import SubscriptionScanner
+from mosaic_api.integrations.aoai.key_check import EndpointKeyProbe
 from mosaic_api.integrations.apim import ApimClient, ApimWriter, ArmClient
 from mosaic_api.integrations.apim.credentials import ApimCredentialClient
 from mosaic_api.integrations.graph import DirectoryLookup, GraphDirectoryLookup
@@ -164,15 +166,31 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             bootstrap_resource_id=app_settings.apim_bootstrap_resource_id,
             environment_repository=environment_repository,
         )
+        key_vault_reader = KeyVaultSecretReader(credential)
+        # A key-authenticated endpoint's key goes only to its own Azure AI host, over a client
+        # that follows no redirects and shares nothing with the ARM pool.
+        endpoint_key_probe = EndpointKeyProbe()
+        subscription_scanner = SubscriptionScanner(arm_client)
         model_endpoint_service = ModelEndpointService(
             endpoint_repository,
             gateway_repository=gateway_repository,
             client_factory=lambda resource: CognitiveServicesClient(arm_client, resource),
-            scanner=SubscriptionScanner(arm_client),
+            scanner=subscription_scanner,
             principal_id=app_settings.managed_identity_principal_id,
             identity_resolver=arm_client.caller_object_id,
             bootstrap_subscription_id=app_settings.apim_subscription_id,
             environment_repository=environment_repository,
+            secret_resolver=key_vault_reader.read,
+            key_probe=endpoint_key_probe.check,
+            vault_locator=KeyVaultLocator(
+                arm_client,
+                scanner=subscription_scanner,
+                known_vault_ids=(
+                    [app_settings.key_vault_resource_id]
+                    if app_settings.key_vault_resource_id
+                    else []
+                ),
+            ),
         )
         publishing_service = PublishingService(
             gateway_repository,
@@ -202,7 +220,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             timeout=httpx.Timeout(app_settings.mcp_discovery_timeout_seconds, connect=10.0),
             follow_redirects=False,
         )
-        key_vault_reader = KeyVaultSecretReader(credential)
         mcp_endpoint_service = McpEndpointService(
             mcp_repository,
             gateway_repository=gateway_repository,
@@ -325,6 +342,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             await authenticator.close()
             await arm_client.close()
             await key_vault_reader.close()
+            await endpoint_key_probe.close()
             await mcp_http_client.aclose()
             await repository.close()
             await gateway_repository.close()

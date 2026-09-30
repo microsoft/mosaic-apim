@@ -63,6 +63,7 @@ const actionLabels: Record<PublishAction, string> = {
 }
 
 const kindLabels: Record<PublishedResourceKind, string> = {
+  namedValue: 'Named value',
   policyFragment: 'Policy fragment',
   backend: 'Backend',
   api: 'API',

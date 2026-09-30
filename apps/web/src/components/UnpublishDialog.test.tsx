@@ -275,6 +275,33 @@ describe('UnpublishDialog', () => {
     expect(within(dialog).getByRole('button', { name: 'Cancel' })).toBeEnabled()
   })
 
+  it("says the named value goes and the key stays in Key Vault", async () => {
+    api.planUnpublishPublication.mockResolvedValue({
+      ...governedPlan,
+      steps: [
+        ...governedPlan.steps,
+        {
+          kind: 'namedValue',
+          name: 'mosaic-fabrikam-claude-key',
+          action: 'delete',
+          reason:
+            "Delete the named value API Management reads the model endpoint's API key through. " +
+            'The key itself stays in Key Vault.',
+          resourceId: '/namedValues/mosaic-fabrikam-claude-key',
+          existed: true,
+        },
+      ],
+    })
+    const { dialog } = await open()
+
+    const steps = await within(dialog).findByRole('table', { name: 'Unpublish plan steps' })
+    const rows = within(steps).getAllByRole('row')
+    const last = rows[rows.length - 1]
+    expect(last).toHaveTextContent('Named value')
+    expect(last).toHaveTextContent('mosaic-fabrikam-claude-key')
+    expect(last).toHaveTextContent('The key itself stays in Key Vault.')
+  })
+
   it('moves focus to the review once the plan arrives, so it is read', async () => {
     await open()
 

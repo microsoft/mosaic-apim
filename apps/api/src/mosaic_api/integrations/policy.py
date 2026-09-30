@@ -11,6 +11,12 @@ from mosaic_api.domain import (
     TokenEnforcement,
 )
 from mosaic_api.integrations.apim.policy_semantics import analyze_policy
+from mosaic_api.integrations.backend_keys import (
+    describe_backend_key,
+    is_backend_key_facet,
+    set_backend_key,
+    strip_caller_credentials,
+)
 
 
 def _bool(value: bool) -> str:
@@ -86,8 +92,8 @@ def add_shape_headers(parent: ET.Element, shape: str | None) -> None:
     """Request headers a shape needs on the way to its backend, if any.
 
     An Anthropic client authenticates with ``x-api-key``. Here that header carries a gateway
-    credential, or nothing the backend should see, so it is removed before the gateway's own
-    managed identity token is attached.
+    credential, or nothing the backend should see, so it is removed before the gateway attaches
+    its own credential: its managed identity token, or the backend key read from Key Vault.
     """
 
     if shape != ApiShape.ANTHROPIC_MESSAGES:
@@ -97,6 +103,12 @@ def add_shape_headers(parent: ET.Element, shape: str | None) -> None:
         parent, "set-header", {"name": "anthropic-version", "exists-action": "skip"}
     )
     ET.SubElement(version, "value").text = ANTHROPIC_VERSION
+
+
+def shape_removed_headers(shape: str | None) -> tuple[str, ...]:
+    """The caller headers :func:`add_shape_headers` removes for a shape."""
+
+    return ("x-api-key",) if shape == ApiShape.ANTHROPIC_MESSAGES else ()
 
 
 @dataclass(frozen=True)
@@ -121,15 +133,28 @@ def render_publication_policy(publication: Publication) -> PublicationPolicy:
     Enforcement lives in the fragment rather than the API policy document so that the ownership
     seam ADR 0004 established survives publishing: there is exactly one place MOSAIC writes rules,
     and changing enforcement never rewrites a document another author might share.
+
+    A publication whose endpoint is reached with an API key authenticates with that key rather than
+    the gateway's managed identity: every caller credential is removed and the key header is set
+    from the publication's Key Vault-backed named value (ADR 0018).
     """
 
     fragment = ET.Element("fragment")
+    key_name = publication.backend_key_name
+    if key_name is not None:
+        strip_caller_credentials(
+            fragment,
+            removed_headers=shape_removed_headers(publication.api_shape),
+        )
     add_shape_headers(fragment, publication.api_shape)
-    ET.SubElement(
-        fragment,
-        "authentication-managed-identity",
-        {"resource": managed_identity_resource(publication.api_shape)},
-    )
+    if key_name is not None:
+        set_backend_key(fragment, shape=publication.api_shape, named_value=key_name)
+    else:
+        ET.SubElement(
+            fragment,
+            "authentication-managed-identity",
+            {"resource": managed_identity_resource(publication.api_shape)},
+        )
     ET.SubElement(fragment, "set-backend-service", {"backend-id": publication.backend_name})
     # Without enforcement the shape can't be token-metered on this gateway's tier, and neither
     # can it emit token metrics: both policies share the same tier support.
@@ -157,6 +182,10 @@ def render_publication_policy(publication: Publication) -> PublicationPolicy:
     combined = hashlib.sha256(f"{fragment_xml}\n{api_policy_xml}".encode()).hexdigest()
     analysis = analyze_policy(fragment_xml)
     include_analysis = analyze_policy(api_policy_xml)
+    if key_name is not None:
+        for facet in analysis.facets:
+            if is_backend_key_facet(facet, publication.api_shape):
+                describe_backend_key(facet)
     return PublicationPolicy(
         fragment_xml=fragment_xml,
         api_policy_xml=api_policy_xml,

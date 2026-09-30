@@ -55,6 +55,13 @@ class Settings(BaseSettings):
     apim_subscription_id: str | None = None
     apim_resource_group: str | None = None
     apim_service_name: str | None = None
+    key_vault_resource_id: str | None = Field(
+        default=None,
+        description=(
+            "The resource ID of the Key Vault deployed with MOSAIC. Lets MOSAIC check which "
+            "gateways can read a key stored there without searching subscriptions for the vault."
+        ),
+    )
     mcp_discovery_timeout_seconds: float = Field(default=20.0, gt=0, le=120)
     entra_directory_lookup: bool = Field(
         default=True,

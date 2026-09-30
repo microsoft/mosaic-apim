@@ -214,6 +214,53 @@ describe('PublishModelDialog', () => {
     expect(within(table).getByText('gpt-4o-prod')).toBeVisible()
     expect(within(table).getByText('gpt-4o')).toBeVisible()
     expect(within(table).getByText('Runtime permissions observed')).toBeVisible()
+    expect(within(table).queryByText('Declared')).not.toBeInTheDocument()
+  })
+
+  it('marks a deployment an administrator declared rather than MOSAIC discovered', async () => {
+    api.listPublishableModels.mockResolvedValue([
+      {
+        ...publishableModel,
+        provider: 'azureAiFoundry',
+        endpointName: 'Fabrikam partner Foundry',
+        deploymentName: 'claude-sonnet-4-5',
+        modelName: 'claude-sonnet-4-5',
+        apiShape: 'anthropicMessages',
+        declared: true,
+      },
+    ])
+
+    renderDialog()
+
+    const table = await screen.findByRole('table', { name: 'Publishable models' })
+    expect(within(table).getByText('Declared')).toBeVisible()
+    expect(within(table).getByText('Anthropic Messages API')).toBeVisible()
+  })
+
+  it('names the Key Vault-backed named value a key-authenticated plan creates', async () => {
+    const user = userEvent.setup()
+    api.createPublishPlan.mockResolvedValue({
+      ...plan,
+      steps: [
+        {
+          kind: 'namedValue',
+          name: 'mosaic-fabrikam-claude-key',
+          action: 'create',
+          reason:
+            "Create the named value API Management reads the model endpoint's API key through, " +
+            'from Key Vault.',
+          resourceId: '/namedValues/mosaic-fabrikam-claude-key',
+          existed: false,
+        },
+        ...plan.steps,
+      ],
+    })
+    renderDialog()
+
+    await advanceToReview(user)
+
+    expect(await screen.findByText('Named value · mosaic-fabrikam-claude-key')).toBeVisible()
+    expect(screen.getByText(/reads the model endpoint's API key through, from Key Vault/)).toBeVisible()
   })
 
   it('does not present a conditional role assignment as either access or a denial', async () => {

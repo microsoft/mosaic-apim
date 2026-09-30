@@ -23,7 +23,9 @@ See [ADR 0010](docs/adr/0010-publishing-models-into-apim.md) and
 [ADR 0011](docs/adr/0011-governed-model-access.md) for the write and credential-disclosure
 boundaries, and [ADR 0016](docs/adr/0016-agent-identities-and-security-group-grants.md) for agent
 identities and security-group grants. [ADR 0017](docs/adr/0017-mcp-gateway-enforcement.md)
-documents MCP gateway enforcement.
+documents MCP gateway enforcement, and [ADR 0018](docs/adr/0018-key-authenticated-backends.md)
+publishing from an Azure AI resource MOSAIC reaches with an API key held in Key Vault, such as a
+Foundry resource in another Microsoft Entra tenant.
 
 ## Screenshots
 
@@ -95,6 +97,21 @@ one under **Settings > Appearance**.
       <p><b>Models.</b> Model deployments MOSAIC has planned or published into API Management,
       with their gateway and API path. Publishing changes APIM only when a reviewed plan is
       applied, and only on a gateway in manage mode.</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/images/screenshots/console-register-key-endpoint.png" alt="The Register model endpoint dialog on its API key tab, with an endpoint URL, a Key Vault secret URI, and two declared deployments">
+      <p><b>Register with an API key.</b> When MOSAIC can't reach a resource with its managed
+      identity, such as a Foundry project in another tenant, an administrator gives its URL and the
+      Key Vault secret that holds its key, and declares the deployments to publish with the API each
+      one takes.</p>
+    </td>
+    <td width="50%" valign="top">
+      <img src="docs/images/screenshots/console-key-endpoint.png" alt="A key-authenticated endpoint's access card and declared deployments">
+      <p><b>Endpoint reached with an API key.</b> MOSAIC shows that it read the key from Key Vault
+      and the endpoint accepted it, whether each gateway can read the key itself, and the
+      deployments declared for publishing.</p>
     </td>
   </tr>
   <tr>
@@ -235,7 +252,8 @@ flowchart LR
     API -->|Secret URI only| KV[Key Vault]
     API -. read-only ARM .-> Foundry[Registered Azure AI model endpoints]
     API -->|read ARM, and write on explicit apply| APIM[Registered API Management gateways]
-    APIM -->|Runtime model traffic, gateway managed identity| Foundry
+    APIM -->|Runtime model traffic, gateway managed identity or API key| Foundry
+    APIM -. API keys through named values .-> KV
     APIM --> Monitor[Azure Monitor / App Insights / Log Analytics]
     API --> Monitor
     Web --> Monitor
@@ -295,7 +313,9 @@ explicit local/test modes and application startup rejects them when `MOSAIC_ENVI
   control-plane access, discover the deployments and available models on them, and report — per
   registered gateway — whether that gateway's managed identity can actually call them, judged by
   the data actions its roles grant on the resource the published API calls and by whether the
-  gateway has a network path to it
+  gateway has a network path to it. A resource MOSAIC can't reach, such as one in another tenant,
+  can be registered by URL with an API key held in Key Vault, with its deployments declared and
+  published through a Key Vault-backed named value
 - MCP server registration: register a Model Context Protocol server by URL, connect to it as a
   read-only client, and record the tools it declares — including the input schemas, output schemas,
   and behaviour annotations that API Management's management plane does not expose
@@ -539,7 +559,8 @@ Every entity contains `tenantId`; this initial deployment is single-tenant but t
 not. The domain distinguishes:
 
 - `ModelEndpoint`: a registered Azure OpenAI, Azure AI Foundry, or OpenAI-compatible endpoint, its
-  verified control-plane access, and per-gateway runtime readiness
+  verified control-plane access, per-gateway runtime readiness, and, for an Azure endpoint reached
+  with an API key, the deployments an administrator declared on it
 - `ModelEndpointSyncRun`: the outcome of one model discovery run
 - `CatalogModel`: provider model identity/version
 - `ModelDeployment`: callable deployed endpoint
@@ -608,8 +629,10 @@ measured scale, not speculation.
   `AgentIdentity.Read.All`, and never writes to Entra. API Management never calls Graph.
 - Cosmos local/key authentication and ACR admin credentials are disabled.
 - Key Vault uses RBAC, soft delete, and purge protection.
-- Backend access is scoped to Cosmos data contributor, Key Vault Secrets User, API Management
-  contributor, Log Analytics Reader, and Monitoring Reader.
+- Backend access is scoped to Cosmos data contributor, Key Vault Secrets User and Reader on
+  MOSAIC's Key Vault, API Management contributor, Log Analytics Reader, and Monitoring Reader. The
+  deployed API Management's identity holds Key Vault Secrets User on the same vault, so it can read
+  the key of an endpoint reached with an API key.
 - API Management writes are bounded by two independent conditions rather than one: the role
   assignment, and a gateway an administrator explicitly moved to `manage`. MOSAIC refuses that
   switch until preflight has confirmed write access, and every write runs against a reviewed plan
@@ -640,12 +663,19 @@ measured scale, not speculation.
   client with Conditional Access.
 - On model endpoints MOSAIC asks only for `Reader`. It deliberately holds no data-plane inference
   right and no `listKeys` permission on any Azure AI resource, so it cannot call a model or read an
-  account key even where it can enumerate deployments.
+  account key even where it can enumerate deployments. The exception is one an administrator opts
+  into: for an endpoint registered with an API key, MOSAIC can read that key from Key Vault. It
+  reads it only to check it, with a request that runs no model, and keeps nothing.
 - MOSAIC never reads named value secret values, and never persists or renders policy XML. Policy
   documents — including the ones MOSAIC authors when publishing — are reduced to a digest plus
   redacted facets in memory.
-- Credentials for non-Azure endpoints are stored as Key Vault secret URIs only. MOSAIC resolves a
-  secret at call time and never persists, returns, or logs its value.
+- Credentials for endpoints reached with an API key are stored as Key Vault secret URIs only.
+  MOSAIC resolves a secret at call time and never persists, returns, or logs its value, or puts it
+  in an error. A published endpoint's key never passes through MOSAIC: API Management reads it from
+  Key Vault itself, through a Key Vault-backed named value, and MOSAIC never calls `listValue`.
+  Anyone who can edit API Management policies can read any named value through a policy, and a
+  request trace shows one to whoever may trace; subscriptions MOSAIC creates never allow tracing.
+  See [ADR 0018](docs/adr/0018-key-authenticated-backends.md).
 - Frontend and backend pull from ACR through their managed identities.
 
 ## Gateways
@@ -793,7 +823,10 @@ ownership boundary already exists.
 
 A model endpoint is an Azure OpenAI or Azure AI Foundry resource that a gateway fronts.
 Administrators register one by resource ID, or accept a suggestion. MOSAIC then reads the
-deployments on it. It never calls a model, and it never changes the resource.
+deployments on it. It never calls a model, and it never changes the resource. A resource MOSAIC's
+managed identity can't reach, such as one in another Microsoft Entra tenant, can instead be
+registered by URL with an API key held in Key Vault; see
+[Endpoints reached with an API key](#endpoints-reached-with-an-api-key).
 
 Every endpoint has **two** access relationships, held by two different identities:
 
@@ -892,7 +925,66 @@ for `Reader` on its own identity to read an endpoint or to scan subscriptions, i
 **Check access** or the scan still fails right after the grant, wait a few minutes and try again.
 
 OpenAI-compatible endpoints are registered with a Key Vault secret identifier the operator created.
-MOSAIC stores the URI only; discovery for those endpoints is not implemented yet.
+MOSAIC stores the URI only; discovery for those endpoints is not implemented yet. An Azure OpenAI or
+Foundry URL isn't registered as OpenAI-compatible: it takes the key path below.
+
+### Endpoints reached with an API key
+
+Register an Azure OpenAI or Foundry resource by resource ID whenever MOSAIC can reach it: MOSAIC
+then reads its deployments with its managed identity, and no key is involved. When it can't, most
+often because the resource is in another Microsoft Entra tenant and its answer is "Token tenant ...
+does not match resource tenant", register the resource by URL with the Key Vault secret that holds
+its API key. [ADR 0018](docs/adr/0018-key-authenticated-backends.md) records the design.
+
+1. **Store the key in Key Vault yourself.** MOSAIC never takes a key: give it only the secret's URI.
+   The Key Vault deployed with MOSAIC (`azd env get-value KEY_VAULT_NAME`) already lets MOSAIC's API
+   and the environment's API Management read secrets, so a key stored there is ready to publish.
+   Add it as a secret in the Azure portal, or with
+   `az keyvault secret set --vault-name <vault> --name <name> --file <file holding the key>`, which
+   keeps the key out of your shell history. The file must hold the key alone, with no line break
+   at its end: MOSAIC reports a key that starts or ends with one and never sends it.
+
+   For another vault, grant Key Vault Secrets User on it to MOSAIC's API identity and to each
+   gateway that publishes from the endpoint. The endpoint's **Access** card gives the exact
+   commands.
+2. **Register it.** On the Models page, **Register endpoint** > **Azure AI with an API key**. Give
+   the resource endpoint (`https://<resource>.services.ai.azure.com`, `.cognitiveservices.azure.com`
+   or `.openai.azure.com`) or a Foundry project endpoint
+   (`https://<resource>.services.ai.azure.com/api/projects/<project>`), and the secret URI
+   (`https://<vault>.vault.azure.net/secrets/<name>`). The same request is
+   `POST /api/v1/model-endpoints` with `endpoint`, `credentialSecretUri` and, optionally,
+   `deployments`.
+3. **Declare its deployments.** An API key can't list a resource's deployments: Foundry lists them
+   only to a Microsoft Entra token. So name each deployment to publish and the API it takes: the
+   Azure OpenAI API, the Foundry Models API, or the Anthropic Messages API for Claude. Declare them
+   while registering, or later from the endpoint's **Deployments** card
+   (`POST` and `DELETE /api/v1/model-endpoints/{id}/declared-deployments[/{name}]`). The console
+   marks them *declared, not discovered*. A declared deployment can't be removed while it's
+   published.
+
+What MOSAIC does with it:
+
+- **It stores the URI, not the key, and without its version.** MOSAIC and API Management both read
+  the current version, so a rotated key reaches the gateway within four hours without touching
+  MOSAIC.
+- **It checks the key and keeps nothing.** Registration and **Check access** read the secret with
+  MOSAIC's identity and send one request that runs no model (`GET /openai/models`) with the key in
+  `api-key`. MOSAIC reads only the status code and drops the key. It never logs, stores or returns
+  a key, or puts one in an error. **Sync models** doesn't apply to these endpoints.
+- **It registers a resource once, whatever host names it.** A resource answers on three hostnames
+  that share its subdomain. A second registration of it by key, or by resource ID when it's
+  already reached by key, or the reverse, is refused with a `409` that names the existing one.
+- **It reports the two relationships these endpoints have.**
+  - **MOSAIC**: whether it read the key and whether the endpoint accepted it. If it can't read the
+    secret, the card gives the `az role assignment create` command for Key Vault Secrets User on
+    the vault.
+  - **Each gateway**: whether its managed identity can read the key from Key Vault. Any role whose
+    data actions include `Microsoft.KeyVault/vaults/secrets/getSecret/action` counts, whether it's
+    on the secret, the vault or above. An access-policy vault counts Get. A firewall that doesn't
+    admit trusted Microsoft services is *not confirmed*. A missing role comes with its command.
+    MOSAIC needs Reader on a vault to read who holds roles there. Without it, or when MOSAIC
+    can't find the vault in the subscriptions it can read, the verdict is *not confirmed*, never a
+    denial, and the command resolves the vault with `az keyvault show`.
 
 **One registration per Azure AI resource.** Deployments live on the resource (the account), never
 on a Foundry project, so a project and its parent resource list the same models. MOSAIC treats every
@@ -926,9 +1018,10 @@ rolled-back publications, and unpublished ones — are deleted with the endpoint
 
 ## Publishing models
 
-Publishing takes a deployment MOSAIC observed on a registered model endpoint and exposes it through
-a registered gateway. It is the first thing MOSAIC writes to API Management, and it completes the
-loop [ADR 0001](docs/adr/0001-apim-runtime-boundary.md) described and deliberately stopped one step
+Publishing takes a deployment MOSAIC observed on a registered model endpoint, or one an
+administrator declared on an endpoint reached with an API key, and exposes it through a registered
+gateway. It is the first thing MOSAIC writes to API Management, and it completes the loop
+[ADR 0001](docs/adr/0001-apim-runtime-boundary.md) described and deliberately stopped one step
 short of: desired state, observed state, deterministic plan, explicit apply, audited result.
 
 A `Publication` in `desired-state` records the intent. Saving it changes nothing in Azure. Planning
@@ -946,21 +1039,34 @@ Applying creates, in dependency order:
 
 | Order | Resource | Purpose |
 | --- | --- | --- |
-| 1 | Backend | The model endpoint origin, with query and fragment stripped |
-| 2 | `mosaic-*` policy fragment | Managed-identity authentication, routing to the backend, and, where the gateway's tier supports them, token limit and token metric |
-| 3 | API | The route, created with no `serviceUrl` so removing the fragment fails closed |
-| 4 | Operations | A curated, versioned set per API shape |
-| 5 | API policy | A thin `<include-fragment>` of the MOSAIC fragment |
-| 6 | Product | Carries the API |
-| 7 | Product/API link | |
-| 8 | Subscription | Only when the publication requires one |
+| 1 | Named value | Only for an endpoint reached with an API key: a Key Vault reference API Management reads the key through with its own identity |
+| 2 | Backend | The model endpoint origin, with query and fragment stripped |
+| 3 | `mosaic-*` policy fragment | Backend authentication (the gateway's managed identity, or the endpoint's key from the named value), routing to the backend, and, where the gateway's tier supports them, token limit and token metric |
+| 4 | API | The route, created with no `serviceUrl` so removing the fragment fails closed |
+| 5 | Operations | A curated, versioned set per API shape |
+| 6 | API policy | A thin `<include-fragment>` of the MOSAIC fragment |
+| 7 | Product | Carries the API |
+| 8 | Product/API link | |
+| 9 | Subscription | Only when the publication requires one |
 
 Each resource is created after the resources it names. API Management accepts a policy fragment and
 only then checks the backend its `set-backend-service` names, failing the write if that backend does
-not exist yet, so the backend comes first. Likewise, the API policy includes the fragment; the
+not exist yet, so the backend comes first. A fragment that sets a key from a named value names that
+too, so the named value comes before both. Likewise, the API policy includes the fragment; the
 operations and the API policy belong to the API; the product link joins the product and the API;
 and the subscription is scoped to the product. A plan saved by an earlier MOSAIC release that put
 the fragment first is refused at apply; plan the publication again.
+
+A publication from an endpoint reached with an API key owns its named value, `<backend>-key`. MOSAIC
+gives API Management the secret's versionless identifier and never the key, and never calls
+`listValue`. After writing it, MOSAIC reads it back and removes it again if API Management reports
+that it couldn't read the secret, saying what to grant. Its fragment first removes every credential
+a caller could send (`api-key`, `x-api-key`, `Authorization`, `Ocp-Apim-Subscription-Key`, and the
+`api-key` and `subscription-key` query parameters), then sets the backend's key header from the
+named value: `api-key` for the Azure OpenAI and Foundry Models APIs, `x-api-key` for the Anthropic
+Messages API. A caller can neither supply nor override the key, and none of their credentials reach
+the backend. The plan's digest covers the secret, so pointing the endpoint at another secret needs a
+new review.
 
 Operation sets are shipped and versioned by MOSAIC rather than fetched from the provider, so a plan
 is deterministic and does not couple an APIM write to a third-party document being reachable. Each
@@ -1015,7 +1121,9 @@ models table asks MOSAIC for an unpublish plan, which deletes nothing, and opens
   for its product loses access.
 - **What MOSAIC deletes**: every resource MOSAIC created, in the order it deletes them. Anything
   MOSAIC found already in API Management stays, and the review names it. Deleting the product
-  also deletes every subscription to it, including ones API Management added.
+  also deletes every subscription to it, including ones API Management added. A publication from
+  an endpoint reached with an API key deletes its named value last, after the fragment that names
+  it; the key itself stays in Key Vault.
 
 Only the review's **Unpublish model** runs the plan. MOSAIC runs exactly the reviewed steps and
 refuses a plan that no longer matches the publication, for example because access was applied or a
@@ -1502,7 +1610,8 @@ records.
    register Azure OpenAI and Foundry endpoints to enumerate their deployed models and verify each
    gateway's runtime access to them, and register MCP servers directly to record the tools they
    declare.
-4. **Model publishing:** expose an observed deployment through a gateway by writing
+4. **Model publishing:** expose an observed deployment, or one declared on an endpoint reached with
+   an API key ([ADR 0018](docs/adr/0018-key-authenticated-backends.md)), through a gateway by writing
    its backend, policy fragment, API, operations, product and subscription, through a deterministic
    plan, an explicit apply, per-step results, and rollback that removes only what it created. This
    is the orchestration [ADR 0009](docs/adr/0009-entitlement-subjects-resources-and-apim-binding.md)

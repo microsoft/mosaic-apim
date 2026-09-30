@@ -217,6 +217,8 @@ const api = {
   preflightModelEndpoint: vi.fn(),
   deleteModelEndpoint: vi.fn(),
   listModelDeployments: vi.fn(),
+  declareModelDeployment: vi.fn(),
+  removeDeclaredModelDeployment: vi.fn(),
 }
 
 const { TestApiError } = vi.hoisted(() => ({
@@ -1899,5 +1901,280 @@ describe('ModelsPage model endpoints', () => {
     expect(await screen.findByText('Used by a gateway')).toBeVisible()
     expect(screen.queryByText(/^Scanned \d+ subscription/)).not.toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: /subscriptions/i })).not.toBeInTheDocument()
+  })
+
+  describe('an Azure endpoint reached with an API key', () => {
+    const PROJECT_URL =
+      'https://fabrikam-foundry.services.ai.azure.com/api/projects/partner-models'
+    const SECRET_URI = 'https://kv-contoso-ai.vault.azure.net/secrets/fabrikam-foundry-key'
+    const VAULT_ID =
+      '/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-contoso-ai' +
+      '/providers/Microsoft.KeyVault/vaults/kv-contoso-ai'
+    const GRANT_COMMAND =
+      'az role assignment create --assignee-object-id "11111111-1111-1111-1111-111111111111"' +
+      ' --assignee-principal-type ServicePrincipal --role "Key Vault Secrets User"' +
+      ` --scope "${VAULT_ID}"`
+
+    function keyEndpoint(overrides: Partial<ModelEndpoint> = {}): ModelEndpoint {
+      return modelEndpoint({
+        id: 'endpoint_key',
+        name: 'Fabrikam partner Foundry',
+        provider: 'azureAiFoundry',
+        endpoint: 'https://fabrikam-foundry.services.ai.azure.com/',
+        azureResourceId: null,
+        subscriptionId: null,
+        resourceGroup: null,
+        accountName: 'fabrikam-foundry',
+        projectName: 'partner-models',
+        authMode: 'apiKey',
+        credentialReferenceId: 'credential_1',
+        declaredDeployments: [
+          {
+            deploymentName: 'claude-sonnet-4-5',
+            modelName: 'claude-sonnet-4-5',
+            apiShape: 'anthropicMessages',
+            declaredAt: '2026-09-01T12:00:00Z',
+            declaredBy: 'admin-object-id',
+          },
+        ],
+        access: {
+          canRead: true,
+          evaluation: 'probe',
+          checkedAt: '2026-09-01T12:00:00Z',
+          missingActions: [],
+          remediation: null,
+          message: 'MOSAIC read the API key from Key Vault and checked it with a request that runs no model.',
+        },
+        runtimeAccess: [
+          runtimeAccess({
+            reason: 'missingRole',
+            requiredRoleName: 'Key Vault Secrets User',
+            requiredRoleDefinitionId: '4633458b-17de-408a-b874-0445c86b69e6',
+            evaluatedScope: VAULT_ID,
+            requiredDataActions: ['Microsoft.KeyVault/vaults/secrets/getSecret/action'],
+            remediation: {
+              roleName: 'Key Vault Secrets User',
+              roleDefinitionId: '4633458b-17de-408a-b874-0445c86b69e6',
+              scope: VAULT_ID,
+              principalId: '11111111-1111-1111-1111-111111111111',
+              command: GRANT_COMMAND,
+            },
+            message:
+              "Development gateway's managed identity holds no role on Key Vault kv-contoso-ai " +
+              "that reads secrets, so the gateway can't read this endpoint's API key.",
+          }),
+        ],
+        capabilities: { managementApiVersion: '2024-10-01', notes: [] },
+        inventory: {
+          deployments: 0,
+          availableModels: 0,
+          succeededDeployments: 0,
+          deprecatedDeployments: 0,
+        },
+        lastSyncedAt: null,
+        ...overrides,
+      })
+    }
+
+    async function openKeyTab(user: ReturnType<typeof userEvent.setup>) {
+      renderPage('/models?register=1')
+      const dialog = await screen.findByRole('dialog', { name: 'Register model endpoint' })
+      await user.click(within(dialog).getByRole('tab', { name: 'Azure AI with an API key' }))
+      return dialog
+    }
+
+    it('offers the key path as an explicit alternative to the resource ID', async () => {
+      const user = userEvent.setup()
+      const dialog = await openKeyTab(user)
+
+      expect(
+        within(dialog).getByText("Only when MOSAIC can't reach the resource"),
+      ).toBeVisible()
+      expect(within(dialog).getByText(/for example when the resource is in another/)).toBeVisible()
+      expect(
+        within(dialog).getByText(/Store the resource's API key as a secret in Key Vault yourself/),
+      ).toBeVisible()
+      expect(within(dialog).getByText(/Never paste the key/)).toBeVisible()
+      expect(within(dialog).getByLabelText(/Endpoint URL/)).toBeVisible()
+      expect(within(dialog).getByLabelText(/Key Vault secret URI/)).toBeVisible()
+      expect(within(dialog).queryByLabelText(/Azure resource ID/)).not.toBeInTheDocument()
+    })
+
+    it('registers the URL, the secret URI and the declared deployments', async () => {
+      const user = userEvent.setup()
+      api.registerModelEndpoint.mockResolvedValue(keyEndpoint())
+      const dialog = await openKeyTab(user)
+
+      await user.click(within(dialog).getByLabelText(/Endpoint URL/))
+      await user.paste(PROJECT_URL)
+      await user.click(within(dialog).getByLabelText(/Key Vault secret URI/))
+      await user.paste(SECRET_URI)
+      await user.type(within(dialog).getByLabelText('Deployment 1 name'), 'claude-sonnet-4-5')
+      await user.type(within(dialog).getByLabelText('Deployment 1 model'), 'claude-sonnet-4-5')
+      // A Claude model takes the Anthropic Messages API unless the administrator says otherwise.
+      expect(within(dialog).getByLabelText('Deployment 1 API')).toHaveValue('anthropicMessages')
+      await user.click(within(dialog).getByRole('button', { name: 'Add a deployment' }))
+      await user.type(within(dialog).getByLabelText('Deployment 2 name'), 'gpt-4-1')
+      await user.type(within(dialog).getByLabelText('Deployment 2 model'), 'gpt-4.1')
+      await user.selectOptions(within(dialog).getByLabelText('Deployment 2 API'), 'azureOpenAi')
+      await user.click(within(dialog).getByRole('button', { name: 'Add a deployment' }))
+      await user.click(within(dialog).getByRole('button', { name: 'Remove deployment 3' }))
+      await user.click(within(dialog).getByRole('button', { name: 'Register' }))
+
+      await waitFor(() => expect(api.registerModelEndpoint).toHaveBeenCalledTimes(1))
+      expect(api.registerModelEndpoint.mock.calls[0][0]).toEqual({
+        endpoint: PROJECT_URL,
+        credentialSecretUri: SECRET_URI,
+        name: undefined,
+        environment: 'development',
+        deployments: [
+          {
+            deploymentName: 'claude-sonnet-4-5',
+            modelName: 'claude-sonnet-4-5',
+            apiShape: 'anthropicMessages',
+          },
+          { deploymentName: 'gpt-4-1', modelName: 'gpt-4.1', apiShape: 'azureOpenAi' },
+        ],
+      })
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    })
+
+    it('offers an Azure OpenAI resource only the Azure OpenAI API', async () => {
+      const user = userEvent.setup()
+      const dialog = await openKeyTab(user)
+
+      await user.click(within(dialog).getByLabelText(/Endpoint URL/))
+      await user.paste('https://fabrikam-aoai.openai.azure.com')
+
+      const shape = within(dialog).getByLabelText('Deployment 1 API')
+      expect(within(shape).getAllByRole('option').map((option) => option.textContent)).toEqual([
+        'Azure OpenAI',
+      ])
+    })
+
+    it('keeps the Register button focusable while busy and moves focus to a refusal', async () => {
+      const user = userEvent.setup()
+      let refuse: (reason: unknown) => void = () => undefined
+      api.registerModelEndpoint.mockReturnValue(
+        new Promise((_, reject) => {
+          refuse = reject
+        }),
+      )
+      const dialog = await openKeyTab(user)
+      await user.click(within(dialog).getByLabelText(/Endpoint URL/))
+      await user.paste(PROJECT_URL)
+      await user.click(within(dialog).getByLabelText(/Key Vault secret URI/))
+      await user.paste(SECRET_URI)
+      await user.click(within(dialog).getByRole('button', { name: 'Register' }))
+
+      const busy = await within(dialog).findByRole('button', { name: 'Registering…' })
+      expect(busy).toHaveAttribute('aria-disabled', 'true')
+
+      const message = 'This resource is already registered with an API key, as Fabrikam.'
+      refuse(new TestApiError(message, 409, { message }))
+      const refusal = await within(dialog).findByText(message)
+      await waitFor(() => expect(refusal.closest('[tabindex="-1"]')).toHaveFocus())
+      expect(within(dialog).getByText("MOSAIC didn't register this endpoint")).toBeVisible()
+    })
+
+    it('shows the key path, what to grant, and the declared deployments', async () => {
+      api.listModelEndpoints.mockResolvedValue([keyEndpoint()])
+
+      renderPage()
+
+      const table = await screen.findByRole('table', { name: 'Registered model endpoints' })
+      const row = within(table).getByText('Fabrikam partner Foundry').closest('tr') as HTMLElement
+      expect(within(row).getByText('API key from Key Vault')).toBeVisible()
+      expect(within(row).getByText('1 declared')).toBeVisible()
+      // An API key can't list deployments, so there is nothing to sync.
+      expect(within(row).queryByRole('button', { name: 'Sync models' })).not.toBeInTheDocument()
+      expect(within(row).getByRole('button', { name: 'Check access' })).toBeVisible()
+
+      expect(screen.getByText('The endpoint accepts the key')).toBeVisible()
+      expect(screen.getByText(/Authentication: API key from Key Vault/)).toBeVisible()
+      expect(screen.getByText("Development gateway: can't read the key")).toBeVisible()
+      expect(screen.getByText(/sends the endpoint's API key, which it reads from Key Vault/)).toBeVisible()
+      expect(screen.getByText(GRANT_COMMAND)).toBeVisible()
+      expect(screen.getByText('Key Vault kv-contoso-ai')).toBeVisible()
+      expect(screen.getByText('Any role that can read secrets is also accepted.', { exact: false })).toBeVisible()
+
+      const declared = screen.getByRole('table', { name: 'Declared model deployments' })
+      const [, declaredRow] = within(declared).getAllByRole('row')
+      expect(within(declaredRow).getAllByText('claude-sonnet-4-5')).toHaveLength(2)
+      expect(within(declaredRow).getByText('Anthropic Messages API (Claude)')).toBeVisible()
+      expect(within(declaredRow).getByText('Declared, not discovered')).toBeVisible()
+      expect(screen.queryByRole('heading', { name: /Models on/ })).not.toBeInTheDocument()
+      expect(api.listModelDeployments).not.toHaveBeenCalled()
+    })
+
+    it('declares a deployment and returns focus to the button that opened the dialog', async () => {
+      const user = userEvent.setup()
+      api.listModelEndpoints.mockResolvedValue([keyEndpoint()])
+      api.declareModelDeployment.mockResolvedValue(keyEndpoint())
+
+      renderPage()
+
+      const opener = await screen.findByRole('button', { name: 'Declare a deployment' })
+      await user.click(opener)
+      const dialog = await screen.findByRole('dialog', {
+        name: 'Declare a deployment on Fabrikam partner Foundry',
+      })
+      await user.type(within(dialog).getByLabelText(/Deployment name/), 'phi-4')
+      await user.type(within(dialog).getByLabelText(/^Model/), 'Phi-4')
+      expect(within(dialog).getByLabelText(/^API/)).toHaveValue('foundryModels')
+      await user.click(within(dialog).getByRole('button', { name: 'Declare deployment' }))
+
+      await waitFor(() =>
+        expect(api.declareModelDeployment).toHaveBeenCalledWith('endpoint_key', {
+          deploymentName: 'phi-4',
+          modelName: 'Phi-4',
+          apiShape: 'foundryModels',
+        }),
+      )
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+      // Fluent returns focus to the button that opened the dialog when it closes.
+      expect(opener).toHaveAttribute('data-tabster', expect.stringContaining('restorer'))
+    })
+
+    it('says why a deployment was not removed and moves focus there', async () => {
+      const user = userEvent.setup()
+      const message =
+        'Unpublish claude-sonnet-4-5 before removing it. Its API would keep serving traffic in ' +
+        'API Management with nothing in MOSAIC to change or remove it.'
+      api.listModelEndpoints.mockResolvedValue([keyEndpoint()])
+      api.removeDeclaredModelDeployment.mockRejectedValue(
+        new TestApiError(message, 409, { message }),
+      )
+
+      renderPage()
+
+      await user.click(await screen.findByRole('button', { name: 'Remove claude-sonnet-4-5' }))
+
+      await waitFor(() =>
+        expect(api.removeDeclaredModelDeployment).toHaveBeenCalledWith(
+          'endpoint_key',
+          'claude-sonnet-4-5',
+        ),
+      )
+      const refusal = await screen.findByText(message)
+      expect(screen.getByText("MOSAIC didn't remove this deployment")).toBeVisible()
+      await waitFor(() => expect(refusal.closest('[tabindex="-1"]')).toHaveFocus())
+    })
+
+    it('moves focus to the outcome when a deployment is removed', async () => {
+      const user = userEvent.setup()
+      api.listModelEndpoints.mockResolvedValue([keyEndpoint()])
+      api.removeDeclaredModelDeployment.mockResolvedValue(keyEndpoint({ declaredDeployments: [] }))
+
+      renderPage()
+
+      await user.click(await screen.findByRole('button', { name: 'Remove claude-sonnet-4-5' }))
+
+      const outcome = await screen.findByRole('status')
+      expect(outcome).toHaveTextContent(
+        'Removed claude-sonnet-4-5 from Fabrikam partner Foundry. Nothing changed in Azure.',
+      )
+      await waitFor(() => expect(outcome).toHaveFocus())
+    })
   })
 })

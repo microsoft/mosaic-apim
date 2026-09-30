@@ -22,6 +22,7 @@ MOSAIC reports the answer and never grants the role, exactly as it does for its 
 import ipaddress
 from dataclasses import dataclass
 from enum import Enum
+from typing import Protocol
 
 from mosaic_api.domain import (
     AZURE_AI_DEVELOPER_ROLE_ID,
@@ -186,6 +187,14 @@ def known_sufficient_roles(
     }
 
 
+class RoleReads(Protocol):
+    """The role reads a check needs, from whichever resource it is evaluated at."""
+
+    async def role_definition(self, role_definition_guid: str) -> JsonObject | None: ...
+
+    async def deny_assignments(self) -> list[JsonObject] | None: ...
+
+
 class RuntimeAccessCheck:
     """Reads shared by every gateway evaluated against one endpoint in one check.
 
@@ -194,7 +203,7 @@ class RuntimeAccessCheck:
     an administrator edits is read afresh the next time.
     """
 
-    def __init__(self, client: CognitiveServicesClient) -> None:
+    def __init__(self, client: RoleReads) -> None:
         self._client = client
         self._definitions: dict[str, JsonObject | None] = {}
         self._deny_assignments: list[JsonObject] | None = None

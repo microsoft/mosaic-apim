@@ -23,6 +23,7 @@ from mosaic_api.domain import (
     ApimResourceId,
 )
 from mosaic_api.errors import (
+    DomainError,
     UpstreamAuthorizationError,
     UpstreamConflictError,
     UpstreamError,
@@ -237,6 +238,28 @@ def _request_failure_message(
 def _poll_url(response: httpx.Response) -> str | None:
     header = response.headers.get("Azure-AsyncOperation") or response.headers.get("Location")
     return header if isinstance(header, str) and header else None
+
+
+_REDACTED_REFERENCE = "[redacted]"
+
+
+def _scrub_text(value: object, redact: tuple[str, ...]) -> object:
+    if not isinstance(value, str):
+        return value
+    for literal in redact:
+        if literal:
+            value = re.sub(re.escape(literal), _REDACTED_REFERENCE, value, flags=re.IGNORECASE)
+    return value
+
+
+def _scrubbed[ErrorT: DomainError](error: ErrorT, redact: tuple[str, ...]) -> ErrorT:
+    """The same error with each literal replaced wherever Azure's text repeated it."""
+
+    return type(error)(
+        str(_scrub_text(error.message, redact)),
+        details={key: _scrub_text(value, redact) for key, value in error.details.items()},
+        summary=str(_scrub_text(error.summary, redact)),
+    )
 
 
 class ArmClient:
@@ -535,7 +558,9 @@ class ArmClient:
             logger.warning("arm_paging_truncated", url=url, pages=pages)
         return items
 
-    async def _await_operation(self, response: httpx.Response, *, resource_url: str) -> None:
+    async def _await_operation(
+        self, response: httpx.Response, *, resource_url: str, redact: tuple[str, ...] = ()
+    ) -> None:
         """Poll an Azure long-running operation to completion.
 
         Until Azure finishes a write, the write has not happened. Treating it as done would make
@@ -586,6 +611,8 @@ class ArmClient:
                     ),
                     payload=payload,
                 )
+                if redact:
+                    failure = _scrubbed(failure, redact)
                 logger.warning(
                     "arm_operation_failed",
                     url=resource_url,
@@ -623,18 +650,30 @@ class ArmClient:
         *,
         params: dict[str, str] | None = None,
         if_match: str | None = None,
+        redact: tuple[str, ...] = (),
     ) -> JsonObject | None:
         """Create or replace a resource. Idempotent, so the shared retry policy is safe.
 
         A write Azure answers with a poll header is waited for, whatever its 2xx status. A 200
-        without one finished synchronously and costs no further request.
+        without one finished synchronously and costs no further request. ``redact`` names literals,
+        such as a Key Vault secret identifier the payload carries, that must not reach an error
+        message or a log line even when Azure repeats them in its reason for refusing the write.
         """
 
-        response = await self._send("PUT", url, params=params, json=payload, if_match=if_match)
-        if response is None:
-            return None
-        if response.status_code in _POLLED_WRITE_STATUSES and _poll_url(response):
-            await self._await_operation(response, resource_url=self._absolute(url))
+        try:
+            response = await self._send(
+                "PUT", url, params=params, json=payload, if_match=if_match
+            )
+            if response is None:
+                return None
+            if response.status_code in _POLLED_WRITE_STATUSES and _poll_url(response):
+                await self._await_operation(
+                    response, resource_url=self._absolute(url), redact=redact
+                )
+        except DomainError as error:
+            if not redact:
+                raise
+            raise _scrubbed(error, redact) from None
         try:
             body = response.json()
         except ValueError:
@@ -824,6 +863,14 @@ class ApimClient:
 
     async def get_backend(self, name: str) -> JsonObject | None:
         return await self._sub_resource(f"backends/{name}")
+
+    async def get_named_value(self, name: str) -> JsonObject | None:
+        """A named value's metadata. A secret's value is never part of this read.
+
+        MOSAIC never calls ``listValue``, the action that would return it.
+        """
+
+        return await self._sub_resource(f"namedValues/{name}")
 
     async def get_product(self, name: str) -> JsonObject | None:
         return await self._sub_resource(f"products/{name}")

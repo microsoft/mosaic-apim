@@ -29,9 +29,11 @@ from mosaic_api.domain import (
     AuditEvent,
     BindingSource,
     CapabilitySupport,
+    DeclaredDeployment,
     EntitlementBinding,
     EntitlementSubjectKind,
     Gateway,
+    KeyVaultSecretId,
     ManagementMode,
     ModelAccessGrant,
     ModelAccessSnapshot,
@@ -73,6 +75,7 @@ from mosaic_api.integrations.apim.model_apis import (
     CURATED_SHAPE_VERSION,
     DeploymentFit,
     OperationSpec,
+    assess_declared_deployment,
     assess_deployment,
     backend_origin,
     default_names,
@@ -82,6 +85,7 @@ from mosaic_api.integrations.apim.model_apis import (
     token_limits_note,
 )
 from mosaic_api.integrations.apim.writer import DEFAULT_SUBSCRIPTION_KEY_NAMES, ApimWriter
+from mosaic_api.integrations.backend_keys import backend_key_name
 from mosaic_api.integrations.policy import PublicationPolicy, render_publication_policy
 from mosaic_api.observed import ObservedApi, ObservedModelDeployment
 from mosaic_api.repositories import (
@@ -121,11 +125,14 @@ DENY_ALL_FRAGMENT = (
 
 # Dependency order: every resource is created after the resources it names. The fragment's
 # set-backend-service names the backend, and API Management validates a fragment asynchronously and
-# fails the write when that backend does not exist yet, so the backend comes first. The API policy's
-# include-fragment names the fragment, and the subscription's scope names the product. A rollback
-# walks this order backwards and unpublish is the same list reversed, so teardown removes each
-# resource before the one it names. The plan follows it too; a test holds the two together.
+# fails the write when that backend does not exist yet, so the backend comes first. A key-
+# authenticated publication's fragment also names its Key Vault-backed named value, which API
+# Management refuses to delete while a policy still names it, so that comes first of all. The API
+# policy's include-fragment names the fragment, and the subscription's scope names the product. A
+# rollback walks this order backwards and unpublish is the same list reversed, so teardown removes
+# each resource before the one it names. The plan follows it too; a test holds the two together.
 CREATE_ORDER: tuple[PublishedResourceKind, ...] = (
+    PublishedResourceKind.NAMED_VALUE,
     PublishedResourceKind.BACKEND,
     PublishedResourceKind.POLICY_FRAGMENT,
     PublishedResourceKind.API,
@@ -158,23 +165,46 @@ class _Resource:
     operation: OperationSpec | None = None
 
 
+@dataclass(frozen=True)
+class _Backend:
+    """Where a published API forwards to, and the key it sends when its endpoint takes one.
+
+    ``key_secret`` is the versionless Key Vault secret identifier API Management resolves the key
+    from. It is an identifier, never a key, and it goes nowhere but the named value MOSAIC writes.
+    """
+
+    origin: str
+    key_secret: str | None = None
+
+
 def _desired_resources(publication: Publication) -> list[_Resource]:
     operations = operations_for(publication)
-    resources = [
-        _Resource(
-            PublishedResourceKind.BACKEND,
-            publication.backend_name,
-            f"backends/{publication.backend_name}",
-        ),
-        _Resource(
-            PublishedResourceKind.POLICY_FRAGMENT,
-            publication.fragment_name,
-            f"policyFragments/{publication.fragment_name}",
-        ),
-        _Resource(
-            PublishedResourceKind.API, publication.api_name, f"apis/{publication.api_name}"
-        ),
-    ]
+    resources: list[_Resource] = []
+    if publication.backend_key_name is not None:
+        resources.append(
+            _Resource(
+                PublishedResourceKind.NAMED_VALUE,
+                publication.backend_key_name,
+                f"namedValues/{publication.backend_key_name}",
+            )
+        )
+    resources.extend(
+        [
+            _Resource(
+                PublishedResourceKind.BACKEND,
+                publication.backend_name,
+                f"backends/{publication.backend_name}",
+            ),
+            _Resource(
+                PublishedResourceKind.POLICY_FRAGMENT,
+                publication.fragment_name,
+                f"policyFragments/{publication.fragment_name}",
+            ),
+            _Resource(
+                PublishedResourceKind.API, publication.api_name, f"apis/{publication.api_name}"
+            ),
+        ]
+    )
     resources.extend(
         _Resource(
             PublishedResourceKind.API_OPERATION,
@@ -243,61 +273,65 @@ def publication_digest(
     origin: str,
     snapshot: ModelAccessSnapshot | None = None,
     environment_fingerprint: str | None = None,
+    key_secret: str | None = None,
 ) -> str:
     """A digest over the *intent*, not the observation.
 
     Apply compares this against the plan's digest. Covering desired state alone is deliberate: it
     makes "the administrator edited the publication after approving a plan" a rejection, while
     leaving ordinary APIM churn to be handled by re-reading each resource during apply.
+
+    A key-authenticated publication's digest also covers the Key Vault secret its named value
+    points at, so pointing the endpoint at another secret needs a new review. The field is added
+    only for such publications, so every other publication's digest is what it always was.
     """
 
-    payload = json.dumps(
-        {
-            "gatewayId": publication.gateway_id,
-            "modelEndpointId": publication.model_endpoint_id,
-            "deploymentName": publication.deployment_name,
-            "provider": str(publication.provider),
-            "displayName": publication.display_name,
-            "apiName": publication.api_name,
-            "apiPath": publication.api_path,
-            "backendName": publication.backend_name,
-            "backendUrl": origin,
-            "fragmentName": publication.fragment_name,
-            "productName": publication.product_name,
-            "subscriptionName": publication.subscription_name,
-            "subscriptionRequired": publication.subscription_required,
-            "subscriptionKeyParameterNames": DEFAULT_SUBSCRIPTION_KEY_NAMES if snapshot else None,
-            "shapeVersion": publication.shape_version,
-            "policySha256": policy.content_sha256,
-            "modelApiId": publication.model_api_id,
-            "governedAccess": (
-                publication.governed_access.model_dump(mode="json")
-                if publication.governed_access
-                else None
-            ),
-            "accessSnapshot": snapshot.model_dump(mode="json") if snapshot else None,
-            "environmentFingerprint": environment_fingerprint,
-            "previousAccessVersion": (
-                publication.applied_access.version if publication.applied_access else None
-            ),
-            "previousAccessSnapshot": (
-                publication.applied_access.model_dump(mode="json")
-                if publication.applied_access
-                else None
-            ),
-            "ownedResources": sorted(
-                (
-                    str(item.kind),
-                    item.name,
-                    item.resource_id,
-                    item.created_by_mosaic,
-                )
-                for item in publication.resources
-            ),
-        },
-        sort_keys=True,
-        separators=(",", ":"),
-    )
+    intent: dict[str, Any] = {
+        "gatewayId": publication.gateway_id,
+        "modelEndpointId": publication.model_endpoint_id,
+        "deploymentName": publication.deployment_name,
+        "provider": str(publication.provider),
+        "displayName": publication.display_name,
+        "apiName": publication.api_name,
+        "apiPath": publication.api_path,
+        "backendName": publication.backend_name,
+        "backendUrl": origin,
+        "fragmentName": publication.fragment_name,
+        "productName": publication.product_name,
+        "subscriptionName": publication.subscription_name,
+        "subscriptionRequired": publication.subscription_required,
+        "subscriptionKeyParameterNames": DEFAULT_SUBSCRIPTION_KEY_NAMES if snapshot else None,
+        "shapeVersion": publication.shape_version,
+        "policySha256": policy.content_sha256,
+        "modelApiId": publication.model_api_id,
+        "governedAccess": (
+            publication.governed_access.model_dump(mode="json")
+            if publication.governed_access
+            else None
+        ),
+        "accessSnapshot": snapshot.model_dump(mode="json") if snapshot else None,
+        "environmentFingerprint": environment_fingerprint,
+        "previousAccessVersion": (
+            publication.applied_access.version if publication.applied_access else None
+        ),
+        "previousAccessSnapshot": (
+            publication.applied_access.model_dump(mode="json")
+            if publication.applied_access
+            else None
+        ),
+        "ownedResources": sorted(
+            (
+                str(item.kind),
+                item.name,
+                item.resource_id,
+                item.created_by_mosaic,
+            )
+            for item in publication.resources
+        ),
+    }
+    if publication.backend_key_name is not None:
+        intent["backendKey"] = {"namedValue": publication.backend_key_name, "secret": key_secret}
+    payload = json.dumps(intent, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
@@ -343,6 +377,7 @@ def unpublish_digest(publication: Publication) -> str:
 
 
 _KIND_NOUNS: dict[PublishedResourceKind, str] = {
+    PublishedResourceKind.NAMED_VALUE: "named value",
     PublishedResourceKind.BACKEND: "backend",
     PublishedResourceKind.POLICY_FRAGMENT: "policy fragment",
     PublishedResourceKind.API: "API",
@@ -371,6 +406,10 @@ _REMOVAL_REASONS: dict[PublishedResourceKind, str] = {
     PublishedResourceKind.BACKEND: "Delete the backend that points at the model endpoint.",
     PublishedResourceKind.PRODUCT: "Delete the product, and every subscription to it.",
     PublishedResourceKind.PRODUCT_API: "Delete the link between the product and the API.",
+    PublishedResourceKind.NAMED_VALUE: (
+        "Delete the named value API Management reads the model endpoint's API key through. The "
+        "key itself stays in Key Vault."
+    ),
 }
 
 
@@ -526,6 +565,8 @@ class PublishingService:
                 },
             )
         self._require_enforcement_fit(request.enforcement, fit.token_limits_note)
+        if endpoint.uses_backend_key():
+            self._require_key_identity(gateway)
 
         names = default_names(endpoint.name, request.deployment_name)
         target = publication_id(
@@ -558,6 +599,9 @@ class PublishingService:
             fragment_name=names.fragment_name,
             product_name=request.product_name or names.product_name,
             subscription_name=names.subscription_name,
+            backend_key_name=(
+                backend_key_name(names.backend_name) if endpoint.uses_backend_key() else None
+            ),
             subscription_required=(
                 not request.governed_access.entra_enabled
                 if request.governed_access
@@ -575,8 +619,17 @@ class PublishingService:
 
     @staticmethod
     def _fit(
-        endpoint: ModelEndpoint, deployment: ObservedModelDeployment, gateway: Gateway
+        endpoint: ModelEndpoint,
+        deployment: ObservedModelDeployment | DeclaredDeployment,
+        gateway: Gateway,
     ) -> DeploymentFit:
+        if isinstance(deployment, DeclaredDeployment):
+            return assess_declared_deployment(
+                endpoint.provider,
+                deployment.api_shape,
+                endpoint=str(endpoint.endpoint),
+                gateway_sku=gateway.capabilities.sku_name,
+            )
         return assess_deployment(
             endpoint.provider,
             model_name=deployment.model_name,
@@ -585,6 +638,22 @@ class PublishingService:
             endpoint=str(endpoint.endpoint),
             gateway_sku=gateway.capabilities.sku_name,
         )
+
+    @staticmethod
+    def _require_key_identity(gateway: Gateway) -> None:
+        """A key-authenticated publication needs a gateway identity to read its key with.
+
+        A gateway MOSAIC hasn't read yet isn't refused: that is "not known", not "has none", and
+        the readiness check and the named value step both still stand between it and a live API.
+        """
+
+        if gateway.capabilities.identity_observed and not gateway.capabilities.principal_id:
+            raise ValidationError(
+                f"API Management reads this endpoint's API key from Key Vault with its managed "
+                f"identity, and {gateway.name} has none. Turn on its system-assigned managed "
+                "identity and re-run its access check first.",
+                details={"gatewayId": gateway.id},
+            )
 
     @staticmethod
     def _require_enforcement_fit(
@@ -603,7 +672,22 @@ class PublishingService:
 
     async def _require_known_deployment(
         self, actor: Actor, endpoint: ModelEndpoint, deployment_name: str
-    ) -> ObservedModelDeployment:
+    ) -> ObservedModelDeployment | DeclaredDeployment:
+        if endpoint.uses_backend_key():
+            declared = endpoint.declared(deployment_name)
+            if declared is None:
+                raise ValidationError(
+                    "Declare this deployment on the endpoint before publishing it. MOSAIC can't "
+                    "list the deployments of an endpoint it reaches with an API key.",
+                    details={
+                        "modelEndpointId": endpoint.id,
+                        "deploymentName": deployment_name,
+                        "declared": sorted(
+                            item.deployment_name for item in endpoint.declared_deployments
+                        ),
+                    },
+                )
+            return declared
         deployments = await self._endpoints.list_observed_for_endpoint(
             ObservedModelDeployment,
             actor.tenant_id,
@@ -777,12 +861,18 @@ class PublishingService:
         for endpoint in endpoints:
             if endpoint.provider == ModelProvider.OPENAI_COMPATIBLE:
                 continue
-            deployments = await self._endpoints.list_observed_for_endpoint(
-                ObservedModelDeployment,
-                actor.tenant_id,
-                endpoint.id,
-                "observedModelDeployment",
-            )
+            deployments: list[ObservedModelDeployment | DeclaredDeployment]
+            if endpoint.uses_backend_key():
+                deployments = list(endpoint.declared_deployments)
+            else:
+                deployments = list(
+                    await self._endpoints.list_observed_for_endpoint(
+                        ObservedModelDeployment,
+                        actor.tenant_id,
+                        endpoint.id,
+                        "observedModelDeployment",
+                    )
+                )
             runtime = next(
                 (item for item in endpoint.runtime_access if item.gateway_id == gateway_id), None
             )
@@ -791,6 +881,7 @@ class PublishingService:
                 api_name, api_path = suggested_names(endpoint.name, deployment.deployment_name)
                 fit = self._fit(endpoint, deployment, gateway)
                 verdict = permits(catalog, gateway.environment, endpoint.environment)
+                observed = deployment if isinstance(deployment, ObservedModelDeployment) else None
                 candidates.append(
                     PublishableModel(
                         model_endpoint_id=endpoint.id,
@@ -799,8 +890,8 @@ class PublishingService:
                         deployment_name=deployment.deployment_name,
                         model_name=deployment.model_name,
                         model_version=deployment.model_version,
-                        model_format=deployment.model_format,
-                        model_publisher=deployment.model_publisher,
+                        model_format=observed.model_format if observed else None,
+                        model_publisher=observed.model_publisher if observed else None,
                         capability=fit.capability,
                         api_shape=fit.api_shape,
                         publishable=fit.publishable,
@@ -813,6 +904,7 @@ class PublishingService:
                         suggested_api_path=api_path,
                         runtime_access=runtime,
                         environment_verdict=verdict,
+                        declared=observed is None,
                     )
                 )
         candidates.sort(key=lambda item: (item.endpoint_name.casefold(), item.deployment_name))
@@ -840,7 +932,8 @@ class PublishingService:
             publication.enforcement,
             token_limits_note(publication.api_shape, gateway.capabilities.sku_name),
         )
-        origin = backend_origin(publication.api_shape, str(endpoint.endpoint))
+        backend = await self._backend(publication, endpoint, gateway)
+        origin = backend.origin
         snapshot, access_warnings = await self._access_snapshot(publication, gateway)
         policy = self._policy(publication, snapshot)
         resource = ApimResourceId.parse(gateway.azure_resource_id)
@@ -897,6 +990,7 @@ class PublishingService:
                 origin,
                 snapshot,
                 environment_fingerprint=environment_fingerprint,
+                key_secret=backend.key_secret,
             ),
             warnings=[
                 *self._warnings(publication, gateway, endpoint),
@@ -935,6 +1029,50 @@ class PublishingService:
         from mosaic_api.integrations.access_policy import render_governed_policy
 
         return render_governed_policy(publication, snapshot)
+
+    async def _backend(
+        self, publication: Publication, endpoint: ModelEndpoint, gateway: Gateway
+    ) -> _Backend:
+        """Where the published API forwards to, and for a key endpoint, which secret it sends.
+
+        The secret is read from the endpoint's credential reference each time, so pointing the
+        endpoint at another secret is picked up by the next plan, and approving it is a review of
+        its own because the digest covers it.
+        """
+
+        origin = backend_origin(publication.api_shape, str(endpoint.endpoint))
+        if publication.backend_key_name is None:
+            if endpoint.uses_backend_key():
+                raise ConflictError(
+                    "This publication authenticates with the gateway's managed identity, but its "
+                    "endpoint is reached with an API key. Remove the publication and publish the "
+                    "model again.",
+                    details={"publicationId": publication.id, "modelEndpointId": endpoint.id},
+                )
+            return _Backend(origin)
+        self._require_key_identity(gateway)
+        credential = (
+            await self._endpoints.get_credential(
+                endpoint.tenant_id, endpoint.credential_reference_id
+            )
+            if endpoint.uses_backend_key() and endpoint.credential_reference_id
+            else None
+        )
+        if credential is None:
+            raise ConflictError(
+                "MOSAIC can't find the Key Vault secret this endpoint's API key is in. Set the "
+                "endpoint's Key Vault secret URI, then plan again.",
+                details={"publicationId": publication.id, "modelEndpointId": endpoint.id},
+            )
+        try:
+            secret = KeyVaultSecretId.parse(str(credential.secret_uri))
+        except ValueError:
+            raise ConflictError(
+                "The endpoint's Key Vault secret URI isn't a Key Vault secret identifier. Set it "
+                "again, then plan again.",
+                details={"publicationId": publication.id, "modelEndpointId": endpoint.id},
+            ) from None
+        return _Backend(origin, secret.versionless)
 
     async def _access_snapshot(
         self, publication: Publication, gateway: Gateway
@@ -1133,6 +1271,9 @@ class PublishingService:
                     }
                 )
             )
+        if publication.backend_key_name is not None:
+            # Before anything that names it: the fragment's key header refers to it.
+            steps.append(base[(PublishedResourceKind.NAMED_VALUE, publication.backend_key_name)])
         steps.append(base[(PublishedResourceKind.BACKEND, publication.backend_name)])
         steps.append(
             api.model_copy(
@@ -1190,6 +1331,7 @@ class PublishingService:
         steps.extend(subscriptions)
         for item in _desired_resources(publication):
             if item.kind in {
+                PublishedResourceKind.NAMED_VALUE,
                 PublishedResourceKind.API,
                 PublishedResourceKind.BACKEND,
                 PublishedResourceKind.API_POLICY,
@@ -1253,6 +1395,10 @@ class PublishingService:
     @staticmethod
     def _reason(item: _Resource, *, existed: bool) -> str:
         subject = {
+            PublishedResourceKind.NAMED_VALUE: (
+                "the named value API Management reads the model endpoint's API key through, from "
+                "Key Vault"
+            ),
             PublishedResourceKind.POLICY_FRAGMENT: "the MOSAIC enforcement fragment",
             PublishedResourceKind.BACKEND: "the backend pointing at the model endpoint",
             PublishedResourceKind.API: "the API that fronts this model",
@@ -1334,6 +1480,7 @@ class PublishingService:
             )
         for item in _desired_resources(publication):
             if item.kind not in {
+                PublishedResourceKind.NAMED_VALUE,
                 PublishedResourceKind.POLICY_FRAGMENT,
                 PublishedResourceKind.API_POLICY,
             }:
@@ -1368,6 +1515,8 @@ class PublishingService:
         self, client: ApimClient, publication: Publication, item: _Resource
     ) -> bool:
         match item.kind:
+            case PublishedResourceKind.NAMED_VALUE:
+                return await client.get_named_value(item.name) is not None
             case PublishedResourceKind.POLICY_FRAGMENT:
                 return await client.get_policy_fragment_resource(item.name) is not None
             case PublishedResourceKind.BACKEND:
@@ -1436,16 +1585,17 @@ class PublishingService:
         environment_fingerprint = compatibility_fingerprint(
             catalog, gateway.environment, endpoint.environment
         )
-        origin = backend_origin(publication.api_shape, str(endpoint.endpoint))
+        backend = await self._backend(publication, endpoint, gateway)
         snapshot, _ = await self._access_snapshot(publication, gateway)
         policy = self._policy(publication, snapshot)
         if (
             publication_digest(
                 publication,
                 policy,
-                origin,
+                backend.origin,
                 snapshot,
                 environment_fingerprint=environment_fingerprint,
+                key_secret=backend.key_secret,
             )
             != plan.digest
         ):
@@ -1469,10 +1619,10 @@ class PublishingService:
         client = self._client_factory(resource)
         if snapshot:
             self._spawn(
-                self._run_governed_apply(publication, gateway, client, plan, policy, origin, run)
+                self._run_governed_apply(publication, gateway, client, plan, policy, backend, run)
             )
         else:
-            self._spawn(self._run_apply(publication, gateway, client, plan, policy, origin, run))
+            self._spawn(self._run_apply(publication, gateway, client, plan, policy, backend, run))
         return run
 
     async def plan_unpublish(self, actor: Actor, target_id: str) -> PublishPlan:
@@ -1712,7 +1862,7 @@ class PublishingService:
         client: ApimClient,
         plan: PublishPlan,
         policy: PublicationPolicy,
-        origin: str,
+        backend: _Backend,
         run: PublishRun,
     ) -> None:
         started = utc_now()
@@ -1755,7 +1905,7 @@ class PublishingService:
                         await self._progress(publication, run, results, owned)
                         write_started = True
                         await self._write_governed_step(
-                            writer, publication, policy, origin, step, item, plan.access_snapshot
+                            writer, publication, policy, backend, step, item, plan.access_snapshot
                         )
                         result.status = PublishStepStatus.SUCCEEDED
                         owned = _merge_resources(
@@ -1818,7 +1968,7 @@ class PublishingService:
         writer: ApimWriter,
         publication: Publication,
         policy: PublicationPolicy,
-        origin: str,
+        backend: _Backend,
         step: PublishPlanStep,
         item: _Resource,
         snapshot: ModelAccessSnapshot | None,
@@ -1852,7 +2002,7 @@ class PublishingService:
             effective = publication
             if step.kind == PublishedResourceKind.API and step.stage == "prepare":
                 effective = publication.model_copy(update={"subscription_required": True})
-            await self._write(writer, effective, policy, origin, item)
+            await self._write(writer, effective, policy, backend, item)
 
     async def _establish_deny(
         self,
@@ -2119,7 +2269,7 @@ class PublishingService:
         client: ApimClient,
         plan: PublishPlan,
         policy: PublicationPolicy,
-        origin: str,
+        backend: _Backend,
         run: PublishRun,
     ) -> None:
         started = utc_now()
@@ -2151,7 +2301,7 @@ class PublishingService:
                             details={"kind": str(step.kind), "name": step.name},
                         )
                     await self._progress(publication, run, [*results, result], tracked)
-                    await self._write(writer, publication, policy, origin, item)
+                    await self._write(writer, publication, policy, backend, item)
                 except asyncio.CancelledError:
                     raise
                 except Exception as error:
@@ -2548,10 +2698,18 @@ class PublishingService:
         writer: ApimWriter,
         publication: Publication,
         policy: PublicationPolicy,
-        origin: str,
+        backend: _Backend,
         item: _Resource,
     ) -> None:
         match item.kind:
+            case PublishedResourceKind.NAMED_VALUE:
+                if backend.key_secret is None:
+                    raise ConflictError(
+                        "MOSAIC doesn't know which Key Vault secret holds this endpoint's key. "
+                        "Plan the publication again.",
+                        details={"publicationId": publication.id},
+                    )
+                await writer.put_named_value(item.name, secret_identifier=backend.key_secret)
             case PublishedResourceKind.POLICY_FRAGMENT:
                 await writer.put_policy_fragment(
                     item.name,
@@ -2560,7 +2718,9 @@ class PublishingService:
                 )
             case PublishedResourceKind.BACKEND:
                 await writer.put_backend(
-                    item.name, url=origin, title=f"MOSAIC backend for {publication.display_name}"
+                    item.name,
+                    url=backend.origin,
+                    title=f"MOSAIC backend for {publication.display_name}",
                 )
             case PublishedResourceKind.API:
                 await writer.put_api(
@@ -2615,6 +2775,8 @@ class PublishingService:
         name: str,
     ) -> None:
         match kind:
+            case PublishedResourceKind.NAMED_VALUE:
+                await writer.delete_named_value(name)
             case PublishedResourceKind.POLICY_FRAGMENT:
                 await writer.delete_policy_fragment(name)
             case PublishedResourceKind.BACKEND:

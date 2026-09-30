@@ -18,16 +18,25 @@ import structlog
 from pydantic import AnyHttpUrl
 
 from mosaic_api.domain import (
+    AZURE_AI_HOST_SUFFIXES,
+    KEY_VAULT_GET_SECRET_DATA_ACTION,
+    MAX_DECLARED_DEPLOYMENTS,
     READER_ROLE_ID,
     READER_ROLE_NAME,
+    AccessEvaluation,
     AccessRemediation,
     AuditEvent,
+    AzureAiEndpointUrl,
     CognitiveServicesResourceId,
     CredentialReference,
+    DeclaredDeployment,
+    DeclaredDeploymentCreate,
+    EndpointAccess,
     EndpointAuthMode,
     Gateway,
     GatewayRuntimeAccess,
     GatewaySyncStatus,
+    KeyVaultSecretId,
     ModelEndpoint,
     ModelEndpointCapabilities,
     ModelEndpointCreate,
@@ -42,12 +51,20 @@ from mosaic_api.domain import (
     SubscriptionScanIssue,
     SubscriptionScanStatus,
     SuggestionSource,
+    azure_ai_account_subdomain,
     deterministic_id,
     new_id,
     utc_now,
+    validate_declarations,
 )
 from mosaic_api.environments import EnvironmentCatalog, azure_environment_tag, suggest_environment
-from mosaic_api.errors import ConflictError, DomainError, NotFoundError, ValidationError
+from mosaic_api.errors import (
+    ConflictError,
+    DomainError,
+    NotFoundError,
+    UpstreamAuthorizationError,
+    ValidationError,
+)
 from mosaic_api.integrations.aoai import (
     CognitiveServicesClient,
     ModelInventoryCollector,
@@ -56,6 +73,13 @@ from mosaic_api.integrations.aoai import (
     run_endpoint_preflight,
     verify_gateway_runtime_access,
 )
+from mosaic_api.integrations.aoai.backend_key_access import (
+    KeyVaultLocator,
+    VaultFacts,
+    secret_reader_remediation,
+    verify_gateway_key_access,
+)
+from mosaic_api.integrations.aoai.key_check import KeyCheckOutcome, KeyCheckResult
 from mosaic_api.integrations.apim import classify_url
 from mosaic_api.integrations.rbac import permits
 from mosaic_api.observed import (
@@ -83,6 +107,10 @@ logger = structlog.get_logger()
 
 EndpointClientFactory = Callable[[CognitiveServicesResourceId], CognitiveServicesClient]
 IdentityResolver = Callable[[], Awaitable[str | None]]
+# Reads a Key Vault secret's value, for one request, with MOSAIC's identity.
+SecretResolver = Callable[[str], Awaitable[str]]
+# Checks an Azure AI resource accepts a key, with an unbilled read: (origin, key) -> result.
+KeyProbe = Callable[[str, str], Awaitable[KeyCheckResult]]
 
 STALE_RUN_MESSAGE = "The API restarted while this sync was running; its result is unknown."
 
@@ -173,6 +201,33 @@ def _registered_resource(endpoint: ModelEndpoint) -> CognitiveServicesResourceId
         return None
 
 
+def _account_subdomains(endpoint: ModelEndpoint) -> set[str]:
+    """The subdomains an endpoint's Azure AI resource answers on, as far as its record says.
+
+    One resource answers on ``<subdomain>.openai.azure.com``, ``.cognitiveservices.azure.com``
+    and ``.services.ai.azure.com``, so registrations are compared by subdomain, not by URL.
+    """
+
+    names = {azure_ai_account_subdomain(str(endpoint.endpoint))}
+    if endpoint.provider != ModelProvider.OPENAI_COMPATIBLE and endpoint.account_name:
+        names.add(endpoint.account_name.casefold())
+    return {name for name in names if name}
+
+
+def _subdomain_key(subdomain: str) -> str:
+    """How a resource registered by URL is keyed beside resources registered by ID."""
+
+    return f"subdomain:{subdomain}"
+
+
+KEYED_ENDPOINT_NOTES: tuple[str, ...] = (
+    "MOSAIC reaches this resource with an API key from Key Vault rather than its managed "
+    "identity. It stores only the secret's identifier, reads the key only to check it, and never "
+    "keeps it. API Management reads the key from Key Vault itself.",
+    "An API key can't list a resource's deployments, so the ones to publish are declared.",
+)
+
+
 def _overlap_message(
     requested: CognitiveServicesResourceId, existing: CognitiveServicesResourceId, name: str
 ) -> str:
@@ -217,6 +272,9 @@ class ModelEndpointService:
         identity_resolver: IdentityResolver | None = None,
         bootstrap_subscription_id: str | None = None,
         environment_repository: EnvironmentRepository | None = None,
+        secret_resolver: SecretResolver | None = None,
+        key_probe: KeyProbe | None = None,
+        vault_locator: KeyVaultLocator | None = None,
     ) -> None:
         self._repository = repository
         self._gateways = gateway_repository
@@ -228,6 +286,11 @@ class ModelEndpointService:
         self._bootstrap_subscription_id = bootstrap_subscription_id
         # None only in tests that don't exercise environments; the built-in seeds apply then.
         self._environments = environment_repository
+        # None only where key-authenticated endpoints aren't exercised; their checks then say
+        # MOSAIC couldn't evaluate them rather than guessing.
+        self._secret_resolver = secret_resolver
+        self._key_probe = key_probe
+        self._vault_locator = vault_locator
         self._active: set[str] = set()
         self._tasks: set[asyncio.Task[None]] = set()
 
@@ -276,6 +339,8 @@ class ModelEndpointService:
     async def register(self, actor: Actor, request: ModelEndpointCreate) -> ModelEndpoint:
         if request.azure_resource_id:
             return await self._register_azure(actor, request)
+        if request.provider != ModelProvider.OPENAI_COMPATIBLE:
+            return await self._register_keyed(actor, request)
         return await self._register_compatible(actor, request)
 
     async def _register_azure(
@@ -316,6 +381,14 @@ class ModelEndpointService:
             auth_mode=EndpointAuthMode.MANAGED_IDENTITY,
         )
         endpoint = await self._apply_preflight(endpoint)
+        keyed = await self._keyed_registration_of(actor.tenant_id, endpoint)
+        if keyed is not None:
+            raise ConflictError(
+                f"MOSAIC already reaches this resource with an API key, through {keyed.name}. "
+                "If MOSAIC can now read the resource with its managed identity, unpublish and "
+                "remove that registration first, then register the resource by its ID.",
+                details={"id": keyed.id, "name": keyed.name},
+            )
         if request.environment is not None:
             async with scope_lease(self._gateways, actor.tenant_id, ENVIRONMENTS_SCOPE):
                 catalog = await load_environment_catalog(self._environments, actor.tenant_id)
@@ -346,6 +419,119 @@ class ModelEndpointService:
             if registered is not None and registered.account_scope.casefold() == account:
                 return registered, endpoint
         return None
+
+    async def _keyed_registration_of(
+        self, tenant_id: str, endpoint: ModelEndpoint
+    ) -> ModelEndpoint | None:
+        """The API-key registration of the resource a resource-ID registration names, if any.
+
+        A key registration knows its resource only by hostname, so the two are matched on the
+        account's subdomain: the one in the endpoint ARM reported, and the account name, which is
+        what that subdomain is unless someone chose another.
+        """
+
+        wanted = {
+            name
+            for name in (
+                azure_ai_account_subdomain(str(endpoint.endpoint)),
+                (endpoint.account_name or "").casefold(),
+            )
+            if name
+        }
+        for existing in await self._repository.list_endpoints(tenant_id):
+            if existing.uses_backend_key() and _account_subdomains(existing) & wanted:
+                return existing
+        return None
+
+    async def _refuse_registered_account(self, tenant_id: str, subdomain: str) -> None:
+        """Refuse a key registration of a resource another registration already reaches."""
+
+        for existing in await self._repository.list_endpoints(tenant_id):
+            if subdomain not in _account_subdomains(existing):
+                continue
+            if existing.uses_backend_key():
+                message = (
+                    f"This resource is already registered with an API key, as {existing.name}."
+                )
+            elif existing.provider == ModelProvider.OPENAI_COMPATIBLE:
+                message = (
+                    f"This resource's host is already registered as the OpenAI-compatible endpoint "
+                    f"{existing.name}. Remove that registration first."
+                )
+            else:
+                message = (
+                    f"MOSAIC already reaches this resource with its managed identity, through "
+                    f"{existing.name}, so it doesn't need an API key. Publish its deployments from "
+                    "there."
+                )
+            raise ConflictError(message, details={"id": existing.id, "name": existing.name})
+
+    async def _register_keyed(
+        self, actor: Actor, request: ModelEndpointCreate
+    ) -> ModelEndpoint:
+        """Register an Azure resource MOSAIC reaches by URL and an API key held in Key Vault.
+
+        Only the secret's versionless identifier is stored, so a rotated key is picked up by MOSAIC
+        and by API Management alike. The key is read once, to check it, and never kept.
+        """
+
+        assert request.endpoint is not None
+        assert request.credential_secret_uri is not None
+        assert request.provider is not None
+        url = AzureAiEndpointUrl.parse(str(request.endpoint))
+        secret = KeyVaultSecretId.parse(str(request.credential_secret_uri))
+        await self._refuse_registered_account(actor.tenant_id, url.subdomain)
+        credential = CredentialReference(
+            id=deterministic_id("credential", actor.tenant_id, url.origin),
+            tenant_id=actor.tenant_id,
+            name=f"{url.host} API key",
+            secret_uri=AnyHttpUrl(secret.versionless),
+        )
+        try:
+            declarations = validate_declarations(list(request.deployments or []), request.provider)
+        except ValueError as error:
+            raise ValidationError(str(error)) from None
+        endpoint = ModelEndpoint(
+            id=deterministic_id("endpoint", actor.tenant_id, "apikey", url.subdomain),
+            tenant_id=actor.tenant_id,
+            name=(request.name or url.project_name or url.subdomain).strip(),
+            provider=request.provider,
+            endpoint=url.origin,
+            account_name=url.subdomain,
+            project_name=url.project_name,
+            environment_label=request.environment_label,
+            auth_mode=EndpointAuthMode.API_KEY,
+            credential_reference_id=credential.id,
+            declared_deployments=[
+                DeclaredDeployment(
+                    **declaration.model_dump(by_alias=False), declared_by=actor.object_id
+                )
+                for declaration in declarations
+            ],
+            status=ModelEndpointStatus.PENDING,
+            capabilities=ModelEndpointCapabilities(notes=list(KEYED_ENDPOINT_NOTES)),
+        )
+        endpoint = await self._apply_key_preflight(endpoint, secret)
+        if request.environment is not None:
+            async with scope_lease(self._gateways, actor.tenant_id, ENVIRONMENTS_SCOPE):
+                catalog = await load_environment_catalog(self._environments, actor.tenant_id)
+                _validate_environment_key(
+                    {environment.key for environment in catalog.environments},
+                    request.environment,
+                )
+                endpoint = endpoint.model_copy(update={"environment": request.environment})
+                return await self._save_keyed(actor, endpoint, credential)
+        return await self._save_keyed(actor, endpoint, credential)
+
+    async def _save_keyed(
+        self, actor: Actor, endpoint: ModelEndpoint, credential: CredentialReference
+    ) -> ModelEndpoint:
+        await self._repository.save_credential(
+            credential, self._audit(actor, "credentialReference.recorded", credential.id)
+        )
+        return await self._repository.create_endpoint(
+            endpoint, self._audit(actor, "modelEndpoint.registered", endpoint.id)
+        )
 
     async def _register_compatible(
         self, actor: Actor, request: ModelEndpointCreate
@@ -418,6 +604,11 @@ class ModelEndpointService:
                     "This endpoint authenticates with managed identity, so it has no API key.",
                     details={"authMode": str(endpoint.auth_mode)},
                 )
+            if endpoint.uses_backend_key():
+                try:
+                    secret_uri = AnyHttpUrl(KeyVaultSecretId.parse(str(secret_uri)).versionless)
+                except ValueError as error:
+                    raise ValidationError(str(error)) from None
             credential_id = endpoint.credential_reference_id or deterministic_id(
                 "credential", actor.tenant_id, str(endpoint.endpoint).rstrip("/")
             )
@@ -440,9 +631,16 @@ class ModelEndpointService:
                 "updated_at": utc_now(),
             }
         )
-        return await self._repository.save_endpoint(
+        saved = await self._repository.save_endpoint(
             updated, self._audit(actor, "modelEndpoint.updated", updated.id)
         )
+        if secret_uri is not None and saved.uses_backend_key():
+            # A new secret makes every earlier check stale, MOSAIC's and the gateways' alike.
+            recorded = await self._repository.record_endpoint_state(
+                await self._apply_preflight(saved)
+            )
+            return recorded or saved
+        return saved
 
     async def delete(self, actor: Actor, endpoint_id: str) -> None:
         """Forget an endpoint, refusing while a publication from it may own anything in APIM.
@@ -537,9 +735,172 @@ class ModelEndpointService:
             raise NotFoundError("Model endpoint was not found", details={"id": endpoint_id})
         return recorded
 
+    @staticmethod
+    def _require_declarable(endpoint: ModelEndpoint) -> None:
+        if not endpoint.uses_backend_key():
+            raise ConflictError(
+                "MOSAIC reads this endpoint's deployments from Azure, so none can be declared.",
+                details={"id": endpoint.id, "authMode": str(endpoint.auth_mode)},
+            )
+
+    async def declare_deployment(
+        self, actor: Actor, endpoint_id: str, request: DeclaredDeploymentCreate
+    ) -> ModelEndpoint:
+        """Record a deployment on a key-authenticated endpoint, as its administrator describes it.
+
+        Declarations are immutable: changing a model's name or API means removing it and declaring
+        it again, which unpublishing guards, so nothing published changes shape underneath.
+        """
+
+        async with scope_lease(
+            self._gateways, actor.tenant_id, endpoint_mutation_scope(endpoint_id)
+        ):
+            endpoint = await self.get_endpoint(actor, endpoint_id)
+            self._require_declarable(endpoint)
+            if any(
+                item.deployment_name.casefold() == request.deployment_name.casefold()
+                for item in endpoint.declared_deployments
+            ):
+                raise ConflictError(
+                    f"Deployment {request.deployment_name} is already declared on {endpoint.name}.",
+                    details={"id": endpoint.id, "deploymentName": request.deployment_name},
+                )
+            if len(endpoint.declared_deployments) >= MAX_DECLARED_DEPLOYMENTS:
+                raise ValidationError(
+                    f"Declare at most {MAX_DECLARED_DEPLOYMENTS} deployments per endpoint.",
+                    details={"id": endpoint.id},
+                )
+            try:
+                validate_declarations([request], endpoint.provider)
+            except ValueError as error:
+                raise ValidationError(str(error)) from None
+            declared = DeclaredDeployment(
+                **request.model_dump(by_alias=False), declared_by=actor.object_id
+            )
+            updated = endpoint.model_copy(
+                update={
+                    "declared_deployments": [*endpoint.declared_deployments, declared],
+                    "updated_at": utc_now(),
+                }
+            )
+            return await self._repository.save_endpoint(
+                updated,
+                AuditEvent(
+                    id=new_id("audit"),
+                    tenant_id=actor.tenant_id,
+                    action="modelEndpoint.deploymentDeclared",
+                    resource_type="modelEndpoint",
+                    resource_id=endpoint.id,
+                    actor_object_id=actor.object_id,
+                    details={"deploymentName": declared.deployment_name},
+                ),
+            )
+
+    async def remove_declared_deployment(
+        self, actor: Actor, endpoint_id: str, deployment_name: str
+    ) -> ModelEndpoint:
+        """Forget a declared deployment, exactly as removing an endpoint forgets one.
+
+        A publication of it that may own API Management resources blocks the removal, and one that
+        owns nothing is removed with it, under the same locks.
+        """
+
+        async with AsyncExitStack() as stack:
+            await stack.enter_async_context(
+                scope_lease(self._gateways, actor.tenant_id, endpoint_mutation_scope(endpoint_id))
+            )
+            endpoint = await self.get_endpoint(actor, endpoint_id)
+            self._require_declarable(endpoint)
+            if endpoint.declared(deployment_name) is None:
+                raise NotFoundError(
+                    f"Deployment {deployment_name} isn't declared on {endpoint.name}.",
+                    details={"id": endpoint.id, "deploymentName": deployment_name},
+                )
+            publications = [
+                publication
+                for publication in await self._gateways.list_publications(actor.tenant_id)
+                if publication.model_endpoint_id == endpoint.id
+                and publication.deployment_name == deployment_name
+            ]
+            forgettable: list[Publication] = []
+            blocking: list[Publication] = []
+            for publication in publications:
+                try:
+                    await stack.enter_async_context(
+                        publication_lock(self._gateways, actor.tenant_id, publication.id)
+                    )
+                except ConflictError:
+                    blocking.append(publication)
+                    continue
+                current = await self._gateways.get_publication(actor.tenant_id, publication.id)
+                if current is None:
+                    continue
+                if current.may_own_gateway_state():
+                    blocking.append(current)
+                else:
+                    forgettable.append(current)
+            if blocking:
+                raise ConflictError(
+                    f"Unpublish {deployment_name} before removing it. Its API would keep serving "
+                    "traffic in API Management with nothing in MOSAIC to change or remove it.",
+                    details={
+                        "id": endpoint.id,
+                        "deploymentName": deployment_name,
+                        "publications": [
+                            {
+                                "id": publication.id,
+                                "displayName": publication.display_name,
+                                "status": str(publication.status),
+                                "gatewayId": publication.gateway_id,
+                            }
+                            for publication in blocking
+                        ],
+                    },
+                )
+            for publication in forgettable:
+                await self._gateways.delete_publication(
+                    publication,
+                    AuditEvent(
+                        id=new_id("audit"),
+                        tenant_id=actor.tenant_id,
+                        action="publication.removed",
+                        resource_type="publication",
+                        resource_id=publication.id,
+                        actor_object_id=actor.object_id,
+                        details={
+                            "reason": "modelEndpoint.deploymentRemoved",
+                            "modelEndpointId": endpoint.id,
+                        },
+                    ),
+                )
+            updated = endpoint.model_copy(
+                update={
+                    "declared_deployments": [
+                        item
+                        for item in endpoint.declared_deployments
+                        if item.deployment_name != deployment_name
+                    ],
+                    "updated_at": utc_now(),
+                }
+            )
+            return await self._repository.save_endpoint(
+                updated,
+                AuditEvent(
+                    id=new_id("audit"),
+                    tenant_id=actor.tenant_id,
+                    action="modelEndpoint.deploymentRemoved",
+                    resource_type="modelEndpoint",
+                    resource_id=endpoint.id,
+                    actor_object_id=actor.object_id,
+                    details={"deploymentName": deployment_name},
+                ),
+            )
+
     async def _apply_preflight(self, endpoint: ModelEndpoint) -> ModelEndpoint:
         """Verify MOSAIC's control-plane access, then report each gateway's runtime access."""
 
+        if endpoint.uses_backend_key():
+            return await self._apply_key_preflight(endpoint)
         if endpoint.auth_mode == EndpointAuthMode.API_KEY or not endpoint.azure_resource_id:
             # A key-based endpoint has no ARM surface to preflight. Its access is proven or
             # disproven by discovery itself, so it is left pending rather than claimed connected.
@@ -572,6 +933,243 @@ class ModelEndpointService:
             # bare string in a field typed as a URL.
             update["endpoint"] = AnyHttpUrl(result.endpoint_url)
         return endpoint.model_copy(update=update)
+
+    async def _key_secret(
+        self, endpoint: ModelEndpoint, secret: KeyVaultSecretId | None = None
+    ) -> KeyVaultSecretId | None:
+        """The Key Vault secret a key-authenticated endpoint's key is in, or None if unknown."""
+
+        if secret is not None:
+            return secret
+        if not endpoint.credential_reference_id:
+            return None
+        credential = await self._repository.get_credential(
+            endpoint.tenant_id, endpoint.credential_reference_id
+        )
+        if credential is None:
+            return None
+        try:
+            return KeyVaultSecretId.parse(str(credential.secret_uri))
+        except ValueError:
+            return None
+
+    async def _apply_key_preflight(
+        self, endpoint: ModelEndpoint, secret: KeyVaultSecretId | None = None
+    ) -> ModelEndpoint:
+        """Check a key-authenticated endpoint the only ways it can be checked (ADR 0018).
+
+        MOSAIC reads the key from Key Vault with its own identity and asks the resource, in one
+        unbilled read, whether it accepts it; then it reports whether each gateway's identity can
+        read the key too. The key lives in a local for the length of that one call. Every failure
+        is recorded rather than raised, so a registration survives a vault that was briefly
+        unreachable.
+        """
+
+        secret = await self._key_secret(endpoint, secret)
+        checked_at = utc_now()
+        principal_id = await self._resolve_principal_id()
+        vault_id = (
+            await self._vault_locator.locate(secret.vault_name)
+            if secret is not None and self._vault_locator is not None
+            else None
+        )
+        access, status = await self._key_access(endpoint, secret, principal_id, vault_id)
+        runtime = await self._key_runtime_access(endpoint.tenant_id, secret, vault_id)
+        return endpoint.model_copy(
+            update={
+                "access": access.model_copy(update={"checked_at": checked_at}),
+                "status": status,
+                "runtime_access": runtime,
+                "capabilities": endpoint.capabilities.model_copy(
+                    update={"notes": list(KEYED_ENDPOINT_NOTES)}
+                ),
+                "updated_at": utc_now(),
+            }
+        )
+
+    async def _key_access(
+        self,
+        endpoint: ModelEndpoint,
+        secret: KeyVaultSecretId | None,
+        principal_id: str | None,
+        vault_id: str | None,
+    ) -> tuple[EndpointAccess, ModelEndpointStatus]:
+        """Whether MOSAIC can read the key, and whether the resource accepts it."""
+
+        if secret is None:
+            return (
+                EndpointAccess(
+                    can_read=False,
+                    evaluation=AccessEvaluation.NOT_EVALUATED,
+                    message=(
+                        "MOSAIC doesn't know which Key Vault secret holds this endpoint's API "
+                        "key. Set its Key Vault secret URI."
+                    ),
+                ),
+                ModelEndpointStatus.DEGRADED,
+            )
+        remediation = secret_reader_remediation(
+            secret.vault_name, vault_id, principal_id=principal_id, mosaic=True
+        )
+        if self._secret_resolver is None or self._key_probe is None:
+            return (
+                EndpointAccess(
+                    can_read=False,
+                    evaluation=AccessEvaluation.NOT_EVALUATED,
+                    message="This MOSAIC deployment can't read Key Vault secrets.",
+                ),
+                ModelEndpointStatus.PENDING,
+            )
+        try:
+            key = await self._secret_resolver(secret.versionless)
+        except UpstreamAuthorizationError:
+            return (
+                EndpointAccess(
+                    can_read=False,
+                    evaluation=AccessEvaluation.PROBE,
+                    missing_actions=[KEY_VAULT_GET_SECRET_DATA_ACTION],
+                    remediation=remediation,
+                    message=(
+                        f"MOSAIC isn't allowed to read the API key from Key Vault "
+                        f"{secret.vault_name}. Grant its identity Key Vault Secrets User on "
+                        "the vault."
+                    ),
+                ),
+                ModelEndpointStatus.UNAUTHORIZED,
+            )
+        except ValidationError:
+            return (
+                EndpointAccess(
+                    can_read=False,
+                    evaluation=AccessEvaluation.PROBE,
+                    message=(
+                        f"Key Vault {secret.vault_name} has no such secret, or the secret has no "
+                        "value. Store the key there, or set the endpoint's secret URI."
+                    ),
+                ),
+                ModelEndpointStatus.DEGRADED,
+            )
+        except DomainError:
+            return (
+                EndpointAccess(
+                    can_read=False,
+                    evaluation=AccessEvaluation.NOT_EVALUATED,
+                    message=(
+                        f"MOSAIC couldn't reach Key Vault {secret.vault_name} to read the API "
+                        "key. Check again shortly."
+                    ),
+                ),
+                ModelEndpointStatus.UNREACHABLE,
+            )
+        try:
+            if key != key.strip():
+                # A key stored from a file often keeps the file's final line break. No Azure key
+                # has one, and the gateway would send it as it is, so it's caught here.
+                return (
+                    EndpointAccess(
+                        can_read=False,
+                        evaluation=AccessEvaluation.PROBE,
+                        message=(
+                            f"The API key in Key Vault {secret.vault_name} starts or ends with a "
+                            "space or a line break, which no Azure key has. Store the key alone, "
+                            "and if you store it from a file, without a line break at its end."
+                        ),
+                    ),
+                    ModelEndpointStatus.DEGRADED,
+                )
+            result = await self._key_probe(str(endpoint.endpoint).rstrip("/"), key)
+        finally:
+            del key
+        return self._key_verdict(result)
+
+    @staticmethod
+    def _key_verdict(result: KeyCheckResult) -> tuple[EndpointAccess, ModelEndpointStatus]:
+        if result.outcome == KeyCheckOutcome.ACCEPTED:
+            return (
+                EndpointAccess(
+                    can_read=True,
+                    evaluation=AccessEvaluation.PROBE,
+                    message=(
+                        "MOSAIC read the API key from Key Vault and checked it with a request "
+                        "that runs no model."
+                    ),
+                ),
+                ModelEndpointStatus.CONNECTED,
+            )
+        if result.outcome == KeyCheckOutcome.REFUSED:
+            return (
+                EndpointAccess(
+                    can_read=False,
+                    evaluation=AccessEvaluation.PROBE,
+                    message=(
+                        f"The endpoint refused the API key in Key Vault (HTTP "
+                        f"{result.status_code}). Store the resource's current key in the "
+                        "secret, and check the resource still allows key authentication."
+                    ),
+                ),
+                ModelEndpointStatus.UNAUTHORIZED,
+            )
+        if result.outcome == KeyCheckOutcome.UNREACHABLE:
+            return (
+                EndpointAccess(
+                    can_read=False,
+                    evaluation=AccessEvaluation.NOT_EVALUATED,
+                    message=(
+                        "MOSAIC read the API key from Key Vault but couldn't reach the endpoint "
+                        "to check it. This isn't a denial. Check again shortly."
+                    ),
+                ),
+                ModelEndpointStatus.UNREACHABLE,
+            )
+        detail = f" (HTTP {result.status_code})" if result.status_code else ""
+        return (
+            EndpointAccess(
+                can_read=False,
+                evaluation=AccessEvaluation.NOT_EVALUATED,
+                message=(
+                    "MOSAIC read the API key from Key Vault, but the endpoint's answer"
+                    f"{detail} didn't say whether it accepts it. This isn't a denial."
+                ),
+            ),
+            ModelEndpointStatus.DEGRADED,
+        )
+
+    async def _key_runtime_access(
+        self, tenant_id: str, secret: KeyVaultSecretId | None, vault_id: str | None
+    ) -> list[GatewayRuntimeAccess]:
+        """Report, for every registered gateway, whether its identity can read the key."""
+
+        if secret is None:
+            return []
+        gateways: list[Gateway] = await self._gateways.list_gateways(tenant_id)
+        client = (
+            self._vault_locator.client(vault_id)
+            if vault_id is not None and self._vault_locator is not None
+            else None
+        )
+        vault = await client.get_vault() if client is not None else None
+        properties = vault.get("properties") if isinstance(vault, dict) else None
+        facts = VaultFacts(
+            vault_name=secret.vault_name,
+            resource_id=vault_id,
+            properties=properties if isinstance(properties, dict) else None,
+        )
+        check = RuntimeAccessCheck(client) if client is not None else None
+        results: list[GatewayRuntimeAccess] = []
+        for gateway in gateways:
+            try:
+                results.append(
+                    await verify_gateway_key_access(
+                        gateway,
+                        facts,
+                        client=client,
+                        check=check,
+                        secret_name=secret.secret_name,
+                    )
+                )
+            except Exception:
+                logger.warning("endpoint_key_access_failed", gateway_id=gateway.id)
+        return results
 
     async def _runtime_access(
         self,
@@ -610,6 +1208,13 @@ class ModelEndpointService:
 
     async def start_sync(self, actor: Actor, endpoint_id: str) -> ModelEndpointSyncRun:
         endpoint = await self.get_endpoint(actor, endpoint_id)
+        if endpoint.uses_backend_key():
+            raise ConflictError(
+                "MOSAIC can't list a resource's deployments with an API key: Foundry lists them "
+                "only to a Microsoft Entra token. Declare the deployments to publish instead, and "
+                "check access again to re-check the key.",
+                details={"authMode": str(endpoint.auth_mode)},
+            )
         if (
             endpoint.auth_mode == EndpointAuthMode.MANAGED_IDENTITY
             and not endpoint.access.can_read
@@ -822,6 +1427,18 @@ class ModelEndpointService:
         """Re-evaluate gateway runtime access on demand, without a full preflight."""
 
         endpoint = await self.get_endpoint(actor, endpoint_id)
+        if endpoint.uses_backend_key():
+            secret = await self._key_secret(endpoint)
+            vault_id = (
+                await self._vault_locator.locate(secret.vault_name)
+                if secret is not None and self._vault_locator is not None
+                else None
+            )
+            results = await self._key_runtime_access(actor.tenant_id, secret, vault_id)
+            await self._repository.record_endpoint_state(
+                endpoint.model_copy(update={"runtime_access": results, "updated_at": utc_now()})
+            )
+            return results
         if not endpoint.azure_resource_id:
             return []
         resource = CognitiveServicesResourceId.parse(endpoint.azure_resource_id)
@@ -857,6 +1474,15 @@ class ModelEndpointService:
             (urlparse(str(endpoint.endpoint)).hostname or "").casefold(): endpoint
             for endpoint in registered
         }
+        # A resource registered with a key is known only by the subdomain all its hosts share, so
+        # it is registered whichever host a gateway or a scan names it by.
+        for endpoint in registered:
+            if not endpoint.uses_backend_key():
+                continue
+            for name in _account_subdomains(endpoint):
+                by_account.setdefault(_subdomain_key(name), endpoint)
+                for suffix in AZURE_AI_HOST_SUFFIXES:
+                    by_host.setdefault(f"{name}{suffix}", endpoint)
 
         suggestions: list[ModelEndpointSuggestion] = []
         seen: set[str] = set()
@@ -1112,7 +1738,9 @@ class ModelEndpointService:
             candidate = properties.get("endpoint")
             endpoint = candidate if isinstance(candidate, str) and candidate else None
         location = account.get("location")
-        existing = by_account.get(resource.account_scope.casefold())
+        existing = by_account.get(resource.account_scope.casefold()) or by_account.get(
+            _subdomain_key(azure_ai_account_subdomain(endpoint) or resource.account_name.casefold())
+        )
         tags = account.get("tags")
         tag = azure_environment_tag(tags if isinstance(tags, dict) else None)
         suggested = suggest_environment(catalog, tag)
