@@ -34,6 +34,12 @@ from apim_double import (  # noqa: E402
     FakeApim,
     FakeCredential,
 )
+from key_vault_double import (  # noqa: E402
+    KEY_VAULT_SECRETS_USER_ROLE_ID,
+    VAULT_ID,
+    FakeKeyVaultArm,
+    vault_role_assignment,
+)
 from mcp_double import FakeMcpServer  # noqa: E402
 
 __all__ = [
@@ -41,12 +47,14 @@ __all__ = [
     "DEV_GATEWAY_RESOURCE_ID",
     "FOUNDRY_RESOURCE_ID",
     "GATEWAY_RESOURCE_ID",
+    "KEY_VAULT_ID",
     "PARTNER_GATEWAY_RESOURCE_ID",
     "DemoApim",
     "DemoCognitiveAccount",
     "DemoMcpServer",
     "FakeCredential",
     "build_cognitive_accounts",
+    "build_key_vault",
     "build_mcp_servers",
     "cognitive_handler",
     "gateway_handler",
@@ -952,6 +960,19 @@ def cognitive_handler(accounts: list[DemoCognitiveAccount]) -> Any:
         return fallback.handler(request)
 
     return handle
+
+
+# The vault the demo keeps its partner's Foundry key in. The Contoso gateways' identity holds Key
+# Vault Secrets User on it, so the console shows them able to read the key.
+KEY_VAULT_ID = VAULT_ID
+
+
+def build_key_vault() -> FakeKeyVaultArm:
+    vault = FakeKeyVaultArm()
+    vault.assignments.append(
+        vault_role_assignment(KEY_VAULT_SECRETS_USER_ROLE_ID, VAULT_ID, APIM_PRINCIPAL_ID)
+    )
+    return vault
 
 
 @dataclass

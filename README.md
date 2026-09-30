@@ -101,6 +101,21 @@ one under **Settings > Appearance**.
   </tr>
   <tr>
     <td width="50%" valign="top">
+      <img src="docs/images/screenshots/console-register-key-endpoint.png" alt="The Register model endpoint dialog on its API key tab, with an endpoint URL, a Key Vault secret URI, and two declared deployments">
+      <p><b>Register with an API key.</b> When MOSAIC can't reach a resource with its managed
+      identity, such as a Foundry project in another tenant, an administrator gives its URL and the
+      Key Vault secret that holds its key, and declares the deployments to publish with the API each
+      one takes.</p>
+    </td>
+    <td width="50%" valign="top">
+      <img src="docs/images/screenshots/console-key-endpoint.png" alt="A key-authenticated endpoint's access card and declared deployments">
+      <p><b>Endpoint reached with an API key.</b> MOSAIC shows that it read the key from Key Vault
+      and the endpoint accepted it, whether each gateway can read the key itself, and the
+      deployments declared for publishing.</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
       <img src="docs/images/screenshots/console-mcps.png" alt="Registered and published MCP servers with environment, status, authentication, and tools">
       <p><b>MCP servers.</b> Servers registered directly or imported from a gateway, with their
       environment, connection status, authentication method, and tools, and the servers MOSAIC

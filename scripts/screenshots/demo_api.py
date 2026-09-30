@@ -59,7 +59,9 @@ from mosaic_api.domain import (
 )
 from mosaic_api.environments import EnvironmentColor, EnvironmentCreate
 from mosaic_api.integrations.aoai import CognitiveServicesClient
+from mosaic_api.integrations.aoai.backend_key_access import KeyVaultLocator
 from mosaic_api.integrations.aoai.client import SubscriptionScanner
+from mosaic_api.integrations.aoai.key_check import KeyCheckOutcome, KeyCheckResult
 from mosaic_api.integrations.apim import ApimClient, ApimWriter, ArmClient
 from mosaic_api.integrations.apim.credentials import ApimCredentialClient
 from mosaic_api.integrations.graph.fake import FakeDirectoryLookup
@@ -84,10 +86,12 @@ from scripts.screenshots.demo_fakes import (
     DEV_GATEWAY_RESOURCE_ID,
     FOUNDRY_RESOURCE_ID,
     GATEWAY_RESOURCE_ID,
+    KEY_VAULT_ID,
     PARTNER_GATEWAY_RESOURCE_ID,
     DemoApim,
     FakeCredential,
     build_cognitive_accounts,
+    build_key_vault,
     build_mcp_servers,
     cognitive_handler,
     gateway_handler,
@@ -99,6 +103,10 @@ MOSAIC_PRINCIPAL_ID = "6e3f8d2a-9b4c-4d0e-a1f2-a3b4c5d6e7f8"
 MODEL_RUNTIME_CLIENT_ID = "7f4a9e3b-0c5d-4e1f-b2a3-b4c5d6e7f809"
 MODEL_CLIENT_ID = "8a5b0f4c-1d6e-4f2a-83b4-c5d6e7f8091a"
 SUBSCRIPTION_COUNTER = "@(context.Subscription.Id)"
+PARTNER_FOUNDRY_URL = (
+    "https://fabrikam-foundry.services.ai.azure.com/api/projects/partner-models"
+)
+PARTNER_FOUNDRY_SECRET_URI = "https://kv-contoso-ai.vault.azure.net/secrets/fabrikam-foundry-key"
 
 DEFAULT_API_PORT = 8000
 DEFAULT_CONSOLE_PORT = 5173
@@ -339,6 +347,15 @@ async def _demo_secret(_secret_uri: str) -> str:
     return "demo-mcp-token-not-a-real-secret"
 
 
+async def _demo_model_key(_secret_uri: str) -> str:
+    return "demo-foundry-key-not-a-real-key"
+
+
+async def _demo_key_check(_origin: str, _key: str) -> KeyCheckResult:
+    # The partner's Foundry resource accepts the key, as its real counterpart would.
+    return KeyCheckResult(KeyCheckOutcome.ACCEPTED, 200)
+
+
 async def _demo_token(_audience: str) -> str:
     return "demo-entra-token-not-a-real-token"
 
@@ -385,6 +402,7 @@ def install_demo_services(app: FastAPI, portal_origins: Iterable[str]) -> DemoSe
     dev_apim = DemoApim(DEV_GATEWAY_RESOURCE_ID, public_ip="203.0.113.25")
     gateway_arm, gateway_http = _arm(gateway_handler(apim, dev_apim))
     ai_arm, ai_http = _arm(cognitive_handler(build_cognitive_accounts()))
+    vault_arm, vault_http = _arm(build_key_vault().handler)
     mcp_http = httpx.AsyncClient(transport=httpx.MockTransport(mcp_handler(build_mcp_servers())))
     lookup = build_directory_lookup()
     directory = DirectoryService(
@@ -409,6 +427,9 @@ def install_demo_services(app: FastAPI, portal_origins: Iterable[str]) -> DemoSe
         scanner=SubscriptionScanner(ai_arm),
         principal_id=MOSAIC_PRINCIPAL_ID,
         environment_repository=state.environment_repository,
+        secret_resolver=_demo_model_key,
+        key_probe=_demo_key_check,
+        vault_locator=KeyVaultLocator(vault_arm, known_vault_ids=[KEY_VAULT_ID]),
     )
     publishing = PublishingService(
         state.gateway_repository,
@@ -470,7 +491,7 @@ def install_demo_services(app: FastAPI, portal_origins: Iterable[str]) -> DemoSe
         entitlements=state.entitlement_service,
         environments=state.environment_service,
         entitlement_repository=entitlement_repository,
-        clients=[gateway_http, ai_http, mcp_http],
+        clients=[gateway_http, ai_http, vault_http, mcp_http],
     )
 
 
@@ -517,6 +538,7 @@ class Estate:
     partner_gateway_id: str = ""
     aoai_endpoint_id: str = ""
     foundry_endpoint_id: str = ""
+    partner_foundry_endpoint_id: str = ""
     publications: dict[str, str] = field(default_factory=dict)
     model_apis: dict[str, str] = field(default_factory=dict)
     dev_model_apis: dict[str, str] = field(default_factory=dict)
@@ -726,6 +748,36 @@ async def seed_estate(services: DemoServices, tenant_id: str) -> Estate:
     estate.foundry_endpoint_id = foundry.id
     for endpoint in (aoai, foundry):
         _require_synced(await services.endpoints.sync_now(admin, endpoint.id), endpoint.name)
+
+    # A partner's Foundry resource in its own Microsoft Entra tenant, which MOSAIC's managed
+    # identity can't reach. It is registered by URL with the Key Vault secret that holds its key,
+    # and its deployments are declared, because a key can't list them (ADR 0018).
+    partner_foundry = await services.endpoints.register(
+        admin,
+        ModelEndpointCreate.model_validate(
+            {
+                "endpoint": PARTNER_FOUNDRY_URL,
+                "credential_secret_uri": PARTNER_FOUNDRY_SECRET_URI,
+                "name": "Fabrikam partner Foundry",
+                "environment": "production",
+                "deployments": [
+                    {
+                        "deployment_name": "claude-sonnet-4-5",
+                        "model_name": "claude-sonnet-4-5",
+                        "api_shape": "anthropicMessages",
+                    },
+                    {
+                        "deployment_name": "gpt-4-1-mini",
+                        "model_name": "gpt-4.1-mini",
+                        "api_shape": "azureOpenAi",
+                    },
+                ],
+            }
+        ),
+    )
+    if str(partner_foundry.status) != "connected":
+        raise SeedError("The partner Foundry endpoint's key check didn't pass")
+    estate.partner_foundry_endpoint_id = partner_foundry.id
 
     # Sales CRM keeps only a legacy free-text label, so Settings has one resource to classify.
     mcp_endpoints = [
