@@ -77,6 +77,7 @@ const actionLabels: Record<PublishAction, string> = {
 }
 
 const kindLabels: Record<PublishedResourceKind, string> = {
+  namedValue: 'Named value',
   policyFragment: 'Policy fragment',
   backend: 'Backend',
   api: 'API',
@@ -604,6 +605,7 @@ function PublishModelSession({ open, onClose, onPublished, initialReview }: Publ
                                   </Text>
                                   <Text size={200}>/{model.suggestedApiPath}</Text>
                                   {model.apiShape && <Badge appearance="outline">{shapeLabels[model.apiShape]}</Badge>}
+                                  {model.declared && <Badge appearance="outline">Declared</Badge>}
                                   {model.publicationStatus && <Badge appearance="tint">{model.publicationStatus}</Badge>}
                                   {(!publishableRow || environmentBlocked) && (
                                     <>

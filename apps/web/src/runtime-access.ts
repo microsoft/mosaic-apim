@@ -64,6 +64,10 @@ export function describeScope(scope: string): string {
     const account = after('accounts')
     if (account) return account
   }
+  if (lower.includes('vaults')) {
+    const vault = after('vaults')
+    if (vault) return `Key Vault ${vault}`
+  }
   if (lower[0] === 'subscriptions' && parts.length === 4 && lower[2] === 'resourcegroups') {
     return `resource group ${parts[3]}`
   }

@@ -7,6 +7,7 @@ import type {
   ApiErrorBody,
   CatalogVisibility,
   ConsoleAccess,
+  DeclaredDeploymentInput,
   DirectoryMemberPage,
   DirectoryObject,
   DirectorySearchKind,
@@ -276,6 +277,7 @@ export interface MosaicApi {
     environmentLabel?: string
     credentialSecretUri?: string
     environment?: string | null
+    deployments?: DeclaredDeploymentInput[]
   }): Promise<ModelEndpoint>
   getModelEndpoint(endpointId: string): Promise<ModelEndpoint>
   updateModelEndpoint(
@@ -291,6 +293,11 @@ export interface MosaicApi {
   syncModelEndpoint(endpointId: string): Promise<ModelEndpointSyncRun>
   listModelEndpointSyncRuns(endpointId: string): Promise<ModelEndpointSyncRun[]>
   listModelDeployments(endpointId: string): Promise<ObservedModelDeployment[]>
+  declareModelDeployment(
+    endpointId: string,
+    payload: DeclaredDeploymentInput,
+  ): Promise<ModelEndpoint>
+  removeDeclaredModelDeployment(endpointId: string, deploymentName: string): Promise<ModelEndpoint>
   listAvailableModels(endpointId: string): Promise<ObservedAvailableModel[]>
   getModelEndpointRuntimeAccess(endpointId: string): Promise<GatewayRuntimeAccess[]>
   listSuggestedModelEndpoints(): Promise<ModelEndpointSuggestionView>
@@ -674,6 +681,16 @@ export function useMosaicApi(): MosaicApi {
         request<ModelEndpointSyncRun[]>(`/api/v1/model-endpoints/${id}/sync-runs`),
       listModelDeployments: (id) =>
         request<ObservedModelDeployment[]>(`/api/v1/model-endpoints/${id}/deployments`),
+      declareModelDeployment: (id, payload) =>
+        request<ModelEndpoint>(`/api/v1/model-endpoints/${id}/declared-deployments`, {
+          method: 'POST',
+          body: payload,
+        }),
+      removeDeclaredModelDeployment: (id, deploymentName) =>
+        request<ModelEndpoint>(
+          `/api/v1/model-endpoints/${id}/declared-deployments/${encodeURIComponent(deploymentName)}`,
+          { method: 'DELETE' },
+        ),
       listAvailableModels: (id) =>
         request<ObservedAvailableModel[]>(`/api/v1/model-endpoints/${id}/available-models`),
       getModelEndpointRuntimeAccess: (id) =>

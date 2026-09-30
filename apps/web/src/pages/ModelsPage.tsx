@@ -37,6 +37,14 @@ import { ChangeEnvironmentDialog } from '../components/ChangeEnvironmentDialog'
 import { EnvironmentBadge } from '../components/EnvironmentBadge'
 import { EnvironmentPicker } from '../components/EnvironmentPicker'
 import { ImportFromGatewayDialog } from '../components/ImportFromGatewayDialog'
+import { DeclarationFields, DeclaredDeploymentsCard } from '../components/KeyEndpoint'
+import {
+  blankDeclaration,
+  keyedProvider,
+  toDeclarations,
+  usesBackendKey,
+  type DeclarationDraft,
+} from '../key-endpoint'
 import { PublishModelDialog } from '../components/PublishModelDialog'
 import { PageHeader } from '../components/PageHeader'
 import { RemovalDialog } from '../components/RemovalDialog'
@@ -104,6 +112,10 @@ const scanVisibilityTitles: Partial<Record<SubscriptionScanStatus, string>> = {
 }
 
 const REGISTRATION_REFUSED = "MOSAIC didn't register this endpoint"
+
+// Registering by resource ID is the default. The key path is the explicit alternative for a
+// resource MOSAIC's managed identity can't reach, such as one in another Microsoft Entra tenant.
+type RegistrationMode = 'azure' | 'key' | 'compatible'
 
 
 function PublicationStatusBadge({ publication }: { publication: Publication }) {
@@ -525,6 +537,7 @@ function ImportedModelApis({ onRemoved }: { onRemoved: (message: string) => void
 function AccessPanel({ endpoint }: { endpoint: ModelEndpoint }) {
   const api = useMosaicApi()
   const { access, runtimeAccess } = endpoint
+  const keyed = usesBackendKey(endpoint)
   const catalog = useEnvironmentCatalog()
   const gateways = useQuery({ queryKey: ['gateways'], queryFn: () => api.listGateways() })
   const gatewaysById = useMemo(() => {
@@ -532,31 +545,45 @@ function AccessPanel({ endpoint }: { endpoint: ModelEndpoint }) {
     for (const gateway of gateways.data ?? []) map.set(gateway.id, gateway)
     return map
   }, [gateways.data])
+  // A key check MOSAIC couldn't finish is not a denial, so it isn't shown as one.
+  const accessIntent = access.canRead
+    ? 'success'
+    : keyed && access.evaluation === 'notEvaluated'
+      ? 'warning'
+      : 'error'
 
   return (
     <Card className={styles.accessCard}>
       <Title3 as="h2">Access</Title3>
 
       <section className={styles.accessSection}>
-        <MessageBar intent={access.canRead ? 'success' : 'error'}>
+        <MessageBar intent={accessIntent}>
           <MessageBarBody>
             <MessageBarTitle>
-              {access.canRead
-                ? 'MOSAIC can read this endpoint'
-                : 'MOSAIC cannot read this endpoint'}
+              {keyed
+                ? access.canRead
+                  ? 'MOSAIC read the key and the endpoint accepted it'
+                  : "MOSAIC can't confirm the key"
+                : access.canRead
+                  ? 'MOSAIC can read this endpoint'
+                  : 'MOSAIC cannot read this endpoint'}
             </MessageBarTitle>
             {access.message}
           </MessageBarBody>
         </MessageBar>
         <Text size={200} className={styles.muted}>
-          This is what lets MOSAIC list the models deployed here. It grants no ability to call
-          them.
+          {keyed
+            ? 'Authentication: API key from Key Vault. MOSAIC reads the key only to check it, with a ' +
+              'request that runs no model, and never keeps it. API Management reads the key from ' +
+              'Key Vault itself.'
+            : 'This is what lets MOSAIC list the models deployed here. It grants no ability to call them.'}
         </Text>
         {access.remediation && (
           <>
             <Text block>
-              Grant the <strong>{access.remediation.roleName}</strong> role to MOSAIC at this
-              scope. Someone with permission to assign roles must run:
+              Grant the <strong>{access.remediation.roleName}</strong> role to MOSAIC
+              {keyed ? ' on the vault' : ' at this scope'}. Someone with permission to assign roles
+              must run:
             </Text>
             <CommandBlock command={access.remediation.command} />
             {access.remediation.customRoleDefinition && (
@@ -575,8 +602,12 @@ function AccessPanel({ endpoint }: { endpoint: ModelEndpoint }) {
       <section className={styles.accessSection}>
         <Text weight="semibold">Gateways calling this endpoint</Text>
         <Text size={200} className={styles.muted}>
-          At runtime the gateway authenticates as itself, not as MOSAIC, so it needs its own role
-          on this endpoint. MOSAIC reports this and never assigns it.
+          {keyed
+            ? "At runtime the gateway sends the endpoint's API key, which it reads from Key Vault " +
+              'with its own managed identity, so it needs a role on the vault that reads secrets. ' +
+              'MOSAIC reports this and never assigns it.'
+            : 'At runtime the gateway authenticates as itself, not as MOSAIC, so it needs its own ' +
+              'role on this endpoint. MOSAIC reports this and never assigns it.'}
         </Text>
         {runtimeAccess.length === 0 ? (
           <Text size={200}>No gateways are registered yet.</Text>
@@ -585,6 +616,7 @@ function AccessPanel({ endpoint }: { endpoint: ModelEndpoint }) {
             <RuntimeAccessRow
               key={entry.gatewayId}
               access={entry}
+              keyAccess={keyed}
               registeredScope={endpoint.azureResourceId}
               environmentCell={lookupCompatibility(catalog.data, gatewaysById.get(entry.gatewayId)?.environment, endpoint.environment)}
             />
@@ -662,26 +694,38 @@ function sameScope(left?: string | null, right?: string | null): boolean {
 
 function RuntimeAccessRow({
   access,
+  keyAccess = false,
   registeredScope,
   environmentCell,
 }: {
   access: GatewayRuntimeAccess
+  /** The row says whether the gateway can read a key from Key Vault, not call with its identity. */
+  keyAccess?: boolean
   registeredScope?: string | null
   environmentCell?: EnvironmentCompatibilityCell
 }) {
   const verdict = runtimeVerdict(access)
+  const verdictLabel = keyAccess
+    ? verdict === CAN_INVOKE
+      ? 'can read the key'
+      : verdict.intent === 'error'
+        ? "can't read the key"
+        : verdict.label
+    : verdict.label
   const environmentVerdict = environmentRuntimeVerdict(environmentCell)
   const grantedRole = access.grantedRoleName ?? access.grantedRoleDefinitionId
   // Findings explain why nothing satisfied the check, so they are noise once something has.
   const findings = grantedRole ? [] : (access.roleFindings ?? [])
   const requiredDataActions = access.requiredDataActions ?? []
+  // An access-policy vault is fixed with a policy, which is not a role assignment.
+  const accessPolicy = keyAccess && access.remediation?.roleDefinitionId === ''
 
   return (
     <div className={styles.runtimeRow}>
       <MessageBar intent={verdict.intent}>
         <MessageBarBody>
           <MessageBarTitle>
-            {access.gatewayName}: {verdict.label}
+            {access.gatewayName}: {verdictLabel}
           </MessageBarTitle>
           {access.message}
         </MessageBarBody>
@@ -743,15 +787,29 @@ function RuntimeAccessRow({
       {access.remediation && (
         <>
           <Text size={200}>
-            Recommended: grant <strong>{access.remediation.roleName}</strong> on{' '}
-            <ScopeName scope={access.remediation.scope} />. Any role that grants the data actions
-            the published API needs is also accepted. Someone with permission to assign roles
-            must run:
+            {accessPolicy ? (
+              <>
+                Recommended: add <strong>{access.remediation.roleName}</strong> for the gateway
+                on {access.remediation.scope}. Someone with permission to change the vault&apos;s
+                access policies must run:
+              </>
+            ) : (
+              <>
+                Recommended: grant <strong>{access.remediation.roleName}</strong> on{' '}
+                <ScopeName scope={access.remediation.scope} />.{' '}
+                {keyAccess
+                  ? 'Any role that can read secrets is also accepted.'
+                  : 'Any role that grants the data actions the published API needs is also accepted.'}{' '}
+                Someone with permission to assign roles must run:
+              </>
+            )}
           </Text>
           <CommandBlock command={access.remediation.command} />
-          {requiredDataActions.length > 0 && (
+          {requiredDataActions.length > 0 && !accessPolicy && (
             <details className={styles.dataActions}>
-              <summary>Data actions the published API needs</summary>
+              <summary>
+                {keyAccess ? 'Data actions reading the key needs' : 'Data actions the published API needs'}
+              </summary>
               <ul className={styles.findingList}>
                 {requiredDataActions.map((action) => (
                   <li key={action}>
@@ -778,10 +836,13 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
   // Where the last registration came from, so a refusal is shown next to the button that asked.
   const [registerOrigin, setRegisterOrigin] = useState<'dialog' | 'suggestion'>('dialog')
   const [removing, setRemoving] = useState<ModelEndpoint | null>(null)
-  const [mode, setMode] = useState<'azure' | 'compatible'>('azure')
+  const [mode, setMode] = useState<RegistrationMode>('azure')
   const [resourceId, setResourceId] = useState('')
   const [endpointUrl, setEndpointUrl] = useState('')
   const [secretUri, setSecretUri] = useState('')
+  const [declarations, setDeclarations] = useState<DeclarationDraft[]>(() => [
+    blankDeclaration(null),
+  ])
   const [name, setName] = useState('')
   const [environment, setEnvironment] = useState<string | null>(null)
   const [environmentTouched, setEnvironmentTouched] = useState(false)
@@ -808,7 +869,7 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
   const deployments = useQuery({
     queryKey: ['model-deployments', selected?.id],
     queryFn: () => api.listModelDeployments(selected!.id),
-    enabled: Boolean(selected),
+    enabled: Boolean(selected) && !(selected && usesBackendKey(selected)),
   })
 
   async function refresh() {
@@ -823,6 +884,7 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
       setResourceId('')
       setEndpointUrl('')
       setSecretUri('')
+      setDeclarations([blankDeclaration(null)])
       setName('')
       setEnvironment(null)
       setEnvironmentTouched(false)
@@ -838,6 +900,15 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
   })
 
   const sync = useMutation({ mutationFn: api.syncModelEndpoint, onSuccess: refresh })
+  // A refusal says why at the top of the dialog, and takes focus so a screen reader reads it.
+  const registerErrorRef = useRef<HTMLDivElement>(null)
+  const shownRegisterError = useRef<unknown>(null)
+  useEffect(() => {
+    const shown = shownRegisterError.current
+    shownRegisterError.current = register.error
+    if (!register.error || Object.is(register.error, shown) || registerOrigin !== 'dialog') return
+    registerErrorRef.current?.focus()
+  }, [register.error, registerOrigin])
   const recheck = useMutation({ mutationFn: api.preflightModelEndpoint, onSuccess: refresh })
   const remove = useMutation({
     mutationFn: (endpoint: ModelEndpoint) => api.deleteModelEndpoint(endpoint.id),
@@ -880,6 +951,7 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
 
   function submit(event: FormEvent) {
     event.preventDefault()
+    if (register.isPending) return
     setRegisterOrigin('dialog')
     setEnvironmentTouched(true)
     if (!environment) return
@@ -888,6 +960,16 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
         azureResourceId: resourceId.trim(),
         name: name.trim() || undefined,
         environment,
+      })
+      return
+    }
+    if (mode === 'key') {
+      register.mutate({
+        endpoint: endpointUrl.trim(),
+        credentialSecretUri: secretUri.trim(),
+        name: name.trim() || undefined,
+        environment,
+        deployments: toDeclarations(declarations, keyedProvider(endpointUrl)),
       })
       return
     }
@@ -961,6 +1043,7 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
     setResourceId('')
     setEndpointUrl('')
     setSecretUri('')
+    setDeclarations([blankDeclaration(null)])
     setName('')
     setEnvironment(null)
     setEnvironmentTouched(false)
@@ -996,6 +1079,7 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
             appearance="primary"
             icon={<AddRegular />}
             onClick={openDialog}
+            {...restoreFocus}
           >
             Register endpoint
           </Button>
@@ -1057,7 +1141,14 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
                           <span className={styles.secondaryCell}>{endpoint.endpoint}</span>
                         </div>
                       </TableCell>
-                      <TableCell>{providerLabels[endpoint.provider]}</TableCell>
+                      <TableCell>
+                        <div className={styles.cellStack}>
+                          <span>{providerLabels[endpoint.provider]}</span>
+                          {usesBackendKey(endpoint) && (
+                            <span className={styles.secondaryCell}>API key from Key Vault</span>
+                          )}
+                        </div>
+                      </TableCell>
                       <TableCell>
                         <div className={styles.cellStack}>
                           <EnvironmentBadge environment={endpoint.environment} catalog={catalog.data} />
@@ -1067,8 +1158,14 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
                       <TableCell>
                         <EndpointStatusBadge status={endpoint.status} />
                       </TableCell>
-                      <TableCell>{endpoint.inventory.deployments}</TableCell>
-                      <TableCell>{formatTimestamp(endpoint.lastSyncedAt)}</TableCell>
+                      <TableCell>
+                        {usesBackendKey(endpoint)
+                          ? `${endpoint.declaredDeployments?.length ?? 0} declared`
+                          : endpoint.inventory.deployments}
+                      </TableCell>
+                      <TableCell>
+                        {usesBackendKey(endpoint) ? '—' : formatTimestamp(endpoint.lastSyncedAt)}
+                      </TableCell>
                       <TableCell>
                         <div className={styles.actionRow}>
                           <Button
@@ -1078,13 +1175,15 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
                           >
                             Check access
                           </Button>
-                          <Button
-                            appearance="secondary"
-                            onClick={() => sync.mutate(endpoint.id)}
-                            disabled={sync.isPending || !endpoint.access.canRead}
-                          >
-                            Sync models
-                          </Button>
+                          {!usesBackendKey(endpoint) && (
+                            <Button
+                              appearance="secondary"
+                              onClick={() => sync.mutate(endpoint.id)}
+                              disabled={sync.isPending || !endpoint.access.canRead}
+                            >
+                              Sync models
+                            </Button>
+                          )}
                           <Button
                             appearance="subtle"
                             onClick={() => setChangingEndpoint(endpoint)}
@@ -1214,7 +1313,11 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
 
       {selected && <AccessPanel endpoint={selected} />}
 
-      {selected && (
+      {selected && usesBackendKey(selected) && (
+        <DeclaredDeploymentsCard endpoint={selected} className={styles.panel} />
+      )}
+
+      {selected && !usesBackendKey(selected) && (
         <Card className={styles.panel}>
           <Title3 as="h2">Models on {selected.name}</Title3>
           {selected.lastSyncError && (
@@ -1284,13 +1387,14 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
               <DialogContent className={styles.dialogForm}>
                 <TabList
                   selectedValue={mode}
-                  onTabSelect={(_, data) => setMode(data.value as 'azure' | 'compatible')}
+                  onTabSelect={(_, data) => setMode(data.value as RegistrationMode)}
                 >
                   <Tab value="azure">Azure AI</Tab>
+                  <Tab value="key">Azure AI with an API key</Tab>
                   <Tab value="compatible">OpenAI compatible</Tab>
                 </TabList>
 
-                {mode === 'azure' ? (
+                {mode === 'azure' && (
                   <Field
                     label="Azure resource ID"
                     required
@@ -1302,7 +1406,48 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
                       placeholder="/subscriptions/.../providers/Microsoft.CognitiveServices/accounts/my-account"
                     />
                   </Field>
-                ) : (
+                )}
+                {mode === 'key' && (
+                  <>
+                    <MessageBar intent="info">
+                      <MessageBarBody>
+                        <MessageBarTitle>Only when MOSAIC can&apos;t reach the resource</MessageBarTitle>
+                        Register by resource ID whenever you can: MOSAIC then reads the deployments
+                        with its managed identity, and no key is involved. Use an API key when that
+                        isn&apos;t possible, for example when the resource is in another Microsoft
+                        Entra tenant.
+                      </MessageBarBody>
+                    </MessageBar>
+                    <Field
+                      label="Endpoint URL"
+                      required
+                      hint="The resource endpoint, such as https://<resource>.services.ai.azure.com, or a Foundry project endpoint ending in /api/projects/<project>. MOSAIC publishes from the resource."
+                    >
+                      <Input
+                        value={endpointUrl}
+                        onChange={(_, data) => setEndpointUrl(data.value)}
+                        placeholder="https://my-resource.services.ai.azure.com/api/projects/my-project"
+                      />
+                    </Field>
+                    <Field
+                      label="Key Vault secret URI"
+                      required
+                      hint="Store the resource's API key as a secret in Key Vault yourself, then paste the secret's URI. Never paste the key: MOSAIC keeps only this URI, and API Management reads the key from Key Vault. MOSAIC and each gateway need Key Vault Secrets User on the vault."
+                    >
+                      <Input
+                        value={secretUri}
+                        onChange={(_, data) => setSecretUri(data.value)}
+                        placeholder="https://my-vault.vault.azure.net/secrets/foundry-key"
+                      />
+                    </Field>
+                    <DeclarationFields
+                      drafts={declarations}
+                      provider={keyedProvider(endpointUrl)}
+                      onChange={setDeclarations}
+                    />
+                  </>
+                )}
+                {mode === 'compatible' && (
                   <>
                     <Field label="Endpoint URL" required>
                       <Input
@@ -1339,15 +1484,17 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
                 />
 
                 {registerOrigin === 'dialog' && register.isError && (
-                  <ErrorState title={REGISTRATION_REFUSED} error={register.error} />
+                  <div ref={registerErrorRef} tabIndex={-1}>
+                    <ErrorState title={REGISTRATION_REFUSED} error={register.error} />
+                  </div>
                 )}
               </DialogContent>
               <DialogActions>
                 <Button appearance="secondary" onClick={closeDialog}>
                   Cancel
                 </Button>
-                <Button appearance="primary" type="submit" disabled={register.isPending}>
-                  Register
+                <Button appearance="primary" type="submit" disabledFocusable={register.isPending}>
+                  {register.isPending ? 'Registering…' : 'Register'}
                 </Button>
               </DialogActions>
             </DialogBody>

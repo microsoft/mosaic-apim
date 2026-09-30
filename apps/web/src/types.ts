@@ -920,6 +920,26 @@ export interface ModelInventorySummary {
   deprecatedDeployments: number
 }
 
+/**
+ * A deployment an administrator declared on an Azure endpoint MOSAIC reaches with an API key. An
+ * API key can't list a resource's deployments, so these are declared, never discovered (ADR 0018).
+ */
+export interface DeclaredDeployment {
+  deploymentName: string
+  modelName: string
+  modelVersion?: string | null
+  apiShape: ApiShape
+  declaredAt: string
+  declaredBy?: string | null
+}
+
+export interface DeclaredDeploymentInput {
+  deploymentName: string
+  modelName: string
+  modelVersion?: string
+  apiShape: ApiShape
+}
+
 export interface ModelEndpoint {
   id: string
   tenantId: string
@@ -937,6 +957,8 @@ export interface ModelEndpoint {
   environmentLabel?: string | null
   authMode: EndpointAuthMode
   credentialReferenceId?: string | null
+  /** Present only on an Azure endpoint registered with an API key. */
+  declaredDeployments?: DeclaredDeployment[]
   status: ModelEndpointStatus
   access: EndpointAccess
   runtimeAccess: GatewayRuntimeAccess[]
@@ -961,6 +983,7 @@ export type PublishStepStatus =
 export type PublishRunStatus = 'running' | 'succeeded' | 'failed' | 'rolledBack' | 'rollbackFailed' | 'interrupted'
 export type PublishStage = 'prepare' | 'policy' | 'activate'
 export type PublishedResourceKind =
+  | 'namedValue'
   | 'policyFragment'
   | 'backend'
   | 'api'
@@ -1020,6 +1043,8 @@ export interface PublishableModel {
   suggestedApiPath: string
   runtimeAccess: GatewayRuntimeAccess | null
   environmentVerdict: EnvironmentVerdict
+  /** True when an administrator declared this deployment rather than MOSAIC reading it. */
+  declared?: boolean
 }
 
 export interface ModelAccessGrant {
@@ -1080,6 +1105,8 @@ export interface Publication {
   fragmentName: string
   productName: string
   subscriptionName: string
+  /** The Key Vault-backed named value a key-authenticated publication's backend key comes from. */
+  backendKeyName?: string | null
   subscriptionRequired: boolean
   /** Null when the publication's shape can't be token-metered on its gateway's tier. */
   enforcement: TokenEnforcement | null
