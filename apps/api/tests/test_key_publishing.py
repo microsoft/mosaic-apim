@@ -401,6 +401,38 @@ async def test_unpublish_reviews_and_removes_the_named_value_last(harness: KeyHa
     assert publication.created_resources() == []
 
 
+async def test_governed_unpublish_reviews_and_removes_the_named_value_last() -> None:
+    harness = KeyHarness(governed=True)
+    await harness.setup()
+    publication_id = await harness.publish(
+        "gpt-4-1",
+        enforcement=TOKENS,
+        governed_access=ModelAccessSettings(keys_enabled=True, entra_enabled=False),
+    )
+    assert (await harness.apply(publication_id)).status == PublishRunStatus.SUCCEEDED
+
+    review = await harness.service.plan_unpublish(ACTOR, publication_id)
+    kinds = [step.kind for step in review.steps]
+    # The API goes first, while the deny policy is attached; the key goes after its last reader.
+    assert kinds[0] == PublishedResourceKind.API
+    assert kinds[-1] == PublishedResourceKind.NAMED_VALUE
+    assert "stays in Key Vault" in review.steps[-1].reason
+    assert any("refuses every call" in warning for warning in review.warnings)
+
+    harness.apim.writes.clear()
+    started = await reviewed_unpublish(harness.service, ACTOR, publication_id)
+    await harness.service.wait_for_idle()
+    run = await harness.service.get_run(ACTOR, started.id)
+
+    assert run.status == PublishRunStatus.SUCCEEDED
+    deleted = harness.apim.write_paths("DELETE")
+    assert deleted.index(f"policyFragments/{GPT_API}") < deleted.index(GPT_KEY)
+    assert deleted[-1] == GPT_KEY
+    assert GPT_KEY not in harness.apim.written
+    publication = await harness.service.get_publication(ACTOR, publication_id)
+    assert publication.created_resources() == []
+
+
 async def test_a_failed_apply_rolls_the_named_value_back(harness: KeyHarness) -> None:
     harness.apim.fail_write(f"products/{CLAUDE_API}", 500)
     publication_id = await harness.publish()
