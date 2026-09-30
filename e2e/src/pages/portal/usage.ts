@@ -35,7 +35,7 @@ export class UsagePage {
 
   /** The badge that labels simulated figures. The banner below it repeats the words, so this is the first. */
   get sampleData(): Locator {
-    return this.page.getByText('Sample data', { exact: true }).first()
+    return this.page.getByText('Sample figures', { exact: true }).first()
   }
 
   /** The resources the table lists, one row header each. */

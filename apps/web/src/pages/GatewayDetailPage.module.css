@@ -98,3 +98,43 @@
 .syncError {
   color: var(--mosaic-warning);
 }
+
+.telemetryActions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 10px;
+}
+
+/* The card's gap spaces its parts, so its headings and tables drop their own margins. */
+.telemetryCard h2 {
+  margin: 0;
+}
+
+.telemetryCard h3 {
+  margin: 10px 0 0;
+}
+
+.telemetryCard :global(.table-scroll) {
+  margin-top: 0;
+}
+
+.daysControl {
+  max-width: 140px;
+  display: grid;
+  gap: 4px;
+  color: var(--mosaic-text-muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.command {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.rollupGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 8px 16px;
+}

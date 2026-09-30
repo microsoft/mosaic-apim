@@ -14,6 +14,11 @@ APIM_API_VERSION = "2024-05-01"
 # of the inventory uses: a preview API that changes or disappears must degrade MCP discovery alone,
 # never the gateway sync that administrators depend on.
 APIM_MCP_API_VERSION = "2025-09-01-preview"
+# An API diagnostic's ``largeLanguageModel`` settings, which turn on the LLM log that carries token
+# counts, exist only on preview contracts. Like the MCP version, it is used for that one resource
+# alone, so a change to the preview can only affect telemetry setup.
+APIM_LLM_DIAGNOSTIC_API_VERSION = "2025-09-01-preview"
+DIAGNOSTIC_SETTINGS_API_VERSION = "2021-05-01-preview"
 AUTHORIZATION_API_VERSION = "2022-04-01"
 # Role definitions are read on a preview contract because the stable 2022-04-01 one drops the
 # per-permission ``condition`` Azure evaluates: Foundry Owner's delegation condition, for instance,

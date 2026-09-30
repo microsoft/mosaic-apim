@@ -1,4 +1,4 @@
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import Protocol
 
 from mosaic_api.domain import (
@@ -24,6 +24,14 @@ from mosaic_api.domain import (
 )
 from mosaic_api.environments import EnvironmentCatalog, EnvironmentUsage
 from mosaic_api.observed import ObservedEndpointEntity, ObservedEntity
+from mosaic_api.usage_telemetry import (
+    AttributionRecord,
+    SummaryDimension,
+    SummaryPeriod,
+    UsageFact,
+    UsageRollupState,
+    UsageSummary,
+)
 
 
 class DirectoryRepository(Protocol):
@@ -493,4 +501,79 @@ class EntitlementRepository(Protocol):
         after it was read, or the grant already exists, this raises ``ConflictError`` and writes
         nothing.
         """
+        ...
+
+
+class UsageRollupRepository(Protocol):
+    """Rolled-up gateway telemetry, kept in its own ``usage-rollups`` container. See ADR 0019.
+
+    Every item is partitioned by tenant. Facts and summaries carry a ``bucket`` naming the day or
+    month they were rolled up from, so the rollup job can replace one gateway's bucket whole:
+    list what the bucket holds, upsert only what changed, and delete what disappeared.
+    """
+
+    async def ready(self) -> bool: ...
+
+    async def close(self) -> None: ...
+
+    async def get_rollup_state(
+        self, tenant_id: str, gateway_id: str
+    ) -> UsageRollupState | None: ...
+
+    async def list_rollup_states(self, tenant_id: str) -> list[UsageRollupState]: ...
+
+    async def update_rollup_state(
+        self,
+        tenant_id: str,
+        gateway_id: str,
+        change: Callable[[UsageRollupState], UsageRollupState],
+    ) -> UsageRollupState:
+        """Apply ``change`` to a gateway's state as currently saved, or to a new one, and save it.
+
+        The rollup job, administrators' requests, and enabling telemetry each write their own
+        fields, and a rollup takes a while. So the save succeeds only if nobody saved the state
+        since it was read. Otherwise the state is read again and ``change`` applied again. The
+        state's identity fields always stay the gateway's. ``change`` can raise to save nothing.
+        """
+        ...
+
+    async def list_attribution_records(self, tenant_id: str) -> list[AttributionRecord]: ...
+
+    async def save_attribution_records(self, records: Sequence[AttributionRecord]) -> None: ...
+
+    async def list_facts(
+        self,
+        tenant_id: str,
+        *,
+        start_day: str,
+        end_day: str,
+        link_keys: Sequence[str] | None = None,
+        gateway_ids: Sequence[str] | None = None,
+    ) -> list[UsageFact]:
+        """Facts whose day falls in the inclusive range, optionally only for some link keys."""
+        ...
+
+    async def list_summaries(
+        self,
+        tenant_id: str,
+        *,
+        period: SummaryPeriod,
+        start: str,
+        end: str,
+        dimensions: Sequence[SummaryDimension],
+        gateway_ids: Sequence[str] | None = None,
+    ) -> list[UsageSummary]:
+        """Summaries whose period starts in the inclusive range."""
+        ...
+
+    async def list_bucket_hashes(
+        self, tenant_id: str, gateway_id: str, bucket: str
+    ) -> dict[str, str]:
+        """Every fact and summary ID in one gateway's bucket, with its content hash."""
+        ...
+
+    async def upsert_rollups(self, items: Sequence[UsageFact | UsageSummary]) -> None: ...
+
+    async def delete_rollups(self, tenant_id: str, item_ids: Sequence[str]) -> None:
+        """Delete facts or summaries; an item that is already gone is not an error."""
         ...

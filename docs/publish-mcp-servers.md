@@ -128,25 +128,32 @@ desired state.
 MCP streaming can break when API Management diagnostics buffer response bodies. Configure
 Application Insights or Azure Monitor diagnostics so response-body bytes are 0 for MCP APIs. MOSAIC
 warns about this because diagnostics can be global gateway configuration and are outside the
-publication resources it owns.
+publication resources it owns. The Azure Monitor diagnostic MOSAIC sets for
+[usage](usage-analytics.md) logs no body bytes, so it's safe for MCP APIs.
 
 ## Usage tags
 
 Once a caller's grant matches, and before call limits, the enforcement fragment emits an API
 Management `trace` with source `mosaic` at `information` severity. Its message reads
-`mosaic-attribution v=1 g=<grant> m=<object ID>`. `g` names the grant. For a security-group grant,
-`m` carries the caller's validated object ID, so each member's usage can be counted separately;
-otherwise it's empty. Application Insights also gets the grant as the property `mosaic-grant`, and
-when the server has security-group grants, the object ID as `mosaic-member`. The trace reads only
-policy variables, never a body, so streaming is unaffected.
+`mosaic-attribution v=1 g=<grant> m=<object ID> a=<client ID>`. `g` names the grant. For a
+security-group grant, `m` carries the caller's validated object ID, so each member's usage can be
+counted separately; otherwise it's empty. `a` is the client application ID the validated token
+names. Application Insights also gets the grant as the property `mosaic-grant`, the client as
+`mosaic-client`, and when the server has security-group grants, the object ID as `mosaic-member`.
+Each refusal records its reason instead, as `mosaic-deny v=1 r=<reason>`, with the caller's object
+ID and client once the token has validated. The traces read only policy variables, never a body,
+so streaming is unaffected.
 
 A successful apply records the same grant identity on each MCP entitlement's binding, and a
-successful unpublish clears it. The portal's usage report then shows these grants as tracked at
-the gateway; see [ADR 0015](adr/0015-end-user-usage-report.md). If MOSAIC can't save a binding,
-the run still succeeds, the error is logged, and the next apply corrects the binding.
+successful unpublish clears it. The portal's usage report then shows these grants as linked from
+gateway log traces; see [ADR 0015](adr/0015-end-user-usage-report.md). If MOSAIC can't save a
+binding, the run still succeeds, the error is logged, and the next apply corrects the binding.
 
-For the tag to reach Log Analytics, set the gateway's Azure Monitor diagnostic verbosity to
-Information or Verbose. `ApiManagementGatewayLogs` then records it in `TraceRecords`. An
-Application Insights diagnostic at Information verbosity records one trace per call, whatever its
-sampling rate. To stop them, set that diagnostic's verbosity to Error. The object ID is personal
-data, so apply your retention and access rules to both destinations.
+For the traces to reach Log Analytics, the MCP API needs an Azure Monitor diagnostic at Information
+or Verbose. **Enable API diagnostics** in the gateway's **Telemetry** section sets it on every API
+MOSAIC published, and MOSAIC then sets it on each new publication. `ApiManagementGatewayLogs`
+records the traces in `TraceRecords`, and MOSAIC rolls them up into usage; see
+[Usage analytics](usage-analytics.md). An Application Insights diagnostic at Information verbosity
+records one trace per call, whatever its sampling rate. To stop them, set that diagnostic's
+verbosity to Error. The object and client IDs are personal data, so apply your retention and
+access rules to both destinations.

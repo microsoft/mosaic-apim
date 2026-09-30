@@ -109,7 +109,8 @@ portal at `http://localhost:5174` signs you in as the demo end user, Megan Bowen
   of it whose APIs still point at the production accounts, a partner gateway that answers `403`
   so it shows **Access needed**, Azure OpenAI and Foundry accounts, a Key Vault that the gateways
   can read a partner's Foundry key from, and MCP servers. MOSAIC reaches them through `httpx` mock
-  transports, so nothing leaves the machine.
+  transports, so nothing leaves the machine. A fake Log Analytics workspace answers MOSAIC's usage
+  queries from the gateways' generated logs, a day at a time.
 - `demo_api.py` runs the production FastAPI app with in-memory repositories and swaps its
   Azure-facing services for the fakes. It then seeds the estate through MOSAIC's own services, in
   the order an operator would: add a custom Partner environment, register, classify, and sync
@@ -117,11 +118,16 @@ portal at `http://localhost:5174` signs you in as the demo end user, Megan Bowen
   deployments, import, publish, grant, and request, approve, and deny access. One MCP server keeps
   only a legacy label, so Settings has something to classify, and the development gateway's
   routes to production produce environment findings. Grants and decided requests are then dated
-  back as far as 120 days, so the portal's usage report has history to show. Every page therefore
-  renders what the product would show for that estate. Requests from the portal's origin are
-  answered as Megan Bowen with the `User` role, and all others as Adele Vance with `Admin` and
-  `User`. Local authentication is refused outside local and test environments, so the demo can't
-  be pointed at a deployed MOSAIC.
+  back as far as 120 days. Last, it enables API diagnostics on the production gateway and
+  generates a quarter of gateway traffic from the estate's people and workloads, including
+  throttled and refused calls and calls to adopted APIs. MOSAIC's rollup job reads it all back,
+  so the Dashboard, Analytics, and the portal's **Usage & cost** page show measured figures. Every
+  page therefore renders what the product would show for that estate. The demo runs no rollup loop
+  afterwards, so every shot in a run shows the same figures. The traffic and timestamps follow the
+  clock, though, so they shift a little from one run to the next. Requests from the portal's
+  origin are answered as Megan Bowen with the `User` role, and all others as Adele Vance with
+  `Admin` and `User`. Local authentication is refused outside local and test environments, so the
+  demo can't be pointed at a deployed MOSAIC.
 - `capture.py` opens each shot in a fresh Chromium context 1440 pixels wide, with the shot's theme
   set both as the operating-system preference and as MOSAIC's stored preference. It waits for
   every spinner to clear and for the shot's ready text, runs the shot's actions, captures the
@@ -209,11 +215,15 @@ shows both themes. Keep new shots in that pattern.
 | `console-overlapping-grants` | Console | `/entitlements`, scrolled to **Overlapping grants** | Dark | Overlapping grants |
 | `console-mcp-publish` | Console | `/mcps`, **Plan and apply** review for the published Docs MCP server | Light | MCP publish review |
 | `console-unpublish-review` | Console | `/models`, **Unpublish** review for GPT-4o, never confirmed | Light | Unpublish review |
-| `console-analytics` | Console | `/analytics`, which shows sample data | Dark | Analytics |
+| `console-analytics` | Console | `/analytics`, **Overview** tab | Dark | Analytics |
+| `console-analytics-consumers` | Console | `/analytics?tab=consumers` | Light | Consumers |
+| `console-analytics-limits` | Console | `/analytics?tab=limits` | Dark | Grant limits |
+| `console-gateway-telemetry` | Console | Contoso AI Gateway, **Overview** tab, scrolled to **Telemetry** | Light | Gateway telemetry |
+| `console-analytics-reliability` | Console | `/analytics?tab=reliability` | Dark | Reliability |
 | `console-environments` | Console | `/settings` | Light | Environments |
 | `console-environment-findings` | Console | `/settings`, scrolled to **Findings** | Dark | Environment findings |
 | `portal-access` | Portal | `/access`, with a grant's **Connection details** open | Light | My access |
 | `portal-mcp-connection` | Portal | `/access`, with an enforced MCP grant's **Connection details** open | Dark | MCP connection |
 | `portal-requests` | Portal | `/requests` | Dark | My requests |
-| `portal-usage` | Portal | `/usage`, which shows sample data | Light | Usage and cost |
+| `portal-usage` | Portal | `/usage` | Light | Usage & cost |
 | `portal-usage-resources` | Portal | `/usage`, scrolled to **By resource** | Dark | Usage by resource |

@@ -5,6 +5,7 @@ import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { GatewayDetailPage } from './GatewayDetailPage'
+import { telemetryFixture } from '../test/analytics-fixtures'
 import { modelPublication } from '../test/model-access'
 import type { Gateway, GatewayAccess, ManagementMode } from '../types'
 
@@ -111,6 +112,10 @@ const api = {
   updateGateway: vi.fn(),
   preflightGateway: vi.fn(),
   syncGateway: vi.fn(),
+  getGatewayTelemetry: vi.fn(),
+  enableGatewayTelemetry: vi.fn(),
+  refreshGatewayTelemetry: vi.fn(),
+  backfillGatewayTelemetry: vi.fn(),
 }
 
 vi.mock('../api', () => ({
@@ -179,6 +184,10 @@ describe('GatewayDetailPage management mode', () => {
       generatedAt: '2026-09-01T12:00:00Z',
     })
     api.listPublications.mockResolvedValue([])
+    api.getGatewayTelemetry.mockResolvedValue(telemetryFixture)
+    api.enableGatewayTelemetry.mockResolvedValue(telemetryFixture)
+    api.refreshGatewayTelemetry.mockResolvedValue({})
+    api.backfillGatewayTelemetry.mockResolvedValue({})
   })
 
   it('shows the gateway’s real management mode', async () => {
@@ -364,5 +373,34 @@ describe('GatewayDetailPage management mode', () => {
     const control = await modeControl()
     expect(within(control).getByRole('radio', { name: 'Observe' })).toBeEnabled()
     expect(screen.getByText('MOSAIC refuses to publish to this gateway')).toBeVisible()
+  })
+
+  it('shows telemetry checks and runs telemetry actions', async () => {
+    const user = userEvent.setup()
+    serve(gateway({ managementMode: 'manage', access: writable }))
+    renderPage()
+
+    expect(await screen.findByRole('heading', { name: 'Telemetry' })).toBeVisible()
+    // The workspace reads by name; its full resource ID stays on hover.
+    expect(screen.getByText('log-prod')).toHaveAttribute('title', expect.stringContaining('/workspaces/log-prod'))
+    const checks = screen.getByRole('table', { name: 'Telemetry checks' })
+    expect(within(checks).getByText('OK')).toBeVisible()
+    expect(within(checks).getByText('Error')).toBeVisible()
+    expect(screen.getByText('Logs sent to Log Analytics')).toBeVisible()
+    expect(screen.getByText(/az monitor diagnostic-settings create/)).toBeVisible()
+    const apis = screen.getByRole('table', { name: 'API diagnostics readiness' })
+    expect(within(apis).getByText('Model API')).toBeVisible()
+    expect(within(apis).getByText('MCP server')).toBeVisible()
+    expect(screen.getByText('Sampling below 100%; LLM logs off')).toBeVisible()
+    expect(screen.getByText('Ready (All APIs setting)')).toBeVisible()
+    expect(screen.getByText('Backfill: Done')).toBeVisible()
+
+    await user.click(screen.getByRole('button', { name: 'Enable API diagnostics' }))
+    await waitFor(() => expect(api.enableGatewayTelemetry).toHaveBeenCalledWith('gateway_1'))
+
+    await user.clear(screen.getByLabelText('Backfill days'))
+    await user.type(screen.getByLabelText('Backfill days'), '60')
+    await user.click(screen.getByRole('button', { name: 'Backfill' }))
+    await waitFor(() => expect(api.backfillGatewayTelemetry).toHaveBeenCalledWith('gateway_1', 60))
   })
 })

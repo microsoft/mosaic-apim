@@ -30,8 +30,27 @@ SUBSCRIPTION_COUNTER = "@(context.Subscription.Id)"
 # The wire format a Log Analytics source parses from TraceRecords.
 _ATTRIBUTION_MESSAGE = (
     '@("mosaic-attribution v=1 g=" + (string)context.Variables["mosaic-grant"]'
-    ' + " m=" + (string)context.Variables["mosaic-member"])'
+    ' + " m=" + (string)context.Variables["mosaic-member"]'
+    ' + " a=" + (string)context.Variables["mosaic-client"])'
 )
+
+
+def _attribution_trace(fragment: ET.Element) -> ET.Element:
+    return next(
+        element
+        for element in fragment.findall("trace")
+        if "mosaic-attribution" in (element.findtext("message") or "")
+    )
+
+
+def _denial_reasons(fragment: ET.Element) -> dict[str, str]:
+    reasons: dict[str, str] = {}
+    for trace in fragment.iter("trace"):
+        message = trace.findtext("message") or ""
+        match = re.search(r"mosaic-deny v=1 r=([a-z-]+)", message)
+        if match:
+            reasons[match.group(1)] = message
+    return reasons
 
 
 def _publication(**overrides: object) -> McpPublication:
@@ -169,8 +188,7 @@ def test_grant_trace_is_after_authentication_before_limits_and_members_only_for_
     result = _render(snapshot=_snapshot(grants=[_grant(enforcement=_enforcement()), group]))
     fragment = ET.fromstring(result.fragment_xml)
     children = list(fragment)
-    trace = fragment.find("trace")
-    assert trace is not None
+    trace = _attribution_trace(fragment)
 
     grant_variable_index = next(
         index
@@ -182,7 +200,12 @@ def test_grant_trace_is_after_authentication_before_limits_and_members_only_for_
         for index, element in enumerate(children)
         if element.tag == "choose" and element.find("when/rate-limit-by-key") is not None
     )
-    assert [element.tag for element in fragment.iter()].count("trace") == 1
+    attribution_traces = [
+        element
+        for element in fragment.iter("trace")
+        if "mosaic-attribution" in (element.findtext("message") or "")
+    ]
+    assert attribution_traces == [trace]
     assert grant_variable_index < children.index(trace) < limit_index
     member_index = next(
         index
@@ -195,6 +218,7 @@ def test_grant_trace_is_after_authentication_before_limits_and_members_only_for_
     assert metadata == {
         "mosaic-grant": '@((string)context.Variables["mosaic-grant"])',
         "mosaic-member": '@((string)context.Variables["mosaic-member"])',
+        "mosaic-client": '@((string)context.Variables["mosaic-client"])',
     }
     assert any(
         facet.element == "trace"
@@ -203,11 +227,33 @@ def test_grant_trace_is_after_authentication_before_limits_and_members_only_for_
         for facet in result.facets
     )
 
-    direct = ET.fromstring(_render().fragment_xml)
-    direct_trace = direct.find("trace")
-    assert direct_trace is not None
+    direct_trace = _attribution_trace(ET.fromstring(_render().fragment_xml))
     assert direct_trace.findtext("message") == _ATTRIBUTION_MESSAGE
-    assert [item.attrib["name"] for item in direct_trace.findall("metadata")] == ["mosaic-grant"]
+    assert [item.attrib["name"] for item in direct_trace.findall("metadata")] == [
+        "mosaic-grant",
+        "mosaic-client",
+    ]
+
+
+def test_every_mcp_refusal_records_a_fixed_reason_before_it_responds() -> None:
+    fragment = _fragment(_snapshot(grants=[_grant(), _group_grant(2)]))
+    reasons = _denial_reasons(fragment)
+    assert set(reasons) == {"no-credential", "token-malformed", "groups-overage", "no-grant"}
+    assert reasons["no-credential"] == "mosaic-deny v=1 r=no-credential"
+    assert reasons["no-grant"] == (
+        '@("mosaic-deny v=1 r=no-grant o=" + (string)context.Variables["mosaic-caller"]'
+        ' + " a=" + (string)context.Variables["mosaic-client"])'
+    )
+    for when in fragment.iter("when"):
+        response = when.find("return-response")
+        if response is None:
+            continue
+        children = list(when)
+        trace_index = children.index(response) - 1
+        assert trace_index >= 0 and children[trace_index].tag == "trace"
+    result = _render(snapshot=_snapshot(grants=[_grant(), _group_grant(2)]))
+    trace_facets = [facet for facet in result.facets if facet.element == "trace"]
+    assert [facet.attributes.get("trace") for facet in trace_facets].count("denial") == 1
 
 
 def test_documents_parse_are_deterministic_and_digest_all_three_documents() -> None:
@@ -251,11 +297,15 @@ def test_expressions_are_ones_api_management_can_parse() -> None:
 def test_fragment_order_and_authenticate_challenges_match_contract() -> None:
     fragment = _fragment()
 
-    assert [child.tag for child in list(fragment)[:3]] == [
+    children = list(fragment)
+    assert [child.tag for child in children[:5]] == [
+        "set-variable",
+        "set-variable",
         "choose",
         "choose",
         "set-variable",
     ]
+    assert [child.attrib["name"] for child in children[:2]] == ["mosaic-caller", "mosaic-client"]
     assert '@(!context.Request.Headers.ContainsKey("Authorization"))' in _conditions(fragment)
     assert any("values.Length != 1" in condition for condition in _conditions(fragment))
     values = _header_values(fragment, "WWW-Authenticate")

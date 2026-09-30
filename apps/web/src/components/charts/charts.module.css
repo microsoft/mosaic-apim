@@ -1,0 +1,143 @@
+.figure {
+  margin: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.chart {
+  width: 100%;
+  height: 220px;
+  overflow: visible;
+  border-left: 1px solid var(--mosaic-border-soft);
+  border-bottom: 1px solid var(--mosaic-border-soft);
+}
+
+.gridLine {
+  stroke: var(--mosaic-border-soft);
+  stroke-dasharray: 3 4;
+}
+
+.area {
+  fill: var(--mosaic-primary-soft);
+}
+
+.line {
+  fill: none;
+  stroke: var(--mosaic-primary);
+  stroke-width: 2.4;
+  vector-effect: non-scaling-stroke;
+}
+
+.lineSecondary {
+  fill: none;
+  stroke: var(--mosaic-success);
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+}
+
+.caption {
+  color: var(--mosaic-text-muted);
+  font-size: 12px;
+}
+
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  color: var(--mosaic-text-muted);
+  font-size: 12px;
+}
+
+.legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.swatch {
+  width: 14px;
+  height: 3px;
+  border-radius: 999px;
+  background: var(--mosaic-primary);
+}
+
+.swatchSecondary {
+  background: var(--mosaic-success);
+}
+
+.axis {
+  display: flex;
+  justify-content: space-between;
+  color: var(--mosaic-text-muted);
+  font-size: 11px;
+}
+
+.list {
+  display: grid;
+  gap: 12px;
+}
+
+.barRow {
+  display: grid;
+  gap: 6px;
+}
+
+.barHeader {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.barHeader span:last-child {
+  color: var(--mosaic-text-muted);
+}
+
+.track {
+  height: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--mosaic-surface-strong);
+}
+
+.fill {
+  height: 100%;
+  display: block;
+  border-radius: inherit;
+  background: var(--mosaic-primary);
+}
+
+.fillWarning {
+  background: var(--mosaic-warning);
+}
+
+.fillDanger {
+  background: var(--mosaic-danger);
+}
+
+.histogram {
+  display: flex;
+  align-items: end;
+  gap: 6px;
+  min-height: 180px;
+  padding-top: 12px;
+}
+
+.bucket {
+  flex: 1;
+  display: grid;
+  align-items: end;
+  gap: 6px;
+  min-width: 0;
+}
+
+.bucketBar {
+  min-height: 2px;
+  border-radius: 4px 4px 0 0;
+  background: var(--mosaic-primary);
+}
+
+.bucketLabel {
+  color: var(--mosaic-text-muted);
+  font-size: 11px;
+  text-align: center;
+}

@@ -1566,3 +1566,489 @@ export interface ObservedMcpTool {
   outputSchema?: Record<string, unknown> | null
   annotations?: McpToolAnnotations | null
 }
+
+export type AnalyticsRange = '24h' | '7d' | '30d' | '90d' | '12m' | 'custom'
+export type AnalyticsDataSource = 'logAnalytics' | 'notConfigured'
+export type AnalyticsGranularity = 'hour' | 'day' | 'month'
+export type FreshnessStatus = 'current' | 'delayed' | 'failing' | 'pending' | 'notLinked'
+export type ExportView =
+  | 'trend'
+  | 'people'
+  | 'applications'
+  | 'groups'
+  | 'grants'
+  | 'clientApps'
+  | 'apis'
+  | 'models'
+  | 'deployments'
+  | 'denials'
+  | 'limits'
+  | 'unusedGrants'
+  | 'unusedKeys'
+  | 'untrackedGrants'
+  | 'unattributed'
+
+export interface AnalyticsFilters {
+  range?: AnalyticsRange
+  start?: string
+  end?: string
+  gatewayId?: string
+  environment?: string
+  resourceId?: string
+  subjectKind?: EntitlementSubjectKind
+}
+
+export interface UsageFreshness {
+  status: FreshnessStatus
+  updatedAt?: string | null
+  dataFrom?: string | null
+  gateways: number
+  intervalMinutes: number | null
+  message?: string | null
+}
+
+export interface AnalyticsWindow {
+  range: AnalyticsRange
+  granularity: AnalyticsGranularity
+  start: string
+  end: string
+  breakdownStart: string
+  breakdownEnd: string
+  previousStart: string
+  previousEnd: string
+}
+
+export interface AnalyticsKpis {
+  requests: number
+  promptTokens: number | null
+  completionTokens: number | null
+  totalTokens: number
+  ok: number
+  throttled: number
+  quotaRefused: number
+  denied: number
+  errors: number
+  clientErrors: number | null
+  serverErrors: number | null
+  backendThrottled: number | null
+  successRate: number | null
+  errorRate: number | null
+  throttleRate: number | null
+  denialRate: number | null
+  p50LatencyMs: number | null
+  p95LatencyMs: number | null
+  averageLatencyMs: number | null
+  averageBackendMs: number | null
+  activeCallers: number | null
+  activeGrants: number | null
+  activeApis: number | null
+  unattributedRequests: number | null
+}
+
+export interface AnalyticsTrendPoint {
+  start: string
+  requests: number | null
+  totalTokens: number | null
+  throttled: number | null
+  quotaRefused: number | null
+  denied: number | null
+  errors: number | null
+}
+
+export interface AnalyticsSeries {
+  key: string
+  label: string
+  values: Array<number | null>
+}
+
+export interface AnalyticsRankRow {
+  key: string
+  label: string
+  detail?: string | null
+  requests: number
+  totalTokens: number
+  requestShare: number | null
+  tokenShare: number | null
+}
+
+export interface AnalyticsGatewayHealth {
+  gatewayId: string
+  name: string
+  environment: string | null
+  environmentName: string
+  status: FreshnessStatus
+  governedApis: number
+  instrumentedApis: number
+  lastRunAt: string | null
+  lastSuccessAt: string | null
+  queriedThrough: string | null
+  lagMinutes: number | null
+  dataAvailableFrom: string | null
+  lastError: string | null
+  lastErrorAt: string | null
+  backfillStatus: 'idle' | 'running' | 'done' | 'failed'
+  backfillFrom: string | null
+  backfillNext: string | null
+  unknownTraceVersions: number
+  diagnosticsError: string | null
+}
+
+export interface AnalyticsReport {
+  dataSource: AnalyticsDataSource
+  generatedAt: string
+  window: AnalyticsWindow
+  freshness: UsageFreshness
+  notes: string[]
+}
+
+export interface AnalyticsOverview extends AnalyticsReport {
+  kpis: AnalyticsKpis
+  previous: AnalyticsKpis | null
+  trend: AnalyticsTrendPoint[]
+  modelTrend: AnalyticsSeries[]
+  topModels: AnalyticsRankRow[]
+  topCallers: AnalyticsRankRow[]
+  topApis: AnalyticsRankRow[]
+  gateways: AnalyticsGatewayHealth[]
+}
+
+export interface AnalyticsUsage {
+  requests: number
+  promptTokens: number
+  completionTokens: number
+  totalTokens: number
+  throttled: number
+  quotaRefused: number
+  errors: number
+  lastSeen: string | null
+  requestShare: number | null
+  tokenShare: number | null
+}
+
+export interface AnalyticsConsumerRow extends AnalyticsUsage {
+  key: string
+  kind: 'person' | 'application' | 'group'
+  label: string
+  detail?: string | null
+  principalId?: string | null
+  /** What the Entra object is; agent users are counted with people. */
+  principalKind?: PrincipalKind | null
+  grants: number
+  resources: number
+  members?: number | null
+}
+
+export interface AnalyticsGrantRow extends AnalyticsUsage {
+  key: string
+  entitlementId: string | null
+  state: 'active' | 'disabled' | 'removed'
+  subjectKind: EntitlementSubjectKind | null
+  subjectLabel: string
+  subjectDetail?: string | null
+  subjectPrincipalKind?: PrincipalKind | null
+  resourceKind: EntitlementResourceKind | null
+  resourceLabel: string
+  gatewayId: string | null
+  gatewayName: string | null
+  callers: number
+  keyRequests: number
+  peakMinuteTokens: number
+  peakMinuteRequests: number
+}
+
+export interface AnalyticsClientAppRow extends AnalyticsUsage {
+  clientAppId: string
+  label: string
+  principalId?: string | null
+  apis: number
+}
+
+export interface AnalyticsConsumers extends AnalyticsReport {
+  linkedRequests: number
+  linkedTokens: number
+  unidentifiedRequests: number
+  people: AnalyticsConsumerRow[]
+  applications: AnalyticsConsumerRow[]
+  groups: AnalyticsConsumerRow[]
+  grants: AnalyticsGrantRow[]
+  clientApps: AnalyticsClientAppRow[]
+  truncated: boolean
+}
+
+export interface AnalyticsApiRow extends AnalyticsUsage {
+  key: string
+  gatewayId: string
+  gatewayName: string
+  apiName: string
+  label: string
+  kind: 'model' | 'mcp' | null
+  resourceId: string | null
+  removed: boolean
+  meteredRequests: number
+  denied: number
+  clientErrors: number
+  serverErrors: number
+  backendThrottled: number
+  p95LatencyMs: number | null
+  averageLatencyMs: number | null
+  errorRate: number | null
+  models: string[] | null
+}
+
+export interface AnalyticsModelRow extends AnalyticsUsage {
+  model: string
+  apis: number
+}
+
+export interface AnalyticsDeploymentRow extends AnalyticsUsage {
+  key: string
+  endpointId: string
+  endpointName: string | null
+  deploymentName: string
+  modelName: string | null
+  skuName: string | null
+  capacityTokensPerMinute: number | null
+  backendThrottled: number
+  peakMinuteTokens: number
+  peakMinuteRequests: number
+  utilization: number | null
+  gateways: number
+  hourlyPeakTokens: number[] | null
+}
+
+export interface AnalyticsBreakdownRow extends AnalyticsUsage {
+  key: string
+  label: string
+  denied: number
+}
+
+export interface AnalyticsModels extends AnalyticsReport {
+  apis: AnalyticsApiRow[]
+  models: AnalyticsModelRow[]
+  deployments: AnalyticsDeploymentRow[]
+  gateways: AnalyticsBreakdownRow[]
+  environments: AnalyticsBreakdownRow[]
+}
+
+export interface AnalyticsStatusMix {
+  requests: number
+  ok: number
+  throttled: number
+  quotaRefused: number
+  denied: number
+  clientErrors: number
+  serverErrors: number
+  backendThrottled: number
+}
+
+export interface AnalyticsLatencyBucket {
+  upperMs: number | null
+  count: number
+}
+
+export interface AnalyticsLatency {
+  p50Ms: number | null
+  p95Ms: number | null
+  p99Ms: number | null
+  averageMs: number | null
+  averageBackendMs: number | null
+  buckets: AnalyticsLatencyBucket[]
+}
+
+export interface AnalyticsDenialReason {
+  reason: string
+  label: string
+  requests: number
+  share: number | null
+}
+
+export interface AnalyticsDenialRow {
+  reason: string
+  reasonLabel: string
+  callerObjectId: string | null
+  callerLabel: string | null
+  clientAppId: string | null
+  clientAppLabel: string | null
+  gatewayId: string
+  gatewayName: string
+  apiName: string
+  apiLabel: string
+  requests: number
+  lastSeen: string | null
+}
+
+export interface AnalyticsReliability extends AnalyticsReport {
+  statusMix: AnalyticsStatusMix
+  latency: AnalyticsLatency
+  trend: AnalyticsTrendPoint[]
+  apis: AnalyticsApiRow[]
+  denialReasons: AnalyticsDenialReason[]
+  denials: AnalyticsDenialRow[]
+}
+
+export interface AnalyticsLimitUse {
+  kind: 'quota' | 'rateLimit'
+  metric: 'requests' | 'tokens'
+  limit: number
+  period: QuotaPeriod | null
+  windowSeconds: number | null
+  windowStart: string | null
+  windowEnd: string | null
+  used: number | null
+  utilization: number | null
+  partial: boolean
+}
+
+export interface AnalyticsLimitRow {
+  key: string
+  entitlementId: string
+  subjectKind: EntitlementSubjectKind
+  subjectLabel: string
+  subjectDetail: string | null
+  subjectPrincipalKind?: PrincipalKind | null
+  memberObjectId: string | null
+  memberLabel: string | null
+  resourceKind: EntitlementResourceKind
+  resourceLabel: string
+  gatewayId: string | null
+  gatewayName: string | null
+  limits: AnalyticsLimitUse[]
+  utilization: number | null
+  status: 'ok' | 'near' | 'reached' | 'unknown'
+  throttled: number
+  quotaRefused: number
+}
+
+export interface AnalyticsLimits extends AnalyticsReport {
+  threshold: number
+  near: number
+  reached: number
+  rows: AnalyticsLimitRow[]
+  truncated: boolean
+}
+
+export interface AnalyticsGrantRef {
+  entitlementId: string
+  subjectKind: EntitlementSubjectKind
+  subjectLabel: string
+  subjectDetail: string | null
+  subjectPrincipalKind?: PrincipalKind | null
+  resourceKind: EntitlementResourceKind
+  resourceLabel: string
+  gatewayId: string | null
+  gatewayName: string | null
+}
+
+export interface AnalyticsUnusedGrant extends AnalyticsGrantRef {
+  grantedAt: string
+  lastUsedAt: string | null
+}
+
+export interface AnalyticsUnusedKey extends AnalyticsGrantRef {
+  subscriptionName: string | null
+  tokenRequests: number
+}
+
+export interface AnalyticsUntrackedGrant extends AnalyticsGrantRef {
+  reason: 'mosaicGroup' | 'notApplied' | 'noLink'
+}
+
+export interface AnalyticsHygiene extends AnalyticsReport {
+  judgedGrants: number
+  unusedGrants: AnalyticsUnusedGrant[]
+  unusedKeys: AnalyticsUnusedKey[]
+  deniedCallers: AnalyticsDenialRow[]
+  untrackedGrants: AnalyticsUntrackedGrant[]
+  truncated: boolean
+}
+
+export interface AnalyticsUnattributedRow {
+  gatewayId: string
+  gatewayName: string
+  apiName: string
+  apiLabel: string
+  subscription: string | null
+  reason: 'noSubscription' | 'unknownSubscription' | 'sharedKey'
+  requests: number
+  totalTokens: number
+  lastSeen: string | null
+  share: number | null
+}
+
+export interface AnalyticsUnattributed extends AnalyticsReport {
+  requests: number
+  totalTokens: number
+  admittedRequests: number
+  share: number | null
+  rows: AnalyticsUnattributedRow[]
+  truncated: boolean
+}
+
+export interface AnalyticsStatus {
+  dataSource: AnalyticsDataSource
+  rollupsEnabled: boolean
+  generatedAt: string
+  freshness: UsageFreshness
+  gateways: AnalyticsGatewayHealth[]
+}
+
+export interface TelemetryCheck {
+  id: 'logger' | 'logRouting' | 'logAccess' | 'apiDiagnostics' | 'rollups'
+  status: 'ok' | 'warning' | 'error' | 'unknown'
+  title: string
+  detail: string
+  command?: string | null
+}
+
+export type ApiDiagnosticGap = 'missing' | 'logger' | 'verbosity' | 'sampling' | 'llmLogs'
+
+export interface ApiTelemetry {
+  apiName: string
+  displayName: string
+  kind: 'model' | 'mcp'
+  published: boolean
+  // The API has no diagnostic of its own and logs as the gateway's All APIs setting says.
+  allApis: boolean
+  gaps: ApiDiagnosticGap[]
+}
+
+export interface TelemetryProbe {
+  hours: number
+  gatewayRows: number
+  tracedRows: number
+  llmRows: number
+  lastSeen: string | null
+}
+
+export interface RollupStatus {
+  lastRunAt: string | null
+  lastSuccessAt: string | null
+  lastDurationMs: number | null
+  queriedThrough: string | null
+  lagMinutes: number | null
+  dataAvailableFrom: string | null
+  lastError: string | null
+  lastErrorAt: string | null
+  backfillStatus: 'idle' | 'running' | 'done' | 'failed'
+  backfillFrom: string | null
+  backfillNext: string | null
+  lastRows: number
+  lastWritten: number
+  unknownTraceVersions: number
+  diagnosticsError: string | null
+}
+
+export interface GatewayTelemetry {
+  gatewayId: string
+  gatewayName: string
+  managementMode: ManagementMode
+  ready: boolean
+  canEnable: boolean
+  rollupsEnabled: boolean
+  checkedAt: string
+  workspaceId: string | null
+  checks: TelemetryCheck[]
+  apis: ApiTelemetry[]
+  probe: TelemetryProbe | null
+  rollup: RollupStatus | null
+}

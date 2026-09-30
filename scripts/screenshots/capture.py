@@ -57,6 +57,7 @@ RESOURCE_NAMES = [
     "kv-contoso-ai",
     "fabrikam-foundry",
     "partner-models",
+    "log-contoso-ai",
     "api://contoso-servicedesk",
 ]
 
@@ -326,11 +327,30 @@ def scroll_to_text(text: str, margin: int = 24) -> Action:
 # The README embeds these by name. Keep the two in step: a renamed or removed shot here needs its
 # README reference updated, and a new README screenshot needs an entry here.
 OPEN_GATEWAY = (click_link("Contoso AI Gateway"), wait_for_text("Published by MOSAIC"))
+# The overview's usage panels and gateway health load after its inventory counts.
+DASHBOARD_LOADED = (wait_for_text("Contoso Support Copilot"), wait_for_text("Partner Gateway"))
+TELEMETRY_READY = "This gateway is ready for usage analytics."
 
 SHOTS: list[Shot] = [
     # The same view in both themes, shown side by side.
-    Shot("console-dashboard-light", "console", "/dashboard", "light", "MOSAIC groups", height=1120),
-    Shot("console-dashboard-dark", "console", "/dashboard", "dark", "MOSAIC groups", height=1120),
+    Shot(
+        "console-dashboard-light",
+        "console",
+        "/dashboard",
+        "light",
+        "MOSAIC groups",
+        actions=DASHBOARD_LOADED,
+        height=2000,
+    ),
+    Shot(
+        "console-dashboard-dark",
+        "console",
+        "/dashboard",
+        "dark",
+        "MOSAIC groups",
+        actions=DASHBOARD_LOADED,
+        height=2000,
+    ),
     Shot("portal-catalog-light", "portal", "/catalog", "light", "Docs search MCP", height=1040),
     Shot("portal-catalog-dark", "portal", "/catalog", "dark", "Docs search MCP", height=1040),
     # Capability galleries: light shots sit in the README's left column and dark in its right.
@@ -478,7 +498,52 @@ SHOTS: list[Shot] = [
         actions=(click_button("Unpublish"), wait_for_text("What MOSAIC deletes")),
         height=1200,
     ),
-    Shot("console-analytics", "console", "/analytics", "dark", "Token usage by group"),
+    Shot(
+        "console-analytics",
+        "console",
+        "/analytics",
+        "dark",
+        "Contoso Support Copilot",
+        # Tall enough for the trend, the three rankings, and the gateway health below them.
+        height=1500,
+    ),
+    Shot(
+        "console-analytics-consumers",
+        "console",
+        "/analytics?tab=consumers",
+        "light",
+        "Contoso Support Copilot",
+        height=1300,
+    ),
+    Shot(
+        "console-analytics-limits",
+        "console",
+        "/analytics?tab=limits",
+        "dark",
+        "Invoice Reconciliation Agent",
+        height=1100,
+    ),
+    Shot(
+        "console-gateway-telemetry",
+        "console",
+        "/gateways",
+        "light",
+        "Contoso AI Gateway",
+        actions=(
+            *OPEN_GATEWAY,
+            wait_for_text(TELEMETRY_READY),
+            scroll_to_text(TELEMETRY_READY, margin=110),
+        ),
+        height=1200,
+    ),
+    Shot(
+        "console-analytics-reliability",
+        "console",
+        "/analytics?tab=reliability",
+        "dark",
+        "No grant for this caller",
+        height=1200,
+    ),
     Shot(
         "console-environments", "console", "/settings", "light", "needs classification", height=1178
     ),

@@ -73,9 +73,15 @@ _HAS_TOKEN = '(bool)context.Variables["mosaic-has-token"]'
 _KEY_GRANT = '(string)context.Variables["mosaic-key-grant"]'
 _MEMBER = '(string)context.Variables["mosaic-member"]'
 _TOKEN_GRANT = '(string)context.Variables["mosaic-token-grant"]'
+# The validated token's oid and azp, lowercased. Empty for a key-only call and until the token
+# validates, so nothing unvalidated is ever recorded.
+_CALLER = '(string)context.Variables["mosaic-caller"]'
+_CLIENT = '(string)context.Variables["mosaic-client"]'
 # Readers split the message on spaces into key=value pairs and ignore keys they don't know.
 # Only a change that breaks those readers bumps the version.
 GRANT_ATTRIBUTION_TRACE_PREFIX = "mosaic-attribution v=1"
+DENIAL_TRACE_PREFIX = "mosaic-deny v=1"
+_DENIAL_REASON = re.compile(r"[a-z][a-z-]{1,31}")
 _DENIED = "Model access denied."
 _GROUPS_OVERAGE_DENIED = (
     "Model access denied. Your token doesn't list your groups because you belong to too many; "
@@ -122,7 +128,33 @@ def _variable(parent: ET.Element, name: str, value: str) -> None:
     ET.SubElement(parent, "set-variable", {"name": name, "value": value})
 
 
-def _deny(parent: ET.Element, *, code: int = 403, message: str = _DENIED) -> None:
+def append_denial_trace(parent: ET.Element, reason: str, *, with_caller: bool = False) -> None:
+    """Record why MOSAIC refused a call, just before the refusal.
+
+    The reason is a fixed code, never request content. ``with_caller`` adds the validated
+    token's oid and azp, which are empty for a key-only call; use it only where those variables
+    have been initialized.
+    """
+
+    if not _DENIAL_REASON.fullmatch(reason):
+        raise ValueError(f"Invalid denial reason code: {reason!r}")
+    trace = ET.SubElement(parent, "trace", {"source": "mosaic", "severity": "information"})
+    ET.SubElement(trace, "message").text = (
+        f'@("{DENIAL_TRACE_PREFIX} r={reason} o=" + {_CALLER} + " a=" + {_CLIENT})'
+        if with_caller
+        else f"{DENIAL_TRACE_PREFIX} r={reason}"
+    )
+
+
+def _deny(
+    parent: ET.Element,
+    *,
+    reason: str,
+    with_caller: bool = False,
+    code: int = 403,
+    message: str = _DENIED,
+) -> None:
+    append_denial_trace(parent, reason, with_caller=with_caller)
     response = ET.SubElement(parent, "return-response")
     ET.SubElement(
         response,
@@ -132,9 +164,45 @@ def _deny(parent: ET.Element, *, code: int = 403, message: str = _DENIED) -> Non
     ET.SubElement(response, "set-body").text = message
 
 
-def _reject(parent: ET.Element, condition: str, *, code: int = 403, message: str = _DENIED) -> None:
+def _reject(
+    parent: ET.Element,
+    condition: str,
+    *,
+    reason: str,
+    with_caller: bool = False,
+    code: int = 403,
+    message: str = _DENIED,
+) -> None:
     when = ET.SubElement(ET.SubElement(parent, "choose"), "when", {"condition": condition})
-    _deny(when, code=code, message=message)
+    _deny(when, reason=reason, with_caller=with_caller, code=code, message=message)
+
+
+def _initialize_caller(parent: ET.Element) -> None:
+    _variable(parent, "mosaic-caller", "")
+    _variable(parent, "mosaic-client", "")
+
+
+def _record_validated_caller(parent: ET.Element) -> None:
+    """Copy the validated token's oid and azp into the caller variables the traces read."""
+
+    for variable, claim in (("mosaic-caller", "oid"), ("mosaic-client", "azp")):
+        _variable(parent, variable, _validated_claim(claim))
+
+
+def _validated_claim(claim: str) -> str:
+    name = _literal(claim)
+    return _expression(
+        [
+            'var jwt = context.Variables.ContainsKey("mosaic-validated-token")'
+            ' ? context.Variables["mosaic-validated-token"] as Jwt : null;',
+            f"if (jwt == null || jwt.Claims == null || !jwt.Claims.ContainsKey({name}))"
+            ' { return ""; }',
+            f"var values = jwt.Claims[{name}];",
+            "if (values == null || values.Length != 1 || String.IsNullOrWhiteSpace(values[0]))"
+            ' { return ""; }',
+            "return values[0].ToLowerInvariant();",
+        ]
+    )
 
 
 def grant_counter_identity(publication: AccessPolicyPublication, grant: AccessPolicyGrant) -> str:
@@ -168,11 +236,13 @@ def append_grant_attribution_trace(
     # properties, so the message carries every value and the metadata repeats them there.
     trace = ET.SubElement(fragment, "trace", {"source": "mosaic", "severity": "information"})
     ET.SubElement(trace, "message").text = (
-        f'@("{GRANT_ATTRIBUTION_TRACE_PREFIX} g=" + {_GRANT} + " m=" + {_MEMBER})'
+        f'@("{GRANT_ATTRIBUTION_TRACE_PREFIX} g=" + {_GRANT} + " m=" + {_MEMBER}'
+        f' + " a=" + {_CLIENT})'
     )
     ET.SubElement(trace, "metadata", {"name": "mosaic-grant", "value": f"@({_GRANT})"})
     if any(grant.enabled and grant.is_group_grant for grant in grants):
         ET.SubElement(trace, "metadata", {"name": "mosaic-member", "value": f"@({_MEMBER})"})
+    ET.SubElement(trace, "metadata", {"name": "mosaic-client", "value": f"@({_CLIENT})"})
 
 
 def describe_grant_attribution_trace(facet: PolicyFacet, *, has_group_grants: bool) -> None:
@@ -182,9 +252,52 @@ def describe_grant_attribution_trace(facet: PolicyFacet, *, has_group_grants: bo
         "TraceRecords when the gateway's Azure Monitor diagnostic logs at Information.",
         "Application Insights records one unsampled trace per call when its diagnostic "
         "verbosity is Information; set it to Error to stop.",
+        "Token calls also record the validated client application ID, so usage can be split "
+        "by app.",
     ]
     if has_group_grants:
         facet.details.append("Security-group grants also record the caller's validated object ID.")
+
+
+def describe_denial_trace(facet: PolicyFacet) -> None:
+    facet.summary = "Records why MOSAIC refused a call, so refused traffic shows in analytics."
+    facet.details = [
+        "Each refusal records a fixed reason code, never request content.",
+        "Refusals after token validation also record the caller's validated object ID and "
+        "client application ID.",
+        "Resource logs keep it in TraceRecords when the gateway's Azure Monitor diagnostic logs "
+        "at Information.",
+    ]
+    facet.attributes = {"trace": "denial"}
+
+
+def classify_traces(
+    fragment: ET.Element, facets: Sequence[PolicyFacet], *, has_group_grants: bool
+) -> list[PolicyFacet]:
+    """Describe the fragment's trace facets: one for its refusals and one for attribution.
+
+    ``facets`` are the fragment's analyzed facets, whose trace entries arrive in document order.
+    Every refusal has its own trace, but one facet describes them all.
+    """
+
+    traces = iter(element for element in fragment.iter() if element.tag == "trace")
+    kept: list[PolicyFacet] = []
+    denial_described = False
+    for facet in facets:
+        if facet.element != "trace":
+            kept.append(facet)
+            continue
+        element = next(traces, None)
+        message = "" if element is None else element.findtext("message", "")
+        if DENIAL_TRACE_PREFIX in message:
+            if denial_described:
+                continue
+            denial_described = True
+            describe_denial_trace(facet)
+        else:
+            describe_grant_attribution_trace(facet, has_group_grants=has_group_grants)
+        kept.append(facet)
+    return kept
 
 
 def _validate(publication: Publication, snapshot: ModelAccessSnapshot) -> None:
@@ -458,11 +571,12 @@ def _authentication(
     _variable(
         fragment, "mosaic-has-token", '@(context.Request.Headers.ContainsKey("Authorization"))'
     )
-    _reject(fragment, f"@(!{_HAS_KEY} && !{_HAS_TOKEN})", code=401)
+    _initialize_caller(fragment)
+    _reject(fragment, f"@(!{_HAS_KEY} && !{_HAS_TOKEN})", reason="no-credential", code=401)
     if not snapshot.settings.keys_enabled:
-        _reject(fragment, f"@({_HAS_KEY})", code=401)
+        _reject(fragment, f"@({_HAS_KEY})", reason="keys-off", code=401)
     if not snapshot.settings.entra_enabled:
-        _reject(fragment, f"@({_HAS_TOKEN})", code=401)
+        _reject(fragment, f"@({_HAS_TOKEN})", reason="tokens-off", code=401)
     _variable(fragment, "mosaic-key-grant", "")
     _variable(fragment, "mosaic-token-grant", "")
     _variable(fragment, "mosaic-member", "")
@@ -471,9 +585,9 @@ def _authentication(
         key = ET.SubElement(
             ET.SubElement(fragment, "choose"), "when", {"condition": f"@({_HAS_KEY})"}
         )
-        _reject(key, _key_shape_check(), code=401)
+        _reject(key, _key_shape_check(), reason="key-malformed", code=401)
         _variable(key, "mosaic-key-grant", _key_lookup(publication, grants))
-        _reject(key, f"@(String.IsNullOrEmpty({_KEY_GRANT}))")
+        _reject(key, f"@(String.IsNullOrEmpty({_KEY_GRANT}))", reason="key-unknown")
 
     if snapshot.settings.entra_enabled:
         token = ET.SubElement(
@@ -491,6 +605,7 @@ def _authentication(
                     " || String.IsNullOrWhiteSpace(authorization.Substring(7));",
                 ]
             ),
+            reason="token-malformed",
             code=401,
         )
         validation = ET.SubElement(
@@ -514,6 +629,7 @@ def _authentication(
             },
         )
         ET.SubElement(claim, "value").text = "2.0"
+        _record_validated_caller(token)
         _variable(
             token,
             "mosaic-token-grant",
@@ -526,10 +642,26 @@ def _authentication(
         )
         _variable(token, "mosaic-member", _token_member_lookup(publication, grants))
         if any(grant.is_group_grant for grant in grants):
-            _reject(token, _token_groups_overage(), message=_GROUPS_OVERAGE_DENIED)
-        _reject(token, f"@(String.IsNullOrEmpty({_TOKEN_GRANT}))")
+            _reject(
+                token,
+                _token_groups_overage(),
+                reason="groups-overage",
+                with_caller=True,
+                message=_GROUPS_OVERAGE_DENIED,
+            )
+        _reject(
+            token,
+            f"@(String.IsNullOrEmpty({_TOKEN_GRANT}))",
+            reason="no-grant",
+            with_caller=True,
+        )
 
-    _reject(fragment, f"@({_HAS_KEY} && {_HAS_TOKEN} && {_KEY_GRANT} != {_TOKEN_GRANT})")
+    _reject(
+        fragment,
+        f"@({_HAS_KEY} && {_HAS_TOKEN} && {_KEY_GRANT} != {_TOKEN_GRANT})",
+        reason="grant-mismatch",
+        with_caller=True,
+    )
     _variable(fragment, "mosaic-grant", f"@({_HAS_KEY} ? {_KEY_GRANT} : {_TOKEN_GRANT})")
 
 
@@ -540,6 +672,8 @@ def _operation_guard(
     _reject(
         fragment,
         f'@(context.Operation == null || context.Request.Method != "POST" || !({allowed}))',
+        reason="operation",
+        with_caller=True,
         message=(
             "This operation is not available through governed access."
             if publication.api_shape == ApiShape.ANTHROPIC_MESSAGES
@@ -564,6 +698,8 @@ def _operation_guard(
                     "} catch { return true; }",
                 ]
             ),
+            reason="model",
+            with_caller=True,
             message="The request must name this publication's model deployment.",
         )
 
@@ -812,7 +948,10 @@ def _facets(
         for element in fragment.iter()
         if element.tag in {"llm-token-limit", "rate-limit-by-key", "quota-by-key"}
     )
-    for facet in [*fragment_analysis.facets, *api_analysis.facets]:
+    fragment_facets = classify_traces(
+        fragment, fragment_analysis.facets, has_group_grants=enabled_group_grants > 0
+    )
+    for facet in [*fragment_facets, *api_analysis.facets]:
         facet.managed_by_mosaic = True
         if facet.section == PolicySection.UNKNOWN:
             facet.section = PolicySection.INBOUND
@@ -877,8 +1016,6 @@ def _facets(
             facet, publication.api_shape
         ) and publication.backend_key_name is not None:
             describe_backend_key(facet)
-        elif facet.element == "trace":
-            describe_grant_attribution_trace(facet, has_group_grants=enabled_group_grants > 0)
         facets.append(facet)
     return facets, sorted(
         set(fragment_analysis.unrecognized_elements + api_analysis.unrecognized_elements)
@@ -919,7 +1056,7 @@ def render_governed_policy(
     )
     fragment = ET.Element("fragment")
     if not (snapshot.settings.keys_enabled or snapshot.settings.entra_enabled):
-        _deny(fragment)
+        _deny(fragment, reason="access-off")
     else:
         _authentication(
             fragment,

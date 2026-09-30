@@ -11,9 +11,15 @@ delete of something already gone is a no-op rather than an error that masks the 
 
 from typing import Any, Literal
 
-from mosaic_api.domain import APIM_API_VERSION, APIM_MCP_API_VERSION, ApimResourceId
+from mosaic_api.domain import (
+    APIM_API_VERSION,
+    APIM_LLM_DIAGNOSTIC_API_VERSION,
+    APIM_MCP_API_VERSION,
+    ApimResourceId,
+)
 from mosaic_api.errors import DomainError, UpstreamError
 from mosaic_api.integrations.apim.client import ArmClient, JsonObject
+from mosaic_api.integrations.apim.diagnostics import AZURE_MONITOR, azure_monitor_logger_payload
 from mosaic_api.integrations.backend_keys import named_value_properties
 
 # API Management requires an If-Match header on deletes. MOSAIC sends "*" rather than a captured
@@ -311,3 +317,17 @@ class ApimWriter:
 
     async def delete_subscription(self, name: str) -> bool:
         return await self._delete(f"subscriptions/{name}")
+
+    async def put_azure_monitor_logger(self) -> JsonObject | None:
+        """Create the logger through which API diagnostics feed the service's resource logs."""
+
+        return await self._put(f"loggers/{AZURE_MONITOR}", azure_monitor_logger_payload())
+
+    async def put_api_diagnostic(self, api_name: str, payload: JsonObject) -> JsonObject | None:
+        """Upsert an API's Azure Monitor diagnostic, on the contract that knows LLM logging."""
+
+        return await self._arm.put(
+            self.resource_id(f"apis/{api_name}/diagnostics/{AZURE_MONITOR}"),
+            payload,
+            params={"api-version": APIM_LLM_DIAGNOSTIC_API_VERSION},
+        )

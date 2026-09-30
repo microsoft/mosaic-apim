@@ -1,0 +1,662 @@
+"""Administrator analytics over MOSAIC's usage rollups. See ADR 0019.
+
+Every report reads the ``usage-rollups`` container and never Log Analytics, so a request costs a
+few Cosmos reads however much traffic the gateways carry. Breakdowns read whole months from monthly
+summaries and the days either side from daily ones, so a long range reads few items.
+"""
+
+import asyncio
+from collections import defaultdict
+from collections.abc import Awaitable, Callable, Iterable, Sequence
+from dataclasses import replace
+from datetime import date, datetime, timedelta
+
+from mosaic_api.domain import utc_now
+from mosaic_api.errors import ConflictError
+from mosaic_api.integrations.graph import DirectoryLookup
+from mosaic_api.observed import ObservedModelDeployment
+from mosaic_api.repositories import (
+    DirectoryRepository,
+    EntitlementRepository,
+    EnvironmentRepository,
+    GatewayRepository,
+    ModelEndpointRepository,
+    UsageRollupRepository,
+)
+from mosaic_api.services.analytics.consumers import consumers_report
+from mosaic_api.services.analytics.export import COLUMNS, REPORT_FOR, filename, table, to_csv
+from mosaic_api.services.analytics.limits import (
+    HygieneInputs,
+    LimitInputs,
+    grant_links,
+    hygiene_report,
+    limited,
+    limits_report,
+)
+from mosaic_api.services.analytics.models import (
+    AnalyticsConsumers,
+    AnalyticsDataSource,
+    AnalyticsFilters,
+    AnalyticsGatewayHealth,
+    AnalyticsHygiene,
+    AnalyticsLimits,
+    AnalyticsModels,
+    AnalyticsOverview,
+    AnalyticsReliability,
+    AnalyticsReport,
+    AnalyticsStatus,
+    AnalyticsUnattributed,
+    ExportView,
+)
+from mosaic_api.services.analytics.scope import (
+    NameCache,
+    Scope,
+    build_grants,
+    is_application,
+    resolve_gateways,
+    resolve_resource,
+)
+from mosaic_api.services.analytics.views import (
+    DENIAL_ROWS,
+    ROW_LIMIT,
+    Context,
+    DeploymentInfo,
+    lag_minutes,
+    models_report,
+    overview,
+    reliability,
+    unattributed_report,
+    within,
+)
+from mosaic_api.services.analytics.window import (
+    Coverage,
+    Window,
+    add_months,
+    coverage_of,
+    resolve_window,
+    split_months,
+)
+from mosaic_api.services.directory import Actor
+from mosaic_api.services.environments import load_environment_catalog
+from mosaic_api.services.telemetry import governed_apis
+from mosaic_api.services.usage import (
+    UsageFreshness,
+    current_window,
+    quota_definitions,
+    usage_freshness,
+)
+from mosaic_api.services.usage_rollup import UsageRollupService
+from mosaic_api.usage_telemetry import (
+    RolledUpApi,
+    SummaryDimension,
+    SummaryPeriod,
+    UsageFact,
+    UsageRollupState,
+    UsageSummary,
+)
+
+# An export keeps this many rows of each list, where the console keeps ROW_LIMIT.
+EXPORT_LIMIT = 10_000
+# Callers MOSAIC has no record of are looked up in the directory, at most this many a request.
+NAME_LOOKUPS = 200
+# A grant is only judged unused while its gateway's figures are at most this old.
+STALE_AFTER = timedelta(days=1)
+
+NOT_CONFIGURED = (
+    "This deployment doesn't read gateway telemetry, so MOSAIC has no measured usage to show. "
+    "Set MOSAIC_USAGE_SOURCE to rollups to turn it on."
+)
+NO_GATEWAYS = (
+    "No gateway in scope has a model API or MCP server MOSAIC governs, so there are no calls to "
+    "report."
+)
+PENDING = (
+    "MOSAIC hasn't rolled up any gateway telemetry yet. Figures appear after the first rollup, "
+    "which runs every {minutes} minutes."
+)
+SUBJECT_NOTE = (
+    "The subject filter narrows people, applications, groups and grants. Totals, models and APIs "
+    "still count every caller."
+)
+HOURS_NOTE = (
+    "Breakdowns cover the whole UTC days the last 24 hours touch, because MOSAIC keeps only totals "
+    "by the hour."
+)
+MONTHS_NOTE = "Ranges longer than 92 days are shown by whole calendar month."
+HYGIENE_NOTE = "Access hygiene always covers the last 30 days, whatever range is chosen."
+
+Reader = Callable[..., Awaitable[AnalyticsReport]]
+
+
+def _day(value: date) -> str:
+    return f"{value.day} {value:%B %Y}"
+
+
+async def _nothing() -> list[UsageSummary]:
+    return []
+
+
+class AnalyticsService:
+    def __init__(
+        self,
+        repository: UsageRollupRepository,
+        *,
+        gateway_repository: GatewayRepository,
+        entitlement_repository: EntitlementRepository,
+        directory_repository: DirectoryRepository,
+        environment_repository: EnvironmentRepository | None = None,
+        endpoint_repository: ModelEndpointRepository | None = None,
+        rollups: UsageRollupService | None = None,
+        directory_lookup: DirectoryLookup | None = None,
+        configured: bool = True,
+        interval_seconds: int = 900,
+        retention_days: int = 400,
+        clock: Callable[[], datetime] = utc_now,
+    ) -> None:
+        self._repository = repository
+        self._gateways = gateway_repository
+        self._entitlements = entitlement_repository
+        self._directory = directory_repository
+        self._environments = environment_repository
+        self._endpoints = endpoint_repository
+        self._rollups = rollups
+        self._names = NameCache(directory_lookup)
+        self._configured = configured
+        self._interval = timedelta(seconds=interval_seconds)
+        self._retention_days = retention_days
+        self._clock = clock
+
+    @property
+    def _source(self) -> AnalyticsDataSource:
+        return "logAnalytics" if self._configured else "notConfigured"
+
+    # -- what a request may see -------------------------------------------------------------
+
+    async def _scope(
+        self, actor: Actor, filters: AnalyticsFilters, *, grants: bool = True
+    ) -> Scope:
+        tenant = actor.tenant_id
+        gateways, catalog, governed, states = await asyncio.gather(
+            self._gateways.list_gateways(tenant),
+            load_environment_catalog(self._environments, tenant),
+            governed_apis(self._gateways, tenant, now=self._clock()),
+            self._repository.list_rollup_states(tenant),
+        )
+        all_gateways = {gateway.id: gateway for gateway in gateways}
+        selected, gateway_ids = resolve_gateways(filters, all_gateways, catalog)
+        # APIs a gateway no longer has are still named from what its rollups remember.
+        apis: dict[tuple[str, str], RolledUpApi] = {}
+        for state in states:
+            for api in state.apis:
+                apis[(state.gateway_id, api.api_name)] = api
+        for gateway_id, current in governed.items():
+            for api in current:
+                apis[(gateway_id, api.api_name)] = api
+        allowed_apis: set[tuple[str, str]] | None = None
+        resource_ids: set[str] | None = None
+        if filters.resource_id is not None:
+            allowed_apis, resource_ids = resolve_resource(filters.resource_id, apis)
+            reached = {gateway_id for gateway_id, _ in allowed_apis}
+            gateway_ids = sorted(reached if gateway_ids is None else reached & set(gateway_ids))
+            selected = {key: gateway for key, gateway in selected.items() if key in reached}
+        scope = Scope(
+            tenant_id=tenant,
+            filters=filters,
+            all_gateways=all_gateways,
+            gateways=selected,
+            gateway_ids=gateway_ids,
+            states={state.gateway_id: state for state in states},
+            governed=governed,
+            apis=apis,
+            allowed_apis=allowed_apis,
+            resource_ids=resource_ids,
+            environments={item.key: item.display_name for item in catalog.environments},
+            grants={},
+            links_by_entitlement={},
+            entitlements={},
+            principals_by_object={},
+            principals_by_id={},
+            principals_by_app={},
+            groups={},
+            subject_names={},
+        )
+        if grants:
+            await self._add_grants(scope)
+        return scope
+
+    async def _add_grants(self, scope: Scope) -> None:
+        tenant = scope.tenant_id
+        records, entitlements, principals, groups = await asyncio.gather(
+            self._repository.list_attribution_records(tenant),
+            self._entitlements.list_entitlements(tenant),
+            self._directory.list_principals(tenant),
+            self._directory.list_groups(tenant),
+        )
+        scope.principals_by_id = {principal.id: principal for principal in principals}
+        scope.principals_by_object = {
+            principal.object_id.casefold(): principal for principal in principals
+        }
+        scope.principals_by_app = {
+            principal.detail.casefold(): principal
+            for principal in principals
+            if is_application(principal) and principal.detail
+        }
+        scope.groups = {group.id: group for group in groups}
+        scope.entitlements = {entitlement.id: entitlement for entitlement in entitlements}
+        scope.grants = build_grants(records, entitlements, scope.principals_by_id, scope.groups)
+        links: dict[str, set[str]] = defaultdict(set)
+        names: dict[str, str] = {}
+        for key, grant in scope.grants.items():
+            if grant.entitlement_id:
+                links[grant.entitlement_id].add(key)
+            if grant.subject_object_id and grant.subject_name:
+                names.setdefault(grant.subject_object_id, grant.subject_name)
+        scope.links_by_entitlement = dict(links)
+        scope.subject_names = names
+
+    async def _name(self, scope: Scope, summaries: Iterable[UsageSummary]) -> None:
+        """Look up callers MOSAIC has no record of, busiest first."""
+
+        calls: dict[str, int] = defaultdict(int)
+        for summary in summaries:
+            if summary.dimension not in {"grantCaller", "denial"}:
+                continue
+            for entry in summary.entries:
+                caller = (
+                    entry.key.rpartition("|")[2]
+                    if summary.dimension == "grantCaller"
+                    else [*entry.key.split("|", 3), "", ""][1]
+                )
+                folded = caller.casefold()
+                if (
+                    folded
+                    and folded not in scope.principals_by_object
+                    and folded not in scope.subject_names
+                ):
+                    calls[folded] += entry.metrics.requests
+        if calls:
+            ordered = sorted(calls, key=lambda object_id: (-calls[object_id], object_id))
+            scope.directory = await self._names.resolve(ordered, limit=NAME_LOOKUPS)
+
+    # -- reading summaries ------------------------------------------------------------------
+
+    def _horizon(self, window: Window) -> date | None:
+        """The first day MOSAIC still keeps daily figures for, when a window is read by day."""
+
+        if window.granularity == "month":
+            return None
+        return window.today - timedelta(days=self._retention_days - 1)
+
+    def _span(self, window: Window) -> tuple[date, date]:
+        horizon = self._horizon(window)
+        first = window.first_day if horizon is None else max(window.first_day, horizon)
+        return first, window.last_day
+
+    async def _read(
+        self,
+        scope: Scope,
+        period: SummaryPeriod,
+        first: date,
+        last: date,
+        dimensions: Sequence[SummaryDimension],
+    ) -> list[UsageSummary]:
+        if first > last or (scope.gateway_ids is not None and not scope.gateway_ids):
+            return []
+        return await self._repository.list_summaries(
+            scope.tenant_id,
+            period=period,
+            start=first.isoformat(),
+            end=last.isoformat(),
+            dimensions=list(dimensions),
+            gateway_ids=scope.gateway_ids,
+        )
+
+    async def _breakdown(
+        self, scope: Scope, window: Window, dimensions: Sequence[SummaryDimension]
+    ) -> list[UsageSummary]:
+        """A window's summaries for breakdowns: whole months by the month, the rest by day."""
+
+        first, last = self._span(window)
+        if window.granularity == "month":
+            return await self._read(scope, "month", first, last, dimensions)
+        months, ranges = split_months(first, last)
+        reads = [self._read(scope, "day", start, end, dimensions) for start, end in ranges]
+        if months:
+            reads.append(self._read(scope, "month", months[0], months[-1], dimensions))
+        return [summary for part in await asyncio.gather(*reads) for summary in part]
+
+    async def _facts(self, scope: Scope, day: date, links: set[str]) -> list[UsageFact]:
+        if not links or (scope.gateway_ids is not None and not scope.gateway_ids):
+            return []
+        return await self._repository.list_facts(
+            scope.tenant_id,
+            start_day=day.isoformat(),
+            end_day=day.isoformat(),
+            link_keys=sorted({link.partition(":")[2] for link in links}),
+            gateway_ids=scope.gateway_ids,
+        )
+
+    async def _deployments(self, scope: Scope) -> dict[str, DeploymentInfo]:
+        """What MOSAIC last observed of each deployment a governed model API calls."""
+
+        if self._endpoints is None:
+            return {}
+        endpoint_ids = sorted(
+            {api.model_endpoint_id for api in scope.apis.values() if api.model_endpoint_id}
+        )
+        if not endpoint_ids:
+            return {}
+        endpoints = {
+            endpoint.id: endpoint
+            for endpoint in await self._endpoints.list_endpoints(scope.tenant_id)
+        }
+        observed = await asyncio.gather(
+            *(
+                self._endpoints.list_observed_for_endpoint(
+                    ObservedModelDeployment,
+                    scope.tenant_id,
+                    endpoint_id,
+                    "observedModelDeployment",
+                )
+                for endpoint_id in endpoint_ids
+                if endpoint_id in endpoints
+            )
+        )
+        found: dict[str, DeploymentInfo] = {}
+        for deployments in observed:
+            for deployment in deployments:
+                endpoint = endpoints.get(deployment.endpoint_id)
+                found[f"{deployment.endpoint_id}/{deployment.deployment_name}"] = DeploymentInfo(
+                    endpoint_name=endpoint.name if endpoint else None,
+                    model_name=deployment.model_name,
+                    model_format=deployment.model_format,
+                    sku_name=deployment.sku_name,
+                    sku_capacity=deployment.sku_capacity,
+                )
+        return found
+
+    # -- what every report carries ----------------------------------------------------------
+
+    def _freshness(self, scope: Scope, now: datetime) -> UsageFreshness:
+        return usage_freshness(
+            scope.live_states(),
+            gateways=len(scope.live_gateways()),
+            now=now,
+            interval=self._interval,
+        )
+
+    def _health(self, scope: Scope, now: datetime) -> list[AnalyticsGatewayHealth]:
+        rows: list[AnalyticsGatewayHealth] = []
+        for gateway in sorted(scope.gateways.values(), key=lambda item: item.name.casefold()):
+            governed = scope.governed.get(gateway.id, [])
+            state = scope.states.get(gateway.id) or UsageRollupState(
+                id=f"pending-{gateway.id}", tenant_id=gateway.tenant_id, gateway_id=gateway.id
+            )
+            freshness = usage_freshness(
+                [state], gateways=1 if governed else 0, now=now, interval=self._interval
+            )
+            rows.append(
+                AnalyticsGatewayHealth(
+                    gateway_id=gateway.id,
+                    name=gateway.name,
+                    environment=gateway.environment,
+                    environment_name=scope.environment_name(gateway.environment),
+                    status=freshness.status,
+                    governed_apis=len(governed),
+                    instrumented_apis=len(
+                        {api.api_name for api in governed}.intersection(state.instrumented_apis)
+                    ),
+                    last_run_at=state.last_run_at,
+                    last_success_at=state.last_success_at,
+                    queried_through=state.queried_through,
+                    lag_minutes=lag_minutes(now, state.queried_through),
+                    data_available_from=state.data_available_from,
+                    last_error=state.last_error,
+                    last_error_at=state.last_error_at,
+                    backfill_status=state.backfill_status,
+                    backfill_from=state.backfill_from,
+                    backfill_next=state.backfill_next,
+                    unknown_trace_versions=state.unknown_trace_versions,
+                    diagnostics_error=state.diagnostics_error,
+                )
+            )
+        return rows
+
+    def _context(self, scope: Scope, window: Window, now: datetime, *, limit: int) -> Context:
+        coverage = coverage_of(scope.live_states())
+        freshness = self._freshness(scope, now)
+        horizon = self._horizon(window)
+        clamped = False
+        if horizon is not None and coverage is not None and coverage.first_day < horizon:
+            coverage = Coverage(first_day=horizon, through=coverage.through)
+            clamped = True
+        notes: list[str] = []
+        if not self._configured:
+            notes.append(NOT_CONFIGURED)
+        elif freshness.status == "notLinked":
+            notes.append(NO_GATEWAYS)
+        elif coverage is None:
+            notes.append(PENDING.format(minutes=freshness.interval_minutes))
+        elif coverage.first_start > window.start:
+            notes.append(
+                f"MOSAIC keeps daily figures for {self._retention_days} days, so this range has "
+                f"none before {_day(coverage.first_day)}. Choose 12 months to see older usage by "
+                "month."
+                if clamped
+                else f"MOSAIC has figures from {_day(coverage.first_day)}, so earlier parts of "
+                "this range show no data."
+            )
+        if scope.filters.subject_kind is not None:
+            notes.append(SUBJECT_NOTE)
+        if window.granularity == "hour":
+            notes.append(HOURS_NOTE)
+        elif window.range == "custom" and window.granularity == "month":
+            notes.append(MONTHS_NOTE)
+        base = {
+            "data_source": self._source,
+            "generated_at": now,
+            "window": window.model(),
+            "freshness": freshness,
+            "notes": notes,
+        }
+        top_limit = limit if limit > ROW_LIMIT else DENIAL_ROWS
+        return Context(
+            scope=scope,
+            window=window,
+            coverage=coverage,
+            base=base,
+            limit=limit,
+            top_limit=top_limit,
+        )
+
+    async def _prepare(
+        self,
+        actor: Actor,
+        filters: AnalyticsFilters,
+        *,
+        limit: int,
+        grants: bool = True,
+    ) -> tuple[Context, datetime]:
+        now = self._clock()
+        window = resolve_window(filters, now)
+        scope = await self._scope(actor, filters, grants=grants)
+        return self._context(scope, window, now, limit=limit), now
+
+    # -- reports ----------------------------------------------------------------------------
+
+    async def status(self, actor: Actor) -> AnalyticsStatus:
+        now = self._clock()
+        scope = await self._scope(actor, AnalyticsFilters(), grants=False)
+        return AnalyticsStatus(
+            data_source=self._source,
+            rollups_enabled=self._rollups is not None,
+            generated_at=now,
+            freshness=self._freshness(scope, now),
+            gateways=self._health(scope, now),
+        )
+
+    async def gateway(self, actor: Actor, gateway_id: str) -> AnalyticsGatewayHealth:
+        """One gateway's rollup health, as the overview reports it."""
+
+        now = self._clock()
+        scope = await self._scope(actor, AnalyticsFilters(gateway_id=gateway_id), grants=False)
+        return self._health(scope, now)[0]
+
+    async def refresh(self, actor: Actor) -> AnalyticsStatus:
+        """Roll up every gateway now instead of at the next interval."""
+
+        if self._rollups is None:
+            raise ConflictError(
+                "This deployment doesn't roll up gateway telemetry, so there is nothing to refresh"
+            )
+        await self._rollups.request_refresh(actor)
+        return await self.status(actor)
+
+    async def overview(
+        self, actor: Actor, filters: AnalyticsFilters, *, limit: int = ROW_LIMIT
+    ) -> AnalyticsOverview:
+        context, now = await self._prepare(actor, filters, limit=limit)
+        scope, window = context.scope, context.window
+        first, last = self._span(window)
+        hourly = window.granularity == "hour"
+        # The last 24 hours compare with the 24 before, which the same daily items hold.
+        current, previous, breakdown = await asyncio.gather(
+            self._read(
+                scope,
+                window.period,
+                window.previous_first_day if hourly else first,
+                last,
+                ["api", "model"],
+            ),
+            _nothing()
+            if hourly
+            else self._read(
+                scope,
+                window.period,
+                window.previous_first_day,
+                window.previous_last_day,
+                ["api"],
+            ),
+            self._breakdown(scope, window, ["grantCaller", "unattributed"]),
+        )
+        await self._name(scope, breakdown)
+        return overview(
+            context,
+            api=[summary for summary in current if summary.dimension == "api"],
+            previous_api=previous,
+            models=[
+                summary
+                for summary in current
+                if summary.dimension == "model" and within(summary, first, last)
+            ],
+            callers=breakdown,
+            unattributed=breakdown,
+            gateways=self._health(scope, now),
+        )
+
+    async def consumers(
+        self, actor: Actor, filters: AnalyticsFilters, *, limit: int = ROW_LIMIT
+    ) -> AnalyticsConsumers:
+        context, _ = await self._prepare(actor, filters, limit=limit)
+        summaries = await self._breakdown(
+            context.scope, context.window, ["grantCaller", "clientApp"]
+        )
+        await self._name(context.scope, summaries)
+        return consumers_report(context, callers=summaries, clients=summaries)
+
+    async def models(
+        self, actor: Actor, filters: AnalyticsFilters, *, limit: int = ROW_LIMIT
+    ) -> AnalyticsModels:
+        context, _ = await self._prepare(actor, filters, limit=limit, grants=False)
+        scope, window = context.scope, context.window
+        first, last = self._span(window)
+        # Deployments are read by the day, which is where their hourly peaks are kept.
+        summaries, observed = await asyncio.gather(
+            self._read(scope, window.period, first, last, ["api", "model", "deployment"]),
+            self._deployments(scope),
+        )
+        return models_report(
+            context, api=summaries, models=summaries, deployments=summaries, observed=observed
+        )
+
+    async def reliability(
+        self, actor: Actor, filters: AnalyticsFilters, *, limit: int = ROW_LIMIT
+    ) -> AnalyticsReliability:
+        context, _ = await self._prepare(actor, filters, limit=limit)
+        scope, window = context.scope, context.window
+        first, last = self._span(window)
+        api, denials = await asyncio.gather(
+            self._read(scope, window.period, first, last, ["api"]),
+            self._breakdown(scope, window, ["denial"]),
+        )
+        await self._name(scope, denials)
+        return reliability(context, api=api, trend_api=api, denials=denials)
+
+    async def limits(
+        self, actor: Actor, filters: AnalyticsFilters, *, limit: int = ROW_LIMIT
+    ) -> AnalyticsLimits:
+        context, now = await self._prepare(actor, filters, limit=limit)
+        scope, window = context.scope, context.window
+        today = window.today
+        week_start = current_window(now, "Weekly")[0].date()
+        hourly: set[str] = set()
+        for entitlement in limited(scope):
+            if any(period == "Hourly" for _, _, period in quota_definitions(entitlement)):
+                hourly.update(grant_links(scope, entitlement))
+        in_window, days, months, facts = await asyncio.gather(
+            self._breakdown(scope, window, ["grantCaller"]),
+            self._read(scope, "day", week_start, today, ["grantCaller"]),
+            self._read(scope, "month", date(today.year, 1, 1), today, ["grantCaller"]),
+            self._facts(scope, today, hourly),
+        )
+        await self._name(scope, [*in_window, *days, *months])
+        inputs = LimitInputs(facts=facts, days=days, months=months, window=in_window)
+        return limits_report(context, inputs, now)
+
+    async def hygiene(
+        self, actor: Actor, filters: AnalyticsFilters, *, limit: int = ROW_LIMIT
+    ) -> AnalyticsHygiene:
+        """Unused grants and keys over the last 30 days, whatever range the request chose."""
+
+        fixed = replace(filters, range="30d", start=None, end=None)
+        context, now = await self._prepare(actor, fixed, limit=limit)
+        if filters.range != "30d":
+            context.notes.append(HYGIENE_NOTE)
+        scope, window = context.scope, context.window
+        current, history = await asyncio.gather(
+            self._breakdown(scope, window, ["grant", "denial"]),
+            self._read(
+                scope, "month", add_months(window.first_day, -12), window.first_day, ["grant"]
+            ),
+        )
+        await self._name(scope, current)
+        inputs = HygieneInputs(grants=current, history=history, denials=current)
+        return hygiene_report(context, inputs, now, stale_after=STALE_AFTER)
+
+    async def unattributed(
+        self, actor: Actor, filters: AnalyticsFilters, *, limit: int = ROW_LIMIT
+    ) -> AnalyticsUnattributed:
+        context, _ = await self._prepare(actor, filters, limit=limit, grants=False)
+        summaries = await self._breakdown(context.scope, context.window, ["api", "unattributed"])
+        return unattributed_report(context, api=summaries, unattributed=summaries)
+
+    async def export(
+        self, actor: Actor, filters: AnalyticsFilters, view: ExportView
+    ) -> tuple[str, str]:
+        """One view's rows as CSV, with the file name to save it under."""
+
+        readers: dict[str, Reader] = {
+            "overview": self.overview,
+            "consumers": self.consumers,
+            "models": self.models,
+            "reliability": self.reliability,
+            "limits": self.limits,
+            "hygiene": self.hygiene,
+            "unattributed": self.unattributed,
+        }
+        report = await readers[REPORT_FOR[view]](actor, filters, limit=EXPORT_LIMIT)
+        window = report.window
+        return (
+            filename(view, window.breakdown_start, window.breakdown_end),
+            to_csv(COLUMNS[view], table(view, report)),
+        )

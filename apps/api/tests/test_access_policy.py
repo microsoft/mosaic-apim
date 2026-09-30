@@ -37,7 +37,8 @@ SUBSCRIPTION_COUNTER = "@(context.Subscription.Id)"
 # The wire format a Log Analytics source parses from TraceRecords.
 _ATTRIBUTION_MESSAGE = (
     '@("mosaic-attribution v=1 g=" + (string)context.Variables["mosaic-grant"]'
-    ' + " m=" + (string)context.Variables["mosaic-member"])'
+    ' + " m=" + (string)context.Variables["mosaic-member"]'
+    ' + " a=" + (string)context.Variables["mosaic-client"])'
 )
 
 
@@ -260,7 +261,8 @@ def test_each_auth_method_is_independently_enabled_and_disabled_credentials_are_
     fragment = ET.fromstring(result.fragment_xml)
     assert len(fragment.findall(".//validate-azure-ad-token")) == int(entra)
     if not keys and not entra:
-        assert [element.tag for element in fragment] == ["return-response"]
+        assert [element.tag for element in fragment] == ["trace", "return-response"]
+        assert fragment.findtext("trace/message") == "mosaic-deny v=1 r=access-off"
         assert fragment.find("return-response/set-status").attrib["code"] == "403"  # type: ignore[union-attr]
         assert fragment.find(".//authentication-managed-identity") is None
         assert fragment.find(".//llm-token-limit") is None
@@ -293,8 +295,11 @@ def test_grant_trace_is_after_operation_guard_before_limits_and_members_only_for
     )
     fragment = ET.fromstring(result.fragment_xml)
     children = list(fragment)
-    trace = fragment.find("trace")
-    assert trace is not None
+    trace = next(
+        element
+        for element in fragment.findall("trace")
+        if "mosaic-attribution" in (element.findtext("message") or "")
+    )
 
     limit_index = next(
         index
@@ -307,20 +312,33 @@ def test_grant_trace_is_after_operation_guard_before_limits_and_members_only_for
         if element.find("when/return-response/set-body") is not None
         and "governed token limits" in (element.findtext("when/return-response/set-body") or "")
     )
-    assert [element.tag for element in fragment.iter()].count("trace") == 1
+    attribution_traces = [
+        element
+        for element in fragment.iter("trace")
+        if "mosaic-attribution" in (element.findtext("message") or "")
+    ]
+    assert attribution_traces == [trace]
     assert guard_index < children.index(trace) < limit_index
     member_index = next(
         index
         for index, element in enumerate(children)
         if element.tag == "set-variable" and element.attrib["name"] == "mosaic-member"
     )
-    # Every call's message reads mosaic-member, so it must already exist for key callers too.
+    client_index = next(
+        index
+        for index, element in enumerate(children)
+        if element.tag == "set-variable" and element.attrib["name"] == "mosaic-client"
+    )
+    # Every call's message reads mosaic-member and mosaic-client, so both must already exist for
+    # key callers too.
     assert member_index < children.index(trace)
+    assert client_index < children.index(trace)
     assert trace.findtext("message") == _ATTRIBUTION_MESSAGE
     metadata = {item.attrib["name"]: item.attrib["value"] for item in trace.findall("metadata")}
     assert metadata == {
         "mosaic-grant": '@((string)context.Variables["mosaic-grant"])',
         "mosaic-member": '@((string)context.Variables["mosaic-member"])',
+        "mosaic-client": '@((string)context.Variables["mosaic-client"])',
     }
     assert any(
         facet.element == "trace"
@@ -330,10 +348,113 @@ def test_grant_trace_is_after_operation_guard_before_limits_and_members_only_for
     )
 
     direct = ET.fromstring(render_governed_policy(_publication(), _snapshot()).fragment_xml)
-    direct_trace = direct.find("trace")
-    assert direct_trace is not None
+    direct_trace = next(
+        element
+        for element in direct.findall("trace")
+        if "mosaic-attribution" in (element.findtext("message") or "")
+    )
     assert direct_trace.findtext("message") == _ATTRIBUTION_MESSAGE
-    assert [item.attrib["name"] for item in direct_trace.findall("metadata")] == ["mosaic-grant"]
+    assert [item.attrib["name"] for item in direct_trace.findall("metadata")] == [
+        "mosaic-grant",
+        "mosaic-client",
+    ]
+
+
+def _denial_reasons(fragment: ET.Element) -> dict[str, str]:
+    reasons: dict[str, str] = {}
+    for trace in fragment.iter("trace"):
+        message = trace.findtext("message") or ""
+        match = re.search(r"mosaic-deny v=1 r=([a-z-]+)", message)
+        if match:
+            reasons[match.group(1)] = message
+    return reasons
+
+
+def test_every_refusal_records_a_fixed_reason_before_it_responds() -> None:
+    fragment = _fragment(_snapshot(grants=[_grant(), _group_grant(2)]))
+    reasons = _denial_reasons(fragment)
+    assert set(reasons) == {
+        "no-credential",
+        "key-malformed",
+        "key-unknown",
+        "token-malformed",
+        "groups-overage",
+        "no-grant",
+        "grant-mismatch",
+        "operation",
+        "model",
+    }
+    # Refusals before token validation record no caller; later ones record the validated oid and
+    # azp, which stay empty for a key-only call.
+    assert reasons["no-credential"] == "mosaic-deny v=1 r=no-credential"
+    assert reasons["no-grant"] == (
+        '@("mosaic-deny v=1 r=no-grant o=" + (string)context.Variables["mosaic-caller"]'
+        ' + " a=" + (string)context.Variables["mosaic-client"])'
+    )
+    for when in fragment.iter("when"):
+        response = when.find("return-response")
+        if response is None:
+            continue
+        children = list(when)
+        trace_index = children.index(response) - 1
+        assert trace_index >= 0 and children[trace_index].tag == "trace"
+        assert "mosaic-deny v=1" in (children[trace_index].findtext("message") or "")
+
+    disabled = _fragment(
+        _snapshot(settings=ModelAccessSettings(keys_enabled=False, entra_enabled=True))
+    )
+    assert {"keys-off", "no-grant"} <= set(_denial_reasons(disabled))
+    keys_only = _fragment(
+        _snapshot(
+            settings=ModelAccessSettings(keys_enabled=True, entra_enabled=False), audience=None
+        )
+    )
+    assert "tokens-off" in _denial_reasons(keys_only)
+    assert "no-grant" not in _denial_reasons(keys_only)
+
+
+def test_the_validated_caller_is_recorded_only_after_token_validation() -> None:
+    fragment = _fragment()
+    children = list(fragment)
+    initial = [
+        element.attrib["name"]
+        for element in children
+        if element.tag == "set-variable" and element.attrib.get("value") == ""
+    ]
+    assert {"mosaic-caller", "mosaic-client"} <= set(initial)
+    token = next(
+        when
+        for when in fragment.findall("choose/when")
+        if when.find("validate-azure-ad-token") is not None
+    )
+    token_children = list(token)
+    validation_index = next(
+        index
+        for index, element in enumerate(token_children)
+        if element.tag == "validate-azure-ad-token"
+    )
+    recorded = {
+        element.attrib["name"]: (index, element.attrib["value"])
+        for index, element in enumerate(token_children)
+        if element.tag == "set-variable"
+        and element.attrib["name"] in {"mosaic-caller", "mosaic-client"}
+    }
+    assert set(recorded) == {"mosaic-caller", "mosaic-client"}
+    for name, claim in (("mosaic-caller", "oid"), ("mosaic-client", "azp")):
+        index, expression = recorded[name]
+        assert index > validation_index
+        assert f'jwt.Claims["{claim}"]' in expression or f'ContainsKey("{claim}")' in expression
+        assert "ToLowerInvariant()" in expression
+        assert expression_error(expression) is None
+
+
+def test_one_facet_describes_every_refusal_trace() -> None:
+    result = render_governed_policy(_publication(), _snapshot(grants=[_grant(), _group_grant(2)]))
+    trace_facets = [facet for facet in result.facets if facet.element == "trace"]
+    assert len(trace_facets) == 2
+    denial = next(facet for facet in trace_facets if facet.attributes.get("trace") == "denial")
+    assert "refused" in denial.summary
+    assert "<" not in _facets_json(result)
 
 
 def test_presence_includes_empty_query_or_header_and_any_authorization_header() -> None:

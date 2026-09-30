@@ -23,6 +23,19 @@ class RepositoryBackend(StrEnum):
     MEMORY = "memory"
 
 
+class UsageSourceMode(StrEnum):
+    """Where usage figures come from.
+
+    ``auto`` reads gateway telemetry rollups in Azure and simulates usage from the caller's real
+    grants in local and test environments. ``simulated`` is refused in Azure, so a deployment can
+    never show invented figures as real ones.
+    """
+
+    AUTO = "auto"
+    ROLLUPS = "rollups"
+    SIMULATED = "simulated"
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="MOSAIC_",
@@ -49,6 +62,30 @@ class Settings(BaseSettings):
     cosmos_sync_operations_container: str = "sync-operations"
     cosmos_audit_events_container: str = "audit-events"
     cosmos_observed_state_container: str = "observed-state"
+    cosmos_usage_rollups_container: str = "usage-rollups"
+    usage_source: UsageSourceMode = UsageSourceMode.AUTO
+    usage_rollup_enabled: bool = Field(
+        default=True,
+        description="Run the background job that copies gateway telemetry into usage rollups.",
+    )
+    usage_rollup_interval_seconds: int = Field(default=900, ge=60, le=86_400)
+    usage_rollup_retention_days: int = Field(
+        default=400,
+        ge=62,
+        le=3650,
+        description=(
+            "How long daily usage facts and summaries are kept. Monthly summaries stay. At least "
+            "62 days, so each month's days are still there when it is folded for the last time."
+        ),
+    )
+    usage_rollup_backfill_max_days: int = Field(default=90, ge=1, le=730)
+    log_analytics_endpoint: AnyHttpUrl = Field(
+        default=AnyHttpUrl("https://api.loganalytics.azure.com"),
+        description=(
+            "Log Analytics query endpoint: https://api.loganalytics.azure.com for Azure "
+            "Commercial and https://api.loganalytics.us for Azure Government."
+        ),
+    )
     cors_origins: list[str] = Field(default_factory=list)
     applicationinsights_connection_string: str | None = None
     managed_identity_principal_id: str | None = None
@@ -117,6 +154,13 @@ class Settings(BaseSettings):
                     "Private MCP endpoints are a local development affordance and must not be "
                     "enabled in Azure"
                 )
+            if self.usage_source is UsageSourceMode.SIMULATED:
+                raise ValueError(
+                    "Simulated usage is a local development affordance and must not be enabled "
+                    "in Azure"
+                )
+            if not str(self.log_analytics_endpoint).casefold().startswith("https://"):
+                raise ValueError("MOSAIC_LOG_ANALYTICS_ENDPOINT must use https in Azure")
         if self.auth_mode is AuthMode.LOCAL and self.environment not in {
             Environment.LOCAL,
             Environment.TEST,
@@ -157,6 +201,12 @@ class Settings(BaseSettings):
                 f"both are set to {self.required_role.strip()!r}"
             )
         return self
+
+    @property
+    def uses_usage_rollups(self) -> bool:
+        if self.usage_source is UsageSourceMode.AUTO:
+            return self.environment is Environment.AZURE
+        return self.usage_source is UsageSourceMode.ROLLUPS
 
     @property
     def issuer(self) -> str:

@@ -3,6 +3,7 @@ import { render, screen, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { DashboardPage } from './DashboardPage'
+import { overviewFixture, statusFixture } from '../test/analytics-fixtures'
 
 const timestamps = { createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:00Z' }
 
@@ -11,6 +12,8 @@ const api = {
   listGroups: vi.fn(),
   getEnvironmentCatalog: vi.fn(),
   listEnvironmentFindings: vi.fn(),
+  getAnalyticsOverview: vi.fn(),
+  getAnalyticsStatus: vi.fn(),
 }
 vi.mock('../api', () => ({
   useMosaicApi: () => api,
@@ -94,9 +97,11 @@ describe('DashboardPage', () => {
       limitations: [],
       generatedAt: '2026-09-29T00:00:00Z',
     })
+    api.getAnalyticsOverview.mockResolvedValue(overviewFixture)
+    api.getAnalyticsStatus.mockResolvedValue(statusFixture)
   })
 
-  it('separates live desired state from sample telemetry', async () => {
+  it('shows live desired state and real usage analytics', async () => {
     renderPage()
 
     expect(await screen.findByText('person')).toBeVisible()
@@ -104,14 +109,36 @@ describe('DashboardPage', () => {
     expect(within(inventoryCard('agents')).getByText('2')).toBeVisible()
     expect(within(inventoryCard('apps and security groups')).getByText('3')).toBeVisible()
     expect(within(inventoryCard('MOSAIC group')).getByText('1')).toBeVisible()
-    expect(screen.getByText('Live data')).toBeVisible()
-    expect(screen.getAllByText('Sample data').length).toBeGreaterThan(1)
-    expect(screen.getByRole('note')).toHaveTextContent('MOSAIC is not querying Azure Monitor yet')
+    expect(screen.getAllByText('Live data').length).toBeGreaterThan(0)
+    expect(screen.queryByText('Sample data')).not.toBeInTheDocument()
+    expect(await screen.findByText('Alice Admin')).toBeVisible()
+    const callers = screen.getByRole('list', { name: 'Top callers' })
+    expect(within(callers).getByText('15.1K tokens')).toBeVisible()
+    expect(within(callers).getByText('106 calls')).toBeVisible()
+    expect(within(screen.getByRole('list', { name: 'Top models' })).getByText('45K tokens')).toBeVisible()
+    // APIs rank by calls, because MCP servers carry no tokens.
+    const apis = screen.getByRole('list', { name: 'Top APIs' })
+    expect(within(apis).getByText('154 calls')).toBeVisible()
+    expect(within(apis).getByText('Production gateway · 45K tokens')).toBeVisible()
+    expect(screen.getByText('Tokens, peak 3K')).toBeVisible()
+    expect(screen.getByText('≈1.5 s')).toBeVisible()
+    expect(screen.getByText('Current')).toBeVisible()
+    expect(screen.getByText('3 governed APIs · 15 min behind')).toBeVisible()
+    expect(screen.queryByText(/Estimated cost/)).not.toBeInTheDocument()
     expect(await screen.findByRole('heading', { name: 'Environments' })).toBeVisible()
     expect(screen.getByText('2 gateways')).toBeVisible()
     expect(screen.getByText('3 MCP servers')).toBeVisible()
     expect(screen.getByText('1 gateway')).toBeVisible()
     expect(screen.getByRole('button', { name: '1 environment finding' })).toBeVisible()
+  })
+
+  it("doesn't spell out a lag for a gateway that is caught up", async () => {
+    const [gateway] = statusFixture.gateways
+    api.getAnalyticsStatus.mockResolvedValue({ ...statusFixture, gateways: [{ ...gateway, lagMinutes: 0 }] })
+    renderPage()
+
+    expect(await screen.findByText('3 governed APIs')).toBeVisible()
+    expect(screen.queryByText(/min behind/)).not.toBeInTheDocument()
   })
 
   it('shows counts even when environment findings fail', async () => {

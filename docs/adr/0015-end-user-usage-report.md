@@ -152,3 +152,25 @@ Consequences:
   real source can attribute, not the simulated figures.
 - MOSAIC hasn't yet confirmed on a live gateway that the message reaches `TraceRecords`. The Log
   Analytics source must verify it before relying on it.
+
+## Amendment 2026-09-30: Measured usage
+
+[ADR 0019](0019-usage-telemetry.md) adds the real source this ADR left room for, behind the same
+route:
+- **Figures are measured in Azure.** `/me/usage` reads rollups of each gateway's logs.
+  `dataSource` is `logAnalytics`, and each row is `measured` or `unattributed`.
+- **The simulation is only for local and test runs.** `MOSAIC_USAGE_SOURCE=simulated` is refused
+  in Azure, and a failure to read the rollups is an error, as this ADR required. The portal's badge
+  for simulated figures now reads Sample figures.
+- **The attribution trace gains a key.** It adds `a=<client ID>`, the validated token's `azp`,
+  under `v=1`, as readers that ignore unknown keys allow.
+- **Measured reports add fields.** They add `freshness`, the last 24 hours by hour, throttled,
+  quota-refused, and failed calls, each day's busiest minute against per-minute rate limits, and
+  each grant's last use. A quota whose window MOSAIC has only partly measured is marked `partial`,
+  so its use is a lower bound.
+- **Measured reports carry no cost until MOSAIC has a price list.** The simulation keeps its
+  illustrative rates. The portal hides the cost column when no row has a cost.
+- **Environment rows count unmeasured resources.** A row's `unmeasuredResources` counts the
+  resources whose usage MOSAIC can't link, which its figures leave out.
+- **Usage tracking is worded by its source.** The portal's labels now read Linked from gateway log
+  traces, Linked from the APIM subscription, and Not linked yet.

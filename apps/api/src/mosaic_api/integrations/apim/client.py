@@ -18,8 +18,10 @@ from azure.core.exceptions import ClientAuthenticationError
 
 from mosaic_api.domain import (
     APIM_API_VERSION,
+    APIM_LLM_DIAGNOSTIC_API_VERSION,
     APIM_MCP_API_VERSION,
     AUTHORIZATION_API_VERSION,
+    DIAGNOSTIC_SETTINGS_API_VERSION,
     ApimResourceId,
 )
 from mosaic_api.errors import (
@@ -901,3 +903,33 @@ class ApimClient:
             return None
         value = properties.get("value")
         return value if isinstance(value, str) else None
+
+    async def get_logger(self, name: str) -> JsonObject | None:
+        return await self._sub_resource(f"loggers/{name}")
+
+    async def get_api_diagnostic(self, api_name: str, name: str) -> JsonObject | None:
+        """Read an API's diagnostic on the contract that describes its LLM log settings."""
+
+        return await self._arm.get(
+            f"{self._base}/apis/{api_name}/diagnostics/{name}",
+            params={"api-version": APIM_LLM_DIAGNOSTIC_API_VERSION},
+            allow_not_found=True,
+        )
+
+    async def get_diagnostic(self, name: str) -> JsonObject | None:
+        """Read the service's diagnostic, set for All APIs, which an API without its own uses."""
+
+        return await self._arm.get(
+            f"{self._base}/diagnostics/{name}",
+            params={"api-version": APIM_LLM_DIAGNOSTIC_API_VERSION},
+            allow_not_found=True,
+        )
+
+    async def list_diagnostic_settings(self) -> list[JsonObject]:
+        """The service's Azure Monitor diagnostic settings: where its resource logs are sent."""
+
+        return await self._arm.list(
+            f"{self._base}/providers/Microsoft.Insights/diagnosticSettings",
+            params={"api-version": DIAGNOSTIC_SETTINGS_API_VERSION},
+            allow_not_found=True,
+        )

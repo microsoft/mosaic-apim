@@ -109,6 +109,12 @@ var webUrl = 'https://${webWebAppName}.azurewebsites.net'
 var portalUrl = 'https://${portalWebAppName}.azurewebsites.net'
 var apimGatewayUrl = 'https://${apimName}.azure-api.net'
 var authorityUrl = uri(environment().authentication.loginEndpoint, tenantId)
+// Where MOSAIC queries gateway logs for usage. Each sovereign cloud has its own query endpoint.
+var logAnalyticsQueryEndpoints = {
+  AzureChinaCloud: 'https://api.loganalytics.azure.cn'
+  AzureUSGovernment: 'https://api.loganalytics.us'
+}
+var logAnalyticsQueryEndpoint = logAnalyticsQueryEndpoints[?environment().name] ?? 'https://api.loganalytics.azure.com'
 var apiCorsAllowedOrigins = concat(localhostOrigins, [
   webUrl
   portalUrl
@@ -209,6 +215,18 @@ var apiAppSettings = [
   {
     name: 'MOSAIC_COSMOS_OBSERVED_STATE_CONTAINER'
     value: 'observed-state'
+  }
+  {
+    name: 'MOSAIC_COSMOS_USAGE_ROLLUPS_CONTAINER'
+    value: 'usage-rollups'
+  }
+  {
+    name: 'MOSAIC_USAGE_SOURCE'
+    value: 'rollups'
+  }
+  {
+    name: 'MOSAIC_LOG_ANALYTICS_ENDPOINT'
+    value: logAnalyticsQueryEndpoint
   }
 ]
 var webAppSettings = [
@@ -531,6 +549,21 @@ resource apiMonitoringReader 'Microsoft.Authorization/roleAssignments@2022-04-01
   dependsOn: [
     #disable-next-line no-unnecessary-dependson
     monitoring
+  ]
+}
+
+// Usage comes from the gateway's own logs, queried in the context of the API Management service,
+// which needs read access to the service's logs and diagnostic settings. See ADR 0019.
+resource apiApimMonitoringReader 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(apimName, apiWebAppName, 'MonitoringReader')
+  scope: apimResource
+  properties: {
+    principalId: apiApp.outputs.principalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '43d0d8ad-25c7-4714-9337-8ba259a9fe05')
+  }
+  dependsOn: [
+    apim
   ]
 }
 

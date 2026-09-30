@@ -27,7 +27,13 @@ import uvicorn
 from azure.core.credentials_async import AsyncTokenCredential
 from fastapi import FastAPI, Request
 from mosaic_api.auth import AuthContext
-from mosaic_api.config import AuthMode, Environment, RepositoryBackend, Settings
+from mosaic_api.config import (
+    AuthMode,
+    Environment,
+    RepositoryBackend,
+    Settings,
+    UsageSourceMode,
+)
 from mosaic_api.domain import (
     AccessRequestApproval,
     AccessRequestCreate,
@@ -66,7 +72,7 @@ from mosaic_api.integrations.apim import ApimClient, ApimWriter, ArmClient
 from mosaic_api.integrations.apim.credentials import ApimCredentialClient
 from mosaic_api.integrations.graph.fake import FakeDirectoryLookup
 from mosaic_api.main import create_app
-from mosaic_api.repositories import InMemoryEntitlementRepository
+from mosaic_api.repositories import GatewayRepository, InMemoryEntitlementRepository
 from mosaic_api.services import (
     DirectoryService,
     EntitlementService,
@@ -75,11 +81,16 @@ from mosaic_api.services import (
     McpEndpointService,
     ModelEndpointService,
     PublishingService,
+    UsageService,
 )
+from mosaic_api.services.analytics import AnalyticsService
 from mosaic_api.services.directory import Actor
 from mosaic_api.services.mcp_endpoints import build_mcp_client_factory
 from mosaic_api.services.mcp_publishing import McpPublishingService
 from mosaic_api.services.portal_access import PortalAccessService
+from mosaic_api.services.telemetry import TelemetryService
+from mosaic_api.services.usage import RollupUsageSource
+from mosaic_api.services.usage_rollup import UsageRollupService
 
 from scripts.screenshots.demo_fakes import (
     AI_RESOURCE_ID,
@@ -89,13 +100,17 @@ from scripts.screenshots.demo_fakes import (
     KEY_VAULT_ID,
     PARTNER_GATEWAY_RESOURCE_ID,
     DemoApim,
+    DemoLogs,
     FakeCredential,
+    TrafficStream,
     build_cognitive_accounts,
     build_key_vault,
     build_mcp_servers,
     cognitive_handler,
     gateway_handler,
+    log_every_call,
     mcp_handler,
+    send_logs_to_workspace,
 )
 
 TENANT_ID = "5f2d7c1e-8a3b-4c9d-b0e1-f2a3b4c5d6e7"
@@ -374,9 +389,14 @@ class DemoServices:
     environments: EnvironmentService
     # The seed dates its grants in the past, which only the in-memory store lets it do.
     entitlement_repository: InMemoryEntitlementRepository
+    gateway_repository: GatewayRepository
+    logs: DemoLogs
+    telemetry: TelemetryService
+    usage_rollups: UsageRollupService
     clients: list[httpx.AsyncClient] = field(default_factory=list)
 
     async def aclose(self) -> None:
+        await self.usage_rollups.aclose()
         await self.gateways.aclose()
         await self.endpoints.aclose()
         await self.publishing.aclose()
@@ -400,6 +420,11 @@ def install_demo_services(app: FastAPI, portal_origins: Iterable[str]) -> DemoSe
         raise SeedError("The demo estate needs the in-memory entitlement repository")
     apim = DemoApim()
     dev_apim = DemoApim(DEV_GATEWAY_RESOURCE_ID, public_ip="203.0.113.25")
+    # Both gateways already send their resource logs to Contoso's workspace, and log every call.
+    send_logs_to_workspace(apim)
+    send_logs_to_workspace(dev_apim)
+    log_every_call(apim)
+    log_every_call(dev_apim)
     gateway_arm, gateway_http = _arm(gateway_handler(apim, dev_apim))
     ai_arm, ai_http = _arm(cognitive_handler(build_cognitive_accounts()))
     vault_arm, vault_http = _arm(build_key_vault().handler)
@@ -480,6 +505,56 @@ def install_demo_services(app: FastAPI, portal_origins: Iterable[str]) -> DemoSe
         model_runtime_client_id=settings.model_runtime_client_id,
         model_client_id=settings.model_client_id,
     )
+    # Usage and analytics read the demo's gateway logs through MOSAIC's own rollup job.
+    logs = DemoLogs()
+    telemetry = TelemetryService(
+        gateway_repository=state.gateway_repository,
+        rollup_repository=state.usage_rollup_repository,
+        entitlement_repository=state.entitlement_repository,
+        client_factory=lambda resource: ApimClient(gateway_arm, resource),
+        writer_factory=lambda resource: ApimWriter(gateway_arm, resource),
+        logs=logs,
+        rollups_enabled=True,
+        interval_seconds=settings.usage_rollup_interval_seconds,
+        principal_id=MOSAIC_PRINCIPAL_ID,
+    )
+    usage_rollups = UsageRollupService(
+        state.usage_rollup_repository,
+        gateway_repository=state.gateway_repository,
+        entitlement_repository=state.entitlement_repository,
+        directory_repository=state.repository,
+        logs=logs,
+        telemetry=telemetry,
+        tenant_id=settings.tenant_id,
+        interval_seconds=settings.usage_rollup_interval_seconds,
+        retention_days=settings.usage_rollup_retention_days,
+        backfill_max_days=settings.usage_rollup_backfill_max_days,
+    )
+    state.telemetry_service = telemetry
+    state.usage_rollup_service = usage_rollups
+    state.usage_service = UsageService(
+        state.portal_service,
+        source=RollupUsageSource(
+            state.usage_rollup_repository,
+            interval_seconds=settings.usage_rollup_interval_seconds,
+        ),
+        gateway_repository=state.gateway_repository,
+        endpoint_repository=state.model_endpoint_repository,
+        environment_repository=state.environment_repository,
+    )
+    state.analytics_service = AnalyticsService(
+        state.usage_rollup_repository,
+        gateway_repository=state.gateway_repository,
+        entitlement_repository=state.entitlement_repository,
+        directory_repository=state.repository,
+        environment_repository=state.environment_repository,
+        endpoint_repository=state.model_endpoint_repository,
+        rollups=usage_rollups,
+        directory_lookup=lookup,
+        configured=True,
+        interval_seconds=settings.usage_rollup_interval_seconds,
+        retention_days=settings.usage_rollup_retention_days,
+    )
     state.authenticator = DemoAuthenticator(settings.tenant_id, portal_origins)
     return DemoServices(
         directory=directory,
@@ -491,6 +566,10 @@ def install_demo_services(app: FastAPI, portal_origins: Iterable[str]) -> DemoSe
         entitlements=state.entitlement_service,
         environments=state.environment_service,
         entitlement_repository=entitlement_repository,
+        gateway_repository=state.gateway_repository,
+        logs=logs,
+        telemetry=telemetry,
+        usage_rollups=usage_rollups,
         clients=[gateway_http, ai_http, vault_http, mcp_http],
     )
 
@@ -544,6 +623,8 @@ class Estate:
     dev_model_apis: dict[str, str] = field(default_factory=dict)
     mcp_endpoints: dict[str, str] = field(default_factory=dict)
     mcp_servers: dict[str, str] = field(default_factory=dict)
+    # The API name MOSAIC gave the Docs Search MCP server it published.
+    docs_mcp_api: str = ""
     principals: dict[str, str] = field(default_factory=dict)
     groups: dict[str, str] = field(default_factory=dict)
 
@@ -584,11 +665,10 @@ def _date_history(
 ) -> None:
     """Move the grants and decisions seeded so far into the past.
 
-    MOSAIC stamps each record with the time it's written, and the usage report simulates a grant's
-    traffic only from the day it was made, so an estate seeded a moment ago would chart a month of
-    nothing and then one busy day. ``decisions`` says how long ago each decided request was
-    decided; the grant it produced dates from then, and every other grant from ``GRANT_AGE`` ago.
-    Pending requests keep today's date.
+    MOSAIC stamps each record with the time it's written, so an estate seeded a moment ago would
+    show every grant as made today beside a quarter of gateway traffic. ``decisions`` says how long
+    ago each decided request was decided; the grant it produced dates from then, and every other
+    grant from ``GRANT_AGE`` ago. Pending requests keep today's date.
     """
     now = utc_now()
     granted: dict[str, datetime] = {}
@@ -907,6 +987,7 @@ async def seed_estate(services: DemoServices, tenant_id: str) -> Estate:
     published_docs = await services.mcp_publishing.get_publication(admin, docs_publication.id)
     estate.publications[published_docs.display_name] = published_docs.id
     estate.mcp_servers[published_docs.api_name] = published_docs.mcp_server_id
+    estate.docs_mcp_api = published_docs.api_name
     await services.gateways.update_mcp_server_catalog(
         admin,
         published_docs.mcp_server_id,
@@ -1111,6 +1192,412 @@ async def seed_estate(services: DemoServices, tenant_id: str) -> Estate:
     return estate
 
 
+# -- Gateway traffic ------------------------------------------------------------------------------
+
+# Microsoft's public clients, which people sign in through to call the gateway. MOSAIC names them.
+AZURE_CLI = "04b07795-8ddb-461a-bbee-02f9e1bf7b46"
+VS_CODE = "aebc6443-996d-45c2-90f0-388ff96faa56"
+# The most rollup cycles the seed waits for while the job reads back the quarter of logs.
+MAX_ROLLUP_CYCLES = 30
+
+
+def chat(model: str, prompt: int, completion: int, latency_ms: int) -> dict[str, Any]:
+    """A model call's shape: the deployment it reaches, its usual tokens, and its usual latency."""
+
+    return {
+        "deployment": model,
+        "model": model,
+        "prompt_tokens": prompt,
+        "completion_tokens": completion,
+        "latency_ms": latency_ms,
+    }
+
+
+async def traffic_streams(
+    services: DemoServices, estate: Estate, tenant_id: str
+) -> list[TrafficStream]:
+    """A quarter of Contoso's gateway traffic, workload by workload.
+
+    Calls to a governed publication carry MOSAIC's trace of the grant its policy matched: a direct
+    grant beats a group grant, and a caller in several granted groups gets the most generous one.
+    The rest is what a real estate also has: refusals, and calls to APIs MOSAIC only adopted, which
+    it can count but not tie to anyone.
+    """
+
+    admin = Actor(ADMIN.object_id, tenant_id)
+    today = utc_now().date()
+    published = {
+        label: await services.publishing.get_publication(admin, estate.publications[label])
+        for label in ("GPT-4o", "GPT-4o mini", "Phi-4", "Text embeddings (large)")
+    }
+    embeddings = published["Text embeddings (large)"]
+    gpt4o = estate.model_apis["GPT-4o"]
+    gpt4o_mini = estate.model_apis["GPT-4o mini"]
+    phi4 = estate.model_apis["Phi-4"]
+    docs = estate.mcp_servers[estate.docs_mcp_api]
+    api_names = {
+        gpt4o: published["GPT-4o"].api_name,
+        gpt4o_mini: published["GPT-4o mini"].api_name,
+        phi4: published["Phi-4"].api_name,
+        docs: estate.docs_mcp_api,
+    }
+
+    def granted(
+        name: str,
+        subject: Person,
+        resource_id: str,
+        *,
+        caller: Person | None = None,
+        client_app: str = "",
+        key: bool = False,
+        **shape: Any,
+    ) -> TrafficStream:
+        """Calls under an applied grant, from the day it was made. ``caller`` is a group member."""
+
+        subject_id = estate.principals[subject.label]
+        entitlement = next(
+            (
+                item
+                for item in services.entitlement_repository.entitlements.values()
+                if item.enabled
+                and item.subject.id == subject_id
+                and item.resource.id == resource_id
+                and item.binding is not None
+                and item.binding.attribution_key
+            ),
+            None,
+        )
+        if entitlement is None or entitlement.binding is None:
+            raise SeedError(f"{subject.label} has no applied grant on {resource_id}")
+        binding = entitlement.binding
+        return TrafficStream(
+            name=name,
+            resource_id=GATEWAY_RESOURCE_ID,
+            api=api_names[resource_id],
+            grant=binding.attribution_key or "",
+            member=caller.object_id if caller else "",
+            # A key call names its subscription; only a validated token names a client app.
+            client_app="" if key else client_app,
+            subscription=(binding.apim_subscription_name or "") if key else "",
+            since=entitlement.created_at.date(),
+            **shape,
+        )
+
+    def refused(
+        name: str, api: str, denial: str, *, caller: Person | None = None, **shape: Any
+    ) -> TrafficStream:
+        return TrafficStream(
+            name=name,
+            resource_id=GATEWAY_RESOURCE_ID,
+            api=api,
+            denial=denial,
+            member=caller.object_id if caller else "",
+            **shape,
+        )
+
+    def adopted(name: str, api: str, subscription: str, **shape: Any) -> TrafficStream:
+        shape.setdefault("resource_id", GATEWAY_RESOURCE_ID)
+        return TrafficStream(name=name, api=api, subscription=subscription, **shape)
+
+    return [
+        granted(
+            "support-copilot",
+            SUPPORT_COPILOT,
+            gpt4o_mini,
+            key=True,
+            per_day=1300,
+            rhythm="always",
+            weekend=0.6,
+            tokens_per_minute=80_000,
+            burst=2,
+            **chat("gpt-4o-mini", 950, 230, 700),
+        ),
+        granted(
+            "claims-gpt-4o",
+            CLAIMS_TRIAGE,
+            gpt4o,
+            client_app=CLAIMS_TRIAGE.object_id,
+            per_day=70,
+            rhythm="always",
+            weekend=0.4,
+            tokens_per_minute=20_000,
+            burst=3,
+            backend_throttle_rate=0.004,
+            **chat("gpt-4o", 1900, 420, 2400),
+        ),
+        granted(
+            "claims-phi-4",
+            CLAIMS_TRIAGE,
+            phi4,
+            client_app=CLAIMS_TRIAGE.object_id,
+            per_day=160,
+            rhythm="always",
+            weekend=0.4,
+            tokens_per_minute=30_000,
+            burst=4,
+            **chat("Phi-4", 650, 110, 650),
+        ),
+        granted(
+            "alex",
+            ALEX,
+            gpt4o,
+            client_app=VS_CODE,
+            per_day=24,
+            tokens_per_minute=50_000,
+            **chat("gpt-4o", 1400, 520, 2600),
+        ),
+        granted(
+            "market-research",
+            MARKET_RESEARCH_AGENT,
+            gpt4o,
+            client_app=MARKET_RESEARCH_AGENT.object_id,
+            per_day=230,
+            rhythm="always",
+            weekend=0.85,
+            tokens_per_minute=30_000,
+            burst=10,
+            backend_throttle_rate=0.004,
+            **chat("gpt-4o", 2100, 480, 3200),
+        ),
+        # Megan's own grant, from the request approved seven weeks ago: a notebook that uses her
+        # key, and scripts that sign in as her.
+        granted(
+            "megan-key",
+            MEGAN,
+            gpt4o,
+            key=True,
+            per_day=30,
+            tokens_per_minute=20_000,
+            **chat("gpt-4o", 1100, 380, 2200),
+        ),
+        granted(
+            "megan-token",
+            MEGAN,
+            gpt4o,
+            client_app=AZURE_CLI,
+            per_day=14,
+            tokens_per_minute=20_000,
+            **chat("gpt-4o", 1300, 450, 2400),
+        ),
+        granted(
+            "invoices",
+            INVOICE_RECONCILIATION_AGENT,
+            phi4,
+            client_app=INVOICE_RECONCILIATION_AGENT.object_id,
+            per_day=270,
+            rhythm="always",
+            weekend=0.3,
+            tokens_per_minute=15_000,
+            burst=8,
+            **chat("Phi-4", 880, 160, 700),
+        ),
+        granted(
+            "scheduling",
+            SCHEDULING_ASSISTANT,
+            phi4,
+            client_app=SCHEDULING_ASSISTANT_AGENT.object_id,
+            per_day=80,
+            tokens_per_minute=8_000,
+            **chat("Phi-4", 520, 90, 500),
+        ),
+        # AI Model Users' members call under the group's grant, unless they have their own. Lidia
+        # is in Finance AI Pilot too, whose smaller allowance loses.
+        granted(
+            "isaiah",
+            AI_MODEL_USERS,
+            gpt4o,
+            caller=ISAIAH,
+            client_app=VS_CODE,
+            per_day=28,
+            tokens_per_minute=10_000,
+            **chat("gpt-4o", 1200, 400, 2400),
+        ),
+        granted(
+            "lidia",
+            AI_MODEL_USERS,
+            gpt4o,
+            caller=LIDIA,
+            client_app=AZURE_CLI,
+            per_day=17,
+            tokens_per_minute=10_000,
+            **chat("gpt-4o", 1600, 500, 2600),
+        ),
+        granted(
+            "diego",
+            FINANCE_AI_PILOT,
+            gpt4o,
+            caller=DIEGO,
+            client_app=AZURE_CLI,
+            per_day=9,
+            tokens_per_minute=5_000,
+            burst=2,
+            **chat("gpt-4o", 1500, 450, 2500),
+        ),
+        granted(
+            "megan-docs",
+            MEGAN,
+            docs,
+            client_app=VS_CODE,
+            per_day=26,
+            latency_ms=450,
+            calls_per_minute=60,
+            burst=3,
+        ),
+        granted(
+            "market-research-docs",
+            MARKET_RESEARCH_AGENT,
+            docs,
+            client_app=MARKET_RESEARCH_AGENT.object_id,
+            per_day=140,
+            rhythm="always",
+            weekend=0.85,
+            latency_ms=380,
+            calls_per_minute=120,
+            burst=6,
+        ),
+        granted(
+            "isaiah-docs",
+            AI_MODEL_USERS,
+            docs,
+            caller=ISAIAH,
+            client_app=VS_CODE,
+            per_day=17,
+            latency_ms=450,
+        ),
+        granted(
+            "lidia-docs",
+            AI_MODEL_USERS,
+            docs,
+            caller=LIDIA,
+            client_app=VS_CODE,
+            per_day=8,
+            latency_ms=450,
+        ),
+        # Nestor's grant isn't applied yet, so the gateway still refuses him.
+        refused(
+            "nestor",
+            api_names[gpt4o],
+            "no-grant",
+            caller=NESTOR,
+            client_app=AZURE_CLI,
+            per_day=5,
+            since=today - timedelta(days=1),
+        ),
+        refused(
+            "patti",
+            api_names[gpt4o],
+            "no-grant",
+            caller=PATTI,
+            client_app=VS_CODE,
+            per_day=2,
+            since=today - timedelta(days=20),
+        ),
+        refused(
+            "mini-tokens",
+            api_names[gpt4o_mini],
+            "tokens-off",
+            per_day=3,
+            since=today - timedelta(days=9),
+        ),
+        refused(
+            "mini-unknown-key",
+            api_names[gpt4o_mini],
+            "key-unknown",
+            per_day=4,
+            rhythm="always",
+            weekend=1.0,
+            since=today - timedelta(days=30),
+        ),
+        refused(
+            "no-credential",
+            "azure-openai",
+            "unauthenticated",
+            per_day=6,
+            rhythm="always",
+            weekend=1.0,
+        ),
+        refused("bad-token", api_names[phi4], "token-invalid", per_day=3),
+        adopted(
+            "claims-openai",
+            "azure-openai",
+            "claims-triage",
+            per_day=120,
+            rhythm="always",
+            weekend=0.4,
+            **chat("gpt-4o-mini", 700, 150, 800),
+        ),
+        adopted(
+            "support-openai",
+            "azure-openai",
+            "support-copilot-prod",
+            per_day=30,
+            rhythm="always",
+            weekend=0.6,
+            until=today - timedelta(days=20),
+            **chat("gpt-4o", 1200, 300, 2300),
+        ),
+        adopted(
+            "support-mistral",
+            "foundry-inference",
+            "support-copilot-prod",
+            per_day=18,
+            rhythm="always",
+            weekend=0.6,
+            **chat("Mistral-Large-2411", 1500, 350, 1800),
+        ),
+        adopted(
+            "partner-orders",
+            "orders-mcp",
+            "fulfilment-partner",
+            per_day=70,
+            rhythm="always",
+            weekend=0.5,
+            latency_ms=300,
+        ),
+        # Text embeddings was published without governed access, so its calls trace no grant.
+        adopted(
+            "docs-indexer",
+            embeddings.api_name,
+            embeddings.subscription_name,
+            per_day=300,
+            rhythm="nightly",
+            weekend=1.0,
+            **chat("text-embedding-3-large", 2600, 0, 450),
+        ),
+        adopted(
+            "dev-claims",
+            "azure-openai",
+            "claims-triage",
+            resource_id=DEV_GATEWAY_RESOURCE_ID,
+            per_day=40,
+            **chat("gpt-4o-mini", 700, 150, 900),
+        ),
+        adopted(
+            "dev-foundry",
+            "foundry-inference",
+            "support-copilot-prod",
+            resource_id=DEV_GATEWAY_RESOURCE_ID,
+            per_day=22,
+            **chat("Phi-4", 600, 120, 750),
+        ),
+    ]
+
+
+async def seed_usage(services: DemoServices, estate: Estate, tenant_id: str) -> None:
+    """Turn on telemetry for the managed gateway, then roll up a quarter of both gateways' logs."""
+
+    await services.telemetry.enable(Actor(ADMIN.object_id, tenant_id), estate.gateway_id)
+    services.logs.streams = await traffic_streams(services, estate, tenant_id)
+    for _ in range(MAX_ROLLUP_CYCLES):
+        states = await services.usage_rollups.run_cycle()
+        failed = next((state for state in states if state.last_error), None)
+        if failed is not None:
+            raise SeedError(f"Rolling up {failed.gateway_id} failed: {failed.last_error}")
+        if not any(state.backfill_status == "running" for state in states):
+            return
+    raise SeedError(f"Rolling up the demo's usage took more than {MAX_ROLLUP_CYCLES} cycles")
+
+
 def build_settings(cors_origins: list[str]) -> Settings:
     return Settings(
         _env_file=None,
@@ -1129,6 +1616,10 @@ def build_settings(cors_origins: list[str]) -> Settings:
         apim_service_name=None,
         cors_origins=cors_origins,
         log_level="WARNING",
+        # Usage comes from rollups of the demo's gateway logs. The demo seeds them itself and
+        # runs no rollup loop, so every capture shows the same figures.
+        usage_source=UsageSourceMode.ROLLUPS,
+        usage_rollup_enabled=False,
     )
 
 
@@ -1147,12 +1638,14 @@ def build_demo_app(console_port: int, portal_port: int) -> FastAPI:
             services = install_demo_services(demo_app, portal_origins)
             try:
                 estate = await seed_estate(services, TENANT_ID)
+                await seed_usage(services, estate, TENANT_ID)
                 demo_app.state.demo_estate = estate
                 print(
                     "MOSAIC demo estate ready: "
                     f"{len(estate.principals)} principals, {len(estate.groups)} groups, "
                     f"{len(estate.publications)} publications, "
-                    f"{len(estate.model_apis)} model APIs, {len(estate.mcp_servers)} MCP servers",
+                    f"{len(estate.model_apis)} model APIs, {len(estate.mcp_servers)} MCP servers, "
+                    f"{len(services.logs.streams)} traffic streams",
                     flush=True,
                 )
                 yield

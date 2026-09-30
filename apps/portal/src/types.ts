@@ -190,6 +190,10 @@ export interface UsageTotals {
   totalTokens: number
   estimatedCost: number | null
   costExcludedResources: number
+  throttled?: number | null
+  quotaRefused?: number | null
+  errors?: number | null
+  lastUsedAt?: string | null
 }
 
 export interface UsageTimelinePoint {
@@ -201,6 +205,22 @@ export interface UsageTimelinePoint {
   completionTokens: number | null
   totalTokens: number | null
   estimatedCost: number | null
+  throttled?: number | null
+  quotaRefused?: number | null
+  errors?: number | null
+  peakMinuteTokens?: number | null
+  peakMinuteRequests?: number | null
+}
+
+export interface UsageHourPoint {
+  hour: string
+  requests: number | null
+  totalTokens: number | null
+  throttled: number | null
+  quotaRefused: number | null
+  errors: number | null
+  peakMinuteTokens: number | null
+  peakMinuteRequests: number | null
 }
 
 export interface UsageEnvironmentBreakdown {
@@ -212,6 +232,8 @@ export interface UsageEnvironmentBreakdown {
   totalTokens: number
   estimatedCost: number | null
   costExcludedResources: number
+  // Resources whose usage MOSAIC can't measure. The figures above leave them out.
+  unmeasuredResources: number
 }
 
 export interface UsageQuota {
@@ -222,12 +244,15 @@ export interface UsageQuota {
   windowEnd: string
   used: number | null
   utilization: number | null
+  partial?: boolean
 }
 
 export interface UsageRateLimit {
   metric: 'tokens' | 'requests'
   limit: number
   windowSeconds: number
+  peak?: number | null
+  utilization?: number | null
 }
 
 export interface UsageResourceRow {
@@ -250,6 +275,23 @@ export interface UsageResourceRow {
   costNote: string | null
   quotas: UsageQuota[]
   rateLimits: UsageRateLimit[]
+  throttled?: number | null
+  quotaRefused?: number | null
+  errors?: number | null
+  peakMinuteTokens?: number | null
+  peakMinuteRequests?: number | null
+  lastUsedAt?: string | null
+  recentHours?: UsageHourPoint[]
+}
+
+export type UsageFreshnessStatus = 'current' | 'delayed' | 'failing' | 'pending' | 'notLinked'
+
+export interface UsageFreshness {
+  status: UsageFreshnessStatus
+  updatedAt: string | null
+  dataFrom: string | null
+  gateways: number
+  intervalMinutes: number
 }
 
 export interface MyUsageReport {
@@ -264,6 +306,8 @@ export interface MyUsageReport {
   byEnvironment: UsageEnvironmentBreakdown[]
   byResource: UsageResourceRow[]
   notes: string[]
+  freshness?: UsageFreshness | null
+  recentHours?: UsageHourPoint[]
 }
 
 export interface ConnectionOperation {
