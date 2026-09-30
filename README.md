@@ -2069,6 +2069,8 @@ records.
      - **Preferential:** provisioned throughput first, with pay-as-you-go overflow.
    - People request access per model, and get one key for every model they hold in a pool.
    - AWS Bedrock members follow in a later phase.
+   - Already built: the Models page shows each deployment's capacity type (provisioned,
+     pay-as-you-go, or batch), its processing scope, and any Azure spillover.
 
    See [ADR 0024](docs/adr/0024-model-pools.md).
 9. **Catalog ecosystem:** API Center experiences, MCP tool-level governance, broader self-service

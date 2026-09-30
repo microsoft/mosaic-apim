@@ -1606,6 +1606,9 @@ describe('ModelsPage model endpoints', () => {
         modelPublisher: 'OpenAI',
         skuName: 'Standard',
         skuCapacity: 50,
+        capacityType: 'payAsYouGo',
+        processingScope: 'regional',
+        spilloverDeploymentName: null,
         provisioningState: 'Succeeded',
         raiPolicyName: 'Microsoft.DefaultV2',
         capabilities: { chatCompletion: 'true' },
@@ -1619,6 +1622,58 @@ describe('ModelsPage model endpoints', () => {
     expect(await screen.findByText('gpt-4o-prod')).toBeVisible()
     expect(screen.getByText('gpt-4o')).toBeVisible()
     expect(screen.getByText('/chat/completions')).toBeVisible()
+    expect(screen.getByText('Pay-as-you-go')).toBeVisible()
+    expect(screen.getByText('Standard 50')).toBeVisible()
+    expect(screen.getByText('Regional')).toBeVisible()
+  })
+
+  it('shows capacity type, processing scope, and Azure spillover on each deployment', async () => {
+    api.listModelEndpoints.mockResolvedValue([modelEndpoint()])
+    api.listModelDeployments.mockResolvedValue([
+      {
+        id: 'obsdeployment_ptu',
+        endpointId: 'endpoint_1',
+        deploymentName: 'gpt-4o-ptu',
+        modelName: 'gpt-4o',
+        skuName: 'GlobalProvisionedManaged',
+        skuCapacity: 100,
+        capacityType: 'provisioned',
+        processingScope: 'global',
+        spilloverDeploymentName: 'gpt-4o-standard',
+        provisioningState: 'Succeeded',
+        capabilities: {},
+        requestPaths: [],
+        observedAt: '2026-09-01T12:05:00Z',
+      },
+      {
+        id: 'obsdeployment_dev',
+        endpointId: 'endpoint_1',
+        deploymentName: 'gpt-4o-dev',
+        modelName: 'gpt-4o',
+        skuName: 'DeveloperTier',
+        capacityType: 'unknown',
+        processingScope: 'unknown',
+        provisioningState: 'Succeeded',
+        capabilities: {},
+        requestPaths: [],
+        observedAt: '2026-09-01T12:05:00Z',
+      },
+    ])
+
+    renderPage()
+
+    const table = await screen.findByRole('table', { name: 'Discovered model deployments' })
+    const row = (name: string) => within(table).getByText(name).closest('tr') as HTMLElement
+    const provisioned = row('gpt-4o-ptu')
+    expect(within(provisioned).getByText('Provisioned')).toBeVisible()
+    expect(within(provisioned).getByText('GlobalProvisionedManaged 100')).toBeVisible()
+    expect(within(provisioned).getByText('Azure spillover to gpt-4o-standard')).toBeVisible()
+    expect(within(provisioned).getByText('Global')).toBeVisible()
+    // An SKU MOSAIC doesn't recognize is shown as it is, and never guessed at.
+    const unrecognized = row('gpt-4o-dev')
+    expect(within(unrecognized).getAllByText('Unknown')).toHaveLength(2)
+    expect(within(unrecognized).getByText('DeveloperTier')).toBeVisible()
+    expect(within(unrecognized).queryByText(/Azure spillover/)).toBeNull()
   })
 
   it('shows MOSAIC remediation when it cannot read the endpoint', async () => {

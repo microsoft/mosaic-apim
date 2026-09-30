@@ -2,7 +2,9 @@
 
 **Status:** Proposed
 
-Nothing in this record is implemented yet.
+Only one piece of phase 1 is implemented. Inventory reads each deployment's capacity type,
+processing scope, and Azure spillover, and the Models page shows them. Nothing else in this record
+is built yet.
 
 For pools only, this record amends [ADR 0011](0011-governed-model-access.md): each person or
 application gets one key per pool, rather than one key per grant.
@@ -396,8 +398,10 @@ flowchart LR
 
   Region, capacity type, and processing scope aren't stored as intent. The plan reads them from
   inventory.
-- **`ObservedModelDeployment`** gains the derived capacity type and processing scope, and the
-  deployment's `spilloverDeploymentName`.
+- **`ObservedModelDeployment`** carries the derived capacity type and processing scope, and the
+  deployment's `spilloverDeploymentName`. The two derived attributes are worked out whenever a
+  deployment is read, so they're right even for a deployment synced before they existed. Azure
+  spillover appears at the endpoint's next sync.
 
 ### Access: granted per model, with one key per pool
 
@@ -560,7 +564,7 @@ Still open for phase 3:
 ### Phases
 
 1. **Pools on Azure members:**
-   - capacity type and processing scope;
+   - capacity type and processing scope (already implemented);
    - the pool definition and the three pool types;
    - environment checks on every member;
    - plan and apply;

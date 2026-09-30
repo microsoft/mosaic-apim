@@ -206,6 +206,7 @@ class ModelInventoryCollector:
                     sku_name=_text(sku.get("name")),
                     sku_capacity=_int_or_none(sku.get("capacity")),
                     deployed_at=_created_at(item),
+                    spillover_deployment_name=_text(properties.get("spilloverDeploymentName")),
                     provisioning_state=_text(properties.get("provisioningState")),
                     rai_policy_name=_text(properties.get("raiPolicyName")),
                     capabilities=capabilities,

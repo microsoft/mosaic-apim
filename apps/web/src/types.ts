@@ -1619,6 +1619,12 @@ export interface ModelEndpointSyncRun {
   errors: string[]
 }
 
+/** How a deployment's capacity is bought, read from its SKU (ADR 0018). */
+export type CapacityType = 'provisioned' | 'payAsYouGo' | 'batch' | 'unknown'
+
+/** Where Azure may process a deployment's requests, read from its SKU (ADR 0018). */
+export type ProcessingScope = 'global' | 'dataZone' | 'regional' | 'unknown'
+
 export interface ObservedModelDeployment {
   id: string
   endpointId: string
@@ -1629,6 +1635,10 @@ export interface ObservedModelDeployment {
   modelPublisher?: string | null
   skuName?: string | null
   skuCapacity?: number | null
+  capacityType?: CapacityType
+  processingScope?: ProcessingScope
+  /** The standard deployment Azure overflows this provisioned deployment to, if any. */
+  spilloverDeploymentName?: string | null
   provisioningState?: string | null
   raiPolicyName?: string | null
   capabilities: Record<string, string>

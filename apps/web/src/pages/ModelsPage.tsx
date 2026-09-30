@@ -51,7 +51,7 @@ import { PublishModelDialog } from '../components/PublishModelDialog'
 import { PageHeader } from '../components/PageHeader'
 import { RemovalDialog } from '../components/RemovalDialog'
 import { UnpublishDialog } from '../components/UnpublishDialog'
-import { AI_KIND_LABELS } from '../labels'
+import { AI_KIND_LABELS, CAPACITY_TYPE_LABELS, PROCESSING_SCOPE_LABELS } from '../labels'
 import {
   PUBLICATION_STATUS_LABELS,
   formatTimestamp,
@@ -1378,6 +1378,7 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
                     <TableHeaderCell>Model</TableHeaderCell>
                     <TableHeaderCell>Version</TableHeaderCell>
                     <TableHeaderCell>Capacity</TableHeaderCell>
+                    <TableHeaderCell>Processing</TableHeaderCell>
                     <TableHeaderCell>State</TableHeaderCell>
                   </TableRow>
                 </TableHeader>
@@ -1399,9 +1400,24 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
                       <TableCell>{deployment.modelName ?? 'Unknown'}</TableCell>
                       <TableCell>{deployment.modelVersion ?? '—'}</TableCell>
                       <TableCell>
-                        {deployment.skuCapacity != null
-                          ? `${deployment.skuName ?? ''} ${deployment.skuCapacity}`.trim()
-                          : (deployment.skuName ?? '—')}
+                        <div className={styles.cellStack}>
+                          <span>{CAPACITY_TYPE_LABELS[deployment.capacityType ?? 'unknown']}</span>
+                          {deployment.skuName && (
+                            <span className={styles.secondaryCell}>
+                              {deployment.skuCapacity != null
+                                ? `${deployment.skuName} ${deployment.skuCapacity}`
+                                : deployment.skuName}
+                            </span>
+                          )}
+                          {deployment.spilloverDeploymentName && (
+                            <span className={styles.secondaryCell}>
+                              Azure spillover to {deployment.spilloverDeploymentName}
+                            </span>
+                          )}
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        {PROCESSING_SCOPE_LABELS[deployment.processingScope ?? 'unknown']}
                       </TableCell>
                       <TableCell>{deployment.provisioningState ?? 'Unknown'}</TableCell>
                     </TableRow>
