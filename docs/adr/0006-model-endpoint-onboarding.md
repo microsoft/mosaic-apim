@@ -1,7 +1,15 @@
 # ADR 0006: Model endpoints have two access relationships, not one
 
 **Status:** Accepted, partially superseded by
-[ADR 0013](0013-runtime-readiness-by-data-actions.md)
+[ADR 0013](0013-runtime-readiness-by-data-actions.md), and amended by
+[ADR 0018](0018-key-authenticated-backends.md)
+
+**Update:** ADR 0018 adds a second way to register an Azure OpenAI or Foundry resource: by URL,
+with an API key held in Key Vault, for a resource MOSAIC's managed identity can't reach, such as one
+in another Microsoft Entra tenant. For such an endpoint, MOSAIC's access is whether it can read the
+key and the endpoint accepts it, and a gateway's is whether its identity can read the key from Key
+Vault. Its deployments are declared rather than read. Registering by resource ID stays the default,
+and everything below still holds for it.
 
 **Update:** ADR 0013 replaces how the runtime relationship is verified.
 
