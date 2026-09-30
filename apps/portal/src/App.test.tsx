@@ -4,6 +4,7 @@ import { MemoryRouter } from 'react-router-dom'
 import { describe, expect, it, vi } from 'vitest'
 import type { PortalApi } from './api'
 import App from './App'
+import type { PortalProfile } from './types'
 
 const mocks = vi.hoisted(() => ({
   api: {} as PortalApi,
@@ -40,6 +41,21 @@ function renderApp() {
   )
 }
 
+function portalProfile(overrides: Partial<PortalProfile> = {}): PortalProfile {
+  return {
+    objectId: 'object-id',
+    tenantId: 'tenant-id',
+    roles: ['User'],
+    isAdmin: false,
+    principalId: null,
+    displayLabel: 'Ada Lovelace',
+    entitlementCount: 0,
+    pendingRequestCount: 0,
+    groupsOverage: false,
+    ...overrides,
+  }
+}
+
 describe('App', () => {
   it('renders the portal no-role explanation on a 403 profile response', async () => {
     mocks.api = {
@@ -60,17 +76,7 @@ describe('App', () => {
 
   it('builds the avatar initials from letters and digits only', async () => {
     mocks.api = {
-      getProfile: async () => ({
-        objectId: 'object-id',
-        tenantId: 'tenant-id',
-        roles: ['User'],
-        isAdmin: false,
-        principalId: null,
-        displayLabel: 'Name (Team)',
-        entitlementCount: 0,
-        pendingRequestCount: 0,
-        groupsOverage: false,
-      }),
+      getProfile: async () => portalProfile({ displayLabel: 'Name (Team)' }),
       listEntitlements: async () => [],
     } as unknown as PortalApi
 
@@ -80,4 +86,29 @@ describe('App', () => {
     expect(screen.getByText('NT')).toBeVisible()
     expect(screen.queryByText('N(')).not.toBeInTheDocument()
   })
+
+  it.each([
+    { entitlementCount: 0, pendingRequestCount: 0, summary: '0 grants · 0 pending requests' },
+    { entitlementCount: 1, pendingRequestCount: 1, summary: '1 grant · 1 pending request' },
+    { entitlementCount: 2, pendingRequestCount: 2, summary: '2 grants · 2 pending requests' },
+    { entitlementCount: 1, pendingRequestCount: 2, summary: '1 grant · 2 pending requests' },
+    { entitlementCount: 2, pendingRequestCount: 1, summary: '2 grants · 1 pending request' },
+  ])(
+    'summarizes access in the header as $summary',
+    async ({ entitlementCount, pendingRequestCount, summary }) => {
+      mocks.api = {
+        getProfile: async () => portalProfile({ entitlementCount, pendingRequestCount }),
+        listEntitlements: async () => [],
+        listEnvironments: async () => [],
+      } as unknown as PortalApi
+
+      renderApp()
+
+      const summaryText = await screen.findByText(summary)
+      expect(summaryText).toBeVisible()
+      const header = summaryText.closest('header')
+      expect(header).toBeInTheDocument()
+      expect(header).not.toHaveTextContent(/entitlement/i)
+    },
+  )
 })
