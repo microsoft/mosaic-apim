@@ -403,7 +403,7 @@ export function EntitlementsPage() {
     setApproving({
       accessRequest,
       requester: {
-        label: principal?.label ?? principal?.objectId ?? accessRequest.requesterObjectId,
+        label: principal?.label || accessRequest.requesterObjectId,
         objectId: accessRequest.requesterObjectId,
         registered: Boolean(principal),
       },
@@ -975,9 +975,11 @@ export function EntitlementsPage() {
                           </Text>
                         </TableCell>
                         <TableCell>
+                          {/* Small: at 1280 px this column is narrower than a medium button's 96 px minimum width. */}
                           <div className={styles.rowActions}>
                             <Button
                               appearance="primary"
+                              size="small"
                               disabled={!approvalReady || approveMutation.isPending || denyMutation.isPending}
                               onClick={() => openApproval(accessRequest)}
                             >
@@ -985,6 +987,7 @@ export function EntitlementsPage() {
                             </Button>
                             <Button
                               appearance="subtle"
+                              size="small"
                               disabled={approveMutation.isPending || denyMutation.isPending}
                               onClick={() => denyMutation.mutate(accessRequest.id)}
                             >
