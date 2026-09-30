@@ -527,12 +527,12 @@ Progress:
   - O25: submitting drops focus, and nothing announces the result.
 - #38 on the import dialog: **Import from gateway** lists only Echo API, which isn't a model.
   Ticking it and pressing **Clear** left focus on **Clear**, now `aria-disabled`, and Escape
-  closed the dialog. Nothing was imported. A failed import's focus stays covered by unit tests,
-  and the approval dialog waits for the next access request.
+  closed the dialog. Nothing was imported. A failed import's focus stays covered by unit tests.
+  The approval dialog was checked with the `user` persona's request, in P5 (Phase 7).
 - Two findings came from these steps. O26: closing a dialog usually drops focus, or moves it to
   an unrelated button. O27: the grant table's Binding column overlaps **Revoke**.
 
-### Phase 7: Live, end-user portal (P1 to P9, A13) 🔄 P0 to P2, P4, P8 and A13 done; P7 and P9 passed for the admin; the rest needs the `user` persona
+### Phase 7: Live, end-user portal (P1 to P9, A13) ✅
 
 - The `noRole` persona is denied cleanly. A persona with the User role and no grants sees an
   empty My access view and the catalog.
@@ -614,31 +614,69 @@ Progress:
   model's name and "Model API · Granted directly to you", and the header badge, "APIM apply
   failed", reads in full on one line. My requests heads both requests with the name and "Model
   API · Opened" with the date. P3 itself waits for G17, because the grant hasn't been applied.
-- 🔄 P7: the verifier's `--foreign-user-entitlement` check passed with the admin persona in the
-  user's place, naming the grants the `user` and `guest` personas hold. Neither grant appeared in
-  the admin's own grant lists, and MOSAIC refused its connection details and its key. The refused
-  key reveals are in MOSAIC's audit log, as requested and then denied. A made-up grant ID failed
-  at the admin's first check, as it should. The end-user routes isolate grants the same way
-  whatever the caller's role, but P7 still needs a run by a persona with only the User role. The
-  `guest` persona's run stopped at its home tenant's MFA prompt, with no one there to approve
-  it, so it reached no MOSAIC route. The `user` persona can run it after Batch 1.
+- ✅ P7: the verifier's `--foreign-user-entitlement` check first passed with the admin persona in
+  the user's place, naming the grants the `user` and `guest` personas hold. Neither grant appeared
+  in the admin's own grant lists, and MOSAIC refused its connection details and its key. The
+  refused key reveals are in MOSAIC's audit log, as requested and then denied. A made-up grant ID
+  failed at the admin's first check, as it should. The `guest` persona's own run stopped at its
+  home tenant's MFA prompt, with no one there to approve it. After Batch 1, the `user` persona,
+  which holds only the User role, ran it against the `guest` persona's grant and passed: the grant
+  stayed out of its lists and its usage report, and MOSAIC refused the grant's connection details
+  and key.
 - ✅ A13: A11's retry applied the `guest` persona's approved grant with the others, so approval,
-  review and apply work end to end. The persona's own view of it (P3, P5 and P6) needs its home
-  tenant's MFA, which waits for someone to approve it.
-- 🔄 P9, after Batch 3d: the anonymous usage route answers 401 instead of 404, so it's deployed.
+  review and apply work end to end. The persona's own view of it needs its home tenant's MFA, so
+  the `user` persona covered P3, P5 and P6 instead.
+- ✅ P9, after Batch 3d: the anonymous usage route answers 401 instead of 404, so it's deployed.
   The verifier's `--foreign-user-entitlement` run, with the admin persona in the user's place, said
   "the user's usage report leaves out 2 grant(s) held by someone else" where it had skipped the
-  check before. The **Usage & cost** page itself still needs a look by a User persona.
-- ⏳ The `user` persona has the User role now (Batch 1), but its browser profile's session has
-  expired and Entra asks for its password. The harness never types a password, so P3, P5 and P6,
-  and P7's run by a User-only persona, wait for someone to sign it in.
+  check before, and the `user` persona's run said the same of the `guest` persona's grant. The
+  `user` persona's **Usage & cost** page shows a "Sample data" badge, says its usage figures are
+  simulated and its estimated costs are not a bill, and lists one row, for the one grant it held
+  then. Its resource filter offers only that model.
+- ✅ P3, after the environment owner signed the `user` persona in again: My access lists its
+  AOAI B `gpt-4o-mini` grant with "Model API · Granted directly to you", "Applied to APIM" and
+  Development. It lists the grant's limits, 2,000 tokens per minute, 100,000 tokens per month and
+  60 calls per 60 seconds, and under "Usage attribution" its APIM subscription and the gateway.
+  The header counts "1 entitlements" (O29).
+- ✅ P6: the grant's **Connection details** shows the base URL, deployment and key header, the chat
+  completions and responses operations, both methods as Accepted, the Entra tenant, client ID,
+  scope and audience, the limits, and code samples with placeholders. **Show primary key**
+  showed the key in the only `data-secret` element, and the harness masked it. Focus stayed on
+  the button, and a status said "Primary key shown. It hides automatically after 60 seconds." A
+  minute later the key was gone, and the status said "Key hidden automatically after 60
+  seconds." The secondary key showed the same way, and **Hide key** removed it at once, said "Key
+  hidden." and moved focus to **Show secondary key**. After a reload, no key was on the page.
+  **Copy** wasn't pressed.
+- ✅ P5, with a requester MOSAIC had registered: the `user` persona asked for Foundry
+  multi-provider `grok-4.3` with a justification, and the card said "A request is already open."
+  The console listed the request under the persona's object ID, though MOSAIC knows its label
+  (O30). The admin saved governed access for the model, with both methods and the publication's
+  12,000 tokens per minute.
+  - **Approve** named the requester by label and ID, prefilled 12,000 tokens per minute, and
+    Fluent put focus in the first field. With the same limits as the persona's `gpt-4o-mini`
+    grant and a note, **Approve and create grant** kept focus while it worked, and was
+    `aria-disabled` (#38). The dialog then closed with its opener gone, and nothing had focus
+    (O26). The banner said API Management is unchanged and linked to the model's review.
+  - Before the apply, My requests showed the request Approved, with the note and "Approval
+    created your grant. It may not work until an administrator applies it.", and My access
+    showed the grant as "APIM changes pending".
+  - The review had 14 steps and moved the model from legacy access to access version 1.
+    **Apply plan** succeeded at all 14 steps in 15 seconds. Focus moved from **Applying…** to
+    the result, and Escape closed the dialog. My access then read "Applied to APIM", with the
+    grant's limits, and its connection details listed one operation: chat completions, at
+    `/models/chat/completions`.
+  - This was the first governed apply on a Foundry model. API Management gained the grant's
+    subscription, and the model's bootstrap subscription was suspended. Only the model's API,
+    policy fragment and that subscription changed; the global policy didn't. The governed policy
+    allows only chat completions on these publications, so their embeddings and model-info
+    operations are denied by design.
 
 ### Phase 8: Runtime verification (R1 to R8, A14) ⏳ verifier ready; waits for the environment owner
 
 `scripts/verify_model_access.py` now covers this phase, with unit tests against a fake gateway
 that applies the governed policy. It reads each grant's connection details from MOSAIC, calls the
-operation its publication exposes, and can sign callers in itself. The live run waits for the
-tenant batches, the redeploy and Phases 5 to 7.
+operation its publication exposes, and can sign callers in itself. The tenant batches, the
+redeploy and Phases 5 to 7 are done, so the live run waits only for the items listed below.
 
 | Journey | How the verifier covers it |
 | --- | --- |
@@ -663,11 +701,17 @@ MOSAIC API tokens to the verifier without anyone copying them. It enters the ver
 codes in the right persona's browser, leaving a person to confirm the sign-in and complete MFA.
 The [runbook](runbook.md#verify-runtime-access) shows how to run it.
 
-What the live run waits for, after Batch 3d and Phase 6:
+What the live run waits for, after Phase 7:
 
 - **R1 and R2** need a model-runtime token for a user. Only MOSAIC's model client has consent for
-  the runtime scope, and it signs in with a device code, which a person confirms. The `user`
-  persona also needs its password entered (Phase 7).
+  the runtime scope, and it signs in with a device code. The driver enters the code in the `user`
+  persona's browser, and a person confirms the sign-in and completes MFA. The persona now holds
+  applied grants on five models on four endpoints, with the same limits: AOAI B `gpt-4o-mini`,
+  Foundry multi-provider `grok-4.3` (approved in P5) and `DeepSeek-V4-Pro`, Foundry project
+  `Llama-4-Maverick-17B-128E-Instruct-FP8`, and Foundry hub-connected `gpt-5.1-chat`. Each
+  Foundry model's first governed apply had 14 steps, and all succeeded. So R1 covers Azure
+  OpenAI, Foundry OpenAI, Grok, Llama and DeepSeek. Claude waits for its deployment (Phase 2).
+  Sending real model calls needs the environment owner's go-ahead, because they're billed.
 - **R3** needs the workload's client secret, the credential Batch 1 deferred. Creating it is a
   tenant change, so it waits for approval. The workload's grant is applied and its key reveal
   works in the console (A12).
@@ -684,8 +728,11 @@ What the live run waits for, after Batch 3d and Phase 6:
     [#44](https://github.com/microsoft/mosaic-apim/issues/44), O17 as
     [#45](https://github.com/microsoft/mosaic-apim/issues/45), O24 as
     [#46](https://github.com/microsoft/mosaic-apim/issues/46), O28 as
-    [#52](https://github.com/microsoft/mosaic-apim/issues/52) and O27 as
-    [#53](https://github.com/microsoft/mosaic-apim/issues/53).
+    [#52](https://github.com/microsoft/mosaic-apim/issues/52), O27 as
+    [#53](https://github.com/microsoft/mosaic-apim/issues/53) and O29 as
+    [#55](https://github.com/microsoft/mosaic-apim/issues/55).
+  - O30 as a [comment](https://github.com/microsoft/mosaic-apim/issues/45#issuecomment-5902625270)
+    on O17's issue.
   - O1 and O5 together as [#47](https://github.com/microsoft/mosaic-apim/issues/47).
   - #33's two test follow-ups as [#48](https://github.com/microsoft/mosaic-apim/issues/48).
   - The follow-ups to O19 and O23 as [#49](https://github.com/microsoft/mosaic-apim/issues/49),
@@ -743,13 +790,13 @@ has passed, and ❌ means the latest run failed on the product gap named.
 | P0 | A User persona reaches My access and the catalog | 1 | ✅ |
 | P1 | A persona without a MOSAIC role gets a clean denial with a sign-out option | 1, 7 | ✅ |
 | P2 | With the role but no grants, My access shows its empty state and the catalog is visible | 7 | ✅ |
-| P3 | My access shows applied grants, limits and attribution | 7 | ⬜ |
+| P3 | My access shows applied grants, limits and attribution | 7 | ✅ |
 | P4 | A request with a justification can be withdrawn and requested again | 7 | ✅ |
-| P5 | After approval and apply, the requester sees the grant | 7 | ⬜ |
-| P6 | Connection details appear, and key reveal is masked, transient and uncached (G3) | 7 | ⬜ |
-| P7 | Another user's entitlement ID returns 403 or 404 | 7 | 🔄 |
+| P5 | After approval and apply, the requester sees the grant | 7 | ✅ |
+| P6 | Connection details appear, and key reveal is masked, transient and uncached (G3) | 7 | ✅ |
+| P7 | Another user's entitlement ID returns 403 or 404 | 7 | ✅ |
 | P8 | The admin shows as allowed in the portal | 7 | ✅ |
-| P9 | **Usage & cost** lists only the caller's grants and labels its figures as simulated; the verifier checks its route leaves out other people's grants (#40) | 7 | 🔄 |
+| P9 | **Usage & cost** lists only the caller's grants and labels its figures as simulated; the verifier checks its route leaves out other people's grants (#40) | 7 | ✅ |
 
 ### Runtime (real calls through APIM)
 
@@ -793,12 +840,14 @@ be confirmed, or fixed, once the journeys that exercise them have run.
 | O20 | The console's card for an account with only the User role says that role opens the MOSAIC end-user portal, but it can't link there, because the console isn't configured with the portal's address. Someone who opens the console by mistake has to find the portal on their own. Seen in A1 after Batch 3c | Add the portal's address to the console's runtime configuration, and link to it from the card. Filed as [#44](https://github.com/microsoft/mosaic-apim/issues/44) |
 | O21 | After Batch 3c, P0 failed within milliseconds, before it opened a page: "Failed to open a new tab", then "Target page, context or browser has been closed". The harness closes every page when a test ends. A headed Chromium quits about a quarter of a second after its last tab closes, so the `guest` persona's browser was gone by the time P0 wanted it. A1 now checks a second persona between the `guest` persona's two smoke tests, so there was time for the browser to quit. Before that, P0 had passed only by winning the race. A throwaway profile shows the same thing every time | Fixed in the harness. Each persona's browser keeps one blank tab open between tests. With that tab, a new page opens after the browser sits idle for 9 seconds; without it, the browser is gone. P0 still needs a live run while someone can answer the `guest` persona's MFA |
 | O22 | MOSAIC lets an admin save limits that API Management may not support on the gateway's tier. The `quota-by-key` page's tier banner lists only the classic tiers, though its usage section also names v2. `rate-limit-by-key` and `llm-token-limit` list the classic and v2 tiers. None lists Consumption. MOSAIC checks the tier only for Anthropic token limits, which need v2. From G17's review of the policy pages, not seen live: this deployment runs the Developer tier, which supports all three | Check the gateway's tier when limits are saved or planned, and say which limit it can't enforce. A follow-up gap, not blocking this plan. Filed as [#43](https://github.com/microsoft/mosaic-apim/issues/43) |
-| O23 | Other dialogs lose focus the way O19's did. The key reveal in the console's connection details, **Approve** on an access request, and **Import** from a gateway are `disabled` while they work, so the button that had focus loses it, and a revealed key or an error doesn't take focus when it appears. The import dialog's **Clear** disables itself too. From the O19 fix's review. A local probe in current Chromium confirms the mechanism: a focused button that becomes `disabled` hands focus to the page, Escape then doesn't reach the dialog, and focus doesn't come back when the button is enabled again. With `aria-disabled`, which the publish and removal dialogs already use, focus stays and Escape closes the dialog. About 45 buttons on the console's and portal's pages also disable themselves while they work. Their impact is lower, because no dialog is trapping Escape there | Fixed in [#38](https://github.com/microsoft/mosaic-apim/pull/38), and deployed with Batch 3d (web). A busy button keeps focus and can't be pressed again. A failed reveal, approval or import moves focus to its reason. A failed copy leaves focus on **Copy** and is announced as an alert. A reveal that succeeds leaves focus on its button, and a status says which key it revealed, never the key. **Clear** stays focusable. Reverting each dialog fails 7, 4 and 6 of its tests. Seen live in A12's key reveal and on the import dialog's **Clear**. The approval dialog waits for the next access request, and P6 for the `user` persona. Two small gaps remain, neither blocking: a copy that fails because the browser has no clipboard API isn't announced again when pressed again, and a copy failure stays on screen if the grant stops qualifying and the key is hidden. The page buttons are left for a separate decision. The gaps, the page buttons, and other dialogs whose buttons still disable themselves are filed as [#49](https://github.com/microsoft/mosaic-apim/issues/49) |
+| O23 | Other dialogs lose focus the way O19's did. The key reveal in the console's connection details, **Approve** on an access request, and **Import** from a gateway are `disabled` while they work, so the button that had focus loses it, and a revealed key or an error doesn't take focus when it appears. The import dialog's **Clear** disables itself too. From the O19 fix's review. A local probe in current Chromium confirms the mechanism: a focused button that becomes `disabled` hands focus to the page, Escape then doesn't reach the dialog, and focus doesn't come back when the button is enabled again. With `aria-disabled`, which the publish and removal dialogs already use, focus stays and Escape closes the dialog. About 45 buttons on the console's and portal's pages also disable themselves while they work. Their impact is lower, because no dialog is trapping Escape there | Fixed in [#38](https://github.com/microsoft/mosaic-apim/pull/38), and deployed with Batch 3d (web). A busy button keeps focus and can't be pressed again. A failed reveal, approval or import moves focus to its reason. A failed copy leaves focus on **Copy** and is announced as an alert. A reveal that succeeds leaves focus on its button, and a status says which key it revealed, never the key. **Clear** stays focusable. Reverting each dialog fails 7, 4 and 6 of its tests. Seen live in A12's key reveal, on the import dialog's **Clear**, and in P5's approval, where **Approve and create grant** kept focus while it worked. P6 saw the portal's key reveal keep focus too. Two small gaps remain, neither blocking: a copy that fails because the browser has no clipboard API isn't announced again when pressed again, and a copy failure stays on screen if the grant stops qualifying and the key is hidden. The page buttons are left for a separate decision. The gaps, the page buttons, and other dialogs whose buttons still disable themselves are filed as [#49](https://github.com/microsoft/mosaic-apim/issues/49) |
 | O24 | End-user routes still return other API Management details. My access shows each grant's APIM product and subscription names under "Usage attribution". Since #40 it no longer shows MOSAIC's gateway record ID there, but the route still returns it. The grant and its connection details also return counter-key policy expressions and APIM subscription names that the portal doesn't show. A failed key reveal's error body carries the full Azure Resource Manager URL, which names the Azure subscription, resource group, APIM service and APIM subscription. When APIM refuses to list the key, it adds the service's resource ID. The portal shows its own text for these, but they're visible in the browser's network tools. From the O18 fix's review, not seen live | Decide what an end user needs to identify their usage. Return APIM names to end-user routes only where the portal uses them, and give those routes problem details without upstream URLs, resource IDs or Azure's raw text. The console keeps them. A follow-up gap, not blocking this plan. Filed as [#46](https://github.com/microsoft/mosaic-apim/issues/46) |
 | O25 | More dialogs disable their buttons while they work, as O23's did. In **Review environment suggestions**, **Close** and **Submit selections** are `disabled` while the submission runs, and **Submit selections** stays disabled once it succeeds, because no rows are left. Seen live in A16 after submitting 8 rows: nothing had focus, and Escape didn't close the dialog until Tab brought focus back to **Close**. Nothing announces the success message either, because nothing provides an `AnnounceProvider`. Settings' add, edit and delete environment dialogs do the same in the code; not seen live | O23's fix applies: a busy button keeps focus and is `aria-disabled`, and the outcome takes focus. Added to [#49](https://github.com/microsoft/mosaic-apim/issues/49#issuecomment-5901935028) |
-| O26 | Closing a dialog doesn't return focus to the button that opened it. Console dialogs open from page state, and none uses a `DialogTrigger`, so Fluent returns focus only to an element marked with `useRestoreFocusTarget()`. Only 2 of the console's 18 dialogs have marked openers: the Models page's removal confirmations and the gateway's management-mode dialog. Seen live on the Batch 3d build: closing **Connection info** on Entitlements leaves nothing focused. Closing **Change environment** on an endpoint, or **Import from gateway**, moves focus to **Remove** on the first published model, in another section, because it was the last marked element that had focus. The portal has no dialogs | Mark each opener with `useRestoreFocusTarget()`, and give focus a sensible place when the dialog's action removes its opener, as approving an access request or removing a published model does. Landing on a destructive button nobody chose is worse than losing focus. Added to [#49](https://github.com/microsoft/mosaic-apim/issues/49#issuecomment-5901935028) |
+| O26 | Closing a dialog doesn't return focus to the button that opened it. Console dialogs open from page state, and none uses a `DialogTrigger`, so Fluent returns focus only to an element marked with `useRestoreFocusTarget()`. Only 2 of the console's 18 dialogs have marked openers: the Models page's removal confirmations and the gateway's management-mode dialog. Seen live on the Batch 3d build: closing **Connection info** on Entitlements leaves nothing focused. Closing **Change environment** on an endpoint, or **Import from gateway**, moves focus to **Remove** on the first published model, in another section, because it was the last marked element that had focus. In P5, approving an access request closed the dialog with its opener gone, and nothing had focus. The portal has no dialogs | Mark each opener with `useRestoreFocusTarget()`, and give focus a sensible place when the dialog's action removes its opener, as approving an access request or removing a published model does. Landing on a destructive button nobody chose is worse than losing focus. Added to [#49](https://github.com/microsoft/mosaic-apim/issues/49#issuecomment-5901935028) |
 | O27 | In the Grants table on Entitlements, the Binding badge, a `mosaic-grant-…` subscription name and its source, doesn't wrap. It runs under **Revoke** in the next column. Seen live at 1440 pixels wide with three applied grants, and the README's `console-entitlements` screenshot shows it in its last row | Wrap or truncate the name and show it in full on hover and focus, or give the column a minimum width. A fix changes a pictured page, so it regenerates `console-entitlements`. Filed as [#53](https://github.com/microsoft/mosaic-apim/issues/53) |
 | O28 | A grant's call quota, a number of calls per hour, day, week, month or year, can be set only through the API. The console and the portal display it, but neither **Add entitlement** nor **Approve access request** has a field for it. A weekly call quota's counter key finds the start of the week with `(int)now.DayOfWeek`. API Management's list of types allowed in policy expressions includes the `DateTime.DayOfWeek` property but doesn't name the `System.DayOfWeek` enum it returns, and the APIM fake in the tests doesn't check types. If API Management refuses it, every apply for that model fails and rolls back, as G17's did. From the code and the policy docs, not seen live | Add the call quota to the console's forms, or say there that it's set through the API. Apply a weekly call quota once on a disposable publication, and if API Management refuses it, find the start of the week without `DayOfWeek`. Filed as [#52](https://github.com/microsoft/mosaic-apim/issues/52) |
+| O29 | The portal's header counts the caller's access as "1 entitlements · 0 pending requests", with no singular, and one open request reads "1 pending requests". It's also the only visible place in the portal that says "entitlements"; every page says "grant". Seen in P3 and P5 | Use the singular for one, and the portal's word, such as "1 grant · 1 pending request". A fix changes the portal's pictured pages, so it regenerates their screenshots. Filed as [#55](https://github.com/microsoft/mosaic-apim/issues/55) |
+| O30 | The console's **Pending access requests** table lists each requester by object ID, even one MOSAIC has registered with a label. **Approve** and the banner after it look the requester up and show the label. Seen in P5 | Use the same lookup in the table, with the object ID as secondary text. Unregistered requesters still need O17's fix. Added to [#45](https://github.com/microsoft/mosaic-apim/issues/45#issuecomment-5902625270) |
 The Phase 3 check on whether the gateway role recommendation narrows once the account kind is
 known led to G8: it does narrow, and the check then rejects the broader role it recommended
 before.
