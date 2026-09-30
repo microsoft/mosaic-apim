@@ -9,6 +9,9 @@ members = ["apps/api"]
 
 [tool.uv]
 exclude-newer = "2026-08-01T00:00:00Z"
+# PyJWT 2.14.0 (published 2026-09-11) fixes eight advisories, including GHSA-ffc3-869f-jxw9. It is
+# newer than the cutoff above, so PyJWT alone gets a later cutoff.
+exclude-newer-package = { pyjwt = "2026-09-12T00:00:00Z" }
 
 [dependency-groups]
 dev = [
