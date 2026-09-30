@@ -1,7 +1,7 @@
 import { type Locator, type Page, expect } from '@playwright/test'
 import type { Targets } from '../../config.ts'
 import type { PersonaPool } from '../../fixtures.ts'
-import { expectNoLoadError } from '../common.ts'
+import { expectDataLoaded, expectNoLoadError, pageDataTimeoutMs } from '../common.ts'
 
 export type ManagementMode = 'Observe' | 'Manage'
 
@@ -30,8 +30,9 @@ export class GatewayPage {
   }
 
   async loaded(): Promise<void> {
-    await expect(this.page.getByRole('heading', { level: 1, name: this.name, exact: true })).toBeVisible()
+    await expect(this.page.getByRole('heading', { level: 1, name: this.name, exact: true })).toBeVisible({ timeout: pageDataTimeoutMs })
     await expect(this.modeHeading).toBeVisible()
+    await expectDataLoaded(this.page, ['Loading gateway', 'Loading published models'])
     await expectNoLoadError(this.page)
   }
 

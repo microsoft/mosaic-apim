@@ -279,6 +279,20 @@ export async function personaApiToken(
 
 const lower = (value: string | null | undefined) => (value ?? '').toLowerCase()
 
+/**
+ * The workload's MOSAIC identity among the principals: by its service principal's object ID when the manifest
+ * gives one, since an admin may label it anything, or else by a label equal to its app registration's name.
+ * People and security groups are never the workload.
+ */
+export function findWorkloadPrincipal(
+  principals: readonly ApiPrincipal[],
+  workload: NonNullable<Targets['workload']>,
+): ApiPrincipal | undefined {
+  const candidates = principals.filter((principal) => principal.kind !== 'user' && principal.kind !== 'securityGroup')
+  if (workload.objectId) return candidates.find((principal) => lower(principal.objectId) === lower(workload.objectId))
+  return candidates.find((principal) => lower(principal.label) === lower(workload.displayName))
+}
+
 export class MosaicApi {
   readonly #personas: PersonaPool
   readonly #targets: Targets
@@ -411,9 +425,7 @@ export class MosaicApi {
   async workloadPrincipal(): Promise<ApiPrincipal | undefined> {
     const workload = this.#targets.workload
     if (!workload) return undefined
-    return (await this.principals()).find(
-      (principal) => principal.kind !== 'user' && principal.kind !== 'securityGroup' && lower(principal.label) === lower(workload.displayName),
-    )
+    return findWorkloadPrincipal(await this.principals(), workload)
   }
 
   entitlements(filter: { subject?: string; resource?: string } = {}): Promise<ApiEntitlement[]> {

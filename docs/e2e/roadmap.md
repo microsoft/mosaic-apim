@@ -797,6 +797,13 @@ policy expression that API Management hasn't compiled yet.
   failed since #51, because the harness didn't know the verifier's `--agent-entitlement` and
   `--group-entitlement`. It knows them now, and the plan checks accept a key-authenticated
   publication's own named value (G18).
+- 🔄 The ordered specs' first live run, read-only, on 2026-09-30: 24 passed. The 3 failures were
+  the `guest` persona's MFA prompt, which needs a person, and the 2 skips need billed calls. The
+  run found two harness problems, both fixed. The specs looked for the workload's MOSAIC identity
+  by its app registration's name, which an admin can relabel; they now use its service principal's
+  object ID when the manifest gives one. And they checked the console's tables before those tables
+  had loaded their data; the page objects now wait for each page's loading indicators to clear.
+  The write and runtime specs wait for a sitting.
 - Record findings here and file issues for anything deferred. Filed so far:
   - O14 as [#42](https://github.com/microsoft/mosaic-apim/issues/42), O22 as
     [#43](https://github.com/microsoft/mosaic-apim/issues/43), O20 as

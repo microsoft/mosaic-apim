@@ -46,7 +46,8 @@ test.describe('30 access', { tag: '@console' }, () => {
       return
     }
     const workload = await ctx.api.workloadPrincipal()
-    expect(workload, `a MOSAIC identity labelled ${targets.workload.displayName}`).toBeDefined()
+    const found = targets.workload.objectId ? 'with the object ID in targets.workload.objectId' : `labelled ${targets.workload.displayName}`
+    expect(workload, `a MOSAIC identity for the workload, ${found}`).toBeDefined()
     if (!workload) return
     const tab = await IdentityPage.open(personas, targets, identityTabFor(workload.kind))
     await expect(await tab.row(workload.objectId)).toHaveCount(1)

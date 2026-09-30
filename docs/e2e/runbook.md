@@ -200,7 +200,7 @@ every field. Each part is optional: a journey whose part is missing skips, and n
 | --- | --- | --- |
 | `gateway` | Most tests in 10 to 90 | The MOSAIC gateway, by name, that the suite publishes through |
 | `runtime.userGrants` | A11, P3, P6, R1, R2, R4 | Models on which `roles.user` already holds an applied grant. Only read |
-| `runtime.applicationGrant` | A11, A12, R3 | The model on which the workload in `targets.workload` holds its grant. Only read |
+| `runtime.applicationGrant` | A11, A12, R3 | The model on which the workload in `targets.workload` holds its grant. Only read. Set `targets.workload.objectId` to the workload's service principal object ID, so the specs find its MOSAIC identity whatever an admin labelled it; without it, the label must equal `targets.workload.displayName` |
 | `runtime.foreignGrant` | A11, P7 | A grant that a persona other than `roles.user` holds, and the user must not be able to reach. Only read |
 | `runtime.apiVersion`, `runtime.modelsApiVersion`, `runtime.chatTokenParameter` | R1 to R7, P7 | The verifier's flags of the same names |
 | `disposable.publication` | The `@writes` tests of 20 to 60, and A15 | A deployment that is **not** in its endpoint's `publish` list, with a `requester` persona and the `limits` of the grant they're given |

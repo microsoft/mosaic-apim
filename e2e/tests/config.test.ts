@@ -14,6 +14,15 @@ test('the committed example manifest is valid', () => {
   assert.equal(targets.endpoints['foundry-partners'].kind, 'foundry')
 })
 
+test("the workload's object ID is optional, and a GUID when given", () => {
+  const input = example()
+  assert.equal(parseTargets(input).workload?.objectId, '22222222-2222-2222-2222-222222222222')
+  delete input.workload.objectId
+  assert.equal(parseTargets(input).workload?.objectId, undefined)
+  input.workload.objectId = 'mosaic-dev-e2e-workload'
+  assert.throws(() => parseTargets(input), /targets\.workload\.objectId must be a GUID/)
+})
+
 test('origins must be bare https origins', () => {
   for (const web of ['http://mosaic.example', 'https://mosaic.example/app', 'https://user:pw@mosaic.example', 'not a url']) {
     const input = example()

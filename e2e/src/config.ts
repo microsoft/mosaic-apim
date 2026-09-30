@@ -107,7 +107,11 @@ export interface Targets {
   origins: Record<'web' | 'portal' | 'api' | 'gateway', string>
   roles: JourneyRoles
   personas: Record<string, PersonaTarget>
-  workload?: { displayName: string; appId?: string }
+  /**
+   * The workload application. `displayName` is its app registration's name. `objectId`, its service principal's
+   * object ID, finds its MOSAIC identity whatever an admin labelled it; without it, the label must equal the name.
+   */
+  workload?: { displayName: string; appId?: string; objectId?: string }
   endpoints: Record<string, EndpointTarget>
   negatives?: Record<string, NegativeTarget>
   suite?: SuiteTargets
@@ -462,7 +466,9 @@ export function parseTargets(input: unknown): Targets {
     const workloadInput = requireObject(root.workload, 'targets.workload')
     const appId = optionalString(workloadInput.appId, 'targets.workload.appId')
     if (appId && !guidPattern.test(appId)) throw new TargetsError('targets.workload.appId must be a GUID')
-    workload = { displayName: requireString(workloadInput.displayName, 'targets.workload.displayName'), appId }
+    const objectId = optionalString(workloadInput.objectId, 'targets.workload.objectId')
+    if (objectId && !guidPattern.test(objectId)) throw new TargetsError('targets.workload.objectId must be a GUID')
+    workload = { displayName: requireString(workloadInput.displayName, 'targets.workload.displayName'), appId, objectId }
   }
 
   return {
