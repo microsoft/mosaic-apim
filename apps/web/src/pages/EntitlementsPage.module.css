@@ -179,6 +179,14 @@
   gap: 4px;
 }
 
+/* Long states wrap in the narrow column, so the badge grows with them. */
+.cellStack > .stateBadge {
+  height: auto;
+  min-height: 20px;
+  padding-block: 2px;
+  text-align: center;
+}
+
 .codeValue {
   color: var(--mosaic-text);
   word-break: break-word;

@@ -337,7 +337,15 @@ SHOTS: list[Shot] = [
         actions=(*OPEN_GATEWAY, click_tab("APIs and endpoints")),
     ),
     Shot("console-models", "console", "/models", "dark", "GPT-4o mini"),
-    Shot("console-mcps", "console", "/mcps", "light", "Contoso Docs Search"),
+    Shot(
+        "console-mcps",
+        "console",
+        "/mcps",
+        "light",
+        "Contoso Docs Search",
+        # Tall enough for the published server and every registered server with its environment.
+        height=1500,
+    ),
     Shot(
         "console-identity",
         "console",

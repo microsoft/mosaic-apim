@@ -19,7 +19,7 @@ export function EntitlementAccessState({ entitlement }: { entitlement: Entitleme
   return (
     <div className={styles.cellStack}>
       <Text size={200}>Desired: {entitlement.enabled ? 'enabled' : 'disabled'}</Text>
-      <Badge appearance="tint">
+      <Badge appearance="tint" className={styles.stateBadge}>
         {runtime ? statusLabels[runtime.status] : recordedMcp ? 'Recorded, not enforced' : 'Desired state only'}
       </Badge>
       {!runtime && (
