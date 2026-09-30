@@ -142,10 +142,13 @@ export class ModelsPage {
     return this.endpoints.getByRole('row').filter({ has: this.page.getByRole('button', { name, exact: true }) })
   }
 
-  /** Selects an endpoint, which shows its access and its models below the table. */
+  /**
+   * Selects an endpoint, which shows its access and its models below the table: "Models on <name>" for an
+   * endpoint MOSAIC reads with its managed identity, or "Deployments on <name>" for one reached with an API key.
+   */
   async selectEndpoint(name: string): Promise<void> {
     await this.endpointRow(name).getByRole('button', { name, exact: true }).click()
-    await expect(this.page.getByRole('heading', { name: `Models on ${name}`, exact: true })).toBeVisible()
+    await expect(this.page.getByRole('heading', { name: new RegExp(`^(Models|Deployments) on ${escapeRegExp(name)}$`) })).toBeVisible()
   }
 
   /** Checks access again. The page shows no banner, so the response is the result. */
@@ -181,9 +184,19 @@ export class ModelsPage {
     return this.page.getByText(canRead ? 'MOSAIC can read this endpoint' : 'MOSAIC cannot read this endpoint', { exact: true })
   }
 
-  /** The gateway's verdict on calling the selected endpoint: "can invoke", "cannot invoke" or "not confirmed". */
+  /** An endpoint reached with an API key: whether it accepted the key MOSAIC read from Key Vault. */
+  keyVerdict(accepted: boolean): Locator {
+    return this.page.getByText(accepted ? 'The endpoint accepts the key' : "MOSAIC can't confirm the key", { exact: true })
+  }
+
+  /**
+   * The gateway's verdict on calling the selected endpoint: "can invoke", "cannot invoke" or "not confirmed", or
+   * for an endpoint reached with an API key, "can read the key", "can't read the key" or "not confirmed".
+   */
   gatewayVerdict(gatewayName: string): Locator {
-    return this.page.getByText(new RegExp(`^${escapeRegExp(gatewayName)}: (can invoke|cannot invoke|not confirmed)$`))
+    return this.page.getByText(
+      new RegExp(`^${escapeRegExp(gatewayName)}: (can invoke|cannot invoke|not confirmed|can read the key|can't read the key)$`),
+    )
   }
 
   get environmentVerdicts(): Locator {
@@ -192,6 +205,11 @@ export class ModelsPage {
 
   get deployments(): Locator {
     return this.page.getByRole('table', { name: 'Discovered model deployments' })
+  }
+
+  /** The deployments an admin declared for an endpoint reached with an API key, which can't list its own. */
+  get declaredDeployments(): Locator {
+    return this.page.getByRole('table', { name: 'Declared model deployments' })
   }
 
   deploymentRow(deploymentName: string): Locator {

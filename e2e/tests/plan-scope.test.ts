@@ -128,6 +128,21 @@ test('subscriptions the target already owns are in scope', () => {
   assert.deepEqual(planScopeProblems(plan, { ...context, target: owner }), [])
 })
 
+test("a key publication's own backend key named value is in scope, and another's is not", () => {
+  const keyed = { ...target, backendKeyName: 'gpt-4.1-nano-backend-key' }
+  const own = step('namedValue', '/namedValues/GPT-4.1-NANO-BACKEND-KEY', 'gpt-4.1-nano-backend-key')
+  const foreign = step('namedValue', '/namedValues/gpt-4.1-mini-backend-key', 'gpt-4.1-mini-backend-key')
+  const nested = step('namedValue', '/namedValues/gpt-4.1-nano-backend-key/listValue', 'gpt-4.1-nano-backend-key')
+  const plan: ScopePlan = { publicationId: 'pub_nano', steps: [own, foreign, nested] }
+  assert.deepEqual(planScopeProblems(plan, { ...context, target: keyed }), [
+    "Step namedValue gpt-4.1-mini-backend-key changes /namedValues/gpt-4.1-mini-backend-key, which isn't part of aoai-west gpt-4.1-nano.",
+    "Step namedValue gpt-4.1-nano-backend-key changes /namedValues/gpt-4.1-nano-backend-key/listValue, which isn't part of aoai-west gpt-4.1-nano.",
+  ])
+  const keyedNeighbour = { ...neighbour, backendKeyName: 'gpt-4.1-mini-backend-key' }
+  assert.equal(foreignNames(keyed, [keyedNeighbour]).includes('gpt-4.1-mini-backend-key'), true)
+  assert.equal(foreignNames(keyed, [keyedNeighbour]).includes('gpt-4.1-nano-backend-key'), false)
+})
+
 test('names match only as whole API Management names', () => {
   assert.equal(mentions('Create · gpt-4.1-mini-api', 'gpt-4.1-mini-api'), true)
   assert.equal(mentions('Removes GPT-4.1-MINI-API.', 'gpt-4.1-mini-api'), true)

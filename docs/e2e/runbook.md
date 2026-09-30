@@ -295,9 +295,10 @@ before anyone signs in.
 
 - **People:**
   - `--user` holds the user grants. It defaults to `roles.user`.
-  - `--admin` hands off application keys, and confirms that each `--foreign-user-entitlement` is
-    a real grant that someone other than the user holds. It's only used with those two flags, and
-    defaults to `roles.admin`. With `--application-entitlement` it must be a different account
+  - `--admin` hands off application keys, confirms that each `--foreign-user-entitlement` is a real
+    grant that someone other than the user holds, and reads the connection details of
+    `--agent-entitlement` and `--group-entitlement` grants. It's only used with those four flags,
+    and defaults to `roles.admin`. With `--application-entitlement` it must be a different account
     from the user. A run with only grants held by someone else may name the admin as the user:
     the driver then signs in once and uses that token for both.
   - `--stranger` holds no grant for the models in the run. It's only used with
@@ -315,10 +316,15 @@ before anyone signs in.
   MFA there; the driver never confirms it. If the driver can't enter the code, it says so, and you
   enter it yourself at the address the verifier printed.
 - **Workloads and other variables:** when `MOSAIC_SMOKE_APPLICATION_CLIENT_ID`,
-  `MOSAIC_SMOKE_APPLICATION_CLIENT_SECRET`, `MOSAIC_SMOKE_PAYLOAD` or one of the three
+  `MOSAIC_SMOKE_APPLICATION_CLIENT_SECRET`, `MOSAIC_SMOKE_PAYLOAD` or one of the five
   `MOSAIC_SMOKE_*_RUNTIME_TOKEN` variables is set in drive.ts's shell, drive.ts passes it to that
   run only. Use a short-lived client secret and delete it afterward. The two control-token
   variables are never passed on: those tokens always come from the personas' browsers.
+- **Agent and security-group grants:** `--agent-entitlement` and `--group-entitlement` call the
+  model with an Entra Agent ID's token or a group member's token. The driver can't sign either in,
+  so set `MOSAIC_SMOKE_AGENT_RUNTIME_TOKEN` or `MOSAIC_SMOKE_GROUP_MEMBER_RUNTIME_TOKEN` in
+  drive.ts's shell. Both flags need `--send-model-requests`, and neither can carry a proof or the
+  revocation watch.
 - **Output:** the verifier's lines appear in the live driver's terminal as they happen, prefixed
   `[verify]`. drive.ts prints them when the run ends, and exits with the verifier's exit code.
   The tokens and secrets the driver passed on are redacted by value, as well as by pattern.
