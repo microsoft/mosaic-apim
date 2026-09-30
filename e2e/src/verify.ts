@@ -24,6 +24,10 @@ export interface VerifyPlan {
   applicationEntitlements: string[]
   /** Grants held by someone other than the user, which the user must not list, read or retrieve a key for. */
   foreignUserEntitlements: string[]
+  /** Entra Agent ID grants, called with MOSAIC_SMOKE_AGENT_RUNTIME_TOKEN. The admin reads their connection details. */
+  agentEntitlements: string[]
+  /** Security-group grants, called with MOSAIC_SMOKE_GROUP_MEMBER_RUNTIME_TOKEN. The admin reads their connection details. */
+  groupEntitlements: string[]
   userTokenSource: UserTokenSource
   applicationTokenSource: ApplicationTokenSource
   checkUngrantedUser: boolean
@@ -49,6 +53,8 @@ const valueFlags: Readonly<Record<string, ValueFlag>> = {
   '--user-entitlement': { pattern: identifier, repeat: true, expects: 'a grant ID' },
   '--application-entitlement': { pattern: identifier, repeat: true, expects: 'a grant ID' },
   '--foreign-user-entitlement': { pattern: identifier, repeat: true, expects: 'a grant ID' },
+  '--agent-entitlement': { pattern: identifier, repeat: true, expects: 'a grant ID' },
+  '--group-entitlement': { pattern: identifier, repeat: true, expects: 'a grant ID' },
   '--watch-revocation': { pattern: identifier, expects: 'a grant ID' },
   '--api-version': { pattern: apiVersion, expects: 'an API version, such as 2024-10-21' },
   '--models-api-version': { pattern: apiVersion, expects: 'an API version, such as 2024-05-01-preview' },
@@ -117,14 +123,20 @@ export function planVerification(targets: Targets, args: readonly string[]): Ver
   const userEntitlements = values.get('--user-entitlement') ?? []
   const applicationEntitlements = values.get('--application-entitlement') ?? []
   const foreignUserEntitlements = values.get('--foreign-user-entitlement') ?? []
-  // Only the grants the run calls models with. Grants held by someone else are only checked through MOSAIC's API.
+  const agentEntitlements = values.get('--agent-entitlement') ?? []
+  const groupEntitlements = values.get('--group-entitlement') ?? []
+  // The grants the run reads keys and tokens for, which proofs and the revocation watch run on.
   const own = [...userEntitlements, ...applicationEntitlements]
-  const listed = [...own, ...foreignUserEntitlements]
+  // Every grant the run calls models with. Grants held by someone else are only checked through MOSAIC's API.
+  const calling = [...own, ...agentEntitlements, ...groupEntitlements]
+  const listed = [...calling, ...foreignUserEntitlements]
   const watchRevocation = single('--watch-revocation')
   if (listed.length === 0) {
-    throw new VerifyError('Name at least one --user-entitlement, --application-entitlement or --foreign-user-entitlement.')
+    throw new VerifyError(
+      'Name at least one --user-entitlement, --application-entitlement, --agent-entitlement, --group-entitlement or --foreign-user-entitlement.',
+    )
   }
-  if (own.length > 0 && !switches.has('--send-model-requests')) {
+  if (calling.length > 0 && !switches.has('--send-model-requests')) {
     throw new VerifyError('Add --send-model-requests to acknowledge that the checks send real, billed model requests.')
   }
   if (new Set(listed).size !== listed.length) throw new VerifyError('List each grant only once.')
@@ -152,6 +164,8 @@ export function planVerification(targets: Targets, args: readonly string[]): Ver
     userEntitlements,
     applicationEntitlements,
     foreignUserEntitlements,
+    agentEntitlements,
+    groupEntitlements,
     userTokenSource: (single('--user-token-source') ?? 'env') as UserTokenSource,
     applicationTokenSource: (single('--application-token-source') ?? 'env') as ApplicationTokenSource,
     checkUngrantedUser: switches.has('--check-ungranted-user'),
@@ -189,7 +203,13 @@ export function verifyPersonas(targets: Targets, plan: VerifyPlan, choice: Perso
   persona(targets, user)
 
   let admin: string | undefined
-  if (plan.applicationEntitlements.length > 0 || plan.foreignUserEntitlements.length > 0) {
+  // The verifier reads these grants' connection details with the admin's MOSAIC API token.
+  const needsAdmin =
+    plan.applicationEntitlements.length > 0 ||
+    plan.foreignUserEntitlements.length > 0 ||
+    plan.agentEntitlements.length > 0 ||
+    plan.groupEntitlements.length > 0
+  if (needsAdmin) {
     admin = choice.admin ?? targets.roles.admin
     persona(targets, admin)
     // The verifier checks that the end user can't read an application's key, so they must be different people.
@@ -197,7 +217,9 @@ export function verifyPersonas(targets: Targets, plan: VerifyPlan, choice: Perso
       throw new VerifyError(`The admin and the user must be different people, not both ${user}.`)
     }
   } else if (choice.admin !== undefined) {
-    throw new VerifyError('--admin is only used with --application-entitlement or --foreign-user-entitlement.')
+    throw new VerifyError(
+      '--admin is only used with --application-entitlement, --foreign-user-entitlement, --agent-entitlement or --group-entitlement.',
+    )
   }
 
   let stranger: string | undefined
@@ -340,6 +362,8 @@ export const forwardedVariables = [
   'MOSAIC_SMOKE_USER_RUNTIME_TOKEN',
   'MOSAIC_SMOKE_APPLICATION_RUNTIME_TOKEN',
   'MOSAIC_SMOKE_UNGRANTED_USER_RUNTIME_TOKEN',
+  'MOSAIC_SMOKE_AGENT_RUNTIME_TOKEN',
+  'MOSAIC_SMOKE_GROUP_MEMBER_RUNTIME_TOKEN',
   'MOSAIC_SMOKE_APPLICATION_CLIENT_ID',
   'MOSAIC_SMOKE_APPLICATION_CLIENT_SECRET',
   'MOSAIC_SMOKE_PAYLOAD',
@@ -349,6 +373,8 @@ const secretVariables = new Set<string>([
   'MOSAIC_SMOKE_USER_RUNTIME_TOKEN',
   'MOSAIC_SMOKE_APPLICATION_RUNTIME_TOKEN',
   'MOSAIC_SMOKE_UNGRANTED_USER_RUNTIME_TOKEN',
+  'MOSAIC_SMOKE_AGENT_RUNTIME_TOKEN',
+  'MOSAIC_SMOKE_GROUP_MEMBER_RUNTIME_TOKEN',
   'MOSAIC_SMOKE_APPLICATION_CLIENT_SECRET',
 ])
 

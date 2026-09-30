@@ -146,8 +146,8 @@ test('a run mirrors the verifier: acknowledged, with distinct grants and a consi
   const cases: [string[], RegExp][] = [
     [['--user-entitlement', 'ent_user'], /Add --send-model-requests/],
     [[...foreign, '--user-entitlement', 'ent_user'], /Add --send-model-requests/],
-    [[], /Name at least one --user-entitlement, --application-entitlement or --foreign-user-entitlement/],
-    [['--send-model-requests'], /Name at least one --user-entitlement, --application-entitlement or --foreign-user-entitlement/],
+    [[], /Name at least one --user-entitlement, --application-entitlement, --agent-entitlement, --group-entitlement or --foreign-user-entitlement/],
+    [['--send-model-requests'], /Name at least one --user-entitlement, --application-entitlement, --agent-entitlement, --group-entitlement or --foreign-user-entitlement/],
     [[...minimal, '--user-entitlement', 'ent_user'], /List each grant only once/],
     [[...minimal, '--application-entitlement', 'ent_user'], /List each grant only once/],
     [[...minimal, '--foreign-user-entitlement', 'ent_user'], /List each grant only once/],
@@ -184,7 +184,7 @@ test('user grants use the manifest user and need no admin', () => {
   assert.equal(verifyPersonas(targets, plan(...minimal), { user: 'guest' }).user, 'guest')
   assert.throws(
     () => verifyPersonas(targets, plan(...minimal), { admin: 'admin' }),
-    /--admin is only used with --application-entitlement or --foreign-user-entitlement/,
+    /--admin is only used with --application-entitlement, --foreign-user-entitlement, --agent-entitlement or --group-entitlement/,
   )
   assert.throws(() => verifyPersonas(targets, plan(...minimal), { user: 'nobody' }), TargetsError)
 })
@@ -196,6 +196,28 @@ test('application grants add the manifest admin, who must be someone other than 
   const twin = example()
   twin.personas['admin-alias'] = { upn: 'USER-A@contoso.example', expectedRole: 'Admin' }
   assert.throws(() => verifyPersonas(parseTargets(twin), application, { admin: 'admin-alias' }), /must be different people/)
+})
+
+test('agent and group grants call models, and the admin reads their connection details', () => {
+  const result = plan('--agent-entitlement', 'ent_agent', '--group-entitlement=ent_group', '--send-model-requests')
+  assert.deepEqual(result.argv, [
+    '--api-base-url', api, '--gateway-origin', gateway,
+    '--agent-entitlement', 'ent_agent', '--group-entitlement', 'ent_group', '--send-model-requests',
+  ])
+  assert.deepEqual(result.agentEntitlements, ['ent_agent'])
+  assert.deepEqual(result.groupEntitlements, ['ent_group'])
+  assert.deepEqual(verifyPersonas(targets, result), { user: 'user-a', admin: 'admin', stranger: undefined })
+  assert.equal(verifyPersonas(targets, plan('--group-entitlement', 'ent_group', '--send-model-requests'), { admin: 'user-b' }).admin, 'user-b')
+  const cases: [string[], RegExp][] = [
+    [['--agent-entitlement', 'ent_agent'], /Add --send-model-requests/],
+    [['--group-entitlement', 'ent_group'], /Add --send-model-requests/],
+    [[...minimal, '--agent-entitlement', 'ent_user'], /List each grant only once/],
+    [['--agent-entitlement', 'ent_same', '--group-entitlement', 'ent_same', '--send-model-requests'], /List each grant only once/],
+    [['--agent-entitlement', 'ent_agent', '--send-model-requests', '--prove-token-limit'], /A proof needs a --user-entitlement or --application-entitlement/],
+    [['--group-entitlement', 'ent_group', '--send-model-requests', '--watch-revocation', 'ent_group'], /must name a --user-entitlement or --application-entitlement/],
+    [['--agent-entitlement', 'https://example.invalid/ent', '--send-model-requests'], /needs a grant ID/],
+  ]
+  for (const [args, message] of cases) assert.throws(() => plan(...args), message, args.join(' '))
 })
 
 test('a device-code check of an ungranted user signs in the outsider, or the no-role persona', () => {

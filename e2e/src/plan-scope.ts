@@ -21,6 +21,8 @@ export interface ScopePublication {
   fragmentName: string
   productName: string
   subscriptionName: string
+  /** The Key Vault-backed named value a key-authenticated publication reads its backend key from. */
+  backendKeyName?: string | null
   modelApiId?: string | null
   resources?: readonly ScopeResource[]
 }
@@ -133,6 +135,8 @@ function pathInScope(path: string, target: ScopePublication, subscriptions: Read
       return name === lower(target.productName) && (rest.length === 0 || (rest[0] === 'apis' && rest[1] === lower(target.apiName)))
     case 'subscriptions':
       return rest.length === 0 && subscriptions.has(name)
+    case 'namedvalues':
+      return rest.length === 0 && typeof target.backendKeyName === 'string' && name === lower(target.backendKeyName)
     default:
       return false
   }
@@ -140,8 +144,8 @@ function pathInScope(path: string, target: ScopePublication, subscriptions: Read
 
 /**
  * Checks a publish or review plan for the target: it must be the target's plan, change only the target's
- * backend, policy fragment, API, product and subscriptions on the target's gateway, and touch only grants on
- * the target's model.
+ * backend, policy fragment, API, product and subscriptions on the target's gateway, and its backend key's named
+ * value when its endpoint takes a key, and touch only grants on the target's model.
  */
 export function planScopeProblems(plan: ScopePlan, context: ScopeContext): string[] {
   const { target, gatewayResourceId, targetGrantIds } = context
@@ -174,7 +178,7 @@ export function planScopeProblems(plan: ScopePlan, context: ScopeContext): strin
 }
 
 const nameCharacter = /[A-Za-z0-9._-]/
-const uniqueKinds = new Set(['backend', 'policyFragment', 'api', 'product', 'subscription'])
+const uniqueKinds = new Set(['backend', 'policyFragment', 'api', 'product', 'subscription', 'namedValue'])
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
@@ -205,6 +209,7 @@ function uniqueNames(publication: ScopePublication): string[] {
     publication.fragmentName,
     publication.productName,
     publication.subscriptionName,
+    publication.backendKeyName ?? '',
     ...(publication.resources ?? []).filter((resource) => uniqueKinds.has(resource.kind)).map((resource) => resource.name),
   ]
 }
