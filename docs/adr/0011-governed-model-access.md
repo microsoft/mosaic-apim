@@ -182,3 +182,13 @@ counter keys remain unchanged.
 The policy treats missing, empty and `/` `scp` values on agent app-only tokens as not delegated,
 and authorizes application/agent callers through `roles`. If Entra signals group overage instead of
 emitting `groups`, the policy denies group-grant access and tells the caller to use a direct grant.
+
+## Amendment 2026-09-30: The governed policy tags each call with its grant
+
+After the operation guard and before any limit, the governed fragment emits a `trace` with source
+`mosaic`. Its message, `mosaic-attribution v=1 g=<grant> m=<member>`, names the matched grant's
+stable counter identity, and for a security-group grant, the caller's validated object ID. Keys and
+Entra tokens produce the same grant identity. A usage source can therefore attribute calls to
+grants that have no subscription. The tag doesn't change authorization, routing, or limits.
+[ADR 0015](0015-end-user-usage-report.md) records the contract and the diagnostic settings it
+needs.

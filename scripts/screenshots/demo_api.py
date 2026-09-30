@@ -429,6 +429,7 @@ def install_demo_services(app: FastAPI, portal_origins: Iterable[str]) -> DemoSe
         writer_factory=lambda resource: ApimWriter(gateway_arm, resource),
         runtime_client_id=settings.model_runtime_client_id,
         security_group_claims=settings.entra_group_claims,
+        environment_repository=state.environment_repository,
     )
     mcp_endpoints = McpEndpointService(
         state.mcp_endpoint_repository,

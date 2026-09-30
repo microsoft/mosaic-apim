@@ -107,6 +107,23 @@ function principalRow(name: string | RegExp) {
   return screen.getByRole('button', { name })
 }
 
+function mockCreatePrincipal() {
+  mocks.createPrincipal.mockImplementation(
+    async (payload: { objectId: string; kind: Principal['kind']; label?: string }) => {
+      const created: Principal = {
+        id: `created-${payload.objectId}`,
+        tenantId: 'tenant',
+        objectId: payload.objectId,
+        kind: payload.kind,
+        label: payload.label,
+        ...timestamps,
+      }
+      mocks.principals.push(created)
+      return created
+    },
+  )
+}
+
 describe('IdentityPage', () => {
   beforeEach(() => {
     vi.resetAllMocks()
@@ -205,6 +222,88 @@ describe('IdentityPage', () => {
     expect(within(dialog).queryByRole('textbox', { name: 'Directory search' })).not.toBeInTheDocument()
   })
 
+  it('keeps the search dialog view while closing', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    expect((await screen.findAllByText('Alex User')).length).toBeGreaterThan(0)
+
+    await user.click(screen.getByRole('button', { name: 'Add person' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Add person' })
+    expect(within(dialog).getByRole('textbox', { name: 'Directory search' })).toBeVisible()
+
+    await user.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+
+    expect(screen.queryByRole('textbox', { name: /Entra object ID/ })).not.toBeInTheDocument()
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(screen.queryByRole('textbox', { name: /Entra object ID/ })).not.toBeInTheDocument()
+  })
+
+  it('clears a non-matching filter after manual add so the new record is selected', async () => {
+    const user = userEvent.setup()
+    mockCreatePrincipal()
+    renderPage()
+    const filter = (await screen.findByRole('textbox', {
+      name: 'Filter by label or object ID',
+    })) as HTMLInputElement
+
+    await user.type(filter, 'zzz')
+    await user.click(screen.getByRole('button', { name: 'Add person' }))
+    let dialog = await screen.findByRole('dialog', { name: 'Add person' })
+    await user.click(within(dialog).getByRole('button', { name: 'Use manual entry' }))
+    dialog = screen.getByRole('dialog', { name: 'Add person' })
+    await user.type(within(dialog).getByRole('textbox', { name: /Entra object ID/ }), 'entra-new-person')
+    await user.type(within(dialog).getByRole('textbox', { name: 'Local label' }), 'Nia Person')
+    await user.click(within(dialog).getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(filter).toHaveValue('')
+    expect(await screen.findByRole('button', { name: /Nia Person/, pressed: true })).toBeVisible()
+  })
+
+  it('keeps a matching filter after manual add', async () => {
+    const user = userEvent.setup()
+    mockCreatePrincipal()
+    renderPage()
+    const filter = (await screen.findByRole('textbox', {
+      name: 'Filter by label or object ID',
+    })) as HTMLInputElement
+
+    await user.type(filter, 'nia')
+    await user.click(screen.getByRole('button', { name: 'Add person' }))
+    let dialog = await screen.findByRole('dialog', { name: 'Add person' })
+    await user.click(within(dialog).getByRole('button', { name: 'Use manual entry' }))
+    dialog = screen.getByRole('dialog', { name: 'Add person' })
+    await user.type(within(dialog).getByRole('textbox', { name: /Entra object ID/ }), 'entra-new-person')
+    await user.type(within(dialog).getByRole('textbox', { name: 'Local label' }), 'Nia Person')
+    await user.click(within(dialog).getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(filter).toHaveValue('nia')
+    expect(await screen.findByRole('button', { name: /Nia Person/, pressed: true })).toBeVisible()
+  })
+
+  it('clears a non-matching filter after adding a directory search result', async () => {
+    const user = userEvent.setup()
+    mocks.searchDirectory.mockResolvedValue([
+      { objectId: 'entra-new-person', kind: 'user', displayName: 'Nia Person', detail: 'nia@example.com' },
+    ])
+    mockCreatePrincipal()
+    renderPage()
+    const filter = (await screen.findByRole('textbox', {
+      name: 'Filter by label or object ID',
+    })) as HTMLInputElement
+
+    await user.type(filter, 'zzz')
+    await user.click(screen.getByRole('button', { name: 'Add person' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Add person' })
+    await user.type(within(dialog).getByRole('textbox', { name: 'Directory search' }), 'nia')
+    await user.click(await within(dialog).findByRole('button', { name: 'Add Nia Person' }))
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(filter).toHaveValue('')
+    expect(await screen.findByRole('button', { name: /Nia Person/, pressed: true })).toBeVisible()
+  })
+
   it('shows a directory result on its own tab once it is added', async () => {
     const user = userEvent.setup()
     mocks.searchDirectory.mockResolvedValue([
@@ -258,5 +357,31 @@ describe('IdentityPage', () => {
     expect(await screen.findByRole('tab', { name: 'Agents', selected: true })).toBeVisible()
     expect(await screen.findByRole('button', { name: /Build agent/, pressed: true })).toBeVisible()
     expect(screen.getByRole('button', { name: /Benefits Bot mailbox/, pressed: false })).toBeVisible()
+  })
+
+  it('clears a non-matching filter after retyping a principal to another tab', async () => {
+    const user = userEvent.setup()
+    mocks.updatePrincipal.mockImplementation(async (principalId: string, payload: { kind: Principal['kind'] }) => {
+      const current = mocks.principals.find((item) => item.id === principalId)
+      if (!current) {
+        throw new Error(`Unknown principal ${principalId}`)
+      }
+      const updated = { ...current, kind: payload.kind }
+      mocks.principals = mocks.principals.map((item) => (item.id === principalId ? updated : item))
+      return updated
+    })
+    renderPage('/identity?tab=workloads')
+    const filter = (await screen.findByRole('textbox', {
+      name: 'Filter by label, detail, object ID, or kind',
+    })) as HTMLInputElement
+
+    await user.type(filter, 'managed')
+    expect(await screen.findByRole('button', { name: /Build agent/, pressed: true })).toBeVisible()
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Principal type' }), 'agentIdentity')
+    await user.click(screen.getByRole('button', { name: 'Save changes' }))
+
+    expect(await screen.findByRole('tab', { name: 'Agents', selected: true })).toBeVisible()
+    expect(filter).toHaveValue('')
+    expect(await screen.findByRole('button', { name: /Build agent/, pressed: true })).toBeVisible()
   })
 })

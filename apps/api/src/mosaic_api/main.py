@@ -194,6 +194,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             writer_factory=lambda resource: ApimWriter(arm_client, resource),
             runtime_client_id=app_settings.model_runtime_client_id,
             security_group_claims=app_settings.entra_group_claims,
+            environment_repository=environment_repository,
         )
         # A dedicated client for outbound MCP calls: redirects are refused per request, and the
         # connection pool for operator-supplied hosts is kept away from the ARM one.

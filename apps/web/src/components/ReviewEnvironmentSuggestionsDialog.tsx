@@ -28,6 +28,7 @@ import {
   publicationsBlockedDetails,
   useEnvironmentCatalog,
 } from '../environments'
+import { environmentAssignmentResourceNoun } from '../labels'
 import type { EnvironmentAssignment, EnvironmentAssignmentResult } from '../types'
 import { EnvironmentPicker } from './EnvironmentPicker'
 import { GrantsAcknowledgmentRefusal, PublicationsBlockedRefusal } from './EnvironmentRefusal'
@@ -98,6 +99,7 @@ export function ReviewEnvironmentSuggestionsDialog({
   })
   const blocked = publicationsBlockedDetails(error)
   const grants = grantsAcknowledgmentDetails(error)
+  const blockedSuggestionNoun = environmentAssignmentResourceNoun(blocked?.suggestedAssignments ?? [])
   const message =
     error instanceof ApiError ? error.message : error instanceof Error ? error.message : null
   return (
@@ -163,7 +165,7 @@ export function ReviewEnvironmentSuggestionsDialog({
             {blocked && <PublicationsBlockedRefusal details={blocked} catalog={catalog.data} />}
             {blocked && blocked.suggestedAssignments.length > 0 && (
               <Button onClick={() => mutation.mutate({ extra: blocked.suggestedAssignments })}>
-                Also classify suggested endpoints
+                Also classify suggested {blockedSuggestionNoun}
               </Button>
             )}
             {grants && <GrantsAcknowledgmentRefusal details={grants} catalog={catalog.data} />}

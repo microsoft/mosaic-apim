@@ -175,6 +175,12 @@ export function formatCount(count: number, noun: string) {
   return `${formatNumber(count)} ${count === 1 ? noun : `${noun}s`}`
 }
 
+export function usageTrackingLabel(linkedBy: UsageResourceRow['linkedBy']) {
+  if (linkedBy === 'gatewayLog') return 'At the gateway'
+  if (linkedBy === 'subscription') return 'By APIM subscription'
+  return 'Not linked yet'
+}
+
 export function formatUtcDate(date: string) {
   const [year, month, day] = date.split('-').map(Number)
   if (!year || !month || !day) return date

@@ -9,7 +9,6 @@ from mosaic_api.domain import (
     Gateway,
     McpEndpoint,
     ModelEndpoint,
-    Publication,
     new_id,
     utc_now,
 )
@@ -55,6 +54,7 @@ from mosaic_api.services.model_access import ENVIRONMENT_BUSY_MESSAGE, environme
 ResourceOverride = Mapping[tuple[str, str], str | None]
 AssignmentResource = Gateway | ModelEndpoint | McpEndpoint
 ResourceKind = EnvironmentResourceKind
+PublicationFilter = Callable[[str, ResourceKind, str], bool]
 ASSIGNMENT_SCOPE_ATTEMPTS = 3
 PUBLICATION_BUSY_MESSAGE = (
     "A publication affected by this change is being applied. Try again when it finishes."
@@ -310,9 +310,12 @@ class EnvironmentService:
         endpoint_ids = frozenset(
             record.resource.id for record in changing if record.kind == "modelEndpoint"
         )
+        mcp_endpoint_ids = frozenset(
+            record.resource.id for record in changing if record.kind == "mcpEndpoint"
+        )
         # Drafts are included: a draft left blocked is allowed, but only while its lock keeps a
         # concurrent apply from turning it into an applied publication mid-change.
-        publication_ids = (
+        model_publication_ids = (
             frozenset(
                 publication.id
                 for publication in await self._gateways.list_publications(tenant_id)
@@ -322,7 +325,19 @@ class EnvironmentService:
             if gateway_ids or endpoint_ids
             else frozenset()
         )
-        return AssignmentScopes(gateway_ids, endpoint_ids, publication_ids)
+        mcp_publication_ids = (
+            frozenset(
+                publication.id
+                for publication in await self._gateways.list_mcp_publications(tenant_id)
+                if publication.gateway_id in gateway_ids
+                or publication.mcp_endpoint_id in mcp_endpoint_ids
+            )
+            if gateway_ids or mcp_endpoint_ids
+            else frozenset()
+        )
+        return AssignmentScopes(
+            gateway_ids, endpoint_ids, model_publication_ids | mcp_publication_ids
+        )
 
     def _validate_assignment_keys(
         self, catalog: EnvironmentCatalog, request: EnvironmentAssignmentRequest
@@ -378,18 +393,23 @@ class EnvironmentService:
     ) -> EnvironmentAssignmentResult:
         changes = [record for record in records if record.previous != record.target]
         overrides: dict[tuple[str, str], str | None] = {
-            (record.kind, record.resource.id): record.target
-            for record in changes
-            if record.kind in {"gateway", "modelEndpoint"}
+            (record.kind, record.resource.id): record.target for record in changes
+        }
+        assigned_gateways = {record.resource.id for record in records if record.kind == "gateway"}
+        assigned_model_endpoints = {
+            record.resource.id for record in records if record.kind == "modelEndpoint"
+        }
+        assigned_mcp_endpoints = {
+            record.resource.id for record in records if record.kind == "mcpEndpoint"
         }
         blocked = await self.blocked_publications(
             actor.tenant_id,
             catalog=catalog,
             overrides=overrides,
-            publication_filter=lambda publication: (
-                publication.gateway_id in {r.resource.id for r in records if r.kind == "gateway"}
-                or publication.model_endpoint_id
-                in {r.resource.id for r in records if r.kind == "modelEndpoint"}
+            publication_filter=lambda gateway_id, endpoint_kind, endpoint_id: (
+                gateway_id in assigned_gateways
+                or (endpoint_kind == "modelEndpoint" and endpoint_id in assigned_model_endpoints)
+                or (endpoint_kind == "mcpEndpoint" and endpoint_id in assigned_mcp_endpoints)
             ),
         )
         if blocked:
@@ -477,29 +497,40 @@ class EnvironmentService:
             for record in changes
             if record.kind == "modelEndpoint"
         }
+        mcp_endpoint_targets = {
+            record.resource.id: record.target for record in changes if record.kind == "mcpEndpoint"
+        }
         gateway_targets = {
             record.resource.id: record.target
             for record in changes
             if record.kind == "gateway"
         }
         suggestions: list[dict[str, object]] = []
-        seen: set[str] = set()
+        seen: set[tuple[str, str]] = set()
         for publication in blocked:
             if publication.gateway_id not in gateway_targets:
                 continue
             gateway_target = gateway_targets[publication.gateway_id]
-            if publication.model_endpoint_id in seen:
+            if publication.kind == "mcp":
+                endpoint_id = publication.mcp_endpoint_id
+                endpoint_kind: ResourceKind = "mcpEndpoint"
+                endpoint_targets_for_kind = mcp_endpoint_targets
+            else:
+                endpoint_id = publication.model_endpoint_id
+                endpoint_kind = "modelEndpoint"
+                endpoint_targets_for_kind = endpoint_targets
+            if endpoint_id is None or (endpoint_kind, endpoint_id) in seen:
                 continue
-            if endpoint_targets.get(publication.model_endpoint_id) == gateway_target:
+            if endpoint_targets_for_kind.get(endpoint_id) == gateway_target:
                 continue
             suggestions.append(
                 {
-                    "resourceKind": "modelEndpoint",
-                    "resourceId": publication.model_endpoint_id,
+                    "resourceKind": endpoint_kind,
+                    "resourceId": endpoint_id,
                     "environment": gateway_target,
                 }
             )
-            seen.add(publication.model_endpoint_id)
+            seen.add((endpoint_kind, endpoint_id))
         return suggestions
 
     async def _affected_grants(
@@ -635,10 +666,15 @@ class EnvironmentService:
             for record in records
             if record.kind == "modelEndpoint"
         }
+        mcp_endpoint_targets = {
+            record.resource.id: record.target for record in records if record.kind == "mcpEndpoint"
+        }
         assigned_gateway_ids = set(gateway_targets)
         assigned_endpoint_ids = set(endpoint_targets)
+        assigned_mcp_endpoint_ids = set(mcp_endpoint_targets)
         gateways = {item.id: item for item in await self._gateways.list_gateways(tenant_id)}
         endpoints = {item.id: item for item in await self._endpoints.list_endpoints(tenant_id)}
+        mcp_endpoints = {item.id: item for item in await self._mcp.list_endpoints(tenant_id)}
         warnings: list[str] = []
         for publication in await self._gateways.list_publications(tenant_id):
             if (
@@ -652,6 +688,21 @@ class EnvironmentService:
                 continue
             gateway_env = gateway_targets.get(gateway.id, gateway.environment)
             endpoint_env = endpoint_targets.get(endpoint.id, endpoint.environment)
+            verdict = permits(catalog, gateway_env, endpoint_env)
+            if verdict.level == VerdictLevel.WARNING and verdict.reason not in warnings:
+                warnings.append(verdict.reason)
+        for mcp_publication in await self._gateways.list_mcp_publications(tenant_id):
+            if (
+                mcp_publication.gateway_id not in assigned_gateway_ids
+                and mcp_publication.mcp_endpoint_id not in assigned_mcp_endpoint_ids
+            ):
+                continue
+            gateway = gateways.get(mcp_publication.gateway_id)
+            mcp_endpoint = mcp_endpoints.get(mcp_publication.mcp_endpoint_id)
+            if gateway is None or mcp_endpoint is None:
+                continue
+            gateway_env = gateway_targets.get(gateway.id, gateway.environment)
+            endpoint_env = mcp_endpoint_targets.get(mcp_endpoint.id, mcp_endpoint.environment)
             verdict = permits(catalog, gateway_env, endpoint_env)
             if verdict.level == VerdictLevel.WARNING and verdict.reason not in warnings:
                 warnings.append(verdict.reason)
@@ -680,6 +731,13 @@ class EnvironmentService:
                 continue
             left = ("gateway", publication.gateway_id)
             right = ("modelEndpoint", publication.model_endpoint_id)
+            if left in by_key and right in by_key:
+                union(left, right)
+        for mcp_publication in await self._gateways.list_mcp_publications(tenant_id):
+            if not mcp_publication.may_own_gateway_state():
+                continue
+            left = ("gateway", mcp_publication.gateway_id)
+            right = ("mcpEndpoint", mcp_publication.mcp_endpoint_id)
             if left in by_key and right in by_key:
                 union(left, right)
         groups: dict[tuple[str, str], list[AssignmentRecord]] = {}
@@ -859,15 +917,18 @@ class EnvironmentService:
         *,
         catalog: EnvironmentCatalog,
         overrides: ResourceOverride | None = None,
-        publication_filter: Callable[[Publication], bool] | None = None,
+        publication_filter: PublicationFilter | None = None,
         include_drafts: bool = False,
     ) -> list[BlockedPublication]:
         overrides = overrides or {}
         blocked: list[BlockedPublication] = []
         gateways = {item.id: item for item in await self._gateways.list_gateways(tenant_id)}
         endpoints = {item.id: item for item in await self._endpoints.list_endpoints(tenant_id)}
+        mcp_endpoints = {item.id: item for item in await self._mcp.list_endpoints(tenant_id)}
         for publication in await self._gateways.list_publications(tenant_id):
-            if publication_filter and not publication_filter(publication):
+            if publication_filter and not publication_filter(
+                publication.gateway_id, "modelEndpoint", publication.model_endpoint_id
+            ):
                 continue
             if not include_drafts and not publication.may_own_gateway_state():
                 continue
@@ -884,6 +945,7 @@ class EnvironmentService:
                 blocked.append(
                     BlockedPublication(
                         publication_id=publication.id,
+                        display_name=publication.display_name,
                         status=str(publication.status),
                         gateway_id=gateway.id,
                         gateway_name=gateway.name,
@@ -892,6 +954,40 @@ class EnvironmentService:
                         model_endpoint_name=endpoint.name,
                         endpoint_environment=endpoint_environment,
                         deployment_name=publication.deployment_name,
+                        verdict=verdict,
+                    )
+                )
+        for mcp_publication in await self._gateways.list_mcp_publications(tenant_id):
+            if publication_filter and not publication_filter(
+                mcp_publication.gateway_id,
+                "mcpEndpoint",
+                mcp_publication.mcp_endpoint_id,
+            ):
+                continue
+            if not include_drafts and not mcp_publication.may_own_gateway_state():
+                continue
+            gateway = gateways.get(mcp_publication.gateway_id)
+            mcp_endpoint = mcp_endpoints.get(mcp_publication.mcp_endpoint_id)
+            if not gateway or not mcp_endpoint:
+                continue
+            gateway_environment = overrides.get(("gateway", gateway.id), gateway.environment)
+            endpoint_environment = overrides.get(
+                ("mcpEndpoint", mcp_endpoint.id), mcp_endpoint.environment
+            )
+            verdict = permits(catalog, gateway_environment, endpoint_environment)
+            if verdict.level == VerdictLevel.BLOCKED:
+                blocked.append(
+                    BlockedPublication(
+                        kind="mcp",
+                        publication_id=mcp_publication.id,
+                        display_name=mcp_publication.display_name,
+                        status=str(mcp_publication.status),
+                        gateway_id=gateway.id,
+                        gateway_name=gateway.name,
+                        gateway_environment=gateway_environment,
+                        mcp_endpoint_id=mcp_endpoint.id,
+                        mcp_endpoint_name=mcp_endpoint.name,
+                        endpoint_environment=endpoint_environment,
                         verdict=verdict,
                     )
                 )

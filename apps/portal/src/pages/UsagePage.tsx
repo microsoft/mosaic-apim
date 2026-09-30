@@ -37,6 +37,7 @@ import {
   quotaWindowLabel,
   rateLimitLabel,
   rowLabel,
+  usageTrackingLabel,
 } from '../usage-format'
 
 function environmentOptions(
@@ -211,7 +212,7 @@ function ResourceTable({
               <th scope="col">Estimated cost</th>
               <th scope="col">Quotas</th>
               <th scope="col">Rate limits</th>
-              <th scope="col">APIM subscription</th>
+              <th scope="col">Usage tracking</th>
             </tr>
           </thead>
           <tbody>
@@ -289,12 +290,13 @@ function ResourceTable({
                   )}
                 </td>
                 <td>
-                  {row.bound ? 'Linked' : <span className="binding-hint">Not linked yet</span>}
+                  {row.linkedBy ? (
+                    usageTrackingLabel(row.linkedBy)
+                  ) : (
+                    <span className="binding-hint">{usageTrackingLabel(row.linkedBy)}</span>
+                  )}
                   {row.attribution === 'unattributed' && (
-                    <small>
-                      Usage can't be attributed until this grant is bound to an API Management
-                      subscription.
-                    </small>
+                    <small>Usage can't be measured for this grant yet.</small>
                   )}
                 </td>
               </tr>

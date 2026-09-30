@@ -130,3 +130,27 @@ A known limit of the fallback deny: when the deny policy can't be written, MOSAI
 fragment instead. That only takes effect once the MCP API's policy includes the fragment. A new API
 that never got its policy still requires an API Management subscription key, because it keeps
 `subscriptionRequired` until the final activation step.
+
+## Amendment 2026-09-30: Environment rules, bindings, and usage tags
+
+MCP publishing now matches model publishing in three more ways. MOSAIC is a proof of concept, so
+existing MCP publications aren't grandfathered.
+
+- **Environment rules.** Create, plan, and apply judge the gateway against the registered MCP
+  server, exactly as [ADR 0014](0014-environments.md) does for models. A blocked pairing is refused,
+  a warning is shown in the plan, and the plan digest pins the environment fingerprint. A
+  re-classification or rule change that would block an applied MCP publication is refused.
+  Unpublish and recovery still never check environments.
+- **Bindings.** A successful apply projects an orchestrated binding onto each grant in the applied
+  snapshot, and a successful unpublish clears them, as model publishing does. An MCP grant has no
+  APIM subscription, so its binding records the grant's attribution key instead. Bindings are
+  written after the publication's state is saved, so a storage error is logged rather than failing
+  the run. Failing it would put a correctly published server behind the deny-all fragment. The
+  next apply writes the bindings again.
+- **Usage tags.** After authentication and before call limits, the enforcement fragment emits a
+  `trace` naming the matched grant, and for a security-group grant, the caller's validated `oid`.
+  The trace reads only policy variables, never a body, so streaming is unaffected.
+  [ADR 0015](0015-end-user-usage-report.md) describes how usage is attributed.
+
+Live verification should also confirm that the trace's message reaches
+`ApiManagementGatewayLogs.TraceRecords` for an MCP API.

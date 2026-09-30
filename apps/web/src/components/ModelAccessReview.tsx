@@ -10,13 +10,27 @@ import {
   Text,
   Title3,
 } from '@fluentui/react-components'
+import { useQuery } from '@tanstack/react-query'
+import { useMosaicApi } from '../api'
 import { describeAccessMethods, describeLimits, describePublicationLimits } from '../entitlement-limits'
+import { ENTITLEMENT_SUBJECT_KIND_LABELS, PRINCIPAL_KIND_LABELS } from '../labels'
 import type { PublishPlan } from '../types'
 import styles from './ImportFromGatewayDialog.module.css'
 
 export function ModelAccessReview({ plan }: { plan: PublishPlan }) {
+  const api = useMosaicApi()
   const snapshot = plan.accessSnapshot
+  const principals = useQuery({
+    queryKey: ['principals'],
+    queryFn: () => api.listPrincipals(),
+    enabled: Boolean(snapshot),
+  })
   if (!snapshot) return null
+
+  const subjectKindLabel = (subject: (typeof snapshot.grants)[number]['subject']) => {
+    const principal = principals.data?.find((item) => item.id === subject.id)
+    return principal ? PRINCIPAL_KIND_LABELS[principal.kind] : ENTITLEMENT_SUBJECT_KIND_LABELS[subject.kind]
+  }
 
   return (
     <section className={styles.nameCell} aria-label="Model-wide access review">
@@ -45,7 +59,7 @@ export function ModelAccessReview({ plan }: { plan: PublishPlan }) {
       {describePublicationLimits(snapshot.publicationEnforcement).map((limit) => <Text key={limit}>{limit}</Text>)}
       <Text size={200}>These safeguards apply in addition to each grant&apos;s limits.</Text>
       {snapshot.grants.length === 0 ? (
-        <Text>No direct grants are in this target. No caller will be authorized.</Text>
+        <Text>No grants are in this target. No caller will be authorized.</Text>
       ) : (
         <div className={styles.tableScroll}>
           <Table size="small" aria-label="All target model grants">
@@ -62,11 +76,11 @@ export function ModelAccessReview({ plan }: { plan: PublishPlan }) {
                 <TableRow key={grant.entitlementId}>
                   <TableCell>
                     <Text block weight="semibold">{grant.displayName}</Text>
-                    <Text block size={200}>{grant.subject.kind} · {grant.objectId}</Text>
+                    <Text block size={200}>{subjectKindLabel(grant.subject)} · {grant.objectId}</Text>
                     <Text block size={200}>Grant: {grant.entitlementId}</Text>
                   </TableCell>
                   <TableCell>{grant.enabled ? 'Enabled' : 'Disabled — revoke both methods'}</TableCell>
-                  <TableCell>{grant.subscriptionName}</TableCell>
+                  <TableCell>{grant.subscriptionName ?? 'None (Entra token)'}</TableCell>
                   <TableCell>
                     {describeLimits(grant).map((limit) => <Text block key={limit}>{limit}</Text>)}
                   </TableCell>

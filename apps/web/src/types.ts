@@ -198,15 +198,19 @@ export interface EnvironmentAssignmentResult {
 }
 
 export interface BlockedPublication {
+  kind?: 'model' | 'mcp'
   publicationId: string
+  displayName?: string | null
   status: string
   gatewayId: string
   gatewayName: string
   gatewayEnvironment: string | null
   modelEndpointId?: string | null
   modelEndpointName?: string | null
-  endpointEnvironment: string | null
   deploymentName?: string | null
+  mcpEndpointId?: string | null
+  mcpEndpointName?: string | null
+  endpointEnvironment: string | null
   verdict: EnvironmentVerdict
 }
 
@@ -310,6 +314,8 @@ export interface EntitlementBinding {
   gatewayId: string
   apimProductName?: string | null
   apimSubscriptionName?: string | null
+  attributionKey?: string | null
+  attributionPerMember?: boolean
   counterKeyExpression?: string | null
   source: BindingSource
   boundAt?: string | null

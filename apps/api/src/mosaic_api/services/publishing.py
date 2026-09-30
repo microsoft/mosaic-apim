@@ -62,10 +62,10 @@ from mosaic_api.domain import (
     utc_now,
 )
 from mosaic_api.environments import (
-    EnvironmentVerdict,
     VerdictLevel,
     compatibility_fingerprint,
     permits,
+    refuse_blocked_pairing,
 )
 from mosaic_api.errors import ConflictError, NotFoundError, ValidationError
 from mosaic_api.integrations.apim import ApimClient
@@ -400,17 +400,6 @@ class PublishingService:
                 },
             )
 
-    @staticmethod
-    def _refuse_blocked_environment(verdict: EnvironmentVerdict) -> None:
-        if verdict.level == VerdictLevel.BLOCKED:
-            raise ConflictError(
-                verdict.reason,
-                details={
-                    "reason": "environmentBlocked",
-                    "verdict": verdict.model_dump(mode="json", by_alias=True),
-                },
-            )
-
     async def create(self, actor: Actor, request: PublicationCreate) -> Publication:
         target = publication_id(
             actor.tenant_id, request.gateway_id, request.model_endpoint_id, request.deployment_name
@@ -430,7 +419,7 @@ class PublishingService:
         endpoint = await self._load_endpoint(actor, request.model_endpoint_id)
         catalog = await load_environment_catalog(self._environments, actor.tenant_id)
         verdict = permits(catalog, gateway.environment, endpoint.environment)
-        self._refuse_blocked_environment(verdict)
+        refuse_blocked_pairing(verdict)
         if endpoint.provider == ModelProvider.OPENAI_COMPATIBLE:
             raise ValidationError(
                 "MOSAIC has no curated API shape for OpenAI-compatible endpoints, so it cannot "
@@ -754,7 +743,7 @@ class PublishingService:
         endpoint = await self._load_endpoint(actor, publication.model_endpoint_id)
         catalog = await load_environment_catalog(self._environments, actor.tenant_id)
         verdict = permits(catalog, gateway.environment, endpoint.environment)
-        self._refuse_blocked_environment(verdict)
+        refuse_blocked_pairing(verdict)
         environment_fingerprint = compatibility_fingerprint(
             catalog, gateway.environment, endpoint.environment
         )
@@ -1346,7 +1335,7 @@ class PublishingService:
 
         catalog = await load_environment_catalog(self._environments, actor.tenant_id)
         verdict = permits(catalog, gateway.environment, endpoint.environment)
-        self._refuse_blocked_environment(verdict)
+        refuse_blocked_pairing(verdict)
         environment_fingerprint = compatibility_fingerprint(
             catalog, gateway.environment, endpoint.environment
         )
@@ -2283,7 +2272,10 @@ class PublishingService:
     ) -> None:
         if self._entitlements is None:
             return
-        from mosaic_api.integrations.access_policy import governed_counter_key_expression
+        from mosaic_api.integrations.access_policy import (
+            governed_counter_key_expression,
+            grant_counter_identity,
+        )
 
         grants = {grant.entitlement_id: grant for grant in snapshot.grants} if snapshot else {}
         records = await self._entitlements.list_entitlements(
@@ -2304,6 +2296,8 @@ class PublishingService:
                     gateway_id=publication.gateway_id,
                     apim_subscription_name=grant.subscription_name,
                     counter_key_expression=governed_counter_key_expression(publication, grant),
+                    attribution_key=grant_counter_identity(publication, grant),
+                    attribution_per_member=grant.is_group_grant,
                     source=BindingSource.ORCHESTRATED,
                     bound_at=utc_now(),
                 )

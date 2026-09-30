@@ -732,10 +732,16 @@ export function EntitlementsPage() {
                       <TableCell><EntitlementAccessState entitlement={entitlement} /></TableCell>
                       <TableCell>
                         {entitlement.binding ? (
-                          <Badge appearance="tint" className={styles.statusReady}>
-                            {entitlement.binding.apimSubscriptionName ?? 'Recorded'} ·{' '}
-                            {entitlement.binding.source}
-                          </Badge>
+                          <div className={styles.cellStack}>
+                            <Badge
+                              appearance="tint"
+                              className={`${styles.stateBadge} ${styles.statusReady}`}
+                            >
+                              {entitlement.binding.apimSubscriptionName ??
+                                (entitlement.binding.attributionKey ? 'Gateway log' : 'Recorded')}{' '}
+                              · {entitlement.binding.source}
+                            </Badge>
+                          </div>
                         ) : (
                           <Badge appearance="tint" className={styles.statusAttention}>
                             Not bound

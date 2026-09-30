@@ -145,6 +145,54 @@ describe('ChangeEnvironmentDialog', () => {
     })
   })
 
+  it('names MCP blocked publications and suggestions as MCP servers', async () => {
+    api.assignEnvironments
+      .mockRejectedValueOnce(
+        new ApiError('Blocked', 409, {
+          details: {
+            reason: 'publicationsBlocked',
+            publications: [
+              {
+                kind: 'mcp',
+                publicationId: 'mcp_pub_1',
+                displayName: 'Weather API',
+                status: 'applied',
+                gatewayId: 'gateway_1',
+                gatewayName: 'Gateway',
+                gatewayEnvironment: 'production',
+                mcpEndpointId: 'mcp_endpoint_1',
+                mcpEndpointName: 'Weather tools',
+                endpointEnvironment: null,
+                verdict: {
+                  level: 'blocked',
+                  reason: 'A Production gateway cannot front an unclassified MCP server.',
+                  gatewayEnvironment: 'production',
+                  endpointEnvironment: null,
+                  viaException: false,
+                },
+              },
+            ],
+            suggestedAssignments: [
+              {
+                resourceKind: 'mcpEndpoint',
+                resourceId: 'mcp_endpoint_1',
+                environment: 'production',
+              },
+            ],
+          },
+        }),
+      )
+      .mockResolvedValueOnce({ results: [], grantsCarried: 0, warnings: [] })
+    renderDialog()
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    expect(await screen.findByText('Weather tools')).toBeVisible()
+    expect(screen.getByText('Weather API')).toBeVisible()
+    expect(
+      screen.getByRole('button', { name: 'Also classify this MCP server as Production' }),
+    ).toBeVisible()
+  })
+
   it('requires grant acknowledgment and resubmits with acknowledgeGrants', async () => {
     api.assignEnvironments
       .mockRejectedValueOnce(

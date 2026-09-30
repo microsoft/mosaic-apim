@@ -178,9 +178,9 @@ one under **Settings > Appearance**.
   <tr>
     <td width="50%" valign="top">
       <img src="docs/images/screenshots/portal-access.png" alt="A model grant with its environment, limits, and expanded connection details">
-      <p><b>My access.</b> Each grant with its environment, limits, and APIM state. A direct model
-      grant expands to show its endpoint, operations, accepted credentials, and Entra details, with
-      code samples and an on-demand key reveal below.</p>
+      <p><b>My access.</b> Each grant with its environment, limits, APIM state, and how its usage is
+      tracked. A direct model grant expands to show its endpoint, operations, accepted credentials,
+      and Entra details, with code samples and an on-demand key reveal below.</p>
     </td>
     <td width="50%" valign="top">
       <img src="docs/images/screenshots/portal-mcp-connection.png" alt="An enforced MCP grant with VS Code mcp.json connection details">
@@ -205,9 +205,10 @@ one under **Settings > Appearance**.
       their real grants and limits, until MOSAIC queries Log Analytics.</p>
     </td>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/portal-usage-resources.png" alt="Usage broken down by environment and by resource">
+      <img src="docs/images/screenshots/portal-usage-resources.png" alt="Usage by resource with each grant's environment, quotas, rate limits, and usage tracking">
       <p><b>Usage by resource.</b> The same figures by environment and by granted resource, with
-      each grant's quotas, rate limits, and whether its APIM subscription is linked yet.</p>
+      each grant's quotas, rate limits, and usage tracking: at the gateway, by APIM subscription,
+      or not linked yet.</p>
     </td>
   </tr>
 </table>
@@ -322,13 +323,16 @@ explicit local/test modes and application startup rejects them when `MOSAIC_ENVI
   accepted credentials, limits, and placeholder code samples, and reveals a key on request
 - Environments: an administrator-defined catalog (Development, Test, QC, Staging, Production,
   Sandbox, and custom environments) that classifies gateways, model endpoints, and MCP servers.
-  Compatibility rules are enforced when models are published, and Azure `environment` tags and
-  legacy labels become suggestions an administrator confirms. Re-classification is guarded, and
-  advisory findings flag mismatched pairings MOSAIC didn't create. The portal shows each catalog
-  entry's and grant's environment, so people request development and production access separately
+  Compatibility rules are enforced when models and MCP servers are published, and Azure
+  `environment` tags and legacy labels become suggestions an administrator confirms.
+  Re-classification is guarded, and advisory findings flag blocked pairings MOSAIC's rules didn't
+  stop. The portal shows each catalog entry's and grant's environment, so people request
+  development and production access separately
 - End-user usage report: a caller-scoped `/me/usage` contract and the portal's **Usage & cost**
   page. Until Log Analytics is wired in, it reports simulated usage built from the caller's real
-  grants and limits
+  grants and limits. Each governed model and MCP call is already tagged at the gateway with the
+  grant it matched, so token, security-group, and MCP grants can be attributed once real data
+  arrives
 - ACR remote builds for every image, so deployment does not depend on a local Docker daemon
 - `azd` and modular Bicep for three Linux Web Apps on one plan, ACR, Cosmos, Key Vault, APIM,
   Log Analytics, Application Insights, diagnostics, managed identities, and narrow RBAC
@@ -543,7 +547,8 @@ not. The domain distinguishes:
   resources an apply created and whether MOSAIC created each one
 - `PublishPlan`, `PublishRun`: the reviewed changes and the audited result of applying them
 - `Entitlement`: a grant of a governed resource to a user, group, or application, its token and
-  request limits, and the API Management product or subscription binding that realizes it
+  request limits, and the binding that realizes it in API Management: a product or subscription,
+  or the grant tag an applied publication emits at the gateway
 - `AccessRequest`: a portal user's request for a resource they can see but are not entitled to
 - `CredentialReference`: Key Vault secret URI only
 - `PolicyRevision`, `SyncOperation`, `AuditEvent`
@@ -1071,8 +1076,8 @@ because credentials are issued for direct grants only.
 Use **MCP servers** to publish a registered streamable MCP server through a managed API Management
 gateway. MOSAIC creates a passthrough MCP API, a backend, an enforcement fragment, an API policy,
 and a per-publication protected-resource-metadata API. It owns those resources under the same
-reviewed plan and explicit apply boundary as model publishing. See
-[Publish MCP servers through API Management](docs/publish-mcp-servers.md).
+reviewed plan, explicit apply boundary, and [environment rules](#environments) as model
+publishing. See [Publish MCP servers through API Management](docs/publish-mcp-servers.md).
 
 Published MCP servers accept Entra runtime tokens only. People and agent users request
 `api://<model-runtime-client-id>/Mcp.Invoke`. Applications, managed identities and agent identities
@@ -1281,7 +1286,8 @@ Each environment has:
 
 A production-class environment may list only other production-class environments.
 
-Whenever a model is published, MOSAIC judges the pairing of gateway and endpoint:
+Whenever a model or MCP server is published, MOSAIC judges the pairing of the gateway with the
+model endpoint or MCP server:
 - **Allowed:** both are in the same environment, or the gateway's environment lists the
   endpoint's as an exception.
 - **Blocked:** two different classified environments without an exception.
@@ -1289,10 +1295,10 @@ Whenever a model is published, MOSAIC judges the pairing of gateway and endpoint
 - **Warning:** any other pairing that involves an unclassified resource. Once **Require
   classification** is on, these are blocked too.
 
-The publish dialog disables blocked deployments and says why. Creating, planning, and applying a
-publication each check again. A plan also records the verdict it was reviewed under. If either
-environment, a production-class flag, the exception, or Require classification changes before
-apply, apply asks for a fresh plan.
+The publish dialogs disable blocked deployments and MCP servers and say why. Creating, planning,
+and applying a publication each check again. A plan also records the verdict it was reviewed
+under. If either environment, a production-class flag, the exception, or Require classification
+changes before apply, apply asks for a fresh plan.
 
 **Classifying resources**
 - Registration asks for an environment.
@@ -1308,14 +1314,14 @@ apply, apply asks for a fresh plan.
 
 **Changes that are refused**
 
-MOSAIC refuses any change that would leave an applied publication blocked:
-- re-classifying a gateway or endpoint;
+MOSAIC refuses any change that would leave an applied model or MCP publication blocked:
+- re-classifying a gateway, model endpoint, or MCP server;
 - editing or deleting an environment;
 - turning on Require classification.
 
-The refusal names the publications. Sometimes a gateway and its endpoints must move together, for
-example to classify an unclassified pair as Production. The console then submits them as one
-batch, which MOSAIC validates as a whole and writes atomically.
+The refusal names the publications. Sometimes a gateway must move together with its endpoints or
+MCP servers, for example to classify an unclassified pair as Production. The console then submits
+them as one batch, which MOSAIC validates as a whole and writes atomically.
 
 **Grants follow their resource.** Moving a resource with enabled grants into or out of a
 production-class environment lists the people and applications affected, and requires
@@ -1328,10 +1334,11 @@ confirmation. The audit event records the grants.
 - A request records the environment it was made for. If the resource has moved since, approval
   asks the administrator to confirm the new environment.
 
-**Findings** point out blocked pairings that exist in API Management but that MOSAIC didn't
-publish. They cover:
+**Findings** point out blocked pairings that MOSAIC's rules didn't stop. They cover:
+- an applied model or MCP publication whose pairing is blocked, which only a change made outside
+  MOSAIC can cause;
 - a gateway backend or API that calls a registered model endpoint in an incompatible environment;
-- a gateway MCP server whose URL is a registered MCP endpoint's URL.
+- a gateway MCP server whose URL is a registered MCP endpoint's URL, unless MOSAIC published it.
 
 Findings are advisory, and each shows its evidence and confidence. They appear on the gateway, in
 Settings, and in the import dialog. MOSAIC doesn't inspect backends referenced only from policy.
@@ -1365,6 +1372,27 @@ Until MOSAIC reads Log Analytics, the report is simulated:
 
 Once a real source is configured, a failure is reported, never replaced with simulated data. See
 [ADR 0015](docs/adr/0015-end-user-usage-report.md).
+
+The **Usage tracking** column says how each grant's real usage will be found:
+- **At the gateway:** a model or MCP publication MOSAIC applied tags every call it authorizes with
+  the grant it matched. This links Entra-token, security-group, and MCP grants, which have no APIM
+  subscription. A security-group grant's tag also carries the caller's object ID, so each member
+  sees only their own calls.
+- **By APIM subscription:** the grant's binding names the subscription that carries its calls.
+  Imported model APIs, imported MCP servers, products, and model deployments can be linked only
+  this way.
+- **Not linked yet:** nothing links the grant, so its real usage will show as unattributed. A
+  publication applied before gateway tagging existed starts tagging on its next apply.
+
+The tag is an API Management `trace` with source `mosaic` at `information` severity, emitted before
+any limit, so throttled calls are tagged too. Its message reads
+`mosaic-attribution v=1 g=<grant> m=<object ID>`, where `m` is empty unless a security-group grant
+matched. For it to reach Log Analytics, set the gateway's Azure Monitor diagnostic verbosity to
+Information or Verbose. `ApiManagementGatewayLogs` then records it in `TraceRecords`. The bootstrap
+gateway's Application Insights diagnostic logs at Information, so each governed call also adds one
+trace there, whatever the sampling rate. To stop them, set that diagnostic's verbosity to Error. A
+security-group tag includes an Entra object ID, which is personal data, so apply your retention and
+access rules to both destinations.
 
 For published MCP servers, `scripts\verify_mcp_access.py` checks the gateway's protected resource
 metadata flow and, when supplied, denied and granted runtime tokens. It never calls an MCP tool.
@@ -1447,7 +1475,8 @@ records.
    `ApiManagementGatewayLlmLog`, consumption measured against each entitlement's own enforcement
    window, per-user attribution, token/traffic/cost allocation, budgets, and portal usage views
    alongside administrator dashboards. The portal's Usage & cost page and its `/me/usage`
-   contract already exist on simulated data; this phase supplies measured figures.
+   contract already exist on simulated data, and governed calls are already tagged with their
+   grant at the gateway; this phase supplies measured figures.
 8. **Catalog ecosystem:** API Center experiences, MCP tool-level governance, broader self-service
    workflows, and environment chains that relate the same model across environments and clouds.
 9. **Production hardening:** private networking, multi-region/production APIM tiers, CMK where

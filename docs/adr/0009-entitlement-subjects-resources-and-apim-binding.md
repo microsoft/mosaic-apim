@@ -120,3 +120,18 @@ model's plan is reviewed and applied.
 `agentUser` grants behave as user grants; `agentIdentity`, service-principal and managed-identity
 grants behave as application grants. MOSAIC-local groups remain informational desired state and are
 not an APIM runtime authorization mechanism.
+
+## Amendment 2026-09-30: Linking a grant without an APIM subscription
+
+The join problem in *Context* assumed an APIM subscription was the only way to find a grant's
+calls in the logs. Entra-token grants, security-group grants, and MCP grants have no subscription,
+so they could never be linked.
+
+The governed policies of model and MCP publications now tag each call they authorize with the
+matched grant's stable identity, and with the caller's object ID for a security-group grant.
+`EntitlementBinding` gains two server-managed fields that an applied publication sets:
+`attributionKey`, the tag's grant identity, and `attributionPerMember`, true for a security-group
+grant. A manual binding can't set either. A binding with neither an attribution key nor a
+subscription links no usage. Imported model APIs, imported MCP servers, products, and model
+deployments carry no MOSAIC policy, so they're still linked only through their subscription.
+[ADR 0015](0015-end-user-usage-report.md) records how the usage report uses these fields.

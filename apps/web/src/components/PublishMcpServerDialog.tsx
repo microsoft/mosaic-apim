@@ -27,6 +27,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMosaicApi } from '../api'
 import { describeLimits } from '../entitlement-limits'
+import { environmentBlockedVerdict, lookupCompatibility, useEnvironmentCatalog } from '../environments'
+import { ENTITLEMENT_SUBJECT_KIND_LABELS, PRINCIPAL_KIND_LABELS } from '../labels'
 import { runtimeConfig } from '../runtime-config'
 import type {
   Gateway,
@@ -40,6 +42,7 @@ import type {
   PublishStepStatus,
 } from '../types'
 import { ErrorState, Loading } from './AsyncState'
+import { EnvironmentBadge } from './EnvironmentBadge'
 import { ModelAccessRecovery } from './ModelAccessRecovery'
 import { PolicyFacetItem } from './PolicyFacets'
 import styles from './ImportFromGatewayDialog.module.css'
@@ -202,8 +205,18 @@ function RunResult({ run }: { run: PublishRun }) {
 }
 
 function McpAccessReview({ plan }: { plan: PublishPlan }) {
+  const api = useMosaicApi()
   const snapshot = plan.mcpAccessSnapshot
+  const principals = useQuery({
+    queryKey: ['principals'],
+    queryFn: () => api.listPrincipals(),
+    enabled: Boolean(snapshot),
+  })
   if (!snapshot) return null
+  const subjectKindLabel = (subject: (typeof snapshot.grants)[number]['subject']) => {
+    const principal = principals.data?.find((item) => item.id === subject.id)
+    return principal ? PRINCIPAL_KIND_LABELS[principal.kind] : ENTITLEMENT_SUBJECT_KIND_LABELS[subject.kind]
+  }
   return (
     <section className={styles.nameCell} aria-label="MCP access review">
       <Title3 as="h3">MCP access changes</Title3>
@@ -216,7 +229,7 @@ function McpAccessReview({ plan }: { plan: PublishPlan }) {
       <Text size={200}>Delegated scope: api://{snapshot.audience}/{snapshot.delegatedScope}</Text>
       <Text size={200}>Application role: {snapshot.applicationRole}</Text>
       {snapshot.grants.length === 0 ? (
-        <Text>No direct or security-group grants are in this target. The gateway will deny callers.</Text>
+        <Text>No grants are in this target. The gateway will deny callers.</Text>
       ) : (
         <div className={styles.tableScroll}>
           <Table size="small" aria-label="All target MCP grants">
@@ -233,7 +246,7 @@ function McpAccessReview({ plan }: { plan: PublishPlan }) {
                 <TableRow key={grant.entitlementId}>
                   <TableCell>
                     <Text block weight="semibold">{grant.displayName}</Text>
-                    <Text block size={200}>{grant.subject.kind} · {grant.objectId}</Text>
+                    <Text block size={200}>{subjectKindLabel(grant.subject)} · {grant.objectId}</Text>
                     <Text block size={200}>Grant: {grant.entitlementId}</Text>
                   </TableCell>
                   <TableCell>{grant.enabled ? 'Enabled' : 'Disabled — revoke at the gateway'}</TableCell>
@@ -290,6 +303,8 @@ export function PublishMcpServerDialog({
     enabled: open && !reviewingExistingPlan,
   })
   const gatewayOptions: Gateway[] = useMemo(() => gateways.data ?? [], [gateways.data])
+  const catalog = useEnvironmentCatalog()
+  const selectedGateway = gatewayOptions.find((gateway) => gateway.id === gatewayId)
 
   useEffect(() => {
     if (!open || reviewingExistingPlan) {
@@ -314,6 +329,8 @@ export function PublishMcpServerDialog({
   })
   const endpoint = (endpoints.data ?? []).find((item) => item.id === endpointId) ?? null
   const localBlockers = endpointBlockers(endpoint)
+  const selectedEnvironmentVerdict = lookupCompatibility(catalog.data, selectedGateway?.environment, endpoint?.environment)
+  const environmentBlocked = selectedEnvironmentVerdict?.level === 'blocked'
 
   useEffect(() => {
     if (!endpoint) return
@@ -397,6 +414,7 @@ export function PublishMcpServerDialog({
     },
     onError: async (error) => {
       if (!publication || (error as { status?: number }).status !== 409) return
+      if (environmentBlockedVerdict(error)) return
       setInvalidPlan(true)
       setReviewMessage(error instanceof Error ? error.message : 'The publish plan is stale.')
       try {
@@ -411,7 +429,7 @@ export function PublishMcpServerDialog({
     },
   })
   const applyError =
-    apply.error && (apply.error as { status?: number }).status !== 409 ? apply.error : null
+    apply.error && ((apply.error as { status?: number }).status !== 409 || environmentBlockedVerdict(apply.error)) ? apply.error : null
 
   const run = useQuery({
     queryKey: ['mcp-publish-run', publication?.id, runId],
@@ -458,10 +476,13 @@ export function PublishMcpServerDialog({
     gatewayId &&
     endpoint &&
     capability.data?.supported &&
-    localBlockers.length === 0,
+    localBlockers.length === 0 &&
+    !environmentBlocked,
   )
-  const canReview = Boolean(form.apiName.trim() && form.apiPath.trim())
+  const canReview = Boolean(form.apiName.trim() && form.apiPath.trim() && !environmentBlocked)
   const missingAccessReview = Boolean(plan && !plan.mcpAccessSnapshot)
+  const createEnvironmentBlocked = environmentBlockedVerdict(createAndPlan.error)
+  const applyEnvironmentBlocked = environmentBlockedVerdict(apply.error)
   const nothingToApply = Boolean(
     plan && plan.steps.length > 0 && plan.steps.every((planStep) => planStep.action === 'noChange'),
   )
@@ -501,6 +522,12 @@ export function PublishMcpServerDialog({
                   </Select>
                 </Field>
                 {gateways.isPending && <Loading label="Loading gateways" />}
+                {selectedGateway && (
+                  <Text size={200}>
+                    Gateway environment:{' '}
+                    <EnvironmentBadge environment={selectedGateway.environment} catalog={catalog.data} size="small" />
+                  </Text>
+                )}
                 {gateways.isError && <ErrorState error={gateways.error} />}
                 {capability.isPending && gatewayId && <Loading label="Checking gateway capability" />}
                 {capability.isError && <ErrorState error={capability.error} />}
@@ -532,13 +559,16 @@ export function PublishMcpServerDialog({
                       <TableBody>
                         {endpoints.data.map((item) => {
                           const blockers = endpointBlockers(item)
+                          const environmentVerdict = lookupCompatibility(catalog.data, selectedGateway?.environment, item.environment)
+                          const blockedByEnvironment = environmentVerdict?.level === 'blocked'
+                          const warningByEnvironment = environmentVerdict?.level === 'warning'
                           return (
                             <TableRow key={item.id}>
                               <TableCell>
                                 <Checkbox
                                   aria-label={`Publish ${item.name}`}
                                   checked={endpointId === item.id}
-                                  disabled={blockers.length > 0}
+                                  disabled={blockers.length > 0 || blockedByEnvironment}
                                   onChange={(_, data) => setEndpointId(data.checked ? item.id : '')}
                                 />
                               </TableCell>
@@ -547,17 +577,23 @@ export function PublishMcpServerDialog({
                                   <Text weight="semibold">{item.name}</Text>
                                   <Text size={200}>{item.endpoint}</Text>
                                   <Text size={200}>{item.inventory.tools} tools · {item.authMode}</Text>
+                                  <Text size={200}>
+                                    Server environment:{' '}
+                                    <EnvironmentBadge environment={item.environment} catalog={catalog.data} size="small" />
+                                  </Text>
                                 </div>
                               </TableCell>
                               <TableCell>
-                                {blockers.length === 0 ? (
+                                {blockers.length === 0 && !blockedByEnvironment ? (
                                   <Badge appearance="tint">Ready to plan</Badge>
                                 ) : (
                                   <div className={styles.nameCell}>
                                     <Badge appearance="tint" color="warning">Not publishable</Badge>
                                     {blockers.map((reason) => <Text key={reason} size={200}>{reason}</Text>)}
+                                    {blockedByEnvironment && <Text size={200}>{environmentVerdict.reason}</Text>}
                                   </div>
                                 )}
+                                {warningByEnvironment && <Text block size={200}>{environmentVerdict.reason}</Text>}
                               </TableCell>
                             </TableRow>
                           )
@@ -583,7 +619,18 @@ export function PublishMcpServerDialog({
                 <Field label="API path" required>
                   <Input value={form.apiPath} onChange={(_, data) => setForm({ ...form, apiPath: data.value })} />
                 </Field>
-                {createAndPlan.isError && <ErrorState error={createAndPlan.error} />}
+                {createAndPlan.isError && (
+                  createEnvironmentBlocked ? (
+                    <MessageBar intent="error">
+                      <MessageBarBody>
+                        <MessageBarTitle>Environment rules block this publication</MessageBarTitle>
+                        {createEnvironmentBlocked.reason}
+                      </MessageBarBody>
+                    </MessageBar>
+                  ) : (
+                    <ErrorState error={createAndPlan.error} />
+                  )
+                )}
               </div>
             )}
 
@@ -650,7 +697,15 @@ export function PublishMcpServerDialog({
                     </ul>
                   </>
                 )}
-                {applyError && <ErrorState error={applyError} />}
+                {applyEnvironmentBlocked && (
+                  <MessageBar intent="error">
+                    <MessageBarBody>
+                      <MessageBarTitle>Environment rules block this publication</MessageBarTitle>
+                      {applyEnvironmentBlocked.reason}
+                    </MessageBarBody>
+                  </MessageBar>
+                )}
+                {applyError && !applyEnvironmentBlocked && <ErrorState error={applyError} />}
                 {refreshError && <ErrorState error={refreshError} />}
               </div>
             )}

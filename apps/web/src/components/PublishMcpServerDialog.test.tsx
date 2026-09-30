@@ -138,6 +138,8 @@ function run(overrides: Partial<PublishRun> = {}): PublishRun {
 }
 
 const api = {
+  getEnvironmentCatalog: vi.fn(),
+  listPrincipals: vi.fn(),
   listGateways: vi.fn(),
   listMcpEndpoints: vi.fn(),
   getMcpPublishingCapability: vi.fn(),
@@ -163,6 +165,21 @@ function renderDialog(onPublished = vi.fn()) {
 describe('PublishMcpServerDialog', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    api.getEnvironmentCatalog.mockResolvedValue({
+      environments: [
+        { key: 'production', displayName: 'Production', description: null, color: 'danger', production: true, aliases: [], acceptsEndpointsFrom: [], order: 10, builtIn: true, usage: { gateways: 1, modelEndpoints: 0, mcpEndpoints: 1 } },
+        { key: 'development', displayName: 'Development', description: null, color: 'informative', production: false, aliases: [], acceptsEndpointsFrom: [], order: 20, builtIn: true, usage: { gateways: 0, modelEndpoints: 0, mcpEndpoints: 1 } },
+      ],
+      requireClassification: false,
+      unclassified: { gateways: 0, modelEndpoints: 0, mcpEndpoints: 0 },
+      compatibility: [
+        { level: 'allowed', reason: 'Production can publish production servers.', gatewayEnvironment: 'production', endpointEnvironment: 'production', viaException: false },
+        { level: 'blocked', reason: 'Production gateways cannot publish development MCP servers.', gatewayEnvironment: 'production', endpointEnvironment: 'development', viaException: false },
+        { level: 'warning', reason: 'Review before publishing production through development.', gatewayEnvironment: 'development', endpointEnvironment: 'production', viaException: false },
+      ],
+      updatedAt: null,
+    })
+    api.listPrincipals.mockResolvedValue([])
     api.listGateways.mockResolvedValue([gateway()])
     api.listMcpEndpoints.mockResolvedValue([endpoint()])
     api.getMcpPublishingCapability.mockResolvedValue({ gatewayId: 'gateway_1', supported: true, reasons: [], warnings: [] })
@@ -200,6 +217,58 @@ describe('PublishMcpServerDialog', () => {
     expect(within(table).getByRole('checkbox', { name: 'Publish Weather tools' })).toBeDisabled()
   })
 
+  it('shows environments and disables blocked pairings with the reason', async () => {
+    api.listGateways.mockResolvedValue([gateway({ environment: 'production' })])
+    api.listMcpEndpoints.mockResolvedValue([endpoint({ environment: 'development' })])
+    renderDialog()
+
+    expect(await screen.findByText('Gateway environment:')).toBeVisible()
+    expect(screen.getByText('Production')).toBeVisible()
+    const table = await screen.findByRole('table', { name: 'Publishable MCP servers' })
+    expect(within(table).getByText('Server environment:')).toBeVisible()
+    expect(within(table).getByText('Development')).toBeVisible()
+    expect(within(table).getByText('Production gateways cannot publish development MCP servers.')).toBeVisible()
+    expect(within(table).getByRole('checkbox', { name: 'Publish Weather tools' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Configure' })).toBeDisabled()
+  })
+
+  it('shows warning pairings and still allows review', async () => {
+    const user = userEvent.setup()
+    api.listGateways.mockResolvedValue([gateway({ environment: 'development' })])
+    api.listMcpEndpoints.mockResolvedValue([endpoint({ environment: 'production' })])
+    renderDialog()
+
+    const table = await screen.findByRole('table', { name: 'Publishable MCP servers' })
+    expect(within(table).getByText('Review before publishing production through development.')).toBeVisible()
+    await user.click(within(table).getByRole('checkbox', { name: 'Publish Weather tools' }))
+    await user.click(screen.getByRole('button', { name: 'Configure' }))
+    await user.click(screen.getByRole('button', { name: 'Review plan' }))
+
+    expect(await screen.findByText('Security readers')).toBeVisible()
+    expect(api.planMcpPublication).toHaveBeenCalledWith('mcp_pub_1')
+  })
+
+  it('shows an environment refusal when create or plan is blocked', async () => {
+    const user = userEvent.setup()
+    api.planMcpPublication.mockRejectedValueOnce(Object.assign(new Error('Blocked'), {
+      status: 409,
+      body: {
+        details: {
+          reason: 'environmentBlocked',
+          verdict: { level: 'blocked', reason: 'Production gateways cannot publish development MCP servers.', gatewayEnvironment: 'production', endpointEnvironment: 'development', viaException: false },
+        },
+      },
+    }))
+    renderDialog()
+
+    await user.click(await screen.findByRole('checkbox', { name: 'Publish Weather tools' }))
+    await user.click(screen.getByRole('button', { name: 'Configure' }))
+    await user.click(screen.getByRole('button', { name: 'Review plan' }))
+
+    expect(await screen.findByText('Environment rules block this publication')).toBeVisible()
+    expect(screen.getByText('Production gateways cannot publish development MCP servers.')).toBeVisible()
+  })
+
   it('creates, plans, reviews MCP grants, applies, and polls the run', async () => {
     const user = userEvent.setup()
     const onPublished = vi.fn()
@@ -229,6 +298,58 @@ describe('PublishMcpServerDialog', () => {
     expect(await screen.findByText('Local development service reported completion; live APIM apply is not verified.')).toBeVisible()
     expect(await screen.findByRole('table', { name: 'MCP publish run steps' })).toBeVisible()
     expect(onPublished).toHaveBeenCalledWith('Local development service reported completion. Live APIM apply is not verified.')
+  })
+
+  it('shows an environment refusal on apply and does not re-plan', async () => {
+    const user = userEvent.setup()
+    api.applyMcpPublication.mockRejectedValueOnce(Object.assign(new Error('Blocked'), {
+      status: 409,
+      body: {
+        details: {
+          reason: 'environmentBlocked',
+          verdict: { level: 'blocked', reason: 'Environment rules changed. Reclassify before applying.', gatewayEnvironment: 'production', endpointEnvironment: 'development', viaException: false },
+        },
+      },
+    }))
+    renderDialog()
+
+    await user.click(await screen.findByRole('checkbox', { name: 'Publish Weather tools' }))
+    await user.click(screen.getByRole('button', { name: 'Configure' }))
+    await user.click(screen.getByRole('button', { name: 'Review plan' }))
+    await screen.findByText('Security readers')
+    expect(api.planMcpPublication).toHaveBeenCalledTimes(1)
+    await user.click(screen.getByRole('button', { name: 'Apply plan' }))
+
+    expect(await screen.findByText('Environment rules block this publication')).toBeVisible()
+    expect(screen.getByText('Environment rules changed. Reclassify before applying.')).toBeVisible()
+    expect(api.planMcpPublication).toHaveBeenCalledTimes(1)
+  })
+
+  it('uses principal kinds from the directory and falls back to subject labels', async () => {
+    api.listPrincipals.mockResolvedValue([{ id: 'app_1', tenantId: 'tenant-test', objectId: 'object', kind: 'agentIdentity', label: 'Agent app', createdAt: '', updatedAt: '' }])
+    const reviewPlan: PublishPlan = {
+      ...plan,
+      mcpAccessSnapshot: {
+        ...plan.mcpAccessSnapshot!,
+        grants: [
+          { ...plan.mcpAccessSnapshot!.grants[0], entitlementId: 'grant_agent', subject: { kind: 'application', id: 'app_1' }, objectId: 'agent-object', displayName: 'Agent app' },
+          { ...plan.mcpAccessSnapshot!.grants[0], entitlementId: 'grant_unknown', subject: { kind: 'application', id: 'missing' }, objectId: 'missing-object', displayName: 'Unknown app' },
+        ],
+      },
+    }
+    render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <PublishMcpServerDialog
+          open
+          onClose={vi.fn()}
+          onPublished={vi.fn()}
+          initialReview={{ publication, plan: reviewPlan }}
+        />
+      </QueryClientProvider>,
+    )
+
+    expect(await screen.findByText('Agent · agent-object')).toBeVisible()
+    expect(screen.getByText('Application · missing-object')).toBeVisible()
   })
 
   it('reuses its draft when a failed plan is retried, rather than creating a duplicate', async () => {

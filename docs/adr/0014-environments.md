@@ -59,8 +59,8 @@ pairing:
   data written outside MOSAIC can produce one.
 
 The console looks verdicts up in a compatibility matrix the API derives from the catalog. It
-never reimplements the rules. The same function judges gateway-hosted MCP servers, and will judge
-an MCP publishing flow when one exists.
+never reimplements the rules. The same function judges MCP publications and gateway-hosted MCP
+servers.
 
 **Suggest, never assume.** Every existing resource starts Unclassified. MOSAIC reads an Azure
 `environment` or `env` resource tag, but only from ARM responses it already fetches:
@@ -170,11 +170,36 @@ Findings never block anything, and they say what they can't see.
   suggestions. The console no longer writes it.
 - The bootstrap gateway registers as Unclassified, like everything else. An `environment` tag on
   the azd-deployed APIM becomes a suggestion.
-- MOSAIC has no flow that publishes MCP servers into API Management, so MCP pairings are reported
-  through findings rather than enforced.
 - Findings cover registered resources only. A backend referenced only from policy, such as a
   `set-backend-service` base URL or a named value, isn't inspected.
 - Environment chains are deferred. MOSAIC doesn't relate the same model across environments or
   clouds, and the portal doesn't search by model. Users request each environment separately.
 - ADR 0001 is unaffected. Classification is MOSAIC desired state, and MOSAIC doesn't write tags
   back to Azure.
+
+## Amendment 2026-09-30: MCP publications follow the same rules
+
+ADR 0017 added a flow that publishes registered MCP servers through a gateway. When this ADR was
+written, that flow didn't exist, so MCP pairings were only reported as findings. MCP publications
+now follow exactly the rules and process that model publications do. MOSAIC is still a proof of
+concept, so existing MCP publications aren't grandfathered.
+
+- **Publishing.** Create, plan, and apply judge the gateway against the registered MCP server with
+  `permits()`. A blocked pairing is refused with the same `environmentBlocked` conflict and verdict
+  that models return. A warning is added to the plan's warnings. The MCP plan digest includes the
+  compatibility fingerprint, so apply rejects a plan whose environments changed. Unpublish and
+  recovery still never check environments.
+- **Locks.** MCP publication creation holds the tenant `environments` lease, its gateway scope,
+  and its publication lock, in the order above. MCP servers have no `endpoint:{id}` scope. The
+  tenant lease already serializes creation against a re-classification, because both hold it.
+  Apply holds the publication lock for its whole run and checks the verdict again under it.
+- **No change may leave an applied MCP publication blocked.** Re-classifying a gateway or an MCP
+  server, editing or deleting an environment, and turning on Require classification all judge
+  applied MCP publications as well. The refusal lists them alongside model publications, with the
+  MCP server's name in place of an endpoint and deployment. A re-classification locks the MCP
+  publications it could newly block, drafts included. Its suggestions can move the MCP server with
+  its gateway, and the two are written in one batch.
+- **Findings.** An applied MCP publication whose pairing is blocked is reported as a
+  `blockedPublication` finding that targets the MCP server. The APIs an MCP publication creates,
+  including its metadata API, count as MOSAIC-owned. A server MOSAIC published therefore isn't
+  also reported as a gateway MCP server that crosses environments.

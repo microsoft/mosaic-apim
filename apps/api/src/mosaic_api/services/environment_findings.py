@@ -8,6 +8,7 @@ from pydantic import Field
 from mosaic_api.domain import (
     Gateway,
     McpEndpoint,
+    McpPublication,
     ModelEndpoint,
     MosaicModel,
     Publication,
@@ -153,12 +154,26 @@ class EnvironmentFindingsService:
         publications = await self._gateways.list_publications(
             actor.tenant_id, gateway_id=gateway_id
         )
+        mcp_publications = await self._gateways.list_mcp_publications(
+            actor.tenant_id, gateway_id=gateway_id
+        )
 
         endpoints_by_host, endpoints_by_account = self._index_model_endpoints(model_endpoints)
         mcp_by_url = self._index_mcp_endpoints(mcp_endpoints)
         own_api_names = {
             (item.gateway_id, item.api_name.casefold())
             for item in publications
+            if item.may_own_gateway_state()
+        }
+        own_api_names.update(
+            (item.gateway_id, name.casefold())
+            for item in mcp_publications
+            if item.may_own_gateway_state()
+            for name in (item.api_name, item.metadata_api_name)
+        )
+        own_mcp_server_names = {
+            (item.gateway_id, item.api_name.casefold())
+            for item in mcp_publications
             if item.may_own_gateway_state()
         }
 
@@ -180,6 +195,19 @@ class EnvironmentFindingsService:
                 if gateway and endpoint:
                     self._add_blocked_publication(
                         items, seen, catalog, gateway, publication, endpoint
+                    )
+        for mcp_publication in mcp_publications:
+            if mcp_publication.may_own_gateway_state():
+                gateway = next(
+                    (item for item in gateways if item.id == mcp_publication.gateway_id), None
+                )
+                mcp_endpoint = next(
+                    (item for item in mcp_endpoints if item.id == mcp_publication.mcp_endpoint_id),
+                    None,
+                )
+                if gateway and mcp_endpoint:
+                    self._add_blocked_mcp_publication(
+                        items, seen, catalog, gateway, mcp_publication, mcp_endpoint
                     )
 
         limitations = [_POLICY_LIMITATION]
@@ -240,6 +268,8 @@ class EnvironmentFindingsService:
                     endpoints_by_account,
                 )
             for server in mcp_servers:
+                if (gateway.id, server.name.casefold()) in own_mcp_server_names:
+                    continue
                 self._add_mcp_findings(items, seen, catalog, gateway, server, mcp_by_url)
 
         items.sort(
@@ -385,6 +415,50 @@ class EnvironmentFindingsService:
                 ),
                 message=_message(catalog, gateway.environment, endpoint.environment),
             )
+
+    def _add_blocked_mcp_publication(
+        self,
+        items: list[EnvironmentFinding],
+        seen: set[tuple[str, str, str, str, str]],
+        catalog: EnvironmentCatalog,
+        gateway: Gateway,
+        publication: McpPublication,
+        endpoint: McpEndpoint,
+    ) -> None:
+        verdict = permits(catalog, gateway.environment, endpoint.environment)
+        if verdict.level != VerdictLevel.BLOCKED:
+            return
+        subject = EnvironmentFindingSubject(
+            kind="publication",
+            id=publication.id,
+            name=publication.display_name,
+            api_name=publication.api_name,
+        )
+        target = EnvironmentFindingTarget(
+            resource_kind="mcpEndpoint",
+            resource_id=endpoint.id,
+            resource_name=endpoint.name,
+            environment=endpoint.environment,
+        )
+        self._add(
+            items,
+            seen,
+            catalog,
+            gateway,
+            kind="blockedPublication",
+            confidence="certain",
+            subject=subject,
+            target=target,
+            verdict=verdict,
+            evidence=(
+                f'MCP publication "{publication.display_name}" is applied on gateway '
+                f'"{gateway.name}" and targets registered MCP server "{endpoint.name}".'
+            ),
+            message=(
+                f"{_message(catalog, gateway.environment, endpoint.environment)} "
+                "The data changed outside MOSAIC's environment rules."
+            ),
+        )
 
     def _add_mcp_findings(
         self,

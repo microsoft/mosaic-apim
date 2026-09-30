@@ -37,31 +37,40 @@ export function PublicationsBlockedRefusal({
                 <TableRow>
                   <TableHeaderCell>Gateway</TableHeaderCell>
                   <TableHeaderCell>Endpoint</TableHeaderCell>
-                  <TableHeaderCell>Deployment</TableHeaderCell>
+                  <TableHeaderCell>Published</TableHeaderCell>
                   <TableHeaderCell>Reason</TableHeaderCell>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {details.publications.map((publication) => (
-                  <TableRow key={publication.publicationId}>
-                    <TableCell>
-                      {publication.gatewayName}{' '}
-                      <EnvironmentBadge
-                        environment={publication.gatewayEnvironment}
-                        catalog={catalog}
-                      />
-                    </TableCell>
-                    <TableCell>
-                      {publication.modelEndpointName ?? 'Endpoint'}{' '}
-                      <EnvironmentBadge
-                        environment={publication.endpointEnvironment}
-                        catalog={catalog}
-                      />
-                    </TableCell>
-                    <TableCell>{publication.deploymentName ?? '—'}</TableCell>
-                    <TableCell>{publication.verdict.reason}</TableCell>
-                  </TableRow>
-                ))}
+                {details.publications.map((publication) => {
+                  const kind = publication.kind ?? 'model'
+                  return (
+                    <TableRow key={publication.publicationId}>
+                      <TableCell>
+                        {publication.gatewayName}{' '}
+                        <EnvironmentBadge
+                          environment={publication.gatewayEnvironment}
+                          catalog={catalog}
+                        />
+                      </TableCell>
+                      <TableCell>
+                        {kind === 'mcp'
+                          ? publication.mcpEndpointName ?? 'MCP server'
+                          : publication.modelEndpointName ?? 'Endpoint'}{' '}
+                        <EnvironmentBadge
+                          environment={publication.endpointEnvironment}
+                          catalog={catalog}
+                        />
+                      </TableCell>
+                      <TableCell>
+                        {kind === 'mcp'
+                          ? publication.displayName ?? 'MCP server'
+                          : publication.deploymentName ?? '—'}
+                      </TableCell>
+                      <TableCell>{publication.verdict.reason}</TableCell>
+                    </TableRow>
+                  )
+                })}
               </TableBody>
             </Table>
           </div>

@@ -13,7 +13,9 @@ import structlog
 from mosaic_api.domain import (
     ApimResourceId,
     AuditEvent,
+    BindingSource,
     CapabilitySupport,
+    EntitlementBinding,
     EntitlementSubjectKind,
     Gateway,
     GatewayTier,
@@ -51,21 +53,34 @@ from mosaic_api.domain import (
     subject_kind_for,
     utc_now,
 )
+from mosaic_api.environments import (
+    VerdictLevel,
+    compatibility_fingerprint,
+    permits,
+    refuse_blocked_pairing,
+)
 from mosaic_api.errors import ConflictError, NotFoundError, ValidationError
 from mosaic_api.integrations.apim import ApimClient
 from mosaic_api.integrations.apim.writer import ApimWriter
-from mosaic_api.integrations.mcp_access_policy import McpPolicyDocuments, render_mcp_policy
+from mosaic_api.integrations.mcp_access_policy import (
+    McpPolicyDocuments,
+    mcp_counter_key_expression,
+    mcp_grant_counter_identity,
+    render_mcp_policy,
+)
 from mosaic_api.observed import ObservedApi
 from mosaic_api.repositories import (
     DirectoryRepository,
     EntitlementRepository,
+    EnvironmentRepository,
     GatewayRepository,
     McpEndpointRepository,
 )
 from mosaic_api.services.directory import Actor
+from mosaic_api.services.environments import load_environment_catalog
 from mosaic_api.services.model_access import (
     entitlement_intent_digest,
-    gateway_mutation_scope,
+    environment_guard,
     local_mutation_active,
     publication_lock,
 )
@@ -170,6 +185,7 @@ def mcp_publication_digest(
     endpoint: McpEndpoint,
     policy: McpPolicyDocuments,
     snapshot: McpAccessSnapshot,
+    environment_fingerprint: str | None = None,
 ) -> str:
     payload = json.dumps(
         {
@@ -187,6 +203,7 @@ def mcp_publication_digest(
             "mcpServerId": publication.mcp_server_id,
             "policySha256": policy.content_sha256,
             "accessSnapshot": snapshot.model_dump(mode="json"),
+            "environmentFingerprint": environment_fingerprint,
             "previousAccessVersion": (
                 publication.applied_access.version if publication.applied_access else None
             ),
@@ -218,6 +235,7 @@ class McpPublishingService:
         writer_factory: WriterFactory,
         runtime_client_id: str | None,
         security_group_claims: bool = True,
+        environment_repository: EnvironmentRepository | None = None,
     ) -> None:
         self._repository = repository
         self._endpoints = mcp_endpoint_repository
@@ -227,6 +245,7 @@ class McpPublishingService:
         self._writer_factory = writer_factory
         self._runtime_client_id = runtime_client_id
         self._security_group_claims = security_group_claims
+        self._environments = environment_repository
         self._active: set[str] = set()
         self._tasks: set[asyncio.Task[None]] = set()
         self._task_failures: list[BaseException] = []
@@ -305,11 +324,14 @@ class McpPublishingService:
 
     async def create(self, actor: Actor, request: McpPublicationCreate) -> McpPublication:
         target = mcp_publication_id(actor.tenant_id, request.gateway_id, request.mcp_endpoint_id)
-        async with publication_lock(
-            self._repository, actor.tenant_id, gateway_mutation_scope(request.gateway_id)
+        async with environment_guard(
+            self._repository,
+            actor.tenant_id,
+            environments=True,
+            gateway_ids=[request.gateway_id],
+            publication_ids=[target],
         ):
-            async with publication_lock(self._repository, actor.tenant_id, target):
-                return await self._create(actor, request)
+            return await self._create(actor, request)
 
     async def _create(self, actor: Actor, request: McpPublicationCreate) -> McpPublication:
         gateway = await self._load_gateway(actor, request.gateway_id)
@@ -318,6 +340,9 @@ class McpPublishingService:
             raise ConflictError(capability.reasons[0], details={"reasons": capability.reasons})
         endpoint = await self._load_endpoint(actor, request.mcp_endpoint_id)
         self._validate_endpoint(endpoint)
+        catalog = await load_environment_catalog(self._environments, actor.tenant_id)
+        verdict = permits(catalog, gateway.environment, endpoint.environment)
+        refuse_blocked_pairing(verdict)
 
         slug = apim_slug(endpoint.name) or "server"
         api_name = request.api_name or f"mosaic-mcp-{slug}"
@@ -421,6 +446,12 @@ class McpPublishingService:
         self._require_writable(gateway)
         endpoint = await self._load_endpoint(actor, publication.mcp_endpoint_id)
         self._validate_endpoint(endpoint)
+        catalog = await load_environment_catalog(self._environments, actor.tenant_id)
+        verdict = permits(catalog, gateway.environment, endpoint.environment)
+        refuse_blocked_pairing(verdict)
+        environment_fingerprint = compatibility_fingerprint(
+            catalog, gateway.environment, endpoint.environment
+        )
         await self._reject_live_collisions(actor, publication, gateway)
 
         snapshot, access_warnings = await self._access_snapshot(publication, endpoint)
@@ -433,17 +464,27 @@ class McpPublishingService:
         resource = ApimResourceId.parse(gateway.azure_resource_id)
         client = self._client_factory(resource)
         steps = await self._steps(publication, endpoint, client, resource)
+        warnings = [*self._warnings(publication, gateway, endpoint, snapshot)]
+        if verdict.level == VerdictLevel.WARNING and verdict.reason not in warnings:
+            warnings.append(verdict.reason)
+        warnings.extend(item for item in access_warnings if item not in warnings)
         plan = PublishPlan(
             id=new_id("publishplan"),
             tenant_id=actor.tenant_id,
             publication_id=publication.id,
             target="mcp",
             gateway_id=gateway.id,
-            digest=mcp_publication_digest(publication, endpoint, policy, snapshot),
+            digest=mcp_publication_digest(
+                publication,
+                endpoint,
+                policy,
+                snapshot,
+                environment_fingerprint=environment_fingerprint,
+            ),
             steps=steps,
             facets=policy.facets,
             policy_content_sha256=policy.content_sha256,
-            warnings=[*self._warnings(publication, gateway, endpoint, snapshot), *access_warnings],
+            warnings=warnings,
             actor_object_id=actor.object_id,
             mcp_access_snapshot=snapshot,
             previous_access_version=(
@@ -503,6 +544,12 @@ class McpPublishingService:
         plan = await self.get_plan(actor, resolved)
         if plan.publication_id != publication.id or plan.id != publication.last_plan_id:
             raise ConflictError("This is not the latest plan for this MCP publication; plan again.")
+        catalog = await load_environment_catalog(self._environments, actor.tenant_id)
+        verdict = permits(catalog, gateway.environment, endpoint.environment)
+        refuse_blocked_pairing(verdict)
+        environment_fingerprint = compatibility_fingerprint(
+            catalog, gateway.environment, endpoint.environment
+        )
         snapshot, _ = await self._access_snapshot(publication, endpoint)
         policy = _policy_documents(
             publication,
@@ -510,9 +557,19 @@ class McpPublishingService:
             backend_auth=endpoint.auth_mode,
             backend_audience=endpoint.resource_audience,
         )
-        if mcp_publication_digest(publication, endpoint, policy, snapshot) != plan.digest:
+        if (
+            mcp_publication_digest(
+                publication,
+                endpoint,
+                policy,
+                snapshot,
+                environment_fingerprint=environment_fingerprint,
+            )
+            != plan.digest
+        ):
             raise ConflictError(
-                "This MCP publication changed after the plan was produced; plan again."
+                "This MCP publication changed after the plan was produced. Re-plan it and "
+                "review the new changes before applying."
             )
         run = self._claim(actor, publication, plan, owner)
         await self._repository.save_publish_run(run)
@@ -1579,6 +1636,8 @@ class McpPublishingService:
                 access_snapshot=denied_snapshot,
                 access_state="applied" if succeeded else "failed",
             )
+            if succeeded:
+                await self._project_bindings(publication, None, run)
             await self._finish_run(
                 run,
                 PublishRunStatus.SUCCEEDED if succeeded else PublishRunStatus.FAILED,
@@ -1676,6 +1735,7 @@ class McpPublishingService:
             access_snapshot=access_snapshot,
             access_state="applied",
         )
+        await self._project_bindings(publication, access_snapshot, run)
         await self._finish_run(
             run, PublishRunStatus.SUCCEEDED, started, results=results, errors=[], orphaned=[]
         )
@@ -1705,6 +1765,61 @@ class McpPublishingService:
                 }
             )
         )
+
+    async def _project_bindings(
+        self,
+        publication: McpPublication,
+        snapshot: McpAccessSnapshot | None,
+        run: PublishRun,
+    ) -> None:
+        """Record each grant's gateway binding once the publication's state is durable.
+
+        Bindings only link usage to grants; the gateway already enforces the reviewed access. A
+        storage error here is logged rather than failing the run, which would put a correctly
+        published server behind the deny-all fragment. The next apply writes the bindings again.
+        """
+        grants = {grant.entitlement_id: grant for grant in snapshot.grants} if snapshot else {}
+        try:
+            records = await self._entitlements.list_entitlements(
+                publication.tenant_id, resource_id=publication.mcp_server_id
+            )
+        except Exception:
+            logger.exception(
+                "mcp_binding_projection_failed", publication_id=publication.id, run_id=run.id
+            )
+            return
+        actor = Actor(run.actor_object_id or "system:mcp-publishing", publication.tenant_id)
+        for entitlement in records:
+            grant = grants.get(entitlement.id)
+            binding = entitlement.binding
+            if grant and grant.enabled and snapshot:
+                binding = EntitlementBinding(
+                    gateway_id=publication.gateway_id,
+                    apim_subscription_name=None,
+                    counter_key_expression=mcp_counter_key_expression(publication, grant),
+                    source=BindingSource.ORCHESTRATED,
+                    bound_at=utc_now(),
+                    attribution_key=mcp_grant_counter_identity(publication, grant),
+                    attribution_per_member=grant.is_group_grant,
+                )
+            elif binding and binding.source == BindingSource.ORCHESTRATED:
+                binding = None
+            else:
+                continue
+            try:
+                await self._entitlements.save_entitlement(
+                    entitlement.model_copy(update={"binding": binding, "runtime": None}),
+                    self._audit(
+                        actor, "entitlement.runtimeProjected", entitlement.id, "entitlement"
+                    ),
+                )
+            except Exception:
+                logger.exception(
+                    "mcp_binding_projection_failed",
+                    publication_id=publication.id,
+                    run_id=run.id,
+                    entitlement_id=entitlement.id,
+                )
 
     async def _mark_applying(self, publication: McpPublication, run_id: str) -> None:
         await self._record_state(

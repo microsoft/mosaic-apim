@@ -126,6 +126,8 @@ export interface EntitlementBinding {
   gatewayId: string
   apimProductName: string | null
   apimSubscriptionName: string | null
+  attributionKey?: string | null
+  attributionPerMember?: boolean
   source: 'inferred' | 'manual' | 'orchestrated' | null
 }
 
@@ -237,6 +239,7 @@ export interface UsageResourceRow {
   viaGroupName: string | null
   enabled: boolean
   bound: boolean
+  linkedBy: 'gatewayLog' | 'subscription' | null
   attribution: UsageAttribution
   model: string | null
   requests: number | null

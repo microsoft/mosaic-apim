@@ -123,15 +123,18 @@ export function isSecurityGroupGrant(resolved: ResolvedEntitlement) {
 }
 
 export function describeBinding(entitlement: Entitlement) {
-  if (!entitlement.binding) {
-    return 'No usage attribution is configured yet.'
+  const binding = entitlement.binding
+  if (binding?.attributionKey) {
+    return binding.attributionPerMember
+      ? 'The gateway records each call you make with this grant, so your own usage can be measured.'
+      : 'The gateway records each call made with this grant, so its usage can be measured.'
   }
-  const pieces = [
-    entitlement.binding.apimProductName ? `Product ${entitlement.binding.apimProductName}` : null,
-    entitlement.binding.apimSubscriptionName ? `Subscription ${entitlement.binding.apimSubscriptionName}` : null,
-    entitlement.binding.gatewayId ? 'Gateway attribution configured' : null,
-  ].filter(Boolean)
-  return pieces.length > 0 ? pieces.join(' · ') : 'Usage attribution is configured.'
+  if (binding?.apimSubscriptionName) {
+    return binding.apimProductName
+      ? `Linked through APIM subscription ${binding.apimSubscriptionName} in product ${binding.apimProductName}.`
+      : `Linked through APIM subscription ${binding.apimSubscriptionName}.`
+  }
+  return "Usage can't be measured for this grant yet."
 }
 
 export function gatewayLabel(summary: ResourceSummary | null | undefined, fallback?: string | null) {

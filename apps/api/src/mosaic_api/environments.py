@@ -523,16 +523,31 @@ class PortalEnvironment(MosaicModel):
 
 
 class BlockedPublication(MosaicModel):
+    kind: Literal["model", "mcp"] = "model"
     publication_id: str
+    display_name: str | None = None
     status: str
     gateway_id: str
     gateway_name: str
     gateway_environment: str | None
-    model_endpoint_id: str
-    model_endpoint_name: str
+    model_endpoint_id: str | None = None
+    model_endpoint_name: str | None = None
+    deployment_name: str | None = None
+    mcp_endpoint_id: str | None = None
+    mcp_endpoint_name: str | None = None
     endpoint_environment: str | None
-    deployment_name: str
     verdict: EnvironmentVerdict
+
+
+def refuse_blocked_pairing(verdict: EnvironmentVerdict) -> None:
+    if verdict.level == VerdictLevel.BLOCKED:
+        raise ConflictError(
+            verdict.reason,
+            details={
+                "reason": "environmentBlocked",
+                "verdict": verdict.model_dump(mode="json", by_alias=True),
+            },
+        )
 
 
 def publications_blocked_error(

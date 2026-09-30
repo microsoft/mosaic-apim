@@ -14,6 +14,8 @@ You need:
 - `MOSAIC_MODEL_RUNTIME_CLIENT_ID` configured, because MCP runtime tokens use that registration's
   `Mcp.Invoke` delegated scope and `Mcp.Invoke.Application` app role;
 - a registered MCP server whose transport is streamable HTTP;
+- a gateway and MCP server whose environments the [environment rules](#environment-rules) allow
+  together;
 - an upstream authentication mode of **None**, or **Managed identity** with a configured audience;
 - API Management diagnostics configured so response-body logging is 0 bytes for MCP traffic.
 
@@ -23,19 +25,41 @@ phase.
 ## Console flow
 
 1. Open **MCP servers** and register or select the server.
-2. Choose **Publish** and select a managed gateway.
+2. Choose **Publish** and select a managed gateway. The dialog shows the gateway's environment and
+   each server's. A server the environment rules block can't be selected, and the dialog says why.
+   A pairing that involves an unclassified resource shows a warning.
 3. Review the generated publication names and API path, then create the publication. This records
    desired state only.
 4. Choose **Plan**. The plan checks live APIM state, builds a grant snapshot and shows every APIM
-   resource and policy facet MOSAIC will write.
+   resource and policy facet MOSAIC will write. The access review names each grant's principal
+   and its kind, such as Person, Agent, Agent user, or Security group.
 5. Review warnings. Common warnings include the diagnostics requirement, the need for VS Code or
-   another interactive client to have consent for `api://<runtime-client-id>/Mcp.Invoke`, and the
-   gateway managed identity's required upstream access.
+   another interactive client to have consent for `api://<runtime-client-id>/Mcp.Invoke`, the
+   gateway managed identity's required upstream access, and an environment pairing that involves
+   an unclassified resource.
 6. Choose **Apply**. MOSAIC runs the reviewed plan asynchronously and records each step.
 7. Create or update MCP entitlements for users, agent identities, agent users or Entra security
    groups.
 8. Re-plan and re-apply the publication so the gateway receives the new grant snapshot. Saving a
    grant does not change APIM until this apply succeeds.
+
+## Environment rules
+
+MCP publications follow the same [environment rules](../README.md#environments) as model
+publications. Creating, planning, and applying a publication each judge the gateway against the
+registered MCP server:
+
+- a blocked pairing is refused, and the console shows **Environment rules block this
+  publication** with the reason;
+- a pairing that involves an unclassified resource is allowed with a warning, unless **Require
+  classification** is on;
+- the plan records the verdict. If either environment or the rules change before apply, apply asks
+  for a fresh plan.
+
+Once a publication is applied, MOSAIC refuses any re-classification or environment change that
+would block it, and names the publication in the refusal. To move a gateway and its MCP server to
+a new environment together, classify them in one batch. Unpublish and recovery never check
+environments, so a rule change can't trap a publication in place.
 
 ## What MOSAIC creates
 
@@ -44,7 +68,7 @@ One MCP publication owns seven APIM resources:
 | Order | Resource | Purpose |
 | --- | --- | --- |
 | 1 | Backend | Points to the registered MCP server URL |
-| 2 | Policy fragment | Validates Entra tokens, matches grants, applies call limits, strips caller credentials and attaches backend managed identity when configured |
+| 2 | Policy fragment | Validates Entra tokens, matches grants, tags each authorized call with its grant, applies call limits, strips caller credentials and attaches backend managed identity when configured |
 | 3 | MCP API | Exposes the streamable MCP endpoint at `{gateway}/{api_path}/mcp` |
 | 4 | MCP API policy | Includes the enforcement fragment and adds the resource metadata challenge on validation failures |
 | 5 | Metadata API | Owns the well-known protected-resource-metadata path for this publication |
@@ -96,3 +120,24 @@ MCP streaming can break when API Management diagnostics buffer response bodies. 
 Application Insights or Azure Monitor diagnostics so response-body bytes are 0 for MCP APIs. MOSAIC
 warns about this because diagnostics can be global gateway configuration and are outside the
 publication resources it owns.
+
+## Usage tags
+
+Once a caller's grant matches, and before call limits, the enforcement fragment emits an API
+Management `trace` with source `mosaic` at `information` severity. Its message reads
+`mosaic-attribution v=1 g=<grant> m=<object ID>`. `g` names the grant. For a security-group grant,
+`m` carries the caller's validated object ID, so each member's usage can be counted separately;
+otherwise it's empty. Application Insights also gets the grant as the property `mosaic-grant`, and
+when the server has security-group grants, the object ID as `mosaic-member`. The trace reads only
+policy variables, never a body, so streaming is unaffected.
+
+A successful apply records the same grant identity on each MCP entitlement's binding, and a
+successful unpublish clears it. The portal's usage report then shows these grants as tracked at
+the gateway; see [ADR 0015](adr/0015-end-user-usage-report.md). If MOSAIC can't save a binding,
+the run still succeeds, the error is logged, and the next apply corrects the binding.
+
+For the tag to reach Log Analytics, set the gateway's Azure Monitor diagnostic verbosity to
+Information or Verbose. `ApiManagementGatewayLogs` then records it in `TraceRecords`. An
+Application Insights diagnostic at Information verbosity records one trace per call, whatever its
+sampling rate. To stop them, set that diagnostic's verbosity to Error. The object ID is personal
+data, so apply your retention and access rules to both destinations.
