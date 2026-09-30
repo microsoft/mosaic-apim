@@ -1,7 +1,7 @@
 import { type Locator, type Page, type Response, expect } from '@playwright/test'
 import type { Targets } from '../../config.ts'
 import type { PersonaPool } from '../../fixtures.ts'
-import { banner, escapeRegExp, expectNoLoadError, field, responseTo } from '../common.ts'
+import { banner, escapeRegExp, expectDataLoaded, expectNoLoadError, field, responseTo } from '../common.ts'
 import { PublishDialog } from './publish-dialog.ts'
 import { UnpublishDialog } from './unpublish-dialog.ts'
 
@@ -33,6 +33,7 @@ export class ModelsPage {
   async loaded(): Promise<void> {
     await expect(this.page.getByRole('heading', { name: 'Models', exact: true })).toBeVisible()
     await expect(this.page.getByRole('heading', { name: 'Model endpoints', exact: true })).toBeVisible()
+    await expectDataLoaded(this.page, ['Loading published models', 'Loading imported model APIs', 'Loading model endpoints'])
     await expectNoLoadError(this.page)
   }
 

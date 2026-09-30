@@ -21,6 +21,19 @@ export async function expectNoLoadError(page: Page): Promise<void> {
   await expect(page.getByText('Unable to load data')).toHaveCount(0)
 }
 
+/**
+ * How long a page may take to load its data. A console page loads its tables in parallel, and against the live
+ * API one of them can take tens of seconds, far longer than an assertion's default wait.
+ */
+export const pageDataTimeoutMs = 90_000
+
+/** Waits until the page shows none of the loading indicators with these names, so its tables hold data. */
+export async function expectDataLoaded(page: Page, indicators: readonly string[]): Promise<void> {
+  for (const name of indicators) {
+    await expect(page.getByRole('progressbar', { name })).toHaveCount(0, { timeout: pageDataTimeoutMs })
+  }
+}
+
 /** A form control by its field label. Fluent marks a required field's label with an asterisk that isn't part of the name. */
 export function field(scope: Page | Locator, label: string): Locator {
   return scope.getByLabel(new RegExp(`^${escapeRegExp(label)}(\\s*\\*)?$`))
