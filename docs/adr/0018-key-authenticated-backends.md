@@ -89,7 +89,7 @@ raised, so a vault that was briefly unreachable doesn't lose the registration:
 
 | What happened | Status | What MOSAIC says |
 | --- | --- | --- |
-| Secret read, key accepted | `connected` | MOSAIC read the key and the endpoint accepted it |
+| Secret read, key accepted | `connected` | The endpoint accepts the key |
 | Secret not readable | `unauthorized` | The `az role assignment create` command for Key Vault Secrets User on the vault |
 | Secret missing or empty | `degraded` | Store the key there, or set the secret URI |
 | Key refused (401 or 403) | `unauthorized` | Store the current key, and check key authentication is allowed |

@@ -1943,7 +1943,7 @@ describe('ModelsPage model endpoints', () => {
           checkedAt: '2026-09-01T12:00:00Z',
           missingActions: [],
           remediation: null,
-          message: 'MOSAIC read the API key from Key Vault and the endpoint accepted it.',
+          message: 'MOSAIC read the API key from Key Vault and checked it with a request that runs no model.',
         },
         runtimeAccess: [
           runtimeAccess({
@@ -2048,7 +2048,7 @@ describe('ModelsPage model endpoints', () => {
 
       const shape = within(dialog).getByLabelText('Deployment 1 API')
       expect(within(shape).getAllByRole('option').map((option) => option.textContent)).toEqual([
-        'Azure OpenAI API',
+        'Azure OpenAI',
       ])
     })
 
@@ -2090,7 +2090,7 @@ describe('ModelsPage model endpoints', () => {
       expect(within(row).queryByRole('button', { name: 'Sync models' })).not.toBeInTheDocument()
       expect(within(row).getByRole('button', { name: 'Check access' })).toBeVisible()
 
-      expect(screen.getByText('MOSAIC read the key and the endpoint accepted it')).toBeVisible()
+      expect(screen.getByText('The endpoint accepts the key')).toBeVisible()
       expect(screen.getByText(/Authentication: API key from Key Vault/)).toBeVisible()
       expect(screen.getByText("Development gateway: can't read the key")).toBeVisible()
       expect(screen.getByText(/sends the endpoint's API key, which it reads from Key Vault/)).toBeVisible()

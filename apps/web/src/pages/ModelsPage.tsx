@@ -557,12 +557,12 @@ function AccessPanel({ endpoint }: { endpoint: ModelEndpoint }) {
       <Title3 as="h2">Access</Title3>
 
       <section className={styles.accessSection}>
-        <MessageBar intent={accessIntent}>
+        <MessageBar intent={accessIntent} layout="multiline">
           <MessageBarBody>
             <MessageBarTitle>
               {keyed
                 ? access.canRead
-                  ? 'MOSAIC read the key and the endpoint accepted it'
+                  ? 'The endpoint accepts the key'
                   : "MOSAIC can't confirm the key"
                 : access.canRead
                   ? 'MOSAIC can read this endpoint'
@@ -573,9 +573,8 @@ function AccessPanel({ endpoint }: { endpoint: ModelEndpoint }) {
         </MessageBar>
         <Text size={200} className={styles.muted}>
           {keyed
-            ? 'Authentication: API key from Key Vault. MOSAIC reads the key only to check it, with a ' +
-              'request that runs no model, and never keeps it. API Management reads the key from ' +
-              'Key Vault itself.'
+            ? 'Authentication: API key from Key Vault. MOSAIC reads the key only to check it and ' +
+              'never keeps it. API Management reads it from Key Vault itself.'
             : 'This is what lets MOSAIC list the models deployed here. It grants no ability to call them.'}
         </Text>
         {access.remediation && (
@@ -722,7 +721,7 @@ function RuntimeAccessRow({
 
   return (
     <div className={styles.runtimeRow}>
-      <MessageBar intent={verdict.intent}>
+      <MessageBar intent={verdict.intent} layout="multiline">
         <MessageBarBody>
           <MessageBarTitle>
             {access.gatewayName}: {verdictLabel}
@@ -730,7 +729,7 @@ function RuntimeAccessRow({
           {access.message}
         </MessageBarBody>
       </MessageBar>
-      <MessageBar intent={environmentVerdict.intent}>
+      <MessageBar intent={environmentVerdict.intent} layout="multiline">
         <MessageBarBody>
           <MessageBarTitle>
             Environment rules: {environmentVerdict.label}

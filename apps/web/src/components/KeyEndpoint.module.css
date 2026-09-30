@@ -14,14 +14,14 @@
 
 .declarationRow {
   display: grid;
-  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr) minmax(0, 1.2fr) auto;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1.25fr) auto;
   gap: 8px;
   align-items: end;
 }
 
 .declarationHeader {
   display: grid;
-  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr) minmax(0, 1.2fr) auto;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1.25fr) 32px;
   gap: 8px;
   color: var(--colorNeutralForeground3);
   font-size: var(--fontSizeBase200);

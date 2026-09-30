@@ -7,6 +7,13 @@ export const API_SHAPE_LABELS: Record<ApiShape, string> = {
   anthropicMessages: 'Anthropic Messages API (Claude)',
 }
 
+/** The same names, short enough for a row of fields. */
+export const API_SHAPE_SHORT_LABELS: Record<ApiShape, string> = {
+  azureOpenAi: 'Azure OpenAI',
+  foundryModels: 'Foundry Models',
+  anthropicMessages: 'Anthropic Messages',
+}
+
 /** Whether MOSAIC and its gateways reach this Azure endpoint with an API key from Key Vault. */
 export function usesBackendKey(endpoint: ModelEndpoint): boolean {
   return endpoint.authMode === 'apiKey' && endpoint.provider !== 'openAiCompatible'

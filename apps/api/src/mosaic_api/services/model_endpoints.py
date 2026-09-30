@@ -1075,8 +1075,8 @@ class ModelEndpointService:
                     can_read=True,
                     evaluation=AccessEvaluation.PROBE,
                     message=(
-                        "MOSAIC read the API key from Key Vault and the endpoint accepted it. "
-                        "MOSAIC checked with a request that runs no model, and kept nothing."
+                        "MOSAIC read the API key from Key Vault and checked it with a request "
+                        "that runs no model."
                     ),
                 ),
                 ModelEndpointStatus.CONNECTED,

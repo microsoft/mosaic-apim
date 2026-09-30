@@ -20,13 +20,14 @@ import {
   Title3,
   useRestoreFocusTarget,
 } from '@fluentui/react-components'
-import { AddRegular } from '@fluentui/react-icons'
+import { AddRegular, DismissRegular } from '@fluentui/react-icons'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { type FormEvent, useEffect, useRef, useState } from 'react'
 import { useMosaicApi } from '../api'
 import { EmptyState, ErrorState } from './AsyncState'
 import {
   API_SHAPE_LABELS,
+  API_SHAPE_SHORT_LABELS,
   blankDeclaration,
   effectiveShape,
   shapesFor,
@@ -102,17 +103,17 @@ export function DeclarationFields({
           >
             {shapes.map((shape) => (
               <option key={shape} value={shape}>
-                {API_SHAPE_LABELS[shape]}
+                {API_SHAPE_SHORT_LABELS[shape]}
               </option>
             ))}
           </Select>
           <Button
             appearance="subtle"
+            icon={<DismissRegular />}
             aria-label={`Remove deployment ${index + 1}`}
+            title="Remove"
             onClick={() => onChange(drafts.filter((item) => item.key !== draft.key))}
-          >
-            Remove
-          </Button>
+          />
         </div>
       ))}
       <div>
