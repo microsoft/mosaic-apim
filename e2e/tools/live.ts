@@ -6,6 +6,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { join } from 'node:path'
 import { createInterface } from 'node:readline'
 import { type AppName, type Targets, flags, loadTargets, persona, resolveTargetRef } from '../src/config.ts'
+import { carriesApiToken, deviceCodePersona, deviceSignInGraceMs, typeDeviceCode } from '../src/device-code.ts'
 import { type LocatorOptions, describeLocator, locate } from '../src/locators.ts'
 import { ensureDir, artifactsDir, liveSessionFile, stateDir } from '../src/paths.ts'
 import {
@@ -26,7 +27,6 @@ import {
   bearerToken,
   checkForwarded,
   controlTokenProblem,
-  isDeviceLoginUrl,
   parseSignInPrompt,
   planVerification,
   publicLine,
@@ -254,12 +254,7 @@ async function captureApiToken(personaKey: string, plan: VerifyPlan, signal: Abo
     page = await session.context.newPage()
     signal.throwIfAborted()
     const app: AppName = expectedRole === 'Admin' ? 'web' : 'portal'
-    const apiCall = page.waitForRequest(
-      async (request) =>
-        request.url().startsWith(`${targets.origins.api}/api/`) &&
-        bearerToken(await request.headerValue('authorization').catch(() => null)) !== undefined,
-      { timeout: 0 },
-    )
+    const apiCall = page.waitForRequest((request) => carriesApiToken(request, targets.origins.api), { timeout: 0 })
     apiCall.catch(() => undefined)
     process.stdout.write(`[verify] Signing ${personaKey} in to the ${app} app for a MOSAIC API token.\n`)
     await page.bringToFront()
@@ -291,10 +286,6 @@ interface DeviceSignIn {
   finish(): void
 }
 
-// The verifier waits at least a second before its first poll, so output within this window of a prompt was
-// written before it, on the other stream, and doesn't mean the sign-in is over.
-const deviceSignInGraceMs = 750
-
 /**
  * Enters a device code in the right persona's browser and picks the persona's account if Entra asks. The
  * person at the keyboard confirms the sign-in and completes MFA, as with every other sign-in.
@@ -316,36 +307,7 @@ async function enterDeviceCode(
     await page.close().catch(() => undefined)
     return
   }
-  await page.bringToFront()
-  await page.goto(prompt.uri)
-  const box = page.locator('input[name="otc"]').first()
-  await box.waitFor({ state: 'visible', timeout: 30_000 })
-  await box.fill(prompt.code)
-  await page.locator('input[type="submit"]').first().click()
-  emit(`Entered the code in ${personaKey}'s browser. If it asks, confirm the sign-in there and complete MFA.`)
-  const tile = page.locator(`[data-test-id="${upn.replace(/["\\]/g, '')}" i]`).first()
-  // The device page shows a rejected or expired code here, with no AADSTS code.
-  const alert = page.locator('#error[role="alert"]').first()
-  let reported: string | undefined
-  let alerted: string | undefined
-  while (!state.done && !page.isClosed()) {
-    if (isLoginHost(page.url())) {
-      const code = await signInErrorCode(page)
-      if (code && code !== reported) {
-        reported = code
-        emit(`${personaKey}'s sign-in page shows ${code}.`)
-      }
-      const message = (await alert.isVisible().catch(() => false))
-        ? (await alert.innerText({ timeout: 1_000 }).catch(() => '')).trim()
-        : ''
-      if (message && message !== alerted) {
-        alerted = message
-        emit(`${personaKey}'s sign-in page says: ${truncate(redact(message), 200)}`)
-      }
-      if (await tile.isVisible().catch(() => false)) await tile.click().catch(() => undefined)
-    }
-    await page.waitForTimeout(750).catch(() => undefined)
-  }
+  await typeDeviceCode(page, personaKey, upn, prompt, () => state.done, emit)
 }
 
 function startDeviceSignIn(
@@ -353,16 +315,17 @@ function startDeviceSignIn(
   people: VerifyPersonas,
   emit: (line: string) => void,
 ): DeviceSignIn | undefined {
-  const personaKey = prompt.subject === 'user' ? people.user : prompt.subject === 'stranger' ? people.stranger : undefined
+  const target = deviceCodePersona(prompt, people)
   const yourself = `Enter the code yourself at that address, signed in as ${prompt.who}.`
-  if (!isDeviceLoginUrl(prompt.uri)) {
+  if ('refused' in target && target.refused === 'not-device-login') {
     emit('That address is not a Microsoft sign-in page, so the driver did not open it. Check it before you use it.')
     return undefined
   }
-  if (personaKey === undefined) {
+  if ('refused' in target) {
     emit(`The driver has no persona to sign in as ${prompt.who}. ${yourself}`)
     return undefined
   }
+  const { personaKey } = target
   if (signingIn.has(personaKey)) {
     emit(`${personaKey} is already signing in, so the driver did not open the page. ${yourself}`)
     return undefined
