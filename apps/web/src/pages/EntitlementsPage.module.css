@@ -187,6 +187,15 @@
   text-align: center;
 }
 
+/* A subscription name has no spaces to wrap at, so it breaks anywhere to stay in its column. */
+.cellStack > .bindingBadge {
+  justify-self: start;
+  height: auto;
+  min-height: 20px;
+  padding-block: 2px;
+  overflow-wrap: anywhere;
+}
+
 .codeValue {
   color: var(--mosaic-text);
   word-break: break-word;

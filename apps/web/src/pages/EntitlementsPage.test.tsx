@@ -168,6 +168,12 @@ async function openApproval(user: ReturnType<typeof userEvent.setup>) {
   return screen.findByRole('dialog')
 }
 
+/** Each body row's cell under the named column header, in row order. */
+function columnCells(table: HTMLElement, header: string) {
+  const column = within(table).getAllByRole('columnheader').findIndex((cell) => cell.textContent === header)
+  return within(table).getAllByRole('row').slice(1).map((row) => within(row).getAllByRole('cell')[column])
+}
+
 vi.mock('../api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api')>()
   return { ...actual, useMosaicApi: () => api }
@@ -231,6 +237,30 @@ describe('EntitlementsPage', () => {
     expect(screen.getByText('Not bound')).toBeVisible()
     expect(screen.getByText('Live data')).toBeVisible()
     expect(screen.queryByText('Sample data')).not.toBeInTheDocument()
+  })
+
+  it('keeps the whole APIM subscription name in the binding cell, with its source on a line of its own', async () => {
+    // A managed subscription name is long and has no spaces. Administrators look the subscription
+    // up by this name, so the cell must hold all of it rather than a shortened form.
+    const subscriptionName = 'mosaic-grant-0123456789abcdef0123456789abcdef'
+    api.listEntitlements.mockResolvedValue([
+      {
+        ...directGrant,
+        binding: { gatewayId: 'gateway_1', source: 'orchestrated', apimSubscriptionName: subscriptionName },
+      },
+      { ...entitlement, id: 'recorded_grant', binding: { gatewayId: 'gateway_1', source: 'manual' } },
+      entitlement,
+    ])
+    renderPage()
+
+    const table = await screen.findByRole('table', { name: 'Entitlements' })
+    const [named, recorded, unbound] = columnCells(table, 'Binding')
+    expect(within(named).getByText(subscriptionName)).toBeVisible()
+    expect(within(named).getByText('orchestrated')).toBeVisible()
+    expect(named).toHaveAccessibleName(`${subscriptionName} orchestrated`)
+    expect(within(recorded).getByText('Recorded')).toBeVisible()
+    expect(within(recorded).getByText('manual')).toBeVisible()
+    expect(unbound).toHaveTextContent(/^Not bound$/)
   })
 
   it('filters grants by environment, including deployment grants from their endpoint', async () => {
@@ -616,6 +646,67 @@ describe('EntitlementsPage', () => {
   })
 
   describe('access requests', () => {
+    it('names a registered requester above their object ID, found by recorded principal or by object ID', async () => {
+      const user = userEvent.setup()
+      api.listPrincipals.mockResolvedValue([
+        {
+          id: 'principal_1', tenantId: 'tenant', objectId: 'user-object-1', kind: 'user',
+          label: 'Ada Lovelace', createdAt: '', updatedAt: '',
+        },
+        {
+          id: 'principal_2', tenantId: 'tenant', objectId: 'user-object-2', kind: 'user',
+          label: 'Grace Hopper', createdAt: '', updatedAt: '',
+        },
+      ])
+      api.listAccessRequests.mockResolvedValue([
+        // Matched by object ID alone, in a different letter case.
+        pendingRequest,
+        // Matched by the principal the request recorded, whatever its object ID.
+        { ...pendingRequest, id: 'request_2', requesterObjectId: 'other-object-2', requesterPrincipalId: 'principal_2' },
+      ])
+      renderPage()
+
+      const requests = await screen.findByRole('table', { name: 'Pending access requests' })
+      await within(requests).findByText('Grace Hopper')
+      const [byObjectId, byPrincipal] = columnCells(requests, 'Requester')
+      expect(within(byObjectId).getByText('Ada Lovelace')).toBeVisible()
+      expect(within(byObjectId).getByText('USER-OBJECT-1')).toBeVisible()
+      expect(within(byPrincipal).getByText('Grace Hopper')).toBeVisible()
+      expect(within(byPrincipal).getByText('other-object-2')).toBeVisible()
+
+      // Approve names the same person the table does.
+      const approve = within(requests).getAllByRole('button', { name: 'Approve' })[1]
+      await waitFor(() => expect(approve).toBeEnabled())
+      await user.click(approve)
+      const dialog = await screen.findByRole('dialog')
+      expect(within(dialog).getByText('Grace Hopper')).toBeVisible()
+      expect(within(dialog).queryByText(/Not registered in MOSAIC/)).not.toBeInTheDocument()
+    })
+
+    it('shows only the object ID for a requester MOSAIC does not know', async () => {
+      api.listAccessRequests.mockResolvedValue([
+        pendingRequest,
+        { ...pendingRequest, id: 'request_2', requesterObjectId: 'new-object-1' },
+      ])
+      renderPage()
+
+      const requests = await screen.findByRole('table', { name: 'Pending access requests' })
+      await within(requests).findByText('Ada Lovelace')
+      const [, unregistered] = columnCells(requests, 'Requester')
+      expect(unregistered).toHaveTextContent(/^new-object-1$/)
+    })
+
+    it('shows only the object ID while principals cannot be loaded', async () => {
+      api.listPrincipals.mockRejectedValue(new Error('Principals are unavailable.'))
+      api.listAccessRequests.mockResolvedValue([pendingRequest])
+      renderPage()
+
+      expect(await screen.findByText('Principals are unavailable.')).toBeVisible()
+      const requests = await screen.findByRole('table', { name: 'Pending access requests' })
+      const [requester] = columnCells(requests, 'Requester')
+      expect(requester).toHaveTextContent(/^USER-OBJECT-1$/)
+    })
+
     it('approves through the limits dialog, creating linked grant intent that still needs review and apply', async () => {
       const user = userEvent.setup()
       api.listPublications.mockResolvedValue([modelPublication])
