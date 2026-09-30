@@ -1091,6 +1091,8 @@ export interface Publication {
   lastPlanDigest: string | null
   lastRunId: string | null
   lastAppliedAt: string | null
+  /** When an unpublish last removed everything MOSAIC created; cleared by the next successful apply. */
+  unpublishedAt?: string | null
   lastError: string | null
   modelApiId?: string | null
   governedAccess?: ModelAccessSettings | null
@@ -1119,6 +1121,8 @@ export interface McpPublication {
   lastPlanDigest: string | null
   lastRunId: string | null
   lastAppliedAt: string | null
+  /** When an unpublish last removed everything MOSAIC created; cleared by the next successful apply. */
+  unpublishedAt?: string | null
   lastError: string | null
   appliedAccess?: McpAccessSnapshot | null
   accessState: 'pending' | 'applying' | 'applied' | 'failed' | 'unknown'
@@ -1170,6 +1174,8 @@ export interface PublishPlan {
   policyContentSha256: string | null
   warnings: string[]
   target?: 'model' | 'mcp'
+  /** Publish plans are applied; unpublish plans delete what MOSAIC created. Older plans omit it. */
+  operation?: 'publish' | 'unpublish'
   accessSnapshot?: ModelAccessSnapshot | null
   mcpAccessSnapshot?: McpAccessSnapshot | null
   previousAccessVersion?: number | null

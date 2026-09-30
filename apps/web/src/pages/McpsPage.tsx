@@ -40,7 +40,16 @@ import { PageHeader } from '../components/PageHeader'
 import { PublishMcpServerDialog } from '../components/PublishMcpServerDialog'
 import { RemovalDialog } from '../components/RemovalDialog'
 import { ModelAccessRecovery } from '../components/ModelAccessRecovery'
+import { UnpublishDialog } from '../components/UnpublishDialog'
 import { environmentLabel, useEnvironmentCatalog } from '../environments'
+import {
+  PUBLICATION_STATUS_LABELS,
+  formatTimestamp,
+  holdsApi,
+  isUnpublished,
+  lastAppliedLabel,
+  publicationStatusLabel,
+} from '../publication-state'
 import type {
   CatalogVisibility,
   Gateway,
@@ -52,7 +61,6 @@ import type {
   McpToolAnnotations,
   PublicationStatus,
   PublishPlan,
-  PublishRun,
 } from '../types'
 import styles from './McpsPage.module.css'
 
@@ -83,24 +91,25 @@ const authLabels: Record<McpAuthMode, string> = {
   managedIdentity: 'Managed identity',
 }
 
-const publicationStatusLabels: Record<PublicationStatus, string> = {
-  draft: 'Draft',
-  planned: 'Planned',
-  applying: 'Applying',
-  published: 'Published',
-  failed: 'Failed',
-  rolledBack: 'Rolled back',
-}
-
-function PublicationStatusBadge({ status }: { status: PublicationStatus }) {
+function PublicationStatusBadge({ publication }: { publication: McpPublication }) {
+  const { status } = publication
   const attention = status === 'failed' || status === 'rolledBack'
   const active = status === 'applying' || status === 'planned'
+  const unpublished = status === 'draft' && isUnpublished(publication)
   return (
     <Badge
       appearance="tint"
-      className={attention ? styles.attentionBadge : active ? styles.degradedBadge : styles.connectedBadge}
+      className={
+        attention
+          ? styles.attentionBadge
+          : active
+            ? styles.degradedBadge
+            : unpublished
+              ? styles.pendingBadge
+              : styles.connectedBadge
+      }
     >
-      {publicationStatusLabels[status]}
+      {publicationStatusLabel(publication)}
     </Badge>
   )
 }
@@ -133,10 +142,6 @@ function transportLabel(server: McpServer): string {
       : `Passthrough · ${server.transportType === 'sse' ? 'SSE' : 'Streamable HTTP'}`
   }
   return 'Backed by REST APIs'
-}
-
-function formatTimestamp(value?: string | null): string {
-  return value ? new Date(value).toLocaleString() : 'Never'
 }
 
 /**
@@ -656,7 +661,6 @@ function PublishedMcpServers({ onBanner }: { onBanner: (message: string) => void
   const api = useMosaicApi()
   const queryClient = useQueryClient()
   const restoreFocus = useRestoreFocusTarget()
-  const [runIssue, setRunIssue] = useState<Error | null>(null)
   const [removing, setRemoving] = useState<McpPublication | null>(null)
   const [unpublishing, setUnpublishing] = useState<McpPublication | null>(null)
   const [review, setReview] = useState<{ publication: McpPublication; plan: PublishPlan } | null>(null)
@@ -685,18 +689,6 @@ function PublishedMcpServers({ onBanner }: { onBanner: (message: string) => void
     ])
   }
 
-  function reportRun(run: PublishRun) {
-    if (run.status === 'running') {
-      onBanner('Run started. Refresh this page to see the latest status.')
-    } else if (run.status === 'succeeded') {
-      onBanner('The service reports the MCP operation completed. Allow for gateway propagation; live invocation is not verified.')
-    } else {
-      setRunIssue(new Error(run.status === 'interrupted'
-        ? 'Apply interrupted — runtime state unknown. The apply lock may still be retained. Access, revocation, and lock release are not confirmed.'
-        : `The service reports ${run.status ?? 'unknown'} runtime state. Access and revocation are not confirmed. ${(run.errors ?? []).join(' ')}`))
-    }
-  }
-
   const reviewPlan = useMutation({
     mutationFn: async (publication: McpPublication) => ({
       publication,
@@ -705,16 +697,6 @@ function PublishedMcpServers({ onBanner }: { onBanner: (message: string) => void
     onSuccess: ({ publication, plan }) => {
       setReview({ publication, plan })
       void queryClient.invalidateQueries({ queryKey: ['mcp-publications'] })
-    },
-  })
-
-  const unpublish = useMutation({
-    onMutate: () => setRunIssue(null),
-    mutationFn: (publicationId: string) => api.unpublishMcpPublication(publicationId),
-    onSuccess: async (run) => {
-      setUnpublishing(null)
-      await refresh()
-      reportRun(run)
     },
   })
 
@@ -742,9 +724,7 @@ function PublishedMcpServers({ onBanner }: { onBanner: (message: string) => void
             </Text>
           </div>
         </div>
-        {(reviewPlan.isError || unpublish.isError || runIssue) && (
-          <ErrorState error={reviewPlan.error ?? unpublish.error ?? runIssue} />
-        )}
+        {reviewPlan.isError && <ErrorState error={reviewPlan.error} />}
         {publications.isPending && <Loading label="Loading published MCP servers" />}
         {publications.isError && <ErrorState error={publications.error} />}
         {publications.isSuccess &&
@@ -779,8 +759,9 @@ function PublishedMcpServers({ onBanner }: { onBanner: (message: string) => void
                     </TableCell>
                     <TableCell>
                       <div className={styles.cellStack}>
-                        <PublicationStatusBadge status={publication.status} />
-                        <AccessStateBadge publication={publication} />
+                        <PublicationStatusBadge publication={publication} />
+                        {/* Once unpublished, the gateway has no MCP API for access to apply to. */}
+                        {!isUnpublished(publication) && <AccessStateBadge publication={publication} />}
                         {publication.accessState === 'unknown' && (
                           <ModelAccessRecovery
                             publicationId={publication.id}
@@ -796,7 +777,7 @@ function PublishedMcpServers({ onBanner }: { onBanner: (message: string) => void
                       </Link>
                     </TableCell>
                     <TableCell>{mcpServerUrl(publication, gatewaysById.get(publication.gatewayId))}</TableCell>
-                    <TableCell>{formatTimestamp(publication.lastAppliedAt)}</TableCell>
+                    <TableCell>{lastAppliedLabel(publication)}</TableCell>
                     <TableCell>
                       <div className={styles.actionRow}>
                         <Button
@@ -808,8 +789,9 @@ function PublishedMcpServers({ onBanner }: { onBanner: (message: string) => void
                         </Button>
                         <Button
                           appearance="secondary"
-                          disabled={unpublish.isPending}
+                          disabled={publication.status === 'applying' || publication.accessState === 'applying' || publication.accessState === 'unknown'}
                           onClick={() => setUnpublishing(publication)}
+                          {...restoreFocus}
                         >
                           Unpublish
                         </Button>
@@ -835,33 +817,13 @@ function PublishedMcpServers({ onBanner }: { onBanner: (message: string) => void
         onClose={() => setReview(null)}
         onPublished={onBanner}
       />
-      <Dialog open={unpublishing !== null} onOpenChange={(_, data) => !data.open && setUnpublishing(null)}>
-        <DialogSurface>
-          <DialogBody>
-            <DialogTitle>Unpublish {unpublishing?.displayName ?? 'this MCP server'}?</DialogTitle>
-            <DialogContent className={styles.dialogForm}>
-              <Text>
-                MOSAIC will first install deny-all runtime policy, then remove the MCP API,
-                discovery API, policy fragment, and backend it owns. The gateway will deny calls
-                before the server is removed.
-              </Text>
-              {unpublish.isError && <ErrorState error={unpublish.error} />}
-            </DialogContent>
-            <DialogActions>
-              <Button appearance="secondary" disabled={unpublish.isPending} onClick={() => setUnpublishing(null)}>
-                Cancel
-              </Button>
-              <Button
-                appearance="primary"
-                disabled={unpublish.isPending}
-                onClick={() => unpublishing && unpublish.mutate(unpublishing.id)}
-              >
-                {unpublish.isPending ? 'Unpublishing…' : 'Unpublish'}
-              </Button>
-            </DialogActions>
-          </DialogBody>
-        </DialogSurface>
-      </Dialog>
+      <UnpublishDialog
+        open={unpublishing !== null}
+        target="mcp"
+        publication={unpublishing}
+        onClose={() => setUnpublishing(null)}
+        onUnpublished={onBanner}
+      />
       <RemovalDialog
         open={removing !== null}
         title={`Delete ${removing?.displayName ?? 'this MCP publication'}?`}
@@ -869,7 +831,7 @@ function PublishedMcpServers({ onBanner }: { onBanner: (message: string) => void
         refusalTitle="MOSAIC didn't delete this MCP publication"
         pending={remove.isPending}
         error={remove.error}
-        statusLabel={(status) => publicationStatusLabels[status as PublicationStatus] ?? status}
+        statusLabel={(status) => PUBLICATION_STATUS_LABELS[status as PublicationStatus] ?? status}
         onConfirm={() => removing && remove.mutate(removing.id)}
         onCancel={() => setRemoving(null)}
       >
@@ -907,6 +869,11 @@ function ImportedMcpServers({ onBanner }: { onBanner: (message: string) => void 
     queryKey: ['gateways'],
     queryFn: () => api.listGateways(),
   })
+  // A server MOSAIC publishes is listed in the portal only while its publication holds its MCP API.
+  const publications = useQuery({
+    queryKey: ['mcp-publications'],
+    queryFn: () => api.listMcpPublications(),
+  })
 
   const gatewayNames = useMemo(() => {
     const map = new Map<string, Gateway>()
@@ -916,6 +883,12 @@ function ImportedMcpServers({ onBanner }: { onBanner: (message: string) => void 
     return map
   }, [gateways.data])
   const catalog = useEnvironmentCatalog()
+
+  function hiddenFromPortal(server: McpServer): boolean {
+    if (!server.publicationId || !publications.isSuccess) return false
+    const publication = publications.data.find((item) => item.id === server.publicationId)
+    return !publication || !holdsApi(publication)
+  }
 
   useEffect(() => {
     if (requestedGatewayId && !hasConsumedImportQueryRef.current) {
@@ -1067,6 +1040,11 @@ function ImportedMcpServers({ onBanner }: { onBanner: (message: string) => void 
                         <option value="catalog">Discoverable</option>
                         <option value="private">Entitled users only</option>
                       </Select>
+                      {hiddenFromPortal(server) && (
+                        <Text block size={200} className={styles.muted}>
+                          Hidden from the portal catalog while it isn&apos;t published.
+                        </Text>
+                      )}
                     </TableCell>
                     <TableCell>
                       <div className={styles.rowActions}>

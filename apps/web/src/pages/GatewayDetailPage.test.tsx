@@ -317,6 +317,23 @@ describe('GatewayDetailPage management mode', () => {
     expect(await screen.findByText('apim-contoso-dev · Observe mode')).toBeVisible()
   })
 
+  it('shows when a model published through the gateway was unpublished', async () => {
+    const unpublishedAt = '2026-09-30T11:20:00Z'
+    serve(gateway({ managementMode: 'manage', access: writable }))
+    api.listPublications.mockResolvedValue([
+      modelPublication,
+      { ...modelPublication, id: 'pub_2', displayName: 'Retired chat', status: 'draft', unpublishedAt },
+    ])
+    renderPage()
+
+    const table = await screen.findByRole('table', { name: 'Gateway published models' })
+    const [, live, retired] = within(table).getAllByRole('row')
+    expect(live).toHaveTextContent('Published')
+    expect(retired).toHaveTextContent(
+      `Retired chatUnpublished/models/chatUnpublished ${new Date(unpublishedAt).toLocaleString()}`,
+    )
+  })
+
   it('shows the API’s refusal and leaves the mode unchanged', async () => {
     const user = userEvent.setup()
     const refusal =

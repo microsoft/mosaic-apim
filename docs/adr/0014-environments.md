@@ -203,3 +203,11 @@ concept, so existing MCP publications aren't grandfathered.
   `blockedPublication` finding that targets the MCP server. The APIs an MCP publication creates,
   including its metadata API, count as MOSAIC-owned. A server MOSAIC published therefore isn't
   also reported as a gateway MCP server that crosses environments.
+
+## Amendment 2026-09-30: Requests for an unpublished resource
+
+A model API or MCP server MOSAIC publishes isn't in the catalog while its API isn't in API
+Management, because its publication was never applied or was unpublished. A portal request for one
+the catalog would otherwise list returns `409` with reason `notPublished` and says why, rather than
+the not-found error. That error is still the answer for private and unknown resources, so a guessed
+ID still confirms nothing it didn't before.

@@ -193,3 +193,33 @@ returning MOSAIC's own wording without Azure's text, as it always has.
   same as one nobody touched. This is consistent with the gap ADR 0005 already acknowledged.
 - Every fragment and API write waits for its operation, so a publish or a governed apply makes a
   few more reads than it writes, and takes as long as API Management takes to validate the policy.
+
+## Amendment 2026-09-30: Unpublishing is planned and reviewed too
+
+Unpublishing used to build its delete plan and run it in the same request. One click deleted a
+publication's API, operations, policy, product, backend, fragment and bootstrap subscription, and
+on a governed model every grant's subscription as well. That broke this record's rule that an
+administrator sees the steps before they run, so unpublishing now follows the same loop.
+
+- **Unpublish has a plan.** `POST /api/v1/publications/{id}/unpublish-plan` returns a `PublishPlan`
+  with `operation: "unpublish"`. It holds a delete step for every resource the publication created,
+  in the order unpublish removes them, and the access the gateway applied last. Its warnings say
+  what else changes, such as the product's subscriptions going with the product, and what MOSAIC
+  leaves in place because it didn't create it. Planning changes nothing on the publication.
+- **Unpublish runs only a reviewed plan.** `POST /api/v1/publications/{id}/unpublish` requires
+  `plan`, and without one it removes nothing (`409`, reason `planRequired`). It refuses a plan for
+  another publication, or a publish plan (`404`), and a plan whose digest no longer matches (`409`,
+  reason `stalePlan`). The digest covers the publication's recorded resources and their ownership,
+  its applied access, whether it is governed, and the names the deletes and the fail-closed guard
+  use. A resource recorded or access applied since the review therefore makes the plan stale.
+  Unpublish then runs exactly the plan's steps. Apply, for its part, refuses unpublish plans, and
+  plans saved before this change whose steps delete.
+- **The console reviews it.** **Unpublish** opens a review that plans as it opens and lists who
+  loses access and what MOSAIC deletes. Only the review's confirm button unpublishes. A refused plan
+  is planned again and shown with the reason, as a refused publish plan is.
+- **An unpublished publication says so.** A successful unpublish records `unpublishedAt`, and the
+  next successful apply clears it. The status stays `draft`, so older clients read the record as
+  before, and the console shows it as **Unpublished**, with when. Until then the console said
+  **Draft** beside the time of the last publish.
+
+MCP publications follow the same rules; see [ADR 0017](0017-mcp-gateway-enforcement.md).

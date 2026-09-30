@@ -34,11 +34,13 @@ from mosaic_api.domain import (
     Gateway,
     GrantOverlapReport,
     GrantPath,
+    McpPublication,
     McpServer,
     ModelApi,
     Principal,
     PrincipalCreate,
     PrincipalKind,
+    Publication,
     ResolvedEntitlement,
     ResourceSummary,
     deterministic_id,
@@ -67,11 +69,13 @@ from mosaic_api.services.mcp_access import (
     decorate_mcp_entitlement,
     entitlement_mcp_publication,
     mcp_grant_needs_retention,
+    mcp_server_offered,
 )
 from mosaic_api.services.model_access import (
     decorate_entitlement,
     entitlement_publication,
     managed_grant_needs_retention,
+    model_api_offered,
     publication_lock,
 )
 
@@ -92,7 +96,7 @@ class ResourceDescriptor:
 
 
 class GovernedRecords:
-    """Gateway, model API, and MCP server records, each read at most once.
+    """Gateway, model API, MCP server and publication records, each kind read at most once.
 
     Naming, summarising, and scoping one list of grants or requests all need the same records.
     Sharing one of these across those lookups keeps a response to one read per kind however many
@@ -106,6 +110,8 @@ class GovernedRecords:
         self._gateways: dict[str, Gateway] | None = None
         self._model_apis: dict[str, ModelApi] | None = None
         self._mcp_servers: dict[str, McpServer] | None = None
+        self._publications: dict[str, Publication] | None = None
+        self._mcp_publications: dict[str, McpPublication] | None = None
 
     async def gateways(self) -> dict[str, Gateway]:
         if self._gateways is None:
@@ -127,6 +133,40 @@ class GovernedRecords:
                 item.id: item for item in await self._repository.list_mcp_servers(self._tenant_id)
             }
         return self._mcp_servers
+
+    async def publications(self) -> dict[str, Publication]:
+        if self._publications is None:
+            self._publications = {
+                item.id: item
+                for item in await self._repository.list_publications(self._tenant_id)
+            }
+        return self._publications
+
+    async def mcp_publications(self) -> dict[str, McpPublication]:
+        if self._mcp_publications is None:
+            self._mcp_publications = {
+                item.id: item
+                for item in await self._repository.list_mcp_publications(self._tenant_id)
+            }
+        return self._mcp_publications
+
+    async def model_api_offered(self, model_api: ModelApi) -> bool:
+        """See :func:`model_api_offered`. Reads publications only for a published model API."""
+
+        if model_api.publication_id is None:
+            return True
+        return model_api_offered(
+            model_api, (await self.publications()).get(model_api.publication_id)
+        )
+
+    async def mcp_server_offered(self, server: McpServer) -> bool:
+        """See :func:`mcp_server_offered`. Reads publications only for a published MCP server."""
+
+        if server.publication_id is None:
+            return True
+        return mcp_server_offered(
+            server, (await self.mcp_publications()).get(server.publication_id)
+        )
 
 
 def _subscription_owner(subscription: ObservedSubscription) -> str | None:
@@ -341,10 +381,16 @@ class EntitlementService:
     async def _catalog_visible_resource(
         self, tenant_id: str, resource: EntitlementResource
     ) -> ResourceSummary | None:
+        """The summary of a model API or MCP server the catalog shows or would show.
+
+        None unless the resource exists, an administrator made it discoverable, and its gateway is
+        registered. It may still be unavailable: see :class:`ResourceSummary`.
+        """
+
         if resource.kind not in {"modelApi", "mcpServer"}:
             return None
         summary = await self.resource_summary(tenant_id, resource)
-        if not summary.available:
+        if summary.gateway_name is None:
             return None
         if resource.kind == "modelApi":
             model_api = await self._gateways.get_model_api(tenant_id, resource.id)
@@ -501,7 +547,7 @@ class EntitlementService:
                         gateway_id=gateway.id,
                         gateway_name=gateway.name,
                         environment=gateway.environment,
-                        available=True,
+                        available=await records.model_api_offered(model_api),
                     )
                 elif model_api:
                     summary = ResourceSummary(
@@ -524,7 +570,7 @@ class EntitlementService:
                         gateway_id=gateway.id,
                         gateway_name=gateway.name,
                         environment=gateway.environment,
-                        available=True,
+                        available=await records.mcp_server_offered(mcp_server),
                     )
                 elif mcp_server:
                     summary = ResourceSummary(
@@ -1206,6 +1252,18 @@ class EntitlementService:
         summary = await self._catalog_visible_resource(actor.tenant_id, request.resource)
         if summary is None:
             raise NotFoundError("That resource isn't in your catalog.")
+        # A discoverable model or MCP server whose API isn't in API Management right now: the
+        # catalog leaves it out, and a request made from a page loaded earlier gets the reason.
+        if not summary.available:
+            raise ConflictError(
+                f"{summary.display_name or 'This resource'} isn't published right now, so MOSAIC "
+                "can't take access requests for it. Try again once an administrator publishes it.",
+                details={
+                    "reason": "notPublished",
+                    "resourceKind": str(request.resource.kind),
+                    "resourceId": request.resource.id,
+                },
+            )
         return await self.create_access_request(actor, request, summary=summary)
 
     async def decide_access_request(

@@ -958,15 +958,26 @@ async def apply_publication(
     return await _publishing(request).apply(_actor(auth), publication_id, plan)
 
 
+@router.post("/publications/{publication_id}/unpublish-plan", response_model=PublishPlan)
+async def plan_unpublish_publication(
+    request: Request, auth: Admin, publication_id: str
+) -> PublishPlan:
+    """Plan an unpublish for review: what it deletes and whose access it ends. Deletes nothing."""
+
+    return await _publishing(request).plan_unpublish(_actor(auth), publication_id)
+
+
 @router.post(
     "/publications/{publication_id}/unpublish",
     response_model=PublishRun,
     status_code=status.HTTP_202_ACCEPTED,
 )
 async def unpublish_publication(
-    request: Request, auth: Admin, publication_id: str
+    request: Request, auth: Admin, publication_id: str, plan: str | None = None
 ) -> PublishRun:
-    return await _publishing(request).unpublish(_actor(auth), publication_id)
+    """Run the reviewed unpublish plan named by ``plan``. Without one, nothing is removed."""
+
+    return await _publishing(request).unpublish(_actor(auth), publication_id, plan)
 
 
 @router.get("/publications/{publication_id}/runs", response_model=list[PublishRun])

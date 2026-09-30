@@ -6,6 +6,7 @@ from mosaic_api.domain import (
     EntitlementRuntime,
     McpAccessGrant,
     McpPublication,
+    McpServer,
     ModelAccessSettings,
     Principal,
     PublicationStatus,
@@ -30,6 +31,26 @@ async def entitlement_mcp_publication(
     if publication.gateway_id != server.gateway_id or publication.api_name != server.api_name:
         return None
     return publication
+
+
+def mcp_server_offered(server: McpServer, publication: McpPublication | None) -> bool:
+    """Whether end users may be offered this MCP server, to request or to connect to.
+
+    An MCP server imported from a gateway is, as it always was. One MOSAIC publishes is offered
+    only while its publication, ``publication`` (the record ``server.publication_id`` names, if
+    any), holds its MCP API in API Management: not before the first apply, and not once unpublished.
+    """
+
+    if server.publication_id is None:
+        return True
+    return (
+        publication is not None
+        and publication.id == server.publication_id
+        and publication.mcp_server_id == server.id
+        and publication.gateway_id == server.gateway_id
+        and publication.api_name == server.api_name
+        and publication.has_applied_api()
+    )
 
 
 def applied_mcp_grant(

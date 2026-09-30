@@ -109,6 +109,23 @@ describe('useMosaicApi', () => {
 
   })
 
+  it('plans an unpublish, then unpublishes only the plan it names', async () => {
+    const fetchMock = vi.fn().mockImplementation(async () => new Response('{}', {
+      status: 200, headers: { 'Content-Type': 'application/json' },
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+    const { result } = renderHook(() => useMosaicApi())
+
+    await result.current.planUnpublishPublication('pub_1')
+    await result.current.unpublishPublication('pub_1', 'plan 2')
+
+    expect(fetchMock.mock.calls.map(([url]) => String(url).replace(/^https?:\/\/[^/]+/, ''))).toEqual([
+      '/api/v1/publications/pub_1/unpublish-plan',
+      '/api/v1/publications/pub_1/unpublish?plan=plan%202',
+    ])
+    expect(fetchMock.mock.calls.map(([, options]) => options.method)).toEqual(['POST', 'POST'])
+  })
+
   it('calls the MCP publication endpoints with the contracted paths and shapes', async () => {
     const fetchMock = vi.fn().mockImplementation(async () => new Response(
       JSON.stringify({ id: 'ok', supported: true, reasons: [], warnings: [] }),
@@ -125,7 +142,8 @@ describe('useMosaicApi', () => {
     await result.current.deleteMcpPublication('mcp pub')
     await result.current.planMcpPublication('mcp pub')
     await result.current.applyMcpPublication('mcp pub', 'plan 1')
-    await result.current.unpublishMcpPublication('mcp pub')
+    await result.current.planUnpublishMcpPublication('mcp pub')
+    await result.current.unpublishMcpPublication('mcp pub', 'plan 2')
     await result.current.listMcpPublishRuns('mcp pub')
     await result.current.getMcpPublishRun('mcp pub', 'run 1')
     await result.current.recoverMcpPublication('mcp pub', { runId: 'run 1', confirmQuiesced: false })
@@ -141,7 +159,8 @@ describe('useMosaicApi', () => {
       '/api/v1/mcp-publications/mcp%20pub',
       '/api/v1/mcp-publications/mcp%20pub/plan',
       '/api/v1/mcp-publications/mcp%20pub/apply?plan=plan%201',
-      '/api/v1/mcp-publications/mcp%20pub/unpublish',
+      '/api/v1/mcp-publications/mcp%20pub/unpublish-plan',
+      '/api/v1/mcp-publications/mcp%20pub/unpublish?plan=plan%202',
       '/api/v1/mcp-publications/mcp%20pub/runs',
       '/api/v1/mcp-publications/mcp%20pub/runs/run%201',
       '/api/v1/mcp-publications/mcp%20pub/recover',
@@ -154,7 +173,9 @@ describe('useMosaicApi', () => {
       mcpEndpointId: 'endpoint_1',
     })
     expect(fetchMock.mock.calls[4][1]).toMatchObject({ method: 'PATCH' })
-    expect(JSON.parse(fetchMock.mock.calls[11][1].body)).toEqual({
+    expect(fetchMock.mock.calls[8][1]).toMatchObject({ method: 'POST' })
+    expect(fetchMock.mock.calls[9][1]).toMatchObject({ method: 'POST' })
+    expect(JSON.parse(fetchMock.mock.calls[12][1].body)).toEqual({
       runId: 'run 1',
       confirmQuiesced: false,
     })

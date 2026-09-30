@@ -1,6 +1,6 @@
 import pytest
 from apim_double import CONTRIBUTOR_PERMISSIONS, RESOURCE_ID, FakeApim
-from conftest import build_arm_client, build_gateway_service
+from conftest import build_arm_client, build_gateway_service, reviewed_unpublish
 from mosaic_api.domain import (
     AuditEvent,
     GatewayCreate,
@@ -205,7 +205,7 @@ async def test_unpublish_ignores_current_blocked_environment(harness: Harness) -
     await harness.plan_apply(publication_id)
     await harness.set_endpoint_environment("development")
 
-    run = await harness.service.unpublish(ACTOR, publication_id)
+    run = await reviewed_unpublish(harness.service, ACTOR, publication_id)
     await harness.service.wait_for_idle()
 
     assert (

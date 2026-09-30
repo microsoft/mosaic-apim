@@ -1470,6 +1470,13 @@ class AccessRequestResourceSnapshot(MosaicModel):
 
 
 class ResourceSummary(MosaicModel):
+    """A governed resource as a person reading a grant or a request sees it.
+
+    ``available`` is false when the resource no longer exists, when its gateway is no longer
+    registered, and when MOSAIC publishes it but its API isn't in API Management: never applied,
+    or unpublished. The name and gateway stay, so a person can still tell what it was.
+    """
+
     kind: EntitlementResourceKind
     id: str
     scope_id: str | None = None
@@ -1493,7 +1500,8 @@ class CatalogEntry(MosaicModel):
     """One governed resource as an end user sees it.
 
     Deliberately narrower than the administrator's view of the same record: a portal user has no
-    business seeing gateway internals, policy state, or how the resource was detected.
+    business seeing gateway internals, policy state, or how the resource was detected. A model API
+    or MCP server MOSAIC publishes is an entry only while its API is in API Management.
     """
 
     kind: CatalogEntryKind
@@ -1507,7 +1515,7 @@ class CatalogEntry(MosaicModel):
     request_state: AccessRequestState | None = None
     # Whether the gateway enforces grants on this resource. Reported for MCP servers only: True
     # when MOSAIC publishes the server and has applied its access, False for an adopted server or
-    # one not yet applied. None for other kinds.
+    # a published one whose latest apply didn't finish. None for other kinds.
     enforced: bool | None = None
 
 
@@ -1634,6 +1642,15 @@ class PublishedResource(MosaicModel):
     resource_id: str
     created_by_mosaic: bool = False
     applied_at: datetime = Field(default_factory=utc_now)
+
+
+def _holds_api(resources: list[PublishedResource], api_name: str) -> bool:
+    return any(
+        item.kind == PublishedResourceKind.API
+        and item.name == api_name
+        and item.created_by_mosaic
+        for item in resources
+    )
 
 
 class ModelAccessGrant(MosaicModel):
@@ -1763,6 +1780,9 @@ class Publication(Entity):
     last_plan_digest: str | None = None
     last_run_id: str | None = None
     last_applied_at: datetime | None = None
+    # When an unpublish last removed everything MOSAIC created for this publication. The next
+    # successful apply clears it. Publications unpublished before MOSAIC recorded this have none.
+    unpublished_at: datetime | None = None
     last_error: str | None = None
     model_api_id: str | None = None
     governed_access: ModelAccessSettings | None = None
@@ -1779,6 +1799,15 @@ class Publication(Entity):
         """The subset rollback and unpublish are allowed to delete."""
 
         return [resource for resource in self.resources if resource.created_by_mosaic]
+
+    def has_applied_api(self) -> bool:
+        """Whether MOSAIC's record says this publication's API is in API Management.
+
+        False before the first successful apply and once an unpublish has deleted the API. Without
+        its API the gateway can't serve the model, so the portal doesn't offer it.
+        """
+
+        return _holds_api(self.resources, self.api_name)
 
     def may_own_gateway_state(self) -> bool:
         """Whether API Management may hold something this publication is responsible for.
@@ -1829,6 +1858,9 @@ class McpPublication(Entity):
     last_plan_digest: str | None = None
     last_run_id: str | None = None
     last_applied_at: datetime | None = None
+    # When an unpublish last removed everything MOSAIC created for this publication. The next
+    # successful apply clears it.
+    unpublished_at: datetime | None = None
     last_error: str | None = None
     applied_access: McpAccessSnapshot | None = None
     access_state: Literal["pending", "applying", "applied", "failed", "unknown"] = "pending"
@@ -1837,6 +1869,15 @@ class McpPublication(Entity):
         """The subset rollback and unpublish are allowed to delete."""
 
         return [resource for resource in self.resources if resource.created_by_mosaic]
+
+    def has_applied_api(self) -> bool:
+        """Whether MOSAIC's record says this publication's MCP API is in API Management.
+
+        False for a publication never applied and once an unpublish has deleted the MCP API. The
+        metadata API doesn't count: it serves sign-in discovery, not the server.
+        """
+
+        return _holds_api(self.resources, self.api_name)
 
     def may_own_gateway_state(self) -> bool:
         """Whether API Management may hold something this publication is responsible for."""
@@ -2492,6 +2533,10 @@ class PublishPlan(Entity):
     # Which kind of publication ``publication_id`` names. Plans saved before MCP publishing
     # existed are model plans.
     target: Literal["model", "mcp"] = "model"
+    # What running the plan does. A publish plan writes the publication's resources and is run by
+    # apply; an unpublish plan deletes the ones MOSAIC created and is run by unpublish, and neither
+    # route runs the other's. Plans saved before unpublishing was planned are publish plans.
+    operation: Literal["publish", "unpublish"] = "publish"
     gateway_id: str
     digest: str
     steps: list[PublishPlanStep] = Field(default_factory=list)

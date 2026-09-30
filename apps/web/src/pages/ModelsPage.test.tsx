@@ -173,13 +173,34 @@ function publishRun(overrides: Partial<PublishRun> = {}): PublishRun {
   }
 }
 
+const unpublishPlan: PublishPlan = {
+  ...publishPlan,
+  id: 'unpublish_plan_1',
+  operation: 'unpublish',
+  digest: 'unpublish-digest',
+  steps: [
+    {
+      kind: 'api',
+      name: 'gpt-4o-api',
+      action: 'delete',
+      reason: 'Delete the API that fronts this model. The gateway stops serving it.',
+      resourceId: '/apis/gpt-4o-api',
+      existed: true,
+    },
+  ],
+  warnings: [],
+  accessSnapshot: null,
+}
+
 const api = {
   getEnvironmentCatalog: vi.fn(),
   listEnvironmentFindings: vi.fn(),
   listGateways: vi.fn(),
   listModelApis: vi.fn(),
   deletePublication: vi.fn(),
+  planUnpublishPublication: vi.fn(),
   unpublishPublication: vi.fn(),
+  listPrincipals: vi.fn(),
   getPublishRun: vi.fn(),
   applyPublishPlan: vi.fn(),
   createPublishPlan: vi.fn(),
@@ -310,7 +331,9 @@ describe('ModelsPage', () => {
     api.createPublishPlan.mockResolvedValue(publishPlan)
     api.applyPublishPlan.mockResolvedValue({ id: 'run_1', tenantId: 'tenant-test', entityType: 'publishRun', publicationId: 'pub_1', gatewayId: 'gateway_1', planId: 'plan_1', planDigest: 'digest', status: 'running', startedAt: '2026-09-01T12:00:00Z', completedAt: null, durationMs: null, steps: [], rolledBack: false, orphanedResources: [], errors: [], createdAt: '2026-09-01T12:00:00Z', updatedAt: '2026-09-01T12:00:00Z' })
     api.getPublishRun.mockResolvedValue({ id: 'run_1', tenantId: 'tenant-test', entityType: 'publishRun', publicationId: 'pub_1', gatewayId: 'gateway_1', planId: 'plan_1', planDigest: 'digest', status: 'succeeded', startedAt: '2026-09-01T12:00:00Z', completedAt: '2026-09-01T12:00:01Z', durationMs: 1000, steps: [], rolledBack: false, orphanedResources: [], errors: [], createdAt: '2026-09-01T12:00:00Z', updatedAt: '2026-09-01T12:00:01Z' })
-    api.unpublishPublication.mockResolvedValue({ id: 'run_2' })
+    api.unpublishPublication.mockResolvedValue(publishRun({ id: 'run_2', planId: 'unpublish_plan_1' }))
+    api.planUnpublishPublication.mockResolvedValue(unpublishPlan)
+    api.listPrincipals.mockResolvedValue([])
     api.deletePublication.mockResolvedValue(undefined)
   })
 
@@ -677,6 +700,91 @@ describe('ModelsPage', () => {
     expect(refusal).toHaveTextContent("MOSAIC didn't remove this publication")
     expect(refusal).toHaveTextContent('Unpublish before removing this publication.')
     expect(screen.queryByText('Unable to load data')).not.toBeInTheDocument()
+  })
+
+  it('asks before unpublishing, and unpublishes only the plan it reviewed', async () => {
+    const user = userEvent.setup()
+    api.listPublications.mockResolvedValue([publication])
+
+    renderPage()
+
+    const table = await screen.findByRole('table', { name: 'Published models' })
+    await user.click(within(table).getByRole('button', { name: 'Unpublish' }))
+
+    const dialog = await screen.findByRole('alertdialog', { name: 'Unpublish GPT-4o production?' })
+    expect(await within(dialog).findByRole('table', { name: 'Unpublish plan steps' })).toHaveTextContent(
+      'Delete the API that fronts this model. The gateway stops serving it.',
+    )
+    expect(api.planUnpublishPublication).toHaveBeenCalledWith('pub_1')
+    expect(api.unpublishPublication).not.toHaveBeenCalled()
+
+    await user.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument())
+    expect(api.unpublishPublication).not.toHaveBeenCalled()
+    // Fluent returns focus to the button that opened the dialog when it closes, as it does for Remove.
+    expect(within(table).getByRole('button', { name: 'Unpublish', hidden: true })).toHaveAttribute(
+      'data-tabster',
+      expect.stringContaining('restorer'),
+    )
+
+    // The page stays hidden from assistive technology for a moment after the modal closes.
+    await user.click(await within(table).findByRole('button', { name: 'Unpublish' }))
+    const reopened = await screen.findByRole('alertdialog')
+    await user.click(await within(reopened).findByRole('button', { name: 'Unpublish model' }))
+
+    await waitFor(() => expect(api.unpublishPublication).toHaveBeenCalledWith('pub_1', 'unpublish_plan_1'))
+    expect(api.unpublishPublication).toHaveBeenCalledTimes(1)
+    expect(api.planUnpublishPublication).toHaveBeenCalledTimes(2)
+  })
+
+  it('shows when a publication was unpublished, and keeps Re-plan to publish it again', async () => {
+    const user = userEvent.setup()
+    const unpublishedAt = '2026-09-30T11:20:00Z'
+    api.listPublications.mockResolvedValue([
+      { ...publication, status: 'draft', unpublishedAt },
+      // Unpublished before MOSAIC recorded when: a draft that was applied once and owns nothing.
+      { ...publication, id: 'pub_2', displayName: 'Older unpublish', status: 'draft' },
+    ])
+
+    renderPage()
+
+    const table = await screen.findByRole('table', { name: 'Published models' })
+    const [, recent, older] = within(table).getAllByRole('row')
+    expect(within(recent).getByText('Unpublished')).toBeVisible()
+    expect(within(recent).getByText(`Unpublished ${new Date(unpublishedAt).toLocaleString()}`)).toBeVisible()
+    expect(within(older).getAllByText('Unpublished')).toHaveLength(2)
+    expect(within(table).queryByText('Draft')).not.toBeInTheDocument()
+    expect(within(table).queryByText(new Date(publication.lastAppliedAt!).toLocaleString())).not.toBeInTheDocument()
+
+    await user.click(within(recent).getByRole('button', { name: 'Re-plan' }))
+
+    await waitFor(() => expect(api.createPublishPlan).toHaveBeenCalledWith('pub_1'))
+    expect(await screen.findByRole('button', { name: 'Apply plan' })).toBeEnabled()
+  })
+
+  it('says an imported model API is hidden from the portal while its publication is unpublished', async () => {
+    const unpublishedApi = { ...modelApi, id: 'modelApi_2', displayName: 'Unpublished chat', importedFromSnapshotId: null, publicationId: 'pub_1' }
+    const liveApi = { ...modelApi, id: 'modelApi_3', displayName: 'Live chat', importedFromSnapshotId: null, publicationId: 'pub_2' }
+    api.listModelApis.mockResolvedValue([modelApi, unpublishedApi, liveApi])
+    api.listPublications.mockResolvedValue([
+      { ...publication, status: 'draft', unpublishedAt: '2026-09-30T11:20:00Z' },
+      {
+        ...publication,
+        id: 'pub_2',
+        resources: [
+          { kind: 'api', name: publication.apiName, resourceId: '/apis/gpt-4o-api', createdByMosaic: true, appliedAt: '2026-09-01T12:30:00Z' },
+        ],
+      },
+    ])
+
+    renderPage()
+
+    const table = await screen.findByRole('table', { name: 'Imported model APIs' })
+    const note = "Hidden from the portal catalog while it isn't published."
+    const rowFor = (name: string) => within(table).getByText(name).closest('tr') as HTMLElement
+    expect(await within(rowFor('Unpublished chat')).findByText(note)).toBeVisible()
+    expect(within(rowFor('Live chat')).queryByText(note)).not.toBeInTheDocument()
+    expect(within(rowFor('Chat completions')).queryByText(note)).not.toBeInTheDocument()
   })
 
   it('opens the registration dialog from the shell query and clears it when closed', async () => {

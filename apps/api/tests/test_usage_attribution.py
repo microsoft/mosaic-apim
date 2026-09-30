@@ -1,4 +1,5 @@
 import pytest
+from conftest import reviewed_unpublish
 from mosaic_api.domain import (
     AuditEvent,
     BindingSource,
@@ -225,7 +226,7 @@ async def test_mcp_apply_projects_bindings_and_unpublish_clears_them() -> None:
     assert group_binding.attribution_key == mcp_grant_counter_identity(applied, group_grant)
     assert group_binding.attribution_per_member is True
 
-    await harness.service.unpublish(MCP_ACTOR, publication_id)
+    await reviewed_unpublish(harness.service, MCP_ACTOR, publication_id)
     await harness.service.wait_for_idle()
 
     cleared = await harness.entitlement_repository.list_entitlements(
@@ -305,7 +306,7 @@ async def test_mcp_binding_clear_failure_leaves_a_successful_unpublish_released(
     unavailable = _UnavailableEntitlementWrites()
     monkeypatch.setattr(harness.entitlement_repository, "save_entitlement", unavailable)
 
-    run = await harness.service.unpublish(MCP_ACTOR, publication_id)
+    run = await reviewed_unpublish(harness.service, MCP_ACTOR, publication_id)
     await harness.service.wait_for_idle()
 
     completed = await harness.service.get_run(MCP_ACTOR, publication_id, run.id)

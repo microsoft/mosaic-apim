@@ -84,6 +84,7 @@ from mosaic_api.services.model_access import (
     local_mutation_active,
     publication_lock,
 )
+from mosaic_api.services.publishing import _KIND_NOUNS as _KIND_NOUNS
 from mosaic_api.services.publishing import DENY_ALL_FRAGMENT, DENY_ALL_POLICY, STALE_RUN_MESSAGE
 from mosaic_api.services.publishing import _merge_resources as _merge_resources
 
@@ -221,6 +222,67 @@ def mcp_publication_digest(
         separators=(",", ":"),
     )
     return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def mcp_unpublish_digest(publication: McpPublication) -> str:
+    """A digest over what unpublishing removes and whose access it ends.
+
+    Unpublish runs a reviewed plan only while this still matches: a resource recorded since the
+    review, or access applied since, makes it stale. It covers the names the deletes and the
+    fail-closed guard read besides the plan's own steps.
+    """
+
+    payload = json.dumps(
+        {
+            "operation": "unpublish",
+            "publicationId": publication.id,
+            "gatewayId": publication.gateway_id,
+            "apiName": publication.api_name,
+            "metadataApiName": publication.metadata_api_name,
+            "fragmentName": publication.fragment_name,
+            "backendName": publication.backend_name,
+            "appliedAccess": (
+                publication.applied_access.model_dump(mode="json")
+                if publication.applied_access
+                else None
+            ),
+            "ownedResources": sorted(
+                (str(item.kind), item.name, item.resource_id, item.created_by_mosaic)
+                for item in publication.resources
+            ),
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def _resource_label(publication: McpPublication, item: PublishedResource) -> str:
+    if item.kind == PublishedResourceKind.API_POLICY:
+        return f"the policy on API {item.name}"
+    if item.kind == PublishedResourceKind.API_OPERATION:
+        return f"operation {item.name} of API {publication.metadata_api_name}"
+    return f"{_KIND_NOUNS[item.kind]} {item.name}"
+
+
+def _removal_reason(publication: McpPublication, item: PublishedResource) -> str:
+    if item.kind == PublishedResourceKind.API:
+        return (
+            "Delete the MCP API. The gateway stops serving the server."
+            if item.name == publication.api_name
+            else "Delete the API that tells MCP clients where to sign in."
+        )
+    if item.kind == PublishedResourceKind.API_POLICY:
+        return (
+            "Delete the MCP API's policy."
+            if item.name == publication.api_name
+            else "Delete the sign-in metadata API's policy."
+        )
+    return {
+        PublishedResourceKind.API_OPERATION: "Delete the operation that serves sign-in metadata.",
+        PublishedResourceKind.POLICY_FRAGMENT: "Delete the MOSAIC enforcement fragment.",
+        PublishedResourceKind.BACKEND: "Delete the backend that points at the MCP server.",
+    }.get(item.kind, f"Delete {_resource_label(publication, item)}.")
 
 
 class McpPublishingService:
@@ -542,6 +604,15 @@ class McpPublishingService:
         if not resolved:
             raise ConflictError("Plan this MCP publication before applying it.")
         plan = await self.get_plan(actor, resolved)
+        if plan.operation != "publish" or any(
+            step.action == PublishAction.DELETE for step in plan.steps
+        ):
+            # Plans saved before unpublishing was planned carry no operation, only delete steps.
+            raise ConflictError(
+                "That plan unpublishes this MCP server, and apply runs only publish plans. Plan "
+                "the publication to publish it.",
+                details={"planId": plan.id, "operation": "unpublish"},
+            )
         if plan.publication_id != publication.id or plan.id != publication.last_plan_id:
             raise ConflictError("This is not the latest plan for this MCP publication; plan again.")
         catalog = await load_environment_catalog(self._environments, actor.tenant_id)
@@ -578,7 +649,71 @@ class McpPublishingService:
         self._spawn(self._run_apply(publication, gateway, endpoint, plan, policy, run, resource))
         return run
 
-    async def unpublish(self, actor: Actor, publication_id: str) -> PublishRun:
+    async def plan_unpublish(self, actor: Actor, publication_id: str) -> PublishPlan:
+        """Plan what unpublishing removes and whose access it ends, without removing anything.
+
+        Like model unpublishing: the plan lists the resources MOSAIC created, in deletion order,
+        and carries the access last applied. It changes nothing on the publication, and unpublish
+        runs it only while :func:`mcp_unpublish_digest` still matches.
+        """
+
+        async with publication_lock(self._repository, actor.tenant_id, publication_id):
+            publication = await self.get_publication(actor, publication_id)
+            gateway = await self._load_gateway(actor, publication.gateway_id)
+            self._require_writable(gateway)
+            removals = self._unpublish_removals(publication)
+            if not removals:
+                raise ConflictError(
+                    "MOSAIC did not create gateway resources for this MCP publication, so there "
+                    "is nothing to remove.",
+                    details={"id": publication.id},
+                )
+            plan = PublishPlan(
+                id=new_id("publishplan"),
+                tenant_id=actor.tenant_id,
+                publication_id=publication.id,
+                target="mcp",
+                operation="unpublish",
+                gateway_id=gateway.id,
+                digest=mcp_unpublish_digest(publication),
+                steps=[
+                    PublishPlanStep(
+                        kind=item.kind,
+                        name=item.name,
+                        action=PublishAction.DELETE,
+                        reason=_removal_reason(publication, item),
+                        resource_id=item.resource_id,
+                        existed=True,
+                    )
+                    for item in removals
+                ],
+                warnings=[
+                    "Before it deletes anything, MOSAIC replaces the MCP API's policy with one "
+                    "that refuses every call, so callers are cut off first.",
+                    *(
+                        f"MOSAIC didn't create {_resource_label(publication, item)}, so it stays "
+                        "in API Management."
+                        for item in publication.resources
+                        if not item.created_by_mosaic
+                    ),
+                ],
+                actor_object_id=actor.object_id,
+                mcp_access_snapshot=publication.applied_access,
+            )
+            await self._repository.save_publish_plan(plan)
+            return plan
+
+    async def unpublish(
+        self, actor: Actor, publication_id: str, plan_id: str | None = None
+    ) -> PublishRun:
+        """Run a reviewed unpublish plan: exactly its steps, and only if it still matches."""
+
+        if not plan_id:
+            raise ConflictError(
+                "Review what unpublishing removes before you unpublish. Plan the unpublish, check "
+                "the resources and grants it lists, then unpublish that plan.",
+                details={"id": publication_id, "reason": "planRequired"},
+            )
         owner = new_id("publishrun")
         await self._repository.acquire_publication_lock(actor.tenant_id, publication_id, owner)
         self._active.add(publication_id)
@@ -586,34 +721,21 @@ class McpPublishingService:
             publication = await self.get_publication(actor, publication_id)
             gateway = await self._load_gateway(actor, publication.gateway_id)
             self._require_writable(gateway)
-            owned = publication.created_resources()
-            if not owned:
+            plan = await self._repository.get_publish_plan(actor.tenant_id, plan_id)
+            if (
+                plan is None
+                or plan.target != "mcp"
+                or plan.operation != "unpublish"
+                or plan.publication_id != publication.id
+            ):
+                raise NotFoundError("MCP unpublish plan was not found", details={"id": plan_id})
+            if mcp_unpublish_digest(publication) != plan.digest:
                 raise ConflictError(
-                    "MOSAIC did not create gateway resources for this MCP publication."
+                    "This MCP publication changed after its unpublish plan was made, so the plan "
+                    "no longer says what unpublishing removes or who loses access. Review a new "
+                    "plan before you unpublish.",
+                    details={"planId": plan.id, "reason": "stalePlan"},
                 )
-            removals = self._unpublish_removals(publication)
-            plan = PublishPlan(
-                id=new_id("publishplan"),
-                tenant_id=actor.tenant_id,
-                publication_id=publication.id,
-                target="mcp",
-                gateway_id=gateway.id,
-                digest=publication.last_plan_digest or "",
-                steps=[
-                    PublishPlanStep(
-                        kind=item.kind,
-                        name=item.name,
-                        action=PublishAction.DELETE,
-                        reason=f"Remove {item.kind} {item.name} that MOSAIC created.",
-                        resource_id=item.resource_id,
-                        existed=True,
-                    )
-                    for item in removals
-                ],
-                actor_object_id=actor.object_id,
-                mcp_access_snapshot=publication.applied_access,
-            )
-            await self._repository.save_publish_plan(plan)
             run = self._claim(actor, publication, plan, owner)
             await self._repository.save_publish_run(run)
             await self._mark_applying(publication, run.id)
@@ -1633,6 +1755,7 @@ class McpPublishingService:
                 run_id=run.id,
                 error="; ".join(errors) or None,
                 applied=False,
+                unpublished=succeeded,
                 access_snapshot=denied_snapshot,
                 access_state="applied" if succeeded else "failed",
             )
@@ -1841,6 +1964,7 @@ class McpPublishingService:
         run_id: str | None,
         error: str | None,
         applied: bool,
+        unpublished: bool = False,
         access_snapshot: McpAccessSnapshot | None = None,
         access_state: str | None = None,
     ) -> None:
@@ -1857,6 +1981,9 @@ class McpPublishingService:
             updates["last_run_id"] = run_id
         if applied:
             updates["last_applied_at"] = utc_now()
+            updates["unpublished_at"] = None
+        if unpublished:
+            updates["unpublished_at"] = utc_now()
         if access_snapshot is not None:
             updates["applied_access"] = access_snapshot
         if access_state is not None:

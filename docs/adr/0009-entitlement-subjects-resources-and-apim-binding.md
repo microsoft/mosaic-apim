@@ -23,6 +23,16 @@ It never shows a raw resource ID. Administrative responses are unchanged.
 Management's error text: `runtime.error` is always null there, as on the other current-user routes.
 See [ADR 0011](0011-governed-model-access.md).
 
+**Update:** The catalog lists a model API or MCP server that MOSAIC publishes only while its
+publication holds its own API in API Management: not before the first apply, not after an
+unpublish, and not once the publication record is gone. It is left out rather than shown as
+unavailable, as a resource whose gateway was removed is left out, because the catalog is what a
+person can request and then use. A portal request for such a resource, which the catalog would
+otherwise list, is refused with `409` and reason `notPublished`. A private or unknown resource still
+gets the not-found answer. `resourceSummary.available` is false for it, so the portal marks grants
+and requests for it as no longer available. Model APIs and MCP servers imported from a gateway are
+unaffected.
+
 ## Context
 
 `Entitlement` existed in the domain but had no routes, no service, and no repository. Nothing ever

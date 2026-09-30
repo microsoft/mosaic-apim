@@ -24,7 +24,8 @@ import { EnvironmentFindings } from '../components/EnvironmentFindings'
 import { GatewayManagementMode } from '../components/GatewayManagementMode'
 import { AI_KIND_LABELS, MANAGEMENT_MODE_LABELS } from '../labels'
 import { PolicyDocumentCard, PolicyFragmentCard } from '../components/PolicyFacets'
-import type { AiBackendKind, Gateway, PublicationStatus } from '../types'
+import { lastAppliedLabel, publicationStatusLabel } from '../publication-state'
+import type { AiBackendKind, Gateway } from '../types'
 import { environmentLabel, invalidateEnvironmentQueries, useEnvironmentCatalog } from '../environments'
 import { PageHeader } from '../components/PageHeader'
 import { AccessPanel, GatewayStatusBadge } from './GatewaysPage'
@@ -40,15 +41,6 @@ type TabKey =
   | 'policies'
   | 'backends'
 
-
-const publicationStatusLabels: Record<PublicationStatus, string> = {
-  draft: 'Draft',
-  planned: 'Planned',
-  applying: 'Applying',
-  published: 'Published',
-  failed: 'Failed',
-  rolledBack: 'Rolled back',
-}
 
 function PublishedModelsSection({ gatewayId }: { gatewayId: string }) {
   const api = useMosaicApi()
@@ -85,9 +77,9 @@ function PublishedModelsSection({ gatewayId }: { gatewayId: string }) {
             {publications.data.map((publication) => (
               <tr key={publication.id}>
                 <td>{publication.displayName}</td>
-                <td>{publicationStatusLabels[publication.status]}</td>
+                <td>{publicationStatusLabel(publication)}</td>
                 <td>/{publication.apiPath}</td>
-                <td>{publication.lastAppliedAt ? new Date(publication.lastAppliedAt).toLocaleString() : 'Never'}</td>
+                <td>{lastAppliedLabel(publication)}</td>
               </tr>
             ))}
           </tbody>

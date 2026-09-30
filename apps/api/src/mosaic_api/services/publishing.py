@@ -301,6 +301,93 @@ def publication_digest(
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
+def _is_governed(publication: Publication) -> bool:
+    """Whether unpublishing denies calls and suspends subscriptions before it deletes anything."""
+
+    return publication.governed_access is not None or publication.applied_access is not None
+
+
+def unpublish_digest(publication: Publication) -> str:
+    """A digest over what unpublishing removes and whose access it ends.
+
+    Unpublish runs a reviewed plan only while this still matches, so an administrator never
+    confirms one teardown and gets another. A resource recorded since the review, or access applied
+    since, changes it. It covers what the run reads besides the plan's own steps: the names the
+    deletes and the fail-closed guard use, and whether that guard runs.
+    """
+
+    payload = json.dumps(
+        {
+            "operation": "unpublish",
+            "publicationId": publication.id,
+            "gatewayId": publication.gateway_id,
+            "apiName": publication.api_name,
+            "productName": publication.product_name,
+            "subscriptionName": publication.subscription_name,
+            "fragmentName": publication.fragment_name,
+            "governed": _is_governed(publication),
+            "appliedAccess": (
+                publication.applied_access.model_dump(mode="json")
+                if publication.applied_access
+                else None
+            ),
+            "ownedResources": sorted(
+                (str(item.kind), item.name, item.resource_id, item.created_by_mosaic)
+                for item in publication.resources
+            ),
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
+_KIND_NOUNS: dict[PublishedResourceKind, str] = {
+    PublishedResourceKind.BACKEND: "backend",
+    PublishedResourceKind.POLICY_FRAGMENT: "policy fragment",
+    PublishedResourceKind.API: "API",
+    PublishedResourceKind.API_OPERATION: "operation",
+    PublishedResourceKind.API_POLICY: "API policy",
+    PublishedResourceKind.PRODUCT: "product",
+    PublishedResourceKind.PRODUCT_API: "product link",
+    PublishedResourceKind.SUBSCRIPTION: "subscription",
+}
+
+
+def _resource_label(publication: Publication, item: PublishedResource) -> str:
+    if item.kind == PublishedResourceKind.API_POLICY:
+        return "the API's policy"
+    if item.kind == PublishedResourceKind.PRODUCT_API:
+        return f"the link from product {publication.product_name} to the API"
+    return f"{_KIND_NOUNS[item.kind]} {item.name}"
+
+
+_REMOVAL_REASONS: dict[PublishedResourceKind, str] = {
+    PublishedResourceKind.API: (
+        "Delete the API that fronts this model. The gateway stops serving it."
+    ),
+    PublishedResourceKind.API_POLICY: "Delete the API's policy.",
+    PublishedResourceKind.POLICY_FRAGMENT: "Delete the MOSAIC enforcement fragment.",
+    PublishedResourceKind.BACKEND: "Delete the backend that points at the model endpoint.",
+    PublishedResourceKind.PRODUCT: "Delete the product, and every subscription to it.",
+    PublishedResourceKind.PRODUCT_API: "Delete the link between the product and the API.",
+}
+
+
+def _removal_reason(
+    publication: Publication, item: PublishedResource, grant: ModelAccessGrant | None
+) -> str:
+    if item.kind == PublishedResourceKind.API_OPERATION:
+        return f"Delete the {item.name} operation."
+    if item.kind != PublishedResourceKind.SUBSCRIPTION:
+        return _REMOVAL_REASONS[item.kind]
+    if grant is not None:
+        return f"Delete {grant.display_name}'s subscription. Its keys stop working."
+    if item.name == publication.subscription_name:
+        return "Delete the subscription MOSAIC created for the product. Its keys stop working."
+    return "Delete a subscription MOSAIC created. Its keys stop working."
+
+
 class PublishingService:
     def __init__(
         self,
@@ -451,7 +538,8 @@ class PublishingService:
             or existing.access_state in {"applying", "unknown"}
         ):
             raise ConflictError(
-                "This model is already published through this gateway. Update it instead.",
+                "This model already has a publication on this gateway. Re-plan that publication "
+                "instead of publishing it again.",
                 details={"id": existing.id, "status": str(existing.status)},
             )
         publication = Publication(
@@ -1332,6 +1420,15 @@ class PublishingService:
         plan = await self._repository.get_publish_plan(actor.tenant_id, resolved)
         if plan is None or plan.target != "model" or plan.publication_id != publication.id:
             raise NotFoundError("Publish plan was not found", details={"id": resolved})
+        if plan.operation != "publish" or any(
+            step.action == PublishAction.DELETE for step in plan.steps
+        ):
+            # Plans saved before unpublishing was planned carry no operation, only delete steps.
+            raise ConflictError(
+                "That plan unpublishes this model, and apply runs only publish plans. Re-plan "
+                "the publication to publish it.",
+                details={"planId": plan.id, "operation": "unpublish"},
+            )
 
         catalog = await load_environment_catalog(self._environments, actor.tenant_id)
         verdict = permits(catalog, gateway.environment, endpoint.environment)
@@ -1378,21 +1475,85 @@ class PublishingService:
             self._spawn(self._run_apply(publication, gateway, client, plan, policy, origin, run))
         return run
 
-    async def unpublish(self, actor: Actor, target_id: str) -> PublishRun:
+    async def plan_unpublish(self, actor: Actor, target_id: str) -> PublishPlan:
+        """Plan what unpublishing removes and whose access it ends, without removing anything.
+
+        The plan lists every resource MOSAIC created, in the order unpublish deletes them, and
+        carries the access the gateway applied last, so an administrator sees who loses access
+        before confirming. It changes nothing on the publication. Unpublish runs only such a plan,
+        and only while :func:`unpublish_digest` still matches it.
+        """
+
+        async with publication_lock(self._repository, actor.tenant_id, target_id):
+            publication = await self.get_publication(actor, target_id)
+            gateway = await self._load_gateway(actor, publication.gateway_id)
+            self._require_writable(gateway)
+            removals = self._unpublish_removals(publication)
+            plan = PublishPlan(
+                id=new_id("publishplan"),
+                tenant_id=actor.tenant_id,
+                publication_id=publication.id,
+                operation="unpublish",
+                gateway_id=gateway.id,
+                digest=unpublish_digest(publication),
+                steps=[self._removal_step(publication, item) for item in removals],
+                warnings=self._unpublish_warnings(publication),
+                actor_object_id=actor.object_id,
+                access_snapshot=publication.applied_access,
+            )
+            await self._repository.save_publish_plan(plan)
+            return plan
+
+    async def unpublish(
+        self, actor: Actor, target_id: str, plan_id: str | None = None
+    ) -> PublishRun:
+        """Run a reviewed unpublish plan: exactly its steps, and only if it still matches."""
+
+        if not plan_id:
+            raise ConflictError(
+                "Review what unpublishing removes before you unpublish. Plan the unpublish, check "
+                "the resources and grants it lists, then unpublish that plan.",
+                details={"id": target_id, "reason": "planRequired"},
+            )
         owner = new_id("publishrun")
         await self._repository.acquire_publication_lock(actor.tenant_id, target_id, owner)
         self._active.add(target_id)
         try:
-            return await self._unpublish_locked(actor, target_id, owner)
+            return await self._unpublish_locked(actor, target_id, plan_id, owner)
         except BaseException:
             self._active.discard(target_id)
             await self._repository.release_publication_lock(actor.tenant_id, target_id, owner)
             raise
 
-    async def _unpublish_locked(self, actor: Actor, target_id: str, owner: str) -> PublishRun:
+    async def _unpublish_locked(
+        self, actor: Actor, target_id: str, plan_id: str, owner: str
+    ) -> PublishRun:
         publication = await self.get_publication(actor, target_id)
         gateway = await self._load_gateway(actor, publication.gateway_id)
         self._require_writable(gateway)
+        plan = await self._repository.get_publish_plan(actor.tenant_id, plan_id)
+        if (
+            plan is None
+            or plan.target != "model"
+            or plan.operation != "unpublish"
+            or plan.publication_id != publication.id
+        ):
+            raise NotFoundError("Unpublish plan was not found", details={"id": plan_id})
+        if unpublish_digest(publication) != plan.digest:
+            raise ConflictError(
+                "This publication changed after its unpublish plan was made, so the plan no "
+                "longer says what unpublishing removes or who loses access. Review a new plan "
+                "before you unpublish.",
+                details={"planId": plan.id, "reason": "stalePlan"},
+            )
+        run = self._claim(actor, publication, plan, owner)
+        await self._repository.save_publish_run(run)
+        await self._mark_applying(publication, run.id)
+        self._spawn(self._run_unpublish(publication, gateway, plan, run))
+        return run
+
+    @staticmethod
+    def _unpublish_removals(publication: Publication) -> list[PublishedResource]:
         owned = publication.created_resources()
         if not owned:
             raise ConflictError(
@@ -1402,36 +1563,59 @@ class PublishingService:
             )
         order = {kind: index for index, kind in enumerate(CREATE_ORDER)}
         removals = sorted(owned, key=lambda item: order[item.kind], reverse=True)
-        if publication.governed_access or publication.applied_access:
+        if _is_governed(publication):
             # Keep the deny policy attached until the API itself is gone. Removing a policy first
             # can expose the backend under inherited APIM policies while cleanup is still running.
             removals.sort(key=lambda item: item.kind != PublishedResourceKind.API)
-        plan = PublishPlan(
-            id=new_id("publishplan"),
-            tenant_id=actor.tenant_id,
-            publication_id=publication.id,
-            gateway_id=gateway.id,
-            digest=publication.last_plan_digest or "",
-            steps=[
-                PublishPlanStep(
-                    kind=item.kind,
-                    name=item.name,
-                    action=PublishAction.DELETE,
-                    reason=f"Remove {item.kind} {item.name} that MOSAIC created.",
-                    resource_id=item.resource_id,
-                    existed=True,
+        return removals
+
+    @staticmethod
+    def _removal_step(publication: Publication, item: PublishedResource) -> PublishPlanStep:
+        grant = next(
+            (
+                grant
+                for grant in (
+                    publication.applied_access.grants if publication.applied_access else []
                 )
-                for item in removals
-            ],
-            actor_object_id=actor.object_id,
-            access_snapshot=publication.applied_access,
+                if item.kind == PublishedResourceKind.SUBSCRIPTION
+                and grant.subscription_name == item.name
+            ),
+            None,
         )
-        await self._repository.save_publish_plan(plan)
-        run = self._claim(actor, publication, plan, owner)
-        await self._repository.save_publish_run(run)
-        await self._mark_applying(publication, run.id)
-        self._spawn(self._run_unpublish(publication, gateway, plan, run))
-        return run
+        return PublishPlanStep(
+            kind=item.kind,
+            name=item.name,
+            action=PublishAction.DELETE,
+            reason=_removal_reason(publication, item, grant),
+            resource_id=item.resource_id,
+            existed=True,
+            entitlement_id=grant.entitlement_id if grant else None,
+        )
+
+    @staticmethod
+    def _unpublish_warnings(publication: Publication) -> list[str]:
+        warnings: list[str] = []
+        if _is_governed(publication):
+            warnings.append(
+                "Before it deletes anything, MOSAIC replaces this API's policy with one that "
+                "refuses every call, and suspends every grant's subscription, so callers are cut "
+                "off first."
+            )
+        if any(
+            item.kind == PublishedResourceKind.PRODUCT and item.name == publication.product_name
+            for item in publication.created_resources()
+        ):
+            warnings.append(
+                f"Deleting product {publication.product_name} also deletes every subscription to "
+                "it, including any that API Management or another administrator added."
+            )
+        warnings.extend(
+            f"MOSAIC didn't create {_resource_label(publication, item)}, so it stays in API "
+            "Management."
+            for item in publication.resources
+            if not item.created_by_mosaic
+        )
+        return warnings
 
     def _claim(
         self, actor: Actor, publication: Publication, plan: PublishPlan, owner: str
@@ -2021,7 +2205,7 @@ class PublishingService:
         results: list[PublishStepResult] = []
         remaining: list[PublishedResource] = list(publication.resources)
         errors: list[str] = []
-        governed = publication.governed_access is not None or publication.applied_access is not None
+        governed = _is_governed(publication)
         denied_snapshot = (
             denied_access_snapshot(publication.applied_access).model_copy(
                 update={"version": publication.applied_access.version + 1}
@@ -2090,6 +2274,7 @@ class PublishingService:
                 run_id=run.id,
                 error="; ".join(errors) or None,
                 applied=False,
+                unpublished=succeeded,
                 access_snapshot=denied_snapshot,
                 access_state=("applied" if succeeded else "failed") if governed else None,
             )
@@ -2330,6 +2515,7 @@ class PublishingService:
         run_id: str | None,
         error: str | None,
         applied: bool,
+        unpublished: bool = False,
         access_snapshot: ModelAccessSnapshot | None = None,
         access_state: str | None = None,
     ) -> None:
@@ -2348,6 +2534,9 @@ class PublishingService:
             updates["last_run_id"] = run_id
         if applied:
             updates["last_applied_at"] = utc_now()
+            updates["unpublished_at"] = None
+        if unpublished:
+            updates["unpublished_at"] = utc_now()
         if access_snapshot is not None:
             updates["applied_access"] = access_snapshot
         if access_state is not None:
