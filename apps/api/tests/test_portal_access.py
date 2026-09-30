@@ -153,11 +153,17 @@ class Harness:
             ),
             resources=[
                 PublishedResource(
+                    kind=PublishedResourceKind.API,
+                    name="mosaic-chat",
+                    resource_id=f"{RESOURCE_ID}/apis/mosaic-chat",
+                    created_by_mosaic=True,
+                ),
+                PublishedResource(
                     kind=PublishedResourceKind.SUBSCRIPTION,
                     name=self.subscription,
                     resource_id=f"{RESOURCE_ID}/subscriptions/{self.subscription}",
                     created_by_mosaic=True,
-                )
+                ),
             ],
         )
 
@@ -277,7 +283,7 @@ async def test_uncertain_or_pending_publication_cannot_reveal(harness: Harness, 
 
 
 async def test_manual_binding_does_not_prove_subscription_ownership(harness: Harness) -> None:
-    await harness.save_publication(resources=[])
+    await harness.save_publication(resources=harness.publication.resources[:1])
     entitlement = harness.entitlement.model_copy(
         update={
             "binding": EntitlementBinding(
@@ -340,6 +346,27 @@ async def test_connection_metadata_is_not_a_key_read_or_runtime_probe(harness: H
     assert connection.subscription_header == "Ocp-Apim-Subscription-Key"
     assert harness.reader.calls == 0
     assert "key" not in connection.model_dump()
+
+
+async def test_an_unpublished_model_offers_no_connection_details_or_key(harness: Harness) -> None:
+    # What a successful unpublish leaves: nothing owned, so no API at the endpoint to describe.
+    await harness.save_publication(
+        status=PublicationStatus.DRAFT,
+        resources=[],
+        unpublished_at=datetime(2026, 9, 30, 11, 20, tzinfo=UTC),
+    )
+
+    for administrator in (False, True):
+        with pytest.raises(ConflictError) as refused:
+            await harness.service.connection(ACTOR, "grant", administrator=administrator)
+        assert refused.value.message == (
+            "This model isn't published in API Management right now, so there's nothing to "
+            "connect to"
+        )
+        assert refused.value.details["reason"] == "notPublished"
+    with pytest.raises(ConflictError, match="isn't published"):
+        await harness.service.reveal_key(ACTOR, "grant", "primary")
+    assert harness.reader.calls == 0
 
 
 async def test_connection_names_the_model_client_as_entra_client_id(harness: Harness) -> None:

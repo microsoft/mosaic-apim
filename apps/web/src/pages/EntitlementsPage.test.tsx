@@ -393,6 +393,30 @@ describe('EntitlementsPage', () => {
     expect(api.applyPublishPlan).not.toHaveBeenCalled()
   })
 
+  it('offers only models whose API is in API Management for governed access', async () => {
+    api.listPublications.mockResolvedValue([
+      modelPublication,
+      // A failed re-apply still leaves the model published.
+      {
+        ...modelPublication,
+        id: 'pub_failed',
+        displayName: 'Retried chat',
+        status: 'failed',
+        resources: [
+          { kind: 'api', name: modelPublication.apiName, resourceId: '/apis/chat', createdByMosaic: true, appliedAt: modelPublication.createdAt },
+        ],
+      },
+      // Reviewing an unpublished model's access would publish it again.
+      { ...modelPublication, id: 'pub_unpublished', displayName: 'Retired chat', status: 'draft', unpublishedAt: modelPublication.createdAt },
+    ])
+    renderPage()
+
+    const picker = await screen.findByRole('combobox', { name: 'Published model' })
+    await within(picker).findByRole('option', { name: /Published chat/ })
+    expect(within(picker).getByRole('option', { name: /Retried chat/ })).toBeInTheDocument()
+    expect(within(picker).queryByRole('option', { name: /Retired chat/ })).not.toBeInTheDocument()
+  })
+
   it('creates direct grant intent on the canonical model without changing Azure', async () => {
     const user = userEvent.setup()
     api.listPublications.mockResolvedValue([modelPublication])

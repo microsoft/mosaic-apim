@@ -95,14 +95,30 @@ async def apply_mcp_publication(
 
 
 @mcp_publishing_router.post(
+    "/mcp-publications/{publication_id}/unpublish-plan", response_model=PublishPlan
+)
+async def plan_unpublish_mcp_publication(
+    request: Request, auth: Admin, publication_id: str
+) -> PublishPlan:
+    """Plan an unpublish for review: what it deletes and whose access it ends. Deletes nothing."""
+
+    return await _mcp_publishing(request).plan_unpublish(_actor(auth), publication_id)
+
+
+@mcp_publishing_router.post(
     "/mcp-publications/{publication_id}/unpublish",
     response_model=PublishRun,
     status_code=status.HTTP_202_ACCEPTED,
 )
 async def unpublish_mcp_publication(
-    request: Request, auth: Admin, publication_id: str
+    request: Request,
+    auth: Admin,
+    publication_id: str,
+    plan: Annotated[str | None, Query()] = None,
 ) -> PublishRun:
-    return await _mcp_publishing(request).unpublish(_actor(auth), publication_id)
+    """Run the reviewed unpublish plan named by ``plan``. Without one, nothing is removed."""
+
+    return await _mcp_publishing(request).unpublish(_actor(auth), publication_id, plan)
 
 
 @mcp_publishing_router.get(

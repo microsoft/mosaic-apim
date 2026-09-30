@@ -131,12 +131,27 @@ def test_mcp_publication_http_round_trip(mcp_publishing_client: TestClient) -> N
     assert lock.status_code == 200
     assert lock.json() == {"publicationId": publication_id, "ownerId": None}
 
-    unpublished = mcp_publishing_client.post(
+    unreviewed = mcp_publishing_client.post(
         f"/api/v1/mcp-publications/{publication_id}/unpublish"
+    )
+    assert unreviewed.status_code == 409
+    assert unreviewed.json()["details"]["reason"] == "planRequired"
+    review = mcp_publishing_client.post(
+        f"/api/v1/mcp-publications/{publication_id}/unpublish-plan"
+    )
+    assert review.status_code == 200, review.text
+    assert review.json()["target"] == "mcp"
+    assert review.json()["operation"] == "unpublish"
+    assert {step["action"] for step in review.json()["steps"]} == {"delete"}
+    unpublished = mcp_publishing_client.post(
+        f"/api/v1/mcp-publications/{publication_id}/unpublish",
+        params={"plan": review.json()["id"]},
     )
     assert unpublished.status_code == 202
     unpublish_run = _await_run(mcp_publishing_client, publication_id, unpublished.json()["id"])
     assert unpublish_run["status"] == "succeeded"
+    after = mcp_publishing_client.get(f"/api/v1/mcp-publications/{publication_id}").json()
+    assert after["unpublishedAt"] is not None
 
     deleted = mcp_publishing_client.delete(f"/api/v1/mcp-publications/{publication_id}")
     assert deleted.status_code == 204

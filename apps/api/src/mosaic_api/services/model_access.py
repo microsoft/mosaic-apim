@@ -13,6 +13,7 @@ from mosaic_api.domain import (
     ModelAccessGrant,
     ModelAccessSettings,
     ModelAccessSnapshot,
+    ModelApi,
     Principal,
     Publication,
     PublicationStatus,
@@ -170,6 +171,26 @@ async def entitlement_publication(
     if publication.gateway_id != model.gateway_id or publication.api_name != model.api_name:
         return None
     return publication
+
+
+def model_api_offered(model_api: ModelApi, publication: Publication | None) -> bool:
+    """Whether end users may be offered this model API, to request or to connect to.
+
+    A model API imported from a gateway is, as it always was: its gateway serves it whatever
+    MOSAIC does. One MOSAIC publishes is offered only while its publication, ``publication``
+    (the record ``model_api.publication_id`` names, if any), holds its API in API Management.
+    After an unpublish, or once that publication is removed, the gateway doesn't serve it.
+    """
+
+    if model_api.publication_id is None:
+        return True
+    return (
+        publication is not None
+        and publication.id == model_api.publication_id
+        and publication.gateway_id == model_api.gateway_id
+        and publication.api_name == model_api.api_name
+        and publication.has_applied_api()
+    )
 
 
 def applied_grant(publication: Publication, entitlement_id: str) -> ModelAccessGrant | None:

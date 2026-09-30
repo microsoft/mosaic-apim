@@ -40,9 +40,17 @@ import { ImportFromGatewayDialog } from '../components/ImportFromGatewayDialog'
 import { PublishModelDialog } from '../components/PublishModelDialog'
 import { PageHeader } from '../components/PageHeader'
 import { RemovalDialog } from '../components/RemovalDialog'
+import { UnpublishDialog } from '../components/UnpublishDialog'
 import { AI_KIND_LABELS } from '../labels'
+import {
+  PUBLICATION_STATUS_LABELS,
+  formatTimestamp,
+  holdsApi,
+  isUnpublished,
+  lastAppliedLabel,
+  publicationStatusLabel,
+} from '../publication-state'
 import { CAN_INVOKE, describeScope, environmentRuntimeVerdict, findingSummary, runtimeVerdict } from '../runtime-access'
-import { runtimeConfig } from '../runtime-config'
 import type {
   CatalogVisibility,
   Gateway,
@@ -56,7 +64,6 @@ import type {
   Publication,
   PublishPlan,
   PublicationStatus,
-  PublishRun,
   SubscriptionScanStatus,
   SuggestionSource,
 } from '../types'
@@ -99,24 +106,25 @@ const scanVisibilityTitles: Partial<Record<SubscriptionScanStatus, string>> = {
 const REGISTRATION_REFUSED = "MOSAIC didn't register this endpoint"
 
 
-const publicationStatusLabels: Record<PublicationStatus, string> = {
-  draft: 'Draft',
-  planned: 'Planned',
-  applying: 'Applying',
-  published: 'Published',
-  failed: 'Failed',
-  rolledBack: 'Rolled back',
-}
-
-function PublicationStatusBadge({ status }: { status: PublicationStatus }) {
+function PublicationStatusBadge({ publication }: { publication: Publication }) {
+  const { status } = publication
   const attention = status === 'failed' || status === 'rolledBack'
   const active = status === 'applying' || status === 'planned'
+  const unpublished = status === 'draft' && isUnpublished(publication)
   return (
     <Badge
       appearance="tint"
-      className={attention ? styles.statusAttention : active ? styles.statusSyncing : styles.statusReady}
+      className={
+        attention
+          ? styles.statusAttention
+          : active
+            ? styles.statusSyncing
+            : unpublished
+              ? styles.statusStopped
+              : styles.statusReady
+      }
     >
-      {publicationStatusLabels[status]}
+      {publicationStatusLabel(publication)}
     </Badge>
   )
 }
@@ -125,8 +133,8 @@ function PublishedModels({ onMessage }: { onMessage: (message: string) => void }
   const api = useMosaicApi()
   const queryClient = useQueryClient()
   const restoreFocus = useRestoreFocusTarget()
-  const [runIssue, setRunIssue] = useState<Error | null>(null)
   const [removing, setRemoving] = useState<Publication | null>(null)
+  const [unpublishing, setUnpublishing] = useState<Publication | null>(null)
   const [review, setReview] = useState<{ publication: Publication; plan: PublishPlan } | null>(null)
 
   const publications = useQuery({
@@ -151,22 +159,9 @@ function PublishedModels({ onMessage }: { onMessage: (message: string) => void }
     await queryClient.invalidateQueries({ queryKey: ['entitlement-connection'] })
   }
 
-  function reportRun(run: PublishRun) {
-    if (run.status === 'running') {
-      onMessage('Run started. Refresh this page to see the latest status.')
-    } else if (run.status === 'succeeded') {
-      onMessage(runtimeConfig.authMode === 'local'
-        ? 'Local development service reported completion. Live APIM changes are not verified.'
-        : 'The service reports the operation completed. Allow for APIM propagation; live invocation is not verified.')
-    } else {
-      setRunIssue(new Error(run.status === 'interrupted'
-        ? 'Apply interrupted — runtime state unknown. The apply lock may still be retained. An operator must stop the original worker and verify that all submitted ARM operations are terminal before confirming recovery; follow README. This UI never confirms quiescence. Access, revocation, and lock release are not confirmed.'
-        : `The service reports ${run.status ?? 'unknown'} runtime state. Access and revocation are not confirmed. ${(run.errors ?? []).join(' ')}`))
-    }
-  }
-
   // The table never applies a plan. Re-plan opens a fresh plan in the publish dialog, and only its
-  // Apply plan applies it, so the administrator sees every plan before it runs.
+  // Apply plan applies it, so the administrator sees every plan before it runs. Unpublish works
+  // the same way: its dialog plans the unpublish, and only its confirm button runs that plan.
   const reviewPlan = useMutation({
     mutationFn: async (publication: Publication) => ({
       publication,
@@ -175,14 +170,6 @@ function PublishedModels({ onMessage }: { onMessage: (message: string) => void }
     onSuccess: ({ publication, plan }) => {
       setReview({ publication, plan })
       void queryClient.invalidateQueries({ queryKey: ['publications'] })
-    },
-  })
-  const unpublish = useMutation({
-    onMutate: () => setRunIssue(null),
-    mutationFn: (publicationId: string) => api.unpublishPublication(publicationId),
-    onSuccess: async (run) => {
-      await refresh()
-      reportRun(run)
     },
   })
   const remove = useMutation({
@@ -211,9 +198,7 @@ function PublishedModels({ onMessage }: { onMessage: (message: string) => void }
           <Text>Model deployments MOSAIC has planned or published into API Management.</Text>
         </div>
       </div>
-      {(reviewPlan.isError || unpublish.isError || runIssue) && (
-        <ErrorState error={reviewPlan.error ?? unpublish.error ?? runIssue} />
-      )}
+      {reviewPlan.isError && <ErrorState error={reviewPlan.error} />}
       {publications.isPending && <Loading label="Loading published models" />}
       {publications.isError && <ErrorState error={publications.error} />}
       {publications.isSuccess &&
@@ -244,7 +229,7 @@ function PublishedModels({ onMessage }: { onMessage: (message: string) => void }
                       </div>
                     </TableCell>
                     <TableCell>
-                      <PublicationStatusBadge status={publication.status} />
+                      <PublicationStatusBadge publication={publication} />
                       {publication.accessState === 'unknown' && (
                         <Text block size={200}>Runtime unknown — retained apply lock. Use the recovery instructions in Entitlements before retrying.</Text>
                       )}
@@ -255,7 +240,7 @@ function PublishedModels({ onMessage }: { onMessage: (message: string) => void }
                       </Link>
                     </TableCell>
                     <TableCell>/{publication.apiPath}</TableCell>
-                    <TableCell>{formatTimestamp(publication.lastAppliedAt)}</TableCell>
+                    <TableCell>{lastAppliedLabel(publication)}</TableCell>
                     <TableCell>
                       <div className={styles.actionRow}>
                         <Button
@@ -265,7 +250,14 @@ function PublishedModels({ onMessage }: { onMessage: (message: string) => void }
                         >
                           {reviewPlan.isPending && reviewPlan.variables?.id === publication.id ? 'Planning…' : 'Re-plan'}
                         </Button>
-                        <Button appearance="secondary" disabled={unpublish.isPending} onClick={() => unpublish.mutate(publication.id)}>Unpublish</Button>
+                        <Button
+                          appearance="secondary"
+                          disabled={publication.status === 'applying' || publication.accessState === 'applying' || publication.accessState === 'unknown'}
+                          onClick={() => setUnpublishing(publication)}
+                          {...restoreFocus}
+                        >
+                          Unpublish
+                        </Button>
                         <Button appearance="subtle" disabled={remove.isPending} onClick={() => confirmRemoval(publication)} {...restoreFocus}>Remove</Button>
                       </div>
                     </TableCell>
@@ -281,6 +273,13 @@ function PublishedModels({ onMessage }: { onMessage: (message: string) => void }
       initialReview={review}
       onClose={() => setReview(null)}
       onPublished={onMessage}
+    />
+    <UnpublishDialog
+      open={unpublishing !== null}
+      target="model"
+      publication={unpublishing}
+      onClose={() => setUnpublishing(null)}
+      onUnpublished={onMessage}
     />
     <RemovalDialog
       open={removing !== null}
@@ -302,10 +301,6 @@ function PublishedModels({ onMessage }: { onMessage: (message: string) => void }
     </RemovalDialog>
     </>
   )
-}
-
-function formatTimestamp(value?: string | null): string {
-  return value ? new Date(value).toLocaleString() : 'Never'
 }
 
 function EndpointStatusBadge({ status }: { status: ModelEndpointStatus }) {
@@ -370,6 +365,11 @@ function ImportedModelApis({ onRemoved }: { onRemoved: (message: string) => void
     queryKey: ['gateways'],
     queryFn: () => api.listGateways(),
   })
+  // A model API MOSAIC publishes is listed in the portal only while its publication holds its API.
+  const publications = useQuery({
+    queryKey: ['publications'],
+    queryFn: () => api.listPublications(),
+  })
   const catalog = useEnvironmentCatalog()
 
   const gatewaysById = useMemo(() => {
@@ -379,6 +379,12 @@ function ImportedModelApis({ onRemoved }: { onRemoved: (message: string) => void
     }
     return map
   }, [gateways.data])
+
+  function hiddenFromPortal(record: { publicationId?: string | null }): boolean {
+    if (!record.publicationId || !publications.isSuccess) return false
+    const publication = publications.data.find((item) => item.id === record.publicationId)
+    return !publication || !holdsApi(publication)
+  }
 
   const removeMutation = useMutation({
     mutationFn: (id: string) => api.deleteModelApi(id),
@@ -486,6 +492,11 @@ function ImportedModelApis({ onRemoved }: { onRemoved: (message: string) => void
                         <option value="catalog">Discoverable</option>
                         <option value="private">Entitled users only</option>
                       </Select>
+                      {hiddenFromPortal(record) && (
+                        <Text block size={200} className={styles.muted}>
+                          Hidden from the portal catalog while it isn&apos;t published.
+                        </Text>
+                      )}
                     </TableCell>
                     <TableCell>
                       <Button
@@ -1352,7 +1363,7 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
         pending={remove.isPending}
         error={remove.error}
         statusLabel={(status) =>
-          publicationStatusLabels[status as PublicationStatus] ?? status
+          PUBLICATION_STATUS_LABELS[status as PublicationStatus] ?? status
         }
         onConfirm={() => removing && remove.mutate(removing)}
         onCancel={() => setRemoving(null)}

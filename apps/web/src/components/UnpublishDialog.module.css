@@ -1,0 +1,56 @@
+/* One column that can shrink below its widest table, so long names wrap or scroll inside it. */
+.content {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+}
+
+.section {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
+}
+
+.section:focus-visible {
+  outline: 2px solid var(--colorStrokeFocus2);
+  outline-offset: 2px;
+}
+
+.cellStack {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* APIM names are long and unbroken; let them wrap inside their column. */
+.resourceName {
+  overflow-wrap: anywhere;
+}
+
+.tableScroll {
+  max-height: 20rem;
+  overflow: auto;
+  border: 1px solid var(--mosaic-border-soft);
+  border-radius: 6px;
+}
+
+/*
+ * The confirm button deletes things, so it looks it. Fluent styles buttons with single-class
+ * rules; these outrank them, and step aside while the button is busy or unavailable so Fluent's
+ * disabled look still shows.
+ */
+.destructive:not([aria-disabled='true']):not(:disabled) {
+  background-color: var(--colorStatusDangerBackground3);
+  border-color: transparent;
+  color: var(--colorNeutralForegroundOnBrand);
+}
+
+.destructive:not([aria-disabled='true']):not(:disabled):hover {
+  background-color: var(--colorStatusDangerBackground3Hover);
+  color: var(--colorNeutralForegroundOnBrand);
+}
+
+.destructive:not([aria-disabled='true']):not(:disabled):hover:active {
+  background-color: var(--colorStatusDangerBackground3Pressed);
+  color: var(--colorNeutralForegroundOnBrand);
+}

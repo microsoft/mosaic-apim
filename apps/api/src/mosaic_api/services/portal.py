@@ -14,7 +14,8 @@ Management's error text for a failed apply stays on the administrator routes, fo
 Grants and requests are named the way the catalog names the resource, and the names are resolved
 here rather than joined against the catalog in the browser: the catalog lists only the model APIs
 and MCP servers currently published to it, while a grant or a request can be for one an
-administrator has since made private, or for a product or model deployment, which it never lists.
+administrator has since made private or unpublished, or for a product or model deployment, which it
+never lists.
 """
 
 from mosaic_api.domain import (
@@ -179,11 +180,20 @@ class PortalService:
 
         A resource an administrator marked ``private`` is omitted entirely rather than shown as
         unavailable, because the point of hiding it is that end users do not know it exists.
+
+        A model API or MCP server MOSAIC publishes is omitted too while its API isn't in API
+        Management: before its first apply, after an unpublish, or once its publication is gone.
+        The catalog is what a person can ask for and then use, and until an administrator
+        publishes it again a request could never give them a working model. That matches how a
+        resource whose gateway was removed is left out. A caller who already holds a grant, or has
+        asked, still sees it on My access or My requests, marked as no longer available, and
+        publishing it again brings it back under the same ID with its grants and catalog settings.
         """
 
+        records = self._entitlements.governed_records(actor.tenant_id)
         entitled = {
             (str(item.entitlement.resource.kind), item.entitlement.resource.id)
-            for item in await self._resolved(actor)
+            for item in await self._resolved(actor, records=records)
         }
         # Only open requests describe the caller's current position. A denied or withdrawn request
         # from last month should not stop them asking again, so it is not surfaced as state here.
@@ -192,17 +202,14 @@ class PortalService:
             for item in await self._requests(actor)
             if item.state == AccessRequestState.PENDING
         }
-        gateways = {
-            gateway.id: gateway
-            for gateway in await self._gateways.list_gateways(actor.tenant_id)
-        }
+        gateways = await records.gateways()
 
         entries: list[CatalogEntry] = []
-        for model_api in await self._gateways.list_model_apis(actor.tenant_id):
+        for model_api in (await records.model_apis()).values():
             if model_api.visibility != CatalogVisibility.CATALOG:
                 continue
             gateway = gateways.get(model_api.gateway_id)
-            if gateway is None:
+            if gateway is None or not await records.model_api_offered(model_api):
                 continue
             entries.append(
                 CatalogEntry(
@@ -217,23 +224,17 @@ class PortalService:
                     request_state=open_requests.get(("modelApi", model_api.id)),
                 )
             )
-        for mcp_server in await self._gateways.list_mcp_servers(actor.tenant_id):
+        for mcp_server in (await records.mcp_servers()).values():
             if mcp_server.visibility != CatalogVisibility.CATALOG:
                 continue
             gateway = gateways.get(mcp_server.gateway_id)
-            if gateway is None:
+            if gateway is None or not await records.mcp_server_offered(mcp_server):
                 continue
             enforced = False
             if mcp_server.publication_id is not None:
-                publication = await self._gateways.get_mcp_publication(
-                    actor.tenant_id, mcp_server.publication_id
-                )
-                enforced = bool(
-                    publication
-                    and publication.mcp_server_id == mcp_server.id
-                    and publication.gateway_id == mcp_server.gateway_id
-                    and publication.api_name == mcp_server.api_name
-                    and publication.status == PublicationStatus.PUBLISHED
+                publication = (await records.mcp_publications())[mcp_server.publication_id]
+                enforced = (
+                    publication.status == PublicationStatus.PUBLISHED
                     and publication.access_state == "applied"
                 )
             entries.append(

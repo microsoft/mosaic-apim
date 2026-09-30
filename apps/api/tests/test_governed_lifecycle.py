@@ -17,7 +17,7 @@ from apim_double import (
     policy_expression_error,
 )
 from azure.core.credentials_async import AsyncTokenCredential
-from conftest import build_endpoint_service, build_gateway_service
+from conftest import build_endpoint_service, build_gateway_service, reviewed_unpublish
 from mosaic_api.domain import (
     BindingSource,
     CatalogEntryUpdate,
@@ -489,7 +489,7 @@ async def test_durable_lock_covers_other_instances_mutations_and_startup(harness
     with pytest.raises(ConflictError, match="already running"):
         await harness.grants.update_entitlement(ACTOR, grant.id, EntitlementUpdate(enabled=False))
     with pytest.raises(ConflictError, match="already running"):
-        await other.unpublish(ACTOR, harness.publication_id)
+        await other.plan_unpublish(ACTOR, harness.publication_id)
     assert await other.reap_stale_publish_runs(TENANT) == 0
     assert (await other.get_run(ACTOR, run.id)).status == PublishRunStatus.RUNNING
     await harness.service.wait_for_idle()
@@ -557,7 +557,7 @@ async def test_managed_objects_and_binding_cannot_be_forgotten(harness: Harness)
         await harness.service.delete(ACTOR, publication.id)
     with pytest.raises(ConflictError):
         await harness.gateway_service.delete(ACTOR, publication.gateway_id)
-    run = await harness.service.unpublish(ACTOR, publication.id)
+    run = await reviewed_unpublish(harness.service, ACTOR, publication.id)
     await harness.service.wait_for_idle()
     assert (await harness.service.get_run(ACTOR, run.id)).status == PublishRunStatus.SUCCEEDED
     grant = await harness.grants.get_entitlement(ACTOR, grant.id)

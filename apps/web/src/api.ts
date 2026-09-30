@@ -186,7 +186,10 @@ export interface MosaicApi {
   deletePublication(publicationId: string): Promise<void>
   createPublishPlan(publicationId: string): Promise<PublishPlan>
   applyPublishPlan(publicationId: string, planId: string): Promise<PublishRun>
-  unpublishPublication(publicationId: string): Promise<PublishRun>
+  /** Plans an unpublish for review: what it deletes and whose access it ends. Deletes nothing. */
+  planUnpublishPublication(publicationId: string): Promise<PublishPlan>
+  /** Runs the reviewed unpublish plan, which the service refuses once it no longer matches. */
+  unpublishPublication(publicationId: string, planId: string): Promise<PublishRun>
   listPublishRuns(publicationId: string): Promise<PublishRun[]>
   getPublishRun(publicationId: string, runId: string): Promise<PublishRun>
   diagnosePublicationRecovery(publicationId: string, runId: string): Promise<PublishRun>
@@ -198,7 +201,8 @@ export interface MosaicApi {
   deleteMcpPublication(publicationId: string): Promise<void>
   planMcpPublication(publicationId: string): Promise<PublishPlan>
   applyMcpPublication(publicationId: string, planId: string): Promise<PublishRun>
-  unpublishMcpPublication(publicationId: string): Promise<PublishRun>
+  planUnpublishMcpPublication(publicationId: string): Promise<PublishPlan>
+  unpublishMcpPublication(publicationId: string, planId: string): Promise<PublishRun>
   listMcpPublishRuns(publicationId: string): Promise<PublishRun[]>
   getMcpPublishRun(publicationId: string, runId: string): Promise<PublishRun>
   recoverMcpPublication(publicationId: string, payload: { runId: string; confirmQuiesced: boolean }): Promise<PublishRun>
@@ -473,8 +477,13 @@ export function useMosaicApi(): MosaicApi {
         request<PublishRun>(`/api/v1/publications/${id}/apply?plan=${encodeURIComponent(planId)}`, {
           method: 'POST',
         }),
-      unpublishPublication: (id) =>
-        request<PublishRun>(`/api/v1/publications/${id}/unpublish`, { method: 'POST' }),
+      unpublishPublication: (id, planId) =>
+        request<PublishRun>(
+          `/api/v1/publications/${id}/unpublish?plan=${encodeURIComponent(planId)}`,
+          { method: 'POST' },
+        ),
+      planUnpublishPublication: (id) =>
+        request<PublishPlan>(`/api/v1/publications/${id}/unpublish-plan`, { method: 'POST' }),
       listPublishRuns: (id) => request<PublishRun[]>(`/api/v1/publications/${id}/runs`),
       getPublishRun: (id, runId) =>
         request<PublishRun>(`/api/v1/publications/${id}/runs/${runId}`),
@@ -513,8 +522,13 @@ export function useMosaicApi(): MosaicApi {
           `/api/v1/mcp-publications/${encodeURIComponent(id)}/apply?plan=${encodeURIComponent(planId)}`,
           { method: 'POST' },
         ),
-      unpublishMcpPublication: (id) =>
-        request<PublishRun>(`/api/v1/mcp-publications/${encodeURIComponent(id)}/unpublish`, {
+      unpublishMcpPublication: (id, planId) =>
+        request<PublishRun>(
+          `/api/v1/mcp-publications/${encodeURIComponent(id)}/unpublish?plan=${encodeURIComponent(planId)}`,
+          { method: 'POST' },
+        ),
+      planUnpublishMcpPublication: (id) =>
+        request<PublishPlan>(`/api/v1/mcp-publications/${encodeURIComponent(id)}/unpublish-plan`, {
           method: 'POST',
         }),
       listMcpPublishRuns: (id) =>

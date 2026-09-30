@@ -277,10 +277,41 @@ def test_unpublish_removes_what_was_published(publishing_client: TestClient) -> 
     blocked = publishing_client.delete(f"/api/v1/publications/{publication_id}")
     assert blocked.status_code == 409
 
-    removed = publishing_client.post(f"/api/v1/publications/{publication_id}/unpublish")
+    unreviewed = publishing_client.post(f"/api/v1/publications/{publication_id}/unpublish")
+    assert unreviewed.status_code == 409
+    assert unreviewed.json()["details"]["reason"] == "planRequired"
+    publish_plan = publishing_client.post(
+        f"/api/v1/publications/{publication_id}/unpublish", params={"plan": plan["id"]}
+    )
+    assert publish_plan.status_code == 404
+    assert not publishing_client.fake_apim.write_paths("DELETE")  # type: ignore[attr-defined]
+
+    review = publishing_client.post(f"/api/v1/publications/{publication_id}/unpublish-plan")
+    assert review.status_code == 200, review.text
+    unpublish_plan = review.json()
+    assert unpublish_plan["operation"] == "unpublish"
+    assert {step["action"] for step in unpublish_plan["steps"]} == {"delete"}
+    refused = publishing_client.post(
+        f"/api/v1/publications/{publication_id}/apply", params={"plan": unpublish_plan["id"]}
+    )
+    assert refused.status_code == 409
+
+    removed = publishing_client.post(
+        f"/api/v1/publications/{publication_id}/unpublish", params={"plan": unpublish_plan["id"]}
+    )
     assert removed.status_code == 202
     run = _await_run(publishing_client, publication_id, removed.json()["id"])
     assert run["status"] == "succeeded"
+    assert run["planId"] == unpublish_plan["id"]
+    unpublished = publishing_client.get(f"/api/v1/publications/{publication_id}").json()
+    assert unpublished["status"] == "draft"
+    assert unpublished["unpublishedAt"] is not None
+
+    again = publishing_client.post(
+        f"/api/v1/publications/{publication_id}/unpublish", params={"plan": unpublish_plan["id"]}
+    )
+    assert again.status_code == 409
+    assert again.json()["details"]["reason"] == "stalePlan"
 
     deleted = publishing_client.delete(f"/api/v1/publications/{publication_id}")
     assert deleted.status_code == 204

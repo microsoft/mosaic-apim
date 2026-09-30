@@ -252,6 +252,13 @@ class PortalAccessService:
             or publication.api_name != model_api.api_name
         ):
             raise ConflictError("The publication binding changed; re-plan model access")
+        if not publication.has_applied_api():
+            # Unpublished: the gateway no longer serves the endpoint these details would describe.
+            raise ConflictError(
+                "This model isn't published in API Management right now, so there's nothing to "
+                "connect to",
+                details={"reason": "notPublished"},
+            )
         gateway = await self._gateways.get_gateway(actor.tenant_id, publication.gateway_id)
         if gateway is None:
             raise ConflictError("The publication's gateway is no longer registered")
@@ -370,6 +377,13 @@ class PortalAccessService:
         publication = await entitlement_mcp_publication(self._gateways, entitlement)
         if server.publication_id is not None and publication is None:
             raise ConflictError("The publication binding changed; re-plan MCP access")
+        if publication is not None and not publication.has_applied_api():
+            # Never applied, or unpublished: there's no MCP API at the URL these details would give.
+            raise ConflictError(
+                "This MCP server isn't published in API Management right now, so there's nothing "
+                "to connect to",
+                details={"reason": "notPublished"},
+            )
         gateway = await self._gateways.get_gateway(actor.tenant_id, server.gateway_id)
         if gateway is None:
             raise ConflictError("The MCP server's gateway is no longer registered")

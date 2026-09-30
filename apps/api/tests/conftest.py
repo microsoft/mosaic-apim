@@ -10,7 +10,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from mcp_double import FakeMcpServer, build_http_client
 from mosaic_api.config import AuthMode, Environment, RepositoryBackend, Settings
-from mosaic_api.domain import ApimResourceId
+from mosaic_api.domain import ApimResourceId, PublishRun
 from mosaic_api.integrations.aoai import CognitiveServicesClient
 from mosaic_api.integrations.aoai.client import SubscriptionScanner
 from mosaic_api.integrations.apim import ApimClient, ApimWriter, ArmClient
@@ -30,6 +30,7 @@ from mosaic_api.services import (
     ModelEndpointService,
     PublishingService,
 )
+from mosaic_api.services.directory import Actor
 from mosaic_api.services.mcp_endpoints import build_mcp_client_factory
 from mosaic_api.services.mcp_publishing import McpPublishingService
 
@@ -238,6 +239,15 @@ def build_mcp_publishing_service(
         runtime_client_id=runtime_client_id,
         security_group_claims=security_group_claims,
     )
+
+
+async def reviewed_unpublish(
+    service: PublishingService | McpPublishingService, actor: Actor, publication_id: str
+) -> PublishRun:
+    """Unpublish the way the console does: plan the unpublish, then run exactly that plan."""
+
+    plan = await service.plan_unpublish(actor, publication_id)
+    return await service.unpublish(actor, publication_id, plan.id)
 
 
 @pytest.fixture

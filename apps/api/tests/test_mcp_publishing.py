@@ -5,6 +5,7 @@ from conftest import (
     build_mcp_publishing_service,
     build_mcp_service,
     build_publishing_service,
+    reviewed_unpublish,
 )
 from mcp_double import FakeMcpServer
 from mosaic_api.domain import (
@@ -575,7 +576,7 @@ async def test_endpoint_delete_refuses_a_published_server_until_it_is_unpublishe
     assert [item["id"] for item in refused.value.details["publications"]] == [publication_id]
     assert await harness.mcp_repository.get_endpoint(TENANT_ID, harness.endpoint_id) is not None
 
-    await harness.service.unpublish(ACTOR, publication_id)
+    await reviewed_unpublish(harness.service, ACTOR, publication_id)
     await harness.service.wait_for_idle()
     await endpoints.delete(ACTOR, harness.endpoint_id)
 
@@ -983,7 +984,7 @@ async def test_unpublish_deletes_in_fail_closed_order(harness: Harness) -> None:
     harness.apim.writes.clear()
     harness.apim.http_calls.clear()
 
-    unpublished = await harness.service.unpublish(ACTOR, publication_id)
+    unpublished = await reviewed_unpublish(harness.service, ACTOR, publication_id)
     await harness.service.wait_for_idle()
 
     completed = await harness.service.get_run(ACTOR, publication_id, unpublished.id)
@@ -1026,7 +1027,7 @@ async def test_unpublish_failure_leaves_denied_failed_state(harness: Harness) ->
     await harness.service.wait_for_idle()
     harness.apim.fail_delete("policyFragments/mosaic-mcp-orders-mcp")
 
-    unpublished = await harness.service.unpublish(ACTOR, publication_id)
+    unpublished = await reviewed_unpublish(harness.service, ACTOR, publication_id)
     await harness.service.wait_for_idle()
 
     completed = await harness.service.get_run(ACTOR, publication_id, unpublished.id)

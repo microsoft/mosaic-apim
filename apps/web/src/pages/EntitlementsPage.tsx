@@ -50,6 +50,7 @@ import {
 } from '../entitlement-limits'
 import { entitlementResourceEnvironment } from '../entitlement-environment'
 import { environmentLabel, useEnvironmentCatalog } from '../environments'
+import { holdsApi } from '../publication-state'
 import { runtimeConfig } from '../runtime-config'
 import {
   ENTITLEMENT_SUBJECT_KIND_LABELS,
@@ -361,8 +362,11 @@ export function EntitlementsPage() {
     onSuccess: (result) => setReview(result),
   })
 
+  // Models whose API is in API Management, even if their latest apply failed. An unpublished one
+  // isn't offered: reviewing its access would publish it again.
   const publishedModels = (publications.data ?? []).filter(
-    (publication) => publication.status === 'published' || Boolean(publication.lastAppliedAt),
+    (publication) =>
+      publication.status === 'published' || (Boolean(publication.lastAppliedAt) && holdsApi(publication)),
   )
   const selectedPublication = publishedModels.find((publication) => publication.id === selectedPublicationId)
 

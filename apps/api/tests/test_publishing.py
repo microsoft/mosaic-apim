@@ -8,7 +8,12 @@ mocked.
 import pytest
 from aoai_double import AI_RESOURCE_ID, FakeCognitiveServices
 from apim_double import CONTRIBUTOR_PERMISSIONS, RESOURCE_ID, FakeApim
-from conftest import build_endpoint_service, build_gateway_service, build_publishing_service
+from conftest import (
+    build_endpoint_service,
+    build_gateway_service,
+    build_publishing_service,
+    reviewed_unpublish,
+)
 from mosaic_api.domain import (
     ApiShape,
     DeploymentCapability,
@@ -274,7 +279,7 @@ async def test_applying_twice_keeps_ownership_and_unpublish_removes_all(
     assert all(item.created_by_mosaic for item in publication.resources)
     harness.apim.writes.clear()
 
-    run_started = await harness.service.unpublish(ACTOR, publication_id)
+    run_started = await reviewed_unpublish(harness.service, ACTOR, publication_id)
     await harness.service.wait_for_idle()
     run = await harness.service.get_run(ACTOR, run_started.id)
 
@@ -710,7 +715,7 @@ async def test_unpublish_removes_only_tracked_resources_in_reverse(harness: Harn
     await harness.apply(publication_id)
     harness.apim.writes.clear()
 
-    run_started = await harness.service.unpublish(ACTOR, publication_id)
+    run_started = await reviewed_unpublish(harness.service, ACTOR, publication_id)
     await harness.service.wait_for_idle()
     run = await harness.service.get_run(ACTOR, run_started.id)
 
@@ -731,7 +736,7 @@ async def test_unpublish_removes_the_fragment_before_the_backend_it_routes_to(
     await harness.apply(publication_id)
     harness.apim.writes.clear()
 
-    run_started = await harness.service.unpublish(ACTOR, publication_id)
+    run_started = await reviewed_unpublish(harness.service, ACTOR, publication_id)
     await harness.service.wait_for_idle()
     run = await harness.service.get_run(ACTOR, run_started.id)
 
@@ -794,7 +799,7 @@ async def test_subscription_record_survives_when_subscription_requirement_is_rem
     )
     harness.apim.writes.clear()
 
-    run_started = await harness.service.unpublish(ACTOR, publication_id)
+    run_started = await reviewed_unpublish(harness.service, ACTOR, publication_id)
     await harness.service.wait_for_idle()
     run = await harness.service.get_run(ACTOR, run_started.id)
 

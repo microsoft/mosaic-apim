@@ -528,6 +528,40 @@ async def test_adopted_mcp_connection_is_recorded_not_enforced(
     assert "imported from the gateway" in connection.status_message
 
 
+@pytest.mark.parametrize("state", ["unpublished", "never-applied"])
+async def test_an_mcp_server_without_its_api_offers_no_connection_details(
+    harness: Harness, state: str
+) -> None:
+    principal = await harness.principal(USER_OID)
+    entitlement = await harness.grant(principal)
+    if state == "unpublished":
+        await harness.apply_grant(
+            entitlement, principal, status=PublicationStatus.DRAFT, resources=[]
+        )
+    else:
+        harness.publication = harness.publication.model_copy(
+            update={
+                "status": PublicationStatus.DRAFT,
+                "access_state": "pending",
+                "resources": [],
+            }
+        )
+        await harness.gateways.save_mcp_publication(harness.publication, _audit())
+
+    for administrator in (False, True):
+        with pytest.raises(ConflictError) as refused:
+            await harness.portal.mcp_connection(
+                Actor(object_id=USER_OID, tenant_id=TENANT),
+                entitlement.id,
+                administrator=administrator,
+            )
+        assert refused.value.message == (
+            "This MCP server isn't published in API Management right now, so there's nothing to "
+            "connect to"
+        )
+        assert refused.value.details["reason"] == "notPublished"
+
+
 async def test_mcp_connection_access_rules_and_resource_mismatches(
     harness: Harness,
 ) -> None:

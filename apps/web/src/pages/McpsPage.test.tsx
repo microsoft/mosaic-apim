@@ -143,6 +143,38 @@ const mcpPlan: PublishPlan = {
   updatedAt: '2026-09-01T12:00:00Z',
 }
 
+const mcpUnpublishPlan: PublishPlan = {
+  ...mcpPlan,
+  id: 'mcp_unpublish_plan',
+  operation: 'unpublish',
+  steps: [
+    {
+      kind: 'api',
+      name: 'mosaic-mcp-contoso-tools',
+      action: 'delete',
+      reason: 'Delete the MCP API. The gateway stops serving the server.',
+      resourceId: '/apis/mosaic-mcp-contoso-tools',
+      existed: true,
+    },
+  ],
+  warnings: ["Before it deletes anything, MOSAIC replaces the MCP API's policy with one that refuses every call, so callers are cut off first."],
+  mcpAccessSnapshot: {
+    version: 2,
+    audience: 'runtime-client-id',
+    delegatedScope: 'Mcp.Invoke',
+    applicationRole: 'Mcp.Invoke.Application',
+    grants: [{
+      entitlementId: 'mcp_grant_1',
+      subject: { kind: 'user', id: 'principal_1' },
+      objectId: 'user-object-1',
+      displayName: 'Megan Bowen',
+      enabled: true,
+      enforcement: null,
+      intentDigest: 'digest',
+    }],
+  },
+}
+
 const mcpRun: PublishRun = {
   id: 'mcp_run_2',
   tenantId: 'tenant-test',
@@ -246,7 +278,9 @@ const api = {
   listGateways: vi.fn(),
   listMcpPublications: vi.fn(),
   planMcpPublication: vi.fn(),
+  planUnpublishMcpPublication: vi.fn(),
   unpublishMcpPublication: vi.fn(),
+  listPrincipals: vi.fn(),
   deleteMcpPublication: vi.fn(),
   getMcpPublicationLock: vi.fn(),
   recoverMcpPublication: vi.fn(),
@@ -322,7 +356,9 @@ describe('McpsPage', () => {
     api.listMcpPublications.mockResolvedValue([])
     api.getMcpPublishingCapability.mockResolvedValue({ gatewayId: 'gateway_1', supported: true, reasons: [], warnings: [] })
     api.planMcpPublication.mockResolvedValue(mcpPlan)
+    api.planUnpublishMcpPublication.mockResolvedValue(mcpUnpublishPlan)
     api.unpublishMcpPublication.mockResolvedValue(mcpRun)
+    api.listPrincipals.mockResolvedValue([])
     api.deleteMcpPublication.mockResolvedValue(undefined)
     api.getMcpPublicationLock.mockResolvedValue({ publicationId: 'mcp_pub_1', ownerId: null })
     api.recoverMcpPublication.mockResolvedValue(mcpRun)
@@ -404,7 +440,7 @@ describe('McpsPage', () => {
     expect(await screen.findByRole('table', { name: 'MCP publish plan steps' })).toBeVisible()
   })
 
-  it('confirms unpublish before calling the service', async () => {
+  it('reviews what unpublishing removes and who loses access before it unpublishes', async () => {
     const user = userEvent.setup()
     api.listMcpPublications.mockResolvedValue([mcpPublication])
 
@@ -412,11 +448,57 @@ describe('McpsPage', () => {
     const table = await screen.findByRole('table', { name: 'Published MCP servers' })
     await user.click(within(table).getByRole('button', { name: 'Unpublish' }))
 
-    expect(await screen.findByText(/The gateway will deny calls before the server is removed/)).toBeVisible()
+    const dialog = await screen.findByRole('alertdialog', { name: 'Unpublish Contoso tools?' })
+    expect(await within(dialog).findByText('1 grant loses access. The gateway refuses its Entra tokens.')).toBeVisible()
+    expect(within(dialog).getByText('Megan Bowen')).toBeVisible()
+    expect(within(dialog).getByRole('table', { name: 'Unpublish plan steps' })).toHaveTextContent(
+      'Delete the MCP API. The gateway stops serving the server.',
+    )
+    expect(api.planUnpublishMcpPublication).toHaveBeenCalledWith('mcp_pub_1')
     expect(api.unpublishMcpPublication).not.toHaveBeenCalled()
-    const dialog = screen.getByRole('dialog')
-    await user.click(within(dialog).getByRole('button', { name: 'Unpublish' }))
-    await waitFor(() => expect(api.unpublishMcpPublication).toHaveBeenCalledWith('mcp_pub_1'))
+    // Fluent returns focus to the button that opened the dialog when it closes.
+    expect(within(table).getByRole('button', { name: 'Unpublish', hidden: true })).toHaveAttribute(
+      'data-tabster',
+      expect.stringContaining('restorer'),
+    )
+
+    await user.click(within(dialog).getByRole('button', { name: 'Unpublish MCP server' }))
+
+    await waitFor(() => expect(api.unpublishMcpPublication).toHaveBeenCalledWith('mcp_pub_1', 'mcp_unpublish_plan'))
+    expect(api.unpublishMcpPublication).toHaveBeenCalledTimes(1)
+  })
+
+  it('shows an unpublished MCP server as unpublished, with when and without an access state', async () => {
+    const unpublishedAt = '2026-09-30T11:20:00Z'
+    api.listMcpPublications.mockResolvedValue([
+      { ...mcpPublication, status: 'draft', resources: [], unpublishedAt },
+    ])
+
+    renderPage()
+
+    const table = await screen.findByRole('table', { name: 'Published MCP servers' })
+    expect(within(table).getByText('Unpublished')).toBeVisible()
+    expect(within(table).getByText(`Unpublished ${new Date(unpublishedAt).toLocaleString()}`)).toBeVisible()
+    expect(within(table).queryByText('Access applied')).not.toBeInTheDocument()
+    expect(within(table).queryByText('Draft')).not.toBeInTheDocument()
+    expect(within(table).getByRole('button', { name: 'Plan and apply' })).toBeEnabled()
+  })
+
+  it('says a server MOSAIC publishes is hidden from the portal while it is not published', async () => {
+    api.listMcpServers.mockResolvedValue([
+      { ...mcpServer, publicationId: 'mcp_pub_1' },
+      { ...mcpServer, id: 'mcpServer_2', displayName: 'Orders MCP', publicationId: null },
+    ])
+    api.listMcpPublications.mockResolvedValue([{ ...mcpPublication, status: 'draft', resources: [] }])
+
+    renderPage()
+
+    const table = await screen.findByRole('table', { name: 'Imported MCP servers' })
+    const [, published, imported] = within(table).getAllByRole('row')
+    expect(
+      await within(published).findByText("Hidden from the portal catalog while it isn't published."),
+    ).toBeVisible()
+    expect(within(imported).queryByText(/Hidden from the portal catalog/)).not.toBeInTheDocument()
   })
 
   it('marks MOSAIC-published imported rows and points deletion to the publication', async () => {
