@@ -671,7 +671,7 @@ Progress:
     allows only chat completions on these publications, so their embeddings and model-info
     operations are denied by design.
 
-### Phase 8: Runtime verification (R1 to R8, A14) 🔄 R3 and R4's additions pass; the rest runs at the owner's sitting
+### Phase 8: Runtime verification (R1 to R8, A14) 🔄 R3 and R4's additions pass, and part of R8; the rest runs at the owner's sitting
 
 `scripts/verify_model_access.py` now covers this phase, with unit tests against a fake gateway
 that applies the governed policy. It reads each grant's connection details from MOSAIC, calls the
@@ -753,6 +753,18 @@ Progress:
   R3 passed again on the new build, and every governed model answered its grant's key.
   [#62](https://github.com/microsoft/mosaic-apim/pull/62), merged after the approval, needs its
   own, because it adds a trace to every governed policy.
+- ✅ **Batch 3f**, 2026-09-30: the environment now runs main as of #66, which adds #62 and
+  [#65](https://github.com/microsoft/mosaic-apim/pull/65) (O33, O34) to Batch 3e. The seven
+  governed models were re-planned and applied again for #62's trace, with the same step counts,
+  and again only their policy fragments changed. R3 passed, and every governed model answered its
+  grant's key.
+- 🔄 **R8**: every call so far shows up in the gateway's resource logs in Log Analytics, with its
+  status: the models' 200s, and R3's refusals, with `validate-azure-ad-token` as the reason for
+  the two bad tokens. Application Insights has each model's token counts, by deployment and
+  publication. Since Batch 3f, each authorized call to a governed model also writes one trace,
+  `mosaic-attribution v=1`, that names its grant by a stable hash, both in Application Insights
+  and in the resource logs. Refused calls and calls to publications without governed access
+  write none. The 429s wait for R5's and R6's runs.
 
 The sitting runs, in order: Claude's import, publication and grant; R1, R2 and R4's cross-subject
 checks in one run, with an `outsider` as the ungranted user; R5's proof; R6's proof; A14's method
@@ -800,7 +812,12 @@ policy expression that API Management hasn't compiled yet.
   product. **Re-plan** on the publication, now a draft, planned 14 creates. Applying them
   restored every resource with the same content, except the new subscriptions' keys, and the
   model answered its bootstrap key. Unpublishing took one click, with no confirmation or plan
-  (O33), and the portal kept offering the model while it was unpublished (O34).
+  (O33), and the portal kept offering the model while it was unpublished (O34). A15 ran again on
+  the Batch 3f build, which has the fix for both. **Unpublish** opened a review listing the same
+  resources, deleted in order, and said that without governed access MOSAIC can't list who calls
+  the model. Only **Unpublish model** ran it. The publication then showed as **Unpublished**, with
+  when, and the portal's catalog left the model out. A request from a catalog page loaded before
+  the unpublish was refused, with the reason. **Re-plan** and **Apply plan** published it again.
 - Roll back test-only tenant changes from the ledger. Imported and published models stay, since
   they're the goal.
 
@@ -867,7 +884,7 @@ has passed, and ❌ means the latest run failed on the product gap named.
 | R5 | A shared budget of 2 calls per 300 seconds, spent by primary key and token, returns 429 for the secondary key | 8 | ⬜ |
 | R6 | The tokens-per-minute limit returns 429 with `Retry-After` | 8 | ⬜ |
 | R7 | After revocation propagates, calls fail | 8 | ⬜ |
-| R8 | Calls show up in Application Insights and Log Analytics (optional) | 8 | ⬜ |
+| R8 | Calls show up in Application Insights and Log Analytics (optional) | 8 | 🔄 |
 
 ## Findings
 
@@ -908,8 +925,8 @@ be confirmed, or fixed, once the journeys that exercise them have run.
 | O30 | The console's **Pending access requests** table lists each requester by object ID, even one MOSAIC has registered with a label. **Approve** and the banner after it look the requester up and show the label. Seen in P5 | Fixed in [#58](https://github.com/microsoft/mosaic-apim/pull/58), and deployed with Batch 3e. The table uses Approve's lookup and shows a registered requester's label, with the object ID beneath. Unregistered requesters still need O17's fix. Not seen live yet, as no request is pending. Added to [#45](https://github.com/microsoft/mosaic-apim/issues/45#issuecomment-5902625270) |
 | O31 | In the console's **Pending access requests** table, **Approve** and **Deny** stick out about 15 pixels past the table's right edge at 1280 pixels wide. Found in #58's width checks on the demo estate | Fixed in [#60](https://github.com/microsoft/mosaic-apim/pull/60), and deployed with Batch 3e. The table sits in a two-thirds-width card, so at 1280 pixels its Actions column is narrower than a medium button's minimum width. Both buttons are now small, as on Settings → Environments, and stay inside their cell at 1280, 1440 and 1920 pixels, in both themes, without taking width from the other columns. Between 1080 pixels, where the cards stack, and about 1150 pixels, the buttons still pass their cell's edge. The environment badges beside them overflow their columns at those widths, and by about 7 pixels at 1280, as they did before. Not seen live yet, as no request is pending |
 | O32 | **Approve access request** shows the requester's object ID twice when the matching principal has no label and its recorded object ID differs in letter case from the request's, because the dialog compares the two case-sensitively. Found in #58's review | Fixed in [#60](https://github.com/microsoft/mosaic-apim/pull/60), and deployed with Batch 3e. With no label, or a blank one, the dialog names the requester by the object ID the request recorded, and compares label and ID without regard to letter case, so the ID appears once. Not seen live yet, as no request is pending |
-| O33 | **Unpublish** in the Models page's Published models table acts at once, with no confirmation and no plan to review, though the page's design is that the administrator sees every plan before it runs. In A15, one click removed the publication's API, product, backend, policy fragment and bootstrap subscription. On a governed publication, the same click also removes every grant's subscription, so every grantee loses access. MCP servers unpublish the same way | Fixed in [#65](https://github.com/microsoft/mosaic-apim/pull/65), not yet deployed. **Unpublish** now asks MOSAIC for an unpublish plan, which deletes nothing, and opens it in a review: who loses access and what stops working for each grant, and every resource MOSAIC deletes, in order. Only the review's **Unpublish model** runs it. MOSAIC runs exactly the reviewed steps, and refuses a plan the publication has since outgrown, or an unpublish with no plan. MCP servers work the same way. A15 runs again once it's deployed |
-| O34 | After unpublishing, the publication shows **Draft** with its old **Last applied** time. Its entry under **Imported model APIs** stays discoverable, and the portal's catalog still lists the model with **Request access**, though the gateway no longer serves it. Seen in A15 | Fixed in [#65](https://github.com/microsoft/mosaic-apim/pull/65), not yet deployed. While a model or MCP server MOSAIC publishes has no API in API Management, the portal leaves it out of the catalog, refuses a new request for it with a `409`, marks grants and requests for it as no longer available, and gives no connection details for it. The console shows the publication as **Unpublished**, with when. Model APIs imported from a gateway are unaffected |
+| O33 | **Unpublish** in the Models page's Published models table acts at once, with no confirmation and no plan to review, though the page's design is that the administrator sees every plan before it runs. In A15, one click removed the publication's API, product, backend, policy fragment and bootstrap subscription. On a governed publication, the same click also removes every grant's subscription, so every grantee loses access. MCP servers unpublish the same way | Fixed in [#65](https://github.com/microsoft/mosaic-apim/pull/65), and deployed with Batch 3f. **Unpublish** now asks MOSAIC for an unpublish plan, which deletes nothing, and opens it in a review: who loses access and what stops working for each grant, and every resource MOSAIC deletes, in order. Only the review's **Unpublish model** runs it. MOSAIC runs exactly the reviewed steps, and refuses a plan the publication has since outgrown, or an unpublish with no plan. MCP servers work the same way. Seen live in A15's rerun |
+| O34 | After unpublishing, the publication shows **Draft** with its old **Last applied** time. Its entry under **Imported model APIs** stays discoverable, and the portal's catalog still lists the model with **Request access**, though the gateway no longer serves it. Seen in A15 | Fixed in [#65](https://github.com/microsoft/mosaic-apim/pull/65), and deployed with Batch 3f. While a model or MCP server MOSAIC publishes has no API in API Management, the portal leaves it out of the catalog, refuses a new request for it with a `409`, marks grants and requests for it as no longer available, and gives no connection details for it. The console shows the publication as **Unpublished**, with when. Model APIs imported from a gateway are unaffected. Seen live in A15's rerun: the catalog dropped the model, and a request from a page loaded earlier got the reason |
 | O35 | With directory lookup turned off, **Overlapping grants** warns that principal membership overlaps weren't checked, and the warning ends in two periods: the console adds one after the API's reason, which already ends with one. Seen after Batch 3e | Add the period only when the reason lacks one. Cosmetic |
 The Phase 3 check on whether the gateway role recommendation narrows once the account kind is
 known led to G8: it does narrow, and the check then rejects the broader role it recommended
