@@ -711,6 +711,19 @@ class TestDeclaredDeployments:
         )
         assert removed.declared_deployments == []
 
+    async def test_a_check_that_raced_a_declaration_keeps_it(self, world: KeyWorld) -> None:
+        endpoint = await world.register(deployments=[])
+        # A check computed from the record as it was before the administrator declared one.
+        stale = await world.service._apply_preflight(endpoint)
+        await world.service.declare_deployment(ACTOR, endpoint.id, CLAUDE)
+
+        recorded = await world.endpoint_repository.record_endpoint_state(stale)
+
+        assert recorded is not None
+        assert [item.deployment_name for item in recorded.declared_deployments] == [
+            "claude-sonnet-4-5"
+        ]
+
     async def test_a_declaration_is_made_once(self, world: KeyWorld) -> None:
         endpoint = await world.register()
         with pytest.raises(ConflictError, match="already declared"):
