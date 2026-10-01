@@ -30,6 +30,7 @@ from mosaic_api.domain import (
     TokenEnforcement,
     deterministic_id,
     entitlement_id,
+    general_cost_center_id,
     new_id,
 )
 from mosaic_api.errors import ConflictError
@@ -141,7 +142,12 @@ def _principal_id(object_id: str = REQUESTER) -> str:
 
 
 def _grant_id(principal_id: str, kind: str = "user") -> str:
-    return entitlement_id(TENANT, EntitlementSubject(kind=kind, id=principal_id), RESOURCE)
+    return entitlement_id(
+        TENANT,
+        EntitlementSubject(kind=kind, id=principal_id),
+        RESOURCE,
+        general_cost_center_id(TENANT),
+    )
 
 
 def _audit_actions(client: TestClient, action: str) -> list[AuditEvent]:
@@ -202,13 +208,18 @@ async def test_approval_creates_the_grant_intent_and_links_it(client: TestClient
 
     [grant_audit] = _audit_actions(client, "entitlement.created")
     assert grant_audit.resource_id == grant_id
-    assert grant_audit.details == {"accessRequestId": created.id}
+    assert grant_audit.details == {
+        "accessRequestId": created.id,
+        "costCenterId": general_cost_center_id(TENANT),
+    }
     [approval_audit] = _audit_actions(client, "accessRequest.approved")
     assert approval_audit.resource_id == created.id
     assert approval_audit.details == {
         "grantedEntitlementId": grant_id,
         "principalId": principal_id,
         "principalCreated": True,
+        "costCenterId": general_cost_center_id(TENANT),
+        "requestedCostCenterId": general_cost_center_id(TENANT),
     }
 
 
@@ -331,7 +342,11 @@ async def test_approval_refuses_to_shadow_an_existing_grant(client: TestClient) 
 
     assert response.status_code == 409, response.text
     assert "already has a direct grant" in response.json()["message"]
-    assert response.json()["details"] == {"entitlementId": existing["id"], "enabled": False}
+    assert response.json()["details"] == {
+        "entitlementId": existing["id"],
+        "enabled": False,
+        "costCenterId": general_cost_center_id(TENANT),
+    }
     pending = _stored(client, created.id)
     assert pending.state == AccessRequestState.PENDING
     assert pending.granted_entitlement_id is None

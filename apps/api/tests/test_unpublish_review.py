@@ -299,6 +299,7 @@ async def test_a_governed_unpublish_plan_says_who_loses_access(
     application = await governed.grant(APPLICATION, application=True)
     await governed.govern()
     assert (await governed.apply()).status == PublishRunStatus.SUCCEEDED
+    await governed.key(user, application)
 
     review = await governed.service.plan_unpublish(GOVERNED_ACTOR, governed.publication_id)
 

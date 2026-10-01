@@ -24,6 +24,11 @@ import {
   withResourceKind,
 } from '../entitlement-format'
 import { usePortalEnvironments } from '../environments'
+import type { ResolvedEntitlement } from '../types'
+
+function costCenterText(resolved: ResolvedEntitlement) {
+  return resolved.costCenter ? `${resolved.costCenter.name} · ${resolved.costCenter.code}` : 'Default cost center'
+}
 
 export function MyAccessPage() {
   const api = usePortalApi()
@@ -32,7 +37,14 @@ export function MyAccessPage() {
     queryKey: ['portal', 'entitlements'],
     queryFn: api.listEntitlements,
   })
-  const visibleEntitlements = entitlements.data?.filter((resolved) => resolved.effective !== false) ?? []
+  const visibleEntitlements =
+    entitlements.data
+      ?.filter((resolved) => resolved.effective !== false)
+      .sort((a, b) => {
+        const nameA = resourceTitle(a.entitlement.resource, a.resourceDisplayName, a.resourceSummary)
+        const nameB = resourceTitle(b.entitlement.resource, b.resourceDisplayName, b.resourceSummary)
+        return nameA.localeCompare(nameB) || costCenterText(a).localeCompare(costCenterText(b))
+      }) ?? []
   const environments = usePortalEnvironments()
 
   return (
@@ -89,6 +101,7 @@ export function MyAccessPage() {
                 action={<Badge className="card-header-badge" appearance={resolved.entitlement.runtime?.status === 'applied' ? 'filled' : 'tint'}>{describeRuntime(resolved.entitlement)}</Badge>}
               />
               <div className="badge-row">
+                <Badge appearance="tint">{costCenterText(resolved)}</Badge>
                 <EnvironmentBadge environment={resolved.resourceSummary?.environment ?? null} environments={environments.data} />
               </div>
               <div className="access-card-grid">

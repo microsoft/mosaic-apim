@@ -18,6 +18,9 @@ import type {
   ApiErrorBody,
   CatalogVisibility,
   ConsoleAccess,
+  CostCenter,
+  CostCenterLimit,
+  CostCenterSettings,
   DeclaredDeploymentInput,
   DirectoryMemberPage,
   DirectoryObject,
@@ -40,6 +43,7 @@ import type {
   EnvironmentUpdate,
   ExportView,
   GrantOverlapReport,
+  GrantKey,
   Gateway,
   GatewayPolicyView,
   GatewayRuntimeAccess,
@@ -175,16 +179,37 @@ export interface MosaicApi {
   listEnvironmentSuggestions(): Promise<EnvironmentSuggestionList>
   assignEnvironments(payload: EnvironmentAssignmentRequest): Promise<EnvironmentAssignmentResult>
   listEnvironmentFindings(gatewayId?: string): Promise<EnvironmentFindingList>
+  listCostCenters(): Promise<CostCenter[]>
+  createCostCenter(payload: {
+    name: string
+    code: string
+    description?: string | null
+    owners?: string[]
+    keysAllowed?: boolean
+  }): Promise<CostCenter>
+  getCostCenter(costCenterId: string): Promise<CostCenter>
+  updateCostCenter(
+    costCenterId: string,
+    payload: Partial<Pick<CostCenter, 'name' | 'code' | 'description' | 'owners' | 'keysAllowed'>>,
+  ): Promise<CostCenter>
+  deleteCostCenter(costCenterId: string): Promise<void>
+  addCostCenterMember(costCenterId: string, principalId: string): Promise<CostCenter>
+  removeCostCenterMember(costCenterId: string, principalId: string): Promise<CostCenter>
+  updateCostCenterLimits(costCenterId: string, limits: CostCenterLimit[]): Promise<CostCenter>
+  recheckCostCenter(costCenterId: string): Promise<CostCenter>
+  getCostCenterSettings(): Promise<CostCenterSettings>
+  updateCostCenterSettings(payload: { defaultCostCenterId: string }): Promise<CostCenterSettings>
   listPrincipals(): Promise<Principal[]>
   createPrincipal(payload: {
     objectId: string
     kind: PrincipalKind
     label?: string
     identityParentId?: string
+    defaultCostCenterId?: string | null
   }): Promise<Principal>
   updatePrincipal(
     principalId: string,
-    payload: { kind?: PrincipalKind; label?: string | null },
+    payload: { kind?: PrincipalKind; label?: string | null; defaultCostCenterId?: string | null },
   ): Promise<Principal>
   deletePrincipal(principalId: string): Promise<void>
   listGroups(): Promise<Group[]>
@@ -305,10 +330,11 @@ export interface MosaicApi {
     mcpServerId: string,
     payload: { visibility?: CatalogVisibility; summary?: string | null },
   ): Promise<McpServer>
-  listEntitlements(filters?: { subject?: string; resource?: string }): Promise<Entitlement[]>
+  listEntitlements(filters?: { subject?: string; resource?: string; costCenter?: string }): Promise<Entitlement[]>
   createEntitlement(payload: {
     subject: EntitlementSubject
     resource: EntitlementResource
+    costCenterId?: string
     enabled?: boolean
     enforcement?: EntitlementEnforcement | null
     binding?: EntitlementBinding | null
@@ -326,6 +352,9 @@ export interface MosaicApi {
   deleteEntitlement(entitlementId: string): Promise<void>
   getEntitlementConnection(entitlementId: string): Promise<ModelConnection>
   getMcpConnection(entitlementId: string): Promise<McpConnection>
+  createEntitlementKey(entitlementId: string): Promise<GrantKey>
+  rotateEntitlementKey(entitlementId: string, slot: KeySlot): Promise<GrantKey>
+  deleteEntitlementKey(entitlementId: string): Promise<GrantKey>
   revealEntitlementKey(entitlementId: string, slot: KeySlot, signal?: AbortSignal): Promise<KeyRevealResult>
   listMyEntitlements(): Promise<Entitlement[]>
   getMyEntitlementConnection(entitlementId: string): Promise<ModelConnection>
@@ -494,6 +523,7 @@ export function useMosaicApi(): MosaicApi {
       if (filters?.environment) params.set('environment', filters.environment)
       if (filters?.resourceId) params.set('resourceId', filters.resourceId)
       if (filters?.subjectKind) params.set('subjectKind', filters.subjectKind)
+      if (filters?.costCenterId) params.set('costCenterId', filters.costCenterId)
       for (const [key, value] of Object.entries(extra ?? {})) {
         if (value) params.set(key, value)
       }
@@ -570,6 +600,42 @@ export function useMosaicApi(): MosaicApi {
         request<EnvironmentFindingList>(
           `/api/v1/environment-findings${gatewayId ? `?gatewayId=${encodeURIComponent(gatewayId)}` : ''}`,
         ),
+      listCostCenters: () => request<CostCenter[]>('/api/v1/cost-centers'),
+      createCostCenter: (payload) =>
+        request<CostCenter>('/api/v1/cost-centers', { method: 'POST', body: payload }),
+      getCostCenter: (id) => request<CostCenter>(`/api/v1/cost-centers/${encodeURIComponent(id)}`),
+      updateCostCenter: (id, payload) =>
+        request<CostCenter>(`/api/v1/cost-centers/${encodeURIComponent(id)}`, {
+          method: 'PATCH',
+          body: payload,
+        }),
+      deleteCostCenter: (id) =>
+        request<void>(`/api/v1/cost-centers/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+      addCostCenterMember: (id, principalId) =>
+        request<CostCenter>(
+          `/api/v1/cost-centers/${encodeURIComponent(id)}/members/${encodeURIComponent(principalId)}`,
+          { method: 'PUT' },
+        ),
+      removeCostCenterMember: (id, principalId) =>
+        request<CostCenter>(
+          `/api/v1/cost-centers/${encodeURIComponent(id)}/members/${encodeURIComponent(principalId)}`,
+          { method: 'DELETE' },
+        ),
+      updateCostCenterLimits: (id, limits) =>
+        request<CostCenter>(`/api/v1/cost-centers/${encodeURIComponent(id)}/limits`, {
+          method: 'PUT',
+          body: { limits },
+        }),
+      recheckCostCenter: (id) =>
+        request<CostCenter>(`/api/v1/cost-centers/${encodeURIComponent(id)}/recheck`, {
+          method: 'POST',
+        }),
+      getCostCenterSettings: () => request<CostCenterSettings>('/api/v1/cost-center-settings'),
+      updateCostCenterSettings: (payload) =>
+        request<CostCenterSettings>('/api/v1/cost-center-settings', {
+          method: 'PUT',
+          body: payload,
+        }),
       listPrincipals: () => request<Principal[]>('/api/v1/principals'),
       createPrincipal: (payload) =>
         request<Principal>('/api/v1/principals', { method: 'POST', body: payload }),
@@ -789,6 +855,9 @@ export function useMosaicApi(): MosaicApi {
         if (filters?.resource) {
           params.set('resource', filters.resource)
         }
+        if (filters?.costCenter) {
+          params.set('costCenter', filters.costCenter)
+        }
         const query = params.toString()
         return request<Entitlement[]>(`/api/v1/entitlements${query ? `?${query}` : ''}`)
       },
@@ -802,6 +871,22 @@ export function useMosaicApi(): MosaicApi {
         request<ModelConnection>(`/api/v1/entitlements/${id}/connection`),
       getMcpConnection: (id) =>
         request<McpConnection>(`/api/v1/entitlements/${encodeURIComponent(id)}/mcp-connection`),
+      createEntitlementKey: (id) =>
+        request<GrantKey>(`/api/v1/entitlements/${encodeURIComponent(id)}/keys`, {
+          method: 'POST',
+          cache: 'no-store',
+        }),
+      rotateEntitlementKey: (id, slot) =>
+        request<GrantKey>(`/api/v1/entitlements/${encodeURIComponent(id)}/keys/rotate`, {
+          method: 'POST',
+          body: { slot },
+          cache: 'no-store',
+        }),
+      deleteEntitlementKey: (id) =>
+        request<GrantKey>(`/api/v1/entitlements/${encodeURIComponent(id)}/keys`, {
+          method: 'DELETE',
+          cache: 'no-store',
+        }),
       revealEntitlementKey: (id, slot, signal) =>
         request<KeyRevealResult>(`/api/v1/entitlements/${id}/keys/reveal`, {
           method: 'POST', body: { slot }, cache: 'no-store', signal,

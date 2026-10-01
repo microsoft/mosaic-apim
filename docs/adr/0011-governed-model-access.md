@@ -207,3 +207,18 @@ them. While the model is unpublished, the connection routes, current-user and ad
 refuse with `409` and reason `notPublished` rather than describe an endpoint that no longer exists,
 so key reveal is refused too. [ADR 0009](0009-entitlement-subjects-resources-and-apim-binding.md)
 records how the catalog and access requests treat an unpublished model.
+
+## Amendment 2026-10-01: Keys are created on request, and grants carry a cost center
+
+[ADR 0022](0022-cost-centers.md) changes two things here:
+- An apply no longer creates a grant's API-scoped subscription. A person creates, rotates, or
+  deletes the key for their own applied direct grant in the portal, and an administrator does so
+  for any direct grant. The subscription keeps its deterministic name, so the applied policy
+  recognizes it as soon as it exists, without another apply. An apply still suspends and
+  reactivates the keys that exist, and deletes the key of a grant revoked because its subject left
+  its cost center. Keys work only when the publication accepts keys and the grant's cost center
+  allows them.
+- Every grant is charged to a cost center, which is part of its identity, so one subject can hold
+  the same model under several. A call names the grant it uses with the `x-mosaic-cost-center`
+  header. A key always charges its own grant's cost center, and a header naming another is refused
+  with 403.

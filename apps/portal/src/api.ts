@@ -6,11 +6,13 @@ import type {
   AccessRequestCreate,
   ApiErrorBody,
   CatalogEntry,
+  GrantKey,
   KeyRevealResult,
   KeySlot,
   McpConnection,
   ModelConnection,
   MyUsageReport,
+  PortalCostCenter,
   PortalProfile,
   PortalEnvironment,
   ResolvedEntitlement,
@@ -29,7 +31,7 @@ export class ApiError extends Error {
 }
 
 interface RequestOptions {
-  method?: 'GET' | 'POST'
+  method?: 'GET' | 'POST' | 'DELETE'
   body?: unknown
   cache?: RequestCache
   signal?: AbortSignal
@@ -50,6 +52,7 @@ export interface PortalApi {
   listEntitlements(): Promise<ResolvedEntitlement[]>
   listEnvironments(): Promise<PortalEnvironment[]>
   listCatalog(): Promise<CatalogEntry[]>
+  listCostCenters(): Promise<PortalCostCenter[]>
   listAccessRequests(): Promise<AccessRequest[]>
   createAccessRequest(payload: AccessRequestCreate): Promise<AccessRequest>
   withdrawAccessRequest(requestId: string): Promise<AccessRequest>
@@ -64,6 +67,9 @@ export interface PortalApi {
     slot: KeySlot,
     signal?: AbortSignal,
   ): Promise<KeyRevealResult>
+  createMyEntitlementKey(entitlementId: string): Promise<GrantKey>
+  rotateMyEntitlementKey(entitlementId: string, slot: KeySlot): Promise<GrantKey>
+  deleteMyEntitlementKey(entitlementId: string): Promise<GrantKey>
 }
 
 export function usePortalApi(): PortalApi {
@@ -110,6 +116,7 @@ export function usePortalApi(): PortalApi {
       listEntitlements: () => request<ResolvedEntitlement[]>('/api/v1/portal/entitlements'),
       listEnvironments: () => request<PortalEnvironment[]>('/api/v1/portal/environments'),
       listCatalog: () => request<CatalogEntry[]>('/api/v1/portal/catalog'),
+      listCostCenters: () => request<PortalCostCenter[]>('/api/v1/portal/cost-centers'),
       listAccessRequests: () => request<AccessRequest[]>('/api/v1/portal/access-requests'),
       createAccessRequest: (payload) =>
         request<AccessRequest>('/api/v1/portal/access-requests', { method: 'POST', body: payload }),
@@ -129,6 +136,22 @@ export function usePortalApi(): PortalApi {
           body: { slot },
           cache: 'no-store',
           signal,
+        }),
+      createMyEntitlementKey: (entitlementId) =>
+        request<GrantKey>(`${entitlementPath(entitlementId)}/keys`, {
+          method: 'POST',
+          cache: 'no-store',
+        }),
+      rotateMyEntitlementKey: (entitlementId, slot) =>
+        request<GrantKey>(`${entitlementPath(entitlementId)}/keys/rotate`, {
+          method: 'POST',
+          body: { slot },
+          cache: 'no-store',
+        }),
+      deleteMyEntitlementKey: (entitlementId) =>
+        request<GrantKey>(`${entitlementPath(entitlementId)}/keys`, {
+          method: 'DELETE',
+          cache: 'no-store',
         }),
     }
   }, [accounts, instance])

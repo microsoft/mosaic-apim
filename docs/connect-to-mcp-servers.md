@@ -21,6 +21,8 @@ Copy these values from the grant's MCP connection details in the portal, or from
 | `applicationScope` | The application scope, `api://<model-runtime-client-id>/.default` |
 | `requiredAppRole` | The app role an application or agent identity needs |
 | `limits` | The call limits the gateway applies |
+| `costCenter` | The [cost center](cost-centers.md) the grant charges: its name and `code` |
+| `costCenterHeader` | `x-mosaic-cost-center`, the header that names a cost center on a call |
 
 Connection details never include runtime tokens or upstream MCP credentials.
 
@@ -99,11 +101,41 @@ Microsoft Entra omits `groups` from access tokens when the caller is in too many
 the token as an overage token. API Management cannot call Microsoft Graph during MCP invocation. If
 your token has overage, ask for a direct grant.
 
+## Cost centers
+
+Every grant is charged to a cost center. When you hold the same MCP server under several cost
+centers, name the one your calls charge with the `x-mosaic-cost-center` header, set to the cost
+center's `code`. The code is compared without case. In VS Code, add it to the server's headers:
+
+```json
+{
+  "servers": {
+    "mosaic-example": {
+      "type": "http",
+      "url": "https://<gateway-host>/<api-path>/mcp",
+      "headers": { "x-mosaic-cost-center": "<costCenter.code>" }
+    }
+  }
+}
+```
+
+Without the header, the gateway uses your grant under your default cost center, then your other
+direct grants, oldest first, then the grants you hold through security groups. A header naming a
+cost center you hold no grant under is refused with 403. The gateway removes the header before the
+call reaches the MCP server.
+
+Only MCP servers MOSAIC publishes, with your grant applied, read the header. Don't send it to an
+imported server: its own policy doesn't read or remove it, so the server would receive it.
+Connection details show the header, and add it to the VS Code snippet, only when the gateway
+enforces your grant.
+
 ## Limits
 
 MCP grants use call limits only. The gateway can return `429` when a short request window or longer
 quota is exhausted. There is no token budget for MCP calls, and MOSAIC does not inspect MCP message
-bodies to count model tokens or tool payloads.
+bodies to count model tokens or tool payloads. A cost center can also set a pooled monthly call
+quota that every grant under it on the server shares. When your grant has a rate limit, responses
+carry `x-mosaic-remaining-calls`, the calls left in the current window.
 
 ## Troubleshooting
 
@@ -113,6 +145,7 @@ bodies to count model tokens or tool payloads.
 | The metadata URL does not return JSON | The server is not a MOSAIC-published MCP server, or the publication is not applied correctly. Ask an administrator to re-plan and apply the publication. |
 | Consent or **Need admin approval** during sign-in | The client is not consented for `api://<model-runtime-client-id>/Mcp.Invoke`. An administrator consents that delegated scope for the client. |
 | HTTP 403 with `insufficient_scope` | The token is valid, but it lacks `Mcp.Invoke`, lacks `Mcp.Invoke.Application`, or does not match an applied direct or group grant. Copy the scope from connection details and confirm the grant was applied. |
+| HTTP 403 that names the cost center | The `x-mosaic-cost-center` header names a cost center you hold no applied grant under, or isn't a valid code. Use `costCenter.code` from connection details, or remove the header. |
 | HTTP 403 mentioning group overage | The token does not contain usable group IDs. Ask for a direct grant to the user, application or agent identity. |
 | HTTP 403 **Access unavailable** | The last apply failed, the publication is not applied, or the server was unpublished. An administrator needs to review the publication status and apply access again. |
 | Imported server grant is visible but the gateway denies it | Imported servers are recorded in MOSAIC but not enforced by MOSAIC. The server's existing API Management policy decides access. |

@@ -92,9 +92,12 @@ class GrantOverlapService:
         labels.update({key: _principal_label(value) for key, value in principals.items()})
         resource_labels = await self._resource_labels(actor, entitlements)
 
-        by_resource: dict[tuple[str, str, str], list[Entitlement]] = defaultdict(list)
+        # Grants under different cost centers never compete: a caller chooses between them.
+        by_resource: dict[tuple[str, str, str, str], list[Entitlement]] = defaultdict(list)
         for entitlement in entitlements:
-            by_resource[_resource_key(entitlement.resource)].append(entitlement)
+            by_resource[(*_resource_key(entitlement.resource), entitlement.cost_center_id)].append(
+                entitlement
+            )
 
         overlaps: list[GrantOverlap] = []
         for key, items in by_resource.items():
@@ -112,7 +115,8 @@ class GrantOverlapService:
                 GrantOverlap(
                     kind=GrantOverlapKind.GROUPS,
                     resource=winner.resource,
-                    resource_label=resource_labels.get(key, winner.resource.id),
+                    resource_label=resource_labels.get(key[:3], winner.resource.id),
+                    cost_center_id=key[3],
                     principal_id=None,
                     principal_label=None,
                     winner=_overlap_grant(winner, winner_label),
@@ -186,7 +190,8 @@ class GrantOverlapService:
                             GrantOverlap(
                                 kind=GrantOverlapKind.DIRECT_AND_GROUP,
                                 resource=direct.resource,
-                                resource_label=resource_labels.get(key, direct.resource.id),
+                                resource_label=resource_labels.get(key[:3], direct.resource.id),
+                                cost_center_id=key[3],
                                 principal_id=principal.id,
                                 principal_label=_principal_label(principal),
                                 winner=_overlap_grant(direct, _principal_label(principal)),
@@ -209,7 +214,8 @@ class GrantOverlapService:
                             GrantOverlap(
                                 kind=GrantOverlapKind.MULTIPLE_GROUPS,
                                 resource=winner.resource,
-                                resource_label=resource_labels.get(key, winner.resource.id),
+                                resource_label=resource_labels.get(key[:3], winner.resource.id),
+                                cost_center_id=key[3],
                                 principal_id=principal.id,
                                 principal_label=_principal_label(principal),
                                 winner=_overlap_grant(winner, winner_label),
@@ -248,6 +254,7 @@ class GrantOverlapService:
                 str(item.kind),
                 str(item.resource.kind),
                 item.resource.id,
+                item.cost_center_id or "",
                 item.principal_id or "",
                 item.winner.entitlement_id,
             )

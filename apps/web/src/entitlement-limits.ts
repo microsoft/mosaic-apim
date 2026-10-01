@@ -2,6 +2,7 @@ import type {
   Entitlement,
   EntitlementEnforcement,
   ModelAccessSettings,
+  PersonLimits,
   QuotaPeriod,
   TokenEnforcement,
 } from './types'
@@ -88,6 +89,21 @@ function periodPhrase(period: QuotaPeriod): string {
     default:
       return 'year'
   }
+}
+
+/** A cost center's per-person defaults as a phrase, such as "20,000 tokens per minute". */
+export function describePersonLimits(person: PersonLimits): string {
+  const n = (value: number) => value.toLocaleString()
+  const parts: string[] = []
+  if (person.tokensPerMinute) parts.push(`${n(person.tokensPerMinute)} tokens per minute`)
+  if (person.tokenQuota) {
+    parts.push(`${n(person.tokenQuota)} tokens per ${periodPhrase(person.tokenQuotaPeriod ?? 'Monthly')}`)
+  }
+  if (person.callsPerMinute) parts.push(`${n(person.callsPerMinute)} calls per minute`)
+  if (person.callQuota) {
+    parts.push(`${n(person.callQuota)} calls per ${periodPhrase(person.callQuotaPeriod ?? 'Monthly')}`)
+  }
+  return parts.join(', ')
 }
 
 /**

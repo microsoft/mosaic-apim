@@ -228,8 +228,9 @@ says from which date the data is complete.
 
 The gateway enforces limits as calls arrive, so someone can reach a limit before a view shows it.
 For the live figure, callers read the gateway's response headers. A throttled call returns
-`Retry-After`, and limit policies can return remaining-quota headers such as
-`x-ratelimit-remaining-tokens`.
+`Retry-After`, and a governed policy reports what's left of the limits that applied:
+`x-mosaic-remaining-tokens`, `x-mosaic-remaining-quota-tokens`, `x-mosaic-remaining-calls`, and
+`x-mosaic-cost-center-remaining-quota-tokens` for a [cost center's](cost-centers.md) pooled quota.
 
 ## History, backfill, and retention
 
@@ -396,6 +397,19 @@ so a spreadsheet doesn't run it as a formula. The file is named for the table an
 last day, such as `mosaic-people-20260901-20260930.csv`. Tables that show cost export a
 **Cost (USD)** column, empty where MOSAIC has no price, and the Cost tab also exports a chargeback
 by month.
+
+### Cost centers
+
+Every grant is charged to a [cost center](cost-centers.md), and the attribution registry records
+each grant's cost center, so the rollups need nothing new: a cost center's figures are its grants'
+figures. Every tab takes a **Cost center** filter. Filtered, a tab counts only calls through the
+cost center's grants, with totals, APIs, models, and deployments rebuilt from them. Refusals,
+unattributed calls, client applications, reserved capacity nobody called, and figures by the hour
+belong to no grant, so the filter leaves them out and the tab says so. Overview ranks cost centers,
+Consumers lists each cost center with its grants, callers, and cost, and the Cost tab shows cost by
+cost center. Grant, limit, and hygiene rows name their cost center. The policy refuses a call whose
+`x-mosaic-cost-center` header names no grant of the caller's, or a key with another cost center's
+header, with the denial reasons `cost-center` and `cost-center-mismatch`.
 
 ### Cost
 

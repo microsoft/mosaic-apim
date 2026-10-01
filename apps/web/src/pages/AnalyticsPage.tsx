@@ -64,8 +64,8 @@ type TabKey = 'overview' | 'cost' | 'consumers' | 'models' | 'reliability' | 'li
 
 const tabs: Array<{ key: TabKey; label: string; exports: ExportView[] }> = [
   { key: 'overview', label: 'Overview', exports: ['trend'] },
-  { key: 'cost', label: 'Cost', exports: ['chargeback', 'costDeployments'] },
-  { key: 'consumers', label: 'Consumers', exports: ['people', 'applications', 'groups', 'grants', 'clientApps'] },
+  { key: 'cost', label: 'Cost', exports: ['chargeback', 'costDeployments', 'costCenters'] },
+  { key: 'consumers', label: 'Consumers', exports: ['people', 'applications', 'groups', 'costCenters', 'grants', 'clientApps'] },
   { key: 'models', label: 'Models', exports: ['apis', 'models', 'deployments'] },
   { key: 'reliability', label: 'Reliability', exports: ['denials', 'apis'] },
   { key: 'limits', label: 'Limits', exports: ['limits'] },
@@ -91,6 +91,7 @@ const exportLabels: Record<ExportView, string> = {
   unattributed: 'Unattributed calls',
   chargeback: 'Chargeback by month',
   costDeployments: 'Cost by deployment',
+  costCenters: 'Cost centers',
 }
 
 const apiKindLabels: Record<NonNullable<AnalyticsApiRow['kind']>, string> = {
@@ -202,6 +203,7 @@ function filtersFromSearch(params: URLSearchParams): AnalyticsFilters {
     environment: params.get('environment') ?? undefined,
     resourceId: params.get('resourceId') ?? undefined,
     subjectKind: (params.get('subjectKind') as EntitlementSubjectKind | null) ?? undefined,
+    costCenterId: params.get('costCenterId') ?? undefined,
   }
 }
 
@@ -344,6 +346,7 @@ function OverviewTab({ report }: { report: AnalyticsOverview }) {
   const byTokens = (row: AnalyticsRankRow): BarListItem => ({ key: row.key, label: row.label, value: row.totalTokens, valueLabel: `${formatCompact(row.totalTokens)} tokens`, detail: [row.detail, `${formatCompact(row.requests)} calls`, row.cost != null ? formatCost(row.cost) : null].filter(Boolean).join(' · ') })
   const topModels = report.topModels.map(byTokens)
   const topCallers = report.topCallers.map(byTokens)
+  const topCostCenters = (report.topCostCenters ?? []).map(byTokens)
   const topApis = report.topApis.map<BarListItem>((row) => ({ key: row.key, label: row.label, value: row.requests, valueLabel: `${formatCompact(row.requests)} calls`, detail: [row.detail, row.totalTokens ? `${formatCompact(row.totalTokens)} tokens` : null].filter(Boolean).join(' · ') }))
 
   return (
@@ -370,6 +373,7 @@ function OverviewTab({ report }: { report: AnalyticsOverview }) {
           </Card>
           <Card className={styles.panelCard}><Title3 as="h2">Top models</Title3><BarList label="Top models" items={topModels} /></Card>
           <Card className={styles.panelCard}><Title3 as="h2">Top callers</Title3><BarList label="Top callers" items={topCallers} /></Card>
+          <Card className={styles.panelCard}><Title3 as="h2">Top cost centers</Title3><BarList label="Top cost centers" items={topCostCenters} /></Card>
           <Card className={styles.panelCard}><Title3 as="h2">Top APIs</Title3><BarList label="Top APIs" items={topApis} /></Card>
         </div>
       )}
@@ -460,6 +464,7 @@ function CostTab({ report }: { report: AnalyticsCost }) {
       <div className={styles.analyticsGrid}>
         <Card className={styles.panelCard}><Title3 as="h2">Cost by model</Title3><BarList label="Cost by model" items={costBars(report.models)} /></Card>
         <Card className={styles.panelCard}><Title3 as="h2">Cost by consumer</Title3><BarList label="Cost by consumer" items={consumers} /></Card>
+        <Card className={styles.panelCard}><Title3 as="h2">Cost by cost center</Title3><BarList label="Cost by cost center" items={costBars(report.costCenters ?? [])} /></Card>
         <Card className={styles.panelCard}><Title3 as="h2">Cost by API</Title3><BarList label="Cost by API" items={costBars(report.apis)} /></Card>
       </div>
       <Card className={styles.panelCard}>
@@ -543,10 +548,23 @@ function ConsumersTab({ report }: { report: AnalyticsConsumers }) {
         <Title3 as="h2">Grants</Title3>
         <div className="table-scroll">
           <table aria-label="Grant usage">
-            <thead><tr><th>Subject</th><th>Resource</th><th>State</th><th>Requests</th><th>Key requests</th><th>Callers</th><th>Peak minute</th>{priced && <th>Cost</th>}</tr></thead>
+            <thead><tr><th>Subject</th><th>Resource</th><th>Cost center</th><th>State</th><th>Requests</th><th>Key requests</th><th>Callers</th><th>Peak minute</th>{priced && <th>Cost</th>}</tr></thead>
             <tbody>
               {report.grants.length === 0 ? <TableEmpty>No grants match these filters.</TableEmpty> : report.grants.map((row) => (
-                <tr key={row.key}><td>{row.subjectLabel}<Text block size={200}>{grantSubjectKindLabel(row)} · {row.subjectDetail ?? 'No detail'}</Text></td><td>{row.resourceLabel}<Text block size={200}>{row.gatewayName ?? 'No gateway'}</Text></td><td>{grantStateLabels[row.state]}</td><td>{formatNumber(row.requests)}</td><td>{formatNumber(row.keyRequests)}</td><td>{row.callers}</td><td>{row.peakMinuteTokens == null ? '—' : `${formatNumber(row.peakMinuteTokens)} tokens`}</td>{priced && <td>{costCell(row.cost, row.totalTokens)}</td>}</tr>
+                <tr key={row.key}><td>{row.subjectLabel}<Text block size={200}>{grantSubjectKindLabel(row)} · {row.subjectDetail ?? 'No detail'}</Text></td><td>{row.resourceLabel}<Text block size={200}>{row.gatewayName ?? 'No gateway'}</Text></td><td>{row.costCenterName ?? '—'}<Text block size={200}>{row.costCenterCode ?? ''}</Text></td><td>{grantStateLabels[row.state]}</td><td>{formatNumber(row.requests)}</td><td>{formatNumber(row.keyRequests)}</td><td>{row.callers}</td><td>{row.peakMinuteTokens == null ? '—' : `${formatNumber(row.peakMinuteTokens)} tokens`}</td>{priced && <td>{costCell(row.cost, row.totalTokens)}</td>}</tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Card>
+      <Card className={styles.panelCard}>
+        <Title3 as="h2">Cost centers</Title3>
+        <div className="table-scroll">
+          <table aria-label="Cost center usage">
+            <thead><tr><th>Cost center</th><th>Grants</th><th>Callers</th><th>Requests</th><th>Tokens</th>{priced && <th>Cost</th>}<th>Share</th></tr></thead>
+            <tbody>
+              {!(report.costCenters ?? []).length ? <TableEmpty>No cost centers match these filters.</TableEmpty> : (report.costCenters ?? []).map((row) => (
+                <tr key={row.key}><td>{row.label}<Text block size={200}>{row.code}</Text></td><td>{row.grants}</td><td>{row.callers}</td><td>{formatNumber(row.requests)}</td><td>{formatNumber(row.totalTokens)}</td>{priced && <td>{costCell(row.cost, row.totalTokens)}</td>}<td>{formatShare(row.requestShare)}</td></tr>
               ))}
             </tbody>
           </table>
@@ -646,13 +664,14 @@ function LimitsTab({ report }: { report: AnalyticsLimits }) {
       <Text size={200}>Reached means the gateway refused calls under the grant&apos;s limits in this range, or use is at a limit. Near means at least {Math.round(report.threshold * 100)}% used. Unknown means MOSAIC cannot tell how close the grant is. Throttled counts only the gateway&apos;s refusals, not a model deployment&apos;s own 429s.</Text>
       <div className="table-scroll">
         <table aria-label="Grant limit use">
-          <thead><tr><th>Grant</th><th>Resource</th><th>Status</th><th>Use vs limit</th><th>Throttled</th><th>Quota refused</th></tr></thead>
+          <thead><tr><th>Grant</th><th>Resource</th><th>Cost center</th><th>Status</th><th>Use vs limit</th><th>Throttled</th><th>Quota refused</th></tr></thead>
           <tbody>
             {rows.length === 0 ? <TableEmpty>No grant limits match these filters.</TableEmpty> : rows.map((row) => (
               <tr key={row.key}>
                 <td>{row.subjectLabel}<Text block size={200}>{row.memberLabel ? `Member ${row.memberLabel}` : grantSubjectKindLabel(row)}</Text></td>
                 <td>{row.resourceLabel}<Text block size={200}>{row.gatewayName ?? 'No gateway'}</Text></td>
-                <td><Badge color={row.status === 'reached' ? 'danger' : row.status === 'near' ? 'warning' : row.status === 'ok' ? 'success' : 'subtle'}>{limitStatusLabels[row.status]}</Badge></td>
+                <td>{row.costCenterName ?? '—'}<Text block size={200}>{row.costCenterCode ?? ''}</Text></td>
+                <td><Badge className={styles.statusBadge} color={row.status === 'reached' ? 'danger' : row.status === 'near' ? 'warning' : row.status === 'ok' ? 'success' : 'subtle'}>{limitStatusLabels[row.status]}</Badge></td>
                 <td>
                   <BarList label={`${row.subjectLabel} limits`} items={row.limits.map((limit) => ({ key: `${row.key}-${limit.kind}-${limit.metric}`, label: limitLabel(limit), value: limit.utilization ?? 0, valueLabel: `${formatNumber(limit.used)} / ${formatNumber(limit.limit)}`, detail: limit.partial ? 'Partial window' : undefined, tone: limit.utilization != null && limit.utilization >= 1 ? 'danger' : limit.utilization != null && limit.utilization >= report.threshold ? 'warning' : 'normal' }))} />
                 </td>
@@ -690,16 +709,16 @@ function HygieneTab({ report }: { report: AnalyticsHygiene }) {
       </MessageBar>
       <Card className={styles.panelCard}>
         <Title3 as="h2">Unused grants</Title3>
-        <div className="table-scroll"><table aria-label="Unused grants"><thead><tr><th>Grant</th><th>Resource</th><th>Granted</th><th>Last used</th></tr></thead><tbody>{report.unusedGrants.length === 0 ? <TableEmpty>No unused grants in this window.</TableEmpty> : report.unusedGrants.map((row) => <tr key={row.entitlementId}><td>{row.subjectLabel}</td><td>{row.resourceLabel}</td><td>{formatDateTime(row.grantedAt)}</td><td>{formatDateTime(row.lastUsedAt)}</td></tr>)}</tbody></table></div>
+        <div className="table-scroll"><table aria-label="Unused grants"><thead><tr><th>Grant</th><th>Resource</th><th>Cost center</th><th>Granted</th><th>Last used</th></tr></thead><tbody>{report.unusedGrants.length === 0 ? <TableEmpty>No unused grants in this window.</TableEmpty> : report.unusedGrants.map((row) => <tr key={row.entitlementId}><td>{row.subjectLabel}</td><td>{row.resourceLabel}</td><td>{row.costCenterName ?? '—'}<Text block size={200}>{row.costCenterCode ?? ''}</Text></td><td>{formatDateTime(row.grantedAt)}</td><td>{formatDateTime(row.lastUsedAt)}</td></tr>)}</tbody></table></div>
       </Card>
       <Card className={styles.panelCard}>
         <Title3 as="h2">Unused keys</Title3>
         <Text size={200}>These grants have APIM subscription keys, but every call came without the key. Consider turning keys off.</Text>
-        <div className="table-scroll"><table aria-label="Unused keys"><thead><tr><th>Grant</th><th>Subscription</th><th>Token requests</th><th>Resource</th></tr></thead><tbody>{report.unusedKeys.length === 0 ? <TableEmpty>No unused keys in this window.</TableEmpty> : report.unusedKeys.map((row) => <tr key={row.entitlementId}><td>{row.subjectLabel}</td><td>{row.subscriptionName ?? '—'}</td><td>{formatNumber(row.tokenRequests)}</td><td>{row.resourceLabel}</td></tr>)}</tbody></table></div>
+        <div className="table-scroll"><table aria-label="Unused keys"><thead><tr><th>Grant</th><th>Cost center</th><th>Subscription</th><th>Token requests</th><th>Resource</th></tr></thead><tbody>{report.unusedKeys.length === 0 ? <TableEmpty>No unused keys in this window.</TableEmpty> : report.unusedKeys.map((row) => <tr key={row.entitlementId}><td>{row.subjectLabel}</td><td>{row.costCenterName ?? '—'}<Text block size={200}>{row.costCenterCode ?? ''}</Text></td><td>{row.subscriptionName ?? '—'}</td><td>{formatNumber(row.tokenRequests)}</td><td>{row.resourceLabel}</td></tr>)}</tbody></table></div>
       </Card>
       <Card className={styles.panelCard}>
         <Title3 as="h2">Untracked grants</Title3>
-        <div className="table-scroll"><table aria-label="Untracked grants"><thead><tr><th>Grant</th><th>Resource</th><th>Reason</th></tr></thead><tbody>{report.untrackedGrants.length === 0 ? <TableEmpty>No untracked grants in this window.</TableEmpty> : report.untrackedGrants.map((row) => <tr key={row.entitlementId}><td>{row.subjectLabel}</td><td>{row.resourceLabel}</td><td>{untrackedReasons[row.reason]}</td></tr>)}</tbody></table></div>
+        <div className="table-scroll"><table aria-label="Untracked grants"><thead><tr><th>Grant</th><th>Resource</th><th>Cost center</th><th>Reason</th></tr></thead><tbody>{report.untrackedGrants.length === 0 ? <TableEmpty>No untracked grants in this window.</TableEmpty> : report.untrackedGrants.map((row) => <tr key={row.entitlementId}><td>{row.subjectLabel}</td><td>{row.resourceLabel}</td><td>{row.costCenterName ?? '—'}<Text block size={200}>{row.costCenterCode ?? ''}</Text></td><td>{untrackedReasons[row.reason]}</td></tr>)}</tbody></table></div>
       </Card>
     </div>
   )
@@ -758,6 +777,7 @@ export function AnalyticsPage() {
   const gateways = useQuery({ queryKey: ['gateways'], queryFn: api.listGateways })
   const modelApis = useQuery({ queryKey: ['model-apis'], queryFn: () => api.listModelApis() })
   const mcpServers = useQuery({ queryKey: ['mcp-servers'], queryFn: () => api.listMcpServers() })
+  const costCenters = useQuery({ queryKey: ['cost-centers'], queryFn: api.listCostCenters })
 
   const reportQuery = useQuery<AnalyticsReport>({
     queryKey: ['analytics', tab, filters],
@@ -829,6 +849,7 @@ export function AnalyticsPage() {
             <label className={styles.filterControl}><span>Gateway</span><Select value={filters.gatewayId ?? ''} onChange={(event) => updateFilter('gatewayId', event.target.value)}><option value="">All gateways</option>{(gateways.data ?? []).map((gateway: Gateway) => <option key={gateway.id} value={gateway.id}>{gateway.name}</option>)}</Select></label>
             <label className={styles.filterControl}><span>Environment</span><Select value={filters.environment ?? ''} onChange={(event) => updateFilter('environment', event.target.value)}><option value="">All environments</option>{(catalog.data?.environments ?? []).map((environment) => <option key={environment.key} value={environment.key}>{environmentLabel(catalog.data, environment.key)}</option>)}</Select></label>
             <label className={styles.filterControl}><span>Resource</span><Select value={filters.resourceId ?? ''} onChange={(event) => updateFilter('resourceId', event.target.value)}><option value="">All APIs and MCP servers</option><ResourceOptions modelApis={modelApis.data} mcpServers={mcpServers.data} /></Select></label>
+            <label className={styles.filterControl}><span>Cost center</span><Select value={filters.costCenterId ?? ''} onChange={(event) => updateFilter('costCenterId', event.target.value)}><option value="">All cost centers</option>{(costCenters.data ?? []).map((costCenter) => <option key={costCenter.id} value={costCenter.id}>{costCenter.name} ({costCenter.code})</option>)}</Select></label>
             <label className={styles.filterControl}><span>Subject kind</span><Select value={filters.subjectKind ?? ''} onChange={(event) => updateFilter('subjectKind', event.target.value)}><option value="">All subjects</option>{Object.entries(subjectLabels).map(([key, label]) => <option key={key} value={key}>{label}</option>)}</Select></label>
             <label className={styles.filterControl}><span>Export</span><Select value={exportView} onChange={(event) => setExportChoice(event.target.value as ExportView)}>{activeExports.map((view) => <option key={view} value={view}>{exportLabels[view]}</option>)}</Select></label>
             <Button appearance="primary" onClick={() => exportCsv.mutate(exportView)} disabled={exportCsv.isPending}>Export CSV</Button>

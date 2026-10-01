@@ -5,12 +5,13 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import date
 
-from mosaic_api.domain import EntitlementSubjectKind
+from mosaic_api.domain import CostCenterRef, EntitlementSubjectKind
 from mosaic_api.services.analytics.cost import CostBook, CostTally, add_cost
 from mosaic_api.services.analytics.models import (
     AnalyticsClientAppRow,
     AnalyticsConsumerRow,
     AnalyticsConsumers,
+    AnalyticsCostCenterRow,
     AnalyticsGrantRow,
     AnalyticsUsage,
     ConsumerKind,
@@ -71,6 +72,8 @@ def consumers_report(
     groups: dict[str, _Tally] = defaultdict(_Tally)
     grants: dict[str, _Tally] = defaultdict(_Tally)
     grant_info: dict[str, GrantInfo | None] = {}
+    cost_centers: dict[str, _Tally] = defaultdict(_Tally)
+    cost_center_refs: dict[str, CostCenterRef] = {}
     linked = UsageMetrics()
     unidentified = 0
     tally = CostTally()
@@ -97,6 +100,15 @@ def consumers_report(
         grant_tally.cost = add_cost(grant_tally.cost, cost)
         grant_info.setdefault(merged, grant)
         object_id = resolved_caller(scope, grant_key, caller)
+        cost_center = scope.cost_center(grant)
+        if cost_center is not None:
+            cost_center_refs.setdefault(cost_center.id, cost_center)
+            center = cost_centers[cost_center.id]
+            center.metrics.add(entry.metrics)
+            center.cost = add_cost(center.cost, cost)
+            center.grants.add(merged)
+            if object_id is not None:
+                center.members.add(object_id)
         if object_id is None:
             unidentified += entry.metrics.requests
         else:
@@ -173,12 +185,16 @@ def consumers_report(
         grant = grant_info.get(merged)
         subject = scope.subject(grant)
         entitlement_id = grant.entitlement_id if grant else None
+        charged = scope.cost_center(grant)
         grant_rows.append(
             AnalyticsGrantRow(
                 **usage_values(grant_tally.metrics, requests, tokens, grant_tally.cost),
                 key=merged,
                 entitlement_id=entitlement_id,
                 state=_state(scope, entitlement_id),
+                cost_center_id=charged.id if charged else None,
+                cost_center_code=charged.code if charged else None,
+                cost_center_name=charged.name if charged else None,
                 subject_kind=grant.subject_kind if grant else None,
                 subject_label=subject.label,
                 subject_detail=subject.detail,
@@ -229,6 +245,18 @@ def consumers_report(
             )
         )
 
+    cost_center_rows = [
+        AnalyticsCostCenterRow(
+            **usage_values(center.metrics, requests, tokens, center.cost),
+            key=cost_center_id,
+            label=cost_center_refs[cost_center_id].name,
+            code=cost_center_refs[cost_center_id].code,
+            grants=len(center.grants),
+            callers=len(center.members),
+        )
+        for cost_center_id, center in cost_centers.items()
+    ]
+
     lists = [person_rows, app_rows, group_rows]
     limit = context.limit
     truncated = (
@@ -246,6 +274,7 @@ def consumers_report(
         groups=_ordered(group_rows, lambda row: row.label)[:limit],
         grants=_ordered(grant_rows, lambda row: row.subject_label)[:limit],
         client_apps=_ordered(client_rows, lambda row: row.label)[:limit],
+        cost_centers=_ordered(cost_center_rows, lambda row: row.label)[:limit],
         truncated=truncated,
         cost=tally.summary(costs.notes) if costs is not None else None,
     )

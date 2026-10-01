@@ -18,6 +18,7 @@ from apim_double import (
 )
 from azure.core.credentials_async import AsyncTokenCredential
 from conftest import build_endpoint_service, build_gateway_service, reviewed_unpublish
+from mosaic_api.cost_centers import CostCenterUpdate
 from mosaic_api.domain import (
     BindingSource,
     CatalogEntryUpdate,
@@ -46,21 +47,27 @@ from mosaic_api.domain import (
     PublishStepStatus,
     RequestEnforcement,
     TokenEnforcement,
+    general_cost_center_id,
     model_access_subscription_name,
 )
 from mosaic_api.errors import ConflictError, ValidationError
 from mosaic_api.integrations import access_policy
 from mosaic_api.integrations.apim import ApimClient, ApimWriter, ArmClient
+from mosaic_api.integrations.apim.client import MAX_ATTEMPTS
+from mosaic_api.integrations.apim.credentials import ApimKeyManager
 from mosaic_api.observed import ObservedApi
 from mosaic_api.repositories import (
+    InMemoryCostCenterRepository,
     InMemoryDirectoryRepository,
     InMemoryEntitlementRepository,
     InMemoryGatewayRepository,
     InMemoryModelEndpointRepository,
 )
+from mosaic_api.services.cost_centers import CostCenterService
 from mosaic_api.services.directory import Actor, DirectoryService
 from mosaic_api.services.entitlements import EntitlementService
 from mosaic_api.services.model_access import gateway_mutation_scope, publication_lock
+from mosaic_api.services.portal_access import PortalAccessService
 from mosaic_api.services.publishing import PublishingService
 
 TENANT = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
@@ -76,6 +83,8 @@ class AccessApim(FakeApim):
         super().__init__(permissions=CONTRIBUTOR_PERMISSIONS)
         self.payloads: list[tuple[str, dict[str, Any]]] = []
         self.fail_activation: str | None = None
+        # How many activations of ``fail_activation`` fail; None fails every one.
+        self.activation_failures: int | None = None
         self.pause_suffix: str | None = None
         self.paused = asyncio.Event()
         self.resume = asyncio.Event()
@@ -91,7 +100,10 @@ class AccessApim(FakeApim):
             if (
                 suffix == self.fail_activation
                 and body.get("properties", {}).get("state") == "active"
+                and self.activation_failures != 0
             ):
+                if self.activation_failures is not None:
+                    self.activation_failures -= 1
                 return httpx.Response(500, json={"error": {"message": "activation failed"}})
         return self.handler(request)
 
@@ -112,6 +124,7 @@ class Harness:
         self.directory = InMemoryDirectoryRepository()
         self.entitlements = InMemoryEntitlementRepository()
         self.endpoints = InMemoryModelEndpointRepository()
+        self.cost_center_records = InMemoryCostCenterRepository()
         self.gateway_service = build_gateway_service(self.apim, self.gateways)
         self.endpoint_service = build_endpoint_service(
             cognitive or FakeCognitiveServices(),
@@ -128,12 +141,21 @@ class Harness:
             self.directory,
             gateway_repository=self.gateways,
             entitlement_repository=self.entitlements,
+            cost_center_repository=self.cost_center_records,
         )
         self.grants = EntitlementService(
             self.entitlements,
             directory_repository=self.directory,
             gateway_repository=self.gateways,
             endpoint_repository=self.endpoints,
+            cost_center_repository=self.cost_center_records,
+        )
+        self.cost_centers = CostCenterService(
+            self.cost_center_records,
+            directory_repository=self.directory,
+            entitlement_repository=self.entitlements,
+            gateway_repository=self.gateways,
+            entitlements=self.grants,
         )
         self.publication_id = ""
         self.model_id = ""
@@ -147,6 +169,7 @@ class Harness:
             client_factory=lambda resource: ApimClient(self.arm, resource),
             writer_factory=lambda resource: ApimWriter(self.arm, resource),
             model_runtime_client_id=AUDIENCE,
+            cost_center_repository=self.cost_center_records,
         )
 
     async def setup(
@@ -216,6 +239,28 @@ class Harness:
     def subscription(self, grant: Entitlement) -> str:
         return model_access_subscription_name(TENANT, self.publication_id, grant.id)
 
+    def keys(self) -> PortalAccessService:
+        """Keys on request, as the portal and the Entitlements page manage them."""
+
+        def no_reader(_resource: object) -> Any:
+            raise AssertionError("Managing a key never reads one")
+
+        return PortalAccessService(
+            self.grants,
+            repository=self.entitlements,
+            directory_repository=self.directory,
+            gateway_repository=self.gateways,
+            credential_factory=no_reader,
+            key_manager_factory=lambda resource: ApimKeyManager(self.arm, resource),
+        )
+
+    async def key(self, *grants: Entitlement) -> None:
+        """Create each grant's key, as an administrator does once its access is applied."""
+
+        keys = self.keys()
+        for grant in grants:
+            await keys.create_key(ACTOR, grant.id, administrator=True)
+
     async def close(self) -> None:
         await self.service.aclose()
         await self.gateway_service.aclose()
@@ -252,6 +297,14 @@ async def test_opt_in_is_model_wide_staged_owned_and_secret_free(harness: Harnes
     assert any(group_grant.id in warning for warning in plan.warnings)
     assert any("publication-wide" in warning for warning in plan.warnings)
     assert plan.previous_access_version is None
+    assert (await harness.apply()).status == PublishRunStatus.SUCCEEDED
+    # An apply never creates a grant's key; its holder or an administrator does, on request.
+    for grant in (user, application):
+        assert f"subscriptions/{harness.subscription(grant)}" not in harness.apim.written
+        loaded = await harness.grants.get_entitlement(ACTOR, grant.id)
+        assert loaded.runtime and loaded.runtime.status == "applied"
+        assert loaded.runtime.key_exists is False
+    await harness.key(user, application)
     harness.apim.payloads.clear()
     assert (await harness.apply()).status == PublishRunStatus.SUCCEEDED
     publication = await harness.service.get_publication(ACTOR, harness.publication_id)
@@ -264,6 +317,7 @@ async def test_opt_in_is_model_wide_staged_owned_and_secret_free(harness: Harnes
         payload = harness.apim.written[f"subscriptions/{name}"]["properties"]
         assert payload["scope"] == f"{RESOURCE_ID}/apis/{publication.api_name}"
         assert payload["state"] == "active"
+        assert payload["displayName"].endswith("(general)")
         staged = [
             body["properties"]["state"]
             for path, body in harness.apim.payloads
@@ -272,6 +326,7 @@ async def test_opt_in_is_model_wide_staged_owned_and_secret_free(harness: Harnes
         assert staged == ["suspended", "active"]
         loaded = await harness.grants.get_entitlement(ACTOR, grant.id)
         assert loaded.runtime and loaded.runtime.status == "applied"
+        assert loaded.runtime.key_exists is True
         assert loaded.binding and loaded.binding.source == BindingSource.ORCHESTRATED
     assert (
         harness.apim.written[f"subscriptions/{publication.subscription_name}"]["properties"][
@@ -359,6 +414,7 @@ async def test_method_toggles_preserve_subscriptions_counters_and_ownership(
     grant = await harness.grant()
     await harness.govern()
     assert (await harness.apply()).status == PublishRunStatus.SUCCEEDED
+    await harness.key(grant)
     baseline = await harness.grants.get_entitlement(ACTOR, grant.id)
     assert baseline.binding
     counter = baseline.binding.counter_key_expression
@@ -394,6 +450,7 @@ async def test_disable_and_reenable_are_intent_until_applied(harness: Harness) -
     grant = await harness.grant()
     await harness.govern()
     await harness.apply()
+    await harness.key(grant)
     disabled = await harness.grants.update_entitlement(
         ACTOR, grant.id, EntitlementUpdate(enabled=False)
     )
@@ -424,9 +481,12 @@ async def test_failed_activation_never_retains_new_or_revoked_entra_access(
     unchanged = await harness.grant(APPLICATION, application=True)
     await harness.govern()
     await harness.apply()
+    await harness.key(revoked, unchanged)
     await harness.grants.update_entitlement(ACTOR, revoked.id, EntitlementUpdate(enabled=False))
     newcomer = await harness.grant(NEW_USER)
-    harness.apim.fail_activation = f"subscriptions/{harness.subscription(newcomer)}"
+    # Every attempt of the apply's activation fails, and the recovery's activation succeeds.
+    harness.apim.fail_activation = f"subscriptions/{harness.subscription(unchanged)}"
+    harness.apim.activation_failures = MAX_ATTEMPTS
     run = await harness.apply()
     assert run.status == PublishRunStatus.FAILED
     publication = await harness.service.get_publication(ACTOR, harness.publication_id)
@@ -441,15 +501,87 @@ async def test_failed_activation_never_retains_new_or_revoked_entra_access(
     assert NEW_USER not in policy
     assert USER not in policy
     assert APPLICATION in policy
-    for grant in (revoked, newcomer):
-        assert (
-            harness.apim.written[f"subscriptions/{harness.subscription(grant)}"]["properties"][
-                "state"
-            ]
-            == "suspended"
-        )
+    assert (
+        harness.apim.written[f"subscriptions/{harness.subscription(revoked)}"]["properties"][
+            "state"
+        ]
+        == "suspended"
+    )
+    # The unchanged grant's key is active again with the last safe snapshot.
+    assert (
+        harness.apim.written[f"subscriptions/{harness.subscription(unchanged)}"]["properties"][
+            "state"
+        ]
+        == "active"
+    )
+    assert f"subscriptions/{harness.subscription(newcomer)}" not in harness.apim.written
     assert not harness.apim.write_paths("DELETE")
     assert await harness.gateways.get_publication_lock(TENANT, publication.id) is None
+
+
+async def test_failed_activation_restores_the_safe_snapshot_when_grants_have_no_key(
+    harness: Harness,
+) -> None:
+    # Keys are created on request, so recovery must not mistake a grant without one for a lost
+    # key and shut the whole model off.
+    keyed = await harness.grant(APPLICATION, application=True)
+    keyless = await harness.grant()
+    revoked = await harness.grant(NEW_USER)
+    await harness.govern()
+    assert (await harness.apply()).status == PublishRunStatus.SUCCEEDED
+    await harness.key(keyed)
+    await harness.grants.update_entitlement(ACTOR, revoked.id, EntitlementUpdate(enabled=False))
+    harness.apim.fail_activation = f"subscriptions/{harness.subscription(keyed)}"
+    harness.apim.activation_failures = MAX_ATTEMPTS
+
+    assert (await harness.apply()).status == PublishRunStatus.FAILED
+
+    publication = await harness.service.get_publication(ACTOR, harness.publication_id)
+    assert publication.access_state == "failed"
+    assert publication.applied_access
+    assert publication.applied_access.settings == ModelAccessSettings()
+    assert {g.entitlement_id for g in publication.applied_access.grants if g.enabled} == {
+        keyed.id,
+        keyless.id,
+    }
+    assert (
+        harness.apim.written[f"subscriptions/{harness.subscription(keyed)}"]["properties"][
+            "state"
+        ]
+        == "active"
+    )
+    # Recovery never creates a key.
+    for grant in (keyless, revoked):
+        assert f"subscriptions/{harness.subscription(grant)}" not in harness.apim.written
+    assert await harness.gateways.get_publication_lock(TENANT, publication.id) is None
+
+
+async def test_recoding_a_cost_center_after_deleting_an_applied_grant_still_plans(
+    harness: Harness,
+) -> None:
+    kept = await harness.grant()
+    removed = await harness.grant(APPLICATION, application=True)
+    await harness.govern()
+    assert (await harness.apply()).status == PublishRunStatus.SUCCEEDED
+    await harness.grants.update_entitlement(ACTOR, removed.id, EntitlementUpdate(enabled=False))
+    assert (await harness.apply()).status == PublishRunStatus.SUCCEEDED
+    # Without a key it can be deleted, and later snapshots carry it forward, disabled, with the
+    # code its cost center had then.
+    await harness.grants.delete_entitlement(ACTOR, removed.id)
+    await harness.cost_centers.update_cost_center(
+        ACTOR, general_cost_center_id(TENANT), CostCenterUpdate(code="gen")
+    )
+
+    assert (await harness.apply()).status == PublishRunStatus.SUCCEEDED
+
+    publication = await harness.service.get_publication(ACTOR, harness.publication_id)
+    assert publication.applied_access
+    grants = {
+        grant.entitlement_id: (grant.enabled, grant.cost_center_code)
+        for grant in publication.applied_access.grants
+    }
+    assert grants[kept.id] == (True, "gen")
+    assert grants[removed.id] == (False, "general")
 
 
 async def test_restricting_limits_does_not_restore_old_permissions_on_failure(
@@ -458,6 +590,7 @@ async def test_restricting_limits_does_not_restore_old_permissions_on_failure(
     grant = await harness.grant()
     await harness.govern()
     await harness.apply()
+    await harness.key(grant)
     await harness.grants.update_entitlement(
         ACTOR,
         grant.id,
@@ -530,6 +663,7 @@ async def test_managed_objects_and_binding_cannot_be_forgotten(harness: Harness)
     grant = await harness.grant()
     await harness.govern()
     await harness.apply()
+    await harness.key(grant)
     publication = await harness.service.get_publication(ACTOR, harness.publication_id)
     for binding in (
         None,
@@ -698,8 +832,8 @@ async def test_a_governed_fragment_update_azure_rejects_is_not_applied_access(
     assert NEW_USER not in previous
     api_policy = harness.apim.written[f"apis/{publication.api_name}/policies/policy"]
     assert "include-fragment" not in api_policy["properties"]["value"]
-    newcomer_key = harness.apim.written[f"subscriptions/{harness.subscription(newcomer)}"]
-    assert newcomer_key["properties"]["state"] == "suspended"
+    # Keys are created on request, so the newcomer has none for the failed apply to leave behind.
+    assert f"subscriptions/{harness.subscription(newcomer)}" not in harness.apim.written
     assert await harness.gateways.get_publication_lock(TENANT, publication.id) is None
 
 
@@ -758,9 +892,9 @@ def _assert_governed_access_applied(
     assert policy_expression_error(fragment) is None
     assert "include-fragment" in api_policy
     assert policy_expression_error(api_policy) is None
+    # An apply creates no grant's key: they're created on request.
     for grant in grants:
-        key = written[f"subscriptions/{harness.subscription(grant)}"]
-        assert key["properties"]["state"] == "active"
+        assert f"subscriptions/{harness.subscription(grant)}" not in written
 
 
 async def test_governed_access_with_per_grant_limits_is_a_fragment_api_management_accepts(
@@ -818,8 +952,12 @@ async def test_a_governed_fragment_api_management_cannot_parse_denies_and_can_be
     assert not any(grant.enabled for grant in failed.applied_access.grants)
     denied = harness.apim.written[fragment]["properties"]["value"]
     assert "return-response" in denied and "@{" not in denied
-    for name in [failed.subscription_name, *(harness.subscription(grant) for grant in grants)]:
-        assert harness.apim.written[f"subscriptions/{name}"]["properties"]["state"] == "suspended"
+    assert (
+        harness.apim.written[f"subscriptions/{failed.subscription_name}"]["properties"]["state"]
+        == "suspended"
+    )
+    for grant in grants:
+        assert f"subscriptions/{harness.subscription(grant)}" not in harness.apim.written
     assert await harness.gateways.get_publication_lock(TENANT, failed.id) is None
 
     run = await harness.apply()
@@ -996,6 +1134,7 @@ async def test_governed_apply_reviews_and_resets_custom_key_parameter_names(
     assert (await harness.apply()).status == PublishRunStatus.SUCCEEDED
     expected = {"header": "Ocp-Apim-Subscription-Key", "query": "subscription-key"}
     assert harness.apim.written[api_path]["properties"]["subscriptionKeyParameterNames"] == expected
+    await harness.key(grant)
     harness.apim.fail_activation = f"subscriptions/{harness.subscription(grant)}"
     assert (await harness.apply()).status == PublishRunStatus.FAILED
     assert harness.apim.written[api_path]["properties"]["subscriptionKeyParameterNames"] == expected
@@ -1008,6 +1147,7 @@ async def test_subscription_scope_accepts_only_the_expected_api(
     grant = await harness.grant()
     await harness.govern()
     assert (await harness.apply()).status == PublishRunStatus.SUCCEEDED
+    await harness.key(grant)
     publication = await harness.service.get_publication(ACTOR, harness.publication_id)
     name = harness.subscription(grant)
     scope = f"/apis/{publication.api_name}"
@@ -1024,6 +1164,7 @@ async def test_subscription_scope_rejects_broader_and_foreign_scopes(
     grant = await harness.grant()
     await harness.govern()
     assert (await harness.apply()).status == PublishRunStatus.SUCCEEDED
+    await harness.key(grant)
     publication = await harness.service.get_publication(ACTOR, harness.publication_id)
     name = harness.subscription(grant)
     scope = {
@@ -1144,3 +1285,35 @@ async def test_governed_claude_on_a_classic_tier_keeps_call_limits_and_drops_tok
         assert 'resource="https://ai.azure.com"' in fragment
     finally:
         await harness.close()
+
+
+async def test_a_pending_recheck_keeps_its_grants_out_of_every_apply(harness: Harness) -> None:
+    """Until MOSAIC has checked that a grant's subject may still charge its cost center, applies
+    leave the grant out, so no apply gives back access a change took away. See ADR 0022."""
+
+    kept = await harness.grant()
+    waiting = await harness.grant(APPLICATION, application=True)
+    await harness.govern()
+    general = general_cost_center_id(TENANT)
+    await harness.grants.request_recheck(
+        ACTOR, general, reason="memberRemoved", subject_id=waiting.subject.id
+    )
+
+    plan = await harness.service.plan(ACTOR, harness.publication_id)
+    assert plan.access_snapshot
+    assert {g.entitlement_id for g in plan.access_snapshot.grants if g.enabled} == {kept.id}
+    assert any(
+        waiting.id in warning and "waiting for MOSAIC to check" in warning
+        for warning in plan.warnings
+    )
+
+    # General is the tenant's default, which everyone may charge, so the recheck keeps the grant.
+    assert await harness.grants.resume_rechecks(ACTOR) == []
+    settled = await harness.cost_center_records.get_cost_center(TENANT, general)
+    assert settled is not None and settled.pending_rechecks == []
+    plan = await harness.service.plan(ACTOR, harness.publication_id)
+    assert plan.access_snapshot
+    assert {g.entitlement_id for g in plan.access_snapshot.grants if g.enabled} == {
+        kept.id,
+        waiting.id,
+    }

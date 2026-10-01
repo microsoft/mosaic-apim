@@ -31,6 +31,8 @@ DENIAL_LABELS = {
     "groups-overage": "Too many groups in the token",
     "no-grant": "No grant for this caller",
     "grant-mismatch": "Key and token name different grants",
+    "cost-center": "No grant under the named cost center",
+    "cost-center-mismatch": "Key belongs to a different cost center",
     "operation": "Operation not allowed",
     "model": "Model not allowed",
     "access-off": "Access is turned off",

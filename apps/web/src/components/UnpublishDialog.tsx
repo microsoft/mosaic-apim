@@ -352,6 +352,7 @@ interface LosingGrant {
   entitlementId: string
   subject: EntitlementSubject
   displayName: string
+  costCenterCode: string | null
   loses: string
 }
 
@@ -359,6 +360,7 @@ interface AppliedGrant {
   entitlementId: string
   subject: EntitlementSubject
   displayName: string
+  costCenterCode: string | null
   enabled: boolean
   /** Whether the grant has a subscription key that works today. */
   key: boolean
@@ -390,18 +392,27 @@ function UnpublishReview({
   // The access the gateway applied last is who can call it now, so it is who loses access.
   const keys = Boolean(model?.settings.keysEnabled)
   const tokens = target === 'mcp' || Boolean(model?.settings.entraEnabled)
+  // Keys are created on request, so a grant has one only if the plan deletes its subscription.
+  const deletedKeys = new Set(
+    plan.steps.filter((step) => step.kind === 'subscription').map((step) => step.name),
+  )
   const applied: AppliedGrant[] = model
     ? model.grants.map((grant) => ({
         entitlementId: grant.entitlementId,
         subject: grant.subject,
         displayName: grant.displayName,
+        costCenterCode: grant.costCenterCode ?? null,
         enabled: grant.enabled,
-        key: keys && Boolean(grant.subscriptionName),
+        key:
+          keys &&
+          grant.keysAllowed !== false &&
+          Boolean(grant.subscriptionName && deletedKeys.has(grant.subscriptionName)),
       }))
     : (mcp?.grants ?? []).map((grant) => ({
         entitlementId: grant.entitlementId,
         subject: grant.subject,
         displayName: grant.displayName,
+        costCenterCode: grant.costCenterCode ?? null,
         enabled: grant.enabled,
         key: false,
       }))
@@ -414,6 +425,7 @@ function UnpublishReview({
         entitlementId: grant.entitlementId,
         subject: grant.subject,
         displayName: grant.displayName,
+        costCenterCode: grant.costCenterCode,
         loses: `${methods.join(' and ')}${members}`,
       }
     })
@@ -451,6 +463,7 @@ function UnpublishReview({
                   <TableRow>
                     <TableHeaderCell>Grantee</TableHeaderCell>
                     <TableHeaderCell>Type</TableHeaderCell>
+                    <TableHeaderCell>Cost center</TableHeaderCell>
                     <TableHeaderCell>Stops working</TableHeaderCell>
                   </TableRow>
                 </TableHeader>
@@ -459,6 +472,7 @@ function UnpublishReview({
                     <TableRow key={grant.entitlementId}>
                       <TableCell>{grant.displayName}</TableCell>
                       <TableCell>{kindLabel(grant.subject)}</TableCell>
+                      <TableCell>{grant.costCenterCode || '—'}</TableCell>
                       <TableCell>{grant.loses}</TableCell>
                     </TableRow>
                   ))}

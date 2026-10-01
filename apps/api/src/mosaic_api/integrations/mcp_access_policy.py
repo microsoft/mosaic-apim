@@ -6,6 +6,7 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 
 from mosaic_api.domain import (
+    COST_CENTER_HEADER,
     MCP_MESSAGE_PATH,
     MCP_RESOURCE_METADATA_PREFIX,
     EntitlementSubjectKind,
@@ -22,21 +23,27 @@ from mosaic_api.domain import (
 )
 from mosaic_api.errors import ValidationError
 from mosaic_api.integrations.access_policy import (
+    _COST_CENTER_HEADER,
     _TOKEN_GRANT,
+    COST_CENTER_DENIED,
+    _cost_center_ids,
     _expression,
     _grant_counter_key,
     _grant_limits,
     _initialize_caller,
     _literal,
+    _pool_limits,
+    _read_cost_center_header,
     _record_validated_caller,
     _reject,
-    _token_groups_overage,
-    _token_lookup,
-    _token_member_lookup,
+    _resolve_token_grant,
+    _validate_cost_center,
+    _validate_pools,
     _variable,
     append_denial_trace,
     append_grant_attribution_trace,
     classify_traces,
+    cost_center_details,
     grant_counter_identity,
 )
 from mosaic_api.integrations.apim.policy_semantics import analyze_policy
@@ -128,6 +135,7 @@ def _validate(
             "doesn't start with .well-known."
         )
     seen: set[str] = set()
+    cost_centers: dict[str, set[str]] = {}
     for grant in snapshot.grants:
         if grant.subject.kind not in {
             EntitlementSubjectKind.USER,
@@ -140,6 +148,10 @@ def _validate(
         if not grant.entitlement_id.strip() or grant.entitlement_id.casefold() in seen:
             raise ValidationError("MCP access grants must have nonempty, unambiguous identities.")
         seen.add(grant.entitlement_id.casefold())
+        if grant.enabled:
+            # Only enabled grants are compiled; a disabled one carried forward may keep a code
+            # its cost center has since changed or given up.
+            _validate_cost_center(grant.cost_center_id, grant.cost_center_code, cost_centers)
         if not _GUID.fullmatch(grant.object_id):
             raise ValidationError("MCP access grants require GUID object IDs.")
         if grant.enforcement is not None and grant.enforcement.tokens is not None:
@@ -156,6 +168,12 @@ def _validate(
                 "Governed request rate renewal must not exceed 300 seconds. Use a call quota "
                 "for longer periods."
             )
+    _validate_pools(
+        snapshot.pools,
+        cost_centers,
+        tokens_allowed=False,
+        codes={grant.cost_center_code.casefold() for grant in snapshot.grants if grant.enabled},
+    )
 
 
 def _runtime_origin_lines() -> list[str]:
@@ -285,7 +303,15 @@ def _mcp_authentication(
         message=_DENIED,
         www_authenticate=invalid,
     )
+    _read_cost_center_header(fragment)
+    _reject(
+        fragment,
+        f'@({_COST_CENTER_HEADER} == "!")',
+        reason="cost-center",
+        message=COST_CENTER_DENIED,
+    )
     _variable(fragment, "mosaic-token-grant", "")
+    _variable(fragment, "mosaic-token-cost-center", "")
     _variable(fragment, "mosaic-member", "")
     validation = ET.SubElement(
         fragment,
@@ -306,39 +332,36 @@ def _mcp_authentication(
     )
     ET.SubElement(claim, "value").text = "2.0"
     _record_validated_caller(fragment)
-    _variable(
-        fragment,
-        "mosaic-token-grant",
-        _token_lookup(
-            publication,
-            grants,
-            delegated_scope=snapshot.delegated_scope,
-            application_role=snapshot.application_role,
-        ),
-    )
-    _variable(fragment, "mosaic-member", _token_member_lookup(publication, grants))
-    if any(grant.is_group_grant for grant in grants):
-        _reject(
-            fragment,
-            _token_groups_overage(),
-            reason="groups-overage",
+
+    def no_grant(parent: ET.Element) -> None:
+        _reject_with_auth(
+            parent,
+            f"@(String.IsNullOrEmpty({_TOKEN_GRANT}))",
+            reason="no-grant",
             with_caller=True,
-            message=_GROUPS_OVERAGE_DENIED,
+            code=403,
+            message=_DENIED,
+            www_authenticate=insufficient,
         )
-    _reject_with_auth(
+
+    _resolve_token_grant(
         fragment,
-        f"@(String.IsNullOrEmpty({_TOKEN_GRANT}))",
-        reason="no-grant",
-        with_caller=True,
-        code=403,
-        message=_DENIED,
-        www_authenticate=insufficient,
+        publication,
+        grants,
+        delegated_scope=snapshot.delegated_scope,
+        application_role=snapshot.application_role,
+        overage_message=_GROUPS_OVERAGE_DENIED,
+        no_grant=no_grant,
     )
     _variable(fragment, "mosaic-grant", f"@({_TOKEN_GRANT})")
+    _variable(
+        fragment, "mosaic-cost-center", '@((string)context.Variables["mosaic-token-cost-center"])'
+    )
+    _cost_center_ids(fragment, grants)
 
 
 def _strip_credentials(fragment: ET.Element) -> None:
-    for name in ("Authorization", "Ocp-Apim-Subscription-Key", "api-key"):
+    for name in ("Authorization", "Ocp-Apim-Subscription-Key", "api-key", COST_CENTER_HEADER):
         ET.SubElement(fragment, "set-header", {"name": name, "exists-action": "delete"})
     ET.SubElement(
         fragment,
@@ -433,10 +456,12 @@ def _facets(
                 f"Application tokens require {snapshot.application_role} in roles with no real "
                 "scp claim.",
                 "Direct user and application grants are checked before security-group grants.",
+                *cost_center_details(),
             ],
             attributes={
                 "enabled-grants": str(len(grants)),
                 "security-group-grants": str(enabled_group_grants),
+                "cost-centers": str(len({grant.cost_center_id for grant in grants})),
             },
             managed_by_mosaic=True,
         ),
@@ -447,7 +472,7 @@ def _facets(
             summary="Removes caller credentials before forwarding to the MCP backend.",
             details=[
                 "Authorization, Ocp-Apim-Subscription-Key, api-key and subscription-key are "
-                "stripped."
+                f"stripped, and so is {COST_CENTER_HEADER}."
             ],
             managed_by_mosaic=True,
         ),
@@ -538,6 +563,32 @@ def _facets(
                     managed_by_mosaic=True,
                 )
             )
+    codes = {grant.cost_center_code.casefold() for grant in grants}
+    for pool in snapshot.pools:
+        if pool.monthly_calls is None or pool.cost_center_code.casefold() not in codes:
+            continue
+        facets.append(
+            PolicyFacet(
+                kind=PolicyFacetKind.QUOTA,
+                element="quota-by-key",
+                section=PolicySection.INBOUND,
+                summary=(
+                    f"Caps MCP calls at {pool.monthly_calls} per UTC calendar month for every "
+                    "grant under one cost center together."
+                ),
+                details=[
+                    "Every grant under the cost center on this MCP server shares this monthly "
+                    "pool, whoever calls, beside each grant's own limits.",
+                    "A period-qualified key resets the quota at UTC calendar boundaries.",
+                ],
+                attributes={
+                    "counter-scope": "cost-center-pool",
+                    "counter-prefix": _COUNTER_PREFIX,
+                    "calendar-period": "Monthly",
+                },
+                managed_by_mosaic=True,
+            )
+        )
     analyses = [analyze_policy(_serialize(element)) for element in (fragment, api, metadata)]
     analyzed: list[PolicyFacet] = []
     for element, analysis in zip((fragment, api, metadata), analyses, strict=True):
@@ -580,6 +631,14 @@ def render_mcp_policy(
     _mcp_authentication(fragment, publication, snapshot, grants_for_lookup)
     append_grant_attribution_trace(fragment, grants)
     _grant_limits(fragment, publication, grants, prefix=_COUNTER_PREFIX)
+    codes = {grant.cost_center_code.casefold() for grant in grants}
+    _pool_limits(
+        fragment,
+        publication,
+        [pool for pool in snapshot.pools if pool.cost_center_code.casefold() in codes],
+        estimate_prompt_tokens=None,
+        prefix=_COUNTER_PREFIX,
+    )
     _strip_credentials(fragment)
     if backend_auth == McpAuthMode.MANAGED_IDENTITY:
         assert backend_audience is not None

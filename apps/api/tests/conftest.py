@@ -17,6 +17,7 @@ from mosaic_api.integrations.apim import ApimClient, ApimWriter, ArmClient
 from mosaic_api.integrations.graph import DirectoryLookup
 from mosaic_api.main import create_app
 from mosaic_api.repositories import (
+    InMemoryCostCenterRepository,
     InMemoryDirectoryRepository,
     InMemoryEntitlementRepository,
     InMemoryGatewayRepository,
@@ -231,6 +232,7 @@ def build_mcp_publishing_service(
     entitlement_repository: InMemoryEntitlementRepository | None = None,
     runtime_client_id: str | None = "22222222-2222-2222-2222-222222222222",
     security_group_claims: bool = True,
+    cost_center_repository: InMemoryCostCenterRepository | None = None,
 ) -> McpPublishingService:
     arm = build_arm_client(fake)
     return McpPublishingService(
@@ -242,6 +244,7 @@ def build_mcp_publishing_service(
         writer_factory=lambda resource: ApimWriter(arm, resource),
         runtime_client_id=runtime_client_id,
         security_group_claims=security_group_claims,
+        cost_center_repository=cost_center_repository,
     )
 
 

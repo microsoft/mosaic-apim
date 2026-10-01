@@ -11,7 +11,7 @@ import {
   MessageBarBody,
   Text,
 } from '@fluentui/react-components'
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
 import { useLocation } from 'react-router-dom'
@@ -156,10 +156,13 @@ function ConnectionSession({
   onClose: () => void
 }) {
   const api = useMosaicApi()
+  const queryClient = useQueryClient()
   const [closed, setClosed] = useState(false)
   const [secret, setSecret] = useState<{ slot: KeySlot; key: string } | null>(null)
   const [revealing, setRevealing] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [keyMessage, setKeyMessage] = useState<string | null>(null)
+  const [confirmation, setConfirmation] = useState<'delete' | 'rotate-primary' | 'rotate-secondary' | null>(null)
   const [copyError, setCopyError] = useState<string | null>(null)
   const [copyMessage, setCopyMessage] = useState<string | null>(null)
   const generation = useRef(0)
@@ -173,8 +176,11 @@ function ConnectionSession({
   const info = connection.data
   const modelInfo = !isMcp ? (info as ModelConnection | undefined) : undefined
   const mcpInfo = isMcp ? (info as McpConnection | undefined) : undefined
-  const eligible = Boolean(
+  const keyExists = modelInfo?.keyExists ?? entitlement.runtime?.keyExists ?? true
+  const keysAllowedByCostCenter = modelInfo?.keysAllowedByCostCenter !== false
+  const keyCapable = Boolean(
     !closed && !connection.isError && modelInfo && modelInfo.keysAvailable !== false
+    && keysAllowedByCostCenter
     && entitlement.enabled && entitlement.subject.kind !== 'group'
     && entitlement.resource.kind === 'modelApi' && entitlement.binding?.source === 'orchestrated'
     && entitlement.runtime?.status === 'applied' && entitlement.runtime.appliedMethods?.keysEnabled
@@ -182,6 +188,52 @@ function ConnectionSession({
     && modelInfo.entitlementId === entitlement.id
     && modelInfo.publicationId === entitlement.runtime.publicationId,
   )
+  const eligible = Boolean(keyCapable && keyExists)
+
+  function keyErrorMessage(failure: unknown) {
+    const body = (failure as { body?: { details?: { reason?: unknown } } })?.body
+    const reason = body?.details?.reason
+    if (reason === 'noKey' || reason === 'keyMissing') return 'No key exists for this grant. Create one, then reveal it.'
+    if (reason === 'keyExists') return 'A key already exists for this grant. Reveal or rotate it instead.'
+    if (reason === 'costCenterKeysOff') return 'Keys are off for this cost center. Turn keys on and apply the model before creating or rotating keys.'
+    if (reason === 'keyNotOwned') return "API Management already has a subscription with this key's name that MOSAIC didn't create. Remove it there, then try again."
+    if (reason === 'keyScopeChanged') return "This key is no longer scoped to its model in API Management. Re-plan and apply the model's access."
+    return failure instanceof Error ? failure.message : 'Unable to manage the key.'
+  }
+
+  const refreshKeys = async () => {
+    setSecret(null)
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ['entitlement-connection'] }),
+      queryClient.invalidateQueries({ queryKey: ['entitlements'] }),
+    ])
+  }
+  const createKey = useMutation({
+    mutationFn: () => api.createEntitlementKey(entitlement.id),
+    onSuccess: async () => {
+      setKeyMessage('Created the grant key.')
+      await refreshKeys()
+    },
+    onError: (failure) => setError(keyErrorMessage(failure)),
+  })
+  const rotateKey = useMutation({
+    mutationFn: (slot: KeySlot) => api.rotateEntitlementKey(entitlement.id, slot),
+    onSuccess: async (_, slot) => {
+      setConfirmation(null)
+      setKeyMessage(`Rotated the ${slot} key.`)
+      await refreshKeys()
+    },
+    onError: (failure) => setError(keyErrorMessage(failure)),
+  })
+  const deleteKey = useMutation({
+    mutationFn: () => api.deleteEntitlementKey(entitlement.id),
+    onSuccess: async () => {
+      setConfirmation(null)
+      setKeyMessage('Deleted the grant key.')
+      await refreshKeys()
+    },
+    onError: (failure) => setError(keyErrorMessage(failure)),
+  })
 
   useEffect(() => {
     mounted.current = true
@@ -256,7 +308,7 @@ function ConnectionSession({
       setSecret({ slot, key: result.key })
     } catch (failure) {
       if (mounted.current && generation.current === request) {
-        setError(failure instanceof Error ? failure.message : 'Unable to reveal the key.')
+        setError(keyErrorMessage(failure))
       }
     } finally {
       if (mounted.current && generation.current === request) setRevealing(false)
@@ -302,6 +354,8 @@ function ConnectionSession({
                   <div><dt>Endpoint</dt><dd>{modelInfo.endpoint}</dd></div>
                   <div><dt>Deployment</dt><dd>{modelInfo.deploymentName}</dd></div>
                   <div><dt>Tenant</dt><dd>{modelInfo.tenantId}</dd></div>
+                  {modelInfo.costCenter && <div><dt>Cost center</dt><dd>{modelInfo.costCenter.name} ({modelInfo.costCenter.code})</dd></div>}
+                  {modelInfo.costCenterHeader && modelInfo.costCenter && <div><dt>Cost center header</dt><dd>{modelInfo.costCenterHeader}: {modelInfo.costCenter.code}</dd></div>}
                   <div><dt>Runtime state</dt><dd>{modelInfo.runtime?.status ?? 'unknown'}</dd></div>
                   <div><dt>Last applied methods</dt><dd>{describeAccessMethods(modelInfo.appliedMethods)}</dd></div>
                   <div><dt>Model-runtime audience</dt><dd>{modelInfo.entraAudience ?? 'Not configured'}</dd></div>
@@ -342,6 +396,12 @@ function ConnectionSession({
                       Key authentication is not available for this grant. Use an Entra token.
                     </MessageBarBody>
                   </MessageBar>
+                ) : modelInfo.keysAllowedByCostCenter === false ? (
+                  <MessageBar intent="warning">
+                    <MessageBarBody>
+                      Keys are off for this cost center. Use Microsoft Entra bearer tokens or turn keys on for the cost center and apply the model.
+                    </MessageBarBody>
+                  </MessageBar>
                 ) : (
                   <>
                     <Text>Use one enabled credential. Examples contain placeholders, never your actual key:</Text>
@@ -355,13 +415,32 @@ function ConnectionSession({
               request. It is cleared from this dialog on close, navigation, or account change.
               Sharing a key delegates this grant&apos;s access.
             </Text>
-            {!eligible && <Text>Key reveal requires an enabled, applied direct grant with key authentication and a trusted orchestrated binding.</Text>}
+            {!keyCapable && <Text>Key reveal requires an enabled, applied direct grant with key authentication, allowed cost-center keys, and a trusted orchestrated binding.</Text>}
+            {keyCapable && !keyExists && <Text>No key exists for this grant yet.</Text>}
             {/* A browser takes focus off a button that becomes disabled, so a busy button stays focusable. */}
-            {modelInfo?.keysAvailable !== false && !isMcp && (
-              <div className={styles.rowActions}>
-                <Button disabled={!eligible} disabledFocusable={revealing} onClick={() => void reveal('primary')}>Reveal primary key</Button>
-                <Button disabled={!eligible} disabledFocusable={revealing} onClick={() => void reveal('secondary')}>Reveal secondary key</Button>
-              </div>
+            {modelInfo?.keysAvailable !== false && !isMcp && keysAllowedByCostCenter && (
+              <>
+                <div className={styles.rowActions}>
+                  {!keyExists ? (
+                    <Button
+                      appearance="primary"
+                      disabled={!keyCapable || createKey.isPending}
+                      onClick={() => createKey.mutate()}
+                    >
+                      Create key
+                    </Button>
+                  ) : (
+                    <>
+                      <Button disabled={!eligible} disabledFocusable={revealing} onClick={() => void reveal('primary')}>Reveal primary key</Button>
+                      <Button disabled={!eligible} disabledFocusable={revealing} onClick={() => void reveal('secondary')}>Reveal secondary key</Button>
+                      <Button disabled={!eligible || rotateKey.isPending} onClick={() => setConfirmation('rotate-primary')}>Rotate primary key</Button>
+                      <Button disabled={!eligible || rotateKey.isPending} onClick={() => setConfirmation('rotate-secondary')}>Rotate secondary key</Button>
+                      <Button disabled={!eligible || deleteKey.isPending} onClick={() => setConfirmation('delete')}>Delete key</Button>
+                    </>
+                  )}
+                </div>
+                {keyMessage && <Text role="status">{keyMessage}</Text>}
+              </>
             )}
             {revealing && <Loading label="Retrieving the current key from APIM" />}
             {secret && eligible && (
@@ -387,6 +466,35 @@ function ConnectionSession({
           <DialogActions><Button onClick={close}>Close</Button></DialogActions>
         </DialogBody>
       </DialogSurface>
+      <Dialog open={confirmation !== null} onOpenChange={(_, data) => !data.open && setConfirmation(null)}>
+        <DialogSurface>
+          <DialogBody>
+            <DialogTitle>
+              {confirmation === 'delete' ? 'Delete key' : confirmation === 'rotate-primary' ? 'Rotate primary key' : 'Rotate secondary key'}
+            </DialogTitle>
+            <DialogContent>
+              <Text>
+                {confirmation === 'delete'
+                  ? 'Every client using this key stops working now. You can create a new key afterwards.'
+                  : `Clients using the old ${confirmation === 'rotate-primary' ? 'primary' : 'secondary'} value stop working now. The other slot keeps working.`}
+              </Text>
+            </DialogContent>
+            <DialogActions>
+              <Button appearance="secondary" onClick={() => setConfirmation(null)}>Cancel</Button>
+              <Button
+                appearance="primary"
+                onClick={() => {
+                  if (confirmation === 'delete') deleteKey.mutate()
+                  if (confirmation === 'rotate-primary') rotateKey.mutate('primary')
+                  if (confirmation === 'rotate-secondary') rotateKey.mutate('secondary')
+                }}
+              >
+                {confirmation === 'delete' ? 'Delete key' : 'Rotate key'}
+              </Button>
+            </DialogActions>
+          </DialogBody>
+        </DialogSurface>
+      </Dialog>
     </Dialog>
   )
 }

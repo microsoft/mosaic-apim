@@ -12,7 +12,7 @@ from mosaic_api.domain import (
     PublicationStatus,
 )
 from mosaic_api.repositories import GatewayRepository
-from mosaic_api.services.model_access import entitlement_intent_digest
+from mosaic_api.services.model_access import CostCenterIntent, entitlement_intent_digest
 
 
 async def entitlement_mcp_publication(
@@ -85,6 +85,7 @@ def decorate_mcp_entitlement(
     principal: Principal | None,
     *,
     locked: bool = False,
+    cost_center: CostCenterIntent | None = None,
 ) -> Entitlement:
     """Derive MCP runtime state from trusted publication state."""
 
@@ -117,7 +118,7 @@ def decorate_mcp_entitlement(
     elif (
         grant is None
         or principal is None
-        or grant.intent_digest != entitlement_intent_digest(entitlement, principal)
+        or grant.intent_digest != entitlement_intent_digest(entitlement, principal, cost_center)
     ):
         status = "pending"
     elif not grant.enabled:

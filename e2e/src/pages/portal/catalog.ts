@@ -42,21 +42,32 @@ export class CatalogPage {
     return this.cards.filter({ has: this.page.getByRole('heading', { level: 2, name: displayName, exact: true }) })
   }
 
+  /** Shown when the person already holds the resource under the cost center the card has selected. */
   entitled(card: Locator): Locator {
-    return card.getByText('Already entitled', { exact: true })
+    return card.getByText(/^Already entitled( for this cost center)?$/)
   }
 
+  /** Shown when the person has an open request for the resource under the selected cost center. */
   requestOpen(card: Locator): Locator {
-    return card.getByText('A request is already open.', { exact: true })
+    return card.getByText(/^A request is already open( for this cost center)?\.$/)
+  }
+
+  /** The cost center a request charges. It starts on the person's default cost center. */
+  costCenter(card: Locator, displayName: string): Locator {
+    return card.getByRole('combobox', { name: `Cost center for ${displayName}`, exact: true })
   }
 
   requestButton(card: Locator): Locator {
     return card.getByRole('button', { name: 'Request access', exact: true })
   }
 
-  /** Requests access with a justification. The response says whether MOSAIC opened the request. */
-  async request(displayName: string, justification: string): Promise<Response> {
+  /**
+   * Requests access with a justification, charged to the person's default cost center unless `costCenter` names
+   * another of theirs by its option text, such as "Research (RES)". The response says whether MOSAIC opened it.
+   */
+  async request(displayName: string, justification: string, costCenter?: string): Promise<Response> {
     const card = this.card(displayName)
+    if (costCenter) await this.costCenter(card, displayName).selectOption({ label: costCenter })
     await card.getByRole('textbox', { name: `Justification for ${displayName}`, exact: true }).fill(justification)
     return responseTo(this.page, this.targets.origins.api, 'POST', /^\/api\/v1\/portal\/access-requests$/, () => this.requestButton(card).click())
   }

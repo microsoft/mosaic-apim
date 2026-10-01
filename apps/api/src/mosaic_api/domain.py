@@ -140,6 +140,19 @@ def deterministic_id(prefix: str, *parts: str) -> str:
     return f"{prefix}_{uuid5(NAMESPACE_URL, value).hex}"
 
 
+# A caller names the cost center a call is charged to with this header. See ADR 0022.
+COST_CENTER_HEADER = "x-mosaic-cost-center"
+COST_CENTER_CODE_PATTERN = re.compile(r"[A-Za-z0-9._-]{1,64}")
+GENERAL_COST_CENTER_CODE = "general"
+GENERAL_COST_CENTER_NAME = "General"
+
+
+def general_cost_center_id(tenant_id: str) -> str:
+    """The built-in General cost center's ID, which every tenant has and can't delete."""
+
+    return deterministic_id("costCenter", tenant_id, GENERAL_COST_CENTER_CODE)
+
+
 class ApimResourceId(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -512,6 +525,11 @@ class Principal(Entity):
     # When Microsoft Graph last confirmed this object exists and is this kind. None for a
     # principal an administrator entered by hand.
     directory_verified_at: datetime | None = None
+    # The cost center a caller's calls are charged to when they name none. Set when the principal
+    # is onboarded, to the one an administrator picks or the tenant's default. None for a security
+    # group, which is never the caller, and for a principal recorded before cost centers, for whom
+    # the tenant's default applies.
+    default_cost_center_id: str | None = None
 
 
 class Group(Entity):
@@ -1619,6 +1637,9 @@ class EntitlementRuntime(MosaicModel):
     ]
     applied_methods: ModelAccessSettings | None = None
     subscription_name: str | None = None
+    # Whether the grant's key exists in API Management. Keys are created on request, by the
+    # grant's holder or an administrator, never by an apply. See ADR 0022.
+    key_exists: bool = False
     applied_at: datetime | None = None
     error: str | None = Field(
         default=None,
@@ -1647,21 +1668,55 @@ class EntitlementBinding(MosaicModel):
     bound_at: datetime | None = None
 
 
+class GrantRevocation(MosaicModel):
+    """Why MOSAIC turned a grant off itself, rather than an administrator turning it off.
+
+    Set when its subject is removed from the grant's cost center. A revoked grant stays disabled
+    until its subject can charge the cost center again, and the next apply deletes its key rather
+    than suspending it. See ADR 0022.
+    """
+
+    reason: Literal["costCenterMembership"] = "costCenterMembership"
+    cost_center_id: str
+    revoked_at: datetime = Field(default_factory=utc_now)
+    revoked_by: str
+
+
+class CostCenterRef(MosaicModel):
+    """A cost center as a grant, a key or a report names it."""
+
+    id: str
+    name: str
+    code: str
+
+
 class Entitlement(Entity):
     """A grant of a governed resource to a subject, and the limits that apply to it.
 
-    Cosmos is the source of truth. An entitlement with no ``enforcement`` is unrestricted, which
-    the portal reports as such rather than rendering a limit of zero.
+    Cosmos is the source of truth. An entitlement with no ``enforcement`` takes its cost center's
+    per-person defaults for the resource, and is otherwise unrestricted, which the portal reports
+    as such rather than rendering a limit of zero.
+
+    Every grant is charged to one cost center, and a subject can hold a grant on the same resource
+    under each cost center it may charge. A grant recorded without one belongs to General.
     """
 
     entity_type: Literal["entitlement"] = "entitlement"
     subject: EntitlementSubject
     resource: EntitlementResource
+    cost_center_id: str = ""
     enabled: bool = True
     enforcement: EntitlementEnforcement | None = None
     binding: EntitlementBinding | None = None
     notes: str | None = None
+    revocation: GrantRevocation | None = None
     runtime: EntitlementRuntime | None = None
+
+    @model_validator(mode="after")
+    def fill_cost_center(self) -> Self:
+        if not self.cost_center_id:
+            self.cost_center_id = general_cost_center_id(self.tenant_id)
+        return self
 
 
 def _writable_binding(binding: EntitlementBinding | None) -> EntitlementBinding | None:
@@ -1677,6 +1732,8 @@ def _writable_binding(binding: EntitlementBinding | None) -> EntitlementBinding 
 class EntitlementCreate(MosaicModel):
     subject: EntitlementSubject
     resource: EntitlementResource
+    # The cost center the grant's calls are charged to. Omitted, it's the subject's default.
+    cost_center_id: str | None = Field(default=None, min_length=1, max_length=128)
     enabled: bool = True
     enforcement: EntitlementEnforcement | None = None
     binding: EntitlementBinding | None = None
@@ -1698,8 +1755,13 @@ def entitlement_id(
     tenant_id: str,
     subject: EntitlementSubject,
     resource: EntitlementResource,
+    cost_center_id: str,
 ) -> str:
-    """Deterministic, so re-granting the same pair updates the record instead of duplicating it."""
+    """Deterministic on subject, resource and cost center, so re-granting the same is a conflict.
+
+    The same subject and resource under two cost centers are two grants, each with its own limits,
+    counters and key.
+    """
 
     return deterministic_id(
         "entitlement",
@@ -1709,6 +1771,7 @@ def entitlement_id(
         str(resource.kind),
         resource.id,
         resource.scope_id or "",
+        cost_center_id,
     )
 
 
@@ -1722,8 +1785,9 @@ class ResolvedEntitlement(MosaicModel):
     """An entitlement that applies to a principal, and how it reached them.
 
     ``effective`` is false for a grant that applies but loses to another grant on the same
-    resource; ``shadowed_by`` then names the entitlement that wins. See :func:`grant_precedence_key`
-    for the rules.
+    resource under the same cost center; ``shadowed_by`` then names the entitlement that wins. See
+    :func:`grant_precedence_key` for the rules. Grants under different cost centers never shadow
+    each other: the caller chooses between them with the cost-center header.
     """
 
     entitlement: Entitlement
@@ -1733,6 +1797,7 @@ class ResolvedEntitlement(MosaicModel):
     effective: bool = True
     shadowed_by: str | None = None
     resource_summary: "ResourceSummary | None" = None
+    cost_center: CostCenterRef | None = None
 
 
 _QUOTA_PERIOD_HOURS: dict[str, float] = {
@@ -1815,6 +1880,14 @@ class AccessRequest(Entity):
     requester_object_id: str
     requester_principal_id: str | None = None
     resource: EntitlementResource
+    # The cost center the requester chose. Approval grants under it unless the administrator
+    # chooses another the requester may charge. None only for requests made before cost centers,
+    # which are charged to the requester's default.
+    cost_center_id: str | None = None
+    # The security groups that cost center listed which the requester's own token said they were
+    # in when they asked. Without Microsoft Graph, approval trusts only these, and only while the
+    # cost center still lists them.
+    cost_center_group_ids: list[str] = Field(default_factory=list)
     justification: str | None = None
     requested_environment: str | None = None
     resource_snapshot: "AccessRequestResourceSnapshot | None" = None
@@ -1827,6 +1900,8 @@ class AccessRequest(Entity):
 
 class AccessRequestCreate(MosaicModel):
     resource: EntitlementResource
+    # One of the requester's cost centers. Omitted, it's their default.
+    cost_center_id: str | None = Field(default=None, min_length=1, max_length=128)
     justification: str | None = None
 
 
@@ -1839,11 +1914,14 @@ class AccessRequestApproval(AccessRequestDecision):
 
     ``enforcement`` is the same type ``EntitlementCreate`` takes, so the limits an administrator
     confirms here are validated exactly as if they had created the grant directly. Omitting it
-    adds no grant-specific limit; publication safeguards still apply.
+    applies the cost center's per-person defaults, if it has any; publication safeguards still
+    apply. ``cost_center_id`` charges the grant to another cost center the requester may charge,
+    instead of the one they chose.
     """
 
     enforcement: EntitlementEnforcement | None = None
     confirmed_environment: str | None = None
+    cost_center_id: str | None = Field(default=None, min_length=1, max_length=128)
 
 
 class AccessRequestResourceSnapshot(MosaicModel):
@@ -1872,6 +1950,7 @@ class ResourceSummary(MosaicModel):
 
 class AdminAccessRequestListItem(AccessRequest):
     resource_summary: ResourceSummary | None = None
+    cost_center: CostCenterRef | None = None
 
 
 class CatalogEntryKind(StrEnum):
@@ -1896,6 +1975,10 @@ class CatalogEntry(MosaicModel):
     environment: str | None = None
     entitled: bool = False
     request_state: AccessRequestState | None = None
+    # The caller's cost centers they already hold a grant under, or have an open request under.
+    # A person can still ask for the resource under another of their cost centers.
+    entitled_cost_center_ids: list[str] = Field(default_factory=list)
+    requested_cost_center_ids: list[str] = Field(default_factory=list)
     # Whether the gateway enforces grants on this resource. Reported for MCP servers only: True
     # when MOSAIC publishes the server and has applied its access, False for an adopted server or
     # a published one whose latest apply didn't finish. None for other kinds.
@@ -1926,6 +2009,7 @@ class PortalAccessRequest(AccessRequest):
 
     resource_display_name: str | None = None
     resource_summary: ResourceSummary | None = None
+    cost_center: CostCenterRef | None = None
 
 
 class PortalProfile(MosaicModel):
@@ -1947,6 +2031,8 @@ class PortalProfile(MosaicModel):
     # True when the caller is in more groups than their sign-in token can list. MOSAIC then can't
     # tell which security-group grants apply to them, and neither can the gateway.
     groups_overage: bool = False
+    # The cost center the caller's calls are charged to when they name none.
+    default_cost_center: CostCenterRef | None = None
 
 
 class ConsoleAccess(MosaicModel):
@@ -2037,6 +2123,26 @@ def _holds_api(resources: list[PublishedResource], api_name: str) -> bool:
     )
 
 
+class AppliedCostCenterPool(MosaicModel):
+    """A cost center's pooled monthly quota on one publication, exactly as an apply compiled it.
+
+    Every grant under the cost center on the publication draws on it, whoever calls. Tokens are
+    limited with a second ``llm-token-limit`` and calls with ``quota-by-key``, each counted per cost
+    center and publication. API Management counts per gateway, so a pool is per gateway too.
+    """
+
+    cost_center_id: str
+    cost_center_code: str
+    monthly_tokens: int | None = Field(default=None, ge=1)
+    monthly_calls: int | None = Field(default=None, ge=1)
+
+    @model_validator(mode="after")
+    def validate_present(self) -> Self:
+        if self.monthly_tokens is None and self.monthly_calls is None:
+            raise ValueError("A pooled quota needs monthly tokens or monthly calls")
+        return self
+
+
 class ModelAccessGrant(MosaicModel):
     entitlement_id: str
     subject: EntitlementSubject
@@ -2050,6 +2156,19 @@ class ModelAccessGrant(MosaicModel):
     enabled: bool
     enforcement: EntitlementEnforcement | None = None
     intent_digest: str
+    # The cost center the grant charges, and its code as the cost-center header names it.
+    cost_center_id: str = ""
+    cost_center_code: str = ""
+    # Whether this is a direct grant under its subject's default cost center. A call that names no
+    # cost center uses it before the subject's other grants, which go oldest first.
+    default_cost_center: bool = False
+    granted_at: datetime | None = None
+    # False when the grant's cost center turned keys off. The gateway then refuses its key and an
+    # apply suspends it, keeping it for when keys are allowed again.
+    keys_allowed: bool = True
+    # True when the grant was revoked because its subject left the cost center. An apply deletes
+    # its key rather than suspending it.
+    revoked: bool = False
 
     @model_validator(mode="after")
     def enforceable_subject_only(self) -> Self:
@@ -2077,6 +2196,7 @@ class ModelAccessSnapshot(MosaicModel):
     # snapshot carries no token policies at all, so none of its grants may carry token limits.
     publication_enforcement: TokenEnforcement | None = None
     grants: list[ModelAccessGrant] = Field(default_factory=list)
+    pools: list[AppliedCostCenterPool] = Field(default_factory=list)
 
 
 def model_access_subscription_name(
@@ -2104,6 +2224,12 @@ class McpAccessGrant(MosaicModel):
     enabled: bool
     enforcement: EntitlementEnforcement | None = None
     intent_digest: str
+    # As on ModelAccessGrant: the cost center the grant charges, which the cost-center header
+    # selects, and whether it's the subject's default.
+    cost_center_id: str = ""
+    cost_center_code: str = ""
+    default_cost_center: bool = False
+    granted_at: datetime | None = None
 
     @model_validator(mode="after")
     def enforceable_subject_only(self) -> Self:
@@ -2129,6 +2255,8 @@ class McpAccessSnapshot(MosaicModel):
     delegated_scope: str = MCP_DELEGATED_SCOPE
     application_role: str = MCP_APPLICATION_ROLE
     grants: list[McpAccessGrant] = Field(default_factory=list)
+    # MCP servers carry no tokens, so their pools count calls only.
+    pools: list[AppliedCostCenterPool] = Field(default_factory=list)
 
 
 class Publication(Entity):
@@ -2335,11 +2463,15 @@ class PrincipalCreate(MosaicModel):
     # Only honoured when directory lookup is off. When it is on, MOSAIC reads this from Microsoft
     # Graph and ignores what the caller sent.
     identity_parent_id: str | None = Field(default=None, max_length=128)
+    # The cost center this principal's calls are charged to when they name none. Omitted, it's
+    # the tenant's default. Ignored for a security group.
+    default_cost_center_id: str | None = Field(default=None, min_length=1, max_length=128)
 
 
 class PrincipalUpdate(MosaicModel):
     kind: PrincipalKind | None = None
     label: str | None = Field(default=None, max_length=200)
+    default_cost_center_id: str | None = Field(default=None, min_length=1, max_length=128)
 
     @field_validator("kind")
     @classmethod
@@ -2439,6 +2571,9 @@ class GrantOverlap(MosaicModel):
     kind: GrantOverlapKind
     resource: EntitlementResource
     resource_label: str
+    # Grants overlap only under the same cost center: a caller picks between cost centers with
+    # the cost-center header.
+    cost_center_id: str | None = None
     # The affected principal, for directAndGroup and multipleGroups. None for groups, which is
     # about every member of both groups rather than one principal.
     principal_id: str | None = None
@@ -3175,6 +3310,15 @@ class ModelConnection(MosaicModel):
     keys_available: bool = True
     via_group_id: str | None = None
     via_group_name: str | None = None
+    # The cost center the grant charges. A caller holding grants under several cost centers names
+    # this one with ``cost_center_header: <code>``; without it the gateway uses their default.
+    cost_center: CostCenterRef | None = None
+    cost_center_header: str = COST_CENTER_HEADER
+    # Whether the grant's key exists. Keys are created on request and never by an apply.
+    key_exists: bool = False
+    # False when the cost center turned keys off. Keys work only when the publication accepts keys
+    # and the cost center allows them.
+    keys_allowed_by_cost_center: bool = True
 
 
 class McpConnection(MosaicModel):
@@ -3213,6 +3357,8 @@ class McpConnection(MosaicModel):
     # ``https://{gateway}/.well-known/oauth-protected-resource/{api_path}/mcp``.
     resource_metadata_url: str | None = None
     limits: EntitlementEnforcement | None = None
+    cost_center: CostCenterRef | None = None
+    cost_center_header: str = COST_CENTER_HEADER
 
 
 class KeyRevealRequest(MosaicModel):
@@ -3224,6 +3370,26 @@ class KeyRevealResult(MosaicModel):
     subscription_name: str
     slot: Literal["primary", "secondary"]
     key: str = Field(repr=False)
+    cost_center: CostCenterRef | None = None
+
+
+class KeyRotateRequest(MosaicModel):
+    slot: Literal["primary", "secondary"] = "primary"
+
+
+class GrantKey(MosaicModel):
+    """A grant's key as its holder manages it: whether it exists, never its value.
+
+    The key is an API Management subscription with a deterministic name, so creating it again
+    after a delete gives the same subscription new values, and no re-apply is needed.
+    """
+
+    entitlement_id: str
+    subscription_name: str
+    exists: bool
+    cost_center: CostCenterRef | None = None
+    # The slot a rotation regenerated.
+    rotated: Literal["primary", "secondary"] | None = None
 
 
 class PublishRecoveryRequest(MosaicModel):

@@ -96,6 +96,28 @@ describe('MyRequestsPage', () => {
     expect(request.queryByRole('button', { name: 'Withdraw' })).not.toBeInTheDocument()
   })
 
+  it('names the cost center each request charges', async () => {
+    renderPage([
+      accessRequest({
+        id: 'request-research',
+        justification: 'Research notebook',
+        costCenterId: 'cc-research',
+        costCenter: { id: 'cc-research', name: 'Research', code: 'RES' },
+      }),
+      accessRequest({
+        id: 'request-general',
+        justification: 'Personal experiments',
+        costCenterId: 'cc-general',
+        costCenter: { id: 'cc-general', name: 'General', code: 'general' },
+      }),
+    ])
+
+    const research = (await screen.findByText('Research notebook')).closest('.request-card')
+    const general = screen.getByText('Personal experiments').closest('.request-card')
+    expect(within(research as HTMLElement).getByText('Research (RES)')).toBeVisible()
+    expect(within(general as HTMLElement).getByText('General (general)')).toBeVisible()
+  })
+
   it('does not imply a grant for an approval that predates linked grants', async () => {
     renderPage([accessRequest({ state: 'approved' })])
 

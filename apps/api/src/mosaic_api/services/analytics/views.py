@@ -291,23 +291,51 @@ def overview(
 
     by_caller: dict[str, UsageMetrics] = defaultdict(UsageMetrics)
     caller_costs: dict[str, float | None] = {}
+    by_cost_center: dict[str, UsageMetrics] = defaultdict(UsageMetrics)
+    cost_center_costs: dict[str, float | None] = {}
+    cost_center_names: dict[str, tuple[str, str]] = {}
     for summary, entry in entries(callers, scope, "grantCaller"):
         grant_key, _, caller = entry.key.rpartition("|")
         object_id = resolved_caller(scope, grant_key, caller)
+        cost = (
+            priced.grant_cost(
+                summary.gateway_id,
+                grant_key,
+                summary.period,
+                date.fromisoformat(summary.period_start),
+                entry.metrics,
+            )
+            if priced is not None
+            else None
+        )
         if object_id is not None:
             by_caller[object_id].add(entry.metrics)
             if priced is not None:
-                caller_costs[object_id] = add_cost(
-                    caller_costs.get(object_id),
-                    priced.grant_cost(
-                        summary.gateway_id,
-                        grant_key,
-                        summary.period,
-                        date.fromisoformat(summary.period_start),
-                        entry.metrics,
-                    ),
-                )
+                caller_costs[object_id] = add_cost(caller_costs.get(object_id), cost)
+        cost_center = scope.cost_center(scope.grants.get(grant_key))
+        if cost_center is not None:
+            by_cost_center[cost_center.id].add(entry.metrics)
+            cost_center_costs[cost_center.id] = add_cost(
+                cost_center_costs.get(cost_center.id), cost
+            )
+            cost_center_names[cost_center.id] = (cost_center.name, cost_center.code)
     linked = total(by_caller.values())
+    linked_by_cost_center = total(by_cost_center.values())
+    top_cost_centers = rank(
+        (
+            Ranked(
+                cost_center_id,
+                cost_center_names[cost_center_id][0],
+                cost_center_names[cost_center_id][1],
+                metrics,
+                cost_center_costs.get(cost_center_id),
+            )
+            for cost_center_id, metrics in by_cost_center.items()
+        ),
+        requests=linked_by_cost_center.requests,
+        tokens=linked_by_cost_center.total_tokens,
+        limit=TOP,
+    )
     ranked_callers: list[Ranked] = []
     for object_id, metrics in by_caller.items():
         name = scope.caller(object_id)
@@ -366,6 +394,7 @@ def overview(
         top_models=top_models,
         top_callers=top_callers,
         top_apis=top_apis,
+        top_cost_centers=top_cost_centers,
         gateways=gateways,
         cost=cost_summary,
         spend=spend,

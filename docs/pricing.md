@@ -198,9 +198,13 @@ and total tokens, cost, and whether the row was priced fully, partly, or not at 
 why a row isn't fully priced. **Cost by deployment** exports the Cost tab's deployments table.
 
 A grant's calls are charged to its subject: the person, application, or security group it was
-granted to, with its Entra object ID. Calls MOSAIC couldn't attribute are charged to
-**Unattributed calls**, and idle reserved capacity to **Reserved capacity with no calls**. Rows are
-split by calendar month, and the first and last month are cut to the chosen range.
+granted to, with its Entra object ID. The **Cost center** and **Cost center name** columns after
+**Object ID** name the [cost center](cost-centers.md) the grant charges, so the same subject has a
+row for each of its cost centers. Calls MOSAIC couldn't attribute are charged to
+**Unattributed calls**, and idle reserved capacity to **Reserved capacity with no calls**. Neither
+belongs to a grant, so their cost center is empty, and no cost center's spend includes them. Rows
+are split by calendar month, and the first and last month are cut to the chosen range. Filtering
+the Cost tab by cost center exports only that cost center's rows.
 
 ## Refreshing the seed
 

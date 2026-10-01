@@ -94,6 +94,9 @@ test.describe('30 access', { tag: '@console' }, () => {
     await expect.soft(dialog.detail('Deployment')).toHaveText(held.publication.deploymentName)
     await expect.soft(dialog.detail('Runtime state')).toHaveText(held.grant.runtime?.status ?? 'unknown')
     await expect.soft(dialog.detail('Last applied methods')).toHaveText(methodsLabel(methods))
+    // Applies don't create keys, so the administrator creates the workload's key before handing it off.
+    const created = await dialog.ensureKey()
+    if (created) expect(created.status(), "creating the workload's key").toBe(201)
     const revealed = await dialog.reveal('primary')
     expect(revealed.status, "the reveal of the workload's primary key").toBe(200)
     expect(revealed.noStore, 'the reveal to forbid caching').toBe(true)

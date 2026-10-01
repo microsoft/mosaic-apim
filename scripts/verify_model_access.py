@@ -1,15 +1,16 @@
 """Opt-in live verification of governed model access through a real API Management gateway.
 
 The script reads each grant's connection details and keys from MOSAIC, then calls the gateway
-directly. Every grant must reach its model with its own key and its own Entra token, and anonymous,
-invalid, wrong-audience and cross-subject calls must be rejected. Optional checks cover an
-ungranted user, the shared request budget, the tokens-per-minute limit and revocation, and that
-grants held by other people stay out of the user's reach in MOSAIC.
+directly. An apply doesn't create keys, so the script creates a grant's key when it has none, as
+its holder or an administrator would. Every grant must reach its model with its own key and its
+own Entra token, and anonymous, invalid, wrong-audience and cross-subject calls must be rejected.
+Optional checks cover an ungranted user, the shared request budget, the tokens-per-minute limit
+and revocation, and that grants held by other people stay out of the user's reach in MOSAIC.
 
 Credentials come from environment variables, or from sign-ins the script starts: the device code
 flow for users and client credentials for a workload. They stay in memory and are never printed,
-and neither is model output. The script doesn't provision resources, rotate keys, or change grants
-or authentication settings.
+and neither is model output. Apart from creating a missing key, the script doesn't provision
+resources, rotate keys, or change grants or authentication settings.
 """
 
 from __future__ import annotations
@@ -267,6 +268,13 @@ def custom_payload() -> dict[str, Any] | None:
     return value
 
 
+def create_key(client: httpx.Client, base: str, token: str, route: str) -> None:
+    """Create a grant's key. Applies don't create keys: a grant's holder asks for one."""
+
+    response = client.post(f"{base}/{route}/keys", headers=bearer(token))
+    expect(response, {201}, "Key creation")
+
+
 def reveal(client: httpx.Client, base: str, token: str, route: str, slot: str) -> str:
     response = client.post(
         f"{base}/{route}/keys/reveal", headers=bearer(token), json={"slot": slot}
@@ -340,6 +348,9 @@ def load_grant(
             options=options,
         )
         if grant.keys_enabled:
+            if connection.get("keyExists") is False:
+                create_key(client, base, control_token, route)
+                say(f"INFO: {label} had no key, so the check created one")
             grant.primary = reveal(client, base, control_token, route, "primary")
             if options.proof == "budget":
                 grant.secondary = reveal(client, base, control_token, route, "secondary")
@@ -364,7 +375,11 @@ def grant_from(
             f"Access must be applied to APIM with nothing pending (status: {shown})"
         )
     methods = mapping(connection.get("appliedMethods"))
-    keys = methods.get("keysEnabled") is True
+    # A cost center can turn keys off for its grants, whatever the model allows.
+    keys = (
+        methods.get("keysEnabled") is True
+        and connection.get("keysAllowedByCostCenter") is not False
+    )
     entra = methods.get("entraEnabled") is True
     if not keys and not entra:
         raise VerificationFailed("Neither keys nor Entra tokens are applied")

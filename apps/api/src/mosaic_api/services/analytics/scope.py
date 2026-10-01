@@ -4,11 +4,12 @@ import asyncio
 import re
 import time
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import structlog
 
 from mosaic_api.domain import (
+    CostCenterRef,
     DirectoryObject,
     Entitlement,
     EntitlementBinding,
@@ -76,6 +77,10 @@ class GrantInfo:
     gateway_id: str | None
     publication_id: str | None
     per_member: bool
+    # The cost center the grant charges, with its code and name as last recorded.
+    cost_center_id: str | None = None
+    cost_center_code: str | None = None
+    cost_center_name: str | None = None
 
 
 @dataclass(frozen=True)
@@ -203,6 +208,8 @@ class Scope:
     groups: dict[str, Group]
     subject_names: dict[str, str]
     directory: dict[str, DirectoryObject] = field(default_factory=dict)
+    # Every cost center that exists now, by ID, for naming grants by their current name.
+    cost_centers: dict[str, CostCenterRef] = field(default_factory=dict)
 
     # -- which gateways count ---------------------------------------------------------------
 
@@ -249,13 +256,22 @@ class Scope:
         return False
 
     def grant_allowed(self, grant_key: str) -> bool:
-        if self.resource_ids is None and self.filters.subject_kind is None:
+        if (
+            self.resource_ids is None
+            and self.filters.subject_kind is None
+            and self.filters.cost_center_id is None
+        ):
             return True
         grant = self.grants.get(grant_key)
         if grant is None:
             return False
         if self.resource_ids is not None and not (
             grant.resource_id in self.resource_ids or grant.publication_id in self.resource_ids
+        ):
+            return False
+        if (
+            self.filters.cost_center_id is not None
+            and grant.cost_center_id != self.filters.cost_center_id
         ):
             return False
         return self.filters.subject_kind is None or grant.subject_kind == self.filters.subject_kind
@@ -273,9 +289,43 @@ class Scope:
             return False
         if self.resource_ids is not None and entitlement.resource.id not in self.resource_ids:
             return False
+        if (
+            self.filters.cost_center_id is not None
+            and entitlement.cost_center_id != self.filters.cost_center_id
+        ):
+            return False
         return (
             self.filters.subject_kind is None
             or entitlement.subject.kind == self.filters.subject_kind
+        )
+
+    def grant_api(self, gateway_id: str, grant: GrantInfo | None) -> RolledUpApi | None:
+        """The governed API a grant's calls reached on a gateway, when it grants one."""
+
+        if grant is None or grant.resource_id is None:
+            return None
+        return next(
+            (
+                api
+                for (api_gateway, _), api in self.apis.items()
+                if api_gateway == gateway_id
+                and grant.resource_id in {api.resource_id, api.publication_id}
+            ),
+            None,
+        )
+
+    def cost_center(self, grant: GrantInfo | None) -> CostCenterRef | None:
+        """The cost center a grant charges, by its current name if it still exists."""
+
+        if grant is None or not grant.cost_center_id:
+            return None
+        current = self.cost_centers.get(grant.cost_center_id)
+        if current is not None:
+            return current
+        return CostCenterRef(
+            id=grant.cost_center_id,
+            name=grant.cost_center_name or grant.cost_center_code or "Removed cost center",
+            code=grant.cost_center_code or "",
         )
 
     # -- names ------------------------------------------------------------------------------
@@ -400,6 +450,11 @@ def grant_for(entitlement: Entitlement, scope: Scope) -> GrantInfo:
         gateway_id=scope.entitlement_gateway(entitlement),
         publication_id=entitlement.runtime.publication_id if entitlement.runtime else None,
         per_member=entitlement.subject.kind == EntitlementSubjectKind.SECURITY_GROUP,
+        cost_center_id=entitlement.cost_center_id,
+        cost_center_code=(current.code if (current := scope.cost_centers.get(
+            entitlement.cost_center_id
+        )) else None),
+        cost_center_name=current.name if current else None,
     )
 
 
@@ -419,6 +474,8 @@ def build_grants(
     principals: dict[str, Principal],
     groups: dict[str, Group],
 ) -> dict[str, GrantInfo]:
+    entitlements = list(entitlements)
+    by_id = {entitlement.id: entitlement for entitlement in entitlements}
     grants: dict[str, GrantInfo] = {}
     for record in records:
         link = "trace" if record.kind == "grant" else "subscription"
@@ -436,6 +493,9 @@ def build_grants(
             gateway_id=record.gateway_id,
             publication_id=record.publication_id,
             per_member=record.per_member,
+            cost_center_id=record.cost_center_id,
+            cost_center_code=record.cost_center_code,
+            cost_center_name=record.cost_center_name,
         )
     for entitlement in entitlements:
         binding = entitlement.binding
@@ -460,8 +520,16 @@ def build_grants(
                         entitlement.runtime.publication_id if entitlement.runtime else None
                     ),
                     per_member=binding.attribution_per_member,
+                    cost_center_id=entitlement.cost_center_id,
                 ),
             )
+    # A record copied before cost centers names none; the grant it stands for still does.
+    for key, grant in list(grants.items()):
+        if grant.cost_center_id or not grant.entitlement_id:
+            continue
+        current = by_id.get(grant.entitlement_id)
+        if current is not None:
+            grants[key] = replace(grant, cost_center_id=current.cost_center_id)
     return grants
 
 

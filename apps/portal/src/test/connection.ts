@@ -9,12 +9,19 @@ import type {
 
 const timestamp = '2026-09-01T12:00:00Z'
 
+export const researchCostCenter = {
+  id: 'cost_center_research',
+  name: 'Research',
+  code: 'RES',
+}
+
 export const directGrant: Entitlement = {
   id: 'entitlement_direct',
   tenantId: 'tenant-1',
   entityType: 'entitlement',
   subject: { kind: 'user', id: 'principal_1' },
   resource: { kind: 'modelApi', id: 'modelApi_chat', scopeId: null },
+  costCenterId: researchCostCenter.id,
   enabled: true,
   enforcement: {
     tokens: {
@@ -59,6 +66,7 @@ export const directSummary: ResourceSummary = {
 export const directResolved: ResolvedEntitlement = {
   entitlement: directGrant,
   resourceSummary: directSummary,
+  costCenter: researchCostCenter,
   via: 'direct',
   viaGroupId: null,
   viaGroupName: null,
@@ -167,6 +175,8 @@ export const mcpConnection: McpConnection = {
   enforced: true,
   statusMessage: 'The gateway enforces this grant.',
   runtime: mcpGrant.runtime,
+  costCenter: researchCostCenter,
+  costCenterHeader: 'x-mosaic-cost-center',
   entraAudience: '11111111-2222-3333-4444-555555555555',
   delegatedScope: 'api://11111111-2222-3333-4444-555555555555/Mcp.Invoke',
   applicationScope: null,
@@ -255,6 +265,10 @@ export const connection: ModelConnection = {
   tenantId: 'tenant-1',
   runtime: directGrant.runtime,
   appliedMethods: { keysEnabled: true, entraEnabled: true },
+  costCenter: researchCostCenter,
+  costCenterHeader: 'x-mosaic-cost-center',
+  keyExists: true,
+  keysAllowedByCostCenter: true,
   entraAudience: '11111111-2222-3333-4444-555555555555',
   entraScope: 'api://11111111-2222-3333-4444-555555555555/Models.Invoke',
   entraClientId: modelClientId,
@@ -318,6 +332,7 @@ export const revealedPrimary: KeyRevealResult = {
   subscriptionName: 'grant-subscription',
   slot: 'primary',
   key: 'test-only-primary-secret',
+  costCenter: researchCostCenter,
 }
 
 export const revealedSecondary: KeyRevealResult = {

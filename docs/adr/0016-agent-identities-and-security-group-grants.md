@@ -109,6 +109,18 @@ recorded governance intent because MOSAIC does not own their gateway policy.
   Microsoft Entra emits group-assigned app roles for users, but not for service principals added to
   those groups.
 
+## Amendment 2026-10-01: Precedence is per cost center
+
+[ADR 0022](0022-cost-centers.md) charges every grant to a cost center and makes it part of the
+grant's identity. The precedence above now chooses one grant per resource and cost center: a direct
+grant still wins over a group grant, and the most generous group grant over the rest, but only
+among grants under the same cost center. Grants under different cost centers don't compete; a
+caller picks one with the `x-mosaic-cost-center` header. Without it, the gateway tries the caller's
+direct grant under their default cost center, then their other direct grants, oldest first, then
+their security-group grants in the order above. A security group may charge only the tenant's
+default cost center or one that lists it, and a member of a listed group may charge that cost
+center too.
+
 ## References
 
 - [Overview of agent identities in Microsoft Entra](https://learn.microsoft.com/entra/agent-id/agent-identities)

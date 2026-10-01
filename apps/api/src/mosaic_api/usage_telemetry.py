@@ -358,6 +358,13 @@ class AttributionRecord(Entity):
     resource: EntitlementResource
     resource_name: str | None = None
     per_member: bool = False
+    # The cost center the grant charges. A grant's cost center never changes, so its calls group
+    # by cost center without a key of their own in the trace. The code and name are as they were
+    # when the record was last copied; reports name a cost center that still exists by its
+    # current name. See ADR 0022.
+    cost_center_id: str | None = None
+    cost_center_code: str | None = None
+    cost_center_name: str | None = None
     recorded_at: datetime
     revoked_at: datetime | None = None
     ttl: int = KEEP_FOREVER

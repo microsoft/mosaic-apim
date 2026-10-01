@@ -74,6 +74,56 @@ describe('useMosaicApi', () => {
     expect(JSON.parse(String(options.body))).toEqual({ slot: 'secondary' })
   })
 
+  it('calls the cost center and admin key endpoints with contracted paths', async () => {
+    const fetchMock = vi.fn().mockImplementation(async () => new Response(JSON.stringify({ id: 'ok' }), {
+      status: 200, headers: { 'Content-Type': 'application/json' },
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+    const { result } = renderHook(() => useMosaicApi())
+
+    await result.current.listCostCenters()
+    await result.current.createCostCenter({ name: 'Support', code: 'support', description: null, owners: ['owner@example.com'], keysAllowed: true })
+    await result.current.getCostCenter('cc 1')
+    await result.current.updateCostCenter('cc 1', { keysAllowed: false })
+    await result.current.addCostCenterMember('cc 1', 'principal 1')
+    await result.current.removeCostCenterMember('cc 1', 'principal 1')
+    await result.current.updateCostCenterLimits('cc 1', [])
+    await result.current.getCostCenterSettings()
+    await result.current.updateCostCenterSettings({ defaultCostCenterId: 'cc 1' })
+    await result.current.listEntitlements({ costCenter: 'cc 1' })
+    await result.current.createEntitlement({ subject: { kind: 'user', id: 'p1' }, resource: { kind: 'modelApi', id: 'm1' }, costCenterId: 'cc 1' })
+    await result.current.createEntitlementKey('grant 1')
+    await result.current.rotateEntitlementKey('grant 1', 'secondary')
+    await result.current.deleteEntitlementKey('grant 1')
+    await result.current.deleteCostCenter('cc 1')
+    await result.current.recheckCostCenter('cc 1')
+
+    expect(fetchMock.mock.calls.map(([url]) => String(url).replace(/^https?:\/\/[^/]+/, ''))).toEqual([
+      '/api/v1/cost-centers',
+      '/api/v1/cost-centers',
+      '/api/v1/cost-centers/cc%201',
+      '/api/v1/cost-centers/cc%201',
+      '/api/v1/cost-centers/cc%201/members/principal%201',
+      '/api/v1/cost-centers/cc%201/members/principal%201',
+      '/api/v1/cost-centers/cc%201/limits',
+      '/api/v1/cost-center-settings',
+      '/api/v1/cost-center-settings',
+      '/api/v1/entitlements?costCenter=cc+1',
+      '/api/v1/entitlements',
+      '/api/v1/entitlements/grant%201/keys',
+      '/api/v1/entitlements/grant%201/keys/rotate',
+      '/api/v1/entitlements/grant%201/keys',
+      '/api/v1/cost-centers/cc%201',
+      '/api/v1/cost-centers/cc%201/recheck',
+    ])
+    expect(fetchMock.mock.calls[15][1]).toMatchObject({ method: 'POST' })
+    expect(fetchMock.mock.calls[6][1]).toMatchObject({ method: 'PUT' })
+    expect(JSON.parse(fetchMock.mock.calls[6][1].body)).toEqual({ limits: [] })
+    expect(fetchMock.mock.calls[12][1]).toMatchObject({ method: 'POST', cache: 'no-store' })
+    expect(JSON.parse(fetchMock.mock.calls[12][1].body)).toEqual({ slot: 'secondary' })
+    expect(fetchMock.mock.calls[13][1]).toMatchObject({ method: 'DELETE', cache: 'no-store' })
+  })
+
   it('sends link, settings, connection and future self-service calls to their existing API prefix', async () => {
     const fetchMock = vi.fn().mockImplementation(async () => new Response('{}', {
       status: 200, headers: { 'Content-Type': 'application/json' },

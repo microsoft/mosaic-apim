@@ -10,7 +10,9 @@ from typing import Literal, Protocol
 
 from pydantic import Field
 
+from mosaic_api.cost_centers import CostCenterBook
 from mosaic_api.domain import (
+    CostCenterRef,
     Entitlement,
     EntitlementBinding,
     EntitlementResource,
@@ -29,20 +31,26 @@ from mosaic_api.pricing import (
     token_amount,
 )
 from mosaic_api.repositories import (
+    CostCenterRepository,
+    EntitlementRepository,
     EnvironmentRepository,
     GatewayRepository,
     ModelEndpointRepository,
     UsageRollupRepository,
 )
+from mosaic_api.services.cost_centers import load_book
 from mosaic_api.services.directory import Actor
 from mosaic_api.services.environments import load_environment_catalog
+from mosaic_api.services.model_access import with_inherited_limits
 from mosaic_api.services.portal import PortalService
 from mosaic_api.services.pricing import PricingService
 from mosaic_api.usage_telemetry import (
     UsageFact,
     UsageHour,
+    UsageMetrics,
     UsageRollupState,
     iso_day,
+    month_start,
     rollup_stale_after,
     subscription_attribution_key,
 )
@@ -183,6 +191,36 @@ class UsageResourceRow(MosaicModel):
     peak_minute_requests: int | None = None
     last_used_at: datetime | None = None
     recent_hours: list[UsageHourPoint] = Field(default_factory=list)
+    # The cost center the grant charges.
+    cost_center: CostCenterRef | None = None
+
+
+class CostCenterResourceUsage(MosaicModel):
+    """Everyone's calls under a cost center to one of the caller's resources, this month."""
+
+    resource: EntitlementResource
+    display_name: str | None = None
+    requests: int
+    # None for an MCP server, which carries no tokens.
+    total_tokens: int | None
+    pool_tokens: int | None = None
+    pool_calls: int | None = None
+    # The larger share of the pool spent, of tokens or of calls. None without a pool.
+    utilization: float | None = None
+
+
+class CostCenterUsage(MosaicModel):
+    """A cost center's calendar month so far, as one total of everyone's calls.
+
+    Only totals: what every grant under the cost center carried, whoever called. Never who called
+    or how much any one person used. Resources are the caller's own grants under it.
+    """
+
+    cost_center: CostCenterRef
+    month_start: date
+    requests: int
+    total_tokens: int
+    resources: list[CostCenterResourceUsage] = Field(default_factory=list)
 
 
 class UsageFreshness(MosaicModel):
@@ -212,6 +250,8 @@ class MyUsageReport(MosaicModel):
     # Measured usage only: how current the figures are, and the last 24 hours across every grant.
     freshness: UsageFreshness | None = None
     recent_hours: list[UsageHourPoint] = Field(default_factory=list)
+    # Measured usage only: each of the caller's cost centers' month so far, in total.
+    cost_centers: list[CostCenterUsage] = Field(default_factory=list)
 
 
 @dataclass
@@ -262,6 +302,15 @@ class UsageSource(Protocol):
         self, actor: Actor, entitlements: Sequence[ResolvedEntitlement]
     ) -> UsageFreshness | None: ...
 
+    async def grant_totals(
+        self, tenant_id: str, grants: Sequence[Entitlement], *, start: date, end: date
+    ) -> Mapping[str, UsageMetrics] | None:
+        """Every call through these grants, whoever made it, totalled by grant and never by caller.
+
+        None when the figures are simulated, which say nothing about anyone else's calls.
+        """
+        ...
+
 
 class SimulatedUsageSource:
     data_source: UsageDataSource = "simulated"
@@ -290,6 +339,11 @@ class SimulatedUsageSource:
     async def freshness(
         self, actor: Actor, entitlements: Sequence[ResolvedEntitlement]
     ) -> UsageFreshness | None:
+        return None
+
+    async def grant_totals(
+        self, tenant_id: str, grants: Sequence[Entitlement], *, start: date, end: date
+    ) -> Mapping[str, UsageMetrics] | None:
         return None
 
     def _series_for(
@@ -694,6 +748,30 @@ class RollupUsageSource:
             series[entitlement.id] = dict(sorted(days.items()))
         return series
 
+    async def grant_totals(
+        self, tenant_id: str, grants: Sequence[Entitlement], *, start: date, end: date
+    ) -> Mapping[str, UsageMetrics] | None:
+        wanted = {grant.id for grant in grants}
+        owners: dict[str, str] = {}
+        for record in await self._repository.list_attribution_records(tenant_id):
+            if record.entitlement_id in wanted:
+                owners[record.key] = record.entitlement_id
+        for grant in grants:
+            if grant.binding is not None:
+                for key in binding_link_keys(grant.binding):
+                    owners.setdefault(key, grant.id)
+        if not owners:
+            return {}
+        facts = await self._repository.list_facts(
+            tenant_id, start_day=iso_day(start), end_day=iso_day(end), link_keys=sorted(owners)
+        )
+        totals: dict[str, UsageMetrics] = defaultdict(UsageMetrics)
+        for fact in facts:
+            owner = owners.get(fact.link_key)
+            if owner is not None:
+                totals[owner].add(fact.metrics)
+        return totals
+
     async def freshness(
         self, actor: Actor, entitlements: Sequence[ResolvedEntitlement]
     ) -> UsageFreshness:
@@ -784,9 +862,13 @@ class UsageService:
         environment_repository: EnvironmentRepository,
         pricing: PricingService | None = None,
         clock: Callable[[], datetime] | None = None,
+        entitlement_repository: EntitlementRepository | None = None,
+        cost_center_repository: CostCenterRepository | None = None,
     ) -> None:
         self._portal = portal
         self._source = source
+        self._grants = entitlement_repository
+        self._cost_centers = cost_center_repository
         self._gateways = gateway_repository
         self._endpoints = endpoint_repository
         self._environments = environment_repository
@@ -828,7 +910,14 @@ class UsageService:
         now = self._clock().astimezone(UTC)
         end = now.date()
         start = end - timedelta(days=_PERIOD_DAYS[period] - 1)
-        entitlements = await self._usage_entitlements(actor)
+        book = await load_book(self._cost_centers, actor.tenant_id)
+        # A grant's limits are its own, or its cost center's per-person limits when it has none.
+        entitlements = [
+            item.model_copy(
+                update={"entitlement": with_inherited_limits(item.entitlement, book)}
+            )
+            for item in await self._usage_entitlements(actor)
+        ]
         quota_start = self._earliest_quota_window_start(entitlements, now).date()
         recent_start = (now - timedelta(hours=23)).date()
         generation_start = min(start, quota_start, recent_start)
@@ -954,6 +1043,7 @@ class UsageService:
                 peak_minute_requests=peak_requests,
                 last_used_at=_last_seen(series),
                 recent_hours=_recent_hours(series, now) if measured and series else [],
+                cost_center=book.ref(entitlement.cost_center_id),
             )
             rows.append(row)
 
@@ -1033,6 +1123,111 @@ class UsageService:
             recent_hours=_combine_hours([row.recent_hours for row in rows], now)
             if measured
             else [],
+            cost_centers=(
+                await self._cost_center_usage(actor, entitlements, book, now)
+                if measured
+                else []
+            ),
+        )
+
+    async def _cost_center_usage(
+        self,
+        actor: Actor,
+        entitlements: Sequence[ResolvedEntitlement],
+        book: CostCenterBook,
+        now: datetime,
+    ) -> list[CostCenterUsage]:
+        """Each of the caller's cost centers' month so far, totalled over everyone's calls.
+
+        Only cost centers the caller holds an enabled grant under, and only totals: the figures
+        are summed over every grant charged to the cost center, so nothing in them is any one
+        person's. Someone whose grants were turned off or revoked no longer sees its totals. A
+        resource's own total is shown only against a pooled quota on it, which is what it's for:
+        without one, a model that one other person uses would show their use.
+        """
+
+        if self._grants is None:
+            return []
+        mine: dict[str, list[ResolvedEntitlement]] = defaultdict(list)
+        for item in entitlements:
+            if not item.entitlement.enabled or item.entitlement.revocation is not None:
+                continue
+            mine[item.entitlement.cost_center_id].append(item)
+        if not mine:
+            return []
+        everyone = await self._grants.list_entitlements(actor.tenant_id)
+        first = month_start(now.date())
+        found: list[CostCenterUsage] = []
+        for cost_center_id, held in sorted(mine.items()):
+            cost_center = book.get(cost_center_id)
+            if cost_center is None:
+                continue
+            grants = [item for item in everyone if item.cost_center_id == cost_center_id]
+            totals = await self._source.grant_totals(
+                actor.tenant_id, grants, start=first, end=now.date()
+            )
+            if totals is None:
+                continue
+            overall = UsageMetrics()
+            by_resource: dict[tuple[str, str, str], UsageMetrics] = defaultdict(UsageMetrics)
+            for grant in grants:
+                metrics = totals.get(grant.id)
+                if metrics is None:
+                    continue
+                overall.add(metrics)
+                resource = grant.resource
+                by_resource[(str(resource.kind), resource.id, resource.scope_id or "")].add(
+                    metrics
+                )
+            resources: list[CostCenterResourceUsage] = []
+            seen: set[tuple[str, str, str]] = set()
+            for item in held:
+                resource = item.entitlement.resource
+                key = (str(resource.kind), resource.id, resource.scope_id or "")
+                if key in seen:
+                    continue
+                seen.add(key)
+                limit = cost_center.limit_for(resource)
+                pool = limit.pool if limit is not None else None
+                if pool is None:
+                    continue
+                metrics = by_resource.get(key) or UsageMetrics()
+                is_mcp = resource.kind == EntitlementResourceKind.MCP_SERVER
+                shares = [
+                    used / allowed
+                    for used, allowed in (
+                        (metrics.total_tokens, pool.monthly_tokens if pool else None),
+                        (metrics.requests, pool.monthly_calls if pool else None),
+                    )
+                    if allowed
+                ]
+                resources.append(
+                    CostCenterResourceUsage(
+                        resource=resource,
+                        display_name=(
+                            item.resource_summary.display_name if item.resource_summary else None
+                        ),
+                        requests=metrics.requests,
+                        total_tokens=None if is_mcp else metrics.total_tokens,
+                        pool_tokens=pool.monthly_tokens if pool else None,
+                        pool_calls=pool.monthly_calls if pool else None,
+                        utilization=round(max(shares), 4) if shares else None,
+                    )
+                )
+            found.append(
+                CostCenterUsage(
+                    cost_center=cost_center.ref(),
+                    month_start=first,
+                    requests=overall.requests,
+                    total_tokens=overall.total_tokens,
+                    resources=sorted(
+                        resources,
+                        key=lambda row: ((row.display_name or "").casefold(), row.resource.id),
+                    ),
+                )
+            )
+        return sorted(
+            found, key=lambda item: (item.cost_center.name.casefold(), item.cost_center.id)
         )
 
     def _earliest_quota_window_start(

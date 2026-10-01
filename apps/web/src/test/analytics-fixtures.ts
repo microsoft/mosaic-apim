@@ -74,6 +74,7 @@ export const overviewFixture: AnalyticsOverview = {
   modelTrend: [],
   topModels: [{ key: 'gpt-4o', label: 'gpt-4o', detail: null, requests: 153, totalTokens: 45030, requestShare: 0.93, tokenShare: 0.99 }],
   topCallers: [{ key: 'alice', label: 'Alice Admin', detail: 'alice@contoso', requests: 106, totalTokens: 15060, requestShare: 0.64, tokenShare: 0.33 }],
+  topCostCenters: [{ key: 'cc-support', label: 'Support', detail: 'support', requests: 120, totalTokens: 32000, requestShare: 0.73, tokenShare: 0.71 }],
   topApis: [{ key: 'chat', label: 'Chat', detail: 'Production gateway', requests: 154, totalTokens: 45030, requestShare: 0.93, tokenShare: 0.99 }],
   gateways: [{
     gatewayId: 'gateway-prod',
@@ -117,7 +118,8 @@ export const consumersFixture: AnalyticsConsumers = {
   ],
   applications: [{ key: 'bot', kind: 'application', label: 'Support bot', detail: 'bot-app-id', principalId: 'principal-bot', principalKind: 'servicePrincipal', grants: 1, resources: 1, members: null, requests: 50, promptTokens: 10000, completionTokens: 5000, totalTokens: 15000, throttled: 0, quotaRefused: 0, errors: 0, lastSeen: generatedAt, requestShare: 0.31, tokenShare: 0.33 }],
   groups: [{ key: 'analysts', kind: 'group', label: 'Analysts', detail: null, principalId: 'principal-group', principalKind: 'securityGroup', grants: 1, resources: 1, members: 2, requests: 7, promptTokens: 70, completionTokens: 70, totalTokens: 140, throttled: 0, quotaRefused: 0, errors: 0, lastSeen: generatedAt, requestShare: 0.04, tokenShare: 0.01 }],
-  grants: [{ key: 'grant-alice', entitlementId: 'grant-alice', state: 'active', subjectKind: 'user', subjectLabel: 'Alice Admin', subjectDetail: 'alice@contoso', subjectPrincipalKind: 'user', resourceKind: 'modelApi', resourceLabel: 'Chat', gatewayId: 'gateway-prod', gatewayName: 'Production gateway', callers: 1, keyRequests: 0, peakMinuteTokens: 1500, peakMinuteRequests: 10, requests: 101, promptTokens: 10000, completionTokens: 5000, totalTokens: 15000, throttled: 1, quotaRefused: 0, errors: 0, lastSeen: generatedAt, requestShare: 0.63, tokenShare: 0.33 }],
+  costCenters: [{ key: 'cc-support', label: 'Support', code: 'support', grants: 3, callers: 2, requests: 120, promptTokens: 20000, completionTokens: 12000, totalTokens: 32000, throttled: 1, quotaRefused: 0, errors: 0, lastSeen: generatedAt, requestShare: 0.75, tokenShare: 0.71 }],
+  grants: [{ key: 'grant-alice', entitlementId: 'grant-alice', state: 'active', subjectKind: 'user', subjectLabel: 'Alice Admin', subjectDetail: 'alice@contoso', subjectPrincipalKind: 'user', costCenterId: 'cc-support', costCenterCode: 'support', costCenterName: 'Support', resourceKind: 'modelApi', resourceLabel: 'Chat', gatewayId: 'gateway-prod', gatewayName: 'Production gateway', callers: 1, keyRequests: 0, peakMinuteTokens: 1500, peakMinuteRequests: 10, requests: 101, promptTokens: 10000, completionTokens: 5000, totalTokens: 15000, throttled: 1, quotaRefused: 0, errors: 0, lastSeen: generatedAt, requestShare: 0.63, tokenShare: 0.33 }],
   clientApps: [{ clientAppId: 'cli-app', label: 'cli-app', principalId: null, apis: 1, requests: 100, promptTokens: 10000, completionTokens: 5000, totalTokens: 15000, throttled: 0, quotaRefused: 0, errors: 0, lastSeen: generatedAt, requestShare: 0.62, tokenShare: 0.33 }],
   truncated: false,
 }
@@ -147,7 +149,7 @@ export const limitsFixture: AnalyticsLimits = {
   near: 1,
   reached: 0,
   rows: [
-    { key: 'grant-alice', entitlementId: 'grant-alice', subjectKind: 'user', subjectLabel: 'Alice Admin', subjectDetail: 'alice@contoso', subjectPrincipalKind: 'user', memberObjectId: null, memberLabel: null, resourceKind: 'modelApi', resourceLabel: 'Chat', gatewayId: 'gateway-prod', gatewayName: 'Production gateway', utilization: 0.75, status: 'ok', throttled: 1, quotaRefused: 0, limits: [{ kind: 'quota', metric: 'tokens', limit: 20000, period: 'Monthly', windowSeconds: null, windowStart: null, windowEnd: null, used: 15000, utilization: 0.75, partial: false }] },
+    { key: 'grant-alice', entitlementId: 'grant-alice', subjectKind: 'user', subjectLabel: 'Alice Admin', subjectDetail: 'alice@contoso', subjectPrincipalKind: 'user', costCenterCode: 'support', costCenterName: 'Support', memberObjectId: null, memberLabel: null, resourceKind: 'modelApi', resourceLabel: 'Chat', gatewayId: 'gateway-prod', gatewayName: 'Production gateway', utilization: 0.75, status: 'ok', throttled: 1, quotaRefused: 0, limits: [{ kind: 'quota', metric: 'tokens', limit: 20000, period: 'Monthly', windowSeconds: null, windowStart: null, windowEnd: null, used: 15000, utilization: 0.75, partial: false }] },
     { key: 'grant-scheduler', entitlementId: 'grant-scheduler', subjectKind: 'user', subjectLabel: 'Scheduling Assistant', subjectDetail: null, subjectPrincipalKind: 'agentUser', memberObjectId: null, memberLabel: null, resourceKind: 'modelApi', resourceLabel: 'Chat', gatewayId: 'gateway-prod', gatewayName: 'Production gateway', utilization: 0.85, status: 'near', throttled: 0, quotaRefused: 0, limits: [{ kind: 'rateLimit', metric: 'requests', limit: 100, period: null, windowSeconds: 60, windowStart: null, windowEnd: null, used: 85, utilization: 0.85, partial: false }] },
   ],
   truncated: false,
@@ -266,6 +268,7 @@ export const costFixture: AnalyticsCost = {
     { key: 'person:bob', label: 'Bob', kind: 'person', requests: 3, totalTokens: 300_000, cost: 3240, costShare: 0.45 },
     { key: 'group:analysts', label: 'Analysts', kind: 'group', requests: 1, totalTokens: 100_000, cost: 1080, costShare: 0.15 },
   ],
+  costCenters: [{ key: 'cc-support', label: 'Support', detail: 'support', kind: 'costCenter', requests: 11, totalTokens: 11_100_000, cost: 4355.25, costShare: 0.6 }],
   apis: [{ key: 'gateway-prod/reserved', label: 'Reserved', detail: 'Production gateway', requests: 4, totalTokens: 400_000, cost: 4320, costShare: 0.6 }],
   deployments: [
     { key: 'endpoint-aoai/chat', endpointId: 'endpoint-aoai', endpointName: 'Contoso Azure OpenAI', deploymentName: 'chat', modelName: 'gpt-4o', modelVersion: '2024-11-20', cloud: 'commercial', cloudLabel: 'Azure Commercial', deploymentType: 'GlobalStandard', region: 'eastus2', pricing: 'tokens', priceId: 'commercial.openai.gpt-4o.2024-11-20.globalstandard', priceOrigin: 'seed', inputPerMillion: 2.5, cachedInputPerMillion: 1.25, outputPerMillion: 10, requests: 11, promptTokens: 10_100_000, completionTokens: 1_000_000, totalTokens: 11_100_000, cost: 35.25, costShare: 0.005, gateways: 1 },

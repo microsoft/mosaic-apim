@@ -1,8 +1,10 @@
 from collections.abc import AsyncIterator
-from contextlib import AsyncExitStack, asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from dataclasses import dataclass
+from typing import Protocol
 from uuid import UUID
 
+from mosaic_api.cost_centers import COST_CENTERS_BUSY, COST_CENTERS_SCOPE, RecheckReason
 from mosaic_api.domain import (
     AuditEvent,
     DirectoryMemberPage,
@@ -18,14 +20,24 @@ from mosaic_api.domain import (
     PrincipalKind,
     PrincipalUpdate,
     deterministic_id,
+    general_cost_center_id,
     new_id,
     subject_kind_for,
     utc_now,
 )
 from mosaic_api.errors import ConflictError, DirectoryDisabledError, NotFoundError, ValidationError
 from mosaic_api.integrations.graph import DirectoryLookup
-from mosaic_api.repositories import DirectoryRepository, EntitlementRepository, GatewayRepository
-from mosaic_api.services.model_access import entitlement_publication, publication_lock
+from mosaic_api.repositories import (
+    CostCenterRepository,
+    DirectoryRepository,
+    EntitlementRepository,
+    GatewayRepository,
+)
+from mosaic_api.services.model_access import (
+    entitlement_publication,
+    publication_lock,
+    scope_lease,
+)
 
 
 @dataclass(frozen=True)
@@ -40,6 +52,34 @@ class Actor:
     groups_overage: bool = False
 
 
+class CostCenterChecks(Protocol):
+    """Revokes grants whose subjects may no longer charge their cost center; see ADR 0022."""
+
+    async def request_recheck(
+        self,
+        actor: Actor,
+        cost_center_id: str,
+        *,
+        reason: RecheckReason,
+        subject_id: str | None = None,
+    ) -> None: ...
+
+    async def resume_rechecks(
+        self, actor: Actor, cost_center_id: str | None = None
+    ) -> list[str]: ...
+
+
+def _moves_default(principal: Principal, request: PrincipalUpdate) -> bool:
+    """Whether the update may take away the principal's default cost center."""
+
+    fields = request.model_fields_set
+    if "default_cost_center_id" in fields and (
+        request.default_cost_center_id != principal.default_cost_center_id
+    ):
+        return True
+    return "kind" in fields and request.kind == PrincipalKind.SECURITY_GROUP
+
+
 class DirectoryService:
     def __init__(
         self,
@@ -49,12 +89,50 @@ class DirectoryService:
         entitlement_repository: EntitlementRepository | None = None,
         directory_lookup: DirectoryLookup | None = None,
         group_claims_enabled: bool = True,
+        cost_center_repository: CostCenterRepository | None = None,
+        cost_center_checks: CostCenterChecks | None = None,
     ) -> None:
         self._repository = repository
         self._gateways = gateway_repository
         self._entitlements = entitlement_repository
         self._directory = directory_lookup
         self._group_claims_enabled = group_claims_enabled
+        self._cost_centers = cost_center_repository
+        # The EntitlementService, which revokes a principal's grants under a former default
+        # cost center it may no longer charge.
+        self._cost_center_checks = cost_center_checks
+
+    async def _onboarding_default(
+        self, actor: Actor, kind: PrincipalKind, requested: str | None
+    ) -> str | None:
+        """The default cost center a principal is onboarded with: the one asked for, or the
+        tenant's. A security group is never the caller, so it has none."""
+
+        if kind == PrincipalKind.SECURITY_GROUP:
+            if requested is not None:
+                raise ValidationError(
+                    "A security group is never the caller, so it has no default cost center"
+                )
+            return None
+        if self._cost_centers is None:
+            return requested
+        if requested is not None:
+            await self._require_cost_center(actor, requested)
+            return requested
+        settings = await self._cost_centers.get_settings(actor.tenant_id)
+        return settings.default_cost_center_id if settings else general_cost_center_id(
+            actor.tenant_id
+        )
+
+    async def _require_cost_center(self, actor: Actor, cost_center_id: str) -> None:
+        if cost_center_id == general_cost_center_id(actor.tenant_id):
+            return
+        if self._cost_centers is None or await self._cost_centers.get_cost_center(
+            actor.tenant_id, cost_center_id
+        ) is None:
+            raise ValidationError(
+                "No cost center has that ID", details={"defaultCostCenterId": cost_center_id}
+            )
 
     @asynccontextmanager
     async def _principal_mutation(self, actor: Actor, principal_id: str) -> AsyncIterator[None]:
@@ -152,6 +230,16 @@ class DirectoryService:
         return principal
 
     async def create_principal(self, actor: Actor, request: PrincipalCreate) -> Principal:
+        """Onboard a principal with its default cost center.
+
+        The default is checked as the request arrives, and again as the principal is saved, under
+        the lease deleting a cost center holds. A cost center deleted meanwhile can't become its
+        default. Microsoft Graph is asked outside the lease.
+        """
+
+        kind = request.kind
+        requested_default = request.default_cost_center_id
+        await self._onboarding_default(actor, kind, requested_default)
         object_id = _normalize_object_id(
             request.object_id,
             request.kind,
@@ -201,36 +289,97 @@ class DirectoryService:
                 "A principal with this Entra object ID already exists",
                 details={"objectId": request.object_id, "id": existing.id},
             )
-        principal = Principal(
-            id=deterministic_id("principal", actor.tenant_id, request.object_id),
-            tenant_id=actor.tenant_id,
-            **request.model_dump(by_alias=False, exclude={"identity_parent_id"}),
-            detail=verified.detail if verified else None,
-            identity_parent_id=(
-                verified.identity_parent_id if verified else request.identity_parent_id
-            ),
-            blueprint_id=verified.blueprint_id if verified else None,
-            directory_verified_at=utc_now() if verified else None,
-        )
-        saved = await self._repository.create_principal(
-            principal,
-            self._audit_event(actor, "principal.created", "principal", principal.id),
-        )
+        async with self._cost_centers_lease(actor):
+            principal = Principal(
+                id=deterministic_id("principal", actor.tenant_id, request.object_id),
+                tenant_id=actor.tenant_id,
+                **request.model_dump(
+                    by_alias=False, exclude={"identity_parent_id", "default_cost_center_id"}
+                ),
+                detail=verified.detail if verified else None,
+                identity_parent_id=(
+                    verified.identity_parent_id if verified else request.identity_parent_id
+                ),
+                blueprint_id=verified.blueprint_id if verified else None,
+                directory_verified_at=utc_now() if verified else None,
+                default_cost_center_id=await self._onboarding_default(
+                    actor, kind, requested_default
+                ),
+            )
+            saved = await self._repository.create_principal(
+                principal,
+                self._audit_event(actor, "principal.created", "principal", principal.id),
+            )
         return saved
+
+    @asynccontextmanager
+    async def _cost_centers_lease(self, actor: Actor) -> AsyncIterator[None]:
+        """The lease deleting a cost center holds while it checks that it's no one's default."""
+
+        if self._gateways is None or self._cost_centers is None:
+            yield
+            return
+        async with scope_lease(
+            self._gateways, actor.tenant_id, COST_CENTERS_SCOPE, busy_message=COST_CENTERS_BUSY
+        ):
+            yield
 
     async def update_principal(
         self, actor: Actor, principal_id: str, request: PrincipalUpdate
     ) -> Principal:
-        async with self._principal_mutation(actor, principal_id):
-            return await self._update_principal(actor, principal_id, request)
+        """Update a principal. Moving its default cost center rechecks its grants under the old one.
+
+        They may have charged the old default only because it was theirs. The recheck is recorded
+        before the move and runs once the locks are released, with any recheck an earlier attempt
+        left pending, so repeating the request finishes one that couldn't. If the update fails, the
+        recheck runs anyway and finds nothing changed.
+        """
+
+        checks = self._cost_center_checks
+        defaults = bool({"default_cost_center_id", "kind"} & request.model_fields_set)
+        former: str | None = None
+        try:
+            async with AsyncExitStack() as stack:
+                await stack.enter_async_context(self._principal_mutation(actor, principal_id))
+                if defaults:
+                    await stack.enter_async_context(self._cost_centers_lease(actor))
+                before = await self.get_principal(actor, principal_id)
+                if (
+                    checks is not None
+                    and before.default_cost_center_id is not None
+                    and _moves_default(before, request)
+                ):
+                    former = before.default_cost_center_id
+                    await checks.request_recheck(
+                        actor, former, reason="defaultChanged", subject_id=before.id
+                    )
+                saved = await self._update_principal(actor, principal_id, request)
+        except Exception:
+            if checks is not None and former is not None:
+                with suppress(Exception):
+                    await checks.resume_rechecks(actor, former)
+            raise
+        if checks is not None and defaults:
+            await checks.resume_rechecks(actor)
+        return saved
 
     async def _update_principal(
         self, actor: Actor, principal_id: str, request: PrincipalUpdate
     ) -> Principal:
         principal = await self.get_principal(actor, principal_id)
         changes = request.model_dump(by_alias=False, exclude_unset=True)
+        if "default_cost_center_id" in changes:
+            requested = changes["default_cost_center_id"]
+            if requested is not None:
+                if principal.kind == PrincipalKind.SECURITY_GROUP:
+                    raise ValidationError(
+                        "A security group is never the caller, so it has no default cost center"
+                    )
+                await self._require_cost_center(actor, requested)
         if changes.get("kind") not in {None, principal.kind}:
             new_kind = changes["kind"]
+            if new_kind == PrincipalKind.SECURITY_GROUP:
+                changes["default_cost_center_id"] = None
             if subject_kind_for(new_kind) != subject_kind_for(principal.kind):
                 await self._require_no_grants(actor, principal_id, active_only=True)
             verified = await self._verify_principal_request(new_kind, principal.object_id)
@@ -300,6 +449,18 @@ class DirectoryService:
                 "Remove this principal from all groups before deleting it",
                 details={"membershipCount": len(memberships)},
             )
+        if self._cost_centers is not None:
+            listing = sorted(
+                item.id
+                for item in await self._cost_centers.list_cost_centers(actor.tenant_id)
+                if principal_id in item.member_ids()
+            )
+            if listing:
+                # Removing it from each cost center first revokes what relied on it there.
+                raise ConflictError(
+                    "Remove this principal from its cost centers before deleting it",
+                    details={"reason": "costCenterMember", "costCenterIds": listing},
+                )
         await self._repository.delete_principal(
             principal,
             self._audit_event(actor, "principal.deleted", "principal", principal_id),

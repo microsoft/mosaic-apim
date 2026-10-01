@@ -38,6 +38,7 @@ async def test_publishing_to_self_service_key_and_revoke_uses_trusted_applied_st
         application = await harness.grant(APPLICATION, application=True)
         await harness.govern()
         assert (await harness.apply()).status == PublishRunStatus.SUCCEEDED
+        await harness.key(user, application)
         assert not any("listSecrets" in path for path in harness.apim.requests)
 
         original = harness.apim.handler

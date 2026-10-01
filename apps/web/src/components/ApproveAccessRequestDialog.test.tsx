@@ -6,7 +6,7 @@ import type { ComponentProps } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 import { modelPublication } from '../test/model-access'
 import { ApiError } from '../api'
-import type { AccessRequest, AccessRequestApproval, EnvironmentCatalogView } from '../types'
+import type { AccessRequest, AccessRequestApproval, CostCenter, EnvironmentCatalogView } from '../types'
 import { ApproveAccessRequestDialog, type ApprovalRequester } from './ApproveAccessRequestDialog'
 
 const accessRequest: AccessRequest = {
@@ -52,6 +52,27 @@ const catalog: EnvironmentCatalogView = {
   unclassified: { gateways: 0, modelEndpoints: 0, mcpEndpoints: 0 },
   compatibility: [],
   updatedAt: null,
+}
+
+const supportCostCenter: CostCenter = {
+  id: 'cc-support',
+  tenantId: 'tenant',
+  entityType: 'costCenter',
+  name: 'Support',
+  code: 'support',
+  description: null,
+  owners: [],
+  members: [],
+  keysAllowed: true,
+  limits: [],
+  builtIn: false,
+  createdAt: '',
+  updatedAt: '',
+  isTenantDefault: false,
+  memberDetails: [],
+  grantCount: 0,
+  enabledGrantCount: 0,
+  defaultFor: 0,
 }
 
 type DialogProps = ComponentProps<typeof ApproveAccessRequestDialog>
@@ -174,6 +195,109 @@ describe('ApproveAccessRequestDialog', () => {
 
     await screen.findByRole('dialog')
     expect(requesterLines()).toEqual(lines)
+  })
+
+  it('shows the requested cost center', async () => {
+    renderDialog({
+      accessRequest: {
+        ...accessRequest,
+        costCenterId: supportCostCenter.id,
+        costCenter: { id: supportCostCenter.id, name: supportCostCenter.name, code: supportCostCenter.code },
+      },
+      costCenters: [supportCostCenter],
+    })
+
+    expect((await screen.findAllByText('Support (support)')).length).toBeGreaterThan(0)
+  })
+
+  it('sends the selected cost center in the approval', async () => {
+    const user = userEvent.setup()
+    const researchCostCenter = { ...supportCostCenter, id: 'cc-research', name: 'Research', code: 'research' }
+    const { onApprove } = renderDialog({ costCenters: [supportCostCenter, researchCostCenter] })
+
+    const dialog = await screen.findByRole('dialog')
+    await user.selectOptions(within(dialog).getByRole('combobox', { name: 'Cost center' }), researchCostCenter.id)
+    await user.click(within(dialog).getByRole('button', { name: 'Approve and create grant' }))
+
+    expect(onApprove).toHaveBeenCalledWith(expect.objectContaining({ costCenterId: researchCostCenter.id }))
+  })
+
+  it('charges the requested cost center, marked as requested, unless another is chosen', async () => {
+    const user = userEvent.setup()
+    const researchCostCenter = { ...supportCostCenter, id: 'cc-research', name: 'Research', code: 'research' }
+    const { onApprove } = renderDialog({
+      accessRequest: {
+        ...accessRequest,
+        costCenterId: researchCostCenter.id,
+        costCenter: { id: researchCostCenter.id, name: researchCostCenter.name, code: researchCostCenter.code },
+      },
+      costCenters: [supportCostCenter, researchCostCenter],
+    })
+
+    const dialog = await screen.findByRole('dialog')
+    const select = within(dialog).getByRole('combobox', { name: 'Cost center' })
+    expect(select).toHaveValue(researchCostCenter.id)
+    expect(within(select).getAllByRole('option').map((option) => option.textContent)).toEqual([
+      'Support (support)',
+      'Research (research) — requested',
+    ])
+    await user.click(within(dialog).getByRole('button', { name: 'Approve and create grant' }))
+
+    expect(onApprove).toHaveBeenCalledWith(expect.objectContaining({ costCenterId: researchCostCenter.id }))
+  })
+
+  it("offers the requester's default only when the request names no cost center", async () => {
+    const user = userEvent.setup()
+    const { onApprove } = renderDialog({ costCenters: [supportCostCenter] })
+
+    const dialog = await screen.findByRole('dialog')
+    const select = within(dialog).getByRole('combobox', { name: 'Cost center' })
+    expect(select).toHaveValue('')
+    expect(within(select).getByRole('option', { name: "Requester's default cost center" })).toBeInTheDocument()
+    await user.click(within(dialog).getByRole('button', { name: 'Approve and create grant' }))
+
+    expect(onApprove.mock.calls[0][0]).not.toHaveProperty('costCenterId')
+  })
+
+  it("leaves limits empty for the cost center's per-person defaults, and follows the choice until edited", async () => {
+    const user = userEvent.setup()
+    const withDefaults: CostCenter = {
+      ...supportCostCenter,
+      limits: [
+        {
+          resource: { kind: 'modelApi', id: 'modelApi_1' },
+          person: { tokensPerMinute: 5000, tokenQuota: null, tokenQuotaPeriod: null, callsPerMinute: null, callQuota: null, callQuotaPeriod: null },
+          pool: null,
+        },
+      ],
+    }
+    const researchCostCenter = { ...supportCostCenter, id: 'cc-research', name: 'Research', code: 'research' }
+    const { onApprove } = renderDialog({
+      accessRequest: {
+        ...accessRequest,
+        costCenterId: withDefaults.id,
+        costCenter: { id: withDefaults.id, name: withDefaults.name, code: withDefaults.code },
+      },
+      costCenters: [withDefaults, researchCostCenter],
+    })
+
+    const dialog = await screen.findByRole('dialog')
+    const tokensPerMinute = within(dialog).getByRole('spinbutton', { name: 'Tokens per minute' })
+    expect(tokensPerMinute).toHaveValue(null)
+    expect(within(dialog).getByText(/Support sets per-person defaults here: 5,000 tokens per minute\./)).toBeVisible()
+
+    // Research sets none, so the publication's limit prefills, until the administrator edits it.
+    const select = within(dialog).getByRole('combobox', { name: 'Cost center' })
+    await user.selectOptions(select, researchCostCenter.id)
+    expect(tokensPerMinute).toHaveValue(12000)
+    await user.clear(tokensPerMinute)
+    await user.type(tokensPerMinute, '7000')
+    await user.selectOptions(select, withDefaults.id)
+    expect(tokensPerMinute).toHaveValue(7000)
+
+    await user.clear(tokensPerMinute)
+    await user.click(within(dialog).getByRole('button', { name: 'Approve and create grant' }))
+    expect(onApprove).toHaveBeenCalledWith(expect.objectContaining({ costCenterId: withDefaults.id, enforcement: null }))
   })
 
   it('sends the confirmed limits on the governed counter, with the decision note', async () => {

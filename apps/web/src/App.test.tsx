@@ -52,6 +52,7 @@ const primaryLinks = [
   'MCPs',
   'Identity',
   'Entitlements',
+  'Cost centers',
   'Policies',
   'Analytics',
   'Pricing',
@@ -101,9 +102,10 @@ describe('App shell', () => {
     }
     expect(screen.getByRole('button', { name: 'Add model endpoint' })).toBeVisible()
     expect(screen.queryByText('AzureLite')).not.toBeInTheDocument()
-    // Pricing sits right after Analytics, whose figures it prices.
+    // Cost centers sits next to Entitlements; Pricing sits right after Analytics, whose figures it prices.
     const primary = within(screen.getByRole('navigation', { name: 'Primary navigation' }))
     const labels = primary.getAllByRole('link').map((link) => link.textContent)
+    expect(labels.indexOf('Cost centers')).toBe(labels.indexOf('Entitlements') + 1)
     expect(labels.indexOf('Pricing')).toBe(labels.indexOf('Analytics') + 1)
   })
 

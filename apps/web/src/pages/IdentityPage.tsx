@@ -172,17 +172,21 @@ export function IdentityPage() {
   const [createPrincipalObjectId, setCreatePrincipalObjectId] = useState('')
   const [createPrincipalLabel, setCreatePrincipalLabel] = useState('')
   const [createPrincipalKind, setCreatePrincipalKind] = useState<PrincipalKind>('user')
+  const [createPrincipalDefaultCostCenterId, setCreatePrincipalDefaultCostCenterId] = useState('')
   const [createPrincipalParentId, setCreatePrincipalParentId] = useState('')
   const [createGroupOpen, setCreateGroupOpen] = useState(false)
   const [createGroupName, setCreateGroupName] = useState('')
   const [createGroupDescription, setCreateGroupDescription] = useState('')
   const [principalDraftLabel, setPrincipalDraftLabel] = useState('')
   const [principalDraftKind, setPrincipalDraftKind] = useState<PrincipalKind>('user')
+  const [principalDraftDefaultCostCenterId, setPrincipalDraftDefaultCostCenterId] = useState('')
   const [groupDraftDescription, setGroupDraftDescription] = useState('')
   const [principalToAdd, setPrincipalToAdd] = useState('')
   const [confirmation, setConfirmation] = useState<ConfirmationState>(null)
 
   const principals = useQuery({ queryKey: ['principals'], queryFn: api.listPrincipals })
+  const costCenters = useQuery({ queryKey: ['cost-centers'], queryFn: api.listCostCenters })
+  const costCenterSettings = useQuery({ queryKey: ['cost-center-settings'], queryFn: api.getCostCenterSettings })
   const groups = useQuery({ queryKey: ['groups'], queryFn: api.listGroups })
   const directoryStatus = useQuery({
     queryKey: ['directory', 'status'],
@@ -246,7 +250,7 @@ export function IdentityPage() {
       payload,
     }: {
       principalId: string
-      payload: { kind?: PrincipalKind; label?: string | null }
+      payload: { kind?: PrincipalKind; label?: string | null; defaultCostCenterId?: string | null }
     }) => api.updatePrincipal(principalId, payload),
     onSuccess: async (principal) => {
       await queryClient.invalidateQueries({ queryKey: ['principals'] })
@@ -340,6 +344,10 @@ export function IdentityPage() {
     () => new Map((principals.data ?? []).map((principal) => [principal.id, principal])),
     [principals.data],
   )
+  const costCenterById = useMemo(
+    () => new Map((costCenters.data ?? []).map((costCenter) => [costCenter.id, costCenter])),
+    [costCenters.data],
+  )
 
   // Show the requested record while it's on this tab and passes the filter, and the first row
   // otherwise. Deriving it, rather than resetting the request, keeps a record that was just added
@@ -369,6 +377,7 @@ export function IdentityPage() {
   useEffect(() => {
     setPrincipalDraftLabel(selectedPrincipal?.label ?? '')
     setPrincipalDraftKind(selectedPrincipal?.kind ?? 'user')
+    setPrincipalDraftDefaultCostCenterId(selectedPrincipal?.defaultCostCenterId ?? '')
   }, [selectedPrincipal])
 
   useEffect(() => {
@@ -425,7 +434,8 @@ export function IdentityPage() {
   const principalDetailHasChanges =
     selectedPrincipal !== undefined &&
     (principalDraftKind !== selectedPrincipal.kind ||
-      principalDraftLabel.trim() !== (selectedPrincipal.label ?? ''))
+      principalDraftLabel.trim() !== (selectedPrincipal.label ?? '') ||
+      principalDraftDefaultCostCenterId !== (selectedPrincipal.defaultCostCenterId ?? ''))
 
   const groupDetailHasChanges =
     selectedGroup !== undefined &&
@@ -445,6 +455,7 @@ export function IdentityPage() {
     setCreatePrincipalLabel('')
     setCreatePrincipalParentId('')
     setCreatePrincipalKind(defaults.manual)
+    setCreatePrincipalDefaultCostCenterId(costCenterSettings.data?.defaultCostCenterId ?? '')
   }
 
   function closePrincipalDialog() {
@@ -467,6 +478,9 @@ export function IdentityPage() {
         createPrincipalKind === 'agentUser' && createPrincipalParentId.trim()
           ? createPrincipalParentId.trim()
           : undefined,
+      ...(createPrincipalKind !== 'securityGroup' && createPrincipalDefaultCostCenterId
+          ? { defaultCostCenterId: createPrincipalDefaultCostCenterId }
+          : {}),
     })
   }
 
@@ -480,6 +494,7 @@ export function IdentityPage() {
       payload: {
         kind: principalDraftKind,
         label: principalDraftLabel.trim() || null,
+        defaultCostCenterId: principalDraftKind === 'securityGroup' ? null : (principalDraftDefaultCostCenterId || null),
       },
     })
   }
@@ -1001,6 +1016,16 @@ export function IdentityPage() {
                       <code className={styles.monospace}>{selectedPrincipal.blueprintId}</code>
                     </div>
                   )}
+                  {selectedPrincipal.kind !== 'securityGroup' && (
+                    <div className={styles.readOnlyPanel}>
+                      <Text className={styles.readOnlyLabel}>Default cost center</Text>
+                      <Text block>
+                        {selectedPrincipal.defaultCostCenterId
+                          ? `${costCenterById.get(selectedPrincipal.defaultCostCenterId)?.name ?? selectedPrincipal.defaultCostCenterId}${costCenterById.get(selectedPrincipal.defaultCostCenterId)?.code ? ` (${costCenterById.get(selectedPrincipal.defaultCostCenterId)?.code})` : ''}`
+                          : 'Tenant default'}
+                      </Text>
+                    </div>
+                  )}
 
                   <Field label="Local label">
                     <Input
@@ -1022,6 +1047,25 @@ export function IdentityPage() {
                       <option value="managedIdentity">Managed identity</option>
                     </Select>
                   </Field>
+
+                  {principalDraftKind !== 'securityGroup' && (
+                    <Field
+                      label="Default cost center"
+                      hint="Changing it revokes this principal's grants under the old default unless it's listed there, directly or through a security group."
+                    >
+                      <Select
+                        value={principalDraftDefaultCostCenterId}
+                        onChange={(_, data) => setPrincipalDraftDefaultCostCenterId(data.value)}
+                      >
+                        <option value="">Tenant default</option>
+                        {(costCenters.data ?? []).map((costCenter) => (
+                          <option key={costCenter.id} value={costCenter.id}>
+                            {costCenter.name} ({costCenter.code})
+                          </option>
+                        ))}
+                      </Select>
+                    </Field>
+                  )}
 
                   <div className={styles.formActions}>
                     <Text className={styles.helperText}>
@@ -1116,9 +1160,25 @@ export function IdentityPage() {
               <DialogTitle>{principalDialogTitle}</DialogTitle>
               <DialogContent className={styles.dialogForm}>
                 <Text className={styles.muted}>{principalCreateHint}</Text>
+                {directoryKind !== 'group' && (
+                  <Field label="Default cost center">
+                    <Select
+                      value={createPrincipalDefaultCostCenterId}
+                      onChange={(_, data) => setCreatePrincipalDefaultCostCenterId(data.value)}
+                    >
+                      <option value="">Tenant default</option>
+                      {(costCenters.data ?? []).map((costCenter) => (
+                        <option key={costCenter.id} value={costCenter.id}>
+                          {costCenter.name} ({costCenter.code})
+                        </option>
+                      ))}
+                    </Select>
+                  </Field>
+                )}
                 <DirectoryPrincipalPicker
                   kind={directoryKind}
                   onKindChange={setDirectoryKind}
+                  defaultCostCenterId={directoryKind === 'group' ? null : createPrincipalDefaultCostCenterId}
                   onCreated={(principal) => {
                     setPrincipalDialogOpen(false)
                     showPrincipal(principal)
@@ -1179,6 +1239,22 @@ export function IdentityPage() {
                         value={createPrincipalParentId}
                         onChange={(_, data) => setCreatePrincipalParentId(data.value)}
                       />
+                    </Field>
+                  )}
+
+                  {createPrincipalKind !== 'securityGroup' && (
+                    <Field label="Default cost center">
+                      <Select
+                        value={createPrincipalDefaultCostCenterId}
+                        onChange={(_, data) => setCreatePrincipalDefaultCostCenterId(data.value)}
+                      >
+                        <option value="">Tenant default</option>
+                        {(costCenters.data ?? []).map((costCenter) => (
+                          <option key={costCenter.id} value={costCenter.id}>
+                            {costCenter.name} ({costCenter.code})
+                          </option>
+                        ))}
+                      </Select>
                     </Field>
                   )}
 

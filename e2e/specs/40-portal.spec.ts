@@ -170,6 +170,9 @@ test.describe('40 portal', { tag: '@portal' }, () => {
     await expect(panel.section('Endpoint')).toBeVisible()
     await expect(panel.section('Authentication')).toBeVisible()
     await expect(panel.keys.secret).toHaveCount(0)
+    // Applies don't create keys, so a grant nobody has used a key with yet has none.
+    const created = await panel.keys.ensureKey()
+    if (created) expect(created.status(), 'creating the grant\'s key').toBe(201)
     for (const slot of ['primary', 'secondary'] as const) {
       const shown = await panel.keys.show(slot)
       expect(shown.response.status(), `the reveal of the ${slot} key`).toBe(200)

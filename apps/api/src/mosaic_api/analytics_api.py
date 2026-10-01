@@ -59,6 +59,7 @@ def analytics_filters(
     environment: Annotated[str | None, Query(max_length=_ID)] = None,
     resource_id: Annotated[str | None, Query(alias="resourceId", max_length=_ID)] = None,
     subject_kind: Annotated[EntitlementSubjectKind | None, Query(alias="subjectKind")] = None,
+    cost_center_id: Annotated[str | None, Query(alias="costCenterId", max_length=_ID)] = None,
 ) -> AnalyticsFilters:
     return AnalyticsFilters(
         range=range_,
@@ -68,6 +69,7 @@ def analytics_filters(
         environment=environment or None,
         resource_id=resource_id or None,
         subject_kind=subject_kind,
+        cost_center_id=cost_center_id or None,
     )
 
 

@@ -40,6 +40,7 @@ ExportView = Literal[
     "untrackedGrants",
     "unattributed",
     "costDeployments",
+    "costCenters",
     "chargeback",
 ]
 ConsumerKind = Literal["person", "application", "group"]
@@ -64,6 +65,9 @@ class AnalyticsFilters:
     resource_id: str | None = None
     # Narrows callers and grants, which carry a subject. API-level totals include every caller.
     subject_kind: EntitlementSubjectKind | None = None
+    # Narrows callers, grants, limits, cost by consumer and the chargeback to the grants charged
+    # to one cost center, as the subject filter does. See ADR 0022.
+    cost_center_id: str | None = None
 
 
 class AnalyticsWindow(MosaicModel):
@@ -233,6 +237,8 @@ class AnalyticsOverview(AnalyticsReport):
     top_models: list[AnalyticsRankRow]
     top_callers: list[AnalyticsRankRow]
     top_apis: list[AnalyticsRankRow]
+    # The cost centers whose grants carried the most linked calls.
+    top_cost_centers: list[AnalyticsRankRow] = Field(default_factory=list)
     gateways: list[AnalyticsGatewayHealth]
     # None when this deployment has no price list.
     cost: AnalyticsCostSummary | None = None
@@ -269,10 +275,24 @@ class AnalyticsConsumerRow(AnalyticsUsage):
     members: int | None = None
 
 
+class AnalyticsCostCenterRow(AnalyticsUsage):
+    """One cost center's linked calls: what every grant charged to it carried."""
+
+    key: str
+    label: str
+    code: str
+    grants: int = 0
+    # The distinct callers MOSAIC saw use its grants.
+    callers: int = 0
+
+
 class AnalyticsGrantRow(AnalyticsUsage):
     key: str
     entitlement_id: str | None
     state: GrantState
+    cost_center_id: str | None = None
+    cost_center_code: str | None = None
+    cost_center_name: str | None = None
     subject_kind: EntitlementSubjectKind | None
     subject_label: str
     subject_detail: str | None = None
@@ -306,6 +326,7 @@ class AnalyticsConsumers(AnalyticsReport):
     groups: list[AnalyticsConsumerRow]
     grants: list[AnalyticsGrantRow]
     client_apps: list[AnalyticsClientAppRow]
+    cost_centers: list[AnalyticsCostCenterRow] = Field(default_factory=list)
     truncated: bool
     # The linked calls' cost. None when this deployment has no price list.
     cost: AnalyticsCostSummary | None = None
@@ -446,6 +467,8 @@ class AnalyticsLimitUse(MosaicModel):
 class AnalyticsLimitRow(MosaicModel):
     key: str
     entitlement_id: str
+    cost_center_code: str | None = None
+    cost_center_name: str | None = None
     subject_kind: EntitlementSubjectKind
     subject_label: str
     subject_detail: str | None
@@ -474,6 +497,8 @@ class AnalyticsLimits(AnalyticsReport):
 
 class AnalyticsGrantRef(MosaicModel):
     entitlement_id: str
+    cost_center_code: str | None = None
+    cost_center_name: str | None = None
     subject_kind: EntitlementSubjectKind
     subject_label: str
     subject_detail: str | None
@@ -601,6 +626,8 @@ class AnalyticsCost(AnalyticsReport):
     # People, applications, and security groups, by what their calls cost.
     consumers: list[AnalyticsCostRow]
     apis: list[AnalyticsCostRow]
+    # Cost centers, by what the calls their grants carried cost.
+    cost_centers: list[AnalyticsCostRow] = Field(default_factory=list)
     # False when this deployment has no price list, so nothing can be priced.
     priced: bool = True
 

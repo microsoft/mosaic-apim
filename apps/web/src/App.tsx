@@ -16,6 +16,7 @@ import {
   ChartMultipleRegular,
   CloudDatabaseRegular,
   CodeTextEditRegular,
+  BuildingRegular,
   MoneyRegular,
   DismissRegular,
   HomeRegular,
@@ -46,6 +47,7 @@ import { ConsoleAccessGate } from './console-access'
 import { initialsFor } from './initials'
 import { AdminProfilePage } from './pages/AdminProfilePage'
 import { AnalyticsPage } from './pages/AnalyticsPage'
+import { CostCenterDetailPage, CostCentersPage } from './pages/CostCentersPage'
 import { DashboardPage } from './pages/DashboardPage'
 import { EntitlementsPage } from './pages/EntitlementsPage'
 import { GatewayDetailPage } from './pages/GatewayDetailPage'
@@ -74,6 +76,7 @@ const primaryNavigation: NavigationItem[] = [
   { to: '/mcps', label: 'MCPs', icon: <PuzzlePieceRegular /> },
   { to: '/identity', label: 'Identity', icon: <PersonAccountsRegular /> },
   { to: '/entitlements', label: 'Entitlements', icon: <ShieldKeyholeRegular /> },
+  { to: '/cost-centers', label: 'Cost centers', icon: <BuildingRegular /> },
   { to: '/policies', label: 'Policies', icon: <CodeTextEditRegular /> },
   { to: '/analytics', label: 'Analytics', icon: <ChartMultipleRegular /> },
   { to: '/pricing', label: 'Pricing', icon: <MoneyRegular /> },
@@ -286,6 +289,8 @@ export default function App() {
               <Route path="/principals" element={<Navigate to="/identity?tab=users" replace />} />
               <Route path="/groups" element={<Navigate to="/identity?tab=groups" replace />} />
               <Route path="/entitlements" element={<EntitlementsPage />} />
+              <Route path="/cost-centers" element={<CostCentersPage />} />
+              <Route path="/cost-centers/:costCenterId" element={<CostCenterDetailPage />} />
               <Route path="/policies" element={<PoliciesPage />} />
               <Route path="/analytics" element={<AnalyticsPage />} />
               <Route path="/usage" element={<Navigate to="/analytics" replace />} />

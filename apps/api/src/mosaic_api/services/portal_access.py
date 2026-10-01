@@ -1,6 +1,6 @@
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Literal, Protocol
+from typing import Any, Literal, Protocol
 
 import structlog
 from pydantic import SecretStr
@@ -13,6 +13,7 @@ from mosaic_api.domain import (
     ConnectionOperation,
     Entitlement,
     Gateway,
+    GrantKey,
     KeyRevealResult,
     McpConnection,
     McpPublication,
@@ -24,6 +25,7 @@ from mosaic_api.domain import (
     PrincipalKind,
     Publication,
     PublicationStatus,
+    PublishedResource,
     PublishedResourceKind,
     grant_precedence_key,
     mcp_resource_metadata_url,
@@ -44,9 +46,15 @@ from mosaic_api.services.directory import Actor
 from mosaic_api.services.entitlements import EntitlementService
 from mosaic_api.services.mcp_access import entitlement_mcp_publication
 from mosaic_api.services.model_access import (
+    CostCenterIntent,
+    cost_center_intent,
+    effective_enforcement,
     entitlement_intent_digest,
+    grant_key_display_name,
+    owns_grant_subscription,
     portal_entitlement,
     portal_runtime,
+    publication_lock,
 )
 
 logger = structlog.get_logger()
@@ -88,6 +96,50 @@ class CredentialReader(Protocol):
     ) -> SecretStr: ...
 
 
+class KeyManager(Protocol):
+    """Creates, rotates and deletes a grant's key in API Management. It never reads a key."""
+
+    async def get_subscription(self, name: str) -> dict[str, Any] | None: ...
+
+    async def create(self, name: str, *, display_name: str, api_name: str) -> None: ...
+
+    async def regenerate(self, name: str, slot: Literal["primary", "secondary"]) -> None: ...
+
+    async def delete(self, name: str) -> None: ...
+
+
+def _owns_key(context: "_AccessContext", name: str) -> bool:
+    """Whether the publication records creating this grant's key, at its exact resource ID."""
+
+    resource = ApimResourceId.parse(context.gateway.azure_resource_id)
+    expected_id = f"{resource.canonical}/subscriptions/{name}"
+    return any(
+        item.kind == PublishedResourceKind.SUBSCRIPTION
+        and item.name == name
+        and item.resource_id.casefold() == expected_id.casefold()
+        and item.created_by_mosaic
+        for item in context.publication.resources
+    )
+
+
+def _require_key_scope(context: "_AccessContext", live: dict[str, Any]) -> None:
+    """Refuse to touch a subscription that isn't scoped to this grant's model API."""
+
+    resource = ApimResourceId.parse(context.gateway.azure_resource_id)
+    relative = f"/apis/{context.publication.api_name}"
+    properties = live.get("properties") or {}
+    scope = str(properties.get("scope", "") if isinstance(properties, dict) else "")
+    if scope.rstrip("/").casefold() not in {
+        relative.casefold(),
+        f"{resource.canonical}{relative}".casefold(),
+    }:
+        raise ConflictError(
+            "This grant's key is no longer scoped to its model in API Management. Ask an "
+            "administrator to re-plan its access.",
+            details={"reason": "keyScopeChanged"},
+        )
+
+
 @dataclass(frozen=True)
 class _AccessContext:
     entitlement: Entitlement
@@ -116,12 +168,14 @@ class PortalAccessService:
         credential_factory: Callable[[ApimResourceId], CredentialReader],
         model_runtime_client_id: str | None = None,
         model_client_id: str | None = None,
+        key_manager_factory: Callable[[ApimResourceId], KeyManager] | None = None,
     ) -> None:
         self._entitlements = entitlements
         self._repository = repository
         self._directory = directory_repository
         self._gateways = gateway_repository
         self._credential_factory = credential_factory
+        self._key_manager_factory = key_manager_factory
         self._runtime_client_id = model_runtime_client_id
         self._model_client_id = model_client_id
 
@@ -130,7 +184,9 @@ class PortalAccessService:
             actor.tenant_id, actor.object_id
         )
         direct: list[Entitlement] = []
-        direct_resource_keys: set[tuple[str, str, str]] = set()
+        # A grant is effective per resource and cost center: a group grant under another cost
+        # center than the caller's direct grant is still theirs to select with the header.
+        direct_resource_keys: set[tuple[str, str, str, str]] = set()
         if principal is None:
             matches = [
                 candidate
@@ -157,6 +213,7 @@ class PortalAccessService:
                     str(entitlement.resource.kind),
                     entitlement.resource.id,
                     entitlement.resource.scope_id or "",
+                    entitlement.cost_center_id,
                 )
                 for entitlement in direct
                 if entitlement.enabled
@@ -177,6 +234,7 @@ class PortalAccessService:
                 str(entitlement.resource.kind),
                 entitlement.resource.id,
                 entitlement.resource.scope_id or "",
+                entitlement.cost_center_id,
             )
             not in direct_resource_keys
         ]
@@ -189,12 +247,13 @@ class PortalAccessService:
                 )
             }
         else:
-            winners: dict[tuple[str, str, str], Entitlement] = {}
+            winners: dict[tuple[str, str, str, str], Entitlement] = {}
             for entitlement in group_candidates:
                 key = (
                     str(entitlement.resource.kind),
                     entitlement.resource.id,
                     entitlement.resource.scope_id or "",
+                    entitlement.cost_center_id,
                 )
                 winner = winners.get(key)
                 if winner is None or grant_precedence_key(
@@ -307,6 +366,8 @@ class PortalAccessService:
             if publication.governed_access is not None or snapshot is not None
             else operations_for(publication)
         )
+        book = await self._entitlements.cost_center_book(actor.tenant_id)
+        intent = cost_center_intent(context.entitlement, context.principal, book)
         return ModelConnection(
             entitlement_id=entitlement_id,
             publication_id=publication.id,
@@ -342,6 +403,10 @@ class PortalAccessService:
             keys_available=keys_available,
             via_group_id=via_group_id,
             via_group_name=via_group_name,
+            cost_center=book.ref(context.entitlement.cost_center_id),
+            key_exists=keys_available
+            and owns_grant_subscription(publication, context.entitlement.id),
+            keys_allowed_by_cost_center=intent.keys_allowed if intent else False,
         )
 
     async def _mcp_context(
@@ -396,8 +461,15 @@ class PortalAccessService:
             actor, entitlement_id, administrator=administrator
         )
         if context.publication is None:
-            return self._adopted_mcp_connection(actor, context, administrator=administrator)
-        return self._published_mcp_connection(actor, context, administrator=administrator)
+            connection = self._adopted_mcp_connection(actor, context, administrator=administrator)
+        else:
+            connection = self._published_mcp_connection(
+                actor, context, administrator=administrator
+            )
+        book = await self._entitlements.cost_center_book(actor.tenant_id)
+        return connection.model_copy(
+            update={"cost_center": book.ref(context.entitlement.cost_center_id)}
+        )
 
     def _adopted_mcp_connection(
         self, actor: Actor, context: _McpAccessContext, *, administrator: bool
@@ -513,7 +585,17 @@ class PortalAccessService:
         )
 
     @staticmethod
-    def _applied_grant(context: _AccessContext) -> ModelAccessGrant:
+    def _applied_grant(
+        context: _AccessContext,
+        intent: CostCenterIntent | None,
+        *,
+        require_key: bool = True,
+    ) -> ModelAccessGrant:
+        """The applied direct grant a key belongs to, refusing anything not exactly applied.
+
+        ``require_key`` False is for creating the key, which can't be owned yet.
+        """
+
         entitlement = context.entitlement
         publication = context.publication
         snapshot = publication.applied_access
@@ -547,23 +629,25 @@ class PortalAccessService:
         )
         if (
             not grant.enabled
+            or intent is None
             or grant.subject != entitlement.subject
             or grant.object_id.casefold() != context.principal.object_id.casefold()
-            or grant.enforcement != entitlement.enforcement
-            or grant.intent_digest != entitlement_intent_digest(entitlement, context.principal)
+            or grant.enforcement != effective_enforcement(entitlement, intent)
+            or grant.intent_digest
+            != entitlement_intent_digest(entitlement, context.principal, intent)
             or grant.subscription_name != expected_name
         ):
-            raise ConflictError("Apply the pending changes to this grant before revealing its key")
-        resource = ApimResourceId.parse(context.gateway.azure_resource_id)
-        expected_id = f"{resource.canonical}/subscriptions/{expected_name}"
-        if not any(
-            item.kind == PublishedResourceKind.SUBSCRIPTION
-            and item.name == expected_name
-            and item.resource_id.casefold() == expected_id.casefold()
-            and item.created_by_mosaic
-            for item in publication.resources
-        ):
-            raise ConflictError("MOSAIC has no trusted ownership record for this subscription")
+            raise ConflictError("Apply the pending changes to this grant before using its key")
+        if not grant.keys_allowed or not intent.keys_allowed:
+            raise ConflictError(
+                "Keys are turned off for this grant's cost center. Use a Microsoft Entra token.",
+                details={"reason": "costCenterKeysOff"},
+            )
+        if require_key and not _owns_key(context, expected_name):
+            raise ConflictError(
+                "This grant has no key yet. Create one first.",
+                details={"reason": "noKey"},
+            )
         return grant
 
     async def _key_context(
@@ -576,7 +660,11 @@ class PortalAccessService:
             raise ConflictError(
                 "A publication operation is in progress or needs recovery; key retrieval is blocked"
             )
-        return context, self._applied_grant(context)
+        return context, self._applied_grant(context, await self._intent(context))
+
+    async def _intent(self, context: _AccessContext) -> CostCenterIntent | None:
+        book = await self._entitlements.cost_center_book(context.entitlement.tenant_id)
+        return cost_center_intent(context.entitlement, context.principal, book)
 
     async def _audit(
         self,
@@ -657,9 +745,218 @@ class PortalAccessService:
                 error_code=error.code,
             )
             raise
+        book = await self._entitlements.cost_center_book(actor.tenant_id)
         return KeyRevealResult(
             entitlement_id=entitlement_id,
             subscription_name=subscription_name,
             slot=slot,
             key=key.get_secret_value(),
+            cost_center=book.ref(context.entitlement.cost_center_id),
+        )
+
+    # -- keys on request --------------------------------------------------------------------
+
+    async def _key_audit(
+        self,
+        actor: Actor,
+        entitlement_id: str,
+        action: Literal["created", "rotated", "deleted"],
+        outcome: str,
+        *,
+        subscription_name: str | None = None,
+        slot: Literal["primary", "secondary"] | None = None,
+        error_code: str | None = None,
+        cost_center_id: str | None = None,
+    ) -> None:
+        await self._repository.record_audit(
+            AuditEvent(
+                id=new_id("audit"),
+                tenant_id=actor.tenant_id,
+                action=f"credential.{action}.{outcome}",
+                resource_type="entitlement",
+                resource_id=entitlement_id,
+                actor_object_id=actor.object_id,
+                details={
+                    "slot": slot,
+                    "subscriptionName": subscription_name,
+                    "costCenterId": cost_center_id,
+                    "errorCode": error_code,
+                },
+            )
+        )
+
+    def _key_manager(self, context: _AccessContext) -> KeyManager:
+        if self._key_manager_factory is None:
+            raise ConflictError("This deployment can't manage keys")
+        return self._key_manager_factory(ApimResourceId.parse(context.gateway.azure_resource_id))
+
+    async def _record_key(
+        self, context: _AccessContext, name: str, *, present: bool
+    ) -> None:
+        """Record that the publication owns, or no longer owns, a grant's key."""
+
+        current = await self._gateways.get_publication(
+            context.publication.tenant_id, context.publication.id
+        )
+        if current is None:
+            raise ConflictError("The publication disappeared while managing this key")
+        resource = ApimResourceId.parse(context.gateway.azure_resource_id)
+        kept = [
+            item
+            for item in current.resources
+            if not (item.kind == PublishedResourceKind.SUBSCRIPTION and item.name == name)
+        ]
+        if present:
+            kept.append(
+                PublishedResource(
+                    kind=PublishedResourceKind.SUBSCRIPTION,
+                    name=name,
+                    resource_id=f"{resource.canonical}/subscriptions/{name}",
+                    created_by_mosaic=True,
+                )
+            )
+        await self._gateways.record_publication_state(
+            current.model_copy(update={"resources": kept})
+        )
+
+    async def _manage_key(
+        self,
+        actor: Actor,
+        entitlement_id: str,
+        action: Literal["created", "rotated", "deleted"],
+        *,
+        administrator: bool,
+        slot: Literal["primary", "secondary"] | None = None,
+    ) -> GrantKey:
+        """Create, rotate or delete a grant's key, under its publication's lock.
+
+        The caller must hold the grant, or use the administrator route. Creating needs an enabled,
+        applied direct grant whose cost center allows keys. The subscription's name is fixed by
+        the grant, so the gateway's policy already recognizes it and nothing is applied again.
+        """
+
+        await self._key_audit(actor, entitlement_id, action, "requested", slot=slot)
+        subscription_name: str | None = None
+        cost_center_id: str | None = None
+        try:
+            context = await self._context(actor, entitlement_id, administrator=administrator)
+            cost_center_id = context.entitlement.cost_center_id
+            manager = self._key_manager(context)
+            async with publication_lock(
+                self._gateways, actor.tenant_id, context.publication.id
+            ):
+                # Read again under the lock, which an apply also holds.
+                context = await self._context(
+                    actor, entitlement_id, administrator=administrator
+                )
+                name = model_access_subscription_name(
+                    context.publication.tenant_id, context.publication.id, context.entitlement.id
+                )
+                subscription_name = name
+                if action == "deleted":
+                    if not _owns_key(context, name):
+                        raise ConflictError(
+                            "This grant has no key to delete.", details={"reason": "noKey"}
+                        )
+                    live = await manager.get_subscription(name)
+                    if live is not None:
+                        _require_key_scope(context, live)
+                        await manager.delete(name)
+                    await self._record_key(context, name, present=False)
+                else:
+                    intent = await self._intent(context)
+                    grant = self._applied_grant(context, intent, require_key=action == "rotated")
+                    live = await manager.get_subscription(name)
+                    if action == "rotated":
+                        if live is None:
+                            raise ConflictError(
+                                "This grant's key is missing from API Management. Delete it and "
+                                "create a new one.",
+                                details={"reason": "keyMissing"},
+                            )
+                        _require_key_scope(context, live)
+                        assert slot is not None
+                        await manager.regenerate(name, slot)
+                    else:
+                        if live is not None and _owns_key(context, name):
+                            raise ConflictError(
+                                "This grant already has a key. Rotate it, or delete it first.",
+                                details={"reason": "keyExists"},
+                            )
+                        if live is not None:
+                            raise ConflictError(
+                                "A subscription with this grant's key name already exists in API "
+                                "Management, and MOSAIC didn't create it.",
+                                details={"reason": "keyNotOwned"},
+                            )
+                        # Recorded before it's created, so a create that fails part way is still
+                        # MOSAIC's to delete, and unpublish removes it.
+                        await self._record_key(context, name, present=True)
+                        assert intent is not None
+                        await manager.create(
+                            name,
+                            display_name=grant_key_display_name(grant.display_name, intent.code),
+                            api_name=context.publication.api_name,
+                        )
+            await self._key_audit(
+                actor,
+                entitlement_id,
+                action,
+                "succeeded",
+                subscription_name=subscription_name,
+                slot=slot,
+                cost_center_id=cost_center_id,
+            )
+        except DomainError as error:
+            await self._key_audit(
+                actor,
+                entitlement_id,
+                action,
+                "denied" if error.status_code < 500 else "failed",
+                subscription_name=subscription_name,
+                slot=slot,
+                error_code=error.code,
+                cost_center_id=cost_center_id,
+            )
+            logger.warning(
+                "credential_key_change_failed",
+                tenant_id=actor.tenant_id,
+                entitlement_id=entitlement_id,
+                action=action,
+                error_code=error.code,
+            )
+            raise
+        book = await self._entitlements.cost_center_book(actor.tenant_id)
+        return GrantKey(
+            entitlement_id=entitlement_id,
+            subscription_name=name,
+            exists=action != "deleted",
+            cost_center=book.ref(cost_center_id),
+            rotated=slot if action == "rotated" else None,
+        )
+
+    async def create_key(
+        self, actor: Actor, entitlement_id: str, *, administrator: bool = False
+    ) -> GrantKey:
+        return await self._manage_key(
+            actor, entitlement_id, "created", administrator=administrator
+        )
+
+    async def rotate_key(
+        self,
+        actor: Actor,
+        entitlement_id: str,
+        slot: Literal["primary", "secondary"],
+        *,
+        administrator: bool = False,
+    ) -> GrantKey:
+        return await self._manage_key(
+            actor, entitlement_id, "rotated", administrator=administrator, slot=slot
+        )
+
+    async def delete_key(
+        self, actor: Actor, entitlement_id: str, *, administrator: bool = False
+    ) -> GrantKey:
+        return await self._manage_key(
+            actor, entitlement_id, "deleted", administrator=administrator
         )

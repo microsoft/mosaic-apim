@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from typing import Any
 
+from mosaic_api.domain import CostCenterRef
 from mosaic_api.pricing import cloud_label, days_in_month, month_first, month_last, round_cost
 from mosaic_api.services.analytics.consumers import consumers_report
 from mosaic_api.services.analytics.cost import (
@@ -35,7 +36,7 @@ from mosaic_api.usage_telemetry import UsageMetrics, UsageSummary
 TOP_CONSUMERS = 10
 CHARGEBACK_NOTE = (
     "Each grant's calls are charged to its subject: the person, application, or security group "
-    "it was granted to."
+    "it was granted to, under the grant's cost center."
 )
 UNATTRIBUTED_PARTY = "Unattributed calls"
 IDLE_PARTY = "Reserved capacity with no calls"
@@ -199,6 +200,11 @@ def cost_report(
         metrics = UsageMetrics(requests=row.requests, total_tokens=row.total_tokens)
         by_consumer[f"{row.kind}:{row.key}"] = (row.label, row.detail, row.kind, metrics, row.cost)
 
+    by_cost_center: dict[str, tuple[str, str | None, str | None, UsageMetrics, float | None]] = {}
+    for center in consumer_report.cost_centers:
+        metrics = UsageMetrics(requests=center.requests, total_tokens=center.total_tokens)
+        by_cost_center[center.key] = (center.label, center.code, "costCenter", metrics, center.cost)
+
     total_cost = None if tally.total is None else round(tally.total, 4)
     deployment_rows = _deployment_rows(context, deployments, costs, now, total_cost)
     notes = [HOURS_NOTE] if hourly else []
@@ -212,6 +218,7 @@ def cost_report(
         deployments=deployment_rows,
         consumers=_cost_rows(by_consumer, summary.total)[:TOP_CONSUMERS],
         apis=_cost_rows(by_api, summary.total),
+        cost_centers=_cost_rows(by_cost_center, summary.total),
     )
 
 
@@ -315,6 +322,8 @@ CHARGEBACK_COLUMNS = [
     ("Charged to", "party"),
     ("Kind", "party_kind"),
     ("Object ID", "party_object_id"),
+    ("Cost center", "cost_center"),
+    ("Cost center name", "cost_center_name"),
     ("Model", "model"),
     ("Deployment", "deployment"),
     ("Endpoint", "endpoint"),
@@ -334,6 +343,10 @@ class _Charge:
     party: str
     party_kind: str
     party_object_id: str | None
+    # The grant's cost center's code and name. Empty for unattributed calls and reserved
+    # capacity nobody called, which belong to no grant and so to no cost center.
+    cost_center: str | None
+    cost_center_name: str | None
     model: str
     deployment: str | None
     endpoint: str | None
@@ -387,12 +400,14 @@ def chargeback_rows(
         key: str | None,
         metrics: UsageMetrics,
         priced: Priced,
+        cost_center: CostCenterRef | None = None,
     ) -> None:
         facts = costs.pricer.facts_for(key)
         model = (facts.model if facts else None) or "Unknown model"
         deployment = facts.deployment_name if facts else None
         endpoint = facts.endpoint_name if facts else None
-        identity = (month, party[1], party[2] or party[0], model, deployment, endpoint)
+        code = cost_center.code if cost_center else None
+        identity = (month, party[1], party[2] or party[0], code, model, deployment, endpoint)
         item = charges.get(identity)
         if item is None:
             item = charges[identity] = _Charge(
@@ -400,6 +415,8 @@ def chargeback_rows(
                 party=party[0],
                 party_kind=party[1],
                 party_object_id=party[2],
+                cost_center=code,
+                cost_center_name=cost_center.name if cost_center else None,
                 model=model,
                 deployment=deployment,
                 endpoint=endpoint,
@@ -415,7 +432,14 @@ def chargeback_rows(
             continue
         key = api.deployment_key if api else None
         priced = costs.price(key, summary.period, start, entry.metrics)
-        charge(month_first(start), _party(scope, grant), key, entry.metrics, priced)
+        charge(
+            month_first(start),
+            _party(scope, grant),
+            key,
+            entry.metrics,
+            priced,
+            scope.cost_center(grant),
+        )
 
     for summary, entry in entries(unattributed, scope, "unattributed"):
         start = date.fromisoformat(summary.period_start)
@@ -464,6 +488,8 @@ def chargeback_rows(
                 "party": item.party,
                 "party_kind": item.party_kind,
                 "party_object_id": item.party_object_id,
+                "cost_center": item.cost_center,
+                "cost_center_name": item.cost_center_name,
                 "model": item.model,
                 "deployment": item.deployment,
                 "endpoint": item.endpoint,

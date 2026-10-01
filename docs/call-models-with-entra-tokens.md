@@ -111,6 +111,8 @@ PATH = "/openai/deployments/<deploymentName>/chat/completions"
 API_VERSION = "<api-version>"
 
 headers = {"Authorization": f"Bearer {token}"}
+# Only when you hold this model under more than one cost center: the code of the one to charge.
+# headers["<costCenterHeader>"] = "<costCenter.code>"
 # Only if keys are also enabled and your client sends a key. It must belong to this same grant.
 # headers["<subscriptionHeader>"] = "<your primary or secondary key>"
 
@@ -132,6 +134,39 @@ rejected. Both count against the same grant limits.
 
 For the responses route, and for AI Services routes without a deployment in their path, set the
 request body's `model` to `deploymentName`.
+
+### Choose the cost center a call charges
+
+Every grant is charged to a [cost center](cost-centers.md), shown as `costCenter` in the connection
+details. When you hold the same model under several cost centers, name the one a call charges with
+the `x-mosaic-cost-center` header (`costCenterHeader`), set to its `code`. The code is compared
+without case:
+
+```bash
+curl "$ENDPOINT/openai/deployments/$DEPLOYMENT/chat/completions?api-version=2024-10-21" \
+  -H "Authorization: Bearer $MOSAIC_ACCESS_TOKEN" \
+  -H "x-mosaic-cost-center: CI-204" \
+  -H "Content-Type: application/json" \
+  -d '{"messages":[{"role":"user","content":"Hello"}]}'
+```
+
+Without the header, the gateway uses your grant under your default cost center, then your other
+direct grants, oldest first, then the grants you hold through security groups. A key always charges
+its own grant's cost center, so a key call needs no header, and one naming a different cost center
+is refused. The gateway removes the header before the call reaches the model.
+
+### What's left of your limits
+
+Responses carry what's left of the limits that applied to the call:
+
+| Header | What's left |
+| --- | --- |
+| `x-mosaic-remaining-tokens` | Your grant's tokens this minute |
+| `x-mosaic-remaining-quota-tokens` | Your grant's token quota |
+| `x-mosaic-remaining-calls` | Your grant's calls this rate window |
+| `x-mosaic-cost-center-remaining-quota-tokens` | The cost center's pooled tokens this month, shared with everyone who charges it |
+
+Each is present only when that limit applies.
 
 ### Claude models
 
@@ -167,5 +202,8 @@ header, never in `api_key`.
 | `AADSTS500011` (resource principal not found) | The scope doesn't match a registration in this tenant. Copy `entraScope` and `tenantId` exactly. |
 | `AADSTS50105` | The model client requires user assignment. Ask an administrator to assign you. |
 | HTTP 401 from the gateway | The gateway couldn't validate the credential. The token might be expired, or be for another audience, such as a MOSAIC portal or Azure CLI token. Or the model doesn't accept the method you used. |
+| HTTP 403 that says you hold no grant under the cost center | The `x-mosaic-cost-center` header names a cost center you hold no applied grant under, or isn't a valid code. Copy `costCenter.code` from the connection details, or leave the header out to use your default. |
+| HTTP 403 that says the key belongs to a different cost center | You sent a key with an `x-mosaic-cost-center` header naming another cost center. Drop the header, or use the key of the grant under that cost center. |
+| HTTP 401 that says keys are turned off for the grant's cost center | The cost center allows Microsoft Entra tokens only. Send a token instead of the key. |
 | HTTP 403 from the gateway | The token is valid but doesn't match an applied grant. The grant might not be applied yet or has been revoked. You might be signed in as a different user, your application might be missing `Models.Invoke.Application`, your token might not include the granted group's ID, or a key you also sent belongs to a different grant. |
 | A group grant is visible in MOSAIC but the gateway denies it | Get a fresh runtime token and check that it has a `groups` claim containing the granted security-group object ID. If Entra emitted group overage instead, use a direct grant. |

@@ -100,8 +100,11 @@ def grant_ref(scope: Scope, entitlement: Entitlement) -> dict[str, Any]:
     grant = grant_for(entitlement, scope)
     subject = scope.subject(grant)
     gateway_id = scope.entitlement_gateway(entitlement)
+    cost_center = scope.cost_centers.get(entitlement.cost_center_id) or scope.cost_center(grant)
     return {
         "entitlement_id": entitlement.id,
+        "cost_center_code": cost_center.code if cost_center else None,
+        "cost_center_name": cost_center.name if cost_center else None,
         "subject_kind": entitlement.subject.kind,
         "subject_label": subject.label,
         "subject_detail": subject.detail,

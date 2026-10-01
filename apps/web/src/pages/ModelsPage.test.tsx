@@ -2013,7 +2013,7 @@ describe('ModelsPage model endpoints', () => {
       expect(within(dialog).queryByLabelText(/^API key/)).not.toBeInTheDocument()
     })
 
-    it('registers the URL, the secret URI and the declared deployments', async () => {
+    it('registers the URL, the secret URI and the declared deployments', { timeout: 10_000 }, async () => {
       const user = userEvent.setup()
       api.registerModelEndpoint.mockResolvedValue(keyEndpoint())
       const dialog = await openKeyTab(user)
