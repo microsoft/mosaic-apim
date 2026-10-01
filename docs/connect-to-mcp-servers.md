@@ -124,6 +124,11 @@ direct grants, oldest first, then the grants you hold through security groups. A
 cost center you hold no grant under is refused with 403. The gateway removes the header before the
 call reaches the MCP server.
 
+Only MCP servers MOSAIC publishes, with your grant applied, read the header. Don't send it to an
+imported server: its own policy doesn't read or remove it, so the server would receive it.
+Connection details show the header, and add it to the VS Code snippet, only when the gateway
+enforces your grant.
+
 ## Limits
 
 MCP grants use call limits only. The gateway can return `429` when a short request window or longer

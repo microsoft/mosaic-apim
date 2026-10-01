@@ -21,6 +21,7 @@ from mosaic_api.domain import (
 )
 from mosaic_api.errors import ConflictError, NotFoundError
 from mosaic_api.services.directory import Actor
+from mosaic_api.services.model_access import grant_key_display_name
 from test_governed_lifecycle import ACTOR, APPLICATION, NEW_USER, TENANT, USER, Harness
 
 OWNER = Actor(USER, TENANT)
@@ -216,3 +217,14 @@ async def test_leaving_a_cost_center_deletes_the_key_on_the_next_apply(
     assert not await _owned(harness, grant)
     final = await harness.grants.get_entitlement(ACTOR, grant.id)
     assert final.runtime is not None and final.runtime.status == "revoked"
+
+
+def test_a_keys_name_always_ends_with_its_whole_cost_center_code() -> None:
+    assert grant_key_display_name("Ada Lovelace", "RES") == "Ada Lovelace (RES)"
+    assert grant_key_display_name("Ada Lovelace", "") == "Ada Lovelace"
+
+    code = "c" * 64
+    name = grant_key_display_name("x" * 200, code)
+    assert len(name) == 100
+    assert name.endswith(f" ({code})")
+    assert grant_key_display_name("y" * 200, "") == "y" * 100

@@ -30,12 +30,6 @@ function costCenterText(resolved: ResolvedEntitlement) {
   return resolved.costCenter ? `${resolved.costCenter.name} · ${resolved.costCenter.code}` : 'Default cost center'
 }
 
-function revocationText(resolved: ResolvedEntitlement) {
-  if (resolved.entitlement.revocation?.reason !== 'costCenterMembership') return null
-  const name = resolved.costCenter?.name ?? 'this cost center'
-  return `Revoked when you left ${name}.`
-}
-
 export function MyAccessPage() {
   const api = usePortalApi()
   const profile = useQuery({ queryKey: ['portal', 'profile'], queryFn: api.getProfile })
@@ -110,11 +104,6 @@ export function MyAccessPage() {
                 <Badge appearance="tint">{costCenterText(resolved)}</Badge>
                 <EnvironmentBadge environment={resolved.resourceSummary?.environment ?? null} environments={environments.data} />
               </div>
-              {revocationText(resolved) && (
-                <MessageBar intent="warning">
-                  <MessageBarBody>{revocationText(resolved)}</MessageBarBody>
-                </MessageBar>
-              )}
               <div className="access-card-grid">
                 <section>
                   <h3>Configured grant limits</h3>

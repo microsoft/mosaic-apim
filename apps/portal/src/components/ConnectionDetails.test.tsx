@@ -554,6 +554,17 @@ describe('ConnectionDetails', () => {
     expect(fact(section('Authentication'), 'Required app role')).toHaveTextContent(mcpSecurityGroupConnection.requiredAppRole!)
   })
 
+  it("never sends the cost center header to an MCP server MOSAIC doesn't enforce", async () => {
+    const user = userEvent.setup()
+    await openMcpDetails(user, { ...mcpConnection, enforced: false })
+
+    expect(screen.getByText('Recorded, not enforced')).toBeVisible()
+    const snippet = samples()[0]
+    expect(snippet).toContain(`"url": "${mcpServerUrl}"`)
+    expect(snippet).not.toContain('x-mosaic-cost-center')
+    expect(screen.queryByRole('heading', { name: 'Cost center header' })).not.toBeInTheDocument()
+  })
+
   it('explains an MCP connection whose server URL is not known yet', async () => {
     const user = userEvent.setup()
     await openMcpDetails(user, { ...mcpConnection, serverUrl: null, resourceMetadataUrl: null, enforced: false })

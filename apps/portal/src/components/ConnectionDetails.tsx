@@ -295,7 +295,8 @@ function McpConnectionPanel({
         )}
       </div>
       <McpEndpointSection connection={connection} />
-      <CostCenterHeaderSection connection={connection} kind="mcpServer" />
+      {/* Only MOSAIC's applied policy reads the header and strips it before the server sees it. */}
+      {connection.enforced && <CostCenterHeaderSection connection={connection} kind="mcpServer" />}
       <McpAuthenticationSection connection={connection} />
       <McpLimitsSection connection={connection} />
       <McpAdvancedSection connection={connection} />
@@ -350,8 +351,10 @@ function CopyableCode({ value, label }: { value: string; label: string }) {
 
 function mcpSnippet(connection: McpConnection) {
   if (!connection.serverUrl) return null
+  // A server MOSAIC doesn't enforce would receive the header itself, so it's sent only where
+  // MOSAIC's applied policy reads and removes it.
   const headers =
-    connection.costCenter && connection.costCenterHeader
+    connection.enforced && connection.costCenter && connection.costCenterHeader
       ? { [connection.costCenterHeader]: connection.costCenter.code }
       : undefined
   return JSON.stringify(

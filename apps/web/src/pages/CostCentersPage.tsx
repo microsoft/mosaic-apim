@@ -190,7 +190,15 @@ export function CostCentersPage() {
 
   const saveSettings = useMutation({
     mutationFn: () => api.updateCostCenterSettings({ defaultCostCenterId }),
-    onSuccess: async () => queryClient.invalidateQueries({ queryKey: ['cost-center-settings'] }),
+    // Moving the default changes which cost center is badged as the tenant default, and the
+    // recheck it runs can revoke grants.
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['cost-center-settings'] }),
+        queryClient.invalidateQueries({ queryKey: ['cost-centers'] }),
+        queryClient.invalidateQueries({ queryKey: ['entitlements'] }),
+      ])
+    },
   })
 
   function submit(event: FormEvent) {

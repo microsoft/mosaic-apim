@@ -114,8 +114,11 @@ describe('Cost centers pages', () => {
     await user.type(screen.getByLabelText('Code'), 'general')
     await user.click(screen.getByRole('button', { name: 'Create cost center' }))
     expect(await screen.findByText('That code is already used by another cost center. Choose a unique code.')).toBeVisible()
+    const listed = api.listCostCenters.mock.calls.length
     await user.click(screen.getByRole('button', { name: 'Save default' }))
     await waitFor(() => expect(api.updateCostCenterSettings).toHaveBeenCalledWith({ defaultCostCenterId: 'cc-general' }))
+    // Which cost center is badged as the tenant default changes with it.
+    await waitFor(() => expect(api.listCostCenters.mock.calls.length).toBeGreaterThan(listed))
   })
 
   it('adds members, removes with confirmation copy, saves limits, and shows delete refusal messages', async () => {

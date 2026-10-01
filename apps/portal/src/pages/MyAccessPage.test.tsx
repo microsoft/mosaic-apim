@@ -146,33 +146,6 @@ describe('MyAccessPage', () => {
     expect(within(cards[1]).getByText('Research · RES')).toBeVisible()
   })
 
-  it('shows why a cost center grant was revoked', async () => {
-    renderPage([
-      {
-        entitlement: {
-          ...baseEntitlement,
-          id: 'revoked-grant',
-          enabled: false,
-          costCenterId: research.id,
-          revocation: {
-            reason: 'costCenterMembership',
-            costCenterId: research.id,
-            revokedAt: '2026-02-01T00:00:00Z',
-            revokedBy: 'admin-1',
-          },
-        },
-        costCenter: research,
-        resourceSummary: baseSummary,
-        via: 'direct',
-        viaGroupId: null,
-        viaGroupName: null,
-      },
-    ])
-
-    expect(await screen.findByText('Research · RES')).toBeVisible()
-    expect(screen.getByText('Revoked when you left Research.')).toBeVisible()
-  })
-
   it('renders security group attribution and per-person limit guidance', async () => {
     renderPage([
       {

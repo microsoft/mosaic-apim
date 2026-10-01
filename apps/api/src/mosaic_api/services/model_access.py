@@ -303,11 +303,20 @@ def applied_grant(publication: Publication, entitlement_id: str) -> ModelAccessG
     )
 
 
-def grant_key_display_name(display_name: str, cost_center_code: str) -> str:
-    """A grant key's name in API Management: who holds it and the cost center it charges."""
+GRANT_KEY_DISPLAY_NAME_LENGTH = 100
 
-    name = f"{display_name} ({cost_center_code})" if cost_center_code else display_name
-    return name[:100]
+
+def grant_key_display_name(display_name: str, cost_center_code: str) -> str:
+    """A grant key's name in API Management: who holds it and the cost center it charges.
+
+    API Management allows 100 characters. A long name is cut to fit, never the cost center's code,
+    so every key still names the cost center it charges.
+    """
+
+    if not cost_center_code:
+        return display_name[:GRANT_KEY_DISPLAY_NAME_LENGTH]
+    suffix = f" ({cost_center_code})"
+    return f"{display_name[: GRANT_KEY_DISPLAY_NAME_LENGTH - len(suffix)]}{suffix}"
 
 
 def owns_grant_subscription(publication: Publication, entitlement_id: str) -> bool:
