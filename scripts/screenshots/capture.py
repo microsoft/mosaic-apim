@@ -508,6 +508,25 @@ SHOTS: list[Shot] = [
         height=1500,
     ),
     Shot(
+        "console-analytics-cost",
+        "console",
+        "/analytics?tab=cost",
+        "light",
+        "Month-end forecast",
+        # Tall enough for this month's spend, the trend, and the cost of each model and deployment.
+        height=1700,
+    ),
+    Shot(
+        "console-pricing",
+        "console",
+        "/pricing",
+        "dark",
+        "priced today.",
+        # One model version's prices, where the demo's scheduled GPT-4o rate shows as a change.
+        actions=(fill_text("Find a model", "2024-11-20"), wait_for_text("Changes ")),
+        height=1300,
+    ),
+    Shot(
         "console-analytics-consumers",
         "console",
         "/analytics?tab=consumers",

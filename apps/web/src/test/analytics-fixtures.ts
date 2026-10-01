@@ -1,5 +1,7 @@
 import type {
   AnalyticsConsumers,
+  AnalyticsCost,
+  AnalyticsCostSummary,
   AnalyticsHygiene,
   AnalyticsLimits,
   AnalyticsModels,
@@ -217,4 +219,65 @@ export const telemetryFixture: GatewayTelemetry = {
     unknownTraceVersions: 0,
     diagnosticsError: null,
   },
+}
+
+export const costSummaryFixture: AnalyticsCostSummary = {
+  currency: 'USD',
+  total: 7235.25,
+  reserved: 7200,
+  pricedTokens: 1_000_000,
+  unpricedTokens: 4000,
+  unpricedRequests: 2,
+  unpricedItems: 1,
+  unpriced: [
+    { key: 'endpoint-aoai/mystery', kind: 'deployment', label: 'mystery', detail: 'Contoso Azure OpenAI', reason: 'noPrice', message: 'No price for contoso-llm 1 (GlobalStandard) in eastus2 in Azure Commercial.', requests: 2, totalTokens: 4000 },
+  ],
+  notes: [
+    "Costs are at list prices from MOSAIC's price list, before any discount, and are estimates, not a bill.",
+    "The gateway's logs don't separate cached prompt tokens, so every prompt token is priced at the full input price.",
+  ],
+}
+
+export const spendFixture = {
+  currency: 'USD' as const,
+  monthStart: '2026-03-01',
+  daysInMonth: 31,
+  daysElapsed: 17.68,
+  through: '2026-03-18T15:30:00Z',
+  monthToDate: 4355.25,
+  reserved: 4320,
+  forecast: 7502.1,
+  projected: true,
+  unpricedTokens: 4000,
+  unpricedItems: 1,
+}
+
+export const costFixture: AnalyticsCost = {
+  ...reportBase,
+  priced: true,
+  spend: spendFixture,
+  cost: costSummaryFixture,
+  trend: [
+    { start: '2026-03-17T00:00:00Z', cost: 243.5, totalTokens: 1_200_000 },
+    { start: '2026-03-18T00:00:00Z', cost: 243.75, totalTokens: 1_100_000 },
+  ],
+  models: [{ key: 'gpt-4o', label: 'gpt-4o', requests: 15, totalTokens: 11_400_000, cost: 4355.25, costShare: 0.6 }],
+  consumers: [
+    { key: 'person:bob', label: 'Bob', kind: 'person', requests: 3, totalTokens: 300_000, cost: 3240, costShare: 0.45 },
+    { key: 'group:analysts', label: 'Analysts', kind: 'group', requests: 1, totalTokens: 100_000, cost: 1080, costShare: 0.15 },
+  ],
+  apis: [{ key: 'gateway-prod/reserved', label: 'Reserved', detail: 'Production gateway', requests: 4, totalTokens: 400_000, cost: 4320, costShare: 0.6 }],
+  deployments: [
+    { key: 'endpoint-aoai/chat', endpointId: 'endpoint-aoai', endpointName: 'Contoso Azure OpenAI', deploymentName: 'chat', modelName: 'gpt-4o', modelVersion: '2024-11-20', cloud: 'commercial', cloudLabel: 'Azure Commercial', deploymentType: 'GlobalStandard', region: 'eastus2', pricing: 'tokens', priceId: 'commercial.openai.gpt-4o.2024-11-20.globalstandard', priceOrigin: 'seed', inputPerMillion: 2.5, cachedInputPerMillion: 1.25, outputPerMillion: 10, requests: 11, promptTokens: 10_100_000, completionTokens: 1_000_000, totalTokens: 11_100_000, cost: 35.25, costShare: 0.005, gateways: 1 },
+    { key: 'endpoint-aoai/reserved', endpointId: 'endpoint-aoai', endpointName: 'Contoso Azure OpenAI', deploymentName: 'reserved', modelName: 'gpt-4o', modelVersion: '2024-11-20', cloud: 'commercial', cloudLabel: 'Azure Commercial', deploymentType: 'GlobalProvisionedManaged', region: 'eastus2', pricing: 'provisioned', priceOrigin: 'seed', ptuHourly: 1, capacity: 10, monthCost: 7440, utilization: 0.0006, idleCost: 2880, requests: 4, promptTokens: 320_000, completionTokens: 80_000, totalTokens: 400_000, cost: 7200, costShare: 0.995, gateways: 1 },
+    { key: 'endpoint-aoai/mystery', endpointId: 'endpoint-aoai', endpointName: 'Contoso Azure OpenAI', deploymentName: 'mystery', modelName: 'contoso-llm', modelVersion: '1', cloud: 'commercial', cloudLabel: 'Azure Commercial', deploymentType: 'GlobalStandard', region: 'eastus2', pricing: 'unpriced', unpricedReason: 'noPrice', unpricedMessage: 'No price for contoso-llm 1 (GlobalStandard) in eastus2 in Azure Commercial.', requests: 2, promptTokens: 2000, completionTokens: 2000, totalTokens: 4000, cost: null, gateways: 1 },
+  ],
+}
+
+export const pricedOverviewFixture: AnalyticsOverview = {
+  ...overviewFixture,
+  kpis: { ...overviewFixture.kpis, cost: 7235.25 },
+  cost: costSummaryFixture,
+  spend: spendFixture,
+  topModels: overviewFixture.topModels.map((row) => ({ ...row, cost: 4355.25 })),
 }

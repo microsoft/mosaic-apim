@@ -49,7 +49,9 @@ def share(part: int, whole: int) -> float | None:
     return round(part / whole, 4) if whole > 0 else None
 
 
-def usage_values(metrics: UsageMetrics, requests: int, tokens: int) -> dict[str, Any]:
+def usage_values(
+    metrics: UsageMetrics, requests: int, tokens: int, cost: float | None = None
+) -> dict[str, Any]:
     """The shared usage columns of a row, with its shares of the given totals."""
 
     return {
@@ -63,6 +65,7 @@ def usage_values(metrics: UsageMetrics, requests: int, tokens: int) -> dict[str,
         "last_seen": metrics.last_seen,
         "request_share": share(metrics.requests, requests),
         "token_share": share(metrics.total_tokens, tokens),
+        "cost": None if cost is None else round(cost, 4),
     }
 
 
@@ -129,6 +132,7 @@ class Point:
     quota: int = 0
     denied: int = 0
     errors: int = 0
+    cost: float | None = None
 
     def add_metrics(self, metrics: UsageMetrics) -> None:
         self.requests += metrics.requests
@@ -272,6 +276,7 @@ def trend(
                     quota_refused=None,
                     denied=None,
                     errors=None,
+                    cost=None,
                 )
             )
             continue
@@ -285,6 +290,7 @@ def trend(
                 quota_refused=point.quota,
                 denied=point.denied,
                 errors=point.errors,
+                cost=None if point.cost is None else round(point.cost, 4),
             )
         )
     return series
@@ -296,6 +302,7 @@ class Ranked:
     label: str
     detail: str | None
     metrics: UsageMetrics
+    cost: float | None = None
 
 
 def rank(
@@ -325,6 +332,7 @@ def rank(
             total_tokens=item.metrics.total_tokens,
             request_share=share(item.metrics.requests, requests),
             token_share=share(item.metrics.total_tokens, tokens),
+            cost=None if item.cost is None else round(item.cost, 4),
         )
         for item in ordered[:limit]
     ]

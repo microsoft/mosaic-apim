@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApiError } from './api'
@@ -54,6 +54,7 @@ const primaryLinks = [
   'Entitlements',
   'Policies',
   'Analytics',
+  'Pricing',
   'Settings',
   'Support',
 ]
@@ -100,6 +101,10 @@ describe('App shell', () => {
     }
     expect(screen.getByRole('button', { name: 'Add model endpoint' })).toBeVisible()
     expect(screen.queryByText('AzureLite')).not.toBeInTheDocument()
+    // Pricing sits right after Analytics, whose figures it prices.
+    const primary = within(screen.getByRole('navigation', { name: 'Primary navigation' }))
+    const labels = primary.getAllByRole('link').map((link) => link.textContent)
+    expect(labels.indexOf('Pricing')).toBe(labels.indexOf('Analytics') + 1)
   })
 
   it('leaves local mode unchanged: no role check and a Local mode label', () => {

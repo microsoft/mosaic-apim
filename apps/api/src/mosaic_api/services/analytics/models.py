@@ -39,6 +39,8 @@ ExportView = Literal[
     "unusedKeys",
     "untrackedGrants",
     "unattributed",
+    "costDeployments",
+    "chargeback",
 ]
 ConsumerKind = Literal["person", "application", "group"]
 GrantState = Literal["active", "disabled", "removed"]
@@ -105,6 +107,9 @@ class AnalyticsKpis(MosaicModel):
     active_grants: int | None
     active_apis: int | None
     unattributed_requests: int | None
+    # US dollars, at list prices. None when nothing in the window could be priced, or when the
+    # window is by the hour, which MOSAIC can't price.
+    cost: float | None = None
 
 
 class AnalyticsTrendPoint(MosaicModel):
@@ -115,6 +120,7 @@ class AnalyticsTrendPoint(MosaicModel):
     quota_refused: int | None
     denied: int | None
     errors: int | None
+    cost: float | None = None
 
 
 class AnalyticsSeries(MosaicModel):
@@ -132,6 +138,7 @@ class AnalyticsRankRow(MosaicModel):
     total_tokens: int
     request_share: float | None
     token_share: float | None
+    cost: float | None = None
 
 
 class AnalyticsGatewayHealth(MosaicModel):
@@ -164,6 +171,58 @@ class AnalyticsReport(MosaicModel):
     notes: list[str]
 
 
+class AnalyticsUnpricedUse(MosaicModel):
+    """Usage left out of a cost because MOSAIC couldn't price it."""
+
+    key: str
+    kind: Literal["deployment", "api", "grant"]
+    label: str
+    detail: str | None = None
+    reason: str
+    message: str
+    requests: int
+    total_tokens: int
+
+
+class AnalyticsCostSummary(MosaicModel):
+    """What a report's usage cost at list prices, in US dollars, and what was left out."""
+
+    currency: Literal["USD"] = "USD"
+    # None when nothing could be priced. Never zero for usage MOSAIC couldn't price.
+    total: float | None
+    # The part of the total that provisioned deployments' reserved capacity makes up.
+    reserved: float | None = None
+    priced_tokens: int = 0
+    unpriced_tokens: int = 0
+    unpriced_requests: int = 0
+    # Deployments and APIs whose usage the total leaves out.
+    unpriced_items: int = 0
+    unpriced: list[AnalyticsUnpricedUse] = Field(default_factory=list)
+    # How the figures were priced, such as how provisioned capacity is shared.
+    notes: list[str] = Field(default_factory=list)
+
+
+class AnalyticsSpend(MosaicModel):
+    """This calendar month's spend so far, and where the month is heading."""
+
+    currency: Literal["USD"] = "USD"
+    month_start: date
+    days_in_month: int
+    # How much of the month MOSAIC has figures for, in days, to the hour.
+    days_elapsed: float
+    # When this month's figures run to: the oldest gateway's last rollup.
+    through: datetime | None = None
+    month_to_date: float | None
+    # Reserved capacity's part of the month so far, counted by the whole day.
+    reserved: float | None = None
+    # Pay-as-you-go spend so far times days in the month over days elapsed, plus the whole
+    # month's reserved capacity. A projection, not a bill. None until there's a day of figures.
+    forecast: float | None
+    projected: bool = True
+    unpriced_tokens: int = 0
+    unpriced_items: int = 0
+
+
 class AnalyticsOverview(AnalyticsReport):
     kpis: AnalyticsKpis
     # The equal-length window just before, or None when MOSAIC has no figures for all of it.
@@ -175,6 +234,9 @@ class AnalyticsOverview(AnalyticsReport):
     top_callers: list[AnalyticsRankRow]
     top_apis: list[AnalyticsRankRow]
     gateways: list[AnalyticsGatewayHealth]
+    # None when this deployment has no price list.
+    cost: AnalyticsCostSummary | None = None
+    spend: AnalyticsSpend | None = None
 
 
 class AnalyticsUsage(MosaicModel):
@@ -188,6 +250,8 @@ class AnalyticsUsage(MosaicModel):
     last_seen: datetime | None = None
     request_share: float | None = None
     token_share: float | None = None
+    # US dollars at list prices. None when the row's usage can't be priced, or carries no tokens.
+    cost: float | None = None
 
 
 class AnalyticsConsumerRow(AnalyticsUsage):
@@ -243,6 +307,8 @@ class AnalyticsConsumers(AnalyticsReport):
     grants: list[AnalyticsGrantRow]
     client_apps: list[AnalyticsClientAppRow]
     truncated: bool
+    # The linked calls' cost. None when this deployment has no price list.
+    cost: AnalyticsCostSummary | None = None
 
 
 class AnalyticsApiRow(AnalyticsUsage):
@@ -302,6 +368,7 @@ class AnalyticsModels(AnalyticsReport):
     deployments: list[AnalyticsDeploymentRow]
     gateways: list[AnalyticsBreakdownRow]
     environments: list[AnalyticsBreakdownRow]
+    cost: AnalyticsCostSummary | None = None
 
 
 class AnalyticsStatusMix(MosaicModel):
@@ -452,6 +519,7 @@ class AnalyticsUnattributedRow(MosaicModel):
     total_tokens: int
     last_seen: datetime | None
     share: float | None
+    cost: float | None = None
 
 
 class AnalyticsUnattributed(AnalyticsReport):
@@ -462,6 +530,79 @@ class AnalyticsUnattributed(AnalyticsReport):
     share: float | None
     rows: list[AnalyticsUnattributedRow]
     truncated: bool
+    cost: AnalyticsCostSummary | None = None
+
+
+class AnalyticsCostTrendPoint(MosaicModel):
+    start: datetime
+    # None for a bucket MOSAIC has no figures for, or can't price.
+    cost: float | None
+    reserved: float | None = None
+    total_tokens: int | None = None
+
+
+class AnalyticsCostRow(MosaicModel):
+    key: str
+    label: str
+    detail: str | None = None
+    kind: str | None = None
+    requests: int
+    total_tokens: int
+    cost: float | None
+    cost_share: float | None = None
+
+
+class AnalyticsCostDeploymentRow(MosaicModel):
+    key: str
+    endpoint_id: str | None
+    endpoint_name: str | None
+    deployment_name: str
+    model_name: str | None
+    model_version: str | None
+    cloud: str | None
+    cloud_label: str
+    deployment_type: str | None
+    region: str | None
+    # How the deployment is charged today.
+    pricing: Literal["tokens", "provisioned", "unpriced"]
+    price_id: str | None = None
+    price_origin: Literal["seed", "admin"] | None = None
+    input_per_million: float | None = None
+    cached_input_per_million: float | None = None
+    output_per_million: float | None = None
+    ptu_hourly: float | None = None
+    monthly_amount: float | None = None
+    capacity: int | None = None
+    # A provisioned deployment's cost for the whole of this month, at today's price.
+    month_cost: float | None = None
+    # A provisioned deployment's tokens against what its PTUs could serve over the window, when
+    # Microsoft publishes the model's throughput per PTU. Output tokens weigh more against PTU
+    # capacity, and MOSAIC weighs them as Microsoft's sizing guidance does.
+    utilization: float | None = None
+    # Reserved capacity in the window with no calls to share it among.
+    idle_cost: float | None = None
+    unpriced_reason: str | None = None
+    unpriced_message: str | None = None
+    requests: int
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+    cost: float | None
+    cost_share: float | None = None
+    gateways: int = 0
+
+
+class AnalyticsCost(AnalyticsReport):
+    spend: AnalyticsSpend | None
+    cost: AnalyticsCostSummary
+    trend: list[AnalyticsCostTrendPoint]
+    models: list[AnalyticsCostRow]
+    deployments: list[AnalyticsCostDeploymentRow]
+    # People, applications, and security groups, by what their calls cost.
+    consumers: list[AnalyticsCostRow]
+    apis: list[AnalyticsCostRow]
+    # False when this deployment has no price list, so nothing can be priced.
+    priced: bool = True
 
 
 class AnalyticsStatus(MosaicModel):

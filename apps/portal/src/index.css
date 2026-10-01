@@ -791,6 +791,7 @@ textarea { font: inherit; }
 }
 
 .not-metered,
+.no-price,
 .binding-hint {
   color: var(--mosaic-text-muted);
 }

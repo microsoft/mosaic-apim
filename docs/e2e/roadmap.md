@@ -680,7 +680,7 @@ Progress:
     allows only chat completions on these publications, so their embeddings and model-info
     operations are denied by design.
 
-### Phase 8: Runtime verification (R1 to R8, A14) 🔄 R3 and R4's additions pass, and part of R8; the rest runs at the owner's sitting
+### Phase 8: Runtime verification (R1 to R9, A14, A17) 🔄 R3 and R4's additions pass, and part of R8; the rest runs at the owner's sitting
 
 `scripts/verify_model_access.py` now covers this phase, with unit tests against a fake gateway
 that applies the governed policy. It reads each grant's connection details from MOSAIC, calls the
@@ -698,6 +698,7 @@ described below.
 | R6 | `--prove-token-limit`, on fresh grants limited to at most 100 tokens per minute, on a model whose own limit for each grant is higher. The 429 must come from the gateway's token limit. Not Claude on the classic tier, which can't limit Anthropic tokens (G5) |
 | R7 | `--watch-revocation <grant-id>` waits while the admin revokes the grant, which disables it, and applies the plan (A14). Rejections count only once MOSAIC reports the grant revoked, and must repeat |
 | R8 | Manual: find the calls in Application Insights and Log Analytics. With [ADR 0019](../adr/0019-usage-telemetry.md) deployed, the gateway's **Telemetry** section must pass its checks, and within about 20 minutes the portal's **Usage & cost** and the console's **Analytics** must count the run's calls against the right grant and client, and its refusals under their reasons |
+| R9 | Manual: after R8, with [ADR 0020](../adr/0020-price-list.md) deployed, **Analytics > Cost** must price each deployment the run called at its seeded list price, its tokens times the price per million, and the portal's **Usage & cost** must show the user only their own cost. Then check that **Pricing > Unpriced deployments** lists the declared Claude deployment until its type is set, and compare a month's estimate for one pay-as-you-go deployment with its Cost Management line at list price |
 
 Method toggles (A14) are checked by rerunning the verifier after each reviewed plan. The verifier
 reveals a grant's keys only while keys are on, so it can't show that a key stops working once keys
@@ -883,6 +884,7 @@ has passed, and ❌ means the latest run failed on the product gap named.
 | A14 | Disable, revoke and method toggles go through review and apply | 8 | ⬜ |
 | A15 | Unpublishing removes only what MOSAIC created | 9 | ✅ |
 | A16 | Settings lists the built-in environments; an Unclassified pairing warns but isn't blocked, and classifying both sides clears the warning (#40) | 6 | ✅ |
+| A17 | **Pricing** lists the seeded price of each target deployment with its source, detects each endpoint's cloud from its host, and says why any deployment has no price; an override from a date prices only the days from then (ADR 0020) | 8 | ⬜ |
 
 ### Portal
 
@@ -911,6 +913,7 @@ has passed, and ❌ means the latest run failed on the product gap named.
 | R6 | The tokens-per-minute limit returns 429 with `Retry-After` | 8 | ⬜ |
 | R7 | After revocation propagates, calls fail | 8 | ⬜ |
 | R8 | Calls show up in Application Insights and Log Analytics, and with ADR 0019, in MOSAIC's usage and analytics (optional) | 8 | 🔄 |
+| R9 | With ADR 0020, the run's calls are priced at list price in Analytics, the Dashboard, and the user's own portal page (optional) | 8 | ⬜ |
 
 ## Findings
 

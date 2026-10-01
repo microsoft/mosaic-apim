@@ -121,13 +121,17 @@ portal at `http://localhost:5174` signs you in as the demo end user, Megan Bowen
   back as far as 120 days. Last, it enables API diagnostics on the production gateway and
   generates a quarter of gateway traffic from the estate's people and workloads, including
   throttled and refused calls and calls to adopted APIs. MOSAIC's rollup job reads it all back,
-  so the Dashboard, Analytics, and the portal's **Usage & cost** page show measured figures. Every
-  page therefore renders what the product would show for that estate. The demo runs no rollup loop
-  afterwards, so every shot in a run shows the same figures. The traffic and timestamps follow the
-  clock, though, so they shift a little from one run to the next. Requests from the portal's
-  origin are answered as Megan Bowen with the `User` role, and all others as Adele Vance with
-  `Admin` and `User`. Local authentication is refused outside local and test environments, so the
-  demo can't be pointed at a deployed MOSAIC.
+  so the Dashboard, Analytics, and the portal's **Usage & cost** page show measured figures. They
+  are priced from the price list MOSAIC ships, plus what the seed sets through the pricing
+  service: the partner's declared GPT-4.1 mini deployment's type, and a negotiated GPT-4o rate
+  from next month, which the **Pricing** page shows as scheduled. The Claude, Mistral Large,
+  Cohere, and realtime deployments and the adopted APIs stay unpriced, so the **Unpriced
+  deployments** tab has something to show. Every page therefore renders what the product would
+  show for that estate. The demo runs no rollup loop afterwards, so every shot in a run shows the
+  same figures. The traffic and timestamps follow the clock, though, so they shift a little from
+  one run to the next. Requests from the portal's origin are answered as Megan Bowen with the
+  `User` role, and all others as Adele Vance with `Admin` and `User`. Local authentication is
+  refused outside local and test environments, so the demo can't be pointed at a deployed MOSAIC.
 - `capture.py` opens each shot in a fresh Chromium context 1440 pixels wide, with the shot's theme
   set both as the operating-system preference and as MOSAIC's stored preference. It waits for
   every spinner to clear and for the shot's ready text, runs the shot's actions, captures the
@@ -168,7 +172,8 @@ rather than editing the image by hand. Then capture the shot again and check it.
    - `ready` is visible text that appears only once the page's data has loaded. A heading that
      shows while the page is still loading doesn't work.
    - `actions` are the steps that reach the pictured state. Build them from `click_link`,
-     `click_tab`, `click_button`, `select_option`, `wait_for_text`, and `scroll_to_text`.
+     `click_tab`, `click_button`, `select_option`, `fill_text`, `wait_for_text`, and
+     `scroll_to_text`.
    - `height` is the viewport height in pixels. It defaults to 900.
 3. Capture it with `--only`, open the PNG, and check that everything identifying is blurred.
 4. Embed it in the README with a one- or two-sentence description, and add it to the
@@ -216,6 +221,8 @@ shows both themes. Keep new shots in that pattern.
 | `console-mcp-publish` | Console | `/mcps`, **Plan and apply** review for the published Docs MCP server | Light | MCP publish review |
 | `console-unpublish-review` | Console | `/models`, **Unpublish** review for GPT-4o, never confirmed | Light | Unpublish review |
 | `console-analytics` | Console | `/analytics`, **Overview** tab | Dark | Analytics |
+| `console-analytics-cost` | Console | `/analytics?tab=cost` | Light | Cost |
+| `console-pricing` | Console | `/pricing`, **Prices** tab filtered to `2024-11-20` | Dark | Pricing |
 | `console-analytics-consumers` | Console | `/analytics?tab=consumers` | Light | Consumers |
 | `console-analytics-limits` | Console | `/analytics?tab=limits` | Dark | Grant limits |
 | `console-gateway-telemetry` | Console | Contoso AI Gateway, **Overview** tab, scrolled to **Telemetry** | Light | Gateway telemetry |

@@ -55,8 +55,8 @@ one under **Settings > Appearance**.
     security groups, and MOSAIC groups registered in MOSAIC, each opening its tab under Identity,
     and of the gateways, model endpoints, and MCP servers in each environment. Below them, the last
     7 days of gateway usage rolled up from Log Analytics: requests, tokens, active callers, errors,
-    and latency, the daily trend, how current each gateway's telemetry is, and the top models,
-    callers, and APIs.</td>
+    and latency, what this month has cost so far with its month-end forecast, the daily trend, how
+    current each gateway's telemetry is, and the top models, callers, and APIs.</td>
   </tr>
   <tr>
     <td><img src="docs/images/screenshots/portal-catalog-light.png" alt="The portal catalog in the light theme"></td>
@@ -167,19 +167,34 @@ one under **Settings > Appearance**.
       resources that will change.</p>
     </td>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/console-analytics.png" alt="Analytics with request, token, caller, error, and latency figures, a daily trend, and the top models, callers, and APIs">
+      <img src="docs/images/screenshots/console-analytics.png" alt="Analytics with request, token, cost, caller, error, and latency figures, a daily trend, and the top models, callers, and APIs">
       <p><b>Analytics.</b> Real gateway usage rolled up from Log Analytics, filtered by time range,
       gateway, environment, resource, and kind of subject. The overview compares the headline
-      figures with the previous period and ranks the top models, callers, and APIs, and every tab
-      exports CSV.</p>
+      figures, cost among them, with the previous period and ranks the top models, callers, and
+      APIs, and every tab exports CSV.</p>
     </td>
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/console-analytics-consumers.png" alt="The Consumers tab listing people, agents, applications, and security groups with their requests, tokens, grants, resources, and last call">
+      <img src="docs/images/screenshots/console-analytics-cost.png" alt="The Cost tab with this month's spend, the month-end forecast, the range's cost, a cost and token trend, and cost by model, consumer, and API">
+      <p><b>Cost.</b> What measured usage cost at list price: this month's spend and its month-end
+      forecast, the range's cost and trend, and cost by model, consumer, API, and deployment, with
+      a chargeback export. Usage MOSAIC can't price shows <b>No price</b>, never $0.</p>
+    </td>
+    <td width="50%" valign="top">
+      <img src="docs/images/screenshots/console-pricing.png" alt="The Pricing page listing one GPT-4o version's list prices by deployment type and region, each with its source, and a scheduled change">
+      <p><b>Pricing.</b> The list prices MOSAIC turns usage into cost with, for each cloud, each
+      linked to its source. Administrators add prices for other clouds and providers, or override
+      one from a date without changing the days before it, and see which deployments have no price
+      and why.</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/images/screenshots/console-analytics-consumers.png" alt="The Consumers tab listing people, agents, applications, and security groups with their requests, tokens, grants, resources, last call, and cost">
       <p><b>Consumers.</b> Each person, agent, application, and security group that called a
-      governed API, with requests, tokens, grants, resources, and when they were last seen. Below
-      it, the same usage by grant and by client application.</p>
+      governed API, with requests, tokens, grants, resources, when they were last seen, and what
+      their calls cost. Below it, the same usage by grant and by client application.</p>
     </td>
     <td width="50%" valign="top">
       <img src="docs/images/screenshots/console-analytics-limits.png" alt="The Limits tab showing each grant's quota and rate-limit use with reached, near-limit, and OK badges">
@@ -256,17 +271,18 @@ one under **Settings > Appearance**.
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/portal-usage.png" alt="Measured requests, tokens, errors and throttling, and busiest resource, with a daily trend and the last 24 hours">
-      <p><b>Usage &amp; cost.</b> A person's own requests, tokens, errors and throttling, and busiest
-      resource, measured from the gateway's logs across everything they hold. A daily trend by
-      environment or resource and the last 24 hours by hour show when they used it.</p>
+      <img src="docs/images/screenshots/portal-usage.png" alt="Measured requests, tokens, errors and throttling, estimated cost, and busiest resource, with a daily trend and the last 24 hours">
+      <p><b>Usage &amp; cost.</b> A person's own requests, tokens, errors and throttling, what they
+      cost at list price, and their busiest resource, measured from the gateway's logs across
+      everything they hold. A daily trend by environment or resource and the last 24 hours by hour
+      show when they used it.</p>
     </td>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/portal-usage-resources.png" alt="Usage by resource with each grant's requests, tokens, quota use, busiest minute, and usage tracking">
+      <img src="docs/images/screenshots/portal-usage-resources.png" alt="Usage by resource with each grant's requests, tokens, estimated cost, quota use, busiest minute, and usage tracking">
       <p><b>Usage by resource.</b> The same figures by environment and by granted resource, with
-      each quota's use in its current window and the busiest minute against each rate limit.
-      Usage tracking says how a grant's calls are linked, or that its usage can't be measured
-      yet.</p>
+      each one's estimated cost, or <b>No price</b> and why, each quota's use in its current window,
+      and the busiest minute against each rate limit. Usage tracking says how a grant's calls are
+      linked, or that its usage can't be measured yet.</p>
     </td>
   </tr>
 </table>
@@ -391,10 +407,11 @@ explicit local/test modes and application startup rejects them when `MOSAIC_ENVI
   stop. The portal shows each catalog entry's and grant's environment, so people request
   development and production access separately
 - End-user usage report: a caller-scoped `/me/usage` contract and the portal's **Usage & cost**
-  page, measured from the gateway's logs. Each governed model and MCP call is tagged at the
-  gateway with the grant it matched and the calling client, so key, token, security-group, and MCP
-  grants are each attributed to the right person. Only local and test runs simulate the figures,
-  from the caller's real grants and limits, and they label them **Sample figures**
+  page, measured from the gateway's logs and priced from the price list. Each governed model and
+  MCP call is tagged at the gateway with the grant it matched and the calling client, so key,
+  token, security-group, and MCP grants are each attributed to the right person. Only local and
+  test runs simulate the figures, from the caller's real grants and limits, and they label them
+  **Sample figures**
 - Usage analytics: a background job rolls API Management's gateway and LLM logs up from Log
   Analytics into Cosmos every 15 minutes, keeping daily and monthly figures after the workspace's
   own retention ends. The console's Dashboard and Analytics pages show requests, tokens, callers,
@@ -403,15 +420,23 @@ explicit local/test modes and application startup rejects them when `MOSAIC_ENVI
   Telemetry section checks that its usage can be measured and says how to fix what's missing. See
   [Usage analytics](docs/usage-analytics.md) and
   [ADR 0019](docs/adr/0019-usage-telemetry.md)
+- Pricing: a sourced, dated price list turns measured usage into cost. MOSAIC ships list prices for
+  Azure Commercial and Azure Government from the Azure Retail Prices API, each citing its source.
+  Administrators add prices for custom clouds and other providers, or override one from a date, as
+  audited versions that never rewrite the days before them. Analytics, the Dashboard, and the
+  portal show cost at list price, with this month's spend and a month-end forecast, provisioned
+  throughput shared by each caller's share of its tokens, and a chargeback export. Usage MOSAIC
+  can't price shows **No price**, never $0. See [Pricing](docs/pricing.md) and
+  [ADR 0020](docs/adr/0020-price-list.md)
 - ACR remote builds for every image, so deployment does not depend on a local Docker daemon
 - `azd` and modular Bicep for three Linux Web Apps on one plan, ACR, Cosmos, Key Vault, APIM,
   Log Analytics, Application Insights, diagnostics, managed identities, and narrow RBAC
 - Idempotent Entra application/service-principal setup through `azd` hooks
 
 The Gateways workspace, the Identity workspace, the Models and MCPs workspaces, the Entitlements
-workspace, Settings → Environments, model publishing, the Dashboard, Analytics, the end-user
-portal, and the deterministic policy preview use live API contracts. Usage figures in Azure are
-measured from gateway logs; only local and test runs simulate the portal's, labeled
+workspace, Settings → Environments, model publishing, the Dashboard, Analytics, Pricing, the
+end-user portal, and the deterministic policy preview use live API contracts. Usage figures in
+Azure are measured from gateway logs; only local and test runs simulate the portal's, labeled
 **Sample figures**. Policy metadata and other future operational experiences are interactive
 frontend previews labeled **Sample data** or **Local preview**. They never claim to mutate Azure
 or substitute sample data for a failed API request.
@@ -634,6 +659,10 @@ not. The domain distinguishes:
   or the grant tag an applied publication emits at the gateway
 - `AccessRequest`: a portal user's request for a resource they can see but are not entitled to
 - `CredentialReference`: Key Vault secret URI only
+- `PriceVersion`: a price an administrator added, or a new version of a listed one, with the day it
+  takes effect, its source, and a note; never edited or deleted
+- `EndpointPricing`: an administrator's cloud and region for a model endpoint, and the deployment
+  type and PTUs of deployments MOSAIC can't read
 - `PolicyRevision`, `SyncOperation`, `AuditEvent`
 Cosmos uses:
 
@@ -1643,33 +1672,61 @@ diagnostic's verbosity to Error.
 ### Usage analytics in the console
 
 The **Dashboard** shows the last 7 days: requests, tokens, active callers, error rate, and p95
-latency, the daily trend, how current each gateway's telemetry is, and the top five models,
-callers, and APIs. **Analytics** covers the last 24 hours, 7, 30, or 90 days, 12 months, or chosen
-dates, and filters by gateway, environment, resource, and kind of subject:
+latency, spend this month and its month-end forecast, the daily trend, how current each gateway's
+telemetry is, and the top five models, callers, and APIs. **Analytics** covers the last 24 hours, 7,
+30, or 90 days, 12 months, or chosen dates, and filters by gateway, environment, resource, and kind
+of subject:
 
 | Tab | What it shows |
 | --- | --- |
-| Overview | Requests, tokens, active callers, errors, and p95 latency against the previous period, the trend, and the top models, callers, and APIs |
-| Consumers | Each person, agent, application, and Entra security group, with requests, tokens, grants, resources, and when they were last seen; then each grant, and each client application |
-| Models | Each model, each deployment's busiest minute against its capacity, and each API and MCP server |
+| Overview | Requests, tokens, active callers, errors, p95 latency, and cost against the previous period, the trend, and the top models, callers, and APIs |
+| Cost | What usage cost at list price: the total and trend, spend this month and the month-end forecast, and cost by model, deployment, caller, and API, with each provisioned deployment's monthly cost and utilization |
+| Consumers | Each person, agent, application, and Entra security group, with requests, tokens, cost, grants, resources, and when they were last seen; then each grant, and each client application |
+| Models | Each model, each deployment's busiest minute against its capacity, and each API and MCP server, with their cost |
 | Reliability | Successful, gateway-throttled, backend 429, and denied calls, an estimated latency histogram, denials by reason, and each API's reliability |
 | Limits | How close each grant is to each quota and rate limit, and the calls the gateway throttled or refused for quota |
 | Access hygiene | Grants nobody used in the last 30 days, keys nobody used because every call brought a token, and grants MOSAIC can't track |
-| Unattributed | Calls MOSAIC couldn't link to a grant, such as those made with a publication's shared key |
+| Unattributed | Calls MOSAIC couldn't link to a grant, such as those made with a publication's shared key, and what they cost |
 
-Every tab exports CSV. There's no cost yet, because MOSAIC has no price list. These routes need
-`Admin`:
+Every tab exports CSV, and tables that show cost export it too. The Cost tab exports a chargeback by
+month, person, application, or group, and model. These routes need `Admin`:
 
 | Method | Route under `/api/v1` | Result |
 | --- | --- | --- |
 | GET | `/analytics/status` | Where the figures come from, and how current each gateway's rollup is |
 | POST | `/analytics/refresh` | Roll up every gateway now; 202, or 429 within a minute of the last |
-| GET | `/analytics/{view}` | `overview`, `consumers`, `models`, `reliability`, `limits`, `hygiene`, or `unattributed`, filtered by `range` (`24h`, `7d`, `30d`, `90d`, `12m`, or `custom` with `start` and `end`), `gatewayId`, `environment`, `resourceId`, and `subjectKind` |
-| GET | `/analytics/export?view=` | One table as CSV, with the same filters |
+| GET | `/analytics/{view}` | `overview`, `cost`, `consumers`, `models`, `reliability`, `limits`, `hygiene`, or `unattributed`, filtered by `range` (`24h`, `7d`, `30d`, `90d`, `12m`, or `custom` with `start` and `end`), `gatewayId`, `environment`, `resourceId`, and `subjectKind` |
+| GET | `/analytics/export?view=` | One table as CSV, with the same filters; `chargeback` is the chargeback by month, and `costDeployments` the cost of each deployment |
 | GET | `/gateways/{id}/telemetry` | The gateway's telemetry checks and each governed API's diagnostic |
 | POST | `/gateways/{id}/telemetry/enable` | Create the logger and set API diagnostics on what MOSAIC published; audited |
 | POST | `/gateways/{id}/telemetry/refresh` | Roll up this gateway now; 202, or 429 within a minute of the last |
 | POST | `/gateways/{id}/telemetry/backfill` | Re-read `days` of older logs, 1 to 730, or `MOSAIC_USAGE_ROLLUP_BACKFILL_MAX_DAYS` when omitted; 202, audited |
+
+### Pricing
+
+MOSAIC prices usage from a sourced, dated price list, at list price, each time a view is read. It
+ships list prices for Azure Commercial and Azure Government, read from the public Azure Retail
+Prices API, and every price cites its source. On the console's **Pricing** page, administrators add
+prices for custom clouds and other providers, such as an OpenAI-compatible endpoint, or override one
+from a date. Each is a new version, audited, and never changes the days before it.
+
+A deployment's cloud comes from its endpoint's host, where `.azure.us` means Azure Government, and
+an administrator can override it. The most specific price wins, by deployment, model, version,
+region, deployment type, and publisher. Provisioned throughput costs its PTUs by the hour, or a
+monthly amount, shared among its callers by their share of its tokens. Usage MOSAIC can't price
+shows **No price**, never $0, and the **Unpriced deployments** tab says what would price it.
+[Pricing](docs/pricing.md) covers sources, matching, overrides, PTUs, chargeback, and refreshing the
+seed. [ADR 0020](docs/adr/0020-price-list.md) records the design. These routes need `Admin`:
+
+| Method | Route under `/api/v1` | Result |
+| --- | --- | --- |
+| GET | `/pricing` | Each cloud, the seed's sources, and how many deployments have a price |
+| GET | `/pricing/prices?cloud=` | A cloud's prices, each with the version in effect today, the next one scheduled, and their sources |
+| POST | `/pricing/prices` | Add a price, or a new version of one, from a date, with a source URL and a note; audited |
+| GET | `/pricing/prices/{lineId}/history` | Every version of a price |
+| GET | `/pricing/unpriced` | Deployments with no price today, and adopted model APIs with calls, with why |
+| GET | `/pricing/endpoints` | Each endpoint's cloud, region, and deployments, as MOSAIC prices them |
+| PATCH | `/pricing/endpoints/{id}` | Override an endpoint's cloud or region, or set a declared deployment's type and PTUs; audited, and refused with 409 if the facts changed since the `version` sent |
 
 ### Usage and cost in the portal
 
@@ -1682,7 +1739,9 @@ calls.
 
 In Azure the figures are measured, and the page says how current they are. The gateway applies
 limits as calls arrive, so someone can reach one before the page shows it. A row with nothing to
-link its calls has null figures, not zero. Cost isn't shown yet, because MOSAIC has no price list.
+link its calls has null figures, not zero. Cost is the person's own calls at list price, from the
+[price list](#pricing). A resource MOSAIC can't price shows **No price**, and the totals say how
+many resources they exclude.
 
 Local and test runs simulate the report instead, from the caller's real grants and limits. The
 figures are deterministic and never exceed a quota, costs are illustrative estimates, and the page
@@ -1756,9 +1815,10 @@ records.
 7. **Insights and chargeback:** usage is measured now. Gateway and LLM logs are rolled up from Log
    Analytics into Cosmos, attributed to each grant, member, and client application, and shown in
    the portal against each grant's own limits and in the console's Dashboard and Analytics; see
-   [ADR 0019](docs/adr/0019-usage-telemetry.md). Still to come: a sourced, dated price list that
-   turns usage into cost, cost centers that allocate it to teams, and budgets that warn by email
-   and can block.
+   [ADR 0019](docs/adr/0019-usage-telemetry.md). A sourced, dated price list turns that usage into
+   cost at list price, with a month-end forecast and a chargeback export; see
+   [ADR 0020](docs/adr/0020-price-list.md). Still to come: cost centers that allocate it to teams,
+   and budgets that warn by email and can block.
 8. **Catalog ecosystem:** API Center experiences, MCP tool-level governance, broader self-service
    workflows, and environment chains that relate the same model across environments and clouds.
 9. **Production hardening:** private networking, multi-region/production APIM tiers, CMK where

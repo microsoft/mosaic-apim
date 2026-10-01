@@ -247,7 +247,7 @@ function EnvironmentBreakdown({
                     measured > 0 &&
                     ` · ${
                       row.estimatedCost === null
-                        ? 'cost unknown'
+                        ? 'no price'
                         : formatCurrency(row.estimatedCost, currency)
                     }`}{' '}
                   · {formatCount(row.resources, 'resource')}
@@ -299,10 +299,18 @@ function ResourceUsageValue({
 }
 
 function CostCell({ row, currency }: { row: UsageResourceRow; currency: string }) {
-  if (row.estimatedCost !== null) return <>{formatCurrency(row.estimatedCost, currency)}</>
+  if (row.estimatedCost !== null) {
+    // Part of a grant's usage can lack a price, so its cost comes with why.
+    return (
+      <>
+        {formatCurrency(row.estimatedCost, currency)}
+        {row.costNote && <small>{row.costNote}</small>}
+      </>
+    )
+  }
   return (
     <>
-      Unknown
+      <span className="no-price">No price</span>
       {row.costNote && <small>{row.costNote}</small>}
     </>
   )
@@ -641,6 +649,13 @@ export function UsagePage() {
                       environmentFilter === 'unclassified' ? null : environmentFilter,
                     )}
                 .
+                {showCost && usage.data.dataSource === 'logAnalytics' && (
+                  <>
+                    {' '}
+                    Estimated costs use list prices from MOSAIC&apos;s price list, before any
+                    discount, and aren&apos;t a bill.
+                  </>
+                )}
               </Text>
             </>
           )}

@@ -1,0 +1,160 @@
+.page {
+  min-width: 0;
+}
+
+.stack {
+  display: grid;
+  gap: 16px;
+}
+
+.summary {
+  margin-bottom: 16px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 14px;
+}
+
+.muted {
+  color: var(--mosaic-text-muted);
+}
+
+.tabs {
+  margin-bottom: 16px;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--mosaic-border-soft);
+}
+
+.tabBadge {
+  margin-left: 6px;
+}
+
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 12px;
+}
+
+.control {
+  min-width: 220px;
+  display: grid;
+  gap: 4px;
+  color: var(--mosaic-text-muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.priceTable td {
+  vertical-align: top;
+}
+
+.number {
+  text-align: right !important;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.sources {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 2px 10px;
+}
+
+.originBadge {
+  margin-top: 4px;
+  display: flex;
+  width: fit-content;
+}
+
+.actions {
+  white-space: nowrap;
+  text-align: right !important;
+}
+
+.actions > * + * {
+  margin-left: 6px;
+}
+
+.historyRow,
+.historyRow:hover {
+  background: var(--mosaic-surface-subtle);
+}
+
+.historyRow > td {
+  padding: 4px 14px 16px;
+}
+
+.historyTable {
+  border: 1px solid var(--mosaic-border-soft);
+  border-radius: 6px;
+  background: var(--mosaic-surface);
+}
+
+.historyTable th {
+  background: var(--mosaic-surface);
+}
+
+.reason {
+  margin-top: 4px;
+  max-width: 48ch;
+  color: var(--mosaic-text-muted);
+}
+
+.dialog {
+  max-width: 760px;
+  width: min(760px, calc(100vw - 32px));
+}
+
+.form {
+  display: grid;
+  gap: 14px;
+}
+
+.formGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  align-items: start;
+  gap: 12px;
+}
+
+.endpointEditor {
+  padding: 12px 0 4px;
+  display: grid;
+  gap: 14px;
+}
+
+.deploymentFacts {
+  display: grid;
+  gap: 10px;
+}
+
+.editorActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.sourceList {
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 10px;
+  list-style: none;
+}
+
+.sourceList li {
+  padding: 12px 14px;
+  display: grid;
+  gap: 2px;
+  border: 1px solid var(--mosaic-border-soft);
+  border-radius: 8px;
+  background: var(--mosaic-surface);
+}
+
+@media (max-width: 760px) {
+  .controls {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}

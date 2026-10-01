@@ -11,6 +11,7 @@ import {
   BotRegular,
   ChartMultipleRegular,
   CloudDatabaseRegular,
+  MoneyRegular,
   PeopleCommunityRegular,
   PersonAccountsRegular,
 } from '@fluentui/react-icons'
@@ -23,9 +24,10 @@ import { BarList, type BarListItem } from '../components/charts/BarList'
 import { TrendChart } from '../components/charts/TrendChart'
 import { EnvironmentBadge } from '../components/EnvironmentBadge'
 import { DataSourceBadge, PageHeader } from '../components/PageHeader'
+import { formatCostCompact } from '../cost-format'
 import { environmentFindingsQueryKey, useEnvironmentCatalog } from '../environments'
 import { FRESHNESS_STATUS_LABELS, plural, type PrincipalTab, principalTabForKind } from '../labels'
-import type { AnalyticsRankRow } from '../types'
+import type { AnalyticsRankRow, AnalyticsSpend } from '../types'
 import styles from './DashboardPage.module.css'
 
 function SparkMetric({
@@ -67,6 +69,18 @@ function formatPercent(value: number | null | undefined) {
 function formatLatency(value: number | null | undefined) {
   if (value == null) return '—'
   return value >= 1000 ? `≈${(value / 1000).toFixed(1)} s` : `≈${Math.round(value)} ms`
+}
+
+function monthEnd(spend: AnalyticsSpend) {
+  const [year, month] = spend.monthStart.split('-').map(Number)
+  return new Intl.DateTimeFormat('en-US', { timeZone: 'UTC', month: 'short', day: 'numeric' }).format(new Date(Date.UTC(year, month - 1, spend.daysInMonth)))
+}
+
+// This month's spend so far, with where the month is heading. The forecast is a projection, so it says so.
+function spendDetail(spend: AnalyticsSpend | null | undefined) {
+  if (!spend) return 'No price list'
+  if (spend.forecast == null) return 'Forecast after a day of this month’s figures'
+  return `Projected ${formatCostCompact(spend.forecast)} by ${monthEnd(spend)}`
 }
 
 function dayLabel(start: string) {
@@ -314,6 +328,7 @@ export function DashboardPage() {
         <SparkMetric label="Active callers" value={analytics.isLoading ? '—' : formatCompact(analytics.data?.kpis.activeCallers)} detail="Linked people, apps, and groups" icon={<PersonAccountsRegular />} />
         <SparkMetric label="Error rate" value={analytics.isLoading ? '—' : formatPercent(analytics.data?.kpis.errorRate)} detail={`${formatCompact(analytics.data?.kpis.errors)} error calls`} icon={<ChartMultipleRegular />} />
         <SparkMetric label="P95 latency" value={analytics.isLoading ? '—' : formatLatency(analytics.data?.kpis.p95LatencyMs)} detail="Estimated from latency buckets" icon={<CloudDatabaseRegular />} />
+        <SparkMetric label="This month" value={analytics.isLoading ? '—' : formatCostCompact(analytics.data?.spend?.monthToDate, '—')} detail={analytics.isLoading ? 'Loading' : spendDetail(analytics.data?.spend)} icon={<MoneyRegular />} />
       </div>
 
       <div className={styles.dashboardGrid}>

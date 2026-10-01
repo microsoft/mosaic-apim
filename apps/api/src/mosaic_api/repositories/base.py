@@ -24,6 +24,7 @@ from mosaic_api.domain import (
 )
 from mosaic_api.environments import EnvironmentCatalog, EnvironmentUsage
 from mosaic_api.observed import ObservedEndpointEntity, ObservedEntity
+from mosaic_api.pricing import EndpointPricing, PriceVersion
 from mosaic_api.usage_telemetry import (
     AttributionRecord,
     SummaryDimension,
@@ -576,4 +577,39 @@ class UsageRollupRepository(Protocol):
 
     async def delete_rollups(self, tenant_id: str, item_ids: Sequence[str]) -> None:
         """Delete facts or summaries; an item that is already gone is not an error."""
+        ...
+
+
+class PricingRepository(Protocol):
+    """Administrator-authored prices and pricing facts, kept in ``desired-state``. See ADR 0020.
+
+    Price versions are only ever added, so no two writers can overwrite each other's. An
+    endpoint's pricing facts are saved over the version that was read, and each save commits with
+    its audit event.
+    """
+
+    async def ready(self) -> bool: ...
+
+    async def close(self) -> None: ...
+
+    async def list_price_versions(self, tenant_id: str) -> list[PriceVersion]: ...
+
+    async def create_price_version(
+        self, version: PriceVersion, audit_event: AuditEvent
+    ) -> PriceVersion: ...
+
+    async def list_endpoint_pricing(self, tenant_id: str) -> list[EndpointPricing]: ...
+
+    async def get_endpoint_pricing(
+        self, tenant_id: str, endpoint_id: str
+    ) -> EndpointPricing | None: ...
+
+    async def save_endpoint_pricing(
+        self, settings: EndpointPricing, audit_event: AuditEvent
+    ) -> EndpointPricing:
+        """Create the settings, or replace the version that was read.
+
+        ``settings.etag`` is None for settings that don't exist yet. Raises ``ConflictError`` when
+        someone else saved or created them since they were read.
+        """
         ...

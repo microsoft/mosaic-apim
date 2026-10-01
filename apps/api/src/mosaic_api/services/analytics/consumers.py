@@ -3,8 +3,10 @@
 from collections import defaultdict
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
+from datetime import date
 
 from mosaic_api.domain import EntitlementSubjectKind
+from mosaic_api.services.analytics.cost import CostBook, CostTally, add_cost
 from mosaic_api.services.analytics.models import (
     AnalyticsClientAppRow,
     AnalyticsConsumerRow,
@@ -29,6 +31,7 @@ class _Tally:
     resources: set[str] = field(default_factory=set)
     members: set[str] = field(default_factory=set)
     subject_kinds: set[str] = field(default_factory=set)
+    cost: float | None = None
 
 
 def _grant_key(grant_key: str, grant: GrantInfo | None) -> str:
@@ -57,7 +60,11 @@ def _state(scope: Scope, entitlement_id: str | None) -> GrantState:
 
 
 def consumers_report(
-    context: Context, *, callers: Sequence[UsageSummary], clients: Sequence[UsageSummary]
+    context: Context,
+    *,
+    callers: Sequence[UsageSummary],
+    clients: Sequence[UsageSummary],
+    costs: CostBook | None = None,
 ) -> AnalyticsConsumers:
     scope = context.scope
     people: dict[str, _Tally] = defaultdict(_Tally)
@@ -66,14 +73,28 @@ def consumers_report(
     grant_info: dict[str, GrantInfo | None] = {}
     linked = UsageMetrics()
     unidentified = 0
-    for _, entry in entries(callers, scope, "grantCaller"):
+    tally = CostTally()
+    for summary, entry in entries(callers, scope, "grantCaller"):
         grant_key, _, caller = entry.key.rpartition("|")
         grant = scope.grants.get(grant_key)
         merged = _grant_key(grant_key, grant)
         resource = (grant.resource_id if grant else None) or grant_key
+        cost = (
+            costs.grant_cost(
+                summary.gateway_id,
+                grant_key,
+                summary.period,
+                date.fromisoformat(summary.period_start),
+                entry.metrics,
+                tally,
+            )
+            if costs is not None
+            else None
+        )
         linked.add(entry.metrics)
         grant_tally = grants[merged]
         grant_tally.metrics.add(entry.metrics)
+        grant_tally.cost = add_cost(grant_tally.cost, cost)
         grant_info.setdefault(merged, grant)
         object_id = resolved_caller(scope, grant_key, caller)
         if object_id is None:
@@ -82,6 +103,7 @@ def consumers_report(
             grant_tally.members.add(object_id)
             person = people[object_id]
             person.metrics.add(entry.metrics)
+            person.cost = add_cost(person.cost, cost)
             person.grants.add(merged)
             person.resources.add(resource)
             if grant and grant.subject_kind:
@@ -90,6 +112,7 @@ def consumers_report(
             group_key = grant.subject_id or grant.subject_object_id or grant_key
             group = groups[group_key]
             group.metrics.add(entry.metrics)
+            group.cost = add_cost(group.cost, cost)
             group.grants.add(merged)
             group.resources.add(resource)
             if object_id is not None:
@@ -99,38 +122,38 @@ def consumers_report(
 
     person_rows: list[AnalyticsConsumerRow] = []
     app_rows: list[AnalyticsConsumerRow] = []
-    for object_id, tally in people.items():
+    for object_id, person_tally in people.items():
         name = scope.caller(object_id)
-        kind = _kind(name, tally)
+        kind = _kind(name, person_tally)
         row = AnalyticsConsumerRow(
-            **usage_values(tally.metrics, requests, tokens),
+            **usage_values(person_tally.metrics, requests, tokens, person_tally.cost),
             key=object_id,
             kind=kind,
             label=name.label,
             detail=name.detail,
             principal_id=name.principal_id,
             principal_kind=name.principal_kind,
-            grants=len(tally.grants),
-            resources=len(tally.resources),
+            grants=len(person_tally.grants),
+            resources=len(person_tally.resources),
         )
         (app_rows if kind == "application" else person_rows).append(row)
 
     group_rows: list[AnalyticsConsumerRow] = []
-    for group_key, tally in groups.items():
+    for group_key, group_tally in groups.items():
         grant = grant_info.get(f"group:{group_key}")
         name = scope.subject(grant)
         group_rows.append(
             AnalyticsConsumerRow(
-                **usage_values(tally.metrics, requests, tokens),
+                **usage_values(group_tally.metrics, requests, tokens, group_tally.cost),
                 key=group_key,
                 kind="group",
                 label=name.label,
                 detail=name.detail,
                 principal_id=name.principal_id,
                 principal_kind=name.principal_kind,
-                grants=len(tally.grants),
-                resources=len(tally.resources),
-                members=len(tally.members),
+                grants=len(group_tally.grants),
+                resources=len(group_tally.resources),
+                members=len(group_tally.members),
             )
         )
 
@@ -146,13 +169,13 @@ def consumers_report(
         grant_info[entitlement.id] = grant_for(entitlement, scope)
 
     grant_rows: list[AnalyticsGrantRow] = []
-    for merged, tally in grants.items():
+    for merged, grant_tally in grants.items():
         grant = grant_info.get(merged)
         subject = scope.subject(grant)
         entitlement_id = grant.entitlement_id if grant else None
         grant_rows.append(
             AnalyticsGrantRow(
-                **usage_values(tally.metrics, requests, tokens),
+                **usage_values(grant_tally.metrics, requests, tokens, grant_tally.cost),
                 key=merged,
                 entitlement_id=entitlement_id,
                 state=_state(scope, entitlement_id),
@@ -168,32 +191,41 @@ def consumers_report(
                 ),
                 gateway_id=grant.gateway_id if grant else None,
                 gateway_name=scope.gateway_name(grant.gateway_id) if grant else None,
-                callers=len(tally.members),
-                key_requests=tally.metrics.key_requests,
-                peak_minute_tokens=tally.metrics.peak_minute_tokens,
-                peak_minute_requests=tally.metrics.peak_minute_requests,
+                callers=len(grant_tally.members),
+                key_requests=grant_tally.metrics.key_requests,
+                peak_minute_tokens=grant_tally.metrics.peak_minute_tokens,
+                peak_minute_requests=grant_tally.metrics.peak_minute_requests,
             )
         )
 
     by_client: dict[str, _Tally] = defaultdict(_Tally)
     for summary, entry in entries(clients, scope, "clientApp"):
         client, _, api_name = entry.key.rpartition("|")
-        tally = by_client[client.casefold()]
-        tally.metrics.add(entry.metrics)
-        tally.resources.add(f"{summary.gateway_id}/{api_name}")
+        client_tally = by_client[client.casefold()]
+        client_tally.metrics.add(entry.metrics)
+        if costs is not None:
+            client_tally.cost = add_cost(
+                client_tally.cost, costs.summary_cost(summary, api_name, entry.metrics)
+            )
+        client_tally.resources.add(f"{summary.gateway_id}/{api_name}")
         if entry.application_object_id:
-            tally.members.add(entry.application_object_id)
-    client_total = total(tally.metrics for tally in by_client.values())
+            client_tally.members.add(entry.application_object_id)
+    client_total = total(item.metrics for item in by_client.values())
     client_rows: list[AnalyticsClientAppRow] = []
-    for client, tally in by_client.items():
-        app = scope.application(client, tally.members) if client else Name(NO_TOKEN)
+    for client, client_tally in by_client.items():
+        app = scope.application(client, client_tally.members) if client else Name(NO_TOKEN)
         client_rows.append(
             AnalyticsClientAppRow(
-                **usage_values(tally.metrics, client_total.requests, client_total.total_tokens),
+                **usage_values(
+                    client_tally.metrics,
+                    client_total.requests,
+                    client_total.total_tokens,
+                    client_tally.cost,
+                ),
                 client_app_id=client,
                 label=app.label,
                 principal_id=app.principal_id,
-                apis=len(tally.resources),
+                apis=len(client_tally.resources),
             )
         )
 
@@ -215,4 +247,5 @@ def consumers_report(
         grants=_ordered(grant_rows, lambda row: row.subject_label)[:limit],
         client_apps=_ordered(client_rows, lambda row: row.label)[:limit],
         truncated=truncated,
+        cost=tally.summary(costs.notes) if costs is not None else None,
     )

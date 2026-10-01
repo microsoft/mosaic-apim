@@ -72,6 +72,11 @@ function sumOptionalNumbers(values: Array<number | null | undefined>) {
   return present.length > 0 ? present.reduce((total, value) => total + value, 0) : null
 }
 
+/** Whether a resource's cost leaves anything out: it has none, or only part of its usage is priced. */
+function excludesCost(row: UsageResourceRow) {
+  return row.estimatedCost === null || row.costNote != null
+}
+
 export function aggregateTotals(points: UsageTimelinePoint[], rows: UsageResourceRow[]): UsageTotals {
   const estimatedCost = sumNullable(points.map((point) => point.estimatedCost))
   const lastUsed = rows.map((row) => row.lastUsedAt).filter((value): value is string => Boolean(value))
@@ -81,7 +86,7 @@ export function aggregateTotals(points: UsageTimelinePoint[], rows: UsageResourc
     completionTokens: points.reduce((total, point) => total + (point.completionTokens ?? 0), 0),
     totalTokens: points.reduce((total, point) => total + (point.totalTokens ?? 0), 0),
     estimatedCost,
-    costExcludedResources: rows.filter((row) => row.estimatedCost === null).length,
+    costExcludedResources: rows.filter(excludesCost).length,
     throttled: sumOptionalNumbers(points.map((point) => point.throttled)),
     quotaRefused: sumOptionalNumbers(points.map((point) => point.quotaRefused)),
     errors: sumOptionalNumbers(points.map((point) => point.errors)),
@@ -101,7 +106,7 @@ function aggregateByEnvironment(points: UsageTimelinePoint[], rows: UsageResourc
     const key = keyFor(row.environment)
     if (!resourcesByEnvironment.has(key)) resourcesByEnvironment.set(key, new Set())
     resourcesByEnvironment.get(key)?.add(row.entitlementId)
-    if (row.estimatedCost === null) {
+    if (excludesCost(row)) {
       if (!costExcludedByEnvironment.has(key)) costExcludedByEnvironment.set(key, new Set())
       costExcludedByEnvironment.get(key)?.add(row.entitlementId)
     }
@@ -183,7 +188,8 @@ export function aggregateUsage(report: MyUsageReport, filters: UsageFilters): Ag
 }
 
 export function formatCurrency(value: number | null, currency: string) {
-  if (value === null) return 'Unknown'
+  // Something MOSAIC can't price has no cost, which is never the same as $0.
+  if (value === null) return 'No price'
   return new Intl.NumberFormat('en-US', { style: 'currency', currency }).format(value)
 }
 

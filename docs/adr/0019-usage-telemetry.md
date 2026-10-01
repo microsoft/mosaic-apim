@@ -166,8 +166,8 @@ for each gateway and once a minute for all of them.
 filter by time range, gateway, environment, resource, and kind of subject, and export any table as
 CSV. Callers MOSAIC has no record of are named by object ID lookups in Microsoft Graph. A request
 looks up at most 200, and names are cached for an hour. Without rollups, the routes answer with
-`notConfigured` and empty reports, never samples. No report shows cost yet, because MOSAIC has no
-price list. The portal hides its cost column whenever no row has a cost.
+`notConfigured` and empty reports, never samples. Cost comes from the price list
+[ADR 0020](0020-price-list.md) adds. The portal hides its cost column whenever no row has a cost.
 
 ## Consequences
 

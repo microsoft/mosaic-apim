@@ -7,11 +7,14 @@ import { AnalyticsPage } from './AnalyticsPage'
 import type { EnvironmentCatalogView } from '../types'
 import {
   consumersFixture,
+  costFixture,
+  costSummaryFixture,
   hygieneFixture,
   limitsFixture,
   modelsFixture,
   notConfiguredOverview,
   overviewFixture,
+  pricedOverviewFixture,
   reliabilityFixture,
   unattributedFixture,
 } from '../test/analytics-fixtures'
@@ -38,6 +41,7 @@ const api = {
   getAnalyticsLimits: vi.fn(),
   getAnalyticsHygiene: vi.fn(),
   getAnalyticsUnattributed: vi.fn(),
+  getAnalyticsCost: vi.fn(),
   refreshGatewayTelemetry: vi.fn(),
   exportAnalytics: vi.fn(),
 }
@@ -78,6 +82,7 @@ describe('AnalyticsPage', () => {
     api.getAnalyticsLimits.mockResolvedValue(limitsFixture)
     api.getAnalyticsHygiene.mockResolvedValue(hygieneFixture)
     api.getAnalyticsUnattributed.mockResolvedValue(unattributedFixture)
+    api.getAnalyticsCost.mockResolvedValue(costFixture)
     api.refreshGatewayTelemetry.mockResolvedValue(overviewFixture.gateways[0])
     api.exportAnalytics.mockResolvedValue({ blob: new Blob(['csv'], { type: 'text/csv' }), filename: 'mosaic-trend-20260219-20260320.csv' })
     vi.stubGlobal('URL', { createObjectURL: vi.fn(() => 'blob:csv'), revokeObjectURL: vi.fn() })
@@ -249,5 +254,112 @@ describe('AnalyticsPage', () => {
     await user.click(await screen.findByRole('button', { name: 'Refresh now' }))
 
     expect(await screen.findByText(/refreshed less than a minute ago/i)).toBeVisible()
+  })
+
+  it('shows what the window cost beside its usage', async () => {
+    api.getAnalyticsOverview.mockResolvedValue(pricedOverviewFixture)
+    renderPage()
+
+    await screen.findByText('Alice Admin')
+    const cost = screen.getAllByText('Cost').map((element) => element.closest('.fui-Card')).find(Boolean) as HTMLElement
+    expect(within(cost).getByText('$7,235.25')).toBeVisible()
+    // What a cost leaves out is said, so an unpriced deployment never reads as free.
+    expect(within(cost).getByText('Leaves out 4K tokens with no price')).toBeVisible()
+    expect(within(screen.getByRole('list', { name: 'Top models' })).getByText('153 calls · $4,355.25')).toBeVisible()
+  })
+
+  it('prices the range and projects the month on the Cost tab', async () => {
+    renderPage('/analytics?tab=cost')
+
+    const spend = (await screen.findByText('Spend this month')).closest('.fui-Card') as HTMLElement
+    expect(within(spend).getByText('$4,355.25')).toBeVisible()
+    const forecast = screen.getByText('Month-end forecast').closest('.fui-Card') as HTMLElement
+    expect(within(forecast).getByText('$7,502.10')).toBeVisible()
+    expect(within(forecast).getByText('Projected')).toBeVisible()
+    expect(within(forecast).getByText('At this month’s pace so far, over 17.7 of 31 days')).toBeVisible()
+    const reserved = screen.getByText('Reserved capacity').closest('.fui-Card') as HTMLElement
+    expect(within(reserved).getByText('$7,200.00')).toBeVisible()
+    // The trend's cost line is labelled in dollars, not as a bare count.
+    expect(screen.getByText(/^Cost, peak \$/)).toBeVisible()
+
+    const deployments = screen.getByRole('table', { name: 'Deployment cost' })
+    const row = (name: string) => within(within(deployments).getByText(name).closest('tr') as HTMLElement)
+    expect(row('chat').getByText('$2.50 in · $10.00 out per 1M')).toBeVisible()
+    expect(row('reserved').getByText('10 PTUs at $1.00 an hour')).toBeVisible()
+    expect(row('reserved').getByText('$7,440.00 this month, shared by tokens')).toBeVisible()
+    expect(row('reserved').getByText('$2,880.00 with no calls')).toBeVisible()
+    expect(row('mystery').getAllByText('No price').length).toBeGreaterThan(0)
+
+    const unpriced = screen.getByRole('table', { name: 'Usage with no price' })
+    expect(within(unpriced).getByText(/No price for contoso-llm/)).toBeVisible()
+    expect(screen.getByRole('link', { name: 'Fix them on the Pricing page' })).toHaveAttribute('href', '/pricing?tab=unpriced')
+    expect(screen.getByRole('note', { name: 'How MOSAIC priced this usage' })).toHaveTextContent('cached prompt tokens')
+    expect(within(screen.getByRole('list', { name: 'Cost by consumer' })).getByText('Bob')).toBeVisible()
+  })
+
+  it('waits for a day of figures before forecasting', async () => {
+    api.getAnalyticsCost.mockResolvedValue({ ...costFixture, spend: { ...costFixture.spend!, forecast: null, daysElapsed: 0.2 } })
+    renderPage('/analytics?tab=cost')
+
+    const forecast = (await screen.findByText('Month-end forecast')).closest('.fui-Card') as HTMLElement
+    expect(within(forecast).getByText('—')).toBeVisible()
+    expect(within(forecast).getByText('Forecast after a day of this month’s figures')).toBeVisible()
+  })
+
+  it('says no reserved capacity was charged rather than showing $0', async () => {
+    api.getAnalyticsCost.mockResolvedValue({ ...costFixture, cost: { ...costFixture.cost, reserved: null } })
+    renderPage('/analytics?tab=cost')
+
+    const reserved = (await screen.findByText('Reserved capacity')).closest('.fui-Card') as HTMLElement
+    expect(within(reserved).getByText('None')).toBeVisible()
+    expect(within(reserved).getByText('No provisioned deployment was charged in this range')).toBeVisible()
+    expect(within(reserved).queryByText('$0.00')).not.toBeInTheDocument()
+  })
+
+  it('gives the cost line no peak when nothing in the range has a price', async () => {
+    api.getAnalyticsCost.mockResolvedValue({ ...costFixture, trend: costFixture.trend.map((point) => ({ ...point, cost: null })) })
+    renderPage('/analytics?tab=cost')
+
+    const chart = (await screen.findByRole('img', { name: 'Cost and tokens trend' })).closest('figure') as HTMLElement
+    expect(within(chart).queryByText(/^Cost, peak/)).not.toBeInTheDocument()
+    expect(within(chart).getByText('Tokens, peak 1.2M')).toBeVisible()
+  })
+
+  it('exports the chargeback from the Cost tab', async () => {
+    const user = userEvent.setup()
+    renderPage('/analytics?tab=cost')
+
+    await screen.findByText('Spend this month')
+    const picker = screen.getByLabelText('Export')
+    expect(within(picker).getAllByRole('option').map((option) => option.textContent)).toEqual([
+      'Chargeback by month',
+      'Cost by deployment',
+    ])
+    await user.click(screen.getByRole('button', { name: 'Export CSV' }))
+
+    await waitFor(() => expect(api.exportAnalytics).toHaveBeenCalledWith('chargeback', expect.anything()))
+  })
+
+  it('adds a cost column where usage is priced, and says No price rather than $0', async () => {
+    api.getAnalyticsConsumers.mockResolvedValue({
+      ...consumersFixture,
+      cost: costSummaryFixture,
+      people: consumersFixture.people.map((row, index) => ({ ...row, cost: index === 0 ? 35 : null })),
+    })
+    renderPage('/analytics?tab=consumers')
+
+    const consumers = await screen.findByRole('table', { name: 'Consumers' })
+    const costOf = (name: string) => within(within(consumers).getByText(name).closest('tr') as HTMLElement).getAllByRole('cell').at(-1)
+    expect(costOf('Alice Admin')).toHaveTextContent('$35.00')
+    expect(costOf('Scheduling Assistant')).toHaveTextContent('No price')
+    const linked = screen.getByText('Linked cost').closest('.fui-Card') as HTMLElement
+    expect(within(linked).getByText('$7,235.25')).toBeVisible()
+  })
+
+  it('leaves the cost column out where there is no price list', async () => {
+    renderPage('/analytics?tab=consumers')
+
+    const consumers = await screen.findByRole('table', { name: 'Consumers' })
+    expect(within(consumers).queryByRole('columnheader', { name: 'Cost' })).not.toBeInTheDocument()
   })
 })
