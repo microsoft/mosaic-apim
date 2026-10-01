@@ -250,6 +250,139 @@ function DeclareDeploymentDialog({
 }
 
 /**
+ * Replacing the API key MOSAIC keeps for an endpoint. The new key becomes the next version of the
+ * same Key Vault secret, so nothing published needs a new plan.
+ */
+export function StoredKeyActions({
+  endpoint,
+  onReplaced,
+}: {
+  endpoint: ModelEndpoint
+  onReplaced: (message: string) => void
+}) {
+  const restoreFocus = useRestoreFocusTarget()
+  const [replacing, setReplacing] = useState(false)
+
+  return (
+    <div>
+      <Button appearance="secondary" onClick={() => setReplacing(true)} {...restoreFocus}>
+        Replace API key
+      </Button>
+      <ReplaceKeyDialog
+        endpoint={endpoint}
+        open={replacing}
+        onClose={() => setReplacing(false)}
+        onReplaced={onReplaced}
+      />
+    </div>
+  )
+}
+
+function ReplaceKeyDialog({
+  endpoint,
+  open,
+  onClose,
+  onReplaced,
+}: {
+  endpoint: ModelEndpoint
+  open: boolean
+  onClose: () => void
+  onReplaced: (message: string) => void
+}) {
+  const api = useMosaicApi()
+  const queryClient = useQueryClient()
+  // Held only while the dialog is open, and cleared when it closes.
+  const [apiKey, setApiKey] = useState('')
+  const [touched, setTouched] = useState(false)
+
+  const replace = useMutation({
+    mutationFn: (key: string) => api.updateModelEndpoint(endpoint.id, { apiKey: key }),
+    onSuccess: async (updated) => {
+      await queryClient.invalidateQueries({ queryKey: ['model-endpoints'] })
+      onReplaced(
+        updated.access.canRead
+          ? `Stored the new key for ${endpoint.name}, and the endpoint accepts it. API ` +
+              'Management picks it up within four hours.'
+          : `Stored the new key for ${endpoint.name}, but MOSAIC couldn't confirm the endpoint ` +
+              'accepts it. Its Access card says why.',
+      )
+      close()
+    },
+  })
+  // A refusal says why at the top of the dialog, and takes focus so a screen reader reads it.
+  const errorRef = useFocusOnChange(replace.error, open)
+
+  function close() {
+    setApiKey('')
+    setTouched(false)
+    replace.reset()
+    onClose()
+  }
+
+  function submit(event: FormEvent) {
+    event.preventDefault()
+    if (replace.isPending) return
+    setTouched(true)
+    const key = apiKey.trim()
+    if (!key) return
+    replace.mutate(key)
+  }
+
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(_, data) => {
+        if (!data.open && !replace.isPending) close()
+      }}
+    >
+      <DialogSurface>
+        <form onSubmit={submit}>
+          <DialogBody>
+            <DialogTitle>Replace the API key for {endpoint.name}</DialogTitle>
+            <DialogContent className={styles.form}>
+              {replace.isError && (
+                <div ref={errorRef} tabIndex={-1}>
+                  <ErrorState title="MOSAIC didn't replace the key" error={replace.error} />
+                </div>
+              )}
+              <Text size={200} className={styles.muted}>
+                MOSAIC stores the new key as the next version of the same Key Vault secret, checks
+                it, and never shows it again. API Management picks it up within four hours, so keep
+                the old key working until then: paste the resource&apos;s other key, and regenerate
+                the old one afterwards.
+              </Text>
+              <Field
+                label="New API key"
+                required
+                validationMessage={
+                  touched && !apiKey.trim() ? "Paste the resource's new API key." : undefined
+                }
+              >
+                <Input
+                  type="password"
+                  autoComplete="new-password"
+                  spellCheck={false}
+                  value={apiKey}
+                  onChange={(_, data) => setApiKey(data.value)}
+                />
+              </Field>
+            </DialogContent>
+            <DialogActions>
+              <Button appearance="secondary" disabledFocusable={replace.isPending} onClick={close}>
+                Cancel
+              </Button>
+              <Button appearance="primary" type="submit" disabledFocusable={replace.isPending}>
+                {replace.isPending ? 'Storing…' : 'Store new key'}
+              </Button>
+            </DialogActions>
+          </DialogBody>
+        </form>
+      </DialogSurface>
+    </Dialog>
+  )
+}
+
+/**
  * The deployments declared on a key-authenticated endpoint, where they're declared and removed.
  * They take the place of the discovered models an endpoint registered by resource ID lists.
  */

@@ -130,6 +130,23 @@ function attachmentName(disposition: string | null) {
   return disposition?.match(/filename="([^"]+)"/)?.[1] ?? null
 }
 
+/**
+ * What a failed request says went wrong. MOSAIC's own refusals carry a message. A request that
+ * didn't validate carries where and why, which reads as a sentence once pydantic's prefix is gone.
+ */
+export function failureMessage(body: ApiErrorBody | undefined, status: number): string {
+  if (body?.message) return body.message
+  if (typeof body?.detail === 'string' && body.detail) return body.detail
+  if (Array.isArray(body?.detail)) {
+    const reasons = body.detail
+      .map((issue) => (typeof issue?.msg === 'string' ? issue.msg.replace(/^Value error, /, '') : ''))
+      .filter(Boolean)
+      .map((reason) => (/[.!?]$/.test(reason) ? reason : `${reason}.`))
+    if (reasons.length > 0) return reasons.join(' ')
+  }
+  return `Request failed with status ${status}`
+}
+
 export interface MosaicApi {
   getConsoleAccess(): Promise<ConsoleAccess>
   getAnalyticsStatus(): Promise<AnalyticsStatus>
@@ -329,6 +346,8 @@ export interface MosaicApi {
     name?: string
     environmentLabel?: string
     credentialSecretUri?: string
+    /** The resource's API key, which MOSAIC stores in its own Key Vault and never returns. */
+    apiKey?: string
     environment?: string | null
     deployments?: DeclaredDeploymentInput[]
   }): Promise<ModelEndpoint>
@@ -339,6 +358,8 @@ export interface MosaicApi {
       name?: string
       environmentLabel?: string | null
       credentialSecretUri?: string
+      /** A new key for an endpoint whose key MOSAIC keeps. Never returned. */
+      apiKey?: string
     },
   ): Promise<ModelEndpoint>
   deleteModelEndpoint(endpointId: string): Promise<void>
@@ -421,7 +442,7 @@ export function useMosaicApi(): MosaicApi {
           body = undefined
         }
         throw new ApiError(
-          body?.message ?? body?.detail ?? `Request failed with status ${response.status}`,
+          failureMessage(body, response.status),
           response.status,
           body,
         )
@@ -450,7 +471,7 @@ export function useMosaicApi(): MosaicApi {
           body = undefined
         }
         throw new ApiError(
-          body?.message ?? body?.detail ?? `Request failed with status ${response.status}`,
+          failureMessage(body, response.status),
           response.status,
           body,
         )

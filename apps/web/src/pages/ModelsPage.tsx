@@ -13,6 +13,8 @@ import {
   MessageBar,
   MessageBarBody,
   MessageBarTitle,
+  Radio,
+  RadioGroup,
   Select,
   Table,
   TableBody,
@@ -37,7 +39,7 @@ import { ChangeEnvironmentDialog } from '../components/ChangeEnvironmentDialog'
 import { EnvironmentBadge } from '../components/EnvironmentBadge'
 import { EnvironmentPicker } from '../components/EnvironmentPicker'
 import { ImportFromGatewayDialog } from '../components/ImportFromGatewayDialog'
-import { DeclarationFields, DeclaredDeploymentsCard } from '../components/KeyEndpoint'
+import { DeclarationFields, DeclaredDeploymentsCard, StoredKeyActions } from '../components/KeyEndpoint'
 import {
   blankDeclaration,
   keyedProvider,
@@ -116,6 +118,10 @@ const REGISTRATION_REFUSED = "MOSAIC didn't register this endpoint"
 // Registering by resource ID is the default. The key path is the explicit alternative for a
 // resource MOSAIC's managed identity can't reach, such as one in another Microsoft Entra tenant.
 type RegistrationMode = 'azure' | 'key' | 'compatible'
+
+// On the key path, the administrator either gives MOSAIC the key, which MOSAIC stores in its own
+// Key Vault, or the URI of a secret they stored themselves.
+type KeySource = 'paste' | 'vault'
 
 
 function PublicationStatusBadge({ publication }: { publication: Publication }) {
@@ -534,10 +540,17 @@ function ImportedModelApis({ onRemoved }: { onRemoved: (message: string) => void
  * Collapsing them into one verdict would hide the common failure where MOSAIC can read an
  * endpoint perfectly well but the gateway still cannot call it.
  */
-function AccessPanel({ endpoint }: { endpoint: ModelEndpoint }) {
+function AccessPanel({
+  endpoint,
+  onMessage,
+}: {
+  endpoint: ModelEndpoint
+  onMessage: (message: string) => void
+}) {
   const api = useMosaicApi()
   const { access, runtimeAccess } = endpoint
   const keyed = usesBackendKey(endpoint)
+  const keptByMosaic = keyed && endpoint.keyStoredByMosaic === true
   const catalog = useEnvironmentCatalog()
   const gateways = useQuery({ queryKey: ['gateways'], queryFn: () => api.listGateways() })
   const gatewaysById = useMemo(() => {
@@ -572,11 +585,16 @@ function AccessPanel({ endpoint }: { endpoint: ModelEndpoint }) {
           </MessageBarBody>
         </MessageBar>
         <Text size={200} className={styles.muted}>
-          {keyed
-            ? 'Authentication: API key from Key Vault. MOSAIC reads the key only to check it and ' +
-              'never keeps it. API Management reads it from Key Vault itself.'
-            : 'This is what lets MOSAIC list the models deployed here. It grants no ability to call them.'}
+          {keptByMosaic
+            ? 'Authentication: API key MOSAIC keeps in its own Key Vault. Nobody can read it back ' +
+              'from MOSAIC. MOSAIC reads it only to check it, and API Management reads it from Key ' +
+              'Vault itself.'
+            : keyed
+              ? 'Authentication: API key from Key Vault. MOSAIC reads the key only to check it and ' +
+                'never keeps it. API Management reads it from Key Vault itself.'
+              : 'This is what lets MOSAIC list the models deployed here. It grants no ability to call them.'}
         </Text>
+        {keptByMosaic && <StoredKeyActions endpoint={endpoint} onReplaced={onMessage} />}
         {access.remediation && (
           <>
             <Text block>
@@ -839,6 +857,10 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
   const [resourceId, setResourceId] = useState('')
   const [endpointUrl, setEndpointUrl] = useState('')
   const [secretUri, setSecretUri] = useState('')
+  const [keySource, setKeySource] = useState<KeySource>('paste')
+  // Held only while the dialog is open, and cleared when it closes or the key is registered.
+  const [apiKey, setApiKey] = useState('')
+  const [apiKeyTouched, setApiKeyTouched] = useState(false)
   const [declarations, setDeclarations] = useState<DeclarationDraft[]>(() => [
     blankDeclaration(null),
   ])
@@ -883,6 +905,9 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
       setResourceId('')
       setEndpointUrl('')
       setSecretUri('')
+      setApiKey('')
+      setApiKeyTouched(false)
+      setKeySource('paste')
       setDeclarations([blankDeclaration(null)])
       setName('')
       setEnvironment(null)
@@ -963,9 +988,16 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
       return
     }
     if (mode === 'key') {
+      const pastedKey = apiKey.trim()
+      if (keySource === 'paste' && !pastedKey) {
+        setApiKeyTouched(true)
+        return
+      }
       register.mutate({
         endpoint: endpointUrl.trim(),
-        credentialSecretUri: secretUri.trim(),
+        ...(keySource === 'paste'
+          ? { apiKey: pastedKey }
+          : { credentialSecretUri: secretUri.trim() }),
         name: name.trim() || undefined,
         environment,
         deployments: toDeclarations(declarations, keyedProvider(endpointUrl)),
@@ -1042,6 +1074,9 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
     setResourceId('')
     setEndpointUrl('')
     setSecretUri('')
+    setApiKey('')
+    setApiKeyTouched(false)
+    setKeySource('paste')
     setDeclarations([blankDeclaration(null)])
     setName('')
     setEnvironment(null)
@@ -1310,7 +1345,7 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
         </Card>
       )}
 
-      {selected && <AccessPanel endpoint={selected} />}
+      {selected && <AccessPanel endpoint={selected} onMessage={onMessage} />}
 
       {selected && usesBackendKey(selected) && (
         <DeclaredDeploymentsCard endpoint={selected} className={styles.panel} />
@@ -1428,17 +1463,45 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
                         placeholder="https://my-resource.services.ai.azure.com/api/projects/my-project"
                       />
                     </Field>
-                    <Field
-                      label="Key Vault secret URI"
-                      required
-                      hint="Store the resource's API key as a secret in Key Vault yourself, then paste the secret's URI. Never paste the key: MOSAIC keeps only this URI, and API Management reads the key from Key Vault. MOSAIC and each gateway need Key Vault Secrets User on the vault."
-                    >
-                      <Input
-                        value={secretUri}
-                        onChange={(_, data) => setSecretUri(data.value)}
-                        placeholder="https://my-vault.vault.azure.net/secrets/foundry-key"
-                      />
+                    <Field label="How MOSAIC gets the key">
+                      <RadioGroup
+                        value={keySource}
+                        onChange={(_, data) => setKeySource(data.value as KeySource)}
+                      >
+                        <Radio value="paste" label="Paste the API key" />
+                        <Radio value="vault" label="Use a key already in Key Vault" />
+                      </RadioGroup>
                     </Field>
+                    {keySource === 'paste' ? (
+                      <Field
+                        label="API key"
+                        required
+                        hint="Copy it from the resource's Keys and Endpoint page. MOSAIC stores it as a secret in its own Key Vault, keeps only the secret's URI, and never shows the key again. API Management reads it from Key Vault."
+                        validationMessage={
+                          apiKeyTouched && !apiKey.trim() ? "Paste the resource's API key." : undefined
+                        }
+                      >
+                        <Input
+                          type="password"
+                          autoComplete="new-password"
+                          spellCheck={false}
+                          value={apiKey}
+                          onChange={(_, data) => setApiKey(data.value)}
+                        />
+                      </Field>
+                    ) : (
+                      <Field
+                        label="Key Vault secret URI"
+                        required
+                        hint="The secret you stored the resource's API key in. MOSAIC keeps only this URI, and API Management reads the key from Key Vault. MOSAIC and each gateway need Key Vault Secrets User on the vault."
+                      >
+                        <Input
+                          value={secretUri}
+                          onChange={(_, data) => setSecretUri(data.value)}
+                          placeholder="https://my-vault.vault.azure.net/secrets/foundry-key"
+                        />
+                      </Field>
+                    )}
                     <DeclarationFields
                       drafts={declarations}
                       provider={keyedProvider(endpointUrl)}
