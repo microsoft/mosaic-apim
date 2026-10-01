@@ -16,6 +16,7 @@ this cannot be pointed at a deployed MOSAIC.
 """
 
 import argparse
+import math
 from collections.abc import AsyncIterator, Iterable, Iterator
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
@@ -27,6 +28,7 @@ import uvicorn
 from azure.core.credentials_async import AsyncTokenCredential
 from fastapi import FastAPI, Request
 from mosaic_api.auth import AuthContext
+from mosaic_api.budgets import BudgetAction, BudgetUpdate, EmailSettingsUpdate, EmailTest
 from mosaic_api.config import (
     AuthMode,
     Environment,
@@ -81,6 +83,7 @@ from mosaic_api.integrations.aoai.client import SubscriptionScanner
 from mosaic_api.integrations.aoai.key_check import KeyCheckOutcome, KeyCheckResult
 from mosaic_api.integrations.apim import ApimClient, ApimWriter, ArmClient
 from mosaic_api.integrations.apim.credentials import ApimCredentialClient, ApimKeyManager
+from mosaic_api.integrations.email import EmailMessage, EmailSendResult
 from mosaic_api.integrations.graph.fake import FakeDirectoryLookup
 from mosaic_api.main import create_app
 from mosaic_api.pricing import DeploymentPricingUpdate, EndpointPricingUpdate, PriceCreate
@@ -97,6 +100,8 @@ from mosaic_api.services import (
 )
 from mosaic_api.services import cost_centers as cost_center_service
 from mosaic_api.services.analytics import AnalyticsService
+from mosaic_api.services.budget_gate import BlockedListGate
+from mosaic_api.services.budgets import BudgetService
 from mosaic_api.services.cost_centers import CostCenterService
 from mosaic_api.services.directory import Actor
 from mosaic_api.services.mcp_endpoints import build_mcp_client_factory
@@ -346,6 +351,50 @@ COST_CENTER_MEMBERS: dict[str, list[Person]] = {
     "CLM-520": [CLAIMS_TRIAGE],
 }
 
+# Budget email goes through a Communication Services double that accepts every message and
+# delivers none. Both names are invented.
+DEMO_EMAIL_ENDPOINT = "https://contoso-mosaic.unitedstates.communication.azure.com"
+DEMO_EMAIL_SENDER = "DoNotReply@notify.contoso.com"
+
+
+@dataclass(frozen=True)
+class DemoBudget:
+    """A monthly budget, by cost center code, or None for the organization's."""
+
+    code: str | None
+    # How much of the budget the month's spend so far uses when the demo starts. The amount is
+    # worked out from that spend, so every capture shows the same levels whatever the date.
+    used: float
+    action: BudgetAction
+    recipients: list[str]
+
+
+# Customer Insights near its limit, which Megan's portal warns about; Customer Support past its own
+# and blocked; Finance on track; and the organization's, which only warns. Claims Operations and
+# General have none.
+BUDGETS = [
+    DemoBudget(None, 0.64, "continue", ["ai-platform@contoso.com"]),
+    DemoBudget("CI-204", 0.87, "block", ["insights-leads@contoso.com"]),
+    DemoBudget("CS-110", 1.06, "block", ["support-leads@contoso.com"]),
+    DemoBudget("FIN-310", 0.42, "continue", []),
+]
+
+
+class DemoEmail:
+    """Azure Communication Services Email that accepts every message and sends none."""
+
+    def __init__(self) -> None:
+        self.accepted: list[EmailMessage] = []
+
+    async def send(
+        self, endpoint: str, sender: str, message: EmailMessage, *, operation_id: str
+    ) -> EmailSendResult:
+        self.accepted.append(message)
+        return EmailSendResult(accepted=True, operation_id=operation_id, status_code=202)
+
+    async def close(self) -> None:
+        return None
+
 # Every string that identifies a resource, endpoint, or account in the estate. Captures blur these
 # wherever they render, alongside the generic patterns in capture.py.
 SENSITIVE_LITERALS = [
@@ -466,9 +515,12 @@ class DemoServices:
     pricing: PricingService
     cost_centers: CostCenterService
     portal_access: PortalAccessService
+    analytics: AnalyticsService
+    budgets: BudgetService
     clients: list[httpx.AsyncClient] = field(default_factory=list)
 
     async def aclose(self) -> None:
+        await self.budgets.aclose()
         await self.usage_rollups.aclose()
         await self.gateways.aclose()
         await self.endpoints.aclose()
@@ -531,6 +583,10 @@ def install_demo_services(app: FastAPI, portal_origins: Iterable[str]) -> DemoSe
         vault_locator=KeyVaultLocator(vault_arm, known_vault_ids=[KEY_VAULT_ID]),
         key_store=build_key_store(),
     )
+    # Every gateway MOSAIC manages holds the list of cost centers whose budgets block their calls.
+    blocked_list = BlockedListGate(
+        state.budget_repository, gateway_repository=state.gateway_repository
+    )
     publishing = PublishingService(
         state.gateway_repository,
         endpoint_repository=state.model_endpoint_repository,
@@ -541,6 +597,7 @@ def install_demo_services(app: FastAPI, portal_origins: Iterable[str]) -> DemoSe
         model_runtime_client_id=settings.model_runtime_client_id,
         environment_repository=state.environment_repository,
         cost_center_repository=state.cost_center_repository,
+        blocked_list=blocked_list,
     )
     mcp_publishing = McpPublishingService(
         state.gateway_repository,
@@ -553,6 +610,7 @@ def install_demo_services(app: FastAPI, portal_origins: Iterable[str]) -> DemoSe
         security_group_claims=settings.entra_group_claims,
         environment_repository=state.environment_repository,
         cost_center_repository=state.cost_center_repository,
+        blocked_list=blocked_list,
     )
     mcp_endpoints = McpEndpointService(
         state.mcp_endpoint_repository,
@@ -642,6 +700,23 @@ def install_demo_services(app: FastAPI, portal_origins: Iterable[str]) -> DemoSe
         retention_days=settings.usage_rollup_retention_days,
         cost_center_repository=state.cost_center_repository,
     )
+    # Budgets are judged by the demo's own check, run once the usage is seeded, against the same
+    # gateway doubles. The production loop stays off, so nothing reaches Azure.
+    budgets = BudgetService(
+        state.budget_repository,
+        cost_center_repository=state.cost_center_repository,
+        gateway_repository=state.gateway_repository,
+        gate=blocked_list,
+        client_factory=lambda resource: ApimClient(gateway_arm, resource),
+        writer_factory=lambda resource: ApimWriter(gateway_arm, resource),
+        analytics=state.analytics_service,
+        email=DemoEmail(),
+        portal=state.portal_service,
+        tenant_id=settings.tenant_id,
+        suggested_endpoint=DEMO_EMAIL_ENDPOINT,
+        suggested_sender=DEMO_EMAIL_SENDER,
+    )
+    state.budget_service = budgets
     state.authenticator = DemoAuthenticator(settings.tenant_id, portal_origins)
     return DemoServices(
         directory=directory,
@@ -660,6 +735,8 @@ def install_demo_services(app: FastAPI, portal_origins: Iterable[str]) -> DemoSe
         pricing=pricing,
         cost_centers=state.cost_center_service,
         portal_access=portal_access,
+        analytics=state.analytics_service,
+        budgets=budgets,
         clients=[gateway_http, ai_http, vault_http, mcp_http],
     )
 
@@ -1885,6 +1962,70 @@ async def seed_usage(services: DemoServices, estate: Estate, tenant_id: str) -> 
     raise SeedError(f"Rolling up the demo's usage took more than {MAX_ROLLUP_CYCLES} cycles")
 
 
+def _budget_amount(spent: float, used: float) -> float:
+    """The amount, to two significant figures, of which ``spent`` is the share ``used``."""
+
+    exact = spent / used
+    return round(exact, 1 - math.floor(math.log10(exact)))
+
+
+async def seed_budgets(services: DemoServices, estate: Estate, tenant_id: str) -> None:
+    """Turn budget email on, then set each budget from this month's spend so far."""
+
+    admin = Actor(ADMIN.object_id, tenant_id)
+    await services.budgets.save_email_settings(
+        admin,
+        EmailSettingsUpdate(enabled=True, endpoint=DEMO_EMAIL_ENDPOINT, sender=DEMO_EMAIL_SENDER),
+    )
+    await services.budgets.send_test_email(admin, EmailTest(to=_directory_detail(ADMIN) or ""))
+    spend = await services.analytics.budget_spend(
+        tenant_id,
+        [estate.cost_centers[item.code] for item in BUDGETS if item.code],
+        organization=True,
+    )
+    if spend is None:
+        raise SeedError("The demo's usage has no prices, so no budget can be judged")
+    for item in BUDGETS:
+        cost_center_id = estate.cost_centers[item.code] if item.code else None
+        figures = (
+            spend.organization if cost_center_id is None else spend.cost_centers.get(cost_center_id)
+        )
+        spent = figures.month_to_date if figures is not None else None
+        if not spent:
+            # Only in the first minutes of a UTC month, before the demo's traffic adds up.
+            print(f"No spend yet this month for {item.code or 'the organization'}", flush=True)
+            continue
+        # A budget past its limit crossed 80% first, so its 80% email went before the block.
+        steps = [0.85, item.used] if item.used >= 1 else [item.used]
+        for used in steps:
+            await services.budgets.set_budget(
+                admin,
+                cost_center_id,
+                BudgetUpdate(
+                    amount=_budget_amount(spent, used),
+                    recipients=item.recipients,
+                    notify_owners=cost_center_id is not None,
+                    action=item.action,
+                ),
+            )
+    checked = await services.budgets.run_check()
+    if checked is None:
+        raise SeedError("Another budget check held the lease")
+    overview = await services.budgets.overview(admin)
+    unjudged = [view.id for view in overview.cost_centers if view.status.error]
+    if unjudged:
+        raise SeedError(f"Budgets {unjudged} could not be judged")
+    unenforced = [
+        gateway.name
+        for view in overview.cost_centers
+        if view.status.blocked
+        for gateway in view.status.gateways
+        if not gateway.enforcing
+    ]
+    if unenforced:
+        raise SeedError(f"Gateways {unenforced} were not told about the blocked cost centers")
+
+
 def build_settings(cors_origins: list[str]) -> Settings:
     return Settings(
         _env_file=None,
@@ -1907,6 +2048,8 @@ def build_settings(cors_origins: list[str]) -> Settings:
         # runs no rollup loop, so every capture shows the same figures.
         usage_source=UsageSourceMode.ROLLUPS,
         usage_rollup_enabled=False,
+        # The demo judges budgets itself, with the gateway and email doubles.
+        budgets_enabled=False,
     )
 
 
@@ -1926,6 +2069,7 @@ def build_demo_app(console_port: int, portal_port: int) -> FastAPI:
             try:
                 estate = await seed_estate(services, TENANT_ID)
                 await seed_usage(services, estate, TENANT_ID)
+                await seed_budgets(services, estate, TENANT_ID)
                 demo_app.state.demo_estate = estate
                 print(
                     "MOSAIC demo estate ready: "

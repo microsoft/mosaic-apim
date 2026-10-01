@@ -58,7 +58,8 @@ one under **Settings > Appearance**.
     and of the gateways, model endpoints, and MCP servers in each environment. Below them, the last
     7 days of gateway usage rolled up from Log Analytics: requests, tokens, active callers, errors,
     and latency, what this month has cost so far with its month-end forecast, the daily trend, how
-    current each gateway's telemetry is, and the top models, callers, and APIs.</td>
+    current each gateway's telemetry is, each budget's progress this month with any cost center it
+    blocks, and the top models, callers, and APIs.</td>
   </tr>
   <tr>
     <td><img src="docs/images/screenshots/portal-catalog-light.png" alt="The portal catalog in the light theme"></td>
@@ -167,18 +168,19 @@ one under **Settings > Appearance**.
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/console-cost-centers.png" alt="The Cost centers page listing each cost center's code, members, grants, whether keys are allowed, and owners, beside the forms that create one and choose the tenant default">
+      <img src="docs/images/screenshots/console-cost-centers.png" alt="The Cost centers page listing each cost center's code, members, grants, whether keys are allowed, owners, and budget badges, with the organization budget below them, beside the forms that create one and choose the tenant default">
       <p><b>Cost centers.</b> Every grant, and so every call, is charged to a cost center, which
       spans gateways and has a unique code callers can name in a header, owners, members, and a
-      switch for whether its grants may use keys. Administrators create them here and choose the
-      tenant default that new people are charged to.</p>
+      switch for whether its grants may use keys. Administrators create them here, choose the
+      tenant default that new people are charged to, and set the organization's monthly budget,
+      which only warns, while a badge marks each cost center near or past its own.</p>
     </td>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/console-cost-center-detail.png" alt="A cost center's details and summary, its members with their kind and default badges, and its per-person limits and pooled monthly quotas">
-      <p><b>Cost center.</b> One cost center's people, applications, agents, and security groups,
-      and its limits: per-person defaults and pooled monthly quotas for each model and MCP server.
-      Removing a member revokes the grants that relied on it and deletes their keys on the next
-      apply.</p>
+      <img src="docs/images/screenshots/console-cost-center-detail.png" alt="A cost center's details and summary, its budget near its limit with the email sent at 80%, its members with their kind and default badges, and its per-person limits and pooled monthly quotas">
+      <p><b>Cost center.</b> One cost center's budget, its people, applications, agents, and
+      security groups, and its limits: per-person defaults and pooled monthly quotas for each
+      model and MCP server. Removing a member revokes the grants that relied on it and deletes their
+      keys on the next apply.</p>
     </td>
   </tr>
   <tr>
@@ -264,6 +266,21 @@ one under **Settings > Appearance**.
       administrator sees which grants lose access, the cost center each charges, what stops working
       for each, and every resource MOSAIC deletes. Only confirming this review unpublishes it.</p>
     </td>
+    <td width="50%" valign="top">
+      <img src="docs/images/screenshots/console-budgets.png" alt="A cost center's budget past its limit and blocked, with the gateway refusing its calls and the emails sent at 80%, at 100%, and when it was blocked, beside the budget's amount, thresholds, recipients, and action">
+      <p><b>Budgets.</b> Each cost center can have a monthly budget in dollars across every
+      gateway, which emails anyone at 80% and 100% and either lets calls continue or blocks them at
+      the gateway. A blocked budget shows each gateway refusing its calls and every email sent this
+      month.</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/images/screenshots/console-email-settings.png" alt="The Email section of Settings, turned on, with a Communication Services endpoint and sender address, and a test email that was accepted">
+      <p><b>Budget email.</b> Budget email goes through Azure Communication Services, which MOSAIC
+      signs in to as its managed identity, so no key is kept. It's off until an administrator saves
+      an endpoint and a sender here, and <b>Send test email</b> checks both.</p>
+    </td>
     <td width="50%" valign="top"></td>
   </tr>
 </table>
@@ -302,7 +319,7 @@ one under **Settings > Appearance**.
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/portal-usage.png" alt="Measured requests, tokens, errors and throttling, estimated cost, and busiest resource, with a daily trend and the last 24 hours">
+      <img src="docs/images/screenshots/portal-usage.png" alt="A budget banner, then measured requests, tokens, errors and throttling, estimated cost, and busiest resource, with a daily trend and the last 24 hours">
       <p><b>Usage &amp; cost.</b> A person's own requests, tokens, errors and throttling, what they
       cost at list price, and their busiest resource, measured from the gateway's logs across
       everything they hold. A daily trend by environment or resource and the last 24 hours by hour
@@ -316,6 +333,15 @@ one under **Settings > Appearance**.
       with each one's estimated cost, or <b>No price</b> and why, each quota's use, the busiest
       minute against each rate limit, and how its calls are linked.</p>
     </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/images/screenshots/portal-budget-banner.png" alt="My access with a banner saying a cost center the person charges is near its monthly budget, and that its calls will be refused at 100%">
+      <p><b>Budget banner.</b> When a cost center the person charges nears, passes, or is blocked
+      at its monthly budget, My access and Usage &amp; cost say so, and what happens at 100%. It
+      shows the cost center's total against its budget, never anyone's own share.</p>
+    </td>
+    <td width="50%" valign="top"></td>
   </tr>
 </table>
 
@@ -466,14 +492,23 @@ explicit local/test modes and application startup rejects them when `MOSAIC_ENVI
   they ask for access and name one per call with the `x-mosaic-cost-center` header, and keys are
   created on request. Analytics, the chargeback, and the portal report spend and quotas per cost
   center. See [Cost centers](docs/cost-centers.md) and [ADR 0022](docs/adr/0022-cost-centers.md)
+- Budgets: a monthly budget per cost center, in dollars across every gateway, emails its owners
+  and any other address at 80% and 100%, and either lets calls continue or blocks them at the
+  gateway until it's raised or the UTC month ends. An organization budget only warns. Email goes
+  through Azure Communication Services as MOSAIC's managed identity, off until it's set up in
+  Settings. The Dashboard shows each budget's progress and forecast, and the portal tells people
+  when a cost center they charge is near or past its budget. See
+  [Budgets and alerts](docs/budgets-and-alerts.md) and
+  [ADR 0023](docs/adr/0023-budgets-and-notifications.md)
 - ACR remote builds for every image, so deployment does not depend on a local Docker daemon
 - `azd` and modular Bicep for three Linux Web Apps on one plan, ACR, Cosmos, Key Vault, APIM,
   Log Analytics, Application Insights, diagnostics, managed identities, and narrow RBAC
 - Idempotent Entra application/service-principal setup through `azd` hooks
 
 The Gateways workspace, the Identity workspace, the Models and MCPs workspaces, the Entitlements
-workspace, Cost centers, Settings → Environments, model publishing, the Dashboard, Analytics,
-Pricing, the end-user portal, and the deterministic policy preview use live API contracts. Usage figures in
+workspace, Cost centers and their budgets, Settings → Environments and Email, model publishing,
+the Dashboard, Analytics, Pricing, the end-user portal, and the deterministic policy preview use
+live API contracts. Usage figures in
 Azure are measured from gateway logs; only local and test runs simulate the portal's, labeled
 **Sample figures**. Policy metadata and other future operational experiences are interactive
 frontend previews labeled **Sample data** or **Local preview**. They never claim to mutate Azure
@@ -484,6 +519,10 @@ API's identity moves from the API Management reader role to contributor. Until i
 preflight reports the missing write permissions precisely rather than failing during an apply.
 Measured usage also needs `azd provision`, which adds the `usage-rollups` container, the
 gateway's `azuremonitor` logger, and Monitoring Reader on the gateway for the API's identity.
+Publications applied before budgets existed don't check them until they're applied again, which
+also creates each gateway's `mosaic-blocked-cost-centers` named value. Budget email needs Azure
+Communication Services: set `MOSAIC_DEPLOY_EMAIL` to `true` before `azd provision` to create it,
+then turn email on in **Settings > Email**. See [Budgets and alerts](docs/budgets-and-alerts.md).
 
 ## Prerequisites
 
@@ -543,6 +582,15 @@ Usage figures have their own settings. See [Usage analytics](docs/usage-analytic
 | `MOSAIC_USAGE_ROLLUP_RETENTION_DAYS` | `400` | How long daily figures are kept, from 62 to 3,650 days. Monthly figures are kept for good. |
 | `MOSAIC_USAGE_ROLLUP_BACKFILL_MAX_DAYS` | `90` | How far back a gateway's first rollup, a catch-up after downtime, and a backfill without `days` read, from 1 to 730 days. |
 | `MOSAIC_LOG_ANALYTICS_ENDPOINT` | `https://api.loganalytics.azure.com` | The Log Analytics query endpoint. `azd` sets the one for its cloud, such as `https://api.loganalytics.us` for Azure Government. |
+
+Budgets and their email have these. See [Budgets and alerts](docs/budgets-and-alerts.md#settings).
+
+| Setting | Default | Purpose |
+| --- | --- | --- |
+| `MOSAIC_BUDGETS_ENABLED` | `true` | Runs the background check that judges budgets, emails at thresholds, and blocks cost centers. It runs only where usage comes from rollups. |
+| `MOSAIC_BUDGET_INTERVAL_SECONDS` | `900` | How often every budget is checked, from 60 to 86,400 seconds. |
+| `MOSAIC_BUDGET_FAST_INTERVAL_SECONDS` | `300` | How often a budget at 90% or more, with a threshold or a block to come, is checked, from 60 to 3,600 seconds. |
+| `MOSAIC_EMAIL_SUGGESTED_ENDPOINT`, `MOSAIC_EMAIL_SUGGESTED_SENDER` | None | The Communication Services endpoint and sender `azd` created. They only fill in **Settings > Email**; email stays off until an administrator saves it there. |
 
 In a second terminal:
 
@@ -725,6 +773,9 @@ not. The domain distinguishes:
 - `CostCenter`: who grants and calls are charged to, with its code, owners, members, keys switch,
   per-person defaults and pooled quotas; `CostCenterSettings` names the tenant's default
   ([ADR 0022](docs/adr/0022-cost-centers.md))
+- `Budget`: a cost center's or the organization's monthly amount, thresholds, recipients, and
+  whether it blocks at 100%; `EmailSettings`: the Communication Services endpoint and sender, and
+  whether email is on ([ADR 0023](docs/adr/0023-budgets-and-notifications.md))
 - `CredentialReference`: Key Vault secret URI only
 - `PriceVersion`: a price an administrator added, or a new version of a listed one, with the day it
   takes effect, its source, and a note; never edited or deleted
@@ -739,7 +790,7 @@ Cosmos uses:
 | `sync-operations` | `/tenantId` | Gateway and endpoint sync runs, publish plans, and publish runs |
 | `observed-state` | `/tenantId` | What MOSAIC observed in each registered gateway |
 | `audit-events` | `/tenantId` | Append-only administrator mutation history |
-| `usage-rollups` | `/tenantId` | Gateway usage rolled up from Log Analytics, per day and per month ([ADR 0019](docs/adr/0019-usage-telemetry.md)) |
+| `usage-rollups` | `/tenantId` | Gateway usage rolled up from Log Analytics, per day and per month ([ADR 0019](docs/adr/0019-usage-telemetry.md)), and each budget's state this month and what each gateway's blocked list holds ([ADR 0023](docs/adr/0023-budgets-and-notifications.md)) |
 
 `observed-state` is deliberately separate from `desired-state`. It is disposable, rebuilt on every
 sync, and churns far more than administrator-authored governance intent. Observed documents use
@@ -780,8 +831,9 @@ measured scale, not speculation.
 - Key Vault uses RBAC, soft delete, and purge protection.
 - Backend access is scoped to Cosmos data contributor, Key Vault Secrets User, Key Vault Secrets
   Officer and Reader on MOSAIC's Key Vault, API Management contributor, Log Analytics Reader, and
-  Monitoring Reader. Secrets Officer on that one vault lets MOSAIC write an API key an
-  administrator gives it, replace it, and delete it with its endpoint
+  Monitoring Reader, and, when `azd` deploys Communication Services for budget email,
+  Communication and Email Service Owner on that resource. Secrets Officer on that one vault lets
+  MOSAIC write an API key an administrator gives it, replace it, and delete it with its endpoint
   ([ADR 0021](docs/adr/0021-keys-mosaic-keeps.md)).
   Monitoring Reader on each API Management service lets MOSAIC read that gateway's logs for usage
   and check its diagnostic settings; MOSAIC never changes a diagnostic setting. The deployed API
@@ -790,11 +842,16 @@ measured scale, not speculation.
 - API Management writes are bounded by two independent conditions rather than one: the role
   assignment, and a gateway an administrator explicitly moved to `manage`. MOSAIC refuses that
   switch until preflight has confirmed write access, and every write runs against a reviewed plan
-  whose digest still matches the intent it was produced from. The one exception is telemetry: on
-  a managed gateway, MOSAIC creates the `azuremonitor` logger when an administrator enables API
+  whose digest still matches the intent it was produced from. There are two exceptions. On a
+  managed gateway, MOSAIC creates the `azuremonitor` logger when an administrator enables API
   diagnostics, and sets the `azuremonitor` diagnostic only on APIs it published. That diagnostic
   logs no client IP addresses, headers, bodies, prompts, or completions, and each write is
-  audited.
+  audited. And the budget check writes one named value, `mosaic-blocked-cost-centers`, on managed
+  gateways that carry MOSAIC's publications, listing the cost centers whose budgets block their
+  calls; each write is audited ([ADR 0023](docs/adr/0023-budgets-and-notifications.md)).
+- MOSAIC sends email only through Azure Communication Services, as its managed identity, so it
+  keeps no email credential. Email is off until an administrator saves an endpoint and a sender,
+  and budget emails carry a cost center's totals, never who spent them.
 - The contributor role carries `subscriptions/listSecrets`. Only an explicit credential-reveal
   operation uses it, after checking caller ownership and a trusted, applied grant. Inventory and
   publishing do not read keys. Reveals are audited without their secret values; responses are
@@ -1767,6 +1824,42 @@ records the design.
 
 The administrator routes need `Admin`. Grants list with `GET /entitlements?costCenter={id}`.
 
+## Budgets and alerts
+
+A cost center can have a monthly budget in US dollars, across every gateway, at the list price the
+Cost tab uses. It emails the cost center's owners and up to 20 other addresses, which needn't
+belong to MOSAIC users, at 80% and 100% by default, and at 100% either lets calls continue or
+blocks them at the gateway. An organization budget counts every priced call and only warns.
+[Budgets and alerts](docs/budgets-and-alerts.md) is the guide, and
+[ADR 0023](docs/adr/0023-budgets-and-notifications.md) records the design.
+
+- A background job in the API judges budgets every 15 minutes, after each rollup, and every 5
+  minutes for any at 90% or more. Each threshold emails once a month, and a block and its lifting
+  email once each. Budget state is saved with conditional writes, so API instances can't send an
+  email twice.
+- A blocked cost center is listed in the `mosaic-blocked-cost-centers` named value MOSAIC keeps on
+  each managed gateway. The governed policy refuses its calls with 403 once it has matched the
+  grant, and the gateway's trace records `mosaic-deny v=1 r=budget`. The block lifts when the UTC
+  month ends or an administrator raises the budget, and it lands about 15 to 30 minutes after the
+  spend. It never revokes a grant.
+- Email goes through Azure Communication Services as MOSAIC's managed identity. It's off until an
+  administrator saves an endpoint and a sender in **Settings > Email**, which can send a test.
+  `azd` deploys Communication Services when `MOSAIC_DEPLOY_EMAIL` is `true`.
+- Reserved capacity nobody called, and calls MOSAIC couldn't link to a grant, count only toward
+  the organization's budget.
+
+| Method | Route under `/api/v1` | Result |
+| --- | --- | --- |
+| GET | `/budgets` | Every budget, worst first, and whether email is ready |
+| POST | `/budgets/check` | Check every budget now, at most once a minute |
+| GET, PUT, DELETE | `/budgets/organization` | The organization's budget, which only warns |
+| GET, PUT, DELETE | `/cost-centers/{id}/budget` | A cost center's budget |
+| GET, PUT | `/settings/email` | Email settings: on or off, the Communication Services endpoint, and the sender |
+| POST | `/settings/email/test` | Send a test email |
+| GET | `/me/budgets` | The caller's cost centers near, past, or blocked at their budgets (`User`) |
+
+The administrator routes need `Admin`.
+
 ## Usage and analytics
 
 MOSAIC measures usage from API Management's own resource logs, so it never sits in the traffic
@@ -1879,6 +1972,9 @@ returns only the caller's own usage. A security-group grant's figures count only
 calls. For each [cost center](#cost-centers) the caller holds an enabled grant under, the page adds
 the cost center's total this month, everyone's calls together, and the total on each resource they
 hold there that has a pooled quota, against that quota. It never shows who else called or how much.
+When one of those cost centers is at 80% of its [budget](#budgets-and-alerts), past 100%, or
+blocked, this page and **My access** show a banner with the cost center's share of its budget,
+from `GET /api/v1/me/budgets`.
 
 In Azure the figures are measured, and the page says how current they are. The gateway applies
 limits as calls arrive, so someone can reach one before the page shows it. A row with nothing to
@@ -1962,8 +2058,9 @@ records.
    cost at list price, with a month-end forecast and a chargeback export; see
    [ADR 0020](docs/adr/0020-price-list.md). Cost centers charge every grant and call to a team or
    budget line, with pooled quotas and spend per cost center; see
-   [ADR 0022](docs/adr/0022-cost-centers.md). Still to come: budgets that warn by email and can
-   block.
+   [ADR 0022](docs/adr/0022-cost-centers.md). Monthly budgets warn by email at 80% and 100%, and
+   can block a cost center's calls at the gateway; see
+   [ADR 0023](docs/adr/0023-budgets-and-notifications.md).
 8. **Catalog ecosystem:** API Center experiences, MCP tool-level governance, broader self-service
    workflows, and environment chains that relate the same model across environments and clouds.
 9. **Production hardening:** private networking, multi-region/production APIM tiers, CMK where

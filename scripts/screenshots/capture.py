@@ -75,7 +75,8 @@ REDACTION_PATTERNS = [
     r"/subscriptions/[^\s\"'<>]+",
     # Bare hostnames of the services MOSAIC talks to.
     r"\b[a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:azure-api\.net|openai\.azure\.com|"
-    r"cognitiveservices\.azure\.com|services\.ai\.azure\.com|vault\.azure\.net|contoso\.com)\b",
+    r"cognitiveservices\.azure\.com|services\.ai\.azure\.com|vault\.azure\.net|contoso\.com|"
+    r"communication\.azure\.com|azurecomm\.net)\b",
     # IPv4 addresses, such as gateway egress addresses.
     r"\b\d{1,3}(?:\.\d{1,3}){3}\b",
     # MOSAIC record IDs and the APIM names derived from them, such as modelApi_<32 hex>,
@@ -532,8 +533,9 @@ SHOTS: list[Shot] = [
         "/cost-centers",
         "light",
         "Customer Insights",
-        # Tall enough for every cost center, the new cost center form, and the tenant default.
-        height=1100,
+        # Tall enough for every cost center, the organization budget below them, the new cost
+        # center form, and the tenant default.
+        height=1190,
     ),
     Shot(
         "console-cost-center-detail",
@@ -542,8 +544,9 @@ SHOTS: list[Shot] = [
         "dark",
         "Customer Insights",
         actions=(click_link("Customer Insights"), wait_for_text("Membership")),
-        # Tall enough for the details, the members, and the per-person and pooled limits.
-        height=1840,
+        # Tall enough for the details, the budget, the members, and the per-person and pooled
+        # limits.
+        height=2400,
     ),
     Shot(
         "console-mcp-publish",
@@ -568,6 +571,21 @@ SHOTS: list[Shot] = [
         # never confirms it.
         actions=(click_button("Unpublish"), wait_for_text("What MOSAIC deletes")),
         height=1200,
+    ),
+    Shot(
+        "console-budgets",
+        "console",
+        "/cost-centers",
+        "dark",
+        "Customer Support",
+        # Customer Support's budget, past its limit and blocked: the gateway refusing its calls and
+        # this month's emails, beside the amount, thresholds, recipients, and action.
+        actions=(
+            click_link("Customer Support"),
+            wait_for_text("Refusing calls"),
+            scroll_to_text("A monthly amount in US dollars", margin=110),
+        ),
+        height=900,
     ),
     Shot(
         "console-analytics",
@@ -647,6 +665,19 @@ SHOTS: list[Shot] = [
         actions=(wait_for_text("Limitations:"), scroll_to_text("Findings", margin=80)),
     ),
     Shot(
+        "console-email-settings",
+        "console",
+        "/settings",
+        "light",
+        "needs classification",
+        # Budget email through Communication Services, turned on, with its last test email.
+        actions=(
+            wait_for_text("Send test email"),
+            scroll_to_text("Budget warnings and blocks are emailed", margin=150),
+        ),
+        height=548,
+    ),
+    Shot(
         "portal-access",
         "portal",
         "/access",
@@ -688,7 +719,8 @@ SHOTS: list[Shot] = [
         height=1240,
     ),
     Shot("portal-requests", "portal", "/requests", "dark", "Approved for the churn analysis"),
-    Shot("portal-usage", "portal", "/usage", "light", "Busiest resource", height=1104),
+    # Tall enough for the budget banner, the figures, the daily trend, and the last 24 hours.
+    Shot("portal-usage", "portal", "/usage", "light", "Busiest resource", height=1210),
     Shot(
         "portal-usage-resources",
         "portal",
@@ -698,6 +730,10 @@ SHOTS: list[Shot] = [
         # Each of Megan's cost centers' totals this month, then her own usage by resource.
         actions=(scroll_to_text("Each cost center's total this month", margin=150),),
         height=1240,
+    ),
+    # Customer Insights, which Megan charges, has used most of its budget, and blocks at 100%.
+    Shot(
+        "portal-budget-banner", "portal", "/access", "light", "near its monthly budget", height=720
     ),
 ]
 

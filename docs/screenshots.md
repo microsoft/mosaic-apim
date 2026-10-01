@@ -131,11 +131,17 @@ portal at `http://localhost:5174` signs you in as the demo end user, Megan Bowen
   from next month, which the **Pricing** page shows as scheduled. The Claude, Mistral Large,
   Cohere, and realtime deployments and the adopted APIs stay unpriced, so the **Unpriced
   deployments** tab has something to show. Every page therefore renders what the product would
-  show for that estate. The demo runs no rollup loop afterwards, so every shot in a run shows the
-  same figures. The traffic and timestamps follow the clock, though, so they shift a little from
-  one run to the next. Requests from the portal's origin are answered as Megan Bowen with the
-  `User` role, and all others as Adele Vance with `Admin` and `User`. Local authentication is
-  refused outside local and test environments, so the demo can't be pointed at a deployed MOSAIC.
+  show for that estate. Budget email is turned on against a Communication Services double that
+  accepts every message and delivers none, and the seed sets budgets from this month's spend so
+  far: Customer Insights near its limit, Customer Support past its own and blocked at the
+  gateways, Finance on track, and an organization budget that only warns. Sizing them from the
+  month's spend keeps those levels whatever the date, so in a capture's first UTC day the amounts
+  are only a few hours' worth. The demo runs no rollup or budget loop afterwards, so every shot in
+  a run shows the same figures. The traffic and timestamps follow the clock, though, so they shift a
+  little from one run to the next. Requests from the portal's origin are answered as Megan Bowen
+  with the `User` role, and all others as Adele Vance with `Admin` and `User`. Local
+  authentication is refused outside local and test environments, so the demo can't be pointed at a
+  deployed MOSAIC.
 - `capture.py` opens each shot in a fresh Chromium context 1440 pixels wide, with the shot's theme
   set both as the operating-system preference and as MOSAIC's stored preference. It waits for
   every spinner to clear and for the shot's ready text, runs the shot's actions, captures the
@@ -151,8 +157,8 @@ survives to be read back.
 - `SENSITIVE_LITERALS` in `demo_api.py`: the demo tenant, client, and object IDs.
 - `RESOURCE_NAMES` in `capture.py`: the demo's gateway, resource group, account, and vault names.
 - `REDACTION_PATTERNS` in `capture.py`: GUIDs, email addresses, URLs and URIs, Azure resource IDs,
-  Azure and Contoso hostnames, IPv4 addresses, MOSAIC record IDs and the APIM names derived from
-  them, and the demo's placeholder keys.
+  Azure, Communication Services, and Contoso hostnames, IPv4 addresses, MOSAIC record IDs and the
+  APIM names derived from them, and the demo's placeholder keys.
 
 Some things stay readable on purpose, because they explain the product without identifying
 anything. These are the fictional people and workloads, the display names of gateways, models, and
@@ -226,6 +232,7 @@ shows both themes. Keep new shots in that pattern.
 | `console-cost-center-detail` | Console | `/cost-centers`, **Customer Insights** opened | Dark | Cost center |
 | `console-mcp-publish` | Console | `/mcps`, **Plan and apply** review for the published Docs MCP server | Light | MCP publish review |
 | `console-unpublish-review` | Console | `/models`, **Unpublish** review for GPT-4o, never confirmed | Light | Unpublish review |
+| `console-budgets` | Console | `/cost-centers`, **Customer Support** opened, scrolled to **Budget** | Dark | Budgets |
 | `console-analytics` | Console | `/analytics`, **Overview** tab | Dark | Analytics |
 | `console-analytics-cost` | Console | `/analytics?tab=cost` | Light | Cost |
 | `console-pricing` | Console | `/pricing`, **Prices** tab filtered to `2024-11-20` | Dark | Pricing |
@@ -235,9 +242,11 @@ shows both themes. Keep new shots in that pattern.
 | `console-analytics-reliability` | Console | `/analytics?tab=reliability` | Dark | Reliability |
 | `console-environments` | Console | `/settings` | Light | Environments |
 | `console-environment-findings` | Console | `/settings`, scrolled to **Findings** | Dark | Environment findings |
+| `console-email-settings` | Console | `/settings`, scrolled to **Email** | Light | Budget email |
 | `portal-access` | Portal | `/access`, with a grant's **Connection details** open | Light | My access |
 | `portal-connection-cost-center` | Portal | `/access`, the GPT-4o grant under General with **Connection details** open, scrolled to **Cost center header** | Light | Choosing a cost center |
 | `portal-mcp-connection` | Portal | `/access`, with an enforced MCP grant's **Connection details** open | Dark | MCP connection |
 | `portal-requests` | Portal | `/requests` | Dark | My requests |
 | `portal-usage` | Portal | `/usage` | Light | Usage & cost |
 | `portal-usage-resources` | Portal | `/usage`, scrolled to **Cost centers** | Dark | Cost centers and usage by resource |
+| `portal-budget-banner` | Portal | `/access`, with the budget banner for Customer Insights | Light | Budget banner |
