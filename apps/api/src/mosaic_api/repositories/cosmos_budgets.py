@@ -110,7 +110,8 @@ class CosmosBudgetRepository(CosmosRepositoryBase):
     @staticmethod
     def _state_model(model_type: type[StateT], document: dict[str, Any]) -> StateT:
         payload = {key: value for key, value in document.items() if not key.startswith("_")}
-        return model_type.model_validate(payload)
+        # The version read, so a delete can be made only over it.
+        return model_type.model_validate(payload).model_copy(update={"etag": document.get("_etag")})
 
     async def _list_states(
         self, model_type: type[StateT], tenant_id: str, entity: str
@@ -153,9 +154,9 @@ class CosmosBudgetRepository(CosmosRepositoryBase):
             body = stored.model_dump(mode="json", by_alias=True, exclude={"etag"})
             try:
                 if item is None:
-                    await self._states.create_item(body)
+                    saved = await self._states.create_item(body)
                 else:
-                    await self._states.replace_item(
+                    saved = await self._states.replace_item(
                         item=state_id,
                         body=body,
                         etag=item["_etag"],
@@ -168,7 +169,8 @@ class CosmosBudgetRepository(CosmosRepositoryBase):
             ):
                 # Someone else saved it since it was read; apply the change to what they saved.
                 continue
-            return stored
+            # The version saved, so a later write or delete can be made only over it.
+            return stored.model_copy(update={"etag": saved.get("_etag")})
         raise ConflictError("The budget's state kept changing. Try again in a moment.")
 
     async def list_budget_states(self, tenant_id: str) -> list[BudgetState]:
@@ -198,13 +200,23 @@ class CosmosBudgetRepository(CosmosRepositoryBase):
             change,
         )
 
-    async def delete_budget_state(self, tenant_id: str, budget_id: str) -> None:
+    async def delete_budget_state(
+        self, tenant_id: str, budget_id: str, *, etag: str | None = None
+    ) -> bool:
+        conditions: dict[str, Any] = (
+            {"etag": etag, "match_condition": MatchConditions.IfNotModified} if etag else {}
+        )
         try:
             await self._states.delete_item(
-                item=budget_state_id(tenant_id, budget_id), partition_key=tenant_id
+                item=budget_state_id(tenant_id, budget_id), partition_key=tenant_id, **conditions
             )
-        except exceptions.CosmosResourceNotFoundError:
-            pass
+        except (
+            exceptions.CosmosResourceNotFoundError,
+            exceptions.CosmosAccessConditionFailedError,
+        ):
+            # Gone already, or saved since by a budget set again under the same ID.
+            return False
+        return True
 
     async def list_gate_states(self, tenant_id: str) -> list[GateState]:
         return await self._list_states(GateState, tenant_id, "budgetGateState")

@@ -712,7 +712,12 @@ class BudgetRepository(Protocol):
         """
         ...
 
-    async def delete_budget_state(self, tenant_id: str, budget_id: str) -> None: ...
+    async def delete_budget_state(
+        self, tenant_id: str, budget_id: str, *, etag: str | None = None
+    ) -> bool:
+        """Remove a budget's state. With ``etag``, only that version: a state saved since, such as
+        by a budget set again under the same ID, is kept. Returns whether it was removed."""
+        ...
 
     async def list_gate_states(self, tenant_id: str) -> list[GateState]: ...
 

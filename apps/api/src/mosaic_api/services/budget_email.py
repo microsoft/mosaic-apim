@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import date
 from html import escape
 
@@ -15,6 +16,39 @@ _UNBLOCKED_WHY: dict[str, str] = {
     "blockingOff": "An administrator set its budget to let calls continue.",
     "budgetRemoved": "An administrator removed its budget.",
 }
+
+
+@dataclass(frozen=True)
+class Enforcement:
+    """How many of the gateways MOSAIC manages already do what a block or unblock email says."""
+
+    done: int
+    total: int
+
+
+def _gateways(enforcement: Enforcement | None, *, blocking: bool) -> list[str]:
+    """What the gateways do now. Nothing when MOSAIC didn't write them this time."""
+
+    if enforcement is None:
+        return []
+    if enforcement.total == 0:
+        return (
+            ["No gateway MOSAIC manages publishes its models yet, so none has calls to refuse."]
+            if blocking
+            else []
+        )
+    if enforcement.done == enforcement.total:
+        return [
+            "Every gateway MOSAIC manages refuses them now."
+            if blocking
+            else "Every gateway MOSAIC manages allows them again."
+        ]
+    verb = "refuse" if blocking else "allow"
+    return [
+        f"{enforcement.done} of {enforcement.total} gateways MOSAIC manages {verb} them so far. "
+        "MOSAIC keeps updating the rest at each check, and the cost center's page in the console "
+        "shows each gateway."
+    ]
 
 
 def money(value: float | None) -> str:
@@ -54,6 +88,7 @@ def budget_email(
     state: BudgetState,
     cost_center: CostCenterRef | None,
     to: list[str],
+    enforcement: Enforcement | None = None,
 ) -> EmailMessage:
     who = _subject_name(budget, cost_center)
     month = _month(state.month)
@@ -95,8 +130,9 @@ def budget_email(
             f"MOSAIC budget: calls charged to {who} are now blocked",
             [
                 f"{who} has spent {spent}, all of its {amount} budget for {month}. Its budget is "
-                "set to block calls at 100%, so the gateway now refuses calls charged to it with "
-                "403, naming the budget.",
+                "set to block calls at 100%, so MOSAIC has told the gateways it manages to refuse "
+                "calls charged to it with 403, naming the budget.",
+                *_gateways(enforcement, blocking=True),
                 "The block lifts when an administrator raises the budget above what's been spent, "
                 "sets it to let calls continue, or when the month ends.",
                 estimate,
@@ -107,7 +143,8 @@ def budget_email(
     return _message(
         f"MOSAIC budget: calls charged to {who} are allowed again",
         [
-            f"The gateway no longer blocks calls charged to {who}. {why}",
+            f"MOSAIC has told the gateways it manages to allow calls charged to {who} again. {why}",
+            *_gateways(enforcement, blocking=False),
             f"It has spent {spent} of its {amount} budget for {month}.",
         ],
         to,

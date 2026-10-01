@@ -119,14 +119,22 @@ class InMemoryBudgetRepository:
                 "tenant_id": tenant_id,
                 "budget_id": budget_id,
                 "updated_at": utc_now(),
+                "etag": uuid4().hex,
             },
             deep=True,
         )
         self.states[(tenant_id, state_id)] = stored
         return stored.model_copy(deep=True)
 
-    async def delete_budget_state(self, tenant_id: str, budget_id: str) -> None:
-        self.states.pop((tenant_id, budget_state_id(tenant_id, budget_id)), None)
+    async def delete_budget_state(
+        self, tenant_id: str, budget_id: str, *, etag: str | None = None
+    ) -> bool:
+        key = (tenant_id, budget_state_id(tenant_id, budget_id))
+        current = self.states.get(key)
+        if current is None or (etag is not None and current.etag != etag):
+            return False
+        del self.states[key]
+        return True
 
     async def list_gate_states(self, tenant_id: str) -> list[GateState]:
         return [

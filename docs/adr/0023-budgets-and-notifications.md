@@ -96,7 +96,9 @@ Several things shape how MOSAIC can do that:
   sent again: a missed email is better than one sent twice.
 - A cost center's budget emails at each threshold, once a month, and when the cost center is
   blocked or unblocked. Each email names the cost center, the month, its spend, the amount, and
-  what happens next. None says who spent it.
+  what happens next. A block or unblock email also says how many of the gateways MOSAIC manages
+  already refuse, or allow, the cost center's calls, so recipients aren't told a block is in force
+  while a gateway MOSAIC couldn't write still allows them. None says who spent it.
 
 **MOSAIC blocks a cost center at the gateway with a named value it owns.**
 - Every gateway MOSAIC manages has a plain named value, `mosaic-blocked-cost-centers`. It lists the
@@ -123,6 +125,9 @@ Several things shape how MOSAIC can do that:
 - The block lifts when the UTC month ends, when an administrator raises the amount above the
   spend, turns blocking off, or removes the budget, and the unblock is emailed. A block never
   revokes a grant: it refuses calls at the gateway, and nothing else.
+- Removing a budget lifts its block, writes the gateways' lists, and emails the unblock. It deletes
+  only the version of the budget's state it last saw, so a budget set again for the same cost
+  center meanwhile keeps its own state and block, and no unblock email contradicts it.
 - A block lands about 15 to 30 minutes after the spend: the logs' delay, the rollup's interval,
   and the time API Management takes to apply a named value. That overshoot is accepted.
 

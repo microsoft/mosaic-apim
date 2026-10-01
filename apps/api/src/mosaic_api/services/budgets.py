@@ -9,8 +9,9 @@ the start of each UTC month, which lifts every block.
 
 Each budget's state is saved only over the version that was read, and the emails a check decides
 are due are recorded in that same write before any is sent. So two checks can't both send one, and
-a check that stops half way never sends one twice. A lease keeps two API instances from checking at
-once. A check that can't price the month changes nothing on that account: it never lifts a block.
+a check that stops half way never sends one twice. A lease keeps two API instances from judging at
+once; the gateway writes and the emails follow it. A check that can't price the month changes
+nothing on that account: it never lifts a block.
 """
 
 from __future__ import annotations
@@ -64,8 +65,13 @@ from mosaic_api.integrations.email import EmailSender
 from mosaic_api.repositories import BudgetRepository, CostCenterRepository, GatewayRepository
 from mosaic_api.services.analytics import AnalyticsService
 from mosaic_api.services.analytics.models import AnalyticsSpend, BudgetSpend
-from mosaic_api.services.budget_email import budget_email, trial_email
-from mosaic_api.services.budget_gate import BlockedListGate, ClientFactory, WriterFactory
+from mosaic_api.services.budget_email import Enforcement, budget_email, trial_email
+from mosaic_api.services.budget_gate import (
+    BlockedListGate,
+    ClientFactory,
+    GateSync,
+    WriterFactory,
+)
 from mosaic_api.services.cost_centers import load_book
 from mosaic_api.services.directory import Actor
 from mosaic_api.services.portal import PortalService
@@ -127,6 +133,24 @@ class _Judging:
     judged: list[_Judged]
     email: EmailSettings | None
     book: CostCenterBook
+
+
+def _enforcement(
+    budget: Budget, synced: GateSync | None, notice: BudgetNotification
+) -> Enforcement | None:
+    """How many gateways already do what a block or unblock email says, or None when this check
+    wrote none, or the email is about a threshold."""
+
+    if synced is None or notice.kind == "threshold" or not budget.cost_center_id:
+        return None
+    key = budget_key(budget.cost_center_id)
+    blocking = notice.kind == "blocked"
+    done = sum(
+        1
+        for state in synced.states
+        if state.error is None and (key in (parse_blocked_list(state.value) or set())) == blocking
+    )
+    return Enforcement(done=done, total=len(synced.states))
 
 
 def _spent(figures: AnalyticsSpend | None) -> float | None:
@@ -271,37 +295,52 @@ class BudgetService:
         waits = [next_month_start(now) - now + timedelta(seconds=1)]
         if self._next_full is not None:
             waits.append(self._next_full - now)
-        if self._hot or self._pending:
+        # A full check still to do, because none has finished yet or one was asked for, is tried
+        # again soon, as a budget close to a threshold is.
+        if self._hot or self._pending or self._full_requested or self._next_full is None:
             waits.append(self._fast_interval)
         return max(1.0, min(wait.total_seconds() for wait in waits))
 
     async def _loop(self) -> None:
         while True:
             self._wake.clear()
-            now = self._clock()
-            full = (
-                self._full_requested
-                or self._next_full is None
-                or now >= self._next_full
-                or month_of(now) != month_of(self._last_check or now)
-            )
-            pending, self._pending = self._pending, set()
-            try:
-                done = await self.run_check(full=full, only=pending or None)
-                if done is None:
-                    self._pending |= pending
-                elif full:
-                    self._full_requested = False
-                    self._next_full = now + self._interval
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                logger.exception("budget_check_failed")
-                self._pending |= pending
+            await self._tick()
             try:
                 await asyncio.wait_for(self._wake.wait(), timeout=self._delay(self._clock()))
             except TimeoutError:
                 pass
+
+    async def _tick(self) -> None:
+        """One pass of the loop: a full check when one is due, or else the budgets that need one."""
+
+        now = self._clock()
+        full = (
+            self._full_requested
+            or self._next_full is None
+            or now >= self._next_full
+            or month_of(now) != month_of(self._last_check or now)
+        )
+        # Take the request now, so one made while this check runs, such as after a rollup, is
+        # kept for the next pass rather than counted as done by this one.
+        if full:
+            self._full_requested = False
+        pending, self._pending = self._pending, set()
+        try:
+            done = await self.run_check(full=full, only=pending or None)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("budget_check_failed")
+            done = None
+        if done is None:
+            self._pending |= pending
+            if full:
+                # Busy, or it failed: ask again, after the fast interval rather than at once, so
+                # a store that's down isn't tried every second.
+                self._full_requested = True
+                self._next_full = now + self._fast_interval
+        elif full:
+            self._next_full = now + self._interval
 
     # -- the check --------------------------------------------------------------------------
 
@@ -334,6 +373,7 @@ class BudgetService:
                 logger.warning("budget_lease_release_failed")
         result = judging.result
         # Gateways first, so a block notice goes once the gateways have been told to refuse.
+        synced: GateSync | None = None
         if full or result.blocked or result.unblocked:
             synced = await self._gate.sync(
                 tenant_id,
@@ -344,7 +384,7 @@ class BudgetService:
             result.gateways = synced.states
         for item in judging.judged:
             result.emails += await self._send_due(
-                item.budget, item.evaluation, judging.email, judging.book
+                item.budget, item.evaluation, judging.email, judging.book, synced
             )
         return result
 
@@ -365,10 +405,13 @@ class BudgetService:
                 continue
             live.append(budget)
         if full:
-            # A budget removed while a check judged it can leave a state behind.
+            # A budget removed while a check judged it can leave a state behind. Only the version
+            # listed goes: a budget set again since, under the same ID, keeps its own check's state.
             kept = {budget.id for budget in live}
             for gone in set(states) - kept:
-                await self._repository.delete_budget_state(tenant_id, gone)
+                await self._repository.delete_budget_state(
+                    tenant_id, gone, etag=states[gone].etag
+                )
         wanted = set(only or ())
         targets = [
             budget
@@ -507,8 +550,15 @@ class BudgetService:
         evaluation: Evaluation,
         email: EmailSettings | None,
         book: CostCenterBook,
+        synced: GateSync | None = None,
+        *,
+        record_outcomes: bool = True,
     ) -> int:
-        """Send each email the check claimed, then record how each went. Returns how many went."""
+        """Send each email the check claimed, then record how each went. Returns how many went.
+
+        ``synced`` is what this check wrote to the gateways, so a block or unblock email can say
+        how many gateways already do what it says.
+        """
 
         if not evaluation.due:
             return 0
@@ -530,7 +580,14 @@ class BudgetService:
             elif self._email is None:
                 error = NO_SENDER
             else:
-                message = budget_email(notice, budget, evaluation.state, cost_center, recipients)
+                message = budget_email(
+                    notice,
+                    budget,
+                    evaluation.state,
+                    cost_center,
+                    recipients,
+                    _enforcement(budget, synced, notice),
+                )
                 outcome = await self._email.send(
                     email.endpoint,
                     email.sender,
@@ -543,6 +600,12 @@ class BudgetService:
                 status = "sent" if outcome.accepted else "failed"
                 error = None if outcome.accepted else outcome.error
                 sent += 1 if outcome.accepted else 0
+            if not still_there:
+                # A removed budget's state went with it, so there's nothing to record into.
+                continue
+            if not record_outcomes:
+                # A same-ID budget set again since the notice was claimed owns the current state.
+                continue
             try:
                 await self._repository.update_budget_state(
                     budget.tenant_id,
@@ -806,14 +869,23 @@ class BudgetService:
                 details={"costCenterId": cost_center_id, "amount": budget.amount},
             ),
         )
+        lifted: tuple[BudgetState, BudgetNotification] | None = None
         if state is not None and state.blocked and state.month == month_of(self._clock()):
-            await self._lift_removed(budget)
-        await self._repository.delete_budget_state(tenant_id, identifier)
+            lifted = await self._lift_removed(budget)
+        # Only the version this left goes: a budget set again meanwhile, under the same ID, keeps
+        # the state its own check saved. The gateways and the email wait until it's gone, so
+        # nothing slow sits between reading the state and removing it.
+        last = lifted[0] if lifted is not None else state
+        if last is not None:
+            await self._repository.delete_budget_state(tenant_id, identifier, etag=last.etag)
+        if lifted is not None:
+            await self._announce_lift(budget, *lifted)
 
-    async def _lift_removed(self, budget: Budget) -> None:
-        """Take a removed budget's block off the gateways now, and tell its recipients."""
+    async def _lift_removed(
+        self, budget: Budget
+    ) -> tuple[BudgetState, BudgetNotification] | None:
+        """Lift a removed budget's block in its saved state, with the email that says so."""
 
-        tenant_id = budget.tenant_id
         now = self._clock()
         notice = BudgetNotification(kind="unblocked", reason="budgetRemoved", created_at=now)
 
@@ -831,21 +903,37 @@ class BudgetService:
             )
 
         try:
-            saved = await self._repository.update_budget_state(tenant_id, budget.id, lift)
+            saved = await self._repository.update_budget_state(budget.tenant_id, budget.id, lift)
         except ConflictError:
-            return
+            return None
+        return saved, notice
+
+    async def _announce_lift(
+        self, budget: Budget, state: BudgetState, notice: BudgetNotification
+    ) -> None:
+        """Take a removed budget's block off the gateways now, and tell its recipients."""
+
+        tenant_id = budget.tenant_id
         book = await load_book(self._cost_centers, tenant_id)
-        await self._gate.sync(
+        # Always right to write: the lists are worked out from the budgets as saved now, so a
+        # budget set again meanwhile keeps its own block.
+        synced = await self._gate.sync(
             tenant_id,
             self._client_factory,
             self._writer_factory,
             audit=self._repository.record_audit,
         )
+        if await self._repository.get_budget(tenant_id, budget.id) is not None:
+            # Set again under the same ID meanwhile: the new budget, and its own checks, say what
+            # happens to the cost center's calls now.
+            return
         await self._send_due(
             budget,
-            Evaluation(state=saved, due=[notice], unblocked="budgetRemoved"),
+            Evaluation(state=state, due=[notice], unblocked="budgetRemoved"),
             await self._repository.get_email_settings(tenant_id),
             book,
+            synced,
+            record_outcomes=False,
         )
 
     async def check_now(self, actor: Actor) -> BudgetOverview:

@@ -14,18 +14,26 @@ function alertCopy(alert: PortalBudgetAlert): {
   body: string
 } {
   const { name, code } = alert.costCenter
+  const share = `It has used ${percent(alert.used)} of this month’s budget`
+  const refused = `calls charged to ${code} are refused until the budget is raised or a new month starts (UTC)`
+  // Only what this budget does: another budget, or the gateway, may still refuse a call.
+  const warnsOnlySentence = `This budget only warns, so it doesn’t stop calls charged to ${code}.`
+  const warnsOnlyContinuation = `this budget only warns, so it doesn’t stop calls charged to ${code}.`
   if (alert.level === 'blocked') {
     return {
       intent: 'error',
       title: `${name} has used its monthly budget`,
-      body: `Calls charged to ${code} are refused until its budget is raised or a new month starts (UTC). Calls charged to your other cost centers still work.`,
+      body: `${share}, so ${refused}.`,
     }
   }
   if (alert.level === 'exceeded') {
     return {
       intent: 'warning',
       title: `${name} is over its monthly budget`,
-      body: `It has used ${percent(alert.used)} of this month’s budget. Calls charged to ${code} still work.`,
+      body:
+        alert.action === 'block'
+          ? `${share}. Once MOSAIC’s next check blocks it, ${refused}.`
+          : `${share}. ${warnsOnlySentence}`,
     }
   }
   return {
@@ -33,8 +41,8 @@ function alertCopy(alert: PortalBudgetAlert): {
     title: `${name} is near its monthly budget`,
     body:
       alert.action === 'block'
-        ? `It has used ${percent(alert.used)} of this month’s budget. At 100%, calls charged to ${code} are refused until the budget is raised or a new month starts (UTC).`
-        : `It has used ${percent(alert.used)} of this month’s budget.`,
+        ? `${share}. At 100%, ${refused}.`
+        : `${share}. At 100%, ${warnsOnlyContinuation}`,
   }
 }
 

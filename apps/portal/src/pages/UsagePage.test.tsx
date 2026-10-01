@@ -485,7 +485,7 @@ describe('UsagePage', () => {
 
     const banners = await screen.findByRole('region', { name: 'Cost center budgets' })
     expect(within(banners).getByText('Research has used its monthly budget')).toBeVisible()
-    expect(within(banners).getByText(/Calls charged to your other cost centers still work/)).toBeVisible()
+    expect(within(banners).getByText(/It has used 101% of this month’s budget, so calls charged to RES are refused/)).toBeVisible()
     expect(await screen.findByText('Busiest resource')).toBeVisible()
   })
 

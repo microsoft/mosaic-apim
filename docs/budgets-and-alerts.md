@@ -106,8 +106,9 @@ while MOSAIC can't price the month waits for the next check that can.
 | *Calls charged to Research (RES) are allowed again* | The block lifts, and why |
 
 Each email gives the month's spend and the amount, and a threshold's email the forecast and what
-happens at 100%. None says who spent it. Thresholds reached by one check send one email, for the
-highest.
+happens at 100%. A block or unblock email also says how many of the gateways MOSAIC manages already
+refuse, or allow, the cost center's calls, so a gateway MOSAIC couldn't write yet isn't hidden. None
+says who spent it. Thresholds reached by one check send one email, for the highest.
 
 Each email goes at most once. A check records an email as being sent before it sends it, so two
 API instances can't both send it, and Communication Services is told each try is the same
@@ -145,7 +146,8 @@ limits stay as they are.
   and `r=budget-list`, rather than risk letting a blocked cost center through. The next check
   writes it again.
 - The block lifts when the month ends, or when an administrator raises the amount above the spend,
-  turns blocking off, or removes the budget.
+  turns blocking off, or removes the budget. Removing it deletes only the state it found, so a
+  budget set again for the same cost center meanwhile keeps its own block.
 
 Publications applied before budgets existed don't check the list until they're applied again.
 

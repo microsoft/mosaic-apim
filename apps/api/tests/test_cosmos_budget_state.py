@@ -11,6 +11,8 @@ from datetime import UTC, datetime
 from typing import cast
 
 import pytest
+from azure.core import MatchConditions
+from azure.cosmos import exceptions
 from azure.cosmos.aio import CosmosClient
 from mosaic_api.budgets import (
     Budget,
@@ -22,6 +24,7 @@ from mosaic_api.budgets import (
     gate_state_id,
 )
 from mosaic_api.errors import ConflictError
+from mosaic_api.repositories import InMemoryBudgetRepository
 from mosaic_api.repositories.cosmos_budgets import STATE_WRITE_ATTEMPTS, CosmosBudgetRepository
 from test_cosmos_usage_state import Container, Cosmos
 
@@ -138,3 +141,56 @@ async def test_a_gateways_list_state_is_saved_the_same_way() -> None:
     assert (saved.value, saved.error) == ("-", "busy")
     assert saved.id == gate_state_id(TENANT, "gateway-a")
     assert saved.gateway_id == "gateway-a"
+
+
+class _Deletable(Container):
+    """The shared container double, with Cosmos's conditional delete."""
+
+    async def delete_item(
+        self,
+        *,
+        item: str,
+        partition_key: str,
+        etag: str | None = None,
+        match_condition: MatchConditions | None = None,
+    ) -> None:
+        key = (partition_key, item)
+        current = self.items.get(key)
+        if current is None:
+            raise exceptions.CosmosResourceNotFoundError(status_code=404)
+        if match_condition == MatchConditions.IfNotModified and current["_etag"] != etag:
+            raise exceptions.CosmosAccessConditionFailedError(status_code=412)
+        del self.items[key]
+
+
+async def test_a_state_is_deleted_only_as_it_was_read() -> None:
+    cosmos = Cosmos()
+    cosmos.container = _Deletable()
+    repository = CosmosBudgetRepository(
+        cast(CosmosClient, cosmos), "mosaic", "desired-state", "audit-events", "usage-rollups"
+    )
+    first = await repository.update_budget_state(TENANT, BUDGET, _judging(850, []))
+    # A budget set again under the same ID saves its own state before the old one's delete.
+    again = await repository.update_budget_state(TENANT, BUDGET, _judging(950, []))
+
+    assert first.etag is not None
+    assert first.etag != again.etag
+    assert not await repository.delete_budget_state(TENANT, BUDGET, etag=first.etag)
+    assert await repository.get_budget_state(TENANT, BUDGET) is not None
+    read = await repository.get_budget_state(TENANT, BUDGET)
+    assert read is not None
+    assert read.etag == again.etag
+    assert await repository.delete_budget_state(TENANT, BUDGET, etag=read.etag)
+    assert await repository.get_budget_state(TENANT, BUDGET) is None
+    assert not await repository.delete_budget_state(TENANT, BUDGET)
+
+
+async def test_the_in_memory_state_is_deleted_only_as_it_was_read() -> None:
+    repository = InMemoryBudgetRepository()
+    first = await repository.update_budget_state(TENANT, BUDGET, _judging(850, []))
+    again = await repository.update_budget_state(TENANT, BUDGET, _judging(950, []))
+
+    assert not await repository.delete_budget_state(TENANT, BUDGET, etag=first.etag)
+    assert await repository.get_budget_state(TENANT, BUDGET) is not None
+    assert await repository.delete_budget_state(TENANT, BUDGET, etag=again.etag)
+    assert await repository.get_budget_state(TENANT, BUDGET) is None

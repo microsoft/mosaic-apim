@@ -121,9 +121,13 @@ describe('MyAccessPage', () => {
 
     const banners = await screen.findByRole('region', { name: 'Cost center budgets' })
     expect(within(banners).getByText('Research has used its monthly budget')).toBeVisible()
+    // Its share, and only what its own budget does: nothing about other cost centers' calls.
     expect(
-      within(banners).getByText(/Calls charged to RES are refused until its budget is raised or a new month starts/),
+      within(banners).getByText(
+        /It has used 102% of this month’s budget, so calls charged to RES are refused until the budget is raised or a new month starts/,
+      ),
     ).toBeVisible()
+    expect(banners).not.toHaveTextContent(/other cost centers/)
     expect(within(banners).getByText('Finance is near its monthly budget')).toBeVisible()
     expect(within(banners).getByText(/It has used 87% of this month’s budget\. At 100%, calls charged to FIN/)).toBeVisible()
     expect(within(banners).getByText(/each cost center’s total, from everyone who charges it/)).toBeVisible()
@@ -135,7 +139,20 @@ describe('MyAccessPage', () => {
     ])
 
     expect(await screen.findByText('Finance is over its monthly budget')).toBeVisible()
-    expect(screen.getByText(/It has used 112% of this month’s budget\. Calls charged to FIN still work\./)).toBeVisible()
+    expect(
+      screen.getByText(/It has used 112% of this month’s budget\. This budget only warns, so it doesn’t stop calls charged to FIN\./),
+    ).toBeVisible()
+  })
+
+  it('says what happens at 100% when a budget only warns', async () => {
+    renderPage([], {}, [
+      { costCenter: finance, level: 'warning', month: '2026-03', used: 0.81, action: 'continue' },
+    ])
+
+    expect(await screen.findByText('Finance is near its monthly budget')).toBeVisible()
+    expect(
+      screen.getByText(/It has used 81% of this month’s budget\. At 100%, this budget only warns, so it doesn’t stop calls charged to FIN\./),
+    ).toBeVisible()
   })
 
   it('shows no budget banner while every budget is on track', async () => {

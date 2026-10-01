@@ -7,6 +7,7 @@ month, through 18 March 2026. See ADR 0023.
 from __future__ import annotations
 
 import json
+from collections.abc import Collection
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
@@ -14,6 +15,7 @@ import pytest
 from mosaic_api.budgets import (
     BLOCKED_COST_CENTERS_NAMED_VALUE,
     NONE_BLOCKED,
+    Budget,
     budget_id,
     budget_key,
 )
@@ -26,6 +28,7 @@ from mosaic_api.services.budgets import (
     EMAIL_OFF,
     MONTH_CHANGE_RETRY_SECONDS,
     NOBODY,
+    BudgetCheck,
     BudgetService,
 )
 from test_cost import (
@@ -312,6 +315,7 @@ async def test_a_budget_used_up_blocks_its_cost_center_at_every_managed_gateway(
         "MOSAIC budget: Research (RES) has reached 100% of its March 2026 budget",
         "MOSAIC budget: calls charged to Research (RES) are now blocked",
     ]
+    assert "Every gateway MOSAIC manages refuses them now." in budgets.email.sent[-1][2].plain_text
     # Nothing new at the next check: the list already says so, and the emails went.
     writes = len(budgets.gateway.writes)
     await budgets.check()
@@ -350,6 +354,113 @@ async def test_turning_blocking_off_or_removing_the_budget_lifts_the_block(
     assert response.status_code == 204, response.text
     assert budgets.gateway.blocked == NONE_BLOCKED
     assert await budgets.repository.get_budget_state(TENANT, budget_id(TENANT, RESEARCH)) is None
+
+
+async def test_a_budget_set_again_while_the_old_one_is_removed_keeps_its_own_state(
+    budgets: Budgets,
+) -> None:
+    await budgets.manage_gateway()
+    budgets.budget(4000, action="block")
+    budgets.email_on()
+    repository = budgets.repository
+    identifier = budget_id(TENANT, RESEARCH)
+    remove = repository.delete_budget_state
+
+    async def set_again_first(tenant_id: str, budget: str, *, etag: str | None = None) -> bool:
+        # Another administrator sets the budget again, and its check saves its state first.
+        await repository.save_budget(
+            Budget(
+                id=budget,
+                tenant_id=tenant_id,
+                cost_center_id=RESEARCH,
+                amount=3000,
+                action="block",
+            ),
+            _audit("budget"),
+        )
+        await repository.update_budget_state(
+            tenant_id,
+            budget,
+            lambda state: state.model_copy(update={"blocked": True, "crossed": [50]}),
+        )
+        return await remove(tenant_id, budget, etag=etag)
+
+    cast(Any, repository).delete_budget_state = set_again_first
+    response = budgets.harness.client.delete(f"/api/v1/cost-centers/{RESEARCH}/budget")
+
+    assert response.status_code == 204, response.text
+    kept = await repository.get_budget_state(TENANT, identifier)
+    assert kept is not None
+    assert kept.crossed == [50]
+    assert kept.blocked is True
+    # The gateways are written from the budgets as saved, so the new budget's block stays, and
+    # the removed one's recipients aren't told calls are allowed while the new one blocks them.
+    assert budgets.gateway.blocked == budget_key(RESEARCH)
+    assert budgets.email.sent == []
+
+
+async def test_removing_a_blocked_budget_lifts_its_block_even_if_its_state_changed_meanwhile(
+    budgets: Budgets,
+) -> None:
+    await budgets.manage_gateway()
+    budgets.budget(4000, action="block")
+    budgets.email_on()
+    repository = budgets.repository
+    remove = repository.delete_budget_state
+
+    async def saved_again_first(tenant_id: str, budget: str, *, etag: str | None = None) -> bool:
+        # A check records an email's outcome between the lift and the delete.
+        await repository.update_budget_state(tenant_id, budget, lambda state: state)
+        return await remove(tenant_id, budget, etag=etag)
+
+    cast(Any, repository).delete_budget_state = saved_again_first
+    response = budgets.harness.client.delete(f"/api/v1/cost-centers/{RESEARCH}/budget")
+
+    assert response.status_code == 204, response.text
+    # The state stays for the next full check to remove, but the block lifts at once.
+    assert budgets.gateway.blocked == NONE_BLOCKED
+    [(_, _, message, _)] = budgets.email.sent
+    assert message.subject.endswith("are allowed again")
+    assert "Every gateway MOSAIC manages allows them again." in message.plain_text
+
+
+async def test_a_rollup_during_a_full_check_gets_a_full_check_of_its_own(
+    budgets: Budgets,
+) -> None:
+    service = budgets.service
+    check = service.run_check
+    fulls: list[bool] = []
+
+    async def rollup_meanwhile(
+        *, full: bool = True, only: Collection[str] | None = None
+    ) -> BudgetCheck | None:
+        fulls.append(full)
+        if len(fulls) == 1:
+            service.rollups_changed()
+        return await check(full=full, only=only)
+
+    cast(Any, service).run_check = rollup_meanwhile
+    await service._tick()
+    await service._tick()
+
+    assert fulls == [True, True]
+
+
+async def test_a_full_check_that_fails_is_tried_again_after_the_fast_interval(
+    budgets: Budgets,
+) -> None:
+    service = budgets.service
+
+    async def failing(*, full: bool = True, only: Collection[str] | None = None) -> None:
+        raise RuntimeError("Cosmos is unavailable")
+
+    cast(Any, service).run_check = failing
+    budgets.harness.now += timedelta(hours=1)
+    await service._tick()
+
+    # Asked for again, and not retried every second while the store is down.
+    assert service._full_requested
+    assert service._delay(budgets.harness.now) == pytest.approx(300)
 
 
 async def test_the_block_lifts_when_the_utc_month_ends(budgets: Budgets) -> None:
@@ -426,6 +537,7 @@ async def test_a_gateway_that_cant_be_written_keeps_its_list_and_is_tried_again(
     budgets: Budgets,
 ) -> None:
     await budgets.manage_gateway()
+    budgets.email_on()
     budgets.gateway.failing = True
 
     view = budgets.budget(4000, action="block")
@@ -434,6 +546,10 @@ async def test_a_gateway_that_cant_be_written_keeps_its_list_and_is_tried_again(
     [gateway] = view["status"]["gateways"]
     assert gateway["enforcing"] is False
     assert "didn't answer" in gateway["error"]
+    # The block email says the gateway doesn't refuse the calls yet, rather than that it does.
+    block = budgets.email.sent[-1][2]
+    assert block.subject.endswith("are now blocked")
+    assert "0 of 1 gateways MOSAIC manages refuse them so far" in block.plain_text
     budgets.gateway.failing = False
     await budgets.check()
     assert budgets.gateway.blocked == budget_key(RESEARCH)
