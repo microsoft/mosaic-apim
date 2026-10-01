@@ -3,12 +3,15 @@
 from collections import defaultdict
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any
 
+from mosaic_api.pricing import round_cost
+from mosaic_api.services.analytics.cost import HOURS_NOTE, CostBook, CostTally, add_cost
 from mosaic_api.services.analytics.models import (
     AnalyticsApiRow,
     AnalyticsBreakdownRow,
+    AnalyticsCostSummary,
     AnalyticsDenialReason,
     AnalyticsDenialRow,
     AnalyticsDeploymentRow,
@@ -20,6 +23,7 @@ from mosaic_api.services.analytics.models import (
     AnalyticsOverview,
     AnalyticsReliability,
     AnalyticsSeries,
+    AnalyticsSpend,
     AnalyticsStatusMix,
     AnalyticsUnattributed,
     AnalyticsUnattributedRow,
@@ -27,6 +31,7 @@ from mosaic_api.services.analytics.models import (
 )
 from mosaic_api.services.analytics.rows import (
     Activity,
+    Point,
     Ranked,
     average_backend,
     average_latency,
@@ -146,6 +151,47 @@ def _activity(
     return Activity(callers=len(who), grants=len(grants), apis=len(apis), unattributed=stray)
 
 
+def window_cost(
+    costs: CostBook,
+    scope: Scope,
+    api: Iterable[UsageSummary],
+    first: date,
+    last: date,
+) -> CostTally:
+    """What the window's calls cost, and the reserved capacity nobody called, in scope."""
+
+    tally = CostTally()
+    for summary, entry in entries(api, scope, "api"):
+        if within(summary, first, last):
+            costs.summary_cost(summary, entry.key, entry.metrics, tally)
+    for key in costs.idle_keys():
+        idle = costs.idle(key, first, last)
+        if idle > 0:
+            tally.add_amount(idle, idle)
+    return tally
+
+
+def bucket_costs(
+    costs: CostBook, scope: Scope, window: Window, api: Iterable[UsageSummary]
+) -> dict[int, float | None]:
+    found: dict[int, float | None] = {}
+    for summary, entry in entries(api, scope, "api"):
+        index = window.bucket_index(period_start(summary))
+        if index is not None:
+            found[index] = add_cost(
+                found.get(index), costs.summary_cost(summary, entry.key, entry.metrics)
+            )
+    idle_keys = costs.idle_keys()
+    for index, start in enumerate(window.buckets):
+        first = start.date()
+        last = (window.bucket_end(start) - timedelta(microseconds=1)).date()
+        for key in idle_keys:
+            idle = costs.idle(key, max(first, window.first_day), min(last, window.last_day))
+            if idle > 0:
+                found[index] = add_cost(found.get(index), idle)
+    return found
+
+
 def overview(
     context: Context,
     *,
@@ -155,13 +201,19 @@ def overview(
     callers: Sequence[UsageSummary],
     unattributed: Sequence[UsageSummary],
     gateways: list[AnalyticsGatewayHealth],
+    costs: CostBook | None = None,
+    spend: AnalyticsSpend | None = None,
 ) -> AnalyticsOverview:
     scope, window, coverage = context.scope, context.window, context.coverage
     activity = _activity(context, api, callers, unattributed)
     covered_before = coverage is not None and coverage.covers(
         window.previous_start, window.previous_end
     )
-    if window.granularity == "hour":
+    hourly = window.granularity == "hour"
+    # MOSAIC prices whole days, so a window by the hour carries no cost.
+    priced = None if hourly else costs
+    tally: CostTally | None = None
+    if hourly:
         current = hour_kpis(hours_between(api, scope, window.start, window.end), activity)
         before = hours_between(api, scope, window.previous_start, window.previous_end)
         previous = hour_kpis(before, Activity()) if covered_before else None
@@ -173,24 +225,53 @@ def overview(
             if covered_before
             else None
         )
+        if priced is not None:
+            tally = window_cost(priced, scope, in_window, window.first_day, window.last_day)
+            current = current.model_copy(
+                update={"cost": None if tally.total is None else round(tally.total, 4)}
+            )
+            if previous is not None:
+                before_tally = window_cost(
+                    priced,
+                    scope,
+                    previous_api,
+                    window.previous_first_day,
+                    window.previous_last_day,
+                )
+                previous = previous.model_copy(
+                    update={
+                        "cost": None
+                        if before_tally.total is None
+                        else round(before_tally.total, 4)
+                    }
+                )
 
     by_model: dict[str, UsageMetrics] = defaultdict(UsageMetrics)
+    model_costs: dict[str, float | None] = {}
     series: dict[str, dict[int, int]] = defaultdict(dict)
     for summary, entry in entries(models, scope, "model"):
-        model = entry.key.rpartition("|")[0] or "unknown"
+        model, _, api_name = entry.key.rpartition("|")
+        model = model or "unknown"
         by_model[model].add(entry.metrics)
+        if priced is not None:
+            model_costs[model] = add_cost(
+                model_costs.get(model), priced.summary_cost(summary, api_name, entry.metrics)
+            )
         index = window.bucket_index(period_start(summary))
-        if index is not None and window.granularity != "hour":
+        if index is not None and not hourly:
             series[model][index] = series[model].get(index, 0) + entry.metrics.total_tokens
     model_total = total(by_model.values())
     top_models = rank(
-        (Ranked(model, model, None, metrics) for model, metrics in by_model.items()),
+        (
+            Ranked(model, model, None, metrics, model_costs.get(model))
+            for model, metrics in by_model.items()
+        ),
         requests=model_total.requests,
         tokens=model_total.total_tokens,
         limit=TOP,
     )
     model_trend: list[AnalyticsSeries] = []
-    if window.granularity != "hour":
+    if not hourly:
         known = [
             coverage is not None and coverage.known(start, window.bucket_end(start))
             for start in window.buckets
@@ -209,23 +290,43 @@ def overview(
             )
 
     by_caller: dict[str, UsageMetrics] = defaultdict(UsageMetrics)
-    for _, entry in entries(callers, scope, "grantCaller"):
+    caller_costs: dict[str, float | None] = {}
+    for summary, entry in entries(callers, scope, "grantCaller"):
         grant_key, _, caller = entry.key.rpartition("|")
         object_id = resolved_caller(scope, grant_key, caller)
         if object_id is not None:
             by_caller[object_id].add(entry.metrics)
+            if priced is not None:
+                caller_costs[object_id] = add_cost(
+                    caller_costs.get(object_id),
+                    priced.grant_cost(
+                        summary.gateway_id,
+                        grant_key,
+                        summary.period,
+                        date.fromisoformat(summary.period_start),
+                        entry.metrics,
+                    ),
+                )
     linked = total(by_caller.values())
     ranked_callers: list[Ranked] = []
     for object_id, metrics in by_caller.items():
         name = scope.caller(object_id)
-        ranked_callers.append(Ranked(object_id, name.label, name.detail, metrics))
+        ranked_callers.append(
+            Ranked(object_id, name.label, name.detail, metrics, caller_costs.get(object_id))
+        )
     top_callers = rank(
         ranked_callers, requests=linked.requests, tokens=linked.total_tokens, limit=TOP
     )
 
-    api_metrics = fold(
-        [s for s in api if within(s, window.first_day, window.last_day)], scope, "api"
-    )
+    in_range = [s for s in api if within(s, window.first_day, window.last_day)]
+    api_metrics = fold(in_range, scope, "api")
+    api_costs: dict[tuple[str, str], float | None] = {}
+    if priced is not None:
+        for summary, entry in entries(in_range, scope, "api"):
+            key = (summary.gateway_id, entry.key)
+            api_costs[key] = add_cost(
+                api_costs.get(key), priced.summary_cost(summary, entry.key, entry.metrics)
+            )
     # Over the last 24 hours the APIs cover whole days, so their shares are of those days.
     api_total = total(api_metrics.values())
     # Model APIs and MCP servers share this list, and MCP calls carry no tokens, so calls rank it.
@@ -236,6 +337,7 @@ def overview(
                 scope.api_label(gateway_id, name),
                 scope.gateway_name(gateway_id),
                 metrics,
+                api_costs.get((gateway_id, name)),
             )
             for (gateway_id, name), metrics in api_metrics.items()
         ),
@@ -244,23 +346,51 @@ def overview(
         limit=TOP,
         by="requests",
     )
+    points = bucket_points(window, api, scope)
+    if priced is not None:
+        for index, value in bucket_costs(priced, scope, window, api).items():
+            points.setdefault(index, Point()).cost = value
+    cost_summary: AnalyticsCostSummary | None = None
+    if costs is not None:
+        cost_summary = (
+            AnalyticsCostSummary(total=None, notes=[HOURS_NOTE])
+            if tally is None
+            else tally.summary(costs.notes)
+        )
     return AnalyticsOverview(
         **context.report(),
         kpis=current,
         previous=previous,
-        trend=trend(window, coverage, bucket_points(window, api, scope)),
+        trend=trend(window, coverage, points),
         model_trend=model_trend,
         top_models=top_models,
         top_callers=top_callers,
         top_apis=top_apis,
         gateways=gateways,
+        cost=cost_summary,
+        spend=spend,
     )
+
+
+def api_costs(
+    costs: CostBook | None, scope: Scope, api: Iterable[UsageSummary]
+) -> dict[tuple[str, str], float | None]:
+    """Each API's cost, summed across the summaries read."""
+
+    found: dict[tuple[str, str], float | None] = {}
+    if costs is None:
+        return found
+    for summary, entry in entries(api, scope, "api"):
+        key = (summary.gateway_id, entry.key)
+        found[key] = add_cost(found.get(key), costs.summary_cost(summary, entry.key, entry.metrics))
+    return found
 
 
 def api_rows(
     scope: Scope,
     metrics_by_api: dict[tuple[str, str], UsageMetrics],
     models: Iterable[UsageSummary] | None,
+    costs_by_api: dict[tuple[str, str], float | None] | None = None,
 ) -> list[AnalyticsApiRow]:
     """Every API with calls in the window, and every governed one in scope without any.
 
@@ -284,7 +414,12 @@ def api_rows(
         known = scope.apis.get((gateway_id, name))
         rows.append(
             AnalyticsApiRow(
-                **usage_values(metrics, combined.requests, combined.total_tokens),
+                **usage_values(
+                    metrics,
+                    combined.requests,
+                    combined.total_tokens,
+                    (costs_by_api or {}).get((gateway_id, name)),
+                ),
                 key=f"{gateway_id}/{name}",
                 gateway_id=gateway_id,
                 gateway_name=scope.gateway_name(gateway_id),
@@ -313,13 +448,16 @@ def api_rows(
 
 
 def _breakdown(
-    groups: dict[str, tuple[str, UsageMetrics]], requests: int, tokens: int
+    groups: dict[str, tuple[str, UsageMetrics, float | None]], requests: int, tokens: int
 ) -> list[AnalyticsBreakdownRow]:
     rows = [
         AnalyticsBreakdownRow(
-            **usage_values(metrics, requests, tokens), key=key, label=label, denied=metrics.denied
+            **usage_values(metrics, requests, tokens, cost),
+            key=key,
+            label=label,
+            denied=metrics.denied,
         )
-        for key, (label, metrics) in groups.items()
+        for key, (label, metrics, cost) in groups.items()
     ]
     rows.sort(key=lambda row: (-row.total_tokens, -row.requests, row.label.casefold()))
     return rows
@@ -332,22 +470,32 @@ def models_report(
     models: Sequence[UsageSummary],
     deployments: Sequence[UsageSummary],
     observed: dict[str, DeploymentInfo],
+    costs: CostBook | None = None,
 ) -> AnalyticsModels:
-    scope = context.scope
+    scope, window = context.scope, context.window
     metrics_by_api = fold(api, scope, "api")
     combined = total(metrics_by_api.values())
     requests, tokens = combined.requests, combined.total_tokens
+    costs_by_api = api_costs(costs, scope, api)
 
     by_model: dict[str, UsageMetrics] = defaultdict(UsageMetrics)
+    model_costs: dict[str, float | None] = {}
     model_apis: dict[str, set[tuple[str, str]]] = defaultdict(set)
     for summary, entry in entries(models, scope, "model"):
         model, _, name = entry.key.rpartition("|")
         by_model[model or "unknown"].add(entry.metrics)
         model_apis[model or "unknown"].add((summary.gateway_id, name))
+        if costs is not None:
+            model_costs[model or "unknown"] = add_cost(
+                model_costs.get(model or "unknown"),
+                costs.summary_cost(summary, name, entry.metrics),
+            )
     model_total = total(by_model.values())
     model_rows = [
         AnalyticsModelRow(
-            **usage_values(metrics, model_total.requests, model_total.total_tokens),
+            **usage_values(
+                metrics, model_total.requests, model_total.total_tokens, model_costs.get(model)
+            ),
             model=model,
             apis=len(model_apis[model]),
         )
@@ -356,11 +504,22 @@ def models_report(
     model_rows.sort(key=lambda row: (-row.total_tokens, -row.requests, row.model))
 
     by_deployment: dict[str, UsageMetrics] = defaultdict(UsageMetrics)
+    deployment_costs: dict[str, float | None] = {}
     reached: dict[str, set[str]] = defaultdict(set)
     hourly: dict[str, list[int]] = {}
     for summary, entry in entries(deployments, scope, "deployment"):
         by_deployment[entry.key].add(entry.metrics)
         reached[entry.key].add(summary.gateway_id)
+        if costs is not None:
+            deployment_costs[entry.key] = add_cost(
+                deployment_costs.get(entry.key),
+                costs.price(
+                    entry.key,
+                    summary.period,
+                    date.fromisoformat(summary.period_start),
+                    entry.metrics,
+                ).amount,
+            )
         if entry.hourly_peak_tokens and summary.period == "day":
             peaks = hourly.setdefault(entry.key, [0] * 24)
             for hour, value in enumerate(entry.hourly_peak_tokens[:24]):
@@ -373,7 +532,12 @@ def models_report(
         capacity = info.capacity_tokens_per_minute if info else None
         deployment_rows.append(
             AnalyticsDeploymentRow(
-                **usage_values(metrics, deployment_total.requests, deployment_total.total_tokens),
+                **usage_values(
+                    metrics,
+                    deployment_total.requests,
+                    deployment_total.total_tokens,
+                    deployment_costs.get(key),
+                ),
                 key=key,
                 endpoint_id=endpoint_id,
                 endpoint_name=info.endpoint_name if info else None,
@@ -393,24 +557,41 @@ def models_report(
         )
     deployment_rows.sort(key=lambda row: (-row.total_tokens, -row.requests, row.key))
 
-    by_gateway: dict[str, tuple[str, UsageMetrics]] = {}
-    by_environment: dict[str, tuple[str, UsageMetrics]] = {}
-    for (gateway_id, _), metrics in metrics_by_api.items():
-        by_gateway.setdefault(gateway_id, (scope.gateway_name(gateway_id), UsageMetrics()))[1].add(
-            metrics
+    by_gateway: dict[str, tuple[str, UsageMetrics, float | None]] = {}
+    by_environment: dict[str, tuple[str, UsageMetrics, float | None]] = {}
+    for (gateway_id, api_name), metrics in metrics_by_api.items():
+        cost = costs_by_api.get((gateway_id, api_name))
+        label, gateway_metrics, gateway_cost = by_gateway.setdefault(
+            gateway_id, (scope.gateway_name(gateway_id), UsageMetrics(), None)
         )
+        gateway_metrics.add(metrics)
+        by_gateway[gateway_id] = (label, gateway_metrics, add_cost(gateway_cost, cost))
         gateway = scope.all_gateways.get(gateway_id)
         environment = (gateway.environment or "") if gateway else "removed"
-        label = scope.environment_name(gateway.environment) if gateway else "Removed gateways"
-        by_environment.setdefault(environment, (label, UsageMetrics()))[1].add(metrics)
+        name = scope.environment_name(gateway.environment) if gateway else "Removed gateways"
+        _, environment_metrics, environment_cost = by_environment.setdefault(
+            environment, (name, UsageMetrics(), None)
+        )
+        environment_metrics.add(metrics)
+        by_environment[environment] = (
+            name,
+            environment_metrics,
+            add_cost(environment_cost, cost),
+        )
     shared = any(len(gateways) > 1 for gateways in reached.values())
+    cost_summary: AnalyticsCostSummary | None = None
+    if costs is not None:
+        cost_summary = window_cost(
+            costs, scope, api, window.first_day, window.last_day
+        ).summary(costs.notes)
     return AnalyticsModels(
         **context.report(PEAKS_NOTE if shared else ""),
-        apis=api_rows(scope, metrics_by_api, models),
+        apis=api_rows(scope, metrics_by_api, models, costs_by_api),
         models=model_rows,
         deployments=deployment_rows,
         gateways=_breakdown(by_gateway, requests, tokens),
         environments=_breakdown(by_environment, requests, tokens),
+        cost=cost_summary,
     )
 
 
@@ -508,13 +689,26 @@ def reliability(
 
 
 def unattributed_report(
-    context: Context, *, api: Sequence[UsageSummary], unattributed: Sequence[UsageSummary]
+    context: Context,
+    *,
+    api: Sequence[UsageSummary],
+    unattributed: Sequence[UsageSummary],
+    costs: CostBook | None = None,
 ) -> AnalyticsUnattributed:
     scope = context.scope
     admitted = sum(
         max(0, metrics.requests - metrics.denied) for metrics in fold(api, scope, "api").values()
     )
     folded = fold(unattributed, scope, "unattributed")
+    row_costs: dict[tuple[str, str], float | None] = {}
+    tally = CostTally()
+    if costs is not None:
+        for summary, entry in entries(unattributed, scope, "unattributed"):
+            row_key = (summary.gateway_id, entry.key)
+            row_costs[row_key] = add_cost(
+                row_costs.get(row_key),
+                costs.summary_cost(summary, entry.key.partition("|")[0], entry.metrics, tally),
+            )
     stray = total(folded.values())
     ordered = sorted(folded.items(), key=lambda item: (-item[1].requests, item[0]))
     rows: list[AnalyticsUnattributedRow] = []
@@ -541,6 +735,7 @@ def unattributed_report(
                 total_tokens=metrics.total_tokens,
                 last_seen=metrics.last_seen,
                 share=share(metrics.requests, stray.requests),
+                cost=round_cost(row_costs.get((gateway_id, key))),
             )
         )
     return AnalyticsUnattributed(
@@ -551,6 +746,7 @@ def unattributed_report(
         share=share(stray.requests, admitted),
         rows=rows,
         truncated=len(ordered) > context.limit,
+        cost=tally.summary(costs.notes) if costs is not None else None,
     )
 
 

@@ -126,3 +126,13 @@
     grid-template-columns: 1fr;
   }
 }
+
+.kpiBadge {
+  margin-left: 10px;
+  vertical-align: middle;
+}
+
+.noPrice {
+  color: var(--mosaic-warning);
+  font-weight: 600;
+}

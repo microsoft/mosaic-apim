@@ -8,6 +8,7 @@ endpoint has no models", which for a governance control plane is worse than an o
 
 import asyncio
 from collections.abc import Callable, Coroutine
+from datetime import UTC, datetime
 from functools import partial
 from typing import Any
 
@@ -88,6 +89,20 @@ def _text(value: object) -> str | None:
 
 def _int_or_none(value: object) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _created_at(item: JsonObject) -> datetime | None:
+    """When Azure created a resource, from its ``systemData``, if ARM reported it."""
+
+    system = item.get("systemData")
+    raw = system.get("createdAt") if isinstance(system, dict) else None
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        created = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return created if created.tzinfo else created.replace(tzinfo=UTC)
 
 
 def _capability_map(value: object) -> dict[str, str]:
@@ -190,6 +205,7 @@ class ModelInventoryCollector:
                     model_publisher=_text(model.get("publisher")),
                     sku_name=_text(sku.get("name")),
                     sku_capacity=_int_or_none(sku.get("capacity")),
+                    deployed_at=_created_at(item),
                     provisioning_state=_text(properties.get("provisioningState")),
                     rai_policy_name=_text(properties.get("raiPolicyName")),
                     capabilities=capabilities,

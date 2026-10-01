@@ -1,0 +1,412 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "ModelPrice": {
+      "additionalProperties": false,
+      "description": "One price in the seed. Prices are in US dollars per million tokens, or per PTU an hour.",
+      "properties": {
+        "id": {
+          "pattern": "^[a-z0-9][a-z0-9.-]{0,159}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "cloud": {
+          "pattern": "^[a-z0-9][a-z0-9-]{0,39}$",
+          "title": "Cloud",
+          "type": "string"
+        },
+        "publisher": {
+          "anyOf": [
+            {
+              "maxLength": 80,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Publisher"
+        },
+        "model": {
+          "maxLength": 120,
+          "minLength": 1,
+          "title": "Model",
+          "type": "string"
+        },
+        "aliases": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Aliases",
+          "type": "array"
+        },
+        "version": {
+          "anyOf": [
+            {
+              "maxLength": 64,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Version"
+        },
+        "deploymentType": {
+          "anyOf": [
+            {
+              "maxLength": 64,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Deploymenttype"
+        },
+        "regions": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Regions"
+        },
+        "inputPerMillion": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Inputpermillion"
+        },
+        "cachedInputPerMillion": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cachedinputpermillion"
+        },
+        "outputPerMillion": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Outputpermillion"
+        },
+        "ptuHourly": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ptuhourly"
+        },
+        "effectiveFrom": {
+          "format": "date",
+          "title": "Effectivefrom",
+          "type": "string"
+        },
+        "effectiveUntil": {
+          "anyOf": [
+            {
+              "format": "date",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Effectiveuntil"
+        },
+        "sourceIds": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Sourceids",
+          "type": "array"
+        },
+        "retailMeters": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RetailMeters"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "notes": {
+          "anyOf": [
+            {
+              "maxLength": 500,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Notes"
+        }
+      },
+      "required": [
+        "id",
+        "cloud",
+        "model",
+        "effectiveFrom",
+        "sourceIds"
+      ],
+      "title": "ModelPrice",
+      "type": "object"
+    },
+    "PriceSource": {
+      "additionalProperties": false,
+      "description": "Where a price came from: a query of the Retail Prices API, or a documentation page.",
+      "properties": {
+        "id": {
+          "pattern": "^[a-z0-9][a-z0-9-]{0,79}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "title": {
+          "maxLength": 300,
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        },
+        "url": {
+          "maxLength": 2000,
+          "pattern": "^https://",
+          "title": "Url",
+          "type": "string"
+        },
+        "retrievedOn": {
+          "format": "date",
+          "title": "Retrievedon",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "url",
+        "retrievedOn"
+      ],
+      "title": "PriceSource",
+      "type": "object"
+    },
+    "PtuThroughput": {
+      "additionalProperties": false,
+      "description": "How many tokens a minute one PTU serves for a model, to judge a reservation's use.",
+      "properties": {
+        "model": {
+          "maxLength": 120,
+          "minLength": 1,
+          "title": "Model",
+          "type": "string"
+        },
+        "version": {
+          "anyOf": [
+            {
+              "maxLength": 64,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Version"
+        },
+        "inputTokensPerMinutePerPtu": {
+          "exclusiveMinimum": 0,
+          "title": "Inputtokensperminuteperptu",
+          "type": "integer"
+        },
+        "outputToInputRatio": {
+          "exclusiveMinimum": 0,
+          "title": "Outputtoinputratio",
+          "type": "number"
+        },
+        "sourceIds": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Sourceids",
+          "type": "array"
+        }
+      },
+      "required": [
+        "model",
+        "inputTokensPerMinutePerPtu",
+        "outputToInputRatio",
+        "sourceIds"
+      ],
+      "title": "PtuThroughput",
+      "type": "object"
+    },
+    "RetailMeters": {
+      "additionalProperties": false,
+      "description": "The Retail Prices API meters a seeded price was read from, so a refresh can find them.",
+      "properties": {
+        "product": {
+          "title": "Product",
+          "type": "string"
+        },
+        "input": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Input"
+        },
+        "cachedInput": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cachedinput"
+        },
+        "output": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Output"
+        },
+        "provisioned": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Provisioned"
+        }
+      },
+      "required": [
+        "product"
+      ],
+      "title": "RetailMeters",
+      "type": "object"
+    }
+  },
+  "$id": "https://github.com/microsoft/mosaic-apim/apps/api/src/mosaic_api/data/model_prices.schema.json",
+  "additionalProperties": false,
+  "description": "List prices MOSAIC ships, each with the sources it came from.",
+  "properties": {
+    "$schema": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "$Schema"
+    },
+    "schemaVersion": {
+      "const": 1,
+      "title": "Schemaversion",
+      "type": "integer"
+    },
+    "lastUpdated": {
+      "format": "date",
+      "title": "Lastupdated",
+      "type": "string"
+    },
+    "currency": {
+      "const": "USD",
+      "title": "Currency",
+      "type": "string"
+    },
+    "sources": {
+      "items": {
+        "$ref": "#/$defs/PriceSource"
+      },
+      "minItems": 1,
+      "title": "Sources",
+      "type": "array"
+    },
+    "prices": {
+      "items": {
+        "$ref": "#/$defs/ModelPrice"
+      },
+      "title": "Prices",
+      "type": "array"
+    },
+    "ptuThroughput": {
+      "items": {
+        "$ref": "#/$defs/PtuThroughput"
+      },
+      "title": "Ptuthroughput",
+      "type": "array"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "lastUpdated",
+    "currency",
+    "sources",
+    "prices"
+  ],
+  "title": "MOSAIC model price list",
+  "type": "object"
+}

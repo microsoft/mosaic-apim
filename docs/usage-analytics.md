@@ -4,7 +4,8 @@ This guide is for administrators who run MOSAIC. It explains how MOSAIC measures
 model APIs and MCP servers it governs, how to set up a gateway so that its use can be measured, how
 current the figures are, and what each one means. The README's
 [Usage and analytics](../README.md#usage-and-analytics) section lists the views and routes, and
-[ADR 0019](adr/0019-usage-telemetry.md) records the design.
+[ADR 0019](adr/0019-usage-telemetry.md) records the design. [Pricing](pricing.md) explains how
+MOSAIC turns the usage into cost.
 
 ## How MOSAIC measures usage
 
@@ -392,7 +393,17 @@ Each tab exports its tables as CSV, with the same filters. A file holds at most 
 the console shows at most 500. The file starts with a UTF-8 byte order mark, so spreadsheets read
 its characters correctly. A cell that starts with `=`, `+`, `-`, or `@` gets a leading apostrophe,
 so a spreadsheet doesn't run it as a formula. The file is named for the table and its first and
-last day, such as `mosaic-people-20260901-20260930.csv`.
+last day, such as `mosaic-people-20260901-20260930.csv`. Tables that show cost export a
+**Cost (USD)** column, empty where MOSAIC has no price, and the Cost tab also exports a chargeback
+by month.
+
+### Cost
+
+Usage is priced from MOSAIC's price list, at list price, by the day, each time a report is read.
+The Cost tab shows the total, the trend, cost by model, deployment, caller, and API, spend this
+month, and a month-end forecast. Usage MOSAIC can't price shows **No price**, never $0, and each
+report counts what it left out. [Pricing](pricing.md) explains where prices come from, how each
+deployment finds its price, provisioned throughput, and the chargeback export.
 
 ## Privacy and cost
 
@@ -409,6 +420,7 @@ The workspace bills ingestion by the gigabyte. Each governed call adds one row t
 and a model call adds at least one row to the LLM log. Logging no headers or bodies keeps the rows
 small. The bootstrap gateway's Application Insights diagnostic logs at Information too, so each
 governed call also adds a trace there. To stop them, set that diagnostic's verbosity to Error.
+What the calls themselves cost is in the Cost tab, described in [Pricing](pricing.md).
 
 The rollups store totals, not calls. Their size grows with the number of callers and APIs, not with
 traffic.

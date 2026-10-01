@@ -16,6 +16,7 @@ import {
   ChartMultipleRegular,
   CloudDatabaseRegular,
   CodeTextEditRegular,
+  MoneyRegular,
   DismissRegular,
   HomeRegular,
   HistoryRegular,
@@ -53,6 +54,7 @@ import { IdentityPage } from './pages/IdentityPage'
 import { McpsPage } from './pages/McpsPage'
 import { ModelsPage } from './pages/ModelsPage'
 import { PoliciesPage } from './pages/PoliciesPage'
+import { PricingPage } from './pages/PricingPage'
 import { SettingsPage } from './pages/SettingsPage'
 import { SupportPage } from './pages/SupportPage'
 import { runtimeConfig } from './runtime-config'
@@ -74,6 +76,7 @@ const primaryNavigation: NavigationItem[] = [
   { to: '/entitlements', label: 'Entitlements', icon: <ShieldKeyholeRegular /> },
   { to: '/policies', label: 'Policies', icon: <CodeTextEditRegular /> },
   { to: '/analytics', label: 'Analytics', icon: <ChartMultipleRegular /> },
+  { to: '/pricing', label: 'Pricing', icon: <MoneyRegular /> },
 ]
 
 const utilityNavigation: NavigationItem[] = [
@@ -286,6 +289,7 @@ export default function App() {
               <Route path="/policies" element={<PoliciesPage />} />
               <Route path="/analytics" element={<AnalyticsPage />} />
               <Route path="/usage" element={<Navigate to="/analytics" replace />} />
+              <Route path="/pricing" element={<PricingPage />} />
               <Route path="/settings" element={<SettingsPage />} />
               <Route path="/support" element={<SupportPage />} />
               <Route path="/profile" element={<AdminProfilePage />} />

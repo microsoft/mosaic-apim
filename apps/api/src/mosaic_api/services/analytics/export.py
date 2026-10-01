@@ -10,6 +10,7 @@ from pydantic import BaseModel
 
 from mosaic_api.services.analytics.models import (
     AnalyticsConsumers,
+    AnalyticsCost,
     AnalyticsHygiene,
     AnalyticsLimits,
     AnalyticsModels,
@@ -33,6 +34,7 @@ _USAGE = [
     ("Errors", "errors"),
     ("Request share", "request_share"),
     ("Token share", "token_share"),
+    ("Cost (USD)", "cost"),
     ("Last seen (UTC)", "last_seen"),
 ]
 _GRANT_REF = [
@@ -78,6 +80,7 @@ COLUMNS: dict[ExportView, list[tuple[str, str]]] = {
         ("Quota refused", "quota_refused"),
         ("Denied", "denied"),
         ("Errors", "errors"),
+        ("Cost (USD)", "cost"),
     ],
     "people": _CONSUMER,
     "applications": _CONSUMER,
@@ -175,8 +178,38 @@ COLUMNS: dict[ExportView, list[tuple[str, str]]] = {
         ("Requests", "requests"),
         ("Total tokens", "total_tokens"),
         ("Share", "share"),
+        ("Cost (USD)", "cost"),
         ("Last seen (UTC)", "last_seen"),
     ],
+    "costDeployments": [
+        ("Deployment", "deployment_name"),
+        ("Endpoint", "endpoint_name"),
+        ("Model", "model_name"),
+        ("Model version", "model_version"),
+        ("Cloud", "cloud_label"),
+        ("Deployment type", "deployment_type"),
+        ("Region", "region"),
+        ("Charged by", "pricing"),
+        ("Input per 1M tokens (USD)", "input_per_million"),
+        ("Cached input per 1M tokens (USD)", "cached_input_per_million"),
+        ("Output per 1M tokens (USD)", "output_per_million"),
+        ("PTU per hour (USD)", "ptu_hourly"),
+        ("Monthly amount (USD)", "monthly_amount"),
+        ("PTUs", "capacity"),
+        ("Month cost (USD)", "month_cost"),
+        ("Utilization", "utilization"),
+        ("Requests", "requests"),
+        ("Prompt tokens", "prompt_tokens"),
+        ("Completion tokens", "completion_tokens"),
+        ("Total tokens", "total_tokens"),
+        ("Idle reserved cost (USD)", "idle_cost"),
+        ("Cost (USD)", "cost"),
+        ("Cost share", "cost_share"),
+        ("Why it has no price", "unpriced_message"),
+        ("Price ID", "price_id"),
+    ],
+    # Built by the chargeback export itself; see cost_report.CHARGEBACK_COLUMNS.
+    "chargeback": [],
 }
 
 REPORT_FOR: dict[ExportView, str] = {
@@ -195,6 +228,8 @@ REPORT_FOR: dict[ExportView, str] = {
     "unusedKeys": "hygiene",
     "untrackedGrants": "hygiene",
     "unattributed": "unattributed",
+    "costDeployments": "cost",
+    "chargeback": "chargeback",
 }
 
 
@@ -267,4 +302,6 @@ def table(view: ExportView, report: BaseModel) -> list[dict[str, Any]]:
         return _dump(hygiene.get(view, []))
     if isinstance(report, AnalyticsUnattributed) and view == "unattributed":
         return _dump(report.rows)
+    if isinstance(report, AnalyticsCost) and view == "costDeployments":
+        return _dump(report.deployments)
     return []

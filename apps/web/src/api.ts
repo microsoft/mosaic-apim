@@ -5,6 +5,7 @@ import type {
   AccessRequest,
   AccessRequestApproval,
   AnalyticsConsumers,
+  AnalyticsCost,
   AnalyticsFilters,
   AnalyticsGatewayHealth,
   AnalyticsHygiene,
@@ -22,6 +23,8 @@ import type {
   DirectoryObject,
   DirectorySearchKind,
   DirectoryStatus,
+  EndpointPricingUpdate,
+  EndpointPricingView,
   Entitlement,
   EntitlementBinding,
   EntitlementEnforcement,
@@ -83,10 +86,16 @@ import type {
   PublishPlan,
   PublishRun,
   PolicyPreview,
+  PriceCreate,
+  PriceHistoryView,
+  PriceListView,
+  PriceView,
+  PricingOverview,
   Principal,
   PrincipalKind,
   ResolvedEntitlement,
   TokenEnforcement,
+  UnpricedReport,
 } from './types'
 
 export class ApiError extends Error {
@@ -132,7 +141,15 @@ export interface MosaicApi {
   getAnalyticsLimits(filters?: AnalyticsFilters): Promise<AnalyticsLimits>
   getAnalyticsHygiene(filters?: AnalyticsFilters): Promise<AnalyticsHygiene>
   getAnalyticsUnattributed(filters?: AnalyticsFilters): Promise<AnalyticsUnattributed>
+  getAnalyticsCost(filters?: AnalyticsFilters): Promise<AnalyticsCost>
   exportAnalytics(view: ExportView, filters?: AnalyticsFilters): Promise<DownloadedFile>
+  getPricingOverview(): Promise<PricingOverview>
+  listPrices(cloud: string): Promise<PriceListView>
+  addPrice(payload: PriceCreate): Promise<PriceView>
+  getPriceHistory(lineId: string): Promise<PriceHistoryView>
+  getUnpricedDeployments(): Promise<UnpricedReport>
+  listEndpointPricing(): Promise<EndpointPricingView[]>
+  updateEndpointPricing(endpointId: string, payload: EndpointPricingUpdate): Promise<EndpointPricingView>
   getEnvironmentCatalog(): Promise<EnvironmentCatalogView>
   createEnvironment(payload: EnvironmentCreate): Promise<EnvironmentCatalogView>
   updateEnvironment(key: string, payload: EnvironmentUpdate): Promise<EnvironmentCatalogView>
@@ -482,8 +499,24 @@ export function useMosaicApi(): MosaicApi {
         request<AnalyticsHygiene>(`/api/v1/analytics/hygiene${analyticsQuery(filters)}`),
       getAnalyticsUnattributed: (filters) =>
         request<AnalyticsUnattributed>(`/api/v1/analytics/unattributed${analyticsQuery(filters)}`),
+      getAnalyticsCost: (filters) =>
+        request<AnalyticsCost>(`/api/v1/analytics/cost${analyticsQuery(filters)}`),
       exportAnalytics: (view, filters) =>
         requestBlob(`/api/v1/analytics/export${analyticsQuery(filters, { view })}`),
+      getPricingOverview: () => request<PricingOverview>('/api/v1/pricing'),
+      listPrices: (cloud) =>
+        request<PriceListView>(`/api/v1/pricing/prices?cloud=${encodeURIComponent(cloud)}`),
+      addPrice: (payload) =>
+        request<PriceView>('/api/v1/pricing/prices', { method: 'POST', body: payload }),
+      getPriceHistory: (lineId) =>
+        request<PriceHistoryView>(`/api/v1/pricing/prices/${encodeURIComponent(lineId)}/history`),
+      getUnpricedDeployments: () => request<UnpricedReport>('/api/v1/pricing/unpriced'),
+      listEndpointPricing: () => request<EndpointPricingView[]>('/api/v1/pricing/endpoints'),
+      updateEndpointPricing: (endpointId, payload) =>
+        request<EndpointPricingView>(`/api/v1/pricing/endpoints/${encodeURIComponent(endpointId)}`, {
+          method: 'PATCH',
+          body: payload,
+        }),
       getEnvironmentCatalog: () => request<EnvironmentCatalogView>('/api/v1/environment-catalog'),
       createEnvironment: (payload) =>
         request<EnvironmentCatalogView>('/api/v1/environment-catalog/environments', {

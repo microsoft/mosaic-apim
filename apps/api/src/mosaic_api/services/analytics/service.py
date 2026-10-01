@@ -10,11 +10,13 @@ from collections import defaultdict
 from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import replace
 from datetime import date, datetime, timedelta
+from typing import Any
 
 from mosaic_api.domain import utc_now
 from mosaic_api.errors import ConflictError
 from mosaic_api.integrations.graph import DirectoryLookup
 from mosaic_api.observed import ObservedModelDeployment
+from mosaic_api.pricing import month_first, month_last
 from mosaic_api.repositories import (
     DirectoryRepository,
     EntitlementRepository,
@@ -24,6 +26,13 @@ from mosaic_api.repositories import (
     UsageRollupRepository,
 )
 from mosaic_api.services.analytics.consumers import consumers_report
+from mosaic_api.services.analytics.cost import CostBook, changed_months
+from mosaic_api.services.analytics.cost_report import (
+    CHARGEBACK_COLUMNS,
+    chargeback_rows,
+    cost_report,
+    spend_report,
+)
 from mosaic_api.services.analytics.export import COLUMNS, REPORT_FOR, filename, table, to_csv
 from mosaic_api.services.analytics.limits import (
     HygieneInputs,
@@ -35,6 +44,8 @@ from mosaic_api.services.analytics.limits import (
 )
 from mosaic_api.services.analytics.models import (
     AnalyticsConsumers,
+    AnalyticsCost,
+    AnalyticsCostSummary,
     AnalyticsDataSource,
     AnalyticsFilters,
     AnalyticsGatewayHealth,
@@ -44,6 +55,7 @@ from mosaic_api.services.analytics.models import (
     AnalyticsOverview,
     AnalyticsReliability,
     AnalyticsReport,
+    AnalyticsSpend,
     AnalyticsStatus,
     AnalyticsUnattributed,
     ExportView,
@@ -78,6 +90,7 @@ from mosaic_api.services.analytics.window import (
 )
 from mosaic_api.services.directory import Actor
 from mosaic_api.services.environments import load_environment_catalog
+from mosaic_api.services.pricing import PricingService
 from mosaic_api.services.telemetry import governed_apis
 from mosaic_api.services.usage import (
     UsageFreshness,
@@ -124,6 +137,7 @@ HOURS_NOTE = (
 )
 MONTHS_NOTE = "Ranges longer than 92 days are shown by whole calendar month."
 HYGIENE_NOTE = "Access hygiene always covers the last 30 days, whatever range is chosen."
+NO_PRICES = "This deployment has no price list, so MOSAIC can't put a cost on usage."
 
 Reader = Callable[..., Awaitable[AnalyticsReport]]
 
@@ -148,6 +162,7 @@ class AnalyticsService:
         endpoint_repository: ModelEndpointRepository | None = None,
         rollups: UsageRollupService | None = None,
         directory_lookup: DirectoryLookup | None = None,
+        pricing: PricingService | None = None,
         configured: bool = True,
         interval_seconds: int = 900,
         retention_days: int = 400,
@@ -161,6 +176,7 @@ class AnalyticsService:
         self._endpoints = endpoint_repository
         self._rollups = rollups
         self._names = NameCache(directory_lookup)
+        self._pricing = pricing
         self._configured = configured
         self._interval = timedelta(seconds=interval_seconds)
         self._retention_days = retention_days
@@ -312,18 +328,109 @@ class AnalyticsService:
         )
 
     async def _breakdown(
-        self, scope: Scope, window: Window, dimensions: Sequence[SummaryDimension]
+        self,
+        scope: Scope,
+        window: Window,
+        dimensions: Sequence[SummaryDimension],
+        costs: CostBook | None = None,
     ) -> list[UsageSummary]:
-        """A window's summaries for breakdowns: whole months by the month, the rest by day."""
+        """A window's summaries for breakdowns: whole months by the month, the rest by day.
+
+        A whole month in which a price changes is read by the day when MOSAIC still keeps its
+        days, so each day is priced at its own price.
+        """
 
         first, last = self._span(window)
         if window.granularity == "month":
-            return await self._read(scope, "month", first, last, dimensions)
+            return await self._months(scope, first, last, dimensions, costs, window.today)
         months, ranges = split_months(first, last)
+        if costs is not None:
+            demoted = changed_months(costs.pricer, months)
+            ranges = [*ranges, *((month, month_last(month)) for month in sorted(demoted))]
+            months = [month for month in months if month not in demoted]
         reads = [self._read(scope, "day", start, end, dimensions) for start, end in ranges]
         if months:
             reads.append(self._read(scope, "month", months[0], months[-1], dimensions))
-        return [summary for part in await asyncio.gather(*reads) for summary in part]
+        return [
+            summary
+            for part in await asyncio.gather(*reads)
+            for summary in part
+            if summary.period == "day" or date.fromisoformat(summary.period_start) in months
+        ]
+
+    async def _months(
+        self,
+        scope: Scope,
+        first: date,
+        last: date,
+        dimensions: Sequence[SummaryDimension],
+        costs: CostBook | None,
+        today: date,
+    ) -> list[UsageSummary]:
+        """Whole months, except those with a price change whose days MOSAIC still keeps."""
+
+        months: list[date] = []
+        cursor = first
+        while cursor <= last:
+            months.append(cursor)
+            cursor = add_months(cursor, 1)
+        kept = today - timedelta(days=self._retention_days - 1)
+        demoted = (
+            {month for month in changed_months(costs.pricer, months) if month >= kept}
+            if costs is not None
+            else set()
+        )
+        reads = [self._read(scope, "month", first, last, dimensions)]
+        reads.extend(
+            self._read(scope, "day", month, month_last(month), dimensions)
+            for month in sorted(demoted)
+        )
+        return [
+            summary
+            for part in await asyncio.gather(*reads)
+            for summary in part
+            if summary.period == "day"
+            or date.fromisoformat(summary.period_start) not in demoted
+        ]
+
+    async def _priced_read(
+        self,
+        scope: Scope,
+        window: Window,
+        first: date,
+        last: date,
+        dimensions: Sequence[SummaryDimension],
+        costs: CostBook | None,
+    ) -> list[UsageSummary]:
+        """Summaries at the window's own grain, with priced months read by the day."""
+
+        if window.period == "month":
+            return await self._months(scope, first, last, dimensions, costs, window.today)
+        return await self._read(scope, "day", first, last, dimensions)
+
+    async def _costs(self, scope: Scope, window: Window) -> CostBook | None:
+        """What prices this request's usage, or None when this deployment has no price list."""
+
+        if self._pricing is None or not self._configured:
+            return None
+        endpoint_ids = {
+            api.model_endpoint_id for api in scope.apis.values() if api.model_endpoint_id
+        }
+        pricer = await self._pricing.pricer(scope.tenant_id, endpoint_ids)
+        first = min(window.previous_first_day, window.first_day, month_first(window.today))
+        provisioned = await self._pricing.provisioned_tokens(
+            scope.tenant_id, pricer.provisioned_keys(), first, window.today
+        )
+        return CostBook(pricer, scope, window.today, provisioned)
+
+    async def _spend(self, scope: Scope, costs: CostBook | None) -> AnalyticsSpend | None:
+        if costs is None:
+            return None
+        today = costs.today
+        api = await self._read(scope, "day", month_first(today), today, ["api"])
+        coverage = coverage_of(scope.live_states())
+        through = min(self._clock(), coverage.through) if coverage is not None else None
+        return spend_report(costs, scope, api, today, through)
 
     async def _facts(self, scope: Scope, day: date, links: set[str]) -> list[UsageFact]:
         if not links or (scope.gateway_ids is not None and not scope.gateway_ids):
@@ -519,25 +626,29 @@ class AnalyticsService:
         scope, window = context.scope, context.window
         first, last = self._span(window)
         hourly = window.granularity == "hour"
+        costs = await self._costs(scope, window)
         # The last 24 hours compare with the 24 before, which the same daily items hold.
-        current, previous, breakdown = await asyncio.gather(
-            self._read(
+        current, previous, breakdown, spend = await asyncio.gather(
+            self._priced_read(
                 scope,
-                window.period,
+                window,
                 window.previous_first_day if hourly else first,
                 last,
                 ["api", "model"],
+                costs,
             ),
             _nothing()
             if hourly
-            else self._read(
+            else self._priced_read(
                 scope,
-                window.period,
+                window,
                 window.previous_first_day,
                 window.previous_last_day,
                 ["api"],
+                costs,
             ),
-            self._breakdown(scope, window, ["grantCaller", "unattributed"]),
+            self._breakdown(scope, window, ["grantCaller", "unattributed"], costs),
+            self._spend(scope, costs),
         )
         await self._name(scope, breakdown)
         return overview(
@@ -552,17 +663,20 @@ class AnalyticsService:
             callers=breakdown,
             unattributed=breakdown,
             gateways=self._health(scope, now),
+            costs=costs,
+            spend=spend,
         )
 
     async def consumers(
         self, actor: Actor, filters: AnalyticsFilters, *, limit: int = ROW_LIMIT
     ) -> AnalyticsConsumers:
         context, _ = await self._prepare(actor, filters, limit=limit)
+        costs = await self._costs(context.scope, context.window)
         summaries = await self._breakdown(
-            context.scope, context.window, ["grantCaller", "clientApp"]
+            context.scope, context.window, ["grantCaller", "clientApp"], costs
         )
         await self._name(context.scope, summaries)
-        return consumers_report(context, callers=summaries, clients=summaries)
+        return consumers_report(context, callers=summaries, clients=summaries, costs=costs)
 
     async def models(
         self, actor: Actor, filters: AnalyticsFilters, *, limit: int = ROW_LIMIT
@@ -570,14 +684,75 @@ class AnalyticsService:
         context, _ = await self._prepare(actor, filters, limit=limit, grants=False)
         scope, window = context.scope, context.window
         first, last = self._span(window)
+        costs = await self._costs(scope, window)
         # Deployments are read by the day, which is where their hourly peaks are kept.
         summaries, observed = await asyncio.gather(
-            self._read(scope, window.period, first, last, ["api", "model", "deployment"]),
+            self._priced_read(scope, window, first, last, ["api", "model", "deployment"], costs),
             self._deployments(scope),
         )
         return models_report(
-            context, api=summaries, models=summaries, deployments=summaries, observed=observed
+            context,
+            api=summaries,
+            models=summaries,
+            deployments=summaries,
+            observed=observed,
+            costs=costs,
         )
+
+    async def cost(
+        self, actor: Actor, filters: AnalyticsFilters, *, limit: int = ROW_LIMIT
+    ) -> AnalyticsCost:
+        """What the window's usage cost, this month's spend, and what couldn't be priced."""
+
+        context, now = await self._prepare(actor, filters, limit=limit)
+        scope, window = context.scope, context.window
+        first, last = self._span(window)
+        costs = await self._costs(scope, window)
+        if costs is None:
+            return AnalyticsCost(
+                **context.report(NO_PRICES),
+                spend=None,
+                cost=AnalyticsCostSummary(total=None),
+                trend=[],
+                models=[],
+                deployments=[],
+                consumers=[],
+                apis=[],
+                priced=False,
+            )
+        summaries, callers, spend = await asyncio.gather(
+            self._priced_read(scope, window, first, last, ["api", "model", "deployment"], costs),
+            self._breakdown(scope, window, ["grantCaller"], costs),
+            self._spend(scope, costs),
+        )
+        await self._name(scope, callers)
+        return cost_report(
+            context,
+            api=summaries,
+            models=summaries,
+            deployments=summaries,
+            callers=callers,
+            costs=costs,
+            spend=spend,
+            now=now,
+        )
+
+    async def chargeback(
+        self, actor: Actor, filters: AnalyticsFilters
+    ) -> tuple[AnalyticsReport, list[dict[str, Any]]]:
+        """Each month's cost by who it's charged to and the model that served it."""
+
+        context, _ = await self._prepare(actor, filters, limit=EXPORT_LIMIT)
+        costs = await self._costs(context.scope, context.window)
+        report = AnalyticsReport(**context.report())
+        if costs is None:
+            return report, []
+        summaries = await self._breakdown(
+            context.scope, context.window, ["grant", "unattributed"], costs
+        )
+        return report, chargeback_rows(
+            context, grants=summaries, unattributed=summaries, costs=costs
+        )[:EXPORT_LIMIT]
 
     async def reliability(
         self, actor: Actor, filters: AnalyticsFilters, *, limit: int = ROW_LIMIT
@@ -637,14 +812,26 @@ class AnalyticsService:
         self, actor: Actor, filters: AnalyticsFilters, *, limit: int = ROW_LIMIT
     ) -> AnalyticsUnattributed:
         context, _ = await self._prepare(actor, filters, limit=limit, grants=False)
-        summaries = await self._breakdown(context.scope, context.window, ["api", "unattributed"])
-        return unattributed_report(context, api=summaries, unattributed=summaries)
+        costs = await self._costs(context.scope, context.window)
+        summaries = await self._breakdown(
+            context.scope, context.window, ["api", "unattributed"], costs
+        )
+        return unattributed_report(
+            context, api=summaries, unattributed=summaries, costs=costs
+        )
 
     async def export(
         self, actor: Actor, filters: AnalyticsFilters, view: ExportView
     ) -> tuple[str, str]:
         """One view's rows as CSV, with the file name to save it under."""
 
+        if view == "chargeback":
+            report, rows = await self.chargeback(actor, filters)
+            window = report.window
+            return (
+                filename(view, window.breakdown_start, window.breakdown_end),
+                to_csv(CHARGEBACK_COLUMNS, rows),
+            )
         readers: dict[str, Reader] = {
             "overview": self.overview,
             "consumers": self.consumers,
@@ -653,6 +840,7 @@ class AnalyticsService:
             "limits": self.limits,
             "hygiene": self.hygiene,
             "unattributed": self.unattributed,
+            "cost": self.cost,
         }
         report = await readers[REPORT_FOR[view]](actor, filters, limit=EXPORT_LIMIT)
         window = report.window

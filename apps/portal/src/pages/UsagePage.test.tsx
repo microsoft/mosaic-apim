@@ -356,7 +356,7 @@ describe('UsagePage', () => {
     }
   })
 
-  it('renders KPI values, unknown cost, and excluded-resource captions', async () => {
+  it('renders KPI values, unpriced resources as No price, and excluded-resource captions', async () => {
     const user = userEvent.setup()
     renderPage()
 
@@ -366,10 +366,37 @@ describe('UsagePage', () => {
 
     await user.selectOptions(screen.getByLabelText('Resource'), 'grant-mcp')
     expect(screen.getAllByText('20')[0]).toBeVisible()
-    expect(screen.getAllByText('Unknown')[0]).toBeVisible()
+    // A resource MOSAIC can't price shows No price, never $0.
+    expect(screen.getAllByText('No price')[0]).toBeVisible()
     expect(screen.getByText('Excludes 1 resource with unknown cost')).toBeVisible()
   })
 
+  it('shows measured costs per resource and in total, and what they leave out', async () => {
+    const report = usageReport({ dataSource: 'logAnalytics', notes: [] })
+    renderPage({
+      ...report,
+      byResource: report.byResource.map((row) =>
+        row.entitlementId === 'grant-unattributed'
+          ? row
+          : row.entitlementId === 'grant-model'
+            ? { ...row, attribution: 'measured' }
+            : row.entitlementId === 'grant-mcp'
+              ? { ...row, attribution: 'measured', costNote: 'MCP servers are billed by their own service, not by tokens.' }
+              : { ...row, attribution: 'measured', estimatedCost: null, costNote: 'No price for contoso-llm in Azure Commercial.' },
+      ),
+      totals: { ...report.totals, costExcludedResources: 3 },
+    })
+
+    const table = await screen.findByRole('table', { name: 'Usage by resource' })
+    expect(within(table).getByRole('columnheader', { name: 'Estimated cost' })).toBeVisible()
+    const chat = within(await findResourceRow('Chat completions'))
+    expect(chat.getByText('$1.23')).toBeVisible()
+    const retired = within(await findResourceRow('Retired chat'))
+    expect(retired.getByText('No price')).toBeVisible()
+    expect(retired.getByText('No price for contoso-llm in Azure Commercial.')).toBeVisible()
+    expect(screen.getByText('Excludes 3 resources with unknown cost')).toBeVisible()
+    expect(screen.getByText(/Estimated costs use list prices from MOSAIC's price list/)).toBeVisible()
+  })
   it('renders MCP null token fields as not metered instead of zero', async () => {
     renderPage()
 

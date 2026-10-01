@@ -2,6 +2,7 @@
 
 from mosaic_api.services.analytics.models import (
     AnalyticsConsumers,
+    AnalyticsCost,
     AnalyticsFilters,
     AnalyticsGatewayHealth,
     AnalyticsHygiene,
@@ -21,6 +22,7 @@ from mosaic_api.services.analytics.service import EXPORT_LIMIT, AnalyticsService
 __all__ = [
     "EXPORT_LIMIT",
     "AnalyticsConsumers",
+    "AnalyticsCost",
     "AnalyticsFilters",
     "AnalyticsGatewayHealth",
     "AnalyticsHygiene",

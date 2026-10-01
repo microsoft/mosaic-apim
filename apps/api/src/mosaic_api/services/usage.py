@@ -22,6 +22,12 @@ from mosaic_api.domain import (
 )
 from mosaic_api.environments import EnvironmentCatalog, is_production
 from mosaic_api.observed import ObservedModelDeployment
+from mosaic_api.pricing import (
+    Pricer,
+    deployment_key,
+    month_first,
+    token_amount,
+)
 from mosaic_api.repositories import (
     EnvironmentRepository,
     GatewayRepository,
@@ -31,6 +37,7 @@ from mosaic_api.repositories import (
 from mosaic_api.services.directory import Actor
 from mosaic_api.services.environments import load_environment_catalog
 from mosaic_api.services.portal import PortalService
+from mosaic_api.services.pricing import PricingService
 from mosaic_api.usage_telemetry import (
     UsageFact,
     UsageHour,
@@ -420,6 +427,72 @@ class _GrantLinks:
     gateway_ids: set[str] = field(default_factory=set)
 
 
+MCP_COST_NOTE = "MCP servers are billed by their own service, not by tokens."
+PRODUCT_COST_NOTE = "Products bundle several APIs, so MOSAIC can't price them."
+UNKNOWN_DEPLOYMENT_NOTE = "MOSAIC doesn't know which deployment this API calls."
+
+
+@dataclass
+class _MeasuredPricing:
+    """Prices one person's measured usage, day by day, at the price in effect each day."""
+
+    pricer: Pricer
+    # Each grant's deployment, keyed as rollups key it, and its model.
+    deployments: dict[str, tuple[str | None, str | None]]
+    # Each provisioned deployment's tokens by month, across every caller.
+    tokens: dict[tuple[str, date], int]
+    today: date
+    reserved: bool = False
+
+    def cost(self, key: str | None, day: date, usage: DailyUsage) -> float | None:
+        rate = self.pricer.rate(key, day)
+        prompt = usage.prompt_tokens or 0
+        completion = usage.completion_tokens or 0
+        total = usage.total_tokens or 0
+        if rate.kind == "tokens" and rate.entry is not None:
+            return token_amount(rate.entry, prompt, completion)
+        if rate.kind == "provisioned" and key is not None:
+            # A provisioned deployment's month is shared by its callers' share of its tokens.
+            self.reserved = True
+            if total <= 0:
+                return 0.0
+            month = month_first(day)
+            monthly = self.pricer.reserved_cost(key, month, self.today)
+            shared = max(self.tokens.get((key.casefold(), month), 0), total)
+            return None if monthly is None else monthly * total / shared
+        return None
+
+    def note(
+        self,
+        entitlement: Entitlement,
+        key: str | None,
+        series: Mapping[date, DailyUsage] | None,
+        start: date,
+        end: date,
+    ) -> str | None:
+        """Why a grant has no cost in the period, or None when some of it can be priced."""
+
+        kind = entitlement.resource.kind
+        if kind == EntitlementResourceKind.MCP_SERVER:
+            return MCP_COST_NOTE
+        if kind == EntitlementResourceKind.PRODUCT:
+            return PRODUCT_COST_NOTE
+        if key is None:
+            return UNKNOWN_DEPLOYMENT_NOTE
+        if series is None:
+            return "MOSAIC can't measure this grant's usage yet, so it can't price it."
+        used = [
+            day
+            for day, usage in series.items()
+            if start <= day <= end and (usage.total_tokens or 0) > 0
+        ]
+        for day in used or [end]:
+            if self.pricer.rate(key, day).kind != "unpriced":
+                return None
+        rate = self.pricer.rate(key, (used or [end])[-1])
+        return rate.unpriced.message if rate.unpriced else "MOSAIC has no price for this model."
+
+
 def binding_link_keys(binding: EntitlementBinding) -> list[str]:
     """The keys a binding links gateway calls to its grant by, as facts record them."""
 
@@ -668,6 +741,7 @@ class UsageService:
         gateway_repository: GatewayRepository,
         endpoint_repository: ModelEndpointRepository,
         environment_repository: EnvironmentRepository,
+        pricing: PricingService | None = None,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
         self._portal = portal
@@ -675,7 +749,39 @@ class UsageService:
         self._gateways = gateway_repository
         self._endpoints = endpoint_repository
         self._environments = environment_repository
+        self._pricing = pricing
         self._clock = clock or (lambda: datetime.now(UTC))
+
+    async def _measured_pricing(
+        self,
+        actor: Actor,
+        entitlements: Sequence[ResolvedEntitlement],
+        *,
+        start: date,
+        end: date,
+    ) -> _MeasuredPricing | None:
+        """The prices for the caller's grants, and each provisioned deployment's monthly tokens."""
+
+        if self._pricing is None:
+            return None
+        deployments: dict[str, tuple[str | None, str | None]] = {}
+        for resolved in entitlements:
+            deployments[resolved.entitlement.id] = await self._deployment_for(
+                actor.tenant_id, resolved.entitlement
+            )
+        endpoint_ids = {key.partition("/")[0] for key, _ in deployments.values() if key}
+        pricer = await self._pricing.pricer(actor.tenant_id, endpoint_ids)
+        provisioned = [
+            key
+            for key, _ in deployments.values()
+            if key and (facts := pricer.facts_for(key)) is not None and facts.provisioned
+        ]
+        tokens = (
+            await self._pricing.provisioned_tokens(actor.tenant_id, provisioned, start, end)
+            if provisioned
+            else {}
+        )
+        return _MeasuredPricing(pricer=pricer, deployments=deployments, tokens=tokens, today=end)
 
     async def my_usage(self, actor: Actor, period: UsagePeriod = "30d") -> MyUsageReport:
         now = self._clock().astimezone(UTC)
@@ -689,6 +795,11 @@ class UsageService:
         freshness = await self._source.freshness(actor, entitlements)
         measured = self._source.data_source != "simulated"
         catalog = await load_environment_catalog(self._environments, actor.tenant_id)
+        pricing = (
+            await self._measured_pricing(actor, entitlements, start=start, end=end)
+            if measured
+            else None
+        )
 
         timeline: list[UsageTimelinePoint] = []
         rows: list[UsageResourceRow] = []
@@ -698,14 +809,19 @@ class UsageService:
         for resolved in entitlements:
             entitlement = resolved.entitlement
             summary = _summary_for(resolved)
-            model = await self._model_for(actor.tenant_id, entitlement)
-            cost_note = _cost_note(entitlement, model, priced=not measured)
-            cost_known = cost_note is None
-            if not cost_known:
-                cost_excluded_resources += 1
             linked_by = _linked_by(entitlement.binding)
             bound = linked_by is not None
             series = usage.get(entitlement.id)
+            if pricing is not None:
+                key, model = pricing.deployments.get(entitlement.id, (None, None))
+                cost_note = pricing.note(entitlement, key, series, start, end)
+            else:
+                key = None
+                model = await self._model_for(actor.tenant_id, entitlement)
+                cost_note = _cost_note(entitlement, model, priced=not measured)
+            cost_known = cost_note is None
+            if not cost_known:
+                cost_excluded_resources += 1
             attribution: UsageAttribution = (
                 "simulated"
                 if not measured
@@ -717,6 +833,7 @@ class UsageService:
                 (day, None if series is None else series.get(day)) for day in _days(start, end)
             ]
             present = [item for _, item in report_figures if item is not None]
+            # A grant MOSAIC can price costs nothing until it's called; one it can't has no cost.
             resource_cost = 0.0 if cost_known else None
             resource_requests = _sum_optional(item.requests for item in present)
             resource_prompt = _sum_optional(item.prompt_tokens for item in present)
@@ -732,7 +849,11 @@ class UsageService:
             for day, item in report_figures:
                 point_cost = None
                 if item is not None and cost_known:
-                    point_cost = _price(model, item.prompt_tokens, item.completion_tokens)
+                    point_cost = (
+                        pricing.cost(key, day, item)
+                        if pricing is not None
+                        else _price(model, item.prompt_tokens, item.completion_tokens)
+                    )
                     if point_cost is not None:
                         resource_cost = (resource_cost or 0.0) + point_cost
                 timeline.append(
@@ -744,7 +865,7 @@ class UsageService:
                         prompt_tokens=None if item is None else item.prompt_tokens,
                         completion_tokens=None if item is None else item.completion_tokens,
                         total_tokens=None if item is None else item.total_tokens,
-                        estimated_cost=point_cost,
+                        estimated_cost=None if point_cost is None else round(point_cost, 6),
                         throttled=None if item is None else item.throttled,
                         quota_refused=None if item is None else item.quota_refused,
                         errors=None if item is None else item.errors,
@@ -859,6 +980,8 @@ class UsageService:
                 ),
                 cost_excluded=cost_excluded_resources,
                 freshness=freshness,
+                priced=pricing is not None,
+                reserved=pricing is not None and pricing.reserved,
             ),
             freshness=freshness,
             recent_hours=_combine_hours([row.recent_hours for row in rows], now)
@@ -880,21 +1003,33 @@ class UsageService:
         # explicit zero usage so users understand the grant exists but is not active.
         return await self._portal.my_entitlements(actor, include_disabled=True)
 
-    async def _model_for(self, tenant_id: str, entitlement: Entitlement) -> str | None:
+    async def _deployment_for(
+        self, tenant_id: str, entitlement: Entitlement
+    ) -> tuple[str | None, str | None]:
+        """The deployment a grant's calls reach, keyed as rollups key it, and its model."""
+
         resource = entitlement.resource
         if resource.kind == EntitlementResourceKind.MODEL_API:
             model_api = await self._gateways.get_model_api(tenant_id, resource.id)
             if model_api is None or model_api.publication_id is None:
-                return None
+                return None, None
             publication = await self._gateways.get_publication(tenant_id, model_api.publication_id)
             if publication is None:
-                return None
-            return await self._observed_model_name(
+                return None, None
+            model = await self._observed_model_name(
                 tenant_id, publication.model_endpoint_id, publication.deployment_name
             )
+            return (
+                deployment_key(publication.model_endpoint_id, publication.deployment_name),
+                model,
+            )
         if resource.kind == EntitlementResourceKind.MODEL_DEPLOYMENT and resource.scope_id:
-            return await self._observed_model_name(tenant_id, resource.scope_id, resource.id)
-        return None
+            model = await self._observed_model_name(tenant_id, resource.scope_id, resource.id)
+            return deployment_key(resource.scope_id, resource.id), model
+        return None, None
+
+    async def _model_for(self, tenant_id: str, entitlement: Entitlement) -> str | None:
+        return (await self._deployment_for(tenant_id, entitlement))[1]
 
     async def _observed_model_name(
         self, tenant_id: str, endpoint_id: str, deployment_name: str
@@ -1279,9 +1414,9 @@ def _price(
 def _cost_note(entitlement: Entitlement, model: str | None, *, priced: bool) -> str | None:
     kind = entitlement.resource.kind
     if kind == EntitlementResourceKind.MCP_SERVER:
-        return "MCP servers are billed by their own service, not by tokens."
+        return MCP_COST_NOTE
     if kind == EntitlementResourceKind.PRODUCT:
-        return "Products bundle several APIs, so MOSAIC can't price them."
+        return PRODUCT_COST_NOTE
     if not priced:
         return "No price list yet."
     if model is None:
@@ -1323,6 +1458,8 @@ def _notes(
     unbound: int,
     cost_excluded: int,
     freshness: UsageFreshness | None = None,
+    priced: bool = False,
+    reserved: bool = False,
 ) -> list[str]:
     if data_source == "simulated":
         notes = [
@@ -1336,8 +1473,20 @@ def _notes(
             f"{interval} minutes. Recent calls can take a little longer to appear.",
             "The gateway applies your limits as you call, so you can reach one before this page "
             "shows it.",
-            "Costs aren't shown yet because MOSAIC doesn't have a price list.",
         ]
+        if priced:
+            notes.append(
+                "Costs are estimates at list prices from MOSAIC's price list, before any "
+                "discount, and are not a bill. The gateway's logs don't separate cached prompt "
+                "tokens, so every prompt token is priced at the full input price."
+            )
+            if reserved:
+                notes.append(
+                    "A provisioned deployment costs the same whether or not it's called, so "
+                    "each month's cost is shared among its callers by their share of its tokens."
+                )
+        else:
+            notes.append("Costs aren't shown yet because MOSAIC doesn't have a price list.")
     if unbound:
         notes.append(
             "1 resource isn't linked to API Management telemetry yet, so MOSAIC can't measure its "
@@ -1346,7 +1495,7 @@ def _notes(
             else f"{unbound} resources aren't linked to API Management telemetry yet, so MOSAIC "
             "can't measure their usage."
         )
-    if cost_excluded and data_source == "simulated":
+    if cost_excluded and (data_source == "simulated" or priced):
         notes.append(
             "Estimated cost leaves out 1 resource MOSAIC can't price; its row says why."
             if cost_excluded == 1

@@ -1587,6 +1587,8 @@ export type ExportView =
   | 'unusedKeys'
   | 'untrackedGrants'
   | 'unattributed'
+  | 'costDeployments'
+  | 'chargeback'
 
 export interface AnalyticsFilters {
   range?: AnalyticsRange
@@ -1643,6 +1645,8 @@ export interface AnalyticsKpis {
   activeGrants: number | null
   activeApis: number | null
   unattributedRequests: number | null
+  /** US dollars at list prices. Null when nothing could be priced, or the window is by the hour. */
+  cost?: number | null
 }
 
 export interface AnalyticsTrendPoint {
@@ -1653,6 +1657,7 @@ export interface AnalyticsTrendPoint {
   quotaRefused: number | null
   denied: number | null
   errors: number | null
+  cost?: number | null
 }
 
 export interface AnalyticsSeries {
@@ -1669,6 +1674,7 @@ export interface AnalyticsRankRow {
   totalTokens: number
   requestShare: number | null
   tokenShare: number | null
+  cost?: number | null
 }
 
 export interface AnalyticsGatewayHealth {
@@ -1710,6 +1716,8 @@ export interface AnalyticsOverview extends AnalyticsReport {
   topCallers: AnalyticsRankRow[]
   topApis: AnalyticsRankRow[]
   gateways: AnalyticsGatewayHealth[]
+  cost?: AnalyticsCostSummary | null
+  spend?: AnalyticsSpend | null
 }
 
 export interface AnalyticsUsage {
@@ -1723,6 +1731,8 @@ export interface AnalyticsUsage {
   lastSeen: string | null
   requestShare: number | null
   tokenShare: number | null
+  /** US dollars at list prices. Null when the row can't be priced or carries no tokens. */
+  cost?: number | null
 }
 
 export interface AnalyticsConsumerRow extends AnalyticsUsage {
@@ -1773,6 +1783,7 @@ export interface AnalyticsConsumers extends AnalyticsReport {
   grants: AnalyticsGrantRow[]
   clientApps: AnalyticsClientAppRow[]
   truncated: boolean
+  cost?: AnalyticsCostSummary | null
 }
 
 export interface AnalyticsApiRow extends AnalyticsUsage {
@@ -1828,6 +1839,7 @@ export interface AnalyticsModels extends AnalyticsReport {
   deployments: AnalyticsDeploymentRow[]
   gateways: AnalyticsBreakdownRow[]
   environments: AnalyticsBreakdownRow[]
+  cost?: AnalyticsCostSummary | null
 }
 
 export interface AnalyticsStatusMix {
@@ -1973,6 +1985,7 @@ export interface AnalyticsUnattributedRow {
   totalTokens: number
   lastSeen: string | null
   share: number | null
+  cost?: number | null
 }
 
 export interface AnalyticsUnattributed extends AnalyticsReport {
@@ -1982,6 +1995,7 @@ export interface AnalyticsUnattributed extends AnalyticsReport {
   share: number | null
   rows: AnalyticsUnattributedRow[]
   truncated: boolean
+  cost?: AnalyticsCostSummary | null
 }
 
 export interface AnalyticsStatus {
@@ -2051,4 +2065,281 @@ export interface GatewayTelemetry {
   apis: ApiTelemetry[]
   probe: TelemetryProbe | null
   rollup: RollupStatus | null
+}
+
+export interface AnalyticsUnpricedUse {
+  key: string
+  kind: 'deployment' | 'api' | 'grant'
+  label: string
+  detail?: string | null
+  reason: string
+  message: string
+  requests: number
+  totalTokens: number
+}
+
+export interface AnalyticsCostSummary {
+  currency: 'USD'
+  /** Null when nothing could be priced. Never zero for usage MOSAIC couldn't price. */
+  total: number | null
+  reserved?: number | null
+  pricedTokens: number
+  unpricedTokens: number
+  unpricedRequests: number
+  unpricedItems: number
+  unpriced: AnalyticsUnpricedUse[]
+  notes: string[]
+}
+
+export interface AnalyticsSpend {
+  currency: 'USD'
+  monthStart: string
+  daysInMonth: number
+  daysElapsed: number
+  through?: string | null
+  monthToDate: number | null
+  reserved?: number | null
+  /** A projection, not a bill. Null until MOSAIC has a day of this month's figures. */
+  forecast: number | null
+  projected: boolean
+  unpricedTokens: number
+  unpricedItems: number
+}
+
+export interface AnalyticsCostTrendPoint {
+  start: string
+  cost: number | null
+  reserved?: number | null
+  totalTokens?: number | null
+}
+
+export interface AnalyticsCostRow {
+  key: string
+  label: string
+  detail?: string | null
+  kind?: string | null
+  requests: number
+  totalTokens: number
+  cost: number | null
+  costShare?: number | null
+}
+
+export interface AnalyticsCostDeploymentRow {
+  key: string
+  endpointId: string | null
+  endpointName: string | null
+  deploymentName: string
+  modelName: string | null
+  modelVersion: string | null
+  cloud: string | null
+  cloudLabel: string
+  deploymentType: string | null
+  region: string | null
+  pricing: 'tokens' | 'provisioned' | 'unpriced'
+  priceId?: string | null
+  priceOrigin?: 'seed' | 'admin' | null
+  inputPerMillion?: number | null
+  cachedInputPerMillion?: number | null
+  outputPerMillion?: number | null
+  ptuHourly?: number | null
+  monthlyAmount?: number | null
+  capacity?: number | null
+  monthCost?: number | null
+  utilization?: number | null
+  idleCost?: number | null
+  unpricedReason?: string | null
+  unpricedMessage?: string | null
+  requests: number
+  promptTokens: number
+  completionTokens: number
+  totalTokens: number
+  cost: number | null
+  costShare?: number | null
+  gateways: number
+}
+
+export interface AnalyticsCost extends AnalyticsReport {
+  spend: AnalyticsSpend | null
+  cost: AnalyticsCostSummary
+  trend: AnalyticsCostTrendPoint[]
+  models: AnalyticsCostRow[]
+  deployments: AnalyticsCostDeploymentRow[]
+  consumers: AnalyticsCostRow[]
+  apis: AnalyticsCostRow[]
+  priced: boolean
+}
+
+export type PriceOrigin = 'seed' | 'admin'
+export type PriceStatus = 'current' | 'upcoming' | 'past' | 'corrected'
+export type UnpricedReason =
+  | 'unknownDeployment'
+  | 'noCloud'
+  | 'noModel'
+  | 'noDeploymentType'
+  | 'noCapacity'
+  | 'noPrice'
+  | 'notYetEffective'
+  | 'noOutputPrice'
+  | 'beforeDeployment'
+
+export interface PriceSource {
+  title: string
+  url: string
+  retrievedOn?: string | null
+}
+
+export interface PriceView {
+  id: string
+  lineId: string
+  origin: PriceOrigin
+  status: PriceStatus
+  cloud: string
+  cloudLabel: string
+  publisher: string | null
+  model: string
+  aliases: string[]
+  version: string | null
+  deploymentType: string | null
+  regions: string[] | null
+  deployment: string | null
+  inputPerMillion: number | null
+  cachedInputPerMillion: number | null
+  outputPerMillion: number | null
+  ptuHourly: number | null
+  monthlyAmount: number | null
+  effectiveFrom: string
+  /** Only a seeded price that a later seed replaced ends. */
+  effectiveUntil?: string | null
+  recordedAt: string
+  recordedBy: string | null
+  sources: PriceSource[]
+  note: string | null
+  overrides: string | null
+}
+
+export interface PriceLineView {
+  lineId: string
+  current: PriceView | null
+  upcoming: PriceView | null
+  versions: number
+}
+
+export interface PriceListView {
+  cloud: string
+  cloudLabel: string
+  currency: 'USD'
+  asOf: string
+  lines: PriceLineView[]
+}
+
+export interface PriceHistoryView {
+  lineId: string
+  versions: PriceView[]
+}
+
+export interface PricingCloud {
+  key: string
+  label: string
+  builtIn: boolean
+  prices: number
+  endpoints: number
+}
+
+export interface PricingOverview {
+  currency: 'USD'
+  asOf: string
+  seedLastUpdated: string
+  sources: PriceSource[]
+  clouds: PricingCloud[]
+  deploymentTypes: string[]
+  deployments: number
+  pricedDeployments: number
+}
+
+export interface PriceCreate {
+  cloud: string
+  publisher?: string | null
+  model: string
+  aliases?: string[]
+  version?: string | null
+  deploymentType?: string | null
+  regions?: string[] | null
+  deployment?: string | null
+  inputPerMillion?: number | null
+  cachedInputPerMillion?: number | null
+  outputPerMillion?: number | null
+  ptuHourly?: number | null
+  monthlyAmount?: number | null
+  effectiveFrom: string
+  sourceUrl: string
+  note: string
+  overrides?: string | null
+}
+
+export interface UnpricedDeploymentRow {
+  key: string
+  kind: 'deployment' | 'api'
+  label: string
+  endpointId?: string | null
+  endpointName?: string | null
+  deploymentName?: string | null
+  gatewayName?: string | null
+  model?: string | null
+  version?: string | null
+  deploymentType?: string | null
+  cloud?: string | null
+  region?: string | null
+  declared: boolean
+  reason: UnpricedReason
+  message: string
+  requests: number
+  totalTokens: number
+}
+
+export interface UnpricedReport {
+  asOf: string
+  days: number
+  deployments: number
+  pricedDeployments: number
+  rows: UnpricedDeploymentRow[]
+}
+
+export interface DeploymentPricingView {
+  deploymentName: string
+  model: string | null
+  version: string | null
+  deploymentType: string | null
+  deploymentTypeSource: 'observed' | 'admin' | null
+  capacity: number | null
+  declared: boolean
+  priced: boolean
+  priceId?: string | null
+  reason?: UnpricedReason | null
+  message?: string | null
+}
+
+export interface EndpointPricingView {
+  endpointId: string
+  name: string
+  provider: string
+  host: string | null
+  detectedCloud: string | null
+  cloud: string | null
+  cloudLabel: string
+  cloudSource: 'detected' | 'override' | null
+  region: string | null
+  regionSource: 'detected' | 'override' | null
+  deployments: DeploymentPricingView[]
+  updatedBy?: string | null
+  updatedAt?: string | null
+}
+
+export interface EndpointPricingUpdate {
+  cloud?: string | null
+  region?: string | null
+  deployments?: Array<{
+    deploymentName: string
+    deploymentType?: string | null
+    capacity?: number | null
+  }>
 }

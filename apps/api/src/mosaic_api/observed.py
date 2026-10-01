@@ -230,6 +230,9 @@ class ObservedModelDeployment(ObservedEndpointEntity):
     model_publisher: str | None = None
     sku_name: str | None = None
     sku_capacity: int | None = None
+    # When Azure created the deployment. A provisioned deployment is billed from then, so its
+    # reserved capacity is priced from then. Left out of stored documents while unknown.
+    deployed_at: datetime | None = Field(default=None, exclude_if=lambda value: value is None)
     provisioning_state: str | None = None
     rai_policy_name: str | None = None
     capabilities: dict[str, str] = Field(default_factory=dict)

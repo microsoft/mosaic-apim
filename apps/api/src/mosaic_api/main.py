@@ -27,6 +27,8 @@ from mosaic_api.integrations.loganalytics import LogAnalyticsClient
 from mosaic_api.integrations.mcp import EntraTokenProvider, KeyVaultSecretReader
 from mosaic_api.mcp_publishing_api import mcp_publishing_router
 from mosaic_api.observability import configure_logging, configure_telemetry
+from mosaic_api.pricing import load_seed
+from mosaic_api.pricing_api import pricing_router
 from mosaic_api.repositories import (
     CosmosDirectoryRepository,
     CosmosEntitlementRepository,
@@ -34,6 +36,7 @@ from mosaic_api.repositories import (
     CosmosGatewayRepository,
     CosmosMcpEndpointRepository,
     CosmosModelEndpointRepository,
+    CosmosPricingRepository,
     CosmosUsageRollupRepository,
     DirectoryRepository,
     EntitlementRepository,
@@ -45,9 +48,11 @@ from mosaic_api.repositories import (
     InMemoryGatewayRepository,
     InMemoryMcpEndpointRepository,
     InMemoryModelEndpointRepository,
+    InMemoryPricingRepository,
     InMemoryUsageRollupRepository,
     McpEndpointRepository,
     ModelEndpointRepository,
+    PricingRepository,
     UsageRollupRepository,
 )
 from mosaic_api.services import (
@@ -66,6 +71,7 @@ from mosaic_api.services.analytics import AnalyticsService
 from mosaic_api.services.mcp_endpoints import build_mcp_client_factory
 from mosaic_api.services.mcp_publishing import McpPublishingService
 from mosaic_api.services.portal_access import PortalAccessService
+from mosaic_api.services.pricing import PricingService
 from mosaic_api.services.telemetry import TelemetryService
 from mosaic_api.services.usage import RollupUsageSource, SimulatedUsageSource, UsageSource
 from mosaic_api.services.usage_rollup import UsageRollupService
@@ -95,6 +101,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         environment_repository: EnvironmentRepository
         mcp_repository: McpEndpointRepository
         rollup_repository: UsageRollupRepository
+        pricing_repository: PricingRepository
         if app_settings.repository_backend is RepositoryBackend.MEMORY:
             repository = InMemoryDirectoryRepository()
             gateway_repository = InMemoryGatewayRepository()
@@ -105,6 +112,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 gateway_repository, endpoint_repository, mcp_repository
             )
             rollup_repository = InMemoryUsageRollupRepository()
+            pricing_repository = InMemoryPricingRepository()
         else:
             cosmos_client = CosmosClient(
                 str(app_settings.cosmos_endpoint), credential=credential
@@ -157,6 +165,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 owns_client=False,
             )
             environment_repository = CosmosEnvironmentRepository(
+                cosmos_client,
+                app_settings.cosmos_database,
+                app_settings.cosmos_desired_state_container,
+                app_settings.cosmos_audit_events_container,
+                owns_client=False,
+            )
+            pricing_repository = CosmosPricingRepository(
                 cosmos_client,
                 app_settings.cosmos_database,
                 app_settings.cosmos_desired_state_container,
@@ -344,6 +359,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if uses_rollups
             else SimulatedUsageSource(environment_repository=environment_repository)
         )
+        pricing_service = PricingService(
+            pricing_repository,
+            endpoint_repository=endpoint_repository,
+            gateway_repository=gateway_repository,
+            rollup_repository=rollup_repository,
+            seed=load_seed(),
+        )
+        app.state.pricing_repository = pricing_repository
+        app.state.pricing_service = pricing_service
         app.state.usage_rollup_repository = rollup_repository
         app.state.telemetry_service = telemetry_service
         app.state.usage_rollup_service = rollup_service
@@ -353,6 +377,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             gateway_repository=gateway_repository,
             endpoint_repository=endpoint_repository,
             environment_repository=environment_repository,
+            pricing=pricing_service,
         )
         app.state.analytics_service = AnalyticsService(
             rollup_repository,
@@ -363,6 +388,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             endpoint_repository=endpoint_repository,
             rollups=rollup_service,
             directory_lookup=directory_lookup,
+            pricing=pricing_service,
             configured=uses_rollups,
             interval_seconds=app_settings.usage_rollup_interval_seconds,
             retention_days=app_settings.usage_rollup_retention_days,
@@ -434,6 +460,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             await environment_repository.close()
             await mcp_repository.close()
             await rollup_repository.close()
+            await pricing_repository.close()
             if cosmos_client:
                 await cosmos_client.close()
             await credential.close()
@@ -482,6 +509,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         mcp_repository = getattr(request.app.state, "mcp_endpoint_repository", None)
         environment_repository = getattr(request.app.state, "environment_repository", None)
         rollup_repository = getattr(request.app.state, "usage_rollup_repository", None)
+        pricing_repository = getattr(request.app.state, "pricing_repository", None)
         is_ready = (
             repository is not None
             and await repository.ready()
@@ -497,6 +525,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             and await environment_repository.ready()
             and rollup_repository is not None
             and await rollup_repository.ready()
+            and pricing_repository is not None
+            and await pricing_repository.ready()
         )
         return JSONResponse(
             status_code=status.HTTP_200_OK if is_ready else status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -507,5 +537,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(mcp_publishing_router)
     app.include_router(directory_router)
     app.include_router(analytics_router)
+    app.include_router(pricing_router)
     app.include_router(portal_router)
     return app

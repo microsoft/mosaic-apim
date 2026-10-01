@@ -458,6 +458,7 @@ def test_export_filename_and_table_pick_the_view_rows() -> None:
             "last_seen": None,
             "request_share": None,
             "token_share": None,
+            "cost": None,
             "grants": 1,
             "resources": 1,
             "members": None,

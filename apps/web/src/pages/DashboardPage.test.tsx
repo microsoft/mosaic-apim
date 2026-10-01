@@ -3,7 +3,7 @@ import { render, screen, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { DashboardPage } from './DashboardPage'
-import { overviewFixture, statusFixture } from '../test/analytics-fixtures'
+import { overviewFixture, pricedOverviewFixture, spendFixture, statusFixture } from '../test/analytics-fixtures'
 
 const timestamps = { createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:00Z' }
 
@@ -125,11 +125,30 @@ describe('DashboardPage', () => {
     expect(screen.getByText('Current')).toBeVisible()
     expect(screen.getByText('3 governed APIs · 15 min behind')).toBeVisible()
     expect(screen.queryByText(/Estimated cost/)).not.toBeInTheDocument()
+    // Without a price list there's no spend, never $0.
+    expect(within(screen.getByText('Spend this month').closest('.fui-Card') as HTMLElement).getByText('No price list')).toBeVisible()
     expect(await screen.findByRole('heading', { name: 'Environments' })).toBeVisible()
     expect(screen.getByText('2 gateways')).toBeVisible()
     expect(screen.getByText('3 MCP servers')).toBeVisible()
     expect(screen.getByText('1 gateway')).toBeVisible()
     expect(screen.getByRole('button', { name: '1 environment finding' })).toBeVisible()
+  })
+
+  it('shows spend this month with its projected month end', async () => {
+    api.getAnalyticsOverview.mockResolvedValue(pricedOverviewFixture)
+    renderPage()
+
+    const spend = (await screen.findByText('Spend this month')).closest('.fui-Card') as HTMLElement
+    expect(await within(spend).findByText('$4,355.25')).toBeVisible()
+    expect(within(spend).getByText('Projected $7,502.10 by Mar 31')).toBeVisible()
+  })
+
+  it('waits for a day of figures before projecting, and says when there is no price list', async () => {
+    api.getAnalyticsOverview.mockResolvedValue({ ...pricedOverviewFixture, spend: { ...spendFixture, forecast: null } })
+    renderPage()
+
+    const spend = (await screen.findByText('Spend this month')).closest('.fui-Card') as HTMLElement
+    expect(await within(spend).findByText('Forecast after a day of this month’s figures')).toBeVisible()
   })
 
   it("doesn't spell out a lag for a gateway that is caught up", async () => {

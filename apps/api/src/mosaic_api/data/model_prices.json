@@ -1,0 +1,4843 @@
+{
+  "$schema": "./model_prices.schema.json",
+  "schemaVersion": 1,
+  "lastUpdated": "2026-09-30",
+  "currency": "USD",
+  "sources": [
+    {
+      "id": "retail-azure-deepseek-models",
+      "title": "Azure Retail Prices API: Foundry Models, Azure Deepseek Models, every region",
+      "url": "https://prices.azure.com/api/retail/prices?$filter=serviceName%20eq%20'Foundry%20Models'%20and%20productName%20eq%20'Azure%20Deepseek%20Models'%20and%20priceType%20eq%20'Consumption'",
+      "retrievedOn": "2026-09-30"
+    },
+    {
+      "id": "retail-azure-llama-models",
+      "title": "Azure Retail Prices API: Foundry Models, Azure Llama Models, every region",
+      "url": "https://prices.azure.com/api/retail/prices?$filter=serviceName%20eq%20'Foundry%20Models'%20and%20productName%20eq%20'Azure%20Llama%20Models'%20and%20priceType%20eq%20'Consumption'",
+      "retrievedOn": "2026-09-30"
+    },
+    {
+      "id": "retail-azure-mistral-models",
+      "title": "Azure Retail Prices API: Foundry Models, Azure Mistral Models, every region",
+      "url": "https://prices.azure.com/api/retail/prices?$filter=serviceName%20eq%20'Foundry%20Models'%20and%20productName%20eq%20'Azure%20Mistral%20Models'%20and%20priceType%20eq%20'Consumption'",
+      "retrievedOn": "2026-09-30"
+    },
+    {
+      "id": "retail-azure-openai",
+      "title": "Azure Retail Prices API: Foundry Models, Azure OpenAI, every region",
+      "url": "https://prices.azure.com/api/retail/prices?$filter=serviceName%20eq%20'Foundry%20Models'%20and%20productName%20eq%20'Azure%20OpenAI'%20and%20priceType%20eq%20'Consumption'",
+      "retrievedOn": "2026-09-30"
+    },
+    {
+      "id": "retail-azure-openai-embedding",
+      "title": "Azure Retail Prices API: Foundry Models, Azure OpenAI Embedding, every region",
+      "url": "https://prices.azure.com/api/retail/prices?$filter=serviceName%20eq%20'Foundry%20Models'%20and%20productName%20eq%20'Azure%20OpenAI%20Embedding'%20and%20priceType%20eq%20'Consumption'",
+      "retrievedOn": "2026-09-30"
+    },
+    {
+      "id": "retail-azure-openai-gpt5",
+      "title": "Azure Retail Prices API: Foundry Models, Azure OpenAI GPT5, every region",
+      "url": "https://prices.azure.com/api/retail/prices?$filter=serviceName%20eq%20'Foundry%20Models'%20and%20productName%20eq%20'Azure%20OpenAI%20GPT5'%20and%20priceType%20eq%20'Consumption'",
+      "retrievedOn": "2026-09-30"
+    },
+    {
+      "id": "retail-azure-openai-reasoning",
+      "title": "Azure Retail Prices API: Foundry Models, Azure OpenAI Reasoning, every region",
+      "url": "https://prices.azure.com/api/retail/prices?$filter=serviceName%20eq%20'Foundry%20Models'%20and%20productName%20eq%20'Azure%20OpenAI%20Reasoning'%20and%20priceType%20eq%20'Consumption'",
+      "retrievedOn": "2026-09-30"
+    },
+    {
+      "id": "retail-azure-phi-models",
+      "title": "Azure Retail Prices API: Foundry Models, Azure Phi Models, every region",
+      "url": "https://prices.azure.com/api/retail/prices?$filter=serviceName%20eq%20'Foundry%20Models'%20and%20productName%20eq%20'Azure%20Phi%20Models'%20and%20priceType%20eq%20'Consumption'",
+      "retrievedOn": "2026-09-30"
+    },
+    {
+      "id": "learn-ptu-sizing",
+      "title": "Determine PTU sizing for a workload, Microsoft Learn: input TPM per PTU and output-to-input ratio by model",
+      "url": "https://learn.microsoft.com/azure/foundry/openai/how-to/provisioned-throughput-sizing",
+      "retrievedOn": "2026-09-30"
+    },
+    {
+      "id": "learn-ptu-billing",
+      "title": "Provisioned throughput billing and cost management, Microsoft Learn: PTUs are billed by the hour whether or not a deployment takes calls",
+      "url": "https://learn.microsoft.com/azure/foundry/openai/concepts/provisioned-throughput-billing",
+      "retrievedOn": "2026-09-30"
+    }
+  ],
+  "prices": [
+    {
+      "id": "commercial.deepseek.all-models.any.datazoneprovisionedmanaged.r1",
+      "cloud": "commercial",
+      "publisher": "DeepSeek",
+      "model": "*",
+      "deploymentType": "DataZoneProvisionedManaged",
+      "regions": [
+        "australiaeast",
+        "belgiumcentral",
+        "centralindia",
+        "francecentral",
+        "germanynorth",
+        "germanywestcentral",
+        "italynorth",
+        "japaneast",
+        "japanwest",
+        "jioindiawest",
+        "koreacentral",
+        "northeurope",
+        "norwayeast",
+        "polandcentral",
+        "southeastasia",
+        "southindia",
+        "spaincentral",
+        "swedencentral",
+        "switzerlandnorth",
+        "switzerlandwest",
+        "westeurope"
+      ],
+      "ptuHourly": 1.2,
+      "effectiveFrom": "2026-09-01",
+      "sourceIds": [
+        "retail-azure-deepseek-models",
+        "learn-ptu-billing"
+      ],
+      "retailMeters": {
+        "product": "Azure Deepseek Models",
+        "provisioned": "Provisioned Managed Data Zone Unit"
+      },
+      "notes": "The hourly rate for one PTU, for every model this publisher sells in Azure. A reservation costs less; enter its monthly amount as a price for the deployment."
+    },
+    {
+      "id": "commercial.deepseek.all-models.any.datazoneprovisionedmanaged.r2",
+      "cloud": "commercial",
+      "publisher": "DeepSeek",
+      "model": "*",
+      "deploymentType": "DataZoneProvisionedManaged",
+      "regions": [
+        "brazilsouth",
+        "canadacentral",
+        "canadaeast",
+        "centralus",
+        "eastasia",
+        "eastus",
+        "eastus2",
+        "northcentralus",
+        "qatarcentral",
+        "southafricanorth",
+        "southcentralus",
+        "uaenorth",
+        "uksouth",
+        "westcentralus",
+        "westus",
+        "westus2",
+        "westus3"
+      ],
+      "ptuHourly": 1.1,
+      "effectiveFrom": "2025-04-01",
+      "sourceIds": [
+        "retail-azure-deepseek-models",
+        "learn-ptu-billing"
+      ],
+      "retailMeters": {
+        "product": "Azure Deepseek Models",
+        "provisioned": "Provisioned Managed Data Zone Unit"
+      },
+      "notes": "The hourly rate for one PTU, for every model this publisher sells in Azure. A reservation costs less; enter its monthly amount as a price for the deployment."
+    },
+    {
+      "id": "commercial.deepseek.all-models.any.globalprovisionedmanaged",
+      "cloud": "commercial",
+      "publisher": "DeepSeek",
+      "model": "*",
+      "deploymentType": "GlobalProvisionedManaged",
+      "ptuHourly": 1.0,
+      "effectiveFrom": "2025-04-01",
+      "sourceIds": [
+        "retail-azure-deepseek-models",
+        "learn-ptu-billing"
+      ],
+      "retailMeters": {
+        "product": "Azure Deepseek Models",
+        "provisioned": "Provisioned Managed Global Unit"
+      },
+      "notes": "The hourly rate for one PTU, for every model this publisher sells in Azure. A reservation costs less; enter its monthly amount as a price for the deployment."
+    },
+    {
+      "id": "commercial.deepseek.all-models.any.provisionedmanaged.r1",
+      "cloud": "commercial",
+      "publisher": "DeepSeek",
+      "model": "*",
+      "deploymentType": "ProvisionedManaged",
+      "regions": [
+        "australiaeast",
+        "centralindia",
+        "jioindiawest",
+        "southindia"
+      ],
+      "ptuHourly": 2.28,
+      "effectiveFrom": "2026-09-01",
+      "sourceIds": [
+        "retail-azure-deepseek-models",
+        "learn-ptu-billing"
+      ],
+      "retailMeters": {
+        "product": "Azure Deepseek Models",
+        "provisioned": "Provisioned Managed Regional Unit"
+      },
+      "notes": "The hourly rate for one PTU, for every model this publisher sells in Azure. A reservation costs less; enter its monthly amount as a price for the deployment."
+    },
+    {
+      "id": "commercial.deepseek.all-models.any.provisionedmanaged.r2",
+      "cloud": "commercial",
+      "publisher": "DeepSeek",
+      "model": "*",
+      "deploymentType": "ProvisionedManaged",
+      "regions": [
+        "belgiumcentral",
+        "canadacentral",
+        "canadaeast",
+        "germanynorth",
+        "germanywestcentral",
+        "italynorth",
+        "polandcentral",
+        "southafricanorth",
+        "spaincentral",
+        "swedencentral",
+        "switzerlandnorth",
+        "switzerlandwest",
+        "uaenorth"
+      ],
+      "ptuHourly": 2.36,
+      "effectiveFrom": "2026-09-01",
+      "sourceIds": [
+        "retail-azure-deepseek-models",
+        "learn-ptu-billing"
+      ],
+      "retailMeters": {
+        "product": "Azure Deepseek Models",
+        "provisioned": "Provisioned Managed Regional Unit"
+      },
+      "notes": "The hourly rate for one PTU, for every model this publisher sells in Azure. A reservation costs less; enter its monthly amount as a price for the deployment."
+    },
+    {
+      "id": "commercial.deepseek.all-models.any.provisionedmanaged.r3",
+      "cloud": "commercial",
+      "publisher": "DeepSeek",
+      "model": "*",
+      "deploymentType": "ProvisionedManaged",
+      "regions": [
+        "brazilsouth",
+        "northeurope",
+        "southeastasia",
+        "westeurope"
+      ],
+      "ptuHourly": 2.72,
+      "effectiveFrom": "2026-09-01",
+      "sourceIds": [
+        "retail-azure-deepseek-models",
+        "learn-ptu-billing"
+      ],
+      "retailMeters": {
+        "product": "Azure Deepseek Models",
+        "provisioned": "Provisioned Managed Regional Unit"
+      },
+      "notes": "The hourly rate for one PTU, for every model this publisher sells in Azure. A reservation costs less; enter its monthly amount as a price for the deployment."
+    },
+    {
+      "id": "commercial.deepseek.all-models.any.provisionedmanaged.r4",
+      "cloud": "commercial",
+      "publisher": "DeepSeek",
+      "model": "*",
+      "deploymentType": "ProvisionedManaged",
+      "regions": [
+        "centralus",
+        "eastus",
+        "eastus2",
+        "northcentralus",
+        "southcentralus",
+        "westcentralus",
+        "westus",
+        "westus2",
+        "westus3"
+      ],
+      "ptuHourly": 2.0,
+      "effectiveFrom": "2025-04-01",
+      "sourceIds": [
+        "retail-azure-deepseek-models",
+        "learn-ptu-billing"
+      ],
+      "retailMeters": {
+        "product": "Azure Deepseek Models",
+        "provisioned": "Provisioned Managed Regional Unit"
+      },
+      "notes": "The hourly rate for one PTU, for every model this publisher sells in Azure. A reservation costs less; enter its monthly amount as a price for the deployment."
+    },
+    {
+      "id": "commercial.deepseek.all-models.any.provisionedmanaged.r5",
+      "cloud": "commercial",
+      "publisher": "DeepSeek",
+      "model": "*",
+      "deploymentType": "ProvisionedManaged",
+      "regions": [
+        "eastasia",
+        "francecentral",
+        "norwayeast",
+        "qatarcentral",
+        "uksouth",
+        "ukwest"
+      ],
+      "ptuHourly": 2.54,
+      "effectiveFrom": "2026-09-01",
+      "sourceIds": [
+        "retail-azure-deepseek-models",
+        "learn-ptu-billing"
+      ],
+      "retailMeters": {
+        "product": "Azure Deepseek Models",
+        "provisioned": "Provisioned Managed Regional Unit"
+      },
+      "notes": "The hourly rate for one PTU, for every model this publisher sells in Azure. A reservation costs less; enter its monthly amount as a price for the deployment."
+    },
+    {
+      "id": "commercial.deepseek.all-models.any.provisionedmanaged.r6",
+      "cloud": "commercial",
+      "publisher": "DeepSeek",
+      "model": "*",
+      "deploymentType": "ProvisionedManaged",
+      "regions": [
+        "japaneast",
+        "japanwest",
+        "koreacentral"
+      ],
+      "ptuHourly": 2.46,
+      "effectiveFrom": "2026-09-01",
+      "sourceIds": [
+        "retail-azure-deepseek-models",
+        "learn-ptu-billing"
+      ],
+      "retailMeters": {
+        "product": "Azure Deepseek Models",
+        "provisioned": "Provisioned Managed Regional Unit"
+      },
+      "notes": "The hourly rate for one PTU, for every model this publisher sells in Azure. A reservation costs less; enter its monthly amount as a price for the deployment."
+    },
+    {
+      "id": "commercial.deepseek.deepseek-r1.any.datazonestandard",
+      "cloud": "commercial",
+      "publisher": "DeepSeek",
+      "model": "DeepSeek-R1",
+      "deploymentType": "DataZoneStandard",
+      "inputPerMillion": 1.485,
+      "outputPerMillion": 5.94,
+      "effectiveFrom": "2025-02-01",
+      "sourceIds": [
+        "retail-azure-deepseek-models"
+      ],
+      "retailMeters": {
+        "product": "Azure Deepseek Models",
+        "input": "R1 Inp DZone Tokens",
+        "output": "R1 Outp DZone Tokens"
+      }
+    },
+    {
+      "id": "commercial.deepseek.deepseek-r1.any.globalstandard",
+      "cloud": "commercial",
+      "publisher": "DeepSeek",
+      "model": "DeepSeek-R1",
+      "deploymentType": "GlobalStandard",
+      "inputPerMillion": 1.35,
+      "outputPerMillion": 5.4,
+      "effectiveFrom": "2025-02-01",
+      "sourceIds": [
+        "retail-azure-deepseek-models"
+      ],
+      "retailMeters": {
+        "product": "Azure Deepseek Models",
+        "input": "R1 Inp glbl Tokens",
+        "output": "R1 Outp glbl Tokens"
+      }
+    },
+    {
+      "id": "commercial.deepseek.deepseek-r1.any.standard.r1",
+      "cloud": "commercial",
+      "publisher": "DeepSeek",
+      "model": "DeepSeek-R1",
+      "deploymentType": "Standard",
+      "regions": [
+        "centralus",
+        "eastus",
+        "eastus2",
+        "northcentralus",
+        "southcentralus",
+        "westcentralus",
+        "westus",
+        "westus2",
+        "westus3"
+      ],
+      "inputPerMillion": 1.485,
+      "outputPerMillion": 5.94,
+      "effectiveFrom": "2025-02-01",
+      "sourceIds": [
+        "retail-azure-deepseek-models"
+      ],
+      "retailMeters": {
+        "product": "Azure Deepseek Models",
+        "input": "R1 Inp regnl Tokens",
+        "output": "R1 Outp regnl Tokens"
+      }
+    },
+    {
+      "id": "commercial.deepseek.deepseek-r1.any.standard.r2",
+      "cloud": "commercial",
+      "publisher": "DeepSeek",
+      "model": "DeepSeek-R1",
+      "deploymentType": "Standard",
+      "regions": [
+        "ukwest"
+      ],
+      "inputPerMillion": 1.485,
+      "outputPerMillion": 5.94,
+      "effectiveFrom": "2026-09-01",
+      "sourceIds": [
+        "retail-azure-deepseek-models"
+      ],
+      "retailMeters": {
+        "product": "Azure Deepseek Models",
+        "input": "R1 Inp regnl Tokens",
+        "output": "R1 Outp regnl Tokens"
+      }
+    },
+    {
+      "id": "commercial.meta.all-models.any.datazoneprovisionedmanaged.r1",
+      "cloud": "commercial",
+      "publisher": "Meta",
+      "model": "*",
+      "deploymentType": "DataZoneProvisionedManaged",
+      "regions": [
+        "belgiumcentral",
+        "francecentral",
+        "germanynorth",
+        "germanywestcentral",
+        "italynorth",
+        "northeurope",
+        "norwayeast",
+        "polandcentral",
+        "spaincentral",
+        "swedencentral",
+        "switzerlandnorth",
+        "switzerlandwest",
+        "westeurope"
+      ],
+      "ptuHourly": 1.2,
+      "effectiveFrom": "2026-09-01",
+      "sourceIds": [
+        "retail-azure-llama-models",
+        "learn-ptu-billing"
+      ],
+      "retailMeters": {
+        "product": "Azure Llama Models",
+        "provisioned": "Provisioned Managed Data Zone Unit"
+      },
+      "notes": "The hourly rate for one PTU, for every model this publisher sells in Azure. A reservation costs less; enter its monthly amount as a price for the deployment."
+    },
+    {
+      "id": "commercial.meta.all-models.any.datazoneprovisionedmanaged.r2",
+      "cloud": "commercial",
+      "publisher": "Meta",
+      "model": "*",
+      "deploymentType": "DataZoneProvisionedManaged",
+      "regions": [
+        "centralus",
+        "eastus",
+        "eastus2",
+        "northcentralus",
+        "southcentralus",
+        "westcentralus",
+        "westus",
+        "westus2",
+        "westus3"
+      ],
+      "ptuHourly": 1.1,
+      "effectiveFrom": "2025-06-01",
+      "sourceIds": [
+        "retail-azure-llama-models",
+        "learn-ptu-billing"
+      ],
+      "retailMeters": {
+        "product": "Azure Llama Models",
+        "provisioned": "Provisioned Managed Data Zone Unit"
+      },
+      "notes": "The hourly rate for one PTU, for every model this publisher sells in Azure. A reservation costs less; enter its monthly amount as a price for the deployment."
+    },
+    {
+      "id": "commercial.meta.all-models.any.globalprovisionedmanaged",
+      "cloud": "commercial",
+      "publisher": "Meta",
+      "model": "*",
+      "deploymentType": "GlobalProvisionedManaged",
+      "ptuHourly": 1.0,
+      "effectiveFrom": "2026-01-01",
+      "sourceIds": [
+        "retail-azure-llama-models",
+        "learn-ptu-billing"
+      ],
+      "retailMeters": {
+        "product": "Azure Llama Models",
+        "provisioned": "Provisioned Managed Global Unit"
+      },
+      "notes": "The hourly rate for one PTU, for every model this publisher sells in Azure. A reservation costs less; enter its monthly amount as a price for the deployment."
+    },
+    {
+      "id": "commercial.meta.all-models.any.provisionedmanaged.r1",
+      "cloud": "commercial",
+      "publisher": "Meta",
+      "model": "*",
+      "deploymentType": "ProvisionedManaged",
+      "regions": [
+        "australiaeast",
+        "centralindia",
+        "jioindiawest",
+        "southindia"
+      ],
+      "ptuHourly": 2.28,
+      "effectiveFrom": "2026-09-01",
+      "sourceIds": [
+        "retail-azure-llama-models",
+        "learn-ptu-billing"
+      ],
+      "retailMeters": {
+        "product": "Azure Llama Models",
+        "provisioned": "Provisioned Managed Regional Unit"
+      },
+      "notes": "The hourly rate for one PTU, for every model this publisher sells in Azure. A reservation costs less; enter its monthly amount as a price for the deployment."
+    },
+    {
+      "id": "commercial.meta.all-models.any.provisionedmanaged.r2",
+      "cloud": "commercial",
+      "publisher": "Meta",
+      "model": "*",
+      "deploymentType": "ProvisionedManaged",
+      "regions": [
+        "brazilsouth",
+        "northeurope",
+        "southeastasia",
+        "westeurope"
+      ],
+      "ptuHourly": 2.72,
+      "effectiveFrom": "2026-09-01",
+      "sourceIds": [
+        "retail-azure-llama-models",
+        "learn-ptu-billing"
+      ],
+      "retailMeters": {
+        "product": "Azure Llama Models",
+        "provisioned": "Provisioned Managed Regional Unit"
+      },
+      "notes": "The hourly rate for one PTU, for every model this publisher sells in Azure. A reservation costs less; enter its monthly amount as a price for the deployment."
+    },
+    {
+      "id": "commercial.meta.all-models.any.provisionedmanaged.r3",
+      "cloud": "commercial",
+      "publisher": "Meta",
+      "model": "*",
+      "deploymentType": "ProvisionedManaged",
+      "regions": [
+        "canadacentral",
+        "canadaeast",
+        "germanynorth",
+        "germanywestcentral",
+        "italynorth",
+        "polandcentral",
+        "southafricanorth",
+        "spaincentral",
+        "swedencentral",
+        "switzerlandnorth",
+        "switzerlandwest",
+        "uaenorth"
+      ],
+      "ptuHourly": 2.36,
+      "effectiveFrom": "2026-09-01",
+      "sourceIds": [
+        "retail-azure-llama-models",
+        "learn-ptu-billing"
+      ],
+      "retailMeters": {
+        "product": "Azure Llama Models",
+        "provisioned": "Provisioned Managed Regional Unit"
+      },
+      "notes": "The hourly rate for one PTU, for every model this publisher sells in Azure. A reservation costs less; enter its monthly amount as a price for the deployment."
+    },
+    {
+      "id": "commercial.meta.all-models.any.provisionedmanaged.r4",
+      "cloud": "commercial",
+      "publisher": "Meta",
+      "model": "*",
+      "deploymentType": "ProvisionedManaged",
+      "regions": [
+        "centralus",
+        "eastus",
+        "eastus2",
+        "northcentralus",
+        "southcentralus",
+        "westcentralus",
+        "westus",
+        "westus2",
+        "westus3"
+      ],
+      "ptuHourly": 2.0,
+      "effectiveFrom": "2025-09-01",
+      "sourceIds": [
+        "retail-azure-llama-models",
+        "learn-ptu-billing"
+      ],
+      "retailMeters": {
+        "product": "Azure Llama Models",
+        "provisioned": "Provisioned Managed Regional Unit"
+      },
+      "notes": "The hourly rate for one PTU, for every model this publisher sells in Azure. A reservation costs less; enter its monthly amount as a price for the deployment."
+    },
+    {
+      "id": "commercial.meta.all-models.any.provisionedmanaged.r5",
+      "cloud": "commercial",
+      "publisher": "Meta",
+      "model": "*",
+      "deploymentType": "ProvisionedManaged",
+      "regions": [
+        "eastasia",
+        "francecentral",
+        "norwayeast",
+        "qatarcentral",
+        "uksouth"
+      ],
+      "ptuHourly": 2.54,
+      "effectiveFrom": "2026-09-01",
+      "sourceIds": [
+        "retail-azure-llama-models",
+        "learn-ptu-billing"
+      ],
+      "retailMeters": {
+        "product": "Azure Llama Models",
+        "provisioned": "Provisioned Managed Regional Unit"
+      },
+      "notes": "The hourly rate for one PTU, for every model this publisher sells in Azure. A reservation costs less; enter its monthly amount as a price for the deployment."
+    },
+    {
+      "id": "commercial.meta.all-models.any.provisionedmanaged.r6",
+      "cloud": "commercial",
+      "publisher": "Meta",
+      "model": "*",
+      "deploymentType": "ProvisionedManaged",
+      "regions": [
+        "japaneast",
+        "japanwest",
+        "koreacentral"
+      ],
+      "ptuHourly": 2.46,
+      "effectiveFrom": "2026-09-01",
+      "sourceIds": [
+        "retail-azure-llama-models",
+        "learn-ptu-billing"
+      ],
+      "retailMeters": {
+        "product": "Azure Llama Models",
+        "provisioned": "Provisioned Managed Regional Unit"
+      },
+      "notes": "The hourly rate for one PTU, for every model this publisher sells in Azure. A reservation costs less; enter its monthly amount as a price for the deployment."
+    },
+    {
+      "id": "commercial.meta.llama-3.3-70b-instruct.any.datazonestandard",
+      "cloud": "commercial",
+      "publisher": "Meta",
+      "model": "Llama-3.3-70B-Instruct",
+      "deploymentType": "DataZoneStandard",
+      "inputPerMillion": 0.781,
+      "outputPerMillion": 0.781,
+      "effectiveFrom": "2025-06-01",
+      "sourceIds": [
+        "retail-azure-llama-models"
+      ],
+      "retailMeters": {
+        "product": "Azure Llama Models",
+        "input": "Llama 3.3 70B Inp Dzone Tokens",
+        "output": "Llama 3.3 70B Outp Dzone Tokens"
+      }
+    },
+    {
+      "id": "commercial.meta.llama-3.3-70b-instruct.any.globalstandard",
+      "cloud": "commercial",
+      "publisher": "Meta",
+      "model": "Llama-3.3-70B-Instruct",
+      "deploymentType": "GlobalStandard",
+      "inputPerMillion": 0.71,
+      "outputPerMillion": 0.71,
+      "effectiveFrom": "2026-01-01",
+      "sourceIds": [
+        "retail-azure-llama-models"
+      ],
+      "retailMeters": {
+        "product": "Azure Llama Models",
+        "input": "Llama 3.3 70B Inp glbl Tokens",
+        "output": "Llama 3.3 70B Outp glbl Tokens"
+      }
+    },
+    {
+      "id": "commercial.meta.llama-3.3-70b-instruct.any.standard.r1",
+      "cloud": "commercial",
+      "publisher": "Meta",
+      "model": "Llama-3.3-70B-Instruct",
+      "deploymentType": "Standard",
+      "regions": [
+        "centralus",
+        "eastus",
+        "eastus2",
+        "northcentralus",
+        "southcentralus",
+        "westcentralus",
+        "westus",
+        "westus2",
+        "westus3"
+      ],
+      "inputPerMillion": 0.781,
+      "outputPerMillion": 0.781,
+      "effectiveFrom": "2025-06-01",
+      "sourceIds": [
+        "retail-azure-llama-models"
+      ],
+      "retailMeters": {
+        "product": "Azure Llama Models",
+        "input": "Llama 3.3 70B Inp regnl Tokens",
+        "output": "Llama 3.3 70B Outp regnl Tokens"
+      }
+    },
+    {
+      "id": "commercial.meta.llama-3.3-70b-instruct.any.standard.r2",
+      "cloud": "commercial",
+      "publisher": "Meta",
+      "model": "Llama-3.3-70B-Instruct",
+      "deploymentType": "Standard",
+      "regions": [
+        "francecentral",
+        "germanywestcentral",
+        "italynorth",
+        "polandcentral",
+        "spaincentral",
+        "swedencentral"
+      ],
+      "inputPerMillion": 0.859,
+      "outputPerMillion": 0.859,
+      "effectiveFrom": "2025-06-01",
+      "sourceIds": [
+        "retail-azure-llama-models"
+      ],
+      "retailMeters": {
+        "product": "Azure Llama Models",
+        "input": "Llama 3.3 70B Inp regnl Tokens",
+        "output": "Llama 3.3 70B Outp regnl Tokens"
+      }
+    },
+    {
+      "id": "commercial.meta.llama-3.3-70b-instruct.any.standard.r3",
+      "cloud": "commercial",
+      "publisher": "Meta",
+      "model": "Llama-3.3-70B-Instruct",
+      "deploymentType": "Standard",
+      "regions": [
+        "southeastasia",
+        "westeurope"
+      ],
+      "inputPerMillion": 0.937,
+      "outputPerMillion": 0.937,
+      "effectiveFrom": "2025-06-01",
+      "sourceIds": [
+        "retail-azure-llama-models"
+      ],
+      "retailMeters": {
+        "product": "Azure Llama Models",
+        "input": "Llama 3.3 70B Inp regnl Tokens",
+        "output": "Llama 3.3 70B Outp regnl Tokens"
+      }
+    },
+    {
+      "id": "commercial.microsoft.phi-4.any.any-type",
+      "cloud": "commercial",
+      "publisher": "Microsoft",
+      "model": "Phi-4",
+      "inputPerMillion": 0.125,
+      "outputPerMillion": 0.5,
+      "effectiveFrom": "2025-02-01",
+      "sourceIds": [
+        "retail-azure-phi-models"
+      ],
+      "retailMeters": {
+        "product": "Azure Phi Models",
+        "input": "Phi-4-Input Tokens",
+        "output": "Phi-4-Output Tokens"
+      },
+      "notes": "The Retail Prices API lists one pay-as-you-go price for Phi-4, for any deployment type."
+    },
+    {
+      "id": "commercial.mistral-ai.all-models.any.datazoneprovisionedmanaged.r1",
+      "cloud": "commercial",
+      "publisher": "Mistral AI",
+      "model": "*",
+      "deploymentType": "DataZoneProvisionedManaged",
+      "regions": [
+        "belgiumcentral",
+        "francecentral",
+        "germanynorth",
+        "germanywestcentral",
+        "northeurope",
+        "norwayeast",
+        "polandcentral",
+        "spaincentral",
+        "swedencentral",
+        "switzerlandnorth",
+        "switzerlandwest",
+        "westeurope"
+      ],
+      "ptuHourly": 1.2,
+      "effectiveFrom": "2026-09-01",
+      "sourceIds": [
+        "retail-azure-mistral-models",
+        "learn-ptu-billing"
+      ],
+      "retailMeters": {
+        "product": "Azure Mistral Models",
+        "provisioned": "Provisioned Managed Data Zone Unit"
+      },
+      "notes": "The hourly rate for one PTU, for every model this publisher sells in Azure. A reservation costs less; enter its monthly amount as a price for the deployment."
+    },
+    {
+      "id": "commercial.mistral-ai.all-models.any.datazoneprovisionedmanaged.r2",
+      "cloud": "commercial",
+      "publisher": "Mistral AI",
+      "model": "*",
+      "deploymentType": "DataZoneProvisionedManaged",
+      "regions": [
+        "centralus",
+        "eastus",
+        "eastus2",
+        "northcentralus",
+        "southcentralus",
+        "westcentralus",
+        "westus",
+        "westus2",
+        "westus3"
+      ],
+      "ptuHourly": 1.1,
+      "effectiveFrom": "2025-06-01",
+      "sourceIds": [
+        "retail-azure-mistral-models",
+        "learn-ptu-billing"
+      ],
+      "retailMeters": {
+        "product": "Azure Mistral Models",
+        "provisioned": "Provisioned Managed Data Zone Unit"
+      },
+      "notes": "The hourly rate for one PTU, for every model this publisher sells in Azure. A reservation costs less; enter its monthly amount as a price for the deployment."
+    },
+    {
+      "id": "commercial.mistral-ai.all-models.any.globalprovisionedmanaged",
+      "cloud": "commercial",
+      "publisher": "Mistral AI",
+      "model": "*",
+      "deploymentType": "GlobalProvisionedManaged",
+      "ptuHourly": 1.0,
+      "effectiveFrom": "2025-06-01",
+      "sourceIds": [
+        "retail-azure-mistral-models",
+        "learn-ptu-billing"
+      ],
+      "retailMeters": {
+        "product": "Azure Mistral Models",
+        "provisioned": "Provisioned Managed Global Unit"
+      },
+      "notes": "The hourly rate for one PTU, for every model this publisher sells in Azure. A reservation costs less; enter its monthly amount as a price for the deployment."
+    },
+    {
+      "id": "commercial.mistral-ai.all-models.any.provisionedmanaged.r1",
+      "cloud": "commercial",
+      "publisher": "Mistral AI",
+      "model": "*",
+      "deploymentType": "ProvisionedManaged",
+      "regions": [
+        "australiaeast",
+        "centralindia",
+        "jioindiawest",
+        "southindia"
+      ],
+      "ptuHourly": 2.28,
+      "effectiveFrom": "2026-09-01",
+      "sourceIds": [
+        "retail-azure-mistral-models",
+        "learn-ptu-billing"
+      ],
+      "retailMeters": {
+        "product": "Azure Mistral Models",
+        "provisioned": "Provisioned Managed Regional Unit"
+      },
+      "notes": "The hourly rate for one PTU, for every model this publisher sells in Azure. A reservation costs less; enter its monthly amount as a price for the deployment."
+    },
+    {
+      "id": "commercial.mistral-ai.all-models.any.provisionedmanaged.r2",
+      "cloud": "commercial",
+      "publisher": "Mistral AI",
+      "model": "*",
+      "deploymentType": "ProvisionedManaged",
+      "regions": [
+        "brazilsouth",
+        "northeurope",
+        "southeastasia",
+        "westeurope"
+      ],
+      "ptuHourly": 2.72,
+      "effectiveFrom": "2026-09-01",
+      "sourceIds": [
+        "retail-azure-mistral-models",
+        "learn-ptu-billing"
+      ],
+      "retailMeters": {
+        "product": "Azure Mistral Models",
+        "provisioned": "Provisioned Managed Regional Unit"
+      },
+      "notes": "The hourly rate for one PTU, for every model this publisher sells in Azure. A reservation costs less; enter its monthly amount as a price for the deployment."
+    },
+    {
+      "id": "commercial.mistral-ai.all-models.any.provisionedmanaged.r3",
+      "cloud": "commercial",
+      "publisher": "Mistral AI",
+      "model": "*",
+      "deploymentType": "ProvisionedManaged",
+      "regions": [
+        "canadacentral",
+        "canadaeast",
+        "germanynorth",
+        "germanywestcentral",
+        "italynorth",
+        "polandcentral",
+        "southafricanorth",
+        "spaincentral",
+        "swedencentral",
+        "switzerlandnorth",
+        "switzerlandwest",
+        "uaenorth"
+      ],
+      "ptuHourly": 2.36,
+      "effectiveFrom": "2026-09-01",
+      "sourceIds": [
+        "retail-azure-mistral-models",
+        "learn-ptu-billing"
+      ],
+      "retailMeters": {
+        "product": "Azure Mistral Models",
+        "provisioned": "Provisioned Managed Regional Unit"
+      },
+      "notes": "The hourly rate for one PTU, for every model this publisher sells in Azure. A reservation costs less; enter its monthly amount as a price for the deployment."
+    },
+    {
+      "id": "commercial.mistral-ai.all-models.any.provisionedmanaged.r4",
+      "cloud": "commercial",
+      "publisher": "Mistral AI",
+      "model": "*",
+      "deploymentType": "ProvisionedManaged",
+      "regions": [
+        "centralus",
+        "eastus",
+        "eastus2",
+        "northcentralus",
+        "southcentralus",
+        "westcentralus",
+        "westus",
+        "westus2",
+        "westus3"
+      ],
+      "ptuHourly": 2.0,
+      "effectiveFrom": "2025-09-01",
+      "sourceIds": [
+        "retail-azure-mistral-models",
+        "learn-ptu-billing"
+      ],
+      "retailMeters": {
+        "product": "Azure Mistral Models",
+        "provisioned": "Provisioned Managed Regional Unit"
+      },
+      "notes": "The hourly rate for one PTU, for every model this publisher sells in Azure. A reservation costs less; enter its monthly amount as a price for the deployment."
+    },
+    {
+      "id": "commercial.mistral-ai.all-models.any.provisionedmanaged.r5",
+      "cloud": "commercial",
+      "publisher": "Mistral AI",
+      "model": "*",
+      "deploymentType": "ProvisionedManaged",
+      "regions": [
+        "eastasia",
+        "francecentral",
+        "norwayeast",
+        "qatarcentral",
+        "uksouth"
+      ],
+      "ptuHourly": 2.54,
+      "effectiveFrom": "2026-09-01",
+      "sourceIds": [
+        "retail-azure-mistral-models",
+        "learn-ptu-billing"
+      ],
+      "retailMeters": {
+        "product": "Azure Mistral Models",
+        "provisioned": "Provisioned Managed Regional Unit"
+      },
+      "notes": "The hourly rate for one PTU, for every model this publisher sells in Azure. A reservation costs less; enter its monthly amount as a price for the deployment."
+    },
+    {
+      "id": "commercial.mistral-ai.all-models.any.provisionedmanaged.r6",
+      "cloud": "commercial",
+      "publisher": "Mistral AI",
+      "model": "*",
+      "deploymentType": "ProvisionedManaged",
+      "regions": [
+        "japaneast",
+        "japanwest",
+        "koreacentral"
+      ],
+      "ptuHourly": 2.46,
+      "effectiveFrom": "2026-09-01",
+      "sourceIds": [
+        "retail-azure-mistral-models",
+        "learn-ptu-billing"
+      ],
+      "retailMeters": {
+        "product": "Azure Mistral Models",
+        "provisioned": "Provisioned Managed Regional Unit"
+      },
+      "notes": "The hourly rate for one PTU, for every model this publisher sells in Azure. A reservation costs less; enter its monthly amount as a price for the deployment."
+    },
+    {
+      "id": "commercial.openai.all-models.any.datazoneprovisionedmanaged.r1",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "*",
+      "deploymentType": "DataZoneProvisionedManaged",
+      "regions": [
+        "australiaeast",
+        "centralindia",
+        "eastasia",
+        "japaneast",
+        "japanwest",
+        "jioindiawest",
+        "koreacentral",
+        "southeastasia",
+        "southindia"
+      ],
+      "ptuHourly": 1.2,
+      "effectiveFrom": "2026-08-01",
+      "sourceIds": [
+        "retail-azure-openai",
+        "learn-ptu-billing"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "provisioned": "Provisioned Managed Data Zone Unit"
+      },
+      "notes": "The hourly rate for one PTU, for every model this publisher sells in Azure. A reservation costs less; enter its monthly amount as a price for the deployment."
+    },
+    {
+      "id": "commercial.openai.all-models.any.datazoneprovisionedmanaged.r2",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "*",
+      "deploymentType": "DataZoneProvisionedManaged",
+      "regions": [
+        "centralus"
+      ],
+      "ptuHourly": 1.1,
+      "effectiveFrom": "2026-09-01",
+      "sourceIds": [
+        "retail-azure-openai",
+        "learn-ptu-billing"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "provisioned": "Provisioned Managed Data Zone Unit"
+      },
+      "notes": "The hourly rate for one PTU, for every model this publisher sells in Azure. A reservation costs less; enter its monthly amount as a price for the deployment."
+    },
+    {
+      "id": "commercial.openai.all-models.any.datazoneprovisionedmanaged.r3",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "*",
+      "deploymentType": "DataZoneProvisionedManaged",
+      "regions": [
+        "eastus",
+        "eastus2",
+        "northcentralus",
+        "southcentralus",
+        "westus",
+        "westus3"
+      ],
+      "ptuHourly": 1.1,
+      "effectiveFrom": "2024-11-01",
+      "sourceIds": [
+        "retail-azure-openai",
+        "learn-ptu-billing"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "provisioned": "Provisioned Managed Data Zone Unit"
+      },
+      "notes": "The hourly rate for one PTU, for every model this publisher sells in Azure. A reservation costs less; enter its monthly amount as a price for the deployment."
+    },
+    {
+      "id": "commercial.openai.all-models.any.datazoneprovisionedmanaged.r4",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "*",
+      "deploymentType": "DataZoneProvisionedManaged",
+      "regions": [
+        "francecentral",
+        "germanywestcentral",
+        "italynorth",
+        "northeurope",
+        "norwayeast",
+        "polandcentral",
+        "spaincentral",
+        "swedencentral",
+        "switzerlandnorth",
+        "westeurope"
+      ],
+      "ptuHourly": 1.2,
+      "effectiveFrom": "2026-09-01",
+      "sourceIds": [
+        "retail-azure-openai",
+        "learn-ptu-billing"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "provisioned": "Provisioned Managed Data Zone Unit"
+      },
+      "notes": "The hourly rate for one PTU, for every model this publisher sells in Azure. A reservation costs less; enter its monthly amount as a price for the deployment."
+    },
+    {
+      "id": "commercial.openai.all-models.any.datazoneprovisionedmanaged.r5",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "*",
+      "deploymentType": "DataZoneProvisionedManaged",
+      "regions": [
+        "indonesiacentral"
+      ],
+      "ptuHourly": 1.2,
+      "effectiveFrom": "2026-06-01",
+      "sourceIds": [
+        "retail-azure-openai",
+        "learn-ptu-billing"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "provisioned": "Provisioned Managed Data Zone Unit"
+      },
+      "notes": "The hourly rate for one PTU, for every model this publisher sells in Azure. A reservation costs less; enter its monthly amount as a price for the deployment."
+    },
+    {
+      "id": "commercial.openai.all-models.any.globalprovisionedmanaged",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "*",
+      "deploymentType": "GlobalProvisionedManaged",
+      "ptuHourly": 1.0,
+      "effectiveFrom": "2024-11-01",
+      "sourceIds": [
+        "retail-azure-openai",
+        "learn-ptu-billing"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "provisioned": "Provisioned Managed Global Unit"
+      },
+      "notes": "The hourly rate for one PTU, for every model this publisher sells in Azure. A reservation costs less; enter its monthly amount as a price for the deployment."
+    },
+    {
+      "id": "commercial.openai.all-models.any.provisionedmanaged.r1",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "*",
+      "deploymentType": "ProvisionedManaged",
+      "regions": [
+        "australiaeast",
+        "southindia"
+      ],
+      "ptuHourly": 2.28,
+      "effectiveFrom": "2026-09-01",
+      "sourceIds": [
+        "retail-azure-openai",
+        "learn-ptu-billing"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "provisioned": "Provisioned Managed Regional Unit"
+      },
+      "notes": "The hourly rate for one PTU, for every model this publisher sells in Azure. A reservation costs less; enter its monthly amount as a price for the deployment."
+    },
+    {
+      "id": "commercial.openai.all-models.any.provisionedmanaged.r2",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "*",
+      "deploymentType": "ProvisionedManaged",
+      "regions": [
+        "brazilsouth",
+        "northeurope",
+        "southeastasia",
+        "westeurope"
+      ],
+      "ptuHourly": 2.72,
+      "effectiveFrom": "2026-09-01",
+      "sourceIds": [
+        "retail-azure-openai",
+        "learn-ptu-billing"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "provisioned": "Provisioned Managed Regional Unit"
+      },
+      "notes": "The hourly rate for one PTU, for every model this publisher sells in Azure. A reservation costs less; enter its monthly amount as a price for the deployment."
+    },
+    {
+      "id": "commercial.openai.all-models.any.provisionedmanaged.r3",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "*",
+      "deploymentType": "ProvisionedManaged",
+      "regions": [
+        "canadacentral",
+        "canadaeast",
+        "germanywestcentral",
+        "italynorth",
+        "polandcentral",
+        "southafricanorth",
+        "swedencentral",
+        "switzerlandnorth",
+        "uaenorth"
+      ],
+      "ptuHourly": 2.36,
+      "effectiveFrom": "2026-09-01",
+      "sourceIds": [
+        "retail-azure-openai",
+        "learn-ptu-billing"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "provisioned": "Provisioned Managed Regional Unit"
+      },
+      "notes": "The hourly rate for one PTU, for every model this publisher sells in Azure. A reservation costs less; enter its monthly amount as a price for the deployment."
+    },
+    {
+      "id": "commercial.openai.all-models.any.provisionedmanaged.r4",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "*",
+      "deploymentType": "ProvisionedManaged",
+      "regions": [
+        "eastus",
+        "eastus2",
+        "northcentralus",
+        "southcentralus",
+        "westus",
+        "westus3"
+      ],
+      "ptuHourly": 2.0,
+      "effectiveFrom": "2024-04-01",
+      "sourceIds": [
+        "retail-azure-openai",
+        "learn-ptu-billing"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "provisioned": "Provisioned Managed Regional Unit"
+      },
+      "notes": "The hourly rate for one PTU, for every model this publisher sells in Azure. A reservation costs less; enter its monthly amount as a price for the deployment."
+    },
+    {
+      "id": "commercial.openai.all-models.any.provisionedmanaged.r5",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "*",
+      "deploymentType": "ProvisionedManaged",
+      "regions": [
+        "francecentral",
+        "norwayeast",
+        "uksouth"
+      ],
+      "ptuHourly": 2.54,
+      "effectiveFrom": "2026-09-01",
+      "sourceIds": [
+        "retail-azure-openai",
+        "learn-ptu-billing"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "provisioned": "Provisioned Managed Regional Unit"
+      },
+      "notes": "The hourly rate for one PTU, for every model this publisher sells in Azure. A reservation costs less; enter its monthly amount as a price for the deployment."
+    },
+    {
+      "id": "commercial.openai.all-models.any.provisionedmanaged.r6",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "*",
+      "deploymentType": "ProvisionedManaged",
+      "regions": [
+        "japaneast",
+        "koreacentral"
+      ],
+      "ptuHourly": 2.46,
+      "effectiveFrom": "2026-09-01",
+      "sourceIds": [
+        "retail-azure-openai",
+        "learn-ptu-billing"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "provisioned": "Provisioned Managed Regional Unit"
+      },
+      "notes": "The hourly rate for one PTU, for every model this publisher sells in Azure. A reservation costs less; enter its monthly amount as a price for the deployment."
+    },
+    {
+      "id": "commercial.openai.gpt-35-turbo.0125.globalstandard",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "gpt-35-turbo",
+      "aliases": [
+        "gpt-3.5-turbo"
+      ],
+      "version": "0125",
+      "deploymentType": "GlobalStandard",
+      "inputPerMillion": 0.5,
+      "outputPerMillion": 1.5,
+      "effectiveFrom": "2025-03-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "gpt-35-turbo16K-0125 Inp-glbl Tokens",
+        "output": "gpt-35-turbo16K-0125 Outp-glbl Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.gpt-35-turbo.0125.standard.r1",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "gpt-35-turbo",
+      "aliases": [
+        "gpt-3.5-turbo"
+      ],
+      "version": "0125",
+      "deploymentType": "Standard",
+      "regions": [
+        "australiaeast",
+        "eastus",
+        "eastus2",
+        "northcentralus",
+        "southcentralus",
+        "southindia",
+        "westus",
+        "westus3"
+      ],
+      "inputPerMillion": 0.55,
+      "outputPerMillion": 1.65,
+      "effectiveFrom": "2025-09-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "gpt-35-turbo-16K-0125 Input-regional Tokens",
+        "output": "gpt-35-turbo-16K-0125 Output-regional Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.gpt-35-turbo.0125.standard.r2",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "gpt-35-turbo",
+      "aliases": [
+        "gpt-3.5-turbo"
+      ],
+      "version": "0125",
+      "deploymentType": "Standard",
+      "regions": [
+        "canadaeast",
+        "francecentral",
+        "japaneast",
+        "swedencentral",
+        "switzerlandnorth",
+        "uksouth"
+      ],
+      "inputPerMillion": 0.605,
+      "outputPerMillion": 1.815,
+      "effectiveFrom": "2025-09-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "gpt-35-turbo-16K-0125 Input-regional Tokens",
+        "output": "gpt-35-turbo-16K-0125 Output-regional Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.gpt-35-turbo.0125.standard.r3",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "gpt-35-turbo",
+      "aliases": [
+        "gpt-3.5-turbo"
+      ],
+      "version": "0125",
+      "deploymentType": "Standard",
+      "regions": [
+        "westeurope"
+      ],
+      "inputPerMillion": 0.66,
+      "outputPerMillion": 1.98,
+      "effectiveFrom": "2025-09-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "gpt-35-turbo-16K-0125 Input-regional Tokens",
+        "output": "gpt-35-turbo-16K-0125 Output-regional Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.gpt-4.1-mini.any.datazonebatch",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "gpt-4.1-mini",
+      "deploymentType": "DataZoneBatch",
+      "inputPerMillion": 0.22,
+      "outputPerMillion": 0.88,
+      "effectiveFrom": "2025-04-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "gpt 4.1 mini Batch Inp DZone Tokens",
+        "output": "gpt 4.1 mini Batch Outp DZone Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.gpt-4.1-mini.any.datazonestandard",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "gpt-4.1-mini",
+      "deploymentType": "DataZoneStandard",
+      "inputPerMillion": 0.44,
+      "cachedInputPerMillion": 0.11,
+      "outputPerMillion": 1.76,
+      "effectiveFrom": "2025-04-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "gpt 4.1 mini Inp Data Zone Tokens",
+        "cachedInput": "gpt 4.1 mini cached Inp DZone Tokens",
+        "output": "gpt 4.1 mini Outp Data Zone Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.gpt-4.1-mini.any.globalbatch",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "gpt-4.1-mini",
+      "deploymentType": "GlobalBatch",
+      "inputPerMillion": 0.2,
+      "outputPerMillion": 0.8,
+      "effectiveFrom": "2025-04-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "gpt 4.1 mini Batch Inp glbl Tokens",
+        "output": "gpt 4.1 mini Batch Outp glbl Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.gpt-4.1-mini.any.globalstandard",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "gpt-4.1-mini",
+      "deploymentType": "GlobalStandard",
+      "inputPerMillion": 0.4,
+      "cachedInputPerMillion": 0.1,
+      "outputPerMillion": 1.6,
+      "effectiveFrom": "2025-04-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "gpt 4.1 mini Inp glbl Tokens",
+        "cachedInput": "gpt 4.1 mini cached Inp glbl Tokens",
+        "output": "gpt 4.1 mini Outp glbl Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.gpt-4.1-mini.any.standard.r1",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "gpt-4.1-mini",
+      "deploymentType": "Standard",
+      "regions": [
+        "australiaeast",
+        "eastus",
+        "eastus2",
+        "northcentralus",
+        "southcentralus",
+        "southindia",
+        "westus",
+        "westus2",
+        "westus3"
+      ],
+      "inputPerMillion": 0.44,
+      "cachedInputPerMillion": 0.11,
+      "outputPerMillion": 1.76,
+      "effectiveFrom": "2025-11-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "gpt 4.1 mini Inp regnl Tokens",
+        "cachedInput": "gpt 4.1 mini cached Inp regnl Tokens",
+        "output": "gpt 4.1 mini Outp regnl Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.gpt-4.1-mini.any.standard.r2",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "gpt-4.1-mini",
+      "deploymentType": "Standard",
+      "regions": [
+        "canadaeast",
+        "francecentral",
+        "japaneast",
+        "swedencentral",
+        "switzerlandnorth",
+        "uksouth"
+      ],
+      "inputPerMillion": 0.484,
+      "cachedInputPerMillion": 0.121,
+      "outputPerMillion": 1.936,
+      "effectiveFrom": "2025-11-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "gpt 4.1 mini Inp regnl Tokens",
+        "cachedInput": "gpt 4.1 mini cached Inp regnl Tokens",
+        "output": "gpt 4.1 mini Outp regnl Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.gpt-4.1-mini.any.standard.r3",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "gpt-4.1-mini",
+      "deploymentType": "Standard",
+      "regions": [
+        "northeurope"
+      ],
+      "inputPerMillion": 0.528,
+      "cachedInputPerMillion": 0.132,
+      "outputPerMillion": 2.112,
+      "effectiveFrom": "2026-06-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "gpt 4.1 mini Inp regnl Tokens",
+        "cachedInput": "gpt 4.1 mini cached Inp regnl Tokens",
+        "output": "gpt 4.1 mini Outp regnl Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.gpt-4.1-mini.any.standard.r4",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "gpt-4.1-mini",
+      "deploymentType": "Standard",
+      "regions": [
+        "westeurope"
+      ],
+      "inputPerMillion": 0.528,
+      "cachedInputPerMillion": 0.132,
+      "outputPerMillion": 2.112,
+      "effectiveFrom": "2025-11-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "gpt 4.1 mini Inp regnl Tokens",
+        "cachedInput": "gpt 4.1 mini cached Inp regnl Tokens",
+        "output": "gpt 4.1 mini Outp regnl Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.gpt-4.1-nano.any.datazonebatch",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "gpt-4.1-nano",
+      "deploymentType": "DataZoneBatch",
+      "inputPerMillion": 0.055,
+      "outputPerMillion": 0.22,
+      "effectiveFrom": "2025-04-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "gpt 4.1 nano Batch Inp DZone Tokens",
+        "output": "gpt 4.1 nano Batch Outp DZone Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.gpt-4.1-nano.any.datazonestandard",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "gpt-4.1-nano",
+      "deploymentType": "DataZoneStandard",
+      "inputPerMillion": 0.11,
+      "cachedInputPerMillion": 0.028,
+      "outputPerMillion": 0.44,
+      "effectiveFrom": "2025-04-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "gpt 4.1 nano Inp Data Zone Tokens",
+        "cachedInput": "gpt 4.1 nano cached Inp DZone Tokens",
+        "output": "gpt 4.1 nano Outp Data Zone Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.gpt-4.1-nano.any.globalbatch",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "gpt-4.1-nano",
+      "deploymentType": "GlobalBatch",
+      "inputPerMillion": 0.05,
+      "outputPerMillion": 0.2,
+      "effectiveFrom": "2025-04-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "gpt 4.1 nano Batch Inp glbl Tokens",
+        "output": "gpt 4.1 nano Batch Outp glbl Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.gpt-4.1-nano.any.globalstandard",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "gpt-4.1-nano",
+      "deploymentType": "GlobalStandard",
+      "inputPerMillion": 0.1,
+      "cachedInputPerMillion": 0.025,
+      "outputPerMillion": 0.4,
+      "effectiveFrom": "2025-04-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "gpt 4.1 nano Inp glbl Tokens",
+        "cachedInput": "gpt 4.1 nano cached Inp glbl Tokens",
+        "output": "gpt 4.1 nano Outp glbl Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.gpt-4.1-nano.any.standard.r1",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "gpt-4.1-nano",
+      "deploymentType": "Standard",
+      "regions": [
+        "eastus",
+        "eastus2",
+        "northcentralus",
+        "southcentralus",
+        "westus",
+        "westus3"
+      ],
+      "inputPerMillion": 0.11,
+      "cachedInputPerMillion": 0.028,
+      "outputPerMillion": 0.44,
+      "effectiveFrom": "2025-04-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "gpt 4.1 nano Inp regnl Tokens",
+        "cachedInput": "gpt 4.1 nano cached Inp regnl Tokens",
+        "output": "gpt 4.1 nano Outp regnl Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.gpt-4.1-nano.any.standard.r2",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "gpt-4.1-nano",
+      "deploymentType": "Standard",
+      "regions": [
+        "northeurope"
+      ],
+      "inputPerMillion": 0.132,
+      "cachedInputPerMillion": 0.033,
+      "outputPerMillion": 0.528,
+      "effectiveFrom": "2026-06-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "gpt 4.1 nano Inp regnl Tokens",
+        "cachedInput": "gpt 4.1 nano cached Inp regnl Tokens",
+        "output": "gpt 4.1 nano Outp regnl Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.gpt-4.1-nano.any.standard.r3",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "gpt-4.1-nano",
+      "deploymentType": "Standard",
+      "regions": [
+        "swedencentral"
+      ],
+      "inputPerMillion": 0.121,
+      "cachedInputPerMillion": 0.031,
+      "outputPerMillion": 0.484,
+      "effectiveFrom": "2025-04-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "gpt 4.1 nano Inp regnl Tokens",
+        "cachedInput": "gpt 4.1 nano cached Inp regnl Tokens",
+        "output": "gpt 4.1 nano Outp regnl Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.gpt-4.1.any.datazonebatch",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "gpt-4.1",
+      "deploymentType": "DataZoneBatch",
+      "inputPerMillion": 1.1,
+      "outputPerMillion": 4.4,
+      "effectiveFrom": "2025-04-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "gpt 4.1 Batch Inp Data Zone Tokens",
+        "output": "gpt 4.1 Batch Outp Data Zone Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.gpt-4.1.any.datazonestandard",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "gpt-4.1",
+      "deploymentType": "DataZoneStandard",
+      "inputPerMillion": 2.2,
+      "cachedInputPerMillion": 0.55,
+      "outputPerMillion": 8.8,
+      "effectiveFrom": "2025-04-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "gpt 4.1 Inp Data Zone Tokens",
+        "cachedInput": "gpt 4.1 cached Inp Data Zone Tokens",
+        "output": "gpt 4.1 Outp Data Zone Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.gpt-4.1.any.globalbatch",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "gpt-4.1",
+      "deploymentType": "GlobalBatch",
+      "inputPerMillion": 1.0,
+      "outputPerMillion": 4.0,
+      "effectiveFrom": "2025-04-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "gpt 4.1 Batch Inp glbl Tokens",
+        "output": "gpt 4.1 Batch Outp glbl Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.gpt-4.1.any.globalstandard",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "gpt-4.1",
+      "deploymentType": "GlobalStandard",
+      "inputPerMillion": 2.0,
+      "cachedInputPerMillion": 0.5,
+      "outputPerMillion": 8.0,
+      "effectiveFrom": "2025-04-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "gpt 4.1 Inp glbl Tokens",
+        "cachedInput": "gpt 4.1 cached Inp glbl Tokens",
+        "output": "gpt 4.1 Outp glbl Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.gpt-4.1.any.standard.r1",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "gpt-4.1",
+      "deploymentType": "Standard",
+      "regions": [
+        "eastus",
+        "eastus2",
+        "northcentralus",
+        "southcentralus",
+        "westus",
+        "westus3"
+      ],
+      "inputPerMillion": 2.2,
+      "cachedInputPerMillion": 0.55,
+      "outputPerMillion": 8.8,
+      "effectiveFrom": "2025-11-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "gpt 4.1 Inp regnl Tokens",
+        "cachedInput": "gpt 4.1 cached Inp regnl Tokens",
+        "output": "gpt 4.1 Outp regnl Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.gpt-4.1.any.standard.r2",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "gpt-4.1",
+      "deploymentType": "Standard",
+      "regions": [
+        "northeurope"
+      ],
+      "inputPerMillion": 2.64,
+      "cachedInputPerMillion": 0.66,
+      "outputPerMillion": 10.56,
+      "effectiveFrom": "2026-06-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "gpt 4.1 Inp regnl Tokens",
+        "cachedInput": "gpt 4.1 cached Inp regnl Tokens",
+        "output": "gpt 4.1 Outp regnl Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.gpt-4.1.any.standard.r3",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "gpt-4.1",
+      "deploymentType": "Standard",
+      "regions": [
+        "swedencentral",
+        "switzerlandnorth"
+      ],
+      "inputPerMillion": 2.42,
+      "cachedInputPerMillion": 0.605,
+      "outputPerMillion": 9.68,
+      "effectiveFrom": "2025-11-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "gpt 4.1 Inp regnl Tokens",
+        "cachedInput": "gpt 4.1 cached Inp regnl Tokens",
+        "output": "gpt 4.1 Outp regnl Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.gpt-4.1.any.standard.r4",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "gpt-4.1",
+      "deploymentType": "Standard",
+      "regions": [
+        "westus2"
+      ],
+      "inputPerMillion": 2.2,
+      "cachedInputPerMillion": 0.55,
+      "outputPerMillion": 8.8,
+      "effectiveFrom": "2025-12-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "gpt 4.1 Inp regnl Tokens",
+        "cachedInput": "gpt 4.1 cached Inp regnl Tokens",
+        "output": "gpt 4.1 Outp regnl Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.gpt-4o-mini.2024-07-18.datazonebatch",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "gpt-4o-mini",
+      "version": "2024-07-18",
+      "deploymentType": "DataZoneBatch",
+      "inputPerMillion": 0.083,
+      "outputPerMillion": 0.33,
+      "effectiveFrom": "2025-01-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "gpt 4o mini 0718 Batch Inp Data Zone Tokens",
+        "output": "gpt 4o mini0718 BatchOutp DataZone Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.gpt-4o-mini.2024-07-18.datazonestandard",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "gpt-4o-mini",
+      "version": "2024-07-18",
+      "deploymentType": "DataZoneStandard",
+      "inputPerMillion": 0.165,
+      "cachedInputPerMillion": 0.083,
+      "outputPerMillion": 0.66,
+      "effectiveFrom": "2024-10-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "gpt 4o mini 0718 Inp Data Zone Tokens",
+        "cachedInput": "gpt 4o mini 0718 cached Inp Data Zone Tokens",
+        "output": "gpt 4o mini 0718 Outp Data Zone Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.gpt-4o-mini.2024-07-18.globalbatch",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "gpt-4o-mini",
+      "version": "2024-07-18",
+      "deploymentType": "GlobalBatch",
+      "inputPerMillion": 0.075,
+      "outputPerMillion": 0.3,
+      "effectiveFrom": "2024-08-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "gpt-4o-mini-0718-Batch-Inp-glbl Tokens",
+        "output": "gpt-4o-mini-0718-Batch-Outp-glbl Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.gpt-4o-mini.2024-07-18.globalstandard",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "gpt-4o-mini",
+      "version": "2024-07-18",
+      "deploymentType": "GlobalStandard",
+      "inputPerMillion": 0.15,
+      "cachedInputPerMillion": 0.075,
+      "outputPerMillion": 0.6,
+      "effectiveFrom": "2024-10-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "gpt-4o-mini-0718-Inp-glbl Tokens",
+        "cachedInput": "gpt 4o mini 0718 cached Inp glbl Tokens",
+        "output": "gpt-4o-mini-0718-Outp-glbl Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.gpt-4o-mini.2024-07-18.standard.r1",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "gpt-4o-mini",
+      "version": "2024-07-18",
+      "deploymentType": "Standard",
+      "regions": [
+        "eastus",
+        "eastus2",
+        "northcentralus",
+        "southcentralus",
+        "westus",
+        "westus3"
+      ],
+      "inputPerMillion": 0.165,
+      "cachedInputPerMillion": 0.083,
+      "outputPerMillion": 0.66,
+      "effectiveFrom": "2024-10-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "gpt-4o-mini-0718-Inp-regnl Tokens",
+        "cachedInput": "gpt 4o mini 0718 cached Inp regnl Tokens",
+        "output": "gpt-4o-mini-0718-Outp-regnl Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.gpt-4o-mini.2024-07-18.standard.r2",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "gpt-4o-mini",
+      "version": "2024-07-18",
+      "deploymentType": "Standard",
+      "regions": [
+        "northeurope"
+      ],
+      "inputPerMillion": 0.198,
+      "cachedInputPerMillion": 0.099,
+      "outputPerMillion": 0.792,
+      "effectiveFrom": "2026-06-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "gpt-4o-mini-0718-Inp-regnl Tokens",
+        "cachedInput": "gpt 4o mini 0718 cached Inp regnl Tokens",
+        "output": "gpt-4o-mini-0718-Outp-regnl Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.gpt-4o-mini.2024-07-18.standard.r3",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "gpt-4o-mini",
+      "version": "2024-07-18",
+      "deploymentType": "Standard",
+      "regions": [
+        "southeastasia"
+      ],
+      "inputPerMillion": 0.198,
+      "cachedInputPerMillion": 0.099,
+      "outputPerMillion": 0.792,
+      "effectiveFrom": "2025-01-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "gpt-4o-mini-0718-Inp-regnl Tokens",
+        "cachedInput": "gpt 4o mini 0718 cached Inp regnl Tokens",
+        "output": "gpt-4o-mini-0718-Outp-regnl Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.gpt-4o-mini.2024-07-18.standard.r4",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "gpt-4o-mini",
+      "version": "2024-07-18",
+      "deploymentType": "Standard",
+      "regions": [
+        "swedencentral"
+      ],
+      "inputPerMillion": 0.165,
+      "cachedInputPerMillion": 0.091,
+      "outputPerMillion": 0.66,
+      "effectiveFrom": "2024-10-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "gpt-4o-mini-0718-Inp-regnl Tokens",
+        "cachedInput": "gpt 4o mini 0718 cached Inp regnl Tokens",
+        "output": "gpt-4o-mini-0718-Outp-regnl Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.gpt-4o-mini.2024-07-18.standard.r5",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "gpt-4o-mini",
+      "version": "2024-07-18",
+      "deploymentType": "Standard",
+      "regions": [
+        "westcentralus",
+        "westus2"
+      ],
+      "inputPerMillion": 0.165,
+      "cachedInputPerMillion": 0.083,
+      "outputPerMillion": 0.66,
+      "effectiveFrom": "2025-12-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "gpt-4o-mini-0718-Inp-regnl Tokens",
+        "cachedInput": "gpt 4o mini 0718 cached Inp regnl Tokens",
+        "output": "gpt-4o-mini-0718-Outp-regnl Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.gpt-4o.2024-05-13.datazonebatch",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "gpt-4o",
+      "version": "2024-05-13",
+      "deploymentType": "DataZoneBatch",
+      "inputPerMillion": 2.75,
+      "outputPerMillion": 8.25,
+      "effectiveFrom": "2024-11-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "gpt 4o 0513 Batch Inp Data Zone Tokens",
+        "output": "gpt 4o 0513 Batch Outp Data Zone Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.gpt-4o.2024-05-13.datazonestandard",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "gpt-4o",
+      "version": "2024-05-13",
+      "deploymentType": "DataZoneStandard",
+      "inputPerMillion": 5.5,
+      "outputPerMillion": 16.5,
+      "effectiveFrom": "2025-09-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "gpt 4o 0513 Input Data Zone Tokens",
+        "output": "gpt 4o 0513 Output Data Zone Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.gpt-4o.2024-05-13.globalbatch",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "gpt-4o",
+      "version": "2024-05-13",
+      "deploymentType": "GlobalBatch",
+      "inputPerMillion": 2.5,
+      "outputPerMillion": 7.5,
+      "effectiveFrom": "2024-08-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "gpt 4o 0513 Batch Inp glbl Tokens",
+        "output": "gpt 4o 0513 Batch Outp glbl Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.gpt-4o.2024-05-13.globalstandard",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "gpt-4o",
+      "version": "2024-05-13",
+      "deploymentType": "GlobalStandard",
+      "inputPerMillion": 5.0,
+      "outputPerMillion": 15.0,
+      "effectiveFrom": "2024-07-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "gpt 4o 0513 Input global Tokens",
+        "output": "gpt 4o 0513 Output global Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.gpt-4o.2024-05-13.standard.r1",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "gpt-4o",
+      "version": "2024-05-13",
+      "deploymentType": "Standard",
+      "regions": [
+        "eastus",
+        "eastus2",
+        "northcentralus",
+        "southcentralus",
+        "westus",
+        "westus3"
+      ],
+      "inputPerMillion": 5.5,
+      "outputPerMillion": 16.5,
+      "effectiveFrom": "2025-09-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "gpt 4o 0513 Input regional Tokens",
+        "output": "gpt 4o 0513 Output regional Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.gpt-4o.2024-05-13.standard.r2",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "gpt-4o",
+      "version": "2024-05-13",
+      "deploymentType": "Standard",
+      "regions": [
+        "northeurope"
+      ],
+      "inputPerMillion": 6.6,
+      "outputPerMillion": 19.8,
+      "effectiveFrom": "2026-06-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "gpt 4o 0513 Input regional Tokens",
+        "output": "gpt 4o 0513 Output regional Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.gpt-4o.2024-05-13.standard.r3",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "gpt-4o",
+      "version": "2024-05-13",
+      "deploymentType": "Standard",
+      "regions": [
+        "southafricanorth"
+      ],
+      "inputPerMillion": 6.05,
+      "outputPerMillion": 18.15,
+      "effectiveFrom": "2025-12-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "gpt 4o 0513 Input regional Tokens",
+        "output": "gpt 4o 0513 Output regional Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.gpt-4o.2024-05-13.standard.r4",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "gpt-4o",
+      "version": "2024-05-13",
+      "deploymentType": "Standard",
+      "regions": [
+        "swedencentral"
+      ],
+      "inputPerMillion": 6.05,
+      "outputPerMillion": 18.15,
+      "effectiveFrom": "2025-09-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "gpt 4o 0513 Input regional Tokens",
+        "output": "gpt 4o 0513 Output regional Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.gpt-4o.2024-05-13.standard.r5",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "gpt-4o",
+      "version": "2024-05-13",
+      "deploymentType": "Standard",
+      "regions": [
+        "westcentralus"
+      ],
+      "inputPerMillion": 5.5,
+      "outputPerMillion": 16.5,
+      "effectiveFrom": "2025-12-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "gpt 4o 0513 Input regional Tokens",
+        "output": "gpt 4o 0513 Output regional Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.gpt-4o.2024-08-06.datazonebatch",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "gpt-4o",
+      "version": "2024-08-06",
+      "deploymentType": "DataZoneBatch",
+      "inputPerMillion": 1.375,
+      "outputPerMillion": 5.5,
+      "effectiveFrom": "2025-01-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "gpt 4o 0806 Batch Inp Data Zone Tokens",
+        "output": "gpt 4o 0806 Batch Outp Data Zone Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.gpt-4o.2024-08-06.datazonestandard",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "gpt-4o",
+      "version": "2024-08-06",
+      "deploymentType": "DataZoneStandard",
+      "inputPerMillion": 2.75,
+      "cachedInputPerMillion": 1.375,
+      "outputPerMillion": 11.0,
+      "effectiveFrom": "2024-10-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "gpt 4o 0806 Inp Data Zone Tokens",
+        "cachedInput": "gpt 4o 0806 cached Inp Data Zone Tokens",
+        "output": "gpt 4o 0806 Outp Data Zone Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.gpt-4o.2024-08-06.globalbatch",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "gpt-4o",
+      "version": "2024-08-06",
+      "deploymentType": "GlobalBatch",
+      "inputPerMillion": 1.25,
+      "outputPerMillion": 5.0,
+      "effectiveFrom": "2024-08-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "gpt-4o-0806-Batch-Inp-glbl Tokens",
+        "output": "gpt-4o-0806-Batch-Outp-glbl Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.gpt-4o.2024-08-06.globalstandard",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "gpt-4o",
+      "version": "2024-08-06",
+      "deploymentType": "GlobalStandard",
+      "inputPerMillion": 2.5,
+      "cachedInputPerMillion": 1.25,
+      "outputPerMillion": 10.0,
+      "effectiveFrom": "2024-10-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "gpt-4o-0806-Inp-glbl Tokens",
+        "cachedInput": "gpt 4o 0806 cached Inp glbl Tokens",
+        "output": "gpt-4o-0806-Outp-glbl Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.gpt-4o.2024-08-06.standard.r1",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "gpt-4o",
+      "version": "2024-08-06",
+      "deploymentType": "Standard",
+      "regions": [
+        "centralus"
+      ],
+      "inputPerMillion": 2.75,
+      "cachedInputPerMillion": 1.375,
+      "outputPerMillion": 11.0,
+      "effectiveFrom": "2025-12-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "gpt-4o-0806-Inp-regnl Tokens",
+        "cachedInput": "gpt 4o 0806 cached Inp regnl Tokens",
+        "output": "gpt-4o-0806-Outp-regnl Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.gpt-4o.2024-08-06.standard.r2",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "gpt-4o",
+      "version": "2024-08-06",
+      "deploymentType": "Standard",
+      "regions": [
+        "eastus",
+        "eastus2",
+        "northcentralus",
+        "southcentralus",
+        "westus",
+        "westus3"
+      ],
+      "inputPerMillion": 2.75,
+      "cachedInputPerMillion": 1.375,
+      "outputPerMillion": 11.0,
+      "effectiveFrom": "2024-10-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "gpt-4o-0806-Inp-regnl Tokens",
+        "cachedInput": "gpt 4o 0806 cached Inp regnl Tokens",
+        "output": "gpt-4o-0806-Outp-regnl Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.gpt-4o.2024-08-06.standard.r3",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "gpt-4o",
+      "version": "2024-08-06",
+      "deploymentType": "Standard",
+      "regions": [
+        "northeurope"
+      ],
+      "inputPerMillion": 3.3,
+      "cachedInputPerMillion": 1.65,
+      "outputPerMillion": 13.2,
+      "effectiveFrom": "2026-06-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "gpt-4o-0806-Inp-regnl Tokens",
+        "cachedInput": "gpt 4o 0806 cached Inp regnl Tokens",
+        "output": "gpt-4o-0806-Outp-regnl Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.gpt-4o.2024-08-06.standard.r4",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "gpt-4o",
+      "version": "2024-08-06",
+      "deploymentType": "Standard",
+      "regions": [
+        "southeastasia"
+      ],
+      "inputPerMillion": 3.3,
+      "cachedInputPerMillion": 1.65,
+      "outputPerMillion": 13.2,
+      "effectiveFrom": "2025-01-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "gpt-4o-0806-Inp-regnl Tokens",
+        "cachedInput": "gpt 4o 0806 cached Inp regnl Tokens",
+        "output": "gpt-4o-0806-Outp-regnl Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.gpt-4o.2024-08-06.standard.r5",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "gpt-4o",
+      "version": "2024-08-06",
+      "deploymentType": "Standard",
+      "regions": [
+        "swedencentral"
+      ],
+      "inputPerMillion": 2.75,
+      "cachedInputPerMillion": 1.513,
+      "outputPerMillion": 11.0,
+      "effectiveFrom": "2024-10-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "gpt-4o-0806-Inp-regnl Tokens",
+        "cachedInput": "gpt 4o 0806 cached Inp regnl Tokens",
+        "output": "gpt-4o-0806-Outp-regnl Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.gpt-4o.2024-11-20.datazonebatch",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "gpt-4o",
+      "version": "2024-11-20",
+      "deploymentType": "DataZoneBatch",
+      "inputPerMillion": 1.375,
+      "outputPerMillion": 5.5,
+      "effectiveFrom": "2025-12-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "gpt 4o 1120 Batch Inp DZ Tokens",
+        "output": "gpt 4o 1120 Batch Outp DZ Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.gpt-4o.2024-11-20.datazonestandard",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "gpt-4o",
+      "version": "2024-11-20",
+      "deploymentType": "DataZoneStandard",
+      "inputPerMillion": 2.75,
+      "cachedInputPerMillion": 1.375,
+      "outputPerMillion": 11.0,
+      "effectiveFrom": "2024-12-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "gpt 4o 1120 Inp Data Zone Tokens",
+        "cachedInput": "gpt 4o 1120 cached Inp Data Zone Tokens",
+        "output": "gpt 4o 1120 Outp Data Zone Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.gpt-4o.2024-11-20.globalbatch",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "gpt-4o",
+      "version": "2024-11-20",
+      "deploymentType": "GlobalBatch",
+      "inputPerMillion": 1.25,
+      "outputPerMillion": 5.0,
+      "effectiveFrom": "2024-12-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "gpt 4o 1120 Batch Inp glbl Tokens",
+        "output": "gpt 4o 1120 Batch Outp glbl Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.gpt-4o.2024-11-20.globalstandard",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "gpt-4o",
+      "version": "2024-11-20",
+      "deploymentType": "GlobalStandard",
+      "inputPerMillion": 2.5,
+      "cachedInputPerMillion": 1.25,
+      "outputPerMillion": 10.0,
+      "effectiveFrom": "2024-12-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "gpt 4o 1120 Inp glbl Tokens",
+        "cachedInput": "gpt 4o 1120 cached Inp glbl Tokens",
+        "output": "gpt 4o 1120 Outp glbl Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.gpt-4o.2024-11-20.standard.r1",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "gpt-4o",
+      "version": "2024-11-20",
+      "deploymentType": "Standard",
+      "regions": [
+        "australiaeast"
+      ],
+      "inputPerMillion": 2.75,
+      "cachedInputPerMillion": 1.375,
+      "outputPerMillion": 11.0,
+      "effectiveFrom": "2025-06-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "gpt 4o 1120 Inp regnl Tokens",
+        "cachedInput": "gpt 4o 1120 cached Inp regnl Tokens",
+        "output": "gpt 4o 1120 Outp regnl Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.gpt-4o.2024-11-20.standard.r2",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "gpt-4o",
+      "version": "2024-11-20",
+      "deploymentType": "Standard",
+      "regions": [
+        "canadaeast"
+      ],
+      "inputPerMillion": 3.025,
+      "cachedInputPerMillion": 1.513,
+      "outputPerMillion": 12.1,
+      "effectiveFrom": "2025-06-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "gpt 4o 1120 Inp regnl Tokens",
+        "cachedInput": "gpt 4o 1120 cached Inp regnl Tokens",
+        "output": "gpt 4o 1120 Outp regnl Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.gpt-4o.2024-11-20.standard.r3",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "gpt-4o",
+      "version": "2024-11-20",
+      "deploymentType": "Standard",
+      "regions": [
+        "centralus"
+      ],
+      "inputPerMillion": 2.75,
+      "cachedInputPerMillion": 1.375,
+      "outputPerMillion": 11.0,
+      "effectiveFrom": "2025-11-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "gpt 4o 1120 Inp regnl Tokens",
+        "cachedInput": "gpt 4o 1120 cached Inp regnl Tokens",
+        "output": "gpt 4o 1120 Outp regnl Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.gpt-4o.2024-11-20.standard.r4",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "gpt-4o",
+      "version": "2024-11-20",
+      "deploymentType": "Standard",
+      "regions": [
+        "eastus",
+        "eastus2",
+        "northcentralus",
+        "southcentralus",
+        "westus",
+        "westus3"
+      ],
+      "inputPerMillion": 2.75,
+      "cachedInputPerMillion": 1.375,
+      "outputPerMillion": 11.0,
+      "effectiveFrom": "2024-12-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "gpt 4o 1120 Inp regnl Tokens",
+        "cachedInput": "gpt 4o 1120 cached Inp regnl Tokens",
+        "output": "gpt 4o 1120 Outp regnl Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.gpt-4o.2024-11-20.standard.r5",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "gpt-4o",
+      "version": "2024-11-20",
+      "deploymentType": "Standard",
+      "regions": [
+        "francecentral",
+        "norwayeast",
+        "southafricanorth",
+        "switzerlandnorth",
+        "uaenorth",
+        "uksouth"
+      ],
+      "inputPerMillion": 3.025,
+      "cachedInputPerMillion": 1.513,
+      "outputPerMillion": 12.1,
+      "effectiveFrom": "2025-12-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "gpt 4o 1120 Inp regnl Tokens",
+        "cachedInput": "gpt 4o 1120 cached Inp regnl Tokens",
+        "output": "gpt 4o 1120 Outp regnl Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.gpt-4o.2024-11-20.standard.r6",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "gpt-4o",
+      "version": "2024-11-20",
+      "deploymentType": "Standard",
+      "regions": [
+        "japaneast"
+      ],
+      "inputPerMillion": 3.025,
+      "cachedInputPerMillion": 1.513,
+      "outputPerMillion": 12.1,
+      "effectiveFrom": "2025-03-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "gpt 4o 1120 Inp regnl Tokens",
+        "cachedInput": "gpt 4o 1120 cached Inp regnl Tokens",
+        "output": "gpt 4o 1120 Outp regnl Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.gpt-4o.2024-11-20.standard.r7",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "gpt-4o",
+      "version": "2024-11-20",
+      "deploymentType": "Standard",
+      "regions": [
+        "northeurope"
+      ],
+      "inputPerMillion": 3.3,
+      "cachedInputPerMillion": 1.65,
+      "outputPerMillion": 13.2,
+      "effectiveFrom": "2026-06-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "gpt 4o 1120 Inp regnl Tokens",
+        "cachedInput": "gpt 4o 1120 cached Inp regnl Tokens",
+        "output": "gpt 4o 1120 Outp regnl Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.gpt-4o.2024-11-20.standard.r8",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "gpt-4o",
+      "version": "2024-11-20",
+      "deploymentType": "Standard",
+      "regions": [
+        "southindia"
+      ],
+      "inputPerMillion": 2.75,
+      "cachedInputPerMillion": 1.375,
+      "outputPerMillion": 11.0,
+      "effectiveFrom": "2025-08-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "gpt 4o 1120 Inp regnl Tokens",
+        "cachedInput": "gpt 4o 1120 cached Inp regnl Tokens",
+        "output": "gpt 4o 1120 Outp regnl Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.gpt-4o.2024-11-20.standard.r9",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "gpt-4o",
+      "version": "2024-11-20",
+      "deploymentType": "Standard",
+      "regions": [
+        "swedencentral"
+      ],
+      "inputPerMillion": 3.025,
+      "cachedInputPerMillion": 1.513,
+      "outputPerMillion": 12.1,
+      "effectiveFrom": "2024-12-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "gpt 4o 1120 Inp regnl Tokens",
+        "cachedInput": "gpt 4o 1120 cached Inp regnl Tokens",
+        "output": "gpt 4o 1120 Outp regnl Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.gpt-5-mini.any.datazonebatch",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "gpt-5-mini",
+      "deploymentType": "DataZoneBatch",
+      "inputPerMillion": 0.1375,
+      "cachedInputPerMillion": 0.01375,
+      "outputPerMillion": 1.1,
+      "effectiveFrom": "2025-08-01",
+      "sourceIds": [
+        "retail-azure-openai-gpt5"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI GPT5",
+        "input": "GPT 5 Mini Batch Inpt DZone 1M Tokens",
+        "cachedInput": "GPT 5 Mini Batch Inpt cchd Dzone 1M Tokens",
+        "output": "GPT 5 Mini Batch outpt DZone 1M Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.gpt-5-mini.any.datazonestandard",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "gpt-5-mini",
+      "deploymentType": "DataZoneStandard",
+      "inputPerMillion": 0.275,
+      "cachedInputPerMillion": 0.0275,
+      "outputPerMillion": 2.2,
+      "effectiveFrom": "2025-08-01",
+      "sourceIds": [
+        "retail-azure-openai-gpt5"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI GPT5",
+        "input": "GPT 5 Mini Inpt DZone 1M Tokens",
+        "cachedInput": "GPT 5 Mini cchd Inpt DZone 1M Tokens",
+        "output": "GPT 5 Mini outpt DZone 1M Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.gpt-5-mini.any.globalbatch",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "gpt-5-mini",
+      "deploymentType": "GlobalBatch",
+      "inputPerMillion": 0.125,
+      "cachedInputPerMillion": 0.0125,
+      "outputPerMillion": 1.0,
+      "effectiveFrom": "2025-08-01",
+      "sourceIds": [
+        "retail-azure-openai-gpt5"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI GPT5",
+        "input": "GPT 5 Mini Batch Inpt Glbl 1M Tokens",
+        "cachedInput": "GPT 5 Mini Batch Inpt cchd Glbl 1M Tokens",
+        "output": "GPT 5 Mini Batch outpt Glbl 1M Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.gpt-5-mini.any.globalstandard",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "gpt-5-mini",
+      "deploymentType": "GlobalStandard",
+      "inputPerMillion": 0.25,
+      "cachedInputPerMillion": 0.025,
+      "outputPerMillion": 2.0,
+      "effectiveFrom": "2025-08-01",
+      "sourceIds": [
+        "retail-azure-openai-gpt5"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI GPT5",
+        "input": "GPT 5 Mini Inpt Glbl 1M Tokens",
+        "cachedInput": "GPT 5 Mini cchd Inpt Glbl 1M Tokens",
+        "output": "GPT 5 Mini outpt Glbl 1M Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.gpt-5-nano.any.datazonebatch",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "gpt-5-nano",
+      "deploymentType": "DataZoneBatch",
+      "inputPerMillion": 0.0275,
+      "cachedInputPerMillion": 0.00275,
+      "outputPerMillion": 0.22,
+      "effectiveFrom": "2025-08-01",
+      "sourceIds": [
+        "retail-azure-openai-gpt5"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI GPT5",
+        "input": "GPT 5 Nano Batch Inpt DZone 1M Tokens",
+        "cachedInput": "GPT 5 Nano Batch Inpt cchd Dzone 1M Tokens",
+        "output": "GPT 5 Nano Batch outpt DZone 1M Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.gpt-5-nano.any.datazonestandard",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "gpt-5-nano",
+      "deploymentType": "DataZoneStandard",
+      "inputPerMillion": 0.055,
+      "cachedInputPerMillion": 0.0055,
+      "outputPerMillion": 0.44,
+      "effectiveFrom": "2025-08-01",
+      "sourceIds": [
+        "retail-azure-openai-gpt5"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI GPT5",
+        "input": "GPT 5 Nano Inpt DZone 1M Tokens",
+        "cachedInput": "GPT 5 Nano cchd Inpt DZone 1M Tokens",
+        "output": "GPT 5 Nano outpt DZone 1M Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.gpt-5-nano.any.globalbatch",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "gpt-5-nano",
+      "deploymentType": "GlobalBatch",
+      "inputPerMillion": 0.025,
+      "cachedInputPerMillion": 0.0025,
+      "outputPerMillion": 0.2,
+      "effectiveFrom": "2025-08-01",
+      "sourceIds": [
+        "retail-azure-openai-gpt5"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI GPT5",
+        "input": "GPT 5 Nano Batch Inpt Glbl 1M Tokens",
+        "cachedInput": "GPT 5 Nano Batch Inpt cchd Glbl 1M Tokens",
+        "output": "GPT 5 Nano Batch outpt Glbl 1M Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.gpt-5-nano.any.globalstandard",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "gpt-5-nano",
+      "deploymentType": "GlobalStandard",
+      "inputPerMillion": 0.05,
+      "cachedInputPerMillion": 0.005,
+      "outputPerMillion": 0.4,
+      "effectiveFrom": "2025-08-01",
+      "sourceIds": [
+        "retail-azure-openai-gpt5"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI GPT5",
+        "input": "GPT 5 Nano Inpt Glbl 1M Tokens",
+        "cachedInput": "GPT 5 Nano cchd Inpt Glbl 1M Tokens",
+        "output": "GPT 5 Nano outpt Glbl 1M Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.gpt-5.any.datazonebatch",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "gpt-5",
+      "deploymentType": "DataZoneBatch",
+      "inputPerMillion": 0.6875,
+      "cachedInputPerMillion": 0.06875,
+      "outputPerMillion": 5.5,
+      "effectiveFrom": "2025-08-01",
+      "sourceIds": [
+        "retail-azure-openai-gpt5"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI GPT5",
+        "input": "GPT 5 Batch Inpt DZone 1M Tokens",
+        "cachedInput": "GPT 5 Batch Inpt cchd Dzone 1M Tokens",
+        "output": "GPT 5 Batch outpt DZone 1M Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.gpt-5.any.datazonestandard",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "gpt-5",
+      "deploymentType": "DataZoneStandard",
+      "inputPerMillion": 1.375,
+      "cachedInputPerMillion": 0.1375,
+      "outputPerMillion": 11.0,
+      "effectiveFrom": "2025-08-01",
+      "sourceIds": [
+        "retail-azure-openai-gpt5"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI GPT5",
+        "input": "GPT 5 Inpt DZone 1M Tokens",
+        "cachedInput": "GPT 5 cchd Inpt DZone 1M Tokens",
+        "output": "GPT 5 outpt DZone 1M Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.gpt-5.any.globalbatch",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "gpt-5",
+      "deploymentType": "GlobalBatch",
+      "inputPerMillion": 0.625,
+      "cachedInputPerMillion": 0.0625,
+      "outputPerMillion": 5.0,
+      "effectiveFrom": "2025-08-01",
+      "sourceIds": [
+        "retail-azure-openai-gpt5"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI GPT5",
+        "input": "GPT 5 Batch Inpt Glbl 1M Tokens",
+        "cachedInput": "GPT 5 Batch Inpt cchd Glbl 1M Tokens",
+        "output": "GPT 5 Batch outpt Glbl 1M Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.gpt-5.any.globalstandard",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "gpt-5",
+      "deploymentType": "GlobalStandard",
+      "inputPerMillion": 1.25,
+      "cachedInputPerMillion": 0.125,
+      "outputPerMillion": 10.0,
+      "effectiveFrom": "2025-08-01",
+      "sourceIds": [
+        "retail-azure-openai-gpt5"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI GPT5",
+        "input": "GPT 5 Inpt Glbl 1M Tokens",
+        "cachedInput": "GPT 5 cchd Inpt Glbl 1M Tokens",
+        "output": "GPT 5 outpt Glbl 1M Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.o1.2024-12-17.datazonebatch",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "o1",
+      "version": "2024-12-17",
+      "deploymentType": "DataZoneBatch",
+      "inputPerMillion": 8.25,
+      "outputPerMillion": 33.0,
+      "effectiveFrom": "2025-02-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "o1 1217 Batch Inp Data Zone Tokens",
+        "output": "o1 1217 Batch Outp Data Zone Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.o1.2024-12-17.datazonestandard",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "o1",
+      "version": "2024-12-17",
+      "deploymentType": "DataZoneStandard",
+      "inputPerMillion": 16.5,
+      "cachedInputPerMillion": 8.25,
+      "outputPerMillion": 66.0,
+      "effectiveFrom": "2024-12-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "o1 1217 Inp Data Zone Tokens",
+        "cachedInput": "o1 1217 cached Inp Data Zone Tokens",
+        "output": "o1 1217 Outp Data Zone Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.o1.2024-12-17.globalbatch",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "o1",
+      "version": "2024-12-17",
+      "deploymentType": "GlobalBatch",
+      "inputPerMillion": 7.5,
+      "outputPerMillion": 30.0,
+      "effectiveFrom": "2025-02-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "o1 1217 Batch Inp glbl Tokens",
+        "output": "o1 1217 Batch Outp glbl Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.o1.2024-12-17.globalstandard",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "o1",
+      "version": "2024-12-17",
+      "deploymentType": "GlobalStandard",
+      "inputPerMillion": 15.0,
+      "cachedInputPerMillion": 7.5,
+      "outputPerMillion": 60.0,
+      "effectiveFrom": "2024-12-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "o1 1217 Inp glbl Tokens",
+        "cachedInput": "o1 1217 cached Inp glbl Tokens",
+        "output": "o1 1217 Outp glbl Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.o1.2024-12-17.standard.r1",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "o1",
+      "version": "2024-12-17",
+      "deploymentType": "Standard",
+      "regions": [
+        "eastus",
+        "eastus2",
+        "northcentralus",
+        "southcentralus",
+        "westus",
+        "westus3"
+      ],
+      "inputPerMillion": 16.5,
+      "cachedInputPerMillion": 8.25,
+      "outputPerMillion": 66.0,
+      "effectiveFrom": "2024-12-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "o1 1217 Inp regnl Tokens",
+        "cachedInput": "o1 1217 cached Inp regnl Tokens",
+        "output": "o1 1217 Outp regnl Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.o1.2024-12-17.standard.r2",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "o1",
+      "version": "2024-12-17",
+      "deploymentType": "Standard",
+      "regions": [
+        "northeurope"
+      ],
+      "inputPerMillion": 19.8,
+      "cachedInputPerMillion": 9.9,
+      "outputPerMillion": 79.2,
+      "effectiveFrom": "2026-06-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "o1 1217 Inp regnl Tokens",
+        "cachedInput": "o1 1217 cached Inp regnl Tokens",
+        "output": "o1 1217 Outp regnl Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.o1.2024-12-17.standard.r3",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "o1",
+      "version": "2024-12-17",
+      "deploymentType": "Standard",
+      "regions": [
+        "swedencentral"
+      ],
+      "inputPerMillion": 18.15,
+      "cachedInputPerMillion": 9.075,
+      "outputPerMillion": 72.6,
+      "effectiveFrom": "2024-12-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "o1 1217 Inp regnl Tokens",
+        "cachedInput": "o1 1217 cached Inp regnl Tokens",
+        "output": "o1 1217 Outp regnl Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.o3-mini.2025-01-31.datazonebatch",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "o3-mini",
+      "version": "2025-01-31",
+      "deploymentType": "DataZoneBatch",
+      "inputPerMillion": 0.605,
+      "outputPerMillion": 2.42,
+      "effectiveFrom": "2025-02-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "o3 mini 0131 Batch Inp Data Zone Tokens",
+        "output": "o3 mini 0131 Batch Outp Data Zone Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.o3-mini.2025-01-31.datazonestandard",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "o3-mini",
+      "version": "2025-01-31",
+      "deploymentType": "DataZoneStandard",
+      "inputPerMillion": 1.21,
+      "cachedInputPerMillion": 0.605,
+      "outputPerMillion": 4.84,
+      "effectiveFrom": "2025-02-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "o3 mini 0131 input Data Zone Tokens",
+        "cachedInput": "o3 mini 0131 cached input Data Zone Tokens",
+        "output": "o3 mini 0131 output Data Zone Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.o3-mini.2025-01-31.globalbatch",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "o3-mini",
+      "version": "2025-01-31",
+      "deploymentType": "GlobalBatch",
+      "inputPerMillion": 0.55,
+      "outputPerMillion": 2.2,
+      "effectiveFrom": "2025-02-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "o3 mini 0131 Batch Inp glbl Tokens",
+        "output": "o3 mini 0131 Batch Outp glbl Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.o3-mini.2025-01-31.globalstandard",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "o3-mini",
+      "version": "2025-01-31",
+      "deploymentType": "GlobalStandard",
+      "inputPerMillion": 1.1,
+      "cachedInputPerMillion": 0.55,
+      "outputPerMillion": 4.4,
+      "effectiveFrom": "2025-02-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "o3 mini 0131 input glbl Tokens",
+        "cachedInput": "o3 mini 0131 cached input glbl Tokens",
+        "output": "o3 mini 0131 output glbl Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.o3-mini.2025-01-31.standard.r1",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "o3-mini",
+      "version": "2025-01-31",
+      "deploymentType": "Standard",
+      "regions": [
+        "eastus",
+        "eastus2",
+        "northcentralus",
+        "southcentralus",
+        "westus",
+        "westus3"
+      ],
+      "inputPerMillion": 1.21,
+      "cachedInputPerMillion": 0.605,
+      "outputPerMillion": 4.84,
+      "effectiveFrom": "2025-02-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "o3 mini 0131 input regnl Tokens",
+        "cachedInput": "o3 mini 0131 cached input regnl Tokens",
+        "output": "o3 mini 0131 output regnl Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.o3-mini.2025-01-31.standard.r2",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "o3-mini",
+      "version": "2025-01-31",
+      "deploymentType": "Standard",
+      "regions": [
+        "northeurope"
+      ],
+      "inputPerMillion": 1.452,
+      "cachedInputPerMillion": 0.726,
+      "outputPerMillion": 5.808,
+      "effectiveFrom": "2026-06-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "o3 mini 0131 input regnl Tokens",
+        "cachedInput": "o3 mini 0131 cached input regnl Tokens",
+        "output": "o3 mini 0131 output regnl Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.o3-mini.2025-01-31.standard.r3",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "o3-mini",
+      "version": "2025-01-31",
+      "deploymentType": "Standard",
+      "regions": [
+        "southeastasia"
+      ],
+      "inputPerMillion": 1.452,
+      "cachedInputPerMillion": 0.726,
+      "outputPerMillion": 5.808,
+      "effectiveFrom": "2025-02-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "o3 mini 0131 input regnl Tokens",
+        "cachedInput": "o3 mini 0131 cached input regnl Tokens",
+        "output": "o3 mini 0131 output regnl Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.o3-mini.2025-01-31.standard.r4",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "o3-mini",
+      "version": "2025-01-31",
+      "deploymentType": "Standard",
+      "regions": [
+        "swedencentral"
+      ],
+      "inputPerMillion": 1.331,
+      "cachedInputPerMillion": 0.666,
+      "outputPerMillion": 5.324,
+      "effectiveFrom": "2025-02-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "o3 mini 0131 input regnl Tokens",
+        "cachedInput": "o3 mini 0131 cached input regnl Tokens",
+        "output": "o3 mini 0131 output regnl Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.o3.2025-04-16.datazonebatch",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "o3",
+      "version": "2025-04-16",
+      "deploymentType": "DataZoneBatch",
+      "inputPerMillion": 1.1,
+      "outputPerMillion": 4.4,
+      "effectiveFrom": "2025-06-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "o3 0416 Batch Inp Data Zone Tokens",
+        "output": "o3 0416 Batch Outp Data Zone Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.o3.2025-04-16.datazonestandard",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "o3",
+      "version": "2025-04-16",
+      "deploymentType": "DataZoneStandard",
+      "inputPerMillion": 2.2,
+      "cachedInputPerMillion": 0.55,
+      "outputPerMillion": 8.8,
+      "effectiveFrom": "2025-06-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "o3 0416 Inp Data Zone Tokens",
+        "cachedInput": "o3 0416 cached Inp Data Zone Tokens",
+        "output": "o3 0416 Outp Data Zone Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.o3.2025-04-16.globalbatch",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "o3",
+      "version": "2025-04-16",
+      "deploymentType": "GlobalBatch",
+      "inputPerMillion": 1.0,
+      "outputPerMillion": 4.0,
+      "effectiveFrom": "2025-06-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "o3 0416 Batch Inp glbl Tokens",
+        "output": "o3 0416 Batch Outp glbl Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.o3.2025-04-16.globalstandard",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "o3",
+      "version": "2025-04-16",
+      "deploymentType": "GlobalStandard",
+      "inputPerMillion": 2.0,
+      "cachedInputPerMillion": 0.5,
+      "outputPerMillion": 8.0,
+      "effectiveFrom": "2025-06-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "o3 0416 Inp glbl Tokens",
+        "cachedInput": "o3 0416 cached Inp glbl Tokens",
+        "output": "o3 0416 Outp glbl Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.o3.2025-04-16.standard.r1",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "o3",
+      "version": "2025-04-16",
+      "deploymentType": "Standard",
+      "regions": [
+        "eastus",
+        "eastus2",
+        "northcentralus",
+        "southcentralus",
+        "westus",
+        "westus3"
+      ],
+      "inputPerMillion": 2.2,
+      "cachedInputPerMillion": 0.55,
+      "outputPerMillion": 8.8,
+      "effectiveFrom": "2025-06-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "o3 0416 Inp regnl Tokens",
+        "cachedInput": "o3 0416 cached Inp regnl Tokens",
+        "output": "o3 0416 Outp regnl Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.o3.2025-04-16.standard.r2",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "o3",
+      "version": "2025-04-16",
+      "deploymentType": "Standard",
+      "regions": [
+        "northeurope"
+      ],
+      "inputPerMillion": 2.64,
+      "cachedInputPerMillion": 0.66,
+      "outputPerMillion": 10.56,
+      "effectiveFrom": "2026-06-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "o3 0416 Inp regnl Tokens",
+        "cachedInput": "o3 0416 cached Inp regnl Tokens",
+        "output": "o3 0416 Outp regnl Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.o3.2025-04-16.standard.r3",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "o3",
+      "version": "2025-04-16",
+      "deploymentType": "Standard",
+      "regions": [
+        "swedencentral"
+      ],
+      "inputPerMillion": 2.42,
+      "cachedInputPerMillion": 0.605,
+      "outputPerMillion": 9.68,
+      "effectiveFrom": "2025-06-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "o3 0416 Inp regnl Tokens",
+        "cachedInput": "o3 0416 cached Inp regnl Tokens",
+        "output": "o3 0416 Outp regnl Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.o4-mini.2025-04-16.datazonebatch.r1",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "o4-mini",
+      "version": "2025-04-16",
+      "deploymentType": "DataZoneBatch",
+      "regions": [
+        "australiaeast",
+        "centralindia",
+        "eastasia",
+        "japaneast",
+        "japanwest",
+        "jioindiawest",
+        "koreacentral",
+        "southeastasia",
+        "southindia"
+      ],
+      "inputPerMillion": 0.66,
+      "outputPerMillion": 2.64,
+      "effectiveFrom": "2026-06-01",
+      "sourceIds": [
+        "retail-azure-openai-reasoning"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI Reasoning",
+        "input": "o4-mini 0416 Batch Inp Data Zone Tokens",
+        "output": "o4-mini 0416 Batch Outp Data Zone Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.o4-mini.2025-04-16.datazonebatch.r2",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "o4-mini",
+      "version": "2025-04-16",
+      "deploymentType": "DataZoneBatch",
+      "regions": [
+        "centralus"
+      ],
+      "inputPerMillion": 0.605,
+      "outputPerMillion": 2.42,
+      "effectiveFrom": "2025-11-01",
+      "sourceIds": [
+        "retail-azure-openai-reasoning"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI Reasoning",
+        "input": "o4-mini 0416 Batch Inp Data Zone Tokens",
+        "output": "o4-mini 0416 Batch Outp Data Zone Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.o4-mini.2025-04-16.datazonebatch.r3",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "o4-mini",
+      "version": "2025-04-16",
+      "deploymentType": "DataZoneBatch",
+      "regions": [
+        "eastus",
+        "eastus2",
+        "francecentral",
+        "germanywestcentral",
+        "northcentralus",
+        "polandcentral",
+        "southcentralus",
+        "spaincentral",
+        "swedencentral",
+        "westeurope",
+        "westus",
+        "westus3"
+      ],
+      "inputPerMillion": 0.605,
+      "outputPerMillion": 2.42,
+      "effectiveFrom": "2025-04-01",
+      "sourceIds": [
+        "retail-azure-openai-reasoning"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI Reasoning",
+        "input": "o4-mini 0416 Batch Inp Data Zone Tokens",
+        "output": "o4-mini 0416 Batch Outp Data Zone Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.o4-mini.2025-04-16.datazonebatch.r4",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "o4-mini",
+      "version": "2025-04-16",
+      "deploymentType": "DataZoneBatch",
+      "regions": [
+        "italynorth"
+      ],
+      "inputPerMillion": 0.605,
+      "outputPerMillion": 2.42,
+      "effectiveFrom": "2025-12-01",
+      "sourceIds": [
+        "retail-azure-openai-reasoning"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI Reasoning",
+        "input": "o4-mini 0416 Batch Inp Data Zone Tokens",
+        "output": "o4-mini 0416 Batch Outp Data Zone Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.o4-mini.2025-04-16.datazonestandard.r1",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "o4-mini",
+      "version": "2025-04-16",
+      "deploymentType": "DataZoneStandard",
+      "regions": [
+        "australiaeast",
+        "centralindia",
+        "eastasia",
+        "japaneast",
+        "japanwest",
+        "jioindiawest",
+        "koreacentral",
+        "southeastasia",
+        "southindia"
+      ],
+      "inputPerMillion": 1.32,
+      "cachedInputPerMillion": 0.33,
+      "outputPerMillion": 5.28,
+      "effectiveFrom": "2026-06-01",
+      "sourceIds": [
+        "retail-azure-openai-reasoning"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI Reasoning",
+        "input": "o4-mini 0416 Inp Data Zone Tokens",
+        "cachedInput": "o4-mini 0416 cached Inp DataZone Tokens",
+        "output": "o4-mini 0416 Outp Data Zone Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.o4-mini.2025-04-16.datazonestandard.r2",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "o4-mini",
+      "version": "2025-04-16",
+      "deploymentType": "DataZoneStandard",
+      "regions": [
+        "centralus"
+      ],
+      "inputPerMillion": 1.21,
+      "cachedInputPerMillion": 0.303,
+      "outputPerMillion": 4.84,
+      "effectiveFrom": "2025-11-01",
+      "sourceIds": [
+        "retail-azure-openai-reasoning"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI Reasoning",
+        "input": "o4-mini 0416 Inp Data Zone Tokens",
+        "cachedInput": "o4-mini 0416 cached Inp DataZone Tokens",
+        "output": "o4-mini 0416 Outp Data Zone Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.o4-mini.2025-04-16.datazonestandard.r3",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "o4-mini",
+      "version": "2025-04-16",
+      "deploymentType": "DataZoneStandard",
+      "regions": [
+        "eastus",
+        "eastus2",
+        "francecentral",
+        "germanywestcentral",
+        "northcentralus",
+        "polandcentral",
+        "southcentralus",
+        "spaincentral",
+        "swedencentral",
+        "westeurope",
+        "westus",
+        "westus3"
+      ],
+      "inputPerMillion": 1.21,
+      "cachedInputPerMillion": 0.303,
+      "outputPerMillion": 4.84,
+      "effectiveFrom": "2025-04-01",
+      "sourceIds": [
+        "retail-azure-openai-reasoning"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI Reasoning",
+        "input": "o4-mini 0416 Inp Data Zone Tokens",
+        "cachedInput": "o4-mini 0416 cached Inp DataZone Tokens",
+        "output": "o4-mini 0416 Outp Data Zone Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.o4-mini.2025-04-16.datazonestandard.r4",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "o4-mini",
+      "version": "2025-04-16",
+      "deploymentType": "DataZoneStandard",
+      "regions": [
+        "italynorth"
+      ],
+      "inputPerMillion": 1.21,
+      "cachedInputPerMillion": 0.303,
+      "outputPerMillion": 4.84,
+      "effectiveFrom": "2025-12-01",
+      "sourceIds": [
+        "retail-azure-openai-reasoning"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI Reasoning",
+        "input": "o4-mini 0416 Inp Data Zone Tokens",
+        "cachedInput": "o4-mini 0416 cached Inp DataZone Tokens",
+        "output": "o4-mini 0416 Outp Data Zone Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.o4-mini.2025-04-16.globalbatch",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "o4-mini",
+      "version": "2025-04-16",
+      "deploymentType": "GlobalBatch",
+      "inputPerMillion": 0.55,
+      "outputPerMillion": 2.2,
+      "effectiveFrom": "2025-04-01",
+      "sourceIds": [
+        "retail-azure-openai-reasoning"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI Reasoning",
+        "input": "o4-mini 0416 Batch Inp glbl Tokens",
+        "output": "o4-mini 0416 Batch Outp glbl Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.o4-mini.2025-04-16.globalstandard",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "o4-mini",
+      "version": "2025-04-16",
+      "deploymentType": "GlobalStandard",
+      "inputPerMillion": 1.1,
+      "cachedInputPerMillion": 0.275,
+      "outputPerMillion": 4.4,
+      "effectiveFrom": "2025-04-01",
+      "sourceIds": [
+        "retail-azure-openai-reasoning"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI Reasoning",
+        "input": "o4-mini 0416 Inp glbl Tokens",
+        "cachedInput": "o4-mini 0416 cached Inp glbl Tokens",
+        "output": "o4-mini 0416 Outp glbl Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.o4-mini.2025-04-16.standard.r1",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "o4-mini",
+      "version": "2025-04-16",
+      "deploymentType": "Standard",
+      "regions": [
+        "eastus",
+        "eastus2",
+        "northcentralus",
+        "southcentralus",
+        "westus",
+        "westus3"
+      ],
+      "inputPerMillion": 1.21,
+      "cachedInputPerMillion": 0.303,
+      "outputPerMillion": 4.84,
+      "effectiveFrom": "2025-11-01",
+      "sourceIds": [
+        "retail-azure-openai-reasoning"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI Reasoning",
+        "input": "o4-mini 0416 Inp regnl Tokens",
+        "cachedInput": "o4-mini 0416 cached Inp regnl Tokens",
+        "output": "o4-mini 0416 Outp regnl Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.o4-mini.2025-04-16.standard.r2",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "o4-mini",
+      "version": "2025-04-16",
+      "deploymentType": "Standard",
+      "regions": [
+        "swedencentral"
+      ],
+      "inputPerMillion": 1.331,
+      "cachedInputPerMillion": 0.333,
+      "outputPerMillion": 5.324,
+      "effectiveFrom": "2025-11-01",
+      "sourceIds": [
+        "retail-azure-openai-reasoning"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI Reasoning",
+        "input": "o4-mini 0416 Inp regnl Tokens",
+        "cachedInput": "o4-mini 0416 cached Inp regnl Tokens",
+        "output": "o4-mini 0416 Outp regnl Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.text-embedding-3-large.any.datazonestandard.r1",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "text-embedding-3-large",
+      "deploymentType": "DataZoneStandard",
+      "regions": [
+        "australiaeast",
+        "centralindia",
+        "eastasia",
+        "japaneast",
+        "japanwest",
+        "jioindiawest",
+        "koreacentral",
+        "southeastasia",
+        "southindia"
+      ],
+      "inputPerMillion": 0.156,
+      "effectiveFrom": "2026-06-01",
+      "sourceIds": [
+        "retail-azure-openai-embedding"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI Embedding",
+        "input": "text embedding 3 large DZ Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.text-embedding-3-large.any.datazonestandard.r2",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "text-embedding-3-large",
+      "deploymentType": "DataZoneStandard",
+      "regions": [
+        "centralus",
+        "eastus",
+        "eastus2",
+        "francecentral",
+        "germanywestcentral",
+        "northcentralus",
+        "polandcentral",
+        "southcentralus",
+        "spaincentral",
+        "swedencentral",
+        "westeurope",
+        "westus",
+        "westus3"
+      ],
+      "inputPerMillion": 0.143,
+      "effectiveFrom": "2026-02-01",
+      "sourceIds": [
+        "retail-azure-openai-embedding"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI Embedding",
+        "input": "text embedding 3 large DZ Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.text-embedding-3-large.any.globalstandard",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "text-embedding-3-large",
+      "deploymentType": "GlobalStandard",
+      "inputPerMillion": 0.13,
+      "effectiveFrom": "2024-06-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "text-embedding-3-large-glbl Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.text-embedding-3-large.any.standard.r1",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "text-embedding-3-large",
+      "deploymentType": "Standard",
+      "regions": [
+        "australiaeast",
+        "eastus",
+        "eastus2",
+        "northcentralus",
+        "southcentralus"
+      ],
+      "inputPerMillion": 0.143,
+      "effectiveFrom": "2025-09-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "text-embedding-3-large-regional Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.text-embedding-3-large.any.standard.r2",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "text-embedding-3-large",
+      "deploymentType": "Standard",
+      "regions": [
+        "canadaeast",
+        "francecentral",
+        "japaneast",
+        "norwayeast",
+        "swedencentral",
+        "switzerlandnorth",
+        "uksouth"
+      ],
+      "inputPerMillion": 0.158,
+      "effectiveFrom": "2025-09-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "text-embedding-3-large-regional Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.text-embedding-3-large.any.standard.r3",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "text-embedding-3-large",
+      "deploymentType": "Standard",
+      "regions": [
+        "northeurope"
+      ],
+      "inputPerMillion": 0.172,
+      "effectiveFrom": "2026-06-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "text-embedding-3-large-regional Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.text-embedding-3-large.any.standard.r4",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "text-embedding-3-large",
+      "deploymentType": "Standard",
+      "regions": [
+        "southeastasia"
+      ],
+      "inputPerMillion": 0.172,
+      "effectiveFrom": "2025-12-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "text-embedding-3-large-regional Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.text-embedding-3-large.any.standard.r5",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "text-embedding-3-large",
+      "deploymentType": "Standard",
+      "regions": [
+        "westeurope"
+      ],
+      "inputPerMillion": 0.172,
+      "effectiveFrom": "2025-09-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "text-embedding-3-large-regional Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.text-embedding-3-small.any.datazonestandard.r1",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "text-embedding-3-small",
+      "deploymentType": "DataZoneStandard",
+      "regions": [
+        "australiaeast",
+        "centralindia",
+        "eastasia",
+        "japaneast",
+        "japanwest",
+        "jioindiawest",
+        "koreacentral",
+        "southeastasia",
+        "southindia"
+      ],
+      "inputPerMillion": 0.024,
+      "effectiveFrom": "2026-06-01",
+      "sourceIds": [
+        "retail-azure-openai-embedding"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI Embedding",
+        "input": "text embedding 3 small DZ Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.text-embedding-3-small.any.datazonestandard.r2",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "text-embedding-3-small",
+      "deploymentType": "DataZoneStandard",
+      "regions": [
+        "centralus",
+        "eastus",
+        "eastus2",
+        "francecentral",
+        "germanywestcentral",
+        "northcentralus",
+        "polandcentral",
+        "southcentralus",
+        "spaincentral",
+        "swedencentral",
+        "westeurope",
+        "westus",
+        "westus3"
+      ],
+      "inputPerMillion": 0.022,
+      "effectiveFrom": "2026-02-01",
+      "sourceIds": [
+        "retail-azure-openai-embedding"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI Embedding",
+        "input": "text embedding 3 small DZ Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.text-embedding-3-small.any.globalstandard",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "text-embedding-3-small",
+      "deploymentType": "GlobalStandard",
+      "inputPerMillion": 0.02,
+      "effectiveFrom": "2024-06-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "text-embedding-3-small-glbl Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.text-embedding-3-small.any.standard.r1",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "text-embedding-3-small",
+      "deploymentType": "Standard",
+      "regions": [
+        "australiaeast",
+        "eastus",
+        "eastus2",
+        "northcentralus",
+        "southcentralus",
+        "westus"
+      ],
+      "inputPerMillion": 0.022,
+      "effectiveFrom": "2025-09-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "text-embedding-3-small-regional Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.text-embedding-3-small.any.standard.r2",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "text-embedding-3-small",
+      "deploymentType": "Standard",
+      "regions": [
+        "canadaeast",
+        "francecentral",
+        "japaneast",
+        "norwayeast",
+        "swedencentral",
+        "switzerlandnorth",
+        "uksouth"
+      ],
+      "inputPerMillion": 0.025,
+      "effectiveFrom": "2025-09-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "text-embedding-3-small-regional Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.text-embedding-3-small.any.standard.r3",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "text-embedding-3-small",
+      "deploymentType": "Standard",
+      "regions": [
+        "northeurope"
+      ],
+      "inputPerMillion": 0.027,
+      "effectiveFrom": "2026-06-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "text-embedding-3-small-regional Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.text-embedding-3-small.any.standard.r4",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "text-embedding-3-small",
+      "deploymentType": "Standard",
+      "regions": [
+        "westeurope"
+      ],
+      "inputPerMillion": 0.027,
+      "effectiveFrom": "2025-09-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "text-embedding-3-small-regional Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.text-embedding-ada-002.any.datazonestandard.r1",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "text-embedding-ada-002",
+      "deploymentType": "DataZoneStandard",
+      "regions": [
+        "australiaeast",
+        "centralindia",
+        "eastasia",
+        "japaneast",
+        "japanwest",
+        "jioindiawest",
+        "koreacentral",
+        "southeastasia",
+        "southindia"
+      ],
+      "inputPerMillion": 0.12,
+      "effectiveFrom": "2026-06-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "embedding-ada-datazone Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.text-embedding-ada-002.any.datazonestandard.r2",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "text-embedding-ada-002",
+      "deploymentType": "DataZoneStandard",
+      "regions": [
+        "eastus",
+        "eastus2",
+        "francecentral",
+        "germanywestcentral",
+        "northcentralus",
+        "polandcentral",
+        "southcentralus",
+        "spaincentral",
+        "swedencentral",
+        "westeurope",
+        "westus",
+        "westus3"
+      ],
+      "inputPerMillion": 0.11,
+      "effectiveFrom": "2025-03-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "embedding-ada-datazone Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.text-embedding-ada-002.any.datazonestandard.r3",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "text-embedding-ada-002",
+      "deploymentType": "DataZoneStandard",
+      "regions": [
+        "northeurope"
+      ],
+      "inputPerMillion": 0.11,
+      "effectiveFrom": "2026-06-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "embedding-ada-datazone Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.text-embedding-ada-002.any.globalstandard",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "text-embedding-ada-002",
+      "deploymentType": "GlobalStandard",
+      "inputPerMillion": 0.1,
+      "effectiveFrom": "2024-06-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "embedding-ada-glbl Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.text-embedding-ada-002.any.standard.r1",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "text-embedding-ada-002",
+      "deploymentType": "Standard",
+      "regions": [
+        "australiaeast",
+        "eastus",
+        "eastus2",
+        "northcentralus",
+        "southcentralus",
+        "southindia",
+        "westus2"
+      ],
+      "inputPerMillion": 0.11,
+      "effectiveFrom": "2025-09-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "embedding-ada-regional Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.text-embedding-ada-002.any.standard.r2",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "text-embedding-ada-002",
+      "deploymentType": "Standard",
+      "regions": [
+        "canadaeast",
+        "francecentral",
+        "japaneast",
+        "swedencentral",
+        "switzerlandnorth",
+        "uksouth"
+      ],
+      "inputPerMillion": 0.121,
+      "effectiveFrom": "2025-09-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "embedding-ada-regional Tokens"
+      }
+    },
+    {
+      "id": "commercial.openai.text-embedding-ada-002.any.standard.r3",
+      "cloud": "commercial",
+      "publisher": "OpenAI",
+      "model": "text-embedding-ada-002",
+      "deploymentType": "Standard",
+      "regions": [
+        "westeurope"
+      ],
+      "inputPerMillion": 0.132,
+      "effectiveFrom": "2025-09-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "embedding-ada-regional Tokens"
+      }
+    },
+    {
+      "id": "government.meta.llama-3.3-70b-instruct.any.globalstandard",
+      "cloud": "government",
+      "publisher": "Meta",
+      "model": "Llama-3.3-70B-Instruct",
+      "deploymentType": "GlobalStandard",
+      "inputPerMillion": 0.888,
+      "outputPerMillion": 0.888,
+      "effectiveFrom": "2026-01-01",
+      "sourceIds": [
+        "retail-azure-llama-models"
+      ],
+      "retailMeters": {
+        "product": "Azure Llama Models",
+        "input": "Llama 3.3 70B Inp glbl Tokens",
+        "output": "Llama 3.3 70B Outp glbl Tokens"
+      }
+    },
+    {
+      "id": "government.openai.all-models.any.datazoneprovisionedmanaged",
+      "cloud": "government",
+      "publisher": "OpenAI",
+      "model": "*",
+      "deploymentType": "DataZoneProvisionedManaged",
+      "ptuHourly": 2.5,
+      "effectiveFrom": "2025-08-01",
+      "sourceIds": [
+        "retail-azure-openai",
+        "learn-ptu-billing"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "provisioned": "Provisioned Managed Data Zone Unit"
+      },
+      "notes": "The hourly rate for one PTU, for every model this publisher sells in Azure. A reservation costs less; enter its monthly amount as a price for the deployment."
+    },
+    {
+      "id": "government.openai.all-models.any.provisionedmanaged",
+      "cloud": "government",
+      "publisher": "OpenAI",
+      "model": "*",
+      "deploymentType": "ProvisionedManaged",
+      "regions": [
+        "usgovarizona",
+        "usgovtexas",
+        "usgovvirginia"
+      ],
+      "ptuHourly": 2.5,
+      "effectiveFrom": "2025-08-01",
+      "sourceIds": [
+        "retail-azure-openai",
+        "learn-ptu-billing"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "provisioned": "Provisioned Managed Regional Unit"
+      },
+      "notes": "The hourly rate for one PTU, for every model this publisher sells in Azure. A reservation costs less; enter its monthly amount as a price for the deployment."
+    },
+    {
+      "id": "government.openai.gpt-35-turbo.0125.standard",
+      "cloud": "government",
+      "publisher": "OpenAI",
+      "model": "gpt-35-turbo",
+      "aliases": [
+        "gpt-3.5-turbo"
+      ],
+      "version": "0125",
+      "deploymentType": "Standard",
+      "regions": [
+        "usgovarizona",
+        "usgovvirginia"
+      ],
+      "inputPerMillion": 0.625,
+      "outputPerMillion": 1.875,
+      "effectiveFrom": "2024-05-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "gpt-35-turbo-16K-0125 Input-regional Tokens",
+        "output": "gpt-35-turbo-16K-0125 Output-regional Tokens"
+      }
+    },
+    {
+      "id": "government.openai.gpt-4.1-mini.any.datazonestandard",
+      "cloud": "government",
+      "publisher": "OpenAI",
+      "model": "gpt-4.1-mini",
+      "deploymentType": "DataZoneStandard",
+      "inputPerMillion": 0.55,
+      "cachedInputPerMillion": 0.138,
+      "outputPerMillion": 2.2,
+      "effectiveFrom": "2026-01-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "gpt 4.1 mini Inp Data Zone Tokens",
+        "cachedInput": "gpt 4.1 mini cached Inp DZone Tokens",
+        "output": "gpt 4.1 mini Outp Data Zone Tokens"
+      }
+    },
+    {
+      "id": "government.openai.gpt-4.1-mini.any.standard",
+      "cloud": "government",
+      "publisher": "OpenAI",
+      "model": "gpt-4.1-mini",
+      "deploymentType": "Standard",
+      "regions": [
+        "usgovarizona",
+        "usgovvirginia"
+      ],
+      "inputPerMillion": 0.55,
+      "cachedInputPerMillion": 0.138,
+      "outputPerMillion": 2.2,
+      "effectiveFrom": "2026-01-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "gpt 4.1 mini Inp regnl Tokens",
+        "cachedInput": "gpt 4.1 mini cached Inp regnl Tokens",
+        "output": "gpt 4.1 mini Outp regnl Tokens"
+      }
+    },
+    {
+      "id": "government.openai.gpt-4.1.any.standard",
+      "cloud": "government",
+      "publisher": "OpenAI",
+      "model": "gpt-4.1",
+      "deploymentType": "Standard",
+      "regions": [
+        "usgovarizona",
+        "usgovvirginia"
+      ],
+      "inputPerMillion": 2.75,
+      "cachedInputPerMillion": 0.688,
+      "outputPerMillion": 11.0,
+      "effectiveFrom": "2026-01-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "gpt 4.1 Inp regnl Tokens",
+        "cachedInput": "gpt 4.1 cached Inp regnl Tokens",
+        "output": "gpt 4.1 Outp regnl Tokens"
+      }
+    },
+    {
+      "id": "government.openai.gpt-4o-mini.2024-07-18.datazonestandard",
+      "cloud": "government",
+      "publisher": "OpenAI",
+      "model": "gpt-4o-mini",
+      "version": "2024-07-18",
+      "deploymentType": "DataZoneStandard",
+      "inputPerMillion": 0.207,
+      "cachedInputPerMillion": 0.104,
+      "outputPerMillion": 0.825,
+      "effectiveFrom": "2025-10-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "gpt 4o mini 0718 Inp Data Zone Tokens",
+        "cachedInput": "gpt 4o mini 0718 cached Inp Data Zone Tokens",
+        "output": "gpt 4o mini 0718 Outp Data Zone Tokens"
+      }
+    },
+    {
+      "id": "government.openai.gpt-4o-mini.2024-07-18.standard",
+      "cloud": "government",
+      "publisher": "OpenAI",
+      "model": "gpt-4o-mini",
+      "version": "2024-07-18",
+      "deploymentType": "Standard",
+      "regions": [
+        "usgovarizona"
+      ],
+      "inputPerMillion": 0.206,
+      "cachedInputPerMillion": 0.104,
+      "outputPerMillion": 0.825,
+      "effectiveFrom": "2024-12-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "gpt-4o-mini-0718-Inp-regnl Tokens",
+        "cachedInput": "gpt 4o mini 0718 cached Inp regnl Tokens",
+        "output": "gpt-4o-mini-0718-Outp-regnl Tokens"
+      }
+    },
+    {
+      "id": "government.openai.gpt-4o.2024-05-13.standard.r1",
+      "cloud": "government",
+      "publisher": "OpenAI",
+      "model": "gpt-4o",
+      "version": "2024-05-13",
+      "deploymentType": "Standard",
+      "regions": [
+        "usgovarizona"
+      ],
+      "inputPerMillion": 6.25,
+      "outputPerMillion": 18.75,
+      "effectiveFrom": "2024-07-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "gpt 4o 0513 Input regional Tokens",
+        "output": "gpt 4o 0513 Output regional Tokens"
+      }
+    },
+    {
+      "id": "government.openai.gpt-4o.2024-05-13.standard.r2",
+      "cloud": "government",
+      "publisher": "OpenAI",
+      "model": "gpt-4o",
+      "version": "2024-05-13",
+      "deploymentType": "Standard",
+      "regions": [
+        "usgovvirginia"
+      ],
+      "inputPerMillion": 6.25,
+      "outputPerMillion": 18.75,
+      "effectiveFrom": "2024-08-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "gpt 4o 0513 Input regional Tokens",
+        "output": "gpt 4o 0513 Output regional Tokens"
+      }
+    },
+    {
+      "id": "government.openai.gpt-4o.2024-11-20.datazonestandard",
+      "cloud": "government",
+      "publisher": "OpenAI",
+      "model": "gpt-4o",
+      "version": "2024-11-20",
+      "deploymentType": "DataZoneStandard",
+      "inputPerMillion": 3.438,
+      "cachedInputPerMillion": 1.719,
+      "outputPerMillion": 13.75,
+      "effectiveFrom": "2025-10-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "gpt 4o 1120 Inp Data Zone Tokens",
+        "cachedInput": "gpt 4o 1120 cached Inp Data Zone Tokens",
+        "output": "gpt 4o 1120 Outp Data Zone Tokens"
+      }
+    },
+    {
+      "id": "government.openai.gpt-4o.2024-11-20.standard",
+      "cloud": "government",
+      "publisher": "OpenAI",
+      "model": "gpt-4o",
+      "version": "2024-11-20",
+      "deploymentType": "Standard",
+      "regions": [
+        "usgovarizona",
+        "usgovvirginia"
+      ],
+      "inputPerMillion": 3.438,
+      "cachedInputPerMillion": 1.719,
+      "outputPerMillion": 13.75,
+      "effectiveFrom": "2025-10-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "gpt 4o 1120 Inp regnl Tokens",
+        "cachedInput": "gpt 4o 1120 cached Inp regnl Tokens",
+        "output": "gpt 4o 1120 Outp regnl Tokens"
+      }
+    },
+    {
+      "id": "government.openai.o3-mini.2025-01-31.datazonestandard",
+      "cloud": "government",
+      "publisher": "OpenAI",
+      "model": "o3-mini",
+      "version": "2025-01-31",
+      "deploymentType": "DataZoneStandard",
+      "inputPerMillion": 1.513,
+      "cachedInputPerMillion": 0.757,
+      "outputPerMillion": 6.05,
+      "effectiveFrom": "2025-10-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "o3 mini 0131 input Data Zone Tokens",
+        "cachedInput": "o3 mini 0131 cached input Data Zone Tokens",
+        "output": "o3 mini 0131 output Data Zone Tokens"
+      }
+    },
+    {
+      "id": "government.openai.text-embedding-3-large.any.standard",
+      "cloud": "government",
+      "publisher": "OpenAI",
+      "model": "text-embedding-3-large",
+      "deploymentType": "Standard",
+      "regions": [
+        "usgovarizona"
+      ],
+      "inputPerMillion": 0.163,
+      "effectiveFrom": "2024-12-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "text-embedding-3-large-regional Tokens"
+      }
+    },
+    {
+      "id": "government.openai.text-embedding-3-small.any.standard",
+      "cloud": "government",
+      "publisher": "OpenAI",
+      "model": "text-embedding-3-small",
+      "deploymentType": "Standard",
+      "regions": [
+        "usgovarizona"
+      ],
+      "inputPerMillion": 0.025,
+      "effectiveFrom": "2026-01-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "text-embedding-3-small-regional Tokens"
+      }
+    },
+    {
+      "id": "government.openai.text-embedding-ada-002.any.standard",
+      "cloud": "government",
+      "publisher": "OpenAI",
+      "model": "text-embedding-ada-002",
+      "deploymentType": "Standard",
+      "regions": [
+        "usgovarizona",
+        "usgovvirginia"
+      ],
+      "inputPerMillion": 0.125,
+      "effectiveFrom": "2024-05-01",
+      "sourceIds": [
+        "retail-azure-openai"
+      ],
+      "retailMeters": {
+        "product": "Azure OpenAI",
+        "input": "embedding-ada-regional Tokens"
+      }
+    }
+  ],
+  "ptuThroughput": [
+    {
+      "model": "gpt-4o",
+      "inputTokensPerMinutePerPtu": 2500,
+      "outputToInputRatio": 4,
+      "sourceIds": [
+        "learn-ptu-sizing"
+      ]
+    },
+    {
+      "model": "gpt-4o-mini",
+      "inputTokensPerMinutePerPtu": 37000,
+      "outputToInputRatio": 4,
+      "sourceIds": [
+        "learn-ptu-sizing"
+      ]
+    },
+    {
+      "model": "o3-mini",
+      "inputTokensPerMinutePerPtu": 2500,
+      "outputToInputRatio": 4,
+      "sourceIds": [
+        "learn-ptu-sizing"
+      ]
+    },
+    {
+      "model": "o1",
+      "inputTokensPerMinutePerPtu": 230,
+      "outputToInputRatio": 4,
+      "sourceIds": [
+        "learn-ptu-sizing"
+      ]
+    },
+    {
+      "model": "gpt-4.1",
+      "inputTokensPerMinutePerPtu": 3000,
+      "outputToInputRatio": 4,
+      "sourceIds": [
+        "learn-ptu-sizing"
+      ]
+    },
+    {
+      "model": "gpt-4.1-mini",
+      "inputTokensPerMinutePerPtu": 14900,
+      "outputToInputRatio": 4,
+      "sourceIds": [
+        "learn-ptu-sizing"
+      ]
+    },
+    {
+      "model": "gpt-4.1-nano",
+      "inputTokensPerMinutePerPtu": 59400,
+      "outputToInputRatio": 4,
+      "sourceIds": [
+        "learn-ptu-sizing"
+      ]
+    },
+    {
+      "model": "o3",
+      "inputTokensPerMinutePerPtu": 3000,
+      "outputToInputRatio": 4,
+      "sourceIds": [
+        "learn-ptu-sizing"
+      ]
+    },
+    {
+      "model": "o4-mini",
+      "inputTokensPerMinutePerPtu": 5400,
+      "outputToInputRatio": 4,
+      "sourceIds": [
+        "learn-ptu-sizing"
+      ]
+    },
+    {
+      "model": "gpt-5",
+      "inputTokensPerMinutePerPtu": 4750,
+      "outputToInputRatio": 8,
+      "sourceIds": [
+        "learn-ptu-sizing"
+      ]
+    },
+    {
+      "model": "gpt-5-mini",
+      "inputTokensPerMinutePerPtu": 23750,
+      "outputToInputRatio": 8,
+      "sourceIds": [
+        "learn-ptu-sizing"
+      ]
+    },
+    {
+      "model": "Llama-3.3-70B-Instruct",
+      "inputTokensPerMinutePerPtu": 8450,
+      "outputToInputRatio": 4,
+      "sourceIds": [
+        "learn-ptu-sizing"
+      ]
+    }
+  ]
+}

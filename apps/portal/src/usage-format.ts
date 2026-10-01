@@ -183,7 +183,8 @@ export function aggregateUsage(report: MyUsageReport, filters: UsageFilters): Ag
 }
 
 export function formatCurrency(value: number | null, currency: string) {
-  if (value === null) return 'Unknown'
+  // Something MOSAIC can't price has no cost, which is never the same as $0.
+  if (value === null) return 'No price'
   return new Intl.NumberFormat('en-US', { style: 'currency', currency }).format(value)
 }
 

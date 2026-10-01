@@ -72,6 +72,7 @@ from mosaic_api.integrations.apim import ApimClient, ApimWriter, ArmClient
 from mosaic_api.integrations.apim.credentials import ApimCredentialClient
 from mosaic_api.integrations.graph.fake import FakeDirectoryLookup
 from mosaic_api.main import create_app
+from mosaic_api.pricing import DeploymentPricingUpdate, EndpointPricingUpdate, PriceCreate
 from mosaic_api.repositories import GatewayRepository, InMemoryEntitlementRepository
 from mosaic_api.services import (
     DirectoryService,
@@ -88,6 +89,7 @@ from mosaic_api.services.directory import Actor
 from mosaic_api.services.mcp_endpoints import build_mcp_client_factory
 from mosaic_api.services.mcp_publishing import McpPublishingService
 from mosaic_api.services.portal_access import PortalAccessService
+from mosaic_api.services.pricing import PricingService
 from mosaic_api.services.telemetry import TelemetryService
 from mosaic_api.services.usage import RollupUsageSource
 from mosaic_api.services.usage_rollup import UsageRollupService
@@ -393,6 +395,7 @@ class DemoServices:
     logs: DemoLogs
     telemetry: TelemetryService
     usage_rollups: UsageRollupService
+    pricing: PricingService
     clients: list[httpx.AsyncClient] = field(default_factory=list)
 
     async def aclose(self) -> None:
@@ -532,6 +535,8 @@ def install_demo_services(app: FastAPI, portal_origins: Iterable[str]) -> DemoSe
     )
     state.telemetry_service = telemetry
     state.usage_rollup_service = usage_rollups
+    # Costs come from MOSAIC's own price list: the shipped seed, plus what the estate sets below.
+    pricing: PricingService = state.pricing_service
     state.usage_service = UsageService(
         state.portal_service,
         source=RollupUsageSource(
@@ -541,6 +546,7 @@ def install_demo_services(app: FastAPI, portal_origins: Iterable[str]) -> DemoSe
         gateway_repository=state.gateway_repository,
         endpoint_repository=state.model_endpoint_repository,
         environment_repository=state.environment_repository,
+        pricing=pricing,
     )
     state.analytics_service = AnalyticsService(
         state.usage_rollup_repository,
@@ -551,6 +557,7 @@ def install_demo_services(app: FastAPI, portal_origins: Iterable[str]) -> DemoSe
         endpoint_repository=state.model_endpoint_repository,
         rollups=usage_rollups,
         directory_lookup=lookup,
+        pricing=pricing,
         configured=True,
         interval_seconds=settings.usage_rollup_interval_seconds,
         retention_days=settings.usage_rollup_retention_days,
@@ -570,6 +577,7 @@ def install_demo_services(app: FastAPI, portal_origins: Iterable[str]) -> DemoSe
         logs=logs,
         telemetry=telemetry,
         usage_rollups=usage_rollups,
+        pricing=pricing,
         clients=[gateway_http, ai_http, vault_http, mcp_http],
     )
 
@@ -858,6 +866,39 @@ async def seed_estate(services: DemoServices, tenant_id: str) -> Estate:
     if str(partner_foundry.status) != "connected":
         raise SeedError("The partner Foundry endpoint's key check didn't pass")
     estate.partner_foundry_endpoint_id = partner_foundry.id
+    # A key can't read a declared deployment's type, so the administrator says what it is and
+    # MOSAIC prices it. The Claude deployment stays unpriced: Azure's public prices don't list it.
+    await services.pricing.update_endpoint(
+        admin,
+        partner_foundry.id,
+        EndpointPricingUpdate(
+            deployments=[
+                DeploymentPricingUpdate(
+                    deployment_name="gpt-4-1-mini", deployment_type="GlobalStandard"
+                )
+            ]
+        ),
+    )
+    # Contoso negotiated a lower GPT-4o rate from next month. A dated version changes nothing
+    # before its date, so the Pricing page shows it as a scheduled change to the list price.
+    month_start = utc_now().date().replace(day=1)
+    await services.pricing.add_price(
+        admin,
+        PriceCreate(
+            cloud="commercial",
+            publisher="OpenAI",
+            model="gpt-4o",
+            version="2024-11-20",
+            deployment_type="GlobalStandard",
+            input_per_million=2.25,
+            cached_input_per_million=1.125,
+            output_per_million=9.0,
+            effective_from=(month_start + timedelta(days=32)).replace(day=1),
+            source_url="https://contoso.example/agreements/azure-enterprise-2026",
+            note="Contoso's enterprise agreement: 10% off list price.",
+            overrides="commercial.openai.gpt-4o.2024-11-20.globalstandard",
+        ),
+    )
 
     # Sales CRM keeps only a legacy free-text label, so Settings has one resource to classify.
     mcp_endpoints = [

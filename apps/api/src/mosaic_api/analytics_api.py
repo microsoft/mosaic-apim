@@ -10,6 +10,7 @@ from mosaic_api.domain import EntitlementSubjectKind
 from mosaic_api.errors import ConflictError
 from mosaic_api.services.analytics import (
     AnalyticsConsumers,
+    AnalyticsCost,
     AnalyticsFilters,
     AnalyticsGatewayHealth,
     AnalyticsHygiene,
@@ -126,6 +127,11 @@ async def analytics_unattributed(
     request: Request, auth: Admin, filters: Filters
 ) -> AnalyticsUnattributed:
     return await _analytics(request).unattributed(_actor(auth), filters)
+
+
+@analytics_router.get("/analytics/cost", response_model=AnalyticsCost)
+async def analytics_cost(request: Request, auth: Admin, filters: Filters) -> AnalyticsCost:
+    return await _analytics(request).cost(_actor(auth), filters)
 
 
 @analytics_router.get(

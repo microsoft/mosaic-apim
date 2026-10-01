@@ -15,19 +15,23 @@ import {
 } from '@fluentui/react-components'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMemo, useState } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { Link as RouterLink, useSearchParams } from 'react-router-dom'
 import { ApiError, useMosaicApi } from '../api'
 import { EmptyState, ErrorState, Loading } from '../components/AsyncState'
 import { BarList, type BarListItem } from '../components/charts/BarList'
 import { Histogram } from '../components/charts/Histogram'
 import { TrendChart } from '../components/charts/TrendChart'
 import { DataSourceBadge, PageHeader } from '../components/PageHeader'
+import { formatCost, formatCostCompact, formatRate, formatShare } from '../cost-format'
 import { environmentLabel, useEnvironmentCatalog } from '../environments'
-import { BACKFILL_STATUS_LABELS, ENTITLEMENT_SUBJECT_KIND_LABELS, FRESHNESS_STATUS_LABELS, PRINCIPAL_KIND_LABELS } from '../labels'
+import { BACKFILL_STATUS_LABELS, ENTITLEMENT_SUBJECT_KIND_LABELS, FRESHNESS_STATUS_LABELS, PRINCIPAL_KIND_LABELS, plural } from '../labels'
 import type {
   AnalyticsApiRow,
   AnalyticsConsumerRow,
   AnalyticsConsumers,
+  AnalyticsCost,
+  AnalyticsCostDeploymentRow,
+  AnalyticsCostSummary,
   AnalyticsDataSource,
   AnalyticsDeploymentRow,
   AnalyticsFilters,
@@ -45,7 +49,6 @@ import type {
   AnalyticsRankRow,
   AnalyticsReliability,
   AnalyticsReport,
-  AnalyticsTrendPoint,
   AnalyticsUnattributed,
   EntitlementSubjectKind,
   ExportView,
@@ -57,10 +60,11 @@ import type {
 } from '../types'
 import styles from './AnalyticsPage.module.css'
 
-type TabKey = 'overview' | 'consumers' | 'models' | 'reliability' | 'limits' | 'hygiene' | 'unattributed'
+type TabKey = 'overview' | 'cost' | 'consumers' | 'models' | 'reliability' | 'limits' | 'hygiene' | 'unattributed'
 
 const tabs: Array<{ key: TabKey; label: string; exports: ExportView[] }> = [
   { key: 'overview', label: 'Overview', exports: ['trend'] },
+  { key: 'cost', label: 'Cost', exports: ['chargeback', 'costDeployments'] },
   { key: 'consumers', label: 'Consumers', exports: ['people', 'applications', 'groups', 'grants', 'clientApps'] },
   { key: 'models', label: 'Models', exports: ['apis', 'models', 'deployments'] },
   { key: 'reliability', label: 'Reliability', exports: ['denials', 'apis'] },
@@ -85,6 +89,8 @@ const exportLabels: Record<ExportView, string> = {
   unusedKeys: 'Unused keys',
   untrackedGrants: 'Untracked grants',
   unattributed: 'Unattributed calls',
+  chargeback: 'Chargeback by month',
+  costDeployments: 'Cost by deployment',
 }
 
 const apiKindLabels: Record<NonNullable<AnalyticsApiRow['kind']>, string> = {
@@ -173,7 +179,7 @@ function formatDay(value: string) {
   return new Intl.DateTimeFormat('en-US', { timeZone: 'UTC', month: 'short', day: 'numeric' }).format(new Date(`${value}T00:00:00Z`))
 }
 
-function trendLabel(point: AnalyticsTrendPoint, granularity: AnalyticsGranularity) {
+function trendLabel(point: { start: string }, granularity: AnalyticsGranularity) {
   const start = new Date(point.start)
   if (granularity === 'month') {
     return new Intl.DateTimeFormat('en-US', { timeZone: 'UTC', month: 'short', year: 'numeric' }).format(start)
@@ -246,11 +252,14 @@ function DataNotes({ report }: { report: AnalyticsReport }) {
   )
 }
 
-function KpiCard({ label, value, detail }: { label: string; value: string; detail?: string }) {
+function KpiCard({ label, value, detail, badge }: { label: string; value: string; detail?: string; badge?: string }) {
   return (
     <Card className={styles.kpiCard}>
       <Text className={styles.kpiLabel}>{label}</Text>
-      <div className={styles.kpiValue}>{value}</div>
+      <div className={styles.kpiValue}>
+        {value}
+        {badge && <Badge appearance="tint" color="informative" className={styles.kpiBadge}>{badge}</Badge>}
+      </div>
       {detail && <Text size={200} className={styles.kpiDetail}>{detail}</Text>}
     </Card>
   )
@@ -260,6 +269,14 @@ function changeText(current: number | null | undefined, previous: number | null 
   if (current == null || previous == null || previous === 0) return 'No previous period comparison'
   const change = (current - previous) / previous
   return `${change >= 0 ? '+' : ''}${(change * 100).toFixed(1)}% vs previous period`
+}
+
+// What a cost leaves out matters more than how it moved: an unpriced deployment isn't free.
+function costDetail(summary: AnalyticsCostSummary, current: number | null | undefined, previous: number | null | undefined) {
+  if (summary.unpricedTokens > 0) {
+    return `Leaves out ${formatCompact(summary.unpricedTokens)} tokens with no price`
+  }
+  return changeText(current, previous)
 }
 
 function reportEmpty(report: AnalyticsReport & { kpis?: AnalyticsKpis }) {
@@ -324,7 +341,7 @@ function GatewayHealthRows({
 function OverviewTab({ report }: { report: AnalyticsOverview }) {
   const trend = report.trend.map((point) => ({ label: trendLabel(point, report.window.granularity), primary: point.requests, secondary: point.totalTokens }))
   // Models and callers rank by tokens, which drive spend. APIs rank by calls, because MCP servers carry no tokens.
-  const byTokens = (row: AnalyticsRankRow): BarListItem => ({ key: row.key, label: row.label, value: row.totalTokens, valueLabel: `${formatCompact(row.totalTokens)} tokens`, detail: [row.detail, `${formatCompact(row.requests)} calls`].filter(Boolean).join(' · ') })
+  const byTokens = (row: AnalyticsRankRow): BarListItem => ({ key: row.key, label: row.label, value: row.totalTokens, valueLabel: `${formatCompact(row.totalTokens)} tokens`, detail: [row.detail, `${formatCompact(row.requests)} calls`, row.cost != null ? formatCost(row.cost) : null].filter(Boolean).join(' · ') })
   const topModels = report.topModels.map(byTokens)
   const topCallers = report.topCallers.map(byTokens)
   const topApis = report.topApis.map<BarListItem>((row) => ({ key: row.key, label: row.label, value: row.requests, valueLabel: `${formatCompact(row.requests)} calls`, detail: [row.detail, row.totalTokens ? `${formatCompact(row.totalTokens)} tokens` : null].filter(Boolean).join(' · ') }))
@@ -334,6 +351,13 @@ function OverviewTab({ report }: { report: AnalyticsOverview }) {
       <div className={styles.kpiGrid}>
         <KpiCard label="Requests" value={formatCompact(report.kpis.requests)} detail={changeText(report.kpis.requests, report.previous?.requests)} />
         <KpiCard label="Tokens" value={formatCompact(report.kpis.totalTokens)} detail={changeText(report.kpis.totalTokens, report.previous?.totalTokens)} />
+        {report.cost && (
+          <KpiCard
+            label="Cost"
+            value={report.window.granularity === 'hour' ? '—' : formatCostCompact(report.kpis.cost)}
+            detail={report.window.granularity === 'hour' ? 'Priced by whole days; choose 7 days or more' : costDetail(report.cost, report.kpis.cost, report.previous?.cost)}
+          />
+        )}
         <KpiCard label="Active callers" value={formatNumber(report.kpis.activeCallers)} detail={report.window.range === '24h' ? 'Whole UTC-day breakdown' : undefined} />
         <KpiCard label="Errors" value={formatPercent(report.kpis.errorRate)} detail={`${formatNumber(report.kpis.errors)} error calls`} />
         <KpiCard label="P95 latency" value={formatLatency(report.kpis.p95LatencyMs)} detail="Estimated from latency buckets" />
@@ -353,23 +377,159 @@ function OverviewTab({ report }: { report: AnalyticsOverview }) {
   )
 }
 
+function monthLabel(value: string) {
+  return new Intl.DateTimeFormat('en-US', { timeZone: 'UTC', month: 'long', year: 'numeric' }).format(new Date(`${value}T00:00:00Z`))
+}
+
+function forecastDetail(report: AnalyticsCost) {
+  const spend = report.spend
+  if (!spend) return undefined
+  if (spend.forecast == null) return 'Forecast after a day of this month’s figures'
+  return `At this month’s pace so far, over ${spend.daysElapsed.toFixed(1)} of ${spend.daysInMonth} days`
+}
+
+function chargedBy(row: AnalyticsCostDeploymentRow) {
+  if (row.pricing === 'unpriced') {
+    return (
+      <>
+        <span className={styles.noPrice}>No price</span>
+        <Text block size={200} className={styles.kpiDetail}>{row.unpricedMessage}</Text>
+      </>
+    )
+  }
+  if (row.pricing === 'provisioned') {
+    const rate = row.monthlyAmount != null ? `${formatRate(row.monthlyAmount)} a month` : `${row.capacity ?? '?'} PTUs at ${formatRate(row.ptuHourly)} an hour`
+    return (
+      <>
+        {rate}
+        <Text block size={200} className={styles.kpiDetail}>{row.monthCost != null ? `${formatCost(row.monthCost)} this month, shared by tokens` : 'Shared by tokens'}</Text>
+      </>
+    )
+  }
+  return (
+    <>
+      {`${formatRate(row.inputPerMillion)} in · ${formatRate(row.outputPerMillion)} out per 1M`}
+      <Text block size={200} className={styles.kpiDetail}>{[row.deploymentType, row.cloudLabel, row.region].filter(Boolean).join(' · ')}</Text>
+    </>
+  )
+}
+
+function costBars(rows: AnalyticsCost['models']): BarListItem[] {
+  return rows.map((row) => ({
+    key: row.key,
+    label: row.label,
+    value: row.cost ?? 0,
+    valueLabel: formatCost(row.cost),
+    detail: [row.detail, `${formatCompact(row.totalTokens)} tokens`, row.costShare != null ? `${formatShare(row.costShare)} of the cost` : null].filter(Boolean).join(' · '),
+  }))
+}
+
+const CONSUMER_KINDS: Record<string, string> = { person: 'Person', application: 'Application', group: 'Security group' }
+
+function CostTab({ report }: { report: AnalyticsCost }) {
+  if (!report.priced) {
+    return <EmptyState title="No price list">This deployment has no price list, so MOSAIC can&apos;t put a cost on usage.</EmptyState>
+  }
+  const spend = report.spend
+  const cost = report.cost
+  const hourly = report.window.granularity === 'hour'
+  const trend = report.trend.map((point) => ({ label: trendLabel(point, report.window.granularity), primary: point.cost, secondary: point.totalTokens ?? null }))
+  const consumers = costBars(report.consumers.map((row) => ({ ...row, detail: row.kind ? CONSUMER_KINDS[row.kind] ?? row.kind : row.detail })))
+  return (
+    <div className={styles.stack}>
+      <div className={styles.kpiGrid}>
+        <KpiCard
+          label="Spend this month"
+          value={formatCostCompact(spend?.monthToDate, '—')}
+          detail={spend ? `${monthLabel(spend.monthStart)} to ${formatDateTime(spend.through ?? null)}` : undefined}
+        />
+        <KpiCard label="Month-end forecast" value={formatCostCompact(spend?.forecast, '—')} badge="Projected" detail={forecastDetail(report)} />
+        <KpiCard label="Cost in this range" value={hourly ? '—' : formatCostCompact(cost.total)} detail={hourly ? 'Priced by whole days; choose 7 days or more' : costDetail(cost, null, null)} />
+        <KpiCard label="Reserved capacity" value={formatCostCompact(cost.reserved ?? 0)} detail="Provisioned deployments’ PTUs in this range" />
+      </div>
+      {!hourly && (
+        <Card className={styles.wideCard}>
+          <Title3 as="h2">Cost and tokens</Title3>
+          <TrendChart title="Cost and tokens trend" points={trend} primaryLabel="Cost" secondaryLabel="Tokens" caption="Each line is scaled to its own peak. A day MOSAIC has no figures for is left blank." />
+        </Card>
+      )}
+      <div className={styles.analyticsGrid}>
+        <Card className={styles.panelCard}><Title3 as="h2">Cost by model</Title3><BarList label="Cost by model" items={costBars(report.models)} /></Card>
+        <Card className={styles.panelCard}><Title3 as="h2">Cost by consumer</Title3><BarList label="Cost by consumer" items={consumers} /></Card>
+        <Card className={styles.panelCard}><Title3 as="h2">Cost by API</Title3><BarList label="Cost by API" items={costBars(report.apis)} /></Card>
+      </div>
+      <Card className={styles.panelCard}>
+        <Title3 as="h2">Deployments</Title3>
+        <Text size={200}>What each deployment is charged by today, and what its usage in this range cost. A provisioned deployment costs its reserved capacity whether or not it&apos;s called; utilization is its tokens against what its PTUs could serve.</Text>
+        <div className="table-scroll">
+          <table aria-label="Deployment cost">
+            <thead><tr><th>Deployment</th><th>Model</th><th>Charged by</th><th>Tokens</th><th>Utilization</th><th>Cost</th><th>Share</th></tr></thead>
+            <tbody>
+              {report.deployments.length === 0 ? <TableEmpty>No deployments match these filters.</TableEmpty> : report.deployments.map((row) => (
+                <tr key={row.key}>
+                  <td>{row.deploymentName}<Text block size={200}>{row.endpointName ?? 'Unknown endpoint'}</Text></td>
+                  <td>{row.modelName ?? 'Unknown'}{row.modelVersion && <Text block size={200}>{row.modelVersion}</Text>}</td>
+                  <td>{chargedBy(row)}</td>
+                  <td>{formatNumber(row.totalTokens)}</td>
+                  <td>{row.pricing === 'provisioned' ? formatPercent(row.utilization) : '—'}</td>
+                  <td>
+                    {costCell(row.cost, row.totalTokens)}
+                    {row.idleCost != null && <Text block size={200} className={styles.kpiDetail}>{`${formatCost(row.idleCost)} with no calls`}</Text>}
+                  </td>
+                  <td>{formatShare(row.costShare)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Card>
+      {cost.unpriced.length > 0 && (
+        <Card className={styles.panelCard}>
+          <Title3 as="h2">Usage with no price</Title3>
+          <Text size={200}>
+            {`${formatCompact(cost.unpricedTokens)} tokens in ${plural(cost.unpricedRequests, 'call')} have no cost, because MOSAIC has no price for them. They're left out of every total, never counted as $0. `}
+            <RouterLink to="/pricing?tab=unpriced">Fix them on the Pricing page</RouterLink>.
+          </Text>
+          <div className="table-scroll">
+            <table aria-label="Usage with no price">
+              <thead><tr><th>Deployment or API</th><th>Why it has no price</th><th>Calls</th><th>Tokens</th></tr></thead>
+              <tbody>
+                {cost.unpriced.map((row) => (
+                  <tr key={row.key}><td>{row.label}<Text block size={200}>{row.detail ?? ''}</Text></td><td>{row.message}</td><td>{formatNumber(row.requests)}</td><td>{formatNumber(row.totalTokens)}</td></tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      )}
+      {cost.notes.length > 0 && (
+        <div className={styles.notes} role="note" aria-label="How MOSAIC priced this usage">
+          {cost.notes.map((note) => <Text key={note}>{note}</Text>)}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function ConsumersTab({ report }: { report: AnalyticsConsumers }) {
+  const priced = report.cost != null
   return (
     <div className={styles.stack}>
       <div className={styles.kpiGrid}>
         <KpiCard label="Linked requests" value={formatCompact(report.linkedRequests)} />
         <KpiCard label="Linked tokens" value={formatCompact(report.linkedTokens)} />
+        {report.cost && <KpiCard label="Linked cost" value={formatCostCompact(report.cost.total)} detail={costDetail(report.cost, null, null)} />}
         <KpiCard label="Unidentified linked calls" value={formatCompact(report.unidentifiedRequests)} />
       </div>
       <Card className={styles.panelCard}>
         <Title3 as="h2">People, applications, and Entra security groups</Title3>
         <div className="table-scroll">
           <table aria-label="Consumers">
-            <thead><tr><th>Name</th><th>Kind</th><th>Requests</th><th>Tokens</th><th>Grants</th><th>Resources</th><th>Last seen</th></tr></thead>
+            <thead><tr><th>Name</th><th>Kind</th><th>Requests</th><th>Tokens</th><th>Grants</th><th>Resources</th><th>Last seen</th>{priced && <th>Cost</th>}</tr></thead>
             <tbody>
               {[...report.people, ...report.applications, ...report.groups].length === 0 ? <TableEmpty>No linked consumers match these filters.</TableEmpty> :
                 [...report.people, ...report.applications, ...report.groups].map((row) => (
-                  <tr key={row.key}><td>{row.label}<Text block size={200}>{row.detail ?? (row.members != null ? `${row.members} active members` : '')}</Text></td><td>{consumerKindLabel(row)}</td><td>{formatNumber(row.requests)}</td><td>{formatNumber(row.totalTokens)}</td><td>{row.grants}</td><td>{row.resources}</td><td>{formatDateTime(row.lastSeen)}</td></tr>
+                  <tr key={row.key}><td>{row.label}<Text block size={200}>{row.detail ?? (row.members != null ? `${row.members} active members` : '')}</Text></td><td>{consumerKindLabel(row)}</td><td>{formatNumber(row.requests)}</td><td>{formatNumber(row.totalTokens)}</td><td>{row.grants}</td><td>{row.resources}</td><td>{formatDateTime(row.lastSeen)}</td>{priced && <td>{costCell(row.cost, row.totalTokens)}</td>}</tr>
                 ))}
             </tbody>
           </table>
@@ -379,10 +539,10 @@ function ConsumersTab({ report }: { report: AnalyticsConsumers }) {
         <Title3 as="h2">Grants</Title3>
         <div className="table-scroll">
           <table aria-label="Grant usage">
-            <thead><tr><th>Subject</th><th>Resource</th><th>State</th><th>Requests</th><th>Key requests</th><th>Callers</th><th>Peak minute</th></tr></thead>
+            <thead><tr><th>Subject</th><th>Resource</th><th>State</th><th>Requests</th><th>Key requests</th><th>Callers</th><th>Peak minute</th>{priced && <th>Cost</th>}</tr></thead>
             <tbody>
               {report.grants.length === 0 ? <TableEmpty>No grants match these filters.</TableEmpty> : report.grants.map((row) => (
-                <tr key={row.key}><td>{row.subjectLabel}<Text block size={200}>{grantSubjectKindLabel(row)} · {row.subjectDetail ?? 'No detail'}</Text></td><td>{row.resourceLabel}<Text block size={200}>{row.gatewayName ?? 'No gateway'}</Text></td><td>{grantStateLabels[row.state]}</td><td>{formatNumber(row.requests)}</td><td>{formatNumber(row.keyRequests)}</td><td>{row.callers}</td><td>{row.peakMinuteTokens == null ? '—' : `${formatNumber(row.peakMinuteTokens)} tokens`}</td></tr>
+                <tr key={row.key}><td>{row.subjectLabel}<Text block size={200}>{grantSubjectKindLabel(row)} · {row.subjectDetail ?? 'No detail'}</Text></td><td>{row.resourceLabel}<Text block size={200}>{row.gatewayName ?? 'No gateway'}</Text></td><td>{grantStateLabels[row.state]}</td><td>{formatNumber(row.requests)}</td><td>{formatNumber(row.keyRequests)}</td><td>{row.callers}</td><td>{row.peakMinuteTokens == null ? '—' : `${formatNumber(row.peakMinuteTokens)} tokens`}</td>{priced && <td>{costCell(row.cost, row.totalTokens)}</td>}</tr>
               ))}
             </tbody>
           </table>
@@ -390,10 +550,16 @@ function ConsumersTab({ report }: { report: AnalyticsConsumers }) {
       </Card>
       <Card className={styles.panelCard}>
         <Title3 as="h2">Client applications</Title3>
-        <BarList label="Client applications" items={report.clientApps.map((row) => ({ key: row.clientAppId, label: row.label, value: row.requests, valueLabel: `${formatCompact(row.requests)} calls`, detail: `${row.apis} APIs` }))} />
+        <BarList label="Client applications" items={report.clientApps.map((row) => ({ key: row.clientAppId, label: row.label, value: row.requests, valueLabel: `${formatCompact(row.requests)} calls`, detail: [`${row.apis} APIs`, row.cost != null ? formatCost(row.cost) : null].filter(Boolean).join(' · ') }))} />
       </Card>
     </div>
   )
+}
+
+// A row with tokens but no cost has no price; a row with no tokens, such as an MCP server's, has no cost to show.
+function costCell(cost: number | null | undefined, tokens: number) {
+  if (cost != null) return formatCost(cost)
+  return tokens > 0 ? <span className={styles.noPrice}>No price</span> : '—'
 }
 
 // A model deployment's own 429 reaches the caller as the gateway's 429 too, so it counts as throttled
@@ -402,14 +568,14 @@ function gatewayThrottled(throttled: number, backendThrottled: number | null) {
   return Math.max(throttled - (backendThrottled ?? 0), 0)
 }
 
-function ApiRows({ rows, label }: { rows: AnalyticsApiRow[]; label: string }) {
+function ApiRows({ rows, label, showCost = false }: { rows: AnalyticsApiRow[]; label: string; showCost?: boolean }) {
   return (
     <div className="table-scroll">
       <table aria-label={label}>
-        <thead><tr><th>API</th><th>Kind</th><th>Requests</th><th>Denied</th><th>Errors</th><th>Backend 429s</th><th>P95</th><th>Models</th></tr></thead>
+        <thead><tr><th>API</th><th>Kind</th><th>Requests</th><th>Denied</th><th>Errors</th><th>Backend 429s</th><th>P95</th><th>Models</th>{showCost && <th>Cost</th>}</tr></thead>
         <tbody>
           {rows.length === 0 ? <TableEmpty>No APIs match these filters.</TableEmpty> : rows.map((row) => (
-            <tr key={row.key}><td>{row.label}<Text block size={200}>{row.gatewayName} · {row.apiName}</Text></td><td>{row.kind ? apiKindLabels[row.kind] : 'Unknown'}</td><td>{formatNumber(row.requests)}</td><td>{formatNumber(row.denied)}</td><td>{formatNumber(row.errors)}</td><td>{formatNumber(row.backendThrottled)}</td><td>{formatLatency(row.p95LatencyMs)}</td><td>{row.models?.join(', ') ?? 'Not read in this view'}</td></tr>
+            <tr key={row.key}><td>{row.label}<Text block size={200}>{row.gatewayName} · {row.apiName}</Text></td><td>{row.kind ? apiKindLabels[row.kind] : 'Unknown'}</td><td>{formatNumber(row.requests)}</td><td>{formatNumber(row.denied)}</td><td>{formatNumber(row.errors)}</td><td>{formatNumber(row.backendThrottled)}</td><td>{formatLatency(row.p95LatencyMs)}</td><td>{row.models?.join(', ') ?? 'Not read in this view'}</td>{showCost && <td>{costCell(row.cost, row.totalTokens)}</td>}</tr>
           ))}
         </tbody>
       </table>
@@ -418,27 +584,28 @@ function ApiRows({ rows, label }: { rows: AnalyticsApiRow[]; label: string }) {
 }
 
 function ModelsTab({ report }: { report: AnalyticsModels }) {
+  const priced = report.cost != null
   return (
     <div className={styles.stack}>
       <Card className={styles.panelCard}>
         <Title3 as="h2">Models</Title3>
-        <BarList label="Models by requests" items={report.models.map((row) => ({ key: row.model, label: row.model, value: row.requests, valueLabel: `${formatCompact(row.requests)} calls`, detail: `${formatCompact(row.totalTokens)} tokens across ${row.apis} APIs` }))} />
+        <BarList label="Models by requests" items={report.models.map((row) => ({ key: row.model, label: row.model, value: row.requests, valueLabel: `${formatCompact(row.requests)} calls`, detail: [`${formatCompact(row.totalTokens)} tokens across ${row.apis} APIs`, row.cost != null ? formatCost(row.cost) : null].filter(Boolean).join(' · ') }))} />
       </Card>
       <Card className={styles.panelCard}>
         <Title3 as="h2">Deployments</Title3>
         <Text size={200}>Deployment request counts include calls the gateway throttled. Backend 429s are shown separately from MOSAIC gateway throttling. Capacity and utilization appear for Azure OpenAI standard deployments, whose capacity is set in tokens a minute. Other models share a regional rate limit instead.</Text>
         <div className="table-scroll">
           <table aria-label="Deployments">
-            <thead><tr><th>Deployment</th><th>Model</th><th>Requests</th><th>Gateway throttled</th><th>Backend 429s</th><th>Peak TPM</th><th>Capacity</th><th>Utilization</th></tr></thead>
+            <thead><tr><th>Deployment</th><th>Model</th><th>Requests</th><th>Gateway throttled</th><th>Backend 429s</th><th>Peak TPM</th><th>Capacity</th><th>Utilization</th>{priced && <th>Cost</th>}</tr></thead>
             <tbody>
               {report.deployments.length === 0 ? <TableEmpty>No deployments match these filters.</TableEmpty> : report.deployments.map((row: AnalyticsDeploymentRow) => (
-                <tr key={row.key}><td>{row.deploymentName}<Text block size={200}>{row.endpointName ?? row.endpointId}</Text></td><td>{row.modelName ?? 'Unknown'}</td><td>{formatNumber(row.requests)}</td><td>{formatNumber(gatewayThrottled(row.throttled, row.backendThrottled))}</td><td>{formatNumber(row.backendThrottled)}</td><td>{formatNumber(row.peakMinuteTokens)}</td><td>{formatNumber(row.capacityTokensPerMinute)}</td><td>{formatPercent(row.utilization)}</td></tr>
+                <tr key={row.key}><td>{row.deploymentName}<Text block size={200}>{row.endpointName ?? row.endpointId}</Text></td><td>{row.modelName ?? 'Unknown'}</td><td>{formatNumber(row.requests)}</td><td>{formatNumber(gatewayThrottled(row.throttled, row.backendThrottled))}</td><td>{formatNumber(row.backendThrottled)}</td><td>{formatNumber(row.peakMinuteTokens)}</td><td>{formatNumber(row.capacityTokensPerMinute)}</td><td>{formatPercent(row.utilization)}</td>{priced && <td>{costCell(row.cost, row.totalTokens)}</td>}</tr>
               ))}
             </tbody>
           </table>
         </div>
       </Card>
-      <Card className={styles.panelCard}><Title3 as="h2">APIs and MCP servers</Title3><ApiRows rows={report.apis} label="APIs and MCP servers" /></Card>
+      <Card className={styles.panelCard}><Title3 as="h2">APIs and MCP servers</Title3><ApiRows rows={report.apis} label="APIs and MCP servers" showCost={priced} /></Card>
     </div>
   )
 }
@@ -535,16 +702,17 @@ function HygieneTab({ report }: { report: AnalyticsHygiene }) {
 }
 
 function UnattributedTab({ report }: { report: AnalyticsUnattributed }) {
+  const priced = report.cost != null
   return (
     <Card className={styles.panelCard}>
       <Title3 as="h2">Unattributed calls</Title3>
-      <Text size={200}>{formatCompact(report.requests)} calls ({formatPercent(report.share)}) could not be linked to a grant. A publication&apos;s shared key belongs to no one caller, so grant access per caller to see who uses it.</Text>
+      <Text size={200}>{formatCompact(report.requests)} calls ({formatPercent(report.share)}) could not be linked to a grant. A publication&apos;s shared key belongs to no one caller, so grant access per caller to see who uses it.{report.cost?.total != null ? ` They cost ${formatCost(report.cost.total)} at list prices.` : ''}</Text>
       <div className="table-scroll">
         <table aria-label="Unattributed calls">
-          <thead><tr><th>API</th><th>Gateway</th><th>Subscription</th><th>Reason</th><th>Requests</th><th>Tokens</th><th>Last seen</th></tr></thead>
+          <thead><tr><th>API</th><th>Gateway</th><th>Subscription</th><th>Reason</th><th>Requests</th><th>Tokens</th><th>Last seen</th>{priced && <th>Cost</th>}</tr></thead>
           <tbody>
             {report.rows.length === 0 ? <TableEmpty>No unattributed calls match these filters.</TableEmpty> : report.rows.map((row) => (
-              <tr key={`${row.gatewayId}-${row.apiName}-${row.subscription ?? 'none'}`}><td>{row.apiLabel}<Text block size={200}>{row.apiName}</Text></td><td>{row.gatewayName}</td><td>{row.subscription ?? 'No subscription'}</td><td>{unattributedReasons[row.reason]}</td><td>{formatNumber(row.requests)}</td><td>{formatNumber(row.totalTokens)}</td><td>{formatDateTime(row.lastSeen)}</td></tr>
+              <tr key={`${row.gatewayId}-${row.apiName}-${row.subscription ?? 'none'}`}><td>{row.apiLabel}<Text block size={200}>{row.apiName}</Text></td><td>{row.gatewayName}</td><td>{row.subscription ?? 'No subscription'}</td><td>{unattributedReasons[row.reason]}</td><td>{formatNumber(row.requests)}</td><td>{formatNumber(row.totalTokens)}</td><td>{formatDateTime(row.lastSeen)}</td>{priced && <td>{costCell(row.cost, row.totalTokens)}</td>}</tr>
             ))}
           </tbody>
         </table>
@@ -590,6 +758,7 @@ export function AnalyticsPage() {
   const reportQuery = useQuery<AnalyticsReport>({
     queryKey: ['analytics', tab, filters],
     queryFn: () => {
+      if (tab === 'cost') return api.getAnalyticsCost(filters)
       if (tab === 'consumers') return api.getAnalyticsConsumers(filters)
       if (tab === 'models') return api.getAnalyticsModels(filters)
       if (tab === 'reliability') return api.getAnalyticsReliability(filters)
@@ -684,6 +853,7 @@ export function AnalyticsPage() {
               </Card>
             </>
           )}
+          {tab === 'cost' && <CostTab report={report as AnalyticsCost} />}
           {tab === 'consumers' && <ConsumersTab report={report as AnalyticsConsumers} />}
           {tab === 'models' && <ModelsTab report={report as AnalyticsModels} />}
           {tab === 'reliability' && <ReliabilityTab report={report as AnalyticsReliability} />}
