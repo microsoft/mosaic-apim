@@ -140,10 +140,17 @@ class KeyVaultSecretWriter:
 
 
 def _raise_for_status(status: int, secret: KeyVaultSecretId, *, storing: bool) -> None:
-    if status < 400:
+    if 200 <= status < 300:
         return
     vault = secret.vault_name
     details = {"status": status, "vault": vault}
+    if 300 <= status < 400:
+        action = "stored" if storing else "deleted"
+        raise UpstreamError(
+            f"Key Vault {vault} answered with a redirect (HTTP {status}), and MOSAIC follows "
+            f"none, so it couldn't confirm the API key was {action}.",
+            details=details,
+        )
     if status in {401, 403}:
         verb = "store" if storing else "delete"
         raise UpstreamAuthorizationError(
