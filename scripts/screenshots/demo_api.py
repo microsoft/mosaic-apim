@@ -106,6 +106,7 @@ from scripts.screenshots.demo_fakes import (
     FakeCredential,
     TrafficStream,
     build_cognitive_accounts,
+    build_key_store,
     build_key_vault,
     build_mcp_servers,
     cognitive_handler,
@@ -123,7 +124,8 @@ SUBSCRIPTION_COUNTER = "@(context.Subscription.Id)"
 PARTNER_FOUNDRY_URL = (
     "https://fabrikam-foundry.services.ai.azure.com/api/projects/partner-models"
 )
-PARTNER_FOUNDRY_SECRET_URI = "https://kv-contoso-ai.vault.azure.net/secrets/fabrikam-foundry-key"
+# Fictional. The console masks it, and MOSAIC keeps it only in the demo's Key Vault double.
+PARTNER_FOUNDRY_DEMO_KEY = "demo-foundry-key-not-a-real-key-0000"
 
 DEFAULT_API_PORT = 8000
 DEFAULT_CONSOLE_PORT = 5173
@@ -458,6 +460,7 @@ def install_demo_services(app: FastAPI, portal_origins: Iterable[str]) -> DemoSe
         secret_resolver=_demo_model_key,
         key_probe=_demo_key_check,
         vault_locator=KeyVaultLocator(vault_arm, known_vault_ids=[KEY_VAULT_ID]),
+        key_store=build_key_store(),
     )
     publishing = PublishingService(
         state.gateway_repository,
@@ -838,14 +841,15 @@ async def seed_estate(services: DemoServices, tenant_id: str) -> Estate:
         _require_synced(await services.endpoints.sync_now(admin, endpoint.id), endpoint.name)
 
     # A partner's Foundry resource in its own Microsoft Entra tenant, which MOSAIC's managed
-    # identity can't reach. It is registered by URL with the Key Vault secret that holds its key,
-    # and its deployments are declared, because a key can't list them (ADR 0018).
+    # identity can't reach. It is registered by URL with its API key, which MOSAIC keeps in the
+    # demo's Key Vault (ADR 0021), and its deployments are declared, because a key can't list them
+    # (ADR 0018).
     partner_foundry = await services.endpoints.register(
         admin,
         ModelEndpointCreate.model_validate(
             {
                 "endpoint": PARTNER_FOUNDRY_URL,
-                "credential_secret_uri": PARTNER_FOUNDRY_SECRET_URI,
+                "api_key": PARTNER_FOUNDRY_DEMO_KEY,
                 "name": "Fabrikam partner Foundry",
                 "environment": "production",
                 "deployments": [

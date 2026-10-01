@@ -107,15 +107,16 @@ portal at `http://localhost:5174` signs you in as the demo end user, Megan Bowen
 - `demo_fakes.py` is the fictional Azure side. It extends the API's test doubles in
   `apps/api/tests` into a Contoso estate: a production gateway MOSAIC can read, a development copy
   of it whose APIs still point at the production accounts, a partner gateway that answers `403`
-  so it shows **Access needed**, Azure OpenAI and Foundry accounts, a Key Vault that the gateways
-  can read a partner's Foundry key from, and MCP servers. MOSAIC reaches them through `httpx` mock
-  transports, so nothing leaves the machine. A fake Log Analytics workspace answers MOSAIC's usage
-  queries from the gateways' generated logs, a day at a time.
+  so it shows **Access needed**, Azure OpenAI and Foundry accounts, a Key Vault that MOSAIC keeps a
+  partner's Foundry key in and the gateways can read it from, and MCP servers. MOSAIC reaches them
+  through `httpx` mock transports, so nothing leaves the machine. A fake Log Analytics workspace
+  answers MOSAIC's usage queries from the gateways' generated logs, a day at a time.
 - `demo_api.py` runs the production FastAPI app with in-memory repositories and swaps its
   Azure-facing services for the fakes. It then seeds the estate through MOSAIC's own services, in
   the order an operator would: add a custom Partner environment, register, classify, and sync
-  gateways, register a partner's Foundry resource by URL with its Key Vault secret and declare its
-  deployments, import, publish, grant, and request, approve, and deny access. One MCP server keeps
+  gateways, register a partner's Foundry resource by URL with a fictional API key, which MOSAIC
+  stores in the Key Vault double, and declare its deployments, then import, publish, grant, and
+  request, approve, and deny access. One MCP server keeps
   only a legacy label, so Settings has something to classify, and the development gateway's
   routes to production produce environment findings. Grants and decided requests are then dated
   back as far as 120 days. Last, it enables API diagnostics on the production gateway and
@@ -210,8 +211,8 @@ shows both themes. Keep new shots in that pattern.
 | `console-gateway-overview` | Console | Contoso AI Gateway, **Overview** tab | Dark | Gateway overview |
 | `console-gateway-apis` | Console | Contoso AI Gateway, **APIs and endpoints** tab | Light | APIs and endpoints |
 | `console-models` | Console | `/models` | Dark | Models |
-| `console-register-key-endpoint` | Console | `/models?register=1`, **Azure AI with an API key** tab filled in and never submitted | Light | Register with an API key |
-| `console-key-endpoint` | Console | `/models`, Fabrikam partner Foundry selected, scrolled to its **Access** card | Dark | Endpoint reached with an API key |
+| `console-register-key-endpoint` | Console | `/models?register=1`, **Azure AI with an API key** tab with a pasted, masked key, filled in and never submitted | Light | Register with an API key |
+| `console-key-endpoint` | Console | `/models`, Fabrikam partner Foundry selected, scrolled to its **Access** card with **Replace API key** | Dark | Endpoint reached with an API key |
 | `console-mcps` | Console | `/mcps`, showing published and registered MCP servers | Light | MCP servers |
 | `console-identity` | Console | `/identity?tab=agents` | Dark | Identity |
 | `console-directory-picker` | Console | `/identity?tab=agents`, **Add agent** dialog with query `agent` | Light | Directory picker |

@@ -26,6 +26,8 @@ identities and security-group grants. [ADR 0017](docs/adr/0017-mcp-gateway-enfor
 documents MCP gateway enforcement, and [ADR 0018](docs/adr/0018-key-authenticated-backends.md)
 publishing from an Azure AI resource MOSAIC reaches with an API key held in Key Vault, such as a
 Foundry resource in another Microsoft Entra tenant.
+[ADR 0021](docs/adr/0021-keys-mosaic-keeps.md) covers the key an administrator gives MOSAIC itself,
+which MOSAIC keeps in its own Key Vault.
 
 ## Screenshots
 
@@ -102,17 +104,17 @@ one under **Settings > Appearance**.
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/console-register-key-endpoint.png" alt="The Register model endpoint dialog on its API key tab, with an endpoint URL, a Key Vault secret URI, and two declared deployments">
+      <img src="docs/images/screenshots/console-register-key-endpoint.png" alt="The Register model endpoint dialog on its API key tab, with an endpoint URL, a masked API key, and two declared deployments">
       <p><b>Register with an API key.</b> When MOSAIC can't reach a resource with its managed
-      identity, such as a Foundry project in another tenant, an administrator gives its URL and the
-      Key Vault secret that holds its key, and declares the deployments to publish with the API each
-      one takes.</p>
+      identity, such as a Foundry project in another tenant, an administrator gives its URL and its
+      API key, which MOSAIC keeps in its own Key Vault, and declares the deployments to publish with
+      the API each one takes.</p>
     </td>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/console-key-endpoint.png" alt="A key-authenticated endpoint's access card and declared deployments">
-      <p><b>Endpoint reached with an API key.</b> MOSAIC shows that it read the key from Key Vault
-      and the endpoint accepted it, whether each gateway can read the key itself, and the
-      deployments declared for publishing.</p>
+      <img src="docs/images/screenshots/console-key-endpoint.png" alt="A key-authenticated endpoint's access card, with Replace API key, and its declared deployments">
+      <p><b>Endpoint reached with an API key.</b> MOSAIC shows that the endpoint accepts the key it
+      keeps, whether each gateway can read the key itself, and the deployments declared for
+      publishing. An administrator can replace the key without ever seeing it again.</p>
     </td>
   </tr>
   <tr>
@@ -736,8 +738,11 @@ measured scale, not speculation.
   `AgentIdentity.Read.All`, and never writes to Entra. API Management never calls Graph.
 - Cosmos local/key authentication and ACR admin credentials are disabled.
 - Key Vault uses RBAC, soft delete, and purge protection.
-- Backend access is scoped to Cosmos data contributor, Key Vault Secrets User and Reader on
-  MOSAIC's Key Vault, API Management contributor, Log Analytics Reader, and Monitoring Reader.
+- Backend access is scoped to Cosmos data contributor, Key Vault Secrets User, Key Vault Secrets
+  Officer and Reader on MOSAIC's Key Vault, API Management contributor, Log Analytics Reader, and
+  Monitoring Reader. Secrets Officer on that one vault lets MOSAIC write an API key an
+  administrator gives it, replace it, and delete it with its endpoint
+  ([ADR 0021](docs/adr/0021-keys-mosaic-keeps.md)).
   Monitoring Reader on each API Management service lets MOSAIC read that gateway's logs for usage
   and check its diagnostic settings; MOSAIC never changes a diagnostic setting. The deployed API
   Management's identity holds Key Vault Secrets User on the same vault, so it can read the key of
@@ -778,17 +783,22 @@ measured scale, not speculation.
   right and no `listKeys` permission on any Azure AI resource, so it cannot call a model or read an
   account key even where it can enumerate deployments. The exception is one an administrator opts
   into: for an endpoint registered with an API key, MOSAIC can read that key from Key Vault. It
-  reads it only to check it, with a request that runs no model, and keeps nothing.
+  reads it only to check it, with a request that runs no model, and keeps nothing. When the
+  administrator gives MOSAIC the key itself, MOSAIC also writes it into its own Key Vault.
 - MOSAIC never reads named value secret values, and never persists or renders policy XML. Policy
   documents — including the ones MOSAIC authors when publishing — are reduced to a digest plus
   redacted facets in memory.
 - Credentials for endpoints reached with an API key are stored as Key Vault secret URIs only.
   MOSAIC resolves a secret at call time and never persists, returns, or logs its value, or puts it
-  in an error. A published endpoint's key never passes through MOSAIC: API Management reads it from
-  Key Vault itself, through a Key Vault-backed named value, and MOSAIC never calls `listValue`.
+  in an error. A key an administrator pastes into MOSAIC passes through its API once, over TLS,
+  into a new secret in MOSAIC's Key Vault. The field is write-only, a refused request never repeats
+  what it sent, and a logged traceback carries no local variables. A published endpoint's key never
+  passes through MOSAIC: API Management reads it from Key Vault itself, through a Key Vault-backed
+  named value, and MOSAIC never calls `listValue`.
   Anyone who can edit API Management policies can read any named value through a policy, and a
   request trace shows one to whoever may trace; subscriptions MOSAIC creates never allow tracing.
-  See [ADR 0018](docs/adr/0018-key-authenticated-backends.md).
+  See [ADR 0018](docs/adr/0018-key-authenticated-backends.md) and
+  [ADR 0021](docs/adr/0021-keys-mosaic-keeps.md).
 - Frontend and backend pull from ACR through their managed identities.
 
 ## Gateways
@@ -1046,27 +1056,32 @@ Foundry URL isn't registered as OpenAI-compatible: it takes the key path below.
 Register an Azure OpenAI or Foundry resource by resource ID whenever MOSAIC can reach it: MOSAIC
 then reads its deployments with its managed identity, and no key is involved. When it can't, most
 often because the resource is in another Microsoft Entra tenant and its answer is "Token tenant ...
-does not match resource tenant", register the resource by URL with the Key Vault secret that holds
-its API key. [ADR 0018](docs/adr/0018-key-authenticated-backends.md) records the design.
+does not match resource tenant", register the resource by URL with its API key, or with the Key
+Vault secret that holds it. [ADR 0018](docs/adr/0018-key-authenticated-backends.md) records the
+design, and [ADR 0021](docs/adr/0021-keys-mosaic-keeps.md) how MOSAIC keeps a key it's given.
 
-1. **Store the key in Key Vault yourself.** MOSAIC never takes a key: give it only the secret's URI.
-   The Key Vault deployed with MOSAIC (`azd env get-value KEY_VAULT_NAME`) already lets MOSAIC's API
-   and the environment's API Management read secrets, so a key stored there is ready to publish.
-   Add it as a secret in the Azure portal, or with
-   `az keyvault secret set --vault-name <vault> --name <name> --file <file holding the key>`, which
-   keeps the key out of your shell history. The file must hold the key alone, with no line break
-   at its end: MOSAIC reports a key that starts or ends with one and never sends it.
-
-   For another vault, grant Key Vault Secrets User on it to MOSAIC's API identity and to each
-   gateway that publishes from the endpoint. The endpoint's **Access** card gives the exact
-   commands.
+1. **Give MOSAIC the key, or the secret that holds it.**
+   - **Paste the key**, the console's default. MOSAIC writes it into a new secret in the Key Vault
+     deployed with it, named `mosaic-apikey-<resource>-<random>` and tagged with the endpoint, and
+     keeps only the secret's URI. It never shows the key again. The environment's API Management
+     can already read that vault, so the key is ready to publish. **Replace API key** on the
+     endpoint's **Access** card writes a new version of the same secret, and removing the endpoint
+     deletes the secret.
+   - **Or store the key in Key Vault yourself**, and give MOSAIC only the secret's URI. The Key
+     Vault deployed with MOSAIC (`azd env get-value KEY_VAULT_NAME`) already lets MOSAIC's API and
+     the environment's API Management read secrets. Add the key as a secret in the Azure portal, or
+     with `az keyvault secret set --vault-name <vault> --name <name> --file <file holding the key>`,
+     which keeps the key out of your shell history. The file must hold the key alone, with no line
+     break at its end: MOSAIC reports a key that starts or ends with one and never sends it. For
+     another vault, grant Key Vault Secrets User on it to MOSAIC's API identity and to each gateway
+     that publishes from the endpoint. The endpoint's **Access** card gives the exact commands.
 2. **Register it.** On the Models page, **Register endpoint** > **Azure AI with an API key**. Give
    the resource endpoint (`https://<resource>.services.ai.azure.com`, `.cognitiveservices.azure.com`
    or `.openai.azure.com`) or a Foundry project endpoint
-   (`https://<resource>.services.ai.azure.com/api/projects/<project>`), and the secret URI
+   (`https://<resource>.services.ai.azure.com/api/projects/<project>`), and the key or the secret URI
    (`https://<vault>.vault.azure.net/secrets/<name>`). The same request is
-   `POST /api/v1/model-endpoints` with `endpoint`, `credentialSecretUri` and, optionally,
-   `deployments`.
+   `POST /api/v1/model-endpoints` with `endpoint`, `apiKey` or `credentialSecretUri` and,
+   optionally, `deployments`.
 3. **Declare its deployments.** An API key can't list a resource's deployments: Foundry lists them
    only to a Microsoft Entra token. So name each deployment to publish and the API it takes: the
    Azure OpenAI API, the Foundry Models API, or the Anthropic Messages API for Claude. Declare them
@@ -1080,6 +1095,13 @@ What MOSAIC does with it:
 - **It stores the URI, not the key, and without its version.** MOSAIC and API Management both read
   the current version, so a rotated key reaches the gateway within four hours without touching
   MOSAIC.
+- **It keeps a key it's given only in Key Vault.** `apiKey` is write-only: no response, record, log
+  or error repeats it, and a request MOSAIC refuses isn't repeated back either. MOSAIC trims what
+  was pasted around a key and refuses anything with a space or line break inside. To replace a key
+  MOSAIC keeps, use **Replace API key**, or `PATCH /api/v1/model-endpoints/{id}` with `apiKey`.
+  API Management picks up the new version within four hours, so paste the resource's other key
+  and regenerate the old one afterwards. A key MOSAIC keeps can't be swapped for a secret URI, or
+  the reverse: remove the endpoint and register it again.
 - **It checks the key and keeps nothing.** Registration and **Check access** read the secret with
   MOSAIC's identity and send one request that runs no model (`GET /openai/models`) with the key in
   `api-key`. MOSAIC reads only the status code and drops the key. It never logs, stores or returns
