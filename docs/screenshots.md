@@ -222,7 +222,7 @@ shows both themes. Keep new shots in that pattern.
 | `console-unpublish-review` | Console | `/models`, **Unpublish** review for GPT-4o, never confirmed | Light | Unpublish review |
 | `console-analytics` | Console | `/analytics`, **Overview** tab | Dark | Analytics |
 | `console-analytics-cost` | Console | `/analytics?tab=cost` | Light | Cost |
-| `console-pricing` | Console | `/pricing`, **Prices** tab filtered to `gpt-4o` | Dark | Pricing |
+| `console-pricing` | Console | `/pricing`, **Prices** tab filtered to `2024-11-20` | Dark | Pricing |
 | `console-analytics-consumers` | Console | `/analytics?tab=consumers` | Light | Consumers |
 | `console-analytics-limits` | Console | `/analytics?tab=limits` | Dark | Grant limits |
 | `console-gateway-telemetry` | Console | Contoso AI Gateway, **Overview** tab, scrolled to **Telemetry** | Light | Gateway telemetry |

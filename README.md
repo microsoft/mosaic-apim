@@ -55,8 +55,8 @@ one under **Settings > Appearance**.
     security groups, and MOSAIC groups registered in MOSAIC, each opening its tab under Identity,
     and of the gateways, model endpoints, and MCP servers in each environment. Below them, the last
     7 days of gateway usage rolled up from Log Analytics: requests, tokens, active callers, errors,
-    and latency, the daily trend, how current each gateway's telemetry is, and the top models,
-    callers, and APIs.</td>
+    and latency, what this month has cost so far with its month-end forecast, the daily trend, how
+    current each gateway's telemetry is, and the top models, callers, and APIs.</td>
   </tr>
   <tr>
     <td><img src="docs/images/screenshots/portal-catalog-light.png" alt="The portal catalog in the light theme"></td>
@@ -167,19 +167,34 @@ one under **Settings > Appearance**.
       resources that will change.</p>
     </td>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/console-analytics.png" alt="Analytics with request, token, caller, error, and latency figures, a daily trend, and the top models, callers, and APIs">
+      <img src="docs/images/screenshots/console-analytics.png" alt="Analytics with request, token, cost, caller, error, and latency figures, a daily trend, and the top models, callers, and APIs">
       <p><b>Analytics.</b> Real gateway usage rolled up from Log Analytics, filtered by time range,
       gateway, environment, resource, and kind of subject. The overview compares the headline
-      figures with the previous period and ranks the top models, callers, and APIs, and every tab
-      exports CSV.</p>
+      figures, cost among them, with the previous period and ranks the top models, callers, and
+      APIs, and every tab exports CSV.</p>
     </td>
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/console-analytics-consumers.png" alt="The Consumers tab listing people, agents, applications, and security groups with their requests, tokens, grants, resources, and last call">
+      <img src="docs/images/screenshots/console-analytics-cost.png" alt="The Cost tab with this month's spend, the month-end forecast, the range's cost, a cost and token trend, and cost by model, consumer, and API">
+      <p><b>Cost.</b> What measured usage cost at list price: this month's spend and its month-end
+      forecast, the range's cost and trend, and cost by model, consumer, API, and deployment, with
+      a chargeback export. Usage MOSAIC can't price shows <b>No price</b>, never $0.</p>
+    </td>
+    <td width="50%" valign="top">
+      <img src="docs/images/screenshots/console-pricing.png" alt="The Pricing page listing one GPT-4o version's list prices by deployment type and region, each with its source, and a scheduled change">
+      <p><b>Pricing.</b> The list prices MOSAIC turns usage into cost with, for each cloud, each
+      linked to its source. Administrators add prices for other clouds and providers, or override
+      one from a date without changing the days before it, and see which deployments have no price
+      and why.</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/images/screenshots/console-analytics-consumers.png" alt="The Consumers tab listing people, agents, applications, and security groups with their requests, tokens, grants, resources, last call, and cost">
       <p><b>Consumers.</b> Each person, agent, application, and security group that called a
-      governed API, with requests, tokens, grants, resources, and when they were last seen. Below
-      it, the same usage by grant and by client application.</p>
+      governed API, with requests, tokens, grants, resources, when they were last seen, and what
+      their calls cost. Below it, the same usage by grant and by client application.</p>
     </td>
     <td width="50%" valign="top">
       <img src="docs/images/screenshots/console-analytics-limits.png" alt="The Limits tab showing each grant's quota and rate-limit use with reached, near-limit, and OK badges">
@@ -256,17 +271,18 @@ one under **Settings > Appearance**.
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/portal-usage.png" alt="Measured requests, tokens, errors and throttling, and busiest resource, with a daily trend and the last 24 hours">
-      <p><b>Usage &amp; cost.</b> A person's own requests, tokens, errors and throttling, and busiest
-      resource, measured from the gateway's logs across everything they hold. A daily trend by
-      environment or resource and the last 24 hours by hour show when they used it.</p>
+      <img src="docs/images/screenshots/portal-usage.png" alt="Measured requests, tokens, errors and throttling, estimated cost, and busiest resource, with a daily trend and the last 24 hours">
+      <p><b>Usage &amp; cost.</b> A person's own requests, tokens, errors and throttling, what they
+      cost at list price, and their busiest resource, measured from the gateway's logs across
+      everything they hold. A daily trend by environment or resource and the last 24 hours by hour
+      show when they used it.</p>
     </td>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/portal-usage-resources.png" alt="Usage by resource with each grant's requests, tokens, quota use, busiest minute, and usage tracking">
+      <img src="docs/images/screenshots/portal-usage-resources.png" alt="Usage by resource with each grant's requests, tokens, estimated cost, quota use, busiest minute, and usage tracking">
       <p><b>Usage by resource.</b> The same figures by environment and by granted resource, with
-      each quota's use in its current window and the busiest minute against each rate limit.
-      Usage tracking says how a grant's calls are linked, or that its usage can't be measured
-      yet.</p>
+      each one's estimated cost, or <b>No price</b> and why, each quota's use in its current window,
+      and the busiest minute against each rate limit. Usage tracking says how a grant's calls are
+      linked, or that its usage can't be measured yet.</p>
     </td>
   </tr>
 </table>
@@ -1710,7 +1726,7 @@ seed. [ADR 0020](docs/adr/0020-price-list.md) records the design. These routes n
 | GET | `/pricing/prices/{lineId}/history` | Every version of a price |
 | GET | `/pricing/unpriced` | Deployments with no price today, and adopted model APIs with calls, with why |
 | GET | `/pricing/endpoints` | Each endpoint's cloud, region, and deployments, as MOSAIC prices them |
-| PATCH | `/pricing/endpoints/{id}` | Override an endpoint's cloud or region, or set a declared deployment's type and PTUs; audited |
+| PATCH | `/pricing/endpoints/{id}` | Override an endpoint's cloud or region, or set a declared deployment's type and PTUs; audited, and refused with 409 if the facts changed since the `version` sent |
 
 ### Usage and cost in the portal
 

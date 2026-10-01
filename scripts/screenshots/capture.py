@@ -522,8 +522,8 @@ SHOTS: list[Shot] = [
         "/pricing",
         "dark",
         "priced today.",
-        # The demo's scheduled GPT-4o rate shows as a change to the list price.
-        actions=(fill_text("Find a model", "gpt-4o"), wait_for_text("Changes ")),
+        # One model version's prices, where the demo's scheduled GPT-4o rate shows as a change.
+        actions=(fill_text("Find a model", "2024-11-20"), wait_for_text("Changes ")),
         height=1300,
     ),
     Shot(
