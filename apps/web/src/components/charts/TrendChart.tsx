@@ -53,12 +53,15 @@ export function TrendChart({
   const secondary = secondaryLabel ? points(secondaryValues, secondaryPeak) : ''
   const first = chartPoints[0]?.label
   const last = chartPoints.length > 1 ? chartPoints[chartPoints.length - 1].label : undefined
+  // A line with no values has no peak. Saying "peak 0" would claim a value nobody measured.
+  const legend = (label: string, values: Array<number | null | undefined>, top: number, format?: (value: number) => string) =>
+    values.some((value) => value != null) ? `${label}, peak ${(format ?? compact.format)(top)}` : label
   return (
     <figure className={styles.figure}>
       <div className={styles.legend}>
-        <span><i className={styles.swatch} />{primaryLabel}, peak {(primaryFormat ?? compact.format)(primaryPeak)}</span>
+        <span><i className={styles.swatch} />{legend(primaryLabel, primaryValues, primaryPeak, primaryFormat)}</span>
         {secondaryLabel && (
-          <span><i className={`${styles.swatch} ${styles.swatchSecondary}`} />{secondaryLabel}, peak {(secondaryFormat ?? compact.format)(secondaryPeak)}</span>
+          <span><i className={`${styles.swatch} ${styles.swatchSecondary}`} />{legend(secondaryLabel, secondaryValues, secondaryPeak, secondaryFormat)}</span>
         )}
       </div>
       <svg className={styles.chart} viewBox="0 0 100 100" preserveAspectRatio="none" role="img" aria-label={title}>

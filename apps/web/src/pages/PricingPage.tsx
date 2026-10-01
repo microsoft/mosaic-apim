@@ -26,7 +26,7 @@ import { AddRegular } from '@fluentui/react-icons'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { type FormEvent, Fragment, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { useMosaicApi } from '../api'
+import { ApiError, useMosaicApi } from '../api'
 import { EmptyState, ErrorState, Loading } from '../components/AsyncState'
 import { PageHeader } from '../components/PageHeader'
 import { formatRate } from '../cost-format'
@@ -695,6 +695,9 @@ function EndpointEditor({ endpoint, clouds, onDone }: { endpoint: EndpointPricin
   const api = useMosaicApi()
   const queryClient = useQueryClient()
   const [draft, setDraft] = useState(() => endpointDraft(endpoint))
+  // The version the form's values came from. A refetch can bring a newer one while the form still
+  // holds what it opened with, so a save sends this one and fails if anyone saved since.
+  const [openedVersion, setOpenedVersion] = useState(() => endpoint.version ?? null)
   const save = useMutation({
     mutationFn: () => {
       const cloud = draft.cloud === '__custom' ? draft.customCloud.trim().toLowerCase() : draft.cloud
@@ -707,7 +710,7 @@ function EndpointEditor({ endpoint, clouds, onDone }: { endpoint: EndpointPricin
           capacity: item.capacity.trim() ? Number(item.capacity) : null,
         })),
         // The form holds every fact as it was when opened, so a save after someone else's must fail.
-        version: endpoint.version ?? null,
+        version: openedVersion,
       }
       return api.updateEndpointPricing(endpoint.endpointId, payload)
     },
@@ -716,10 +719,17 @@ function EndpointEditor({ endpoint, clouds, onDone }: { endpoint: EndpointPricin
       await queryClient.invalidateQueries({ queryKey: ['analytics'] })
       onDone()
     },
-    // Someone else's save leaves this form stale, so fetch what they saved for the next try.
+    // Someone else's save leaves this form stale, so fetch what they saved.
     onError: () => queryClient.invalidateQueries({ queryKey: ['pricing', 'endpoints'] }),
   })
   const editable = Object.keys(draft.deployments)
+  // Once their change has arrived, the form can start again from it.
+  const reloadable = save.error instanceof ApiError && save.error.status === 409 && (endpoint.version ?? null) !== openedVersion
+  const reload = () => {
+    setDraft(endpointDraft(endpoint))
+    setOpenedVersion(endpoint.version ?? null)
+    save.reset()
+  }
   return (
     <form
       className={styles.endpointEditor}
@@ -788,6 +798,7 @@ function EndpointEditor({ endpoint, clouds, onDone }: { endpoint: EndpointPricin
         </MessageBar>
       )}
       <div className={styles.editorActions}>
+        {reloadable && <Button onClick={reload}>Load the latest</Button>}
         <Button onClick={onDone} disabled={save.isPending}>Cancel</Button>
         <Button appearance="primary" type="submit" disabled={save.isPending}>{save.isPending ? 'Saving…' : 'Save'}</Button>
       </div>

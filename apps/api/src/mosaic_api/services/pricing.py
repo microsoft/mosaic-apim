@@ -349,10 +349,10 @@ class PricingService:
     ) -> dict[tuple[str, date], int]:
         """Each provisioned deployment's tokens by month, across every gateway and caller.
 
-        The rollup job folds a month's total only after a cycle succeeds, so this month's and
-        last month's totals can trail their days. For those two months the days are added up
-        too, and the larger figure counts, so a lagging total never lets each caller's share
-        of the month's reserved cost add up to more than the whole.
+        The rollup job folds a month's total only after a cycle succeeds, so a month's total can
+        trail its days, for example after a backfill cycle failed part way. So the days are added
+        up too, for every month they're still kept for, and the larger figure counts. Shares of
+        a month's reserved cost then never add up to more than the whole.
         """
 
         wanted = {key.casefold() for key in keys}
@@ -371,15 +371,13 @@ class PricingService:
             for entry in summary.entries:
                 if entry.key.casefold() in wanted:
                     totals[(entry.key.casefold(), month)] += entry.metrics.total_tokens
-        today = self._today()
-        recent = max(month_first(first), month_first(month_first(today) - timedelta(days=1)))
-        until = min(last, today)
-        if recent <= until:
+        until = min(last, self._today())
+        if month_first(first) <= until:
             days: dict[tuple[str, date], int] = defaultdict(int)
             for summary in await self._rollups.list_summaries(
                 tenant_id,
                 period="day",
-                start=recent.isoformat(),
+                start=month_first(first).isoformat(),
                 end=until.isoformat(),
                 dimensions=["deployment"],
             ):

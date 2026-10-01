@@ -316,6 +316,15 @@ describe('AnalyticsPage', () => {
     expect(within(reserved).queryByText('$0.00')).not.toBeInTheDocument()
   })
 
+  it('gives the cost line no peak when nothing in the range has a price', async () => {
+    api.getAnalyticsCost.mockResolvedValue({ ...costFixture, trend: costFixture.trend.map((point) => ({ ...point, cost: null })) })
+    renderPage('/analytics?tab=cost')
+
+    const chart = (await screen.findByRole('img', { name: 'Cost and tokens trend' })).closest('figure') as HTMLElement
+    expect(within(chart).queryByText(/^Cost, peak/)).not.toBeInTheDocument()
+    expect(within(chart).getByText('Tokens, peak 1.2M')).toBeVisible()
+  })
+
   it('exports the chargeback from the Cost tab', async () => {
     const user = userEvent.setup()
     renderPage('/analytics?tab=cost')

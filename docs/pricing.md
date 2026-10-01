@@ -65,8 +65,8 @@ prices for custom clouds, so their prices are entered like any other.
 
 The same tab can override an endpoint's region, which MOSAIC otherwise reads from the endpoint.
 Choosing the cloud MOSAIC detected clears the override. If another administrator saves an
-endpoint's facts after you open its form, your save is refused rather than undoing theirs. Open the
-form again, and make your change to what they saved.
+endpoint's facts after you open its form, your save is refused rather than undoing theirs. Choose
+**Load the latest** to see what they saved, then make your change again.
 
 ## How a deployment finds its price
 
@@ -163,10 +163,10 @@ the day it first saw a governed API that fronts the deployment.
 
 Each month's cost is shared among the deployment's callers by their share of its tokens that month,
 whichever day they called, counted across every gateway. Filtering Analytics to one gateway doesn't
-inflate anyone's share. A month's total can trail its days when a rollup cycle fails, so for this
-month and last MOSAIC also adds up the days, and uses the larger figure. A month nobody called the
-deployment, its cost is idle: Analytics adds it to totals, and the chargeback export charges it to
-**Reserved capacity with no calls**.
+inflate anyone's share. A month's total can trail its days when a rollup cycle fails part way, so
+MOSAIC also adds up the days, for every month it still keeps them, and uses the larger figure. A
+month nobody called the deployment, its cost is idle: Analytics adds it to totals, and the
+chargeback export charges it to **Reserved capacity with no calls**.
 
 The **Deployments** table on the **Cost** tab shows each provisioned deployment's monthly cost,
 idle cost, and utilization: its tokens against what its PTUs could serve in the range, by Microsoft

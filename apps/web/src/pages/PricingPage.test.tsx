@@ -3,6 +3,7 @@ import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { ApiError } from '../api'
 import { PricingPage } from './PricingPage'
 import type { EndpointPricingView, PriceListView, PriceView, PricingOverview, UnpricedReport } from '../types'
 
@@ -128,7 +129,10 @@ const api = {
   updateEndpointPricing: vi.fn(),
 }
 
-vi.mock('../api', () => ({ useMosaicApi: () => api }))
+vi.mock('../api', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../api')>()
+  return { ...actual, useMosaicApi: () => api }
+})
 
 function renderPage(initial = '/pricing') {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -139,6 +143,13 @@ function renderPage(initial = '/pricing') {
       </MemoryRouter>
     </QueryClientProvider>,
   )
+}
+
+// Pasting a long value is one input event rather than one per character, which keeps the form
+// tests quick when the whole suite runs at once.
+async function fill(user: ReturnType<typeof userEvent.setup>, field: HTMLElement, text: string) {
+  await user.click(field)
+  await user.paste(text)
 }
 
 describe('PricingPage', () => {
@@ -220,8 +231,8 @@ describe('PricingPage', () => {
     const effective = within(dialog).getByLabelText(/In effect from/)
     await user.clear(effective)
     await user.type(effective, '2026-11-01')
-    await user.type(within(dialog).getByRole('textbox', { name: /Source URL/ }), 'https://contoso.example/agreement')
-    await user.type(within(dialog).getByRole('textbox', { name: /Note/ }), 'Negotiated rate')
+    await fill(user, within(dialog).getByRole('textbox', { name: /Source URL/ }), 'https://contoso.example/agreement')
+    await fill(user, within(dialog).getByRole('textbox', { name: /Note/ }), 'Negotiated rate')
     await user.click(within(dialog).getByRole('button', { name: 'Save price' }))
 
     await waitFor(() => expect(api.addPrice).toHaveBeenCalled())
@@ -249,8 +260,8 @@ describe('PricingPage', () => {
     const dialog = await screen.findByRole('dialog', { name: 'Add a price' })
     await user.type(within(dialog).getByRole('textbox', { name: /Model/ }), '*')
     await user.type(within(dialog).getByRole('spinbutton', { name: /Input per 1M tokens/ }), '1')
-    await user.type(within(dialog).getByRole('textbox', { name: /Source URL/ }), 'https://contoso.example/agreement')
-    await user.type(within(dialog).getByRole('textbox', { name: /Note/ }), 'Every model')
+    await fill(user, within(dialog).getByRole('textbox', { name: /Source URL/ }), 'https://contoso.example/agreement')
+    await fill(user, within(dialog).getByRole('textbox', { name: /Note/ }), 'Every model')
     await user.click(within(dialog).getByRole('button', { name: 'Save price' }))
 
     expect(await within(dialog).findByText('A price for every model needs a publisher')).toBeVisible()
@@ -276,7 +287,8 @@ describe('PricingPage', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
 
     // The page behind a modal stays hidden until the dialog has finished closing.
-    await user.click(await within(screen.getByRole('table', { name: 'Unpriced deployments' })).findByRole('button', { name: 'Set facts' }, { timeout: 5000 }))
+    const unpricedTable = await screen.findByRole('table', { name: 'Unpriced deployments' }, { timeout: 5000 })
+    await user.click(await within(unpricedTable).findByRole('button', { name: 'Set facts' }, { timeout: 5000 }))
     expect(await screen.findByRole('table', { name: 'Endpoint pricing' })).toBeVisible()
     expect(screen.getByLabelText('claude deployment type')).toBeVisible()
   })
@@ -303,18 +315,39 @@ describe('PricingPage', () => {
     }))
   })
 
-  it('says when someone else changed an endpoint’s facts first', async () => {
+  it('never saves a form opened before someone else’s change, and can load their change', async () => {
     const user = userEvent.setup()
-    api.updateEndpointPricing.mockRejectedValue(new Error('Someone changed this endpoint’s pricing after you opened it. Reload it and make your change again.'))
+    api.updateEndpointPricing.mockRejectedValue(
+      new ApiError('Someone changed this endpoint’s pricing after you opened it. Reload it and make your change again.', 409),
+    )
     renderPage('/pricing?tab=endpoints')
 
     const table = await screen.findByRole('table', { name: 'Endpoint pricing' })
     const partner = within(within(table).getByText('Fabrikam partner Foundry').closest('tr') as HTMLElement)
     await user.click(partner.getByRole('button', { name: 'Edit' }))
+    // Another administrator sets claude's type while this form is open.
+    const theirs = endpoints.map((item) => item.endpointId === 'endpoint-partner'
+      ? {
+          ...item,
+          version: 'etag-partner-2',
+          deployments: [{ ...item.deployments[0], deploymentType: 'GlobalStandard', deploymentTypeSource: 'admin' as const, priced: true, reason: undefined }],
+        }
+      : item)
+    api.listEndpointPricing.mockResolvedValue(theirs)
     await user.click(screen.getByRole('button', { name: 'Save' }))
 
     expect(await screen.findByText(/Someone changed this endpoint’s pricing after you opened it/)).toBeVisible()
-    await waitFor(() => expect(api.listEndpointPricing).toHaveBeenCalledTimes(2))
+    // Saving again still sends the version the form came from, so it can't undo their change.
+    const reload = await screen.findByRole('button', { name: 'Load the latest' })
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(api.updateEndpointPricing).toHaveBeenCalledTimes(2))
+    expect(api.updateEndpointPricing.mock.calls.map((call) => call[1].version)).toEqual(['etag-partner-1', 'etag-partner-1'])
+
+    await user.click(reload)
+    expect(screen.getByLabelText('claude deployment type')).toHaveValue('GlobalStandard')
+    api.updateEndpointPricing.mockResolvedValue(theirs[1])
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(api.updateEndpointPricing).toHaveBeenLastCalledWith('endpoint-partner', expect.objectContaining({ version: 'etag-partner-2' })))
   })
 
   it('lists the seed’s sources', async () => {

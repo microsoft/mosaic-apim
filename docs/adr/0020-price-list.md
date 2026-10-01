@@ -92,8 +92,8 @@ audit event, `pricing.priceRecorded`. It's never updated or deleted.
 - These facts are an `endpointPricing` item per endpoint in `desired-state`, saved only over the
   version that was read and audited as `pricing.endpointUpdated`. The console's form sends the
   version it was opened on, and a save is refused if someone saved since, so a form opened
-  earlier can't undo a newer change. A request without a version changes only the fields it
-  names, merged into what's saved.
+  earlier can't undo a newer change. After a refusal, the form offers to load the newer facts.
+  A request without a version changes only the fields it names, merged into what's saved.
 - A price applies when its cloud matches, its model or one of its aliases names the deployment's
   model, or it's for every model, and every other fact it names matches. A publisher is compared
   only when the deployment's is known. A regional price applies only in a known region. A PTU
@@ -129,8 +129,9 @@ only the days from its date, and a correction changes history the next time anyo
 - Each month's cost is shared among the deployment's callers by their share of its tokens that
   month, whichever day they called, so a month MOSAIC reads only as a total costs the same as its
   days. Tokens are counted across every gateway, so filtering a report never inflates anyone's
-  share, and for this month and last, whose totals can trail their days, the days are added up
-  too. A month with no calls leaves its cost idle, and reports and the chargeback show it apart.
+  share. A month's total can trail its days when a rollup cycle fails part way, so the days are
+  added up too, for every month MOSAIC still keeps them, and the larger figure counts. A month with
+  no calls leaves its cost idle, and reports and the chargeback show it apart.
 - Utilization compares the deployment's tokens with what its PTUs serve, by Microsoft Learn's
   figures for the model, and is shown next to its cost.
 

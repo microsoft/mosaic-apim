@@ -132,6 +132,22 @@ describe('usage-format', () => {
     expect(aggregated.totals).toBe(report.totals)
   })
 
+  it('counts a partly priced resource as leaving cost out when filtered, as the server does', () => {
+    const partly = {
+      ...report,
+      byResource: [
+        row({ entitlementId: 'grant-1', estimatedCost: 0.01, costNote: 'Part of this usage has no price.' }),
+        report.byResource[1],
+      ],
+    }
+
+    const aggregated = aggregateUsage(partly, { environment: 'production', resource: 'all' })
+
+    expect(aggregated.totals.estimatedCost).toBe(0.01)
+    expect(aggregated.totals.costExcludedResources).toBe(1)
+    expect(aggregated.byEnvironment.find((item) => item.environment === 'production')?.costExcludedResources).toBe(1)
+  })
+
   it('counts resources whose usage is not measured in each filtered environment', () => {
     const unmeasured = row({
       entitlementId: 'grant-3',

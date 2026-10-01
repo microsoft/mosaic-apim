@@ -637,6 +637,37 @@ async def test_a_month_total_that_lags_its_days_never_overcharges_a_share(
     assert row["estimatedCost"] == pytest.approx(MARCH_SO_FAR * 0.25)
 
 
+async def test_an_older_month_total_that_lags_its_days_never_overcharges_a_share(
+    harness: Harness,
+) -> None:
+    await rolled_up(harness)
+    # A backfill cycle that failed after writing 16 March left March's total without that day.
+    summaries = harness.state.usage_rollup_repository._summaries
+    for summary in summaries.values():
+        if (summary.period, summary.dimension, summary.period_start) == (
+            "month",
+            "deployment",
+            "2026-03-01",
+        ):
+            for entry in summary.entries:
+                if entry.key.casefold() == RESERVED.casefold():
+                    entry.metrics.total_tokens -= 100_000
+    harness.now = datetime(2026, 5, 18, 15, 30, tzinfo=UTC)
+    march = DAILY * 31
+
+    report = harness.get(
+        "/api/v1/analytics/consumers", range="custom", start="2026-03-01", end="2026-03-31"
+    )
+
+    people = {row["label"]: row["cost"] for row in report["people"]}
+    assert people["Bob"] == pytest.approx(march * 0.75)
+    assert people["Carol"] == pytest.approx(march * 0.25)
+    harness.sign_in(BOB, ["User"], frozenset())
+    bob = harness.get("/api/v1/me/usage", period="90d")
+    [row] = bob["byResource"]
+    assert row["estimatedCost"] == pytest.approx(march * 0.75)
+
+
 async def test_unattributed_calls_carry_cost(harness: Harness) -> None:
     await rolled_up(harness)
 
