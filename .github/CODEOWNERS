@@ -1,3 +1,4 @@
-# Code owners are asked to review every pull request that touches the files they own, and the main
-# branch ruleset requires one of them to approve it.
+# Code owners are asked to review every pull request that touches the files they own, including
+# Dependabot's. The main branch ruleset requires an approval, but it may come from anyone with write
+# access, so a second maintainer's review can unblock a code owner's own pull request.
 * @paullizer

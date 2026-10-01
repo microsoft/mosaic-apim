@@ -557,10 +557,11 @@ Changes reach `main` only through a pull request. Two rulesets protect the branc
   `CI result` check and the Microsoft CLA check (`license/cla`), be up to date with `main`, and
   have every review conversation resolved. It merges by squash or rebase, so the history stays
   linear. Nobody can force-push to `main` or delete it. Copilot reviews each new pull request.
-- **Require review on main** adds one approval from someone other than the last person to push,
-  and a [code owner](.github/CODEOWNERS) must approve. A new push dismisses earlier approvals.
-  Repository administrators can bypass this ruleset, and only this one, when merging a pull
-  request. That lets a sole maintainer merge their own work, and GitHub records each bypass.
+- **Require review on main** adds one approval from someone with write access other than the last
+  person to push. A new push dismisses earlier approvals. [Code owners](.github/CODEOWNERS) are
+  asked to review each pull request. Repository administrators can bypass this ruleset, and only
+  this one, when merging a pull request. That lets a sole maintainer merge their own work, and
+  GitHub records each bypass.
 
 CodeQL scans `main` on every push and weekly, and also scans pull requests opened from branches in
 this repository. It doesn't gate merging, because it doesn't scan pull requests from forks.
