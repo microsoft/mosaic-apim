@@ -75,25 +75,39 @@ Where the evidence of group membership comes from depends on who asks:
   preselected. One open request per resource and cost center. An approval grants under that cost
   center, or another the administrator chooses that the requester may charge.
 
-**Removing a member revokes their grants under it.**
-- The grant is disabled and records why, as a `revocation`. The next apply deletes its key rather
-  than suspending it. An administrator can turn it back on only once its subject may charge the
-  cost center again.
-- The member is removed, and the principal's default reset if it was this cost center, before
-  the grants are revoked. Any grant written meanwhile checks the membership again once it's saved,
-  and revokes itself if it no longer holds. Either way, no grant outlives the membership it relied
-  on, and repeating a removal that failed part way finishes it.
-- Removing a security group also checks every direct grant under the cost center whose subject
-  might have charged it only through that group. Without Graph, a grant keeps only what its
-  approved request recorded, and a grant nothing proves eligible is revoked: this fails closed.
+**Losing the right to charge a cost center revokes the grants that relied on it.**
+- A revoked grant is disabled and records why, as a `revocation`. The next apply deletes its key
+  rather than suspending it. An administrator can turn it back on only once its subject may charge
+  the cost center again.
+- Four changes can take that right away:
+  - removing a member, which rechecks the member's grants, or every grant under the cost center
+    when a security group leaves, since people may have charged it only through the group;
+  - moving a principal's default, which rechecks its grants under the former default;
+  - moving the tenant's default, which rechecks every grant under the former one;
+  - turning a grant back on, which checks its subject may charge its cost center, whether it was
+    revoked or turned off by hand.
+- A recheck revokes each grant it covers whose subject can no longer charge the cost center, and
+  keeps the rest. Without Graph, a grant keeps only the groups its approved request recorded, and
+  a grant nothing proves eligible is revoked: this fails closed.
 - Leaving the tenant's default revokes nothing, because everyone may charge it.
-- Every other way of losing the right to charge a cost center revokes the same way. Changing a
-  principal's default rechecks its grants under the former default. Changing the tenant's default
-  rechecks every grant under the former one, including security-group grants. Turning a grant
-  back on checks its subject may charge its cost center, whether it was revoked or turned off by
-  hand. A principal a cost center lists can't be deleted until it's removed from the cost center.
-  Changing a default, the tenant's default, and deleting a cost center hold the same tenant-wide
-  lease, so a cost center can't be deleted while it becomes someone's default.
+
+**A recheck is recorded before the change, and finished even when it's interrupted.**
+- The cost center records a `pendingRecheck` before the change that may need it. A member's
+  removal saves both in one write. Then the change is saved, and the recheck runs.
+- Revoking a grant needs its publication's lock, which an apply holds while it runs. A grant whose
+  lock is busy stays pending, so the recheck narrows to the grants it has left instead of stopping.
+- Every later removal, default move, or tenant-default move runs the pending rechecks again, and so
+  does **Check grants again** on the cost center (`POST /cost-centers/{id}/recheck`). Repeating the
+  change that was interrupted finishes it.
+- Until a recheck finishes, applies leave out every grant it covers, with a plan warning that
+  says why. So no apply can give back access a change took away, however the change was cut short.
+- A grant written while a change runs is checked again once it's saved, before its publication's
+  lock is released. It was either checked against the change, or already saved when the recheck
+  listed the grants, so no grant outlives the right it relied on.
+- A principal a cost center lists can't be deleted until it's removed from the cost center.
+  Onboarding a principal, changing a default, changing the tenant's default, and deleting a cost
+  center hold the same tenant-wide lease. So a cost center can't be deleted while it becomes
+  someone's default.
 
 **The gateway selects a grant with the `x-mosaic-cost-center` header.**
 - The policy reads the header once. It must be a single value that matches the code pattern after
@@ -171,9 +185,11 @@ Where the evidence of group membership comes from depends on who asks:
 - `AnalyticsService.cost_center_spend` returns one cost center's spend this month and its
   forecast, for background checks such as budgets.
 - The portal shows a person their own use, their limits, and their rate-limit use over time, as
-  before. For each cost center they hold a grant under, it adds the cost center's total this month,
-  everyone's calls together, against its pooled quota on each resource they hold there. It never
-  shows who else called or how much any one person used.
+  before. For each cost center they hold an enabled grant under, it adds the cost center's total
+  this month, everyone's calls together, and the total on each resource they hold there that has a
+  pooled quota, against that quota. A resource without one gets no total of its own: there's no
+  quota to compare, and a model one other person uses would show their use. It never shows who
+  else called, how many did, or what any one person used.
 
 ## Consequences
 
@@ -187,8 +203,9 @@ Where the evidence of group membership comes from depends on who asks:
 - Group membership is still read from the token at call time, so removing someone from a group
   takes effect when their token expires (ADR 0016).
 - A pooled quota is per gateway. The same model on two gateways has two pools.
-- A cost center's aggregate in the portal is a total. When only two people share it, each can
-  infer the other's use from it and their own.
+- A cost center's totals in the portal are totals, including the person's own calls. When only
+  one other grant charges the cost center, or a pooled resource under it, subtracting their own use
+  shows the other's.
 
 ## Alternatives considered
 

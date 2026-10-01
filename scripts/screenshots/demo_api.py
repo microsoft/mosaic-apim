@@ -16,8 +16,8 @@ this cannot be pointed at a deployed MOSAIC.
 """
 
 import argparse
-from collections.abc import AsyncIterator, Iterable
-from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator, Iterable, Iterator
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, cast
@@ -67,6 +67,7 @@ from mosaic_api.domain import (
     PublishRunStatus,
     RequestEnforcement,
     TokenEnforcement,
+    deterministic_id,
     general_cost_center_id,
     mcp_server_id,
     model_api_id,
@@ -94,6 +95,7 @@ from mosaic_api.services import (
     PublishingService,
     UsageService,
 )
+from mosaic_api.services import cost_centers as cost_center_service
 from mosaic_api.services.analytics import AnalyticsService
 from mosaic_api.services.cost_centers import CostCenterService
 from mosaic_api.services.directory import Actor
@@ -803,6 +805,29 @@ def _date_history(
         )
 
 
+@contextmanager
+def _stable_cost_center_id(tenant_id: str, code: str) -> Iterator[None]:
+    """Give the cost center created inside it an ID that's the same every run.
+
+    A grant's ID includes its cost center's, and pages order grants by ID when nothing else tells
+    them apart. Random IDs would reorder those pages, and every screenshot of them, on each run.
+    Only the demo does this: MOSAIC itself names a new cost center at random.
+    """
+
+    original = cost_center_service.new_id
+
+    def stable(prefix: str) -> str:
+        if prefix == "costCenter":
+            return deterministic_id(prefix, tenant_id, "demo", code)
+        return original(prefix)
+
+    cost_center_service.new_id = stable
+    try:
+        yield
+    finally:
+        cost_center_service.new_id = original
+
+
 async def seed_estate(services: DemoServices, tenant_id: str) -> Estate:
     """Build the Contoso estate through MOSAIC's own services, in the order an operator would."""
 
@@ -812,16 +837,17 @@ async def seed_estate(services: DemoServices, tenant_id: str) -> Estate:
     # Cost centers first, so onboarding can charge each person to theirs.
     estate.cost_centers["general"] = general_cost_center_id(tenant_id)
     for code, name, description, owners, keys_allowed in COST_CENTERS:
-        cost_center = await services.cost_centers.create_cost_center(
-            admin,
-            CostCenterCreate(
-                name=name,
-                code=code,
-                description=description,
-                owners=owners,
-                keys_allowed=keys_allowed,
-            ),
-        )
+        with _stable_cost_center_id(tenant_id, code):
+            cost_center = await services.cost_centers.create_cost_center(
+                admin,
+                CostCenterCreate(
+                    name=name,
+                    code=code,
+                    description=description,
+                    owners=owners,
+                    keys_allowed=keys_allowed,
+                ),
+            )
         estate.cost_centers[code] = cost_center.id
     await services.cost_centers.update_cost_center(
         admin,

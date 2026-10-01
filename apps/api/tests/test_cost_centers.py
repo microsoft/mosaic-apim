@@ -34,6 +34,7 @@ from mosaic_api.domain import (
     EntitlementSubject,
     ModelApi,
     Principal,
+    PrincipalCreate,
     PrincipalKind,
     entitlement_id,
     general_cost_center_id,
@@ -43,7 +44,7 @@ from mosaic_api.errors import ConflictError, NotFoundError, ValidationError
 from mosaic_api.main import create_app
 from mosaic_api.repositories import InMemoryCostCenterRepository, InMemoryGatewayRepository
 from mosaic_api.services.cost_centers import CostCenterService
-from mosaic_api.services.directory import Actor
+from mosaic_api.services.directory import Actor, DirectoryService
 from mosaic_api.services.entitlements import EntitlementService
 from mosaic_api.services.model_access import cost_center_intent, entitlement_intent_digest
 
@@ -771,3 +772,154 @@ async def test_turning_a_grant_back_on_checks_its_cost_center_again(client: Test
     assert refused.status_code == 422
     assert refused.json()["details"]["reason"] == "notACostCenterMember"
     assert _ok(client.get(f"/api/v1/entitlements/{granted['id']}"))["enabled"] is False
+
+
+# -- rechecks that can't finish at once ---------------------------------------------------------
+
+
+async def _busy(*_args: Any, **_kwargs: Any) -> Any:
+    raise ConflictError("Another change to this model is already running")
+
+
+async def test_a_recheck_a_busy_model_interrupts_is_finished_later(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _seed_model(client)
+    research = _create(client, "Research", "RES")
+    elsewhere = _principal(client, OTHER, defaultCostCenterId=research["id"])
+    _ok(client.put(f"/api/v1/cost-centers/{research['id']}/members/{elsewhere['id']}"))
+    granted = _ok(_grant(client, elsewhere, GENERAL), 201)
+    monkeypatch.setattr(_service(client), "revoke_for_cost_center", _busy)
+
+    # The move is saved. Revoking waits for the model, so the recheck stays pending.
+    _ok(client.put("/api/v1/cost-center-settings", json={"defaultCostCenterId": research["id"]}))
+
+    general = _ok(client.get(f"/api/v1/cost-centers/{GENERAL}"))
+    [pending] = general["pendingRechecks"]
+    assert pending["reason"] == "tenantDefaultChanged"
+    assert pending["entitlementIds"] == [granted["id"]]
+    assert _ok(client.get(f"/api/v1/entitlements/{granted['id']}"))["enabled"] is True
+
+    monkeypatch.undo()
+    rechecked = _ok(client.post(f"/api/v1/cost-centers/{GENERAL}/recheck"))
+
+    assert rechecked["pendingRechecks"] == []
+    revoked = _ok(client.get(f"/api/v1/entitlements/{granted['id']}"))
+    assert revoked["enabled"] is False
+    assert revoked["revocation"]["costCenterId"] == GENERAL
+
+
+async def test_repeating_a_group_removal_finishes_its_recheck(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _seed_model(client)
+    research = _create(client, "Research", "RES")
+    group = _principal(client, GROUP, kind="securityGroup")
+    _ok(client.put(f"/api/v1/cost-centers/{research['id']}/members/{group['id']}"))
+    service = _service(client)
+    request = await service.create_access_request(
+        Actor(object_id=PERSON, tenant_id=TENANT, group_ids=frozenset({GROUP})),
+        AccessRequestCreate(resource=RESOURCE, cost_center_id=research["id"]),
+    )
+    approved = await service.approve_access_request(ADMIN, request.id, AccessRequestApproval())
+    through_group = approved.granted_entitlement_id or ""
+    monkeypatch.setattr(service, "revoke_for_cost_center", _busy)
+
+    view = _ok(client.delete(f"/api/v1/cost-centers/{research['id']}/members/{group['id']}"))
+
+    assert group["id"] not in {item["principalId"] for item in view["memberDetails"]}
+    [pending] = view["pendingRechecks"]
+    assert pending["subjectId"] is None
+    assert pending["entitlementIds"] == [through_group]
+    assert (await service.get_entitlement(ADMIN, through_group)).revocation is None
+
+    # The group isn't listed any more, but repeating its removal finishes the recheck.
+    monkeypatch.undo()
+    view = _ok(client.delete(f"/api/v1/cost-centers/{research['id']}/members/{group['id']}"))
+
+    assert view["pendingRechecks"] == []
+    assert (await service.get_entitlement(ADMIN, through_group)).revocation is not None
+
+
+async def test_repeating_a_default_change_finishes_its_recheck(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _seed_model(client)
+    research = _create(client, "Research", "RES")
+    person = _principal(client, PERSON, defaultCostCenterId=research["id"])
+    granted = _ok(_grant(client, person, research["id"]), 201)
+    monkeypatch.setattr(_service(client), "revoke_for_cost_center", _busy)
+
+    _ok(client.patch(f"/api/v1/principals/{person['id']}", json={"defaultCostCenterId": GENERAL}))
+
+    [pending] = _ok(client.get(f"/api/v1/cost-centers/{research['id']}"))["pendingRechecks"]
+    assert (pending["reason"], pending["subjectId"]) == ("defaultChanged", person["id"])
+    assert pending["entitlementIds"] == [granted["id"]]
+    assert _ok(client.get(f"/api/v1/entitlements/{granted['id']}"))["enabled"] is True
+
+    monkeypatch.undo()
+    _ok(client.patch(f"/api/v1/principals/{person['id']}", json={"defaultCostCenterId": GENERAL}))
+
+    assert _ok(client.get(f"/api/v1/cost-centers/{research['id']}"))["pendingRechecks"] == []
+    revoked = _ok(client.get(f"/api/v1/entitlements/{granted['id']}"))
+    assert revoked["revocation"]["costCenterId"] == research["id"]
+
+
+async def test_a_default_change_that_fails_leaves_no_recheck_behind(client: TestClient) -> None:
+    await _seed_model(client)
+    research = _create(client, "Research", "RES")
+    person = _principal(client, PERSON, defaultCostCenterId=research["id"])
+    granted = _ok(_grant(client, person, research["id"]), 201)
+
+    refused = client.patch(
+        f"/api/v1/principals/{person['id']}", json={"defaultCostCenterId": "costCenter_missing"}
+    )
+
+    assert refused.status_code == 422
+    assert _ok(client.get(f"/api/v1/cost-centers/{research['id']}"))["pendingRechecks"] == []
+    assert _ok(client.get(f"/api/v1/entitlements/{granted['id']}"))["enabled"] is True
+
+
+async def test_onboarding_cant_take_a_default_deleted_meanwhile(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    research = _create(client, "Research", "RES")
+    directory: DirectoryService = client.app.state.directory_service
+    cost_centers = _cost_centers(client)
+
+    async def deleted_during_lookup(*_args: Any, **_kwargs: Any) -> None:
+        await cost_centers.delete_cost_center(ADMIN, research["id"])
+
+    monkeypatch.setattr(directory, "_verify_principal_request", deleted_during_lookup)
+
+    with pytest.raises(ValidationError, match="No cost center has that ID"):
+        await directory.create_principal(
+            ADMIN,
+            PrincipalCreate(object_id=PERSON, kind="user", default_cost_center_id=research["id"]),
+        )
+    assert await client.app.state.repository.find_principal_by_object_id(TENANT, PERSON) is None
+
+
+async def test_removing_a_member_keeps_grants_they_still_charge_through_a_group(
+    client: TestClient,
+) -> None:
+    await _seed_model(client)
+    research = _create(client, "Research", "RES")
+    group = _principal(client, GROUP, kind="securityGroup")
+    for principal_id in (group["id"], _principal(client, PERSON)["id"]):
+        _ok(client.put(f"/api/v1/cost-centers/{research['id']}/members/{principal_id}"))
+    service = _service(client)
+    request = await service.create_access_request(
+        Actor(object_id=PERSON, tenant_id=TENANT, group_ids=frozenset({GROUP})),
+        AccessRequestCreate(resource=RESOURCE, cost_center_id=research["id"]),
+    )
+    approved = await service.approve_access_request(ADMIN, request.id, AccessRequestApproval())
+    granted = approved.granted_entitlement_id or ""
+    person = await service.get_entitlement(ADMIN, granted)
+
+    view = _ok(
+        client.delete(f"/api/v1/cost-centers/{research['id']}/members/{person.subject.id}")
+    )
+
+    assert view["pendingRechecks"] == []
+    assert (await service.get_entitlement(ADMIN, granted)).revocation is None

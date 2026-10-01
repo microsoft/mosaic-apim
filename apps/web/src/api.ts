@@ -179,6 +179,7 @@ export interface MosaicApi {
   addCostCenterMember(costCenterId: string, principalId: string): Promise<CostCenter>
   removeCostCenterMember(costCenterId: string, principalId: string): Promise<CostCenter>
   updateCostCenterLimits(costCenterId: string, limits: CostCenterLimit[]): Promise<CostCenter>
+  recheckCostCenter(costCenterId: string): Promise<CostCenter>
   getCostCenterSettings(): Promise<CostCenterSettings>
   updateCostCenterSettings(payload: { defaultCostCenterId: string }): Promise<CostCenterSettings>
   listPrincipals(): Promise<Principal[]>
@@ -603,6 +604,10 @@ export function useMosaicApi(): MosaicApi {
         request<CostCenter>(`/api/v1/cost-centers/${encodeURIComponent(id)}/limits`, {
           method: 'PUT',
           body: { limits },
+        }),
+      recheckCostCenter: (id) =>
+        request<CostCenter>(`/api/v1/cost-centers/${encodeURIComponent(id)}/recheck`, {
+          method: 'POST',
         }),
       getCostCenterSettings: () => request<CostCenterSettings>('/api/v1/cost-center-settings'),
       updateCostCenterSettings: (payload) =>

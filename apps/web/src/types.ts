@@ -98,6 +98,21 @@ export interface CostCenterMemberView {
   addedAt: string | null
 }
 
+/**
+ * Grants under a cost center that MOSAIC hasn't finished checking after a change that may have
+ * stopped their subjects charging it. Applies leave the grants it covers out until it's settled.
+ */
+export interface PendingRecheck {
+  id: string
+  reason: 'memberRemoved' | 'defaultChanged' | 'tenantDefaultChanged'
+  /** The principal whose grants to check, or null for every grant under the cost center. */
+  subjectId: string | null
+  /** The grants it has left, once a check couldn't finish. */
+  entitlementIds: string[] | null
+  requestedAt: string
+  requestedBy: string | null
+}
+
 export interface CostCenter {
   id: string
   tenantId: string
@@ -110,6 +125,7 @@ export interface CostCenter {
   keysAllowed: boolean
   limits: CostCenterLimit[]
   builtIn: boolean
+  pendingRechecks?: PendingRecheck[]
   createdAt: string
   updatedAt: string
   isTenantDefault: boolean

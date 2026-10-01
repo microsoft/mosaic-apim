@@ -96,6 +96,7 @@ describe('useMosaicApi', () => {
     await result.current.rotateEntitlementKey('grant 1', 'secondary')
     await result.current.deleteEntitlementKey('grant 1')
     await result.current.deleteCostCenter('cc 1')
+    await result.current.recheckCostCenter('cc 1')
 
     expect(fetchMock.mock.calls.map(([url]) => String(url).replace(/^https?:\/\/[^/]+/, ''))).toEqual([
       '/api/v1/cost-centers',
@@ -113,7 +114,9 @@ describe('useMosaicApi', () => {
       '/api/v1/entitlements/grant%201/keys/rotate',
       '/api/v1/entitlements/grant%201/keys',
       '/api/v1/cost-centers/cc%201',
+      '/api/v1/cost-centers/cc%201/recheck',
     ])
+    expect(fetchMock.mock.calls[15][1]).toMatchObject({ method: 'POST' })
     expect(fetchMock.mock.calls[6][1]).toMatchObject({ method: 'PUT' })
     expect(JSON.parse(fetchMock.mock.calls[6][1].body)).toEqual({ limits: [] })
     expect(fetchMock.mock.calls[12][1]).toMatchObject({ method: 'POST', cache: 'no-store' })

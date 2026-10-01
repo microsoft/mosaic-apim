@@ -1,6 +1,7 @@
 """Administering cost centers, and which of them a caller may charge. See ADR 0021."""
 
 from collections import Counter
+from contextlib import suppress
 from typing import Any
 
 import structlog
@@ -18,10 +19,12 @@ from mosaic_api.cost_centers import (
     CostCenterSettingsUpdate,
     CostCenterUpdate,
     CostCenterView,
+    PendingRecheck,
     PortalCostCenter,
     default_settings,
     general_cost_center,
     tenant_default_id,
+    with_recheck,
 )
 from mosaic_api.domain import (
     AuditEvent,
@@ -54,6 +57,75 @@ async def load_book(repository: CostCenterRepository | None, tenant_id: str) -> 
     return CostCenterBook(tenant_id, cost_centers, settings)
 
 
+def cost_center_audit(
+    actor: Actor,
+    action: str,
+    resource_id: str,
+    details: dict[str, Any] | None = None,
+    *,
+    resource_type: str = "costCenter",
+) -> AuditEvent:
+    return AuditEvent(
+        id=new_id("audit"),
+        tenant_id=actor.tenant_id,
+        action=action,
+        resource_type=resource_type,
+        resource_id=resource_id,
+        actor_object_id=actor.object_id,
+        details=details or {},
+    )
+
+
+async def stored_cost_center(
+    repository: CostCenterRepository, actor: Actor, cost_center_id: str
+) -> CostCenter:
+    """A cost center as saved. General is saved the first time anyone changes it."""
+
+    found = await repository.get_cost_center(actor.tenant_id, cost_center_id)
+    if found is not None:
+        return found
+    if cost_center_id == general_cost_center_id(actor.tenant_id):
+        general = general_cost_center(actor.tenant_id)
+        try:
+            await repository.create_cost_center(
+                general,
+                cost_center_audit(actor, "costCenter.created", general.id, {"builtIn": True}),
+            )
+        except ConflictError:
+            pass
+        stored = await repository.get_cost_center(actor.tenant_id, cost_center_id)
+        if stored is not None:
+            return stored
+    raise NotFoundError("Cost center not found", details={"id": cost_center_id})
+
+
+async def record_recheck(
+    repository: CostCenterRepository,
+    actor: Actor,
+    cost_center_id: str,
+    recheck: PendingRecheck,
+) -> None:
+    """Record that grants under the cost center need checking again, before the change that may
+    stop their subjects charging it. A failure after that change then leaves the recheck to
+    finish, and applies leave the grants it covers out until it does."""
+
+    current = await stored_cost_center(repository, actor, cost_center_id)
+    pending = with_recheck(current.pending_rechecks, recheck)
+    if pending == current.pending_rechecks:
+        return
+    await repository.save_cost_center(
+        current.model_copy(
+            update={"pending_rechecks": pending, "updated_at": utc_now()}, deep=True
+        ),
+        cost_center_audit(
+            actor,
+            "costCenter.recheckRequested",
+            current.id,
+            {"reason": recheck.reason, "subjectId": recheck.subject_id},
+        ),
+    )
+
+
 class CostCenterService:
     def __init__(
         self,
@@ -81,15 +153,7 @@ class CostCenterService:
         *,
         resource_type: str = "costCenter",
     ) -> AuditEvent:
-        return AuditEvent(
-            id=new_id("audit"),
-            tenant_id=actor.tenant_id,
-            action=action,
-            resource_type=resource_type,
-            resource_id=resource_id,
-            actor_object_id=actor.object_id,
-            details=details or {},
-        )
+        return cost_center_audit(actor, action, resource_id, details, resource_type=resource_type)
 
     async def book(self, tenant_id: str) -> CostCenterBook:
         return await load_book(self._repository, tenant_id)
@@ -97,24 +161,7 @@ class CostCenterService:
     # -- reading ------------------------------------------------------------------------------
 
     async def _stored(self, actor: Actor, cost_center_id: str) -> CostCenter:
-        """A cost center as saved. General is saved the first time anyone changes it."""
-
-        found = await self._repository.get_cost_center(actor.tenant_id, cost_center_id)
-        if found is not None:
-            return found
-        if cost_center_id == general_cost_center_id(actor.tenant_id):
-            general = general_cost_center(actor.tenant_id)
-            try:
-                await self._repository.create_cost_center(
-                    general,
-                    self._audit(actor, "costCenter.created", general.id, {"builtIn": True}),
-                )
-            except ConflictError:
-                pass
-            stored = await self._repository.get_cost_center(actor.tenant_id, cost_center_id)
-            if stored is not None:
-                return stored
-        raise NotFoundError("Cost center not found", details={"id": cost_center_id})
+        return await stored_cost_center(self._repository, actor, cost_center_id)
 
     async def _views(self, actor: Actor, book: CostCenterBook) -> list[CostCenterView]:
         principals = {
@@ -380,13 +427,16 @@ class CostCenterService:
     async def remove_member(
         self, actor: Actor, cost_center_id: str, principal_id: str
     ) -> CostCenterView:
-        """Stop a principal charging the cost center, and revoke its grants under it.
+        """Stop a principal charging the cost center, and revoke the grants that relied on it.
 
-        The member is removed, and the principal's default reset if it was this cost center,
-        before its grants are revoked. A grant written meanwhile checks the membership again
-        after it's saved (see ``EntitlementService._revoke_if_ineligible``), so none outlives the
-        membership. A failure part way leaves grants to revoke: repeating the request finishes
-        the job. The next apply of each grant's model deletes its key.
+        One save removes the member and records a recheck of the grants that may have relied on
+        it: the principal's own, or every grant under the cost center when a security group
+        leaves, since people may have charged it only through the group. The principal's default
+        is reset if it was this cost center. Then the recheck revokes each covered grant whose
+        subject can no longer charge the cost center (see ``EntitlementService.resume_rechecks``).
+        A grant whose model is busy stays pending, and applies leave it out until it's checked.
+        Repeating the request, or checking the cost center's grants again, finishes the job. The
+        next apply of each revoked grant's model deletes its key.
         """
 
         current = await self._stored(actor, cost_center_id)
@@ -407,11 +457,32 @@ class CostCenterService:
             ]
         )
         if not explicit and not is_default and not remaining:
+            if current.pending_rechecks:
+                # Repeating a removal whose recheck couldn't finish finishes it.
+                await self._entitlements.resume_rechecks(actor, current.id)
+                return await self.get_cost_center(actor, cost_center_id)
             raise NotFoundError(
                 "That principal isn't a member of this cost center",
                 details={"costCenterId": cost_center_id, "principalId": principal_id},
             )
-        if explicit:
+        # Everyone may charge the tenant's default, so leaving it revokes nothing. A member whose
+        # principal is gone may have been a security group, so every grant is checked then.
+        group_left = explicit and (
+            principal is None or principal.kind == PrincipalKind.SECURITY_GROUP
+        )
+        pending = (
+            current.pending_rechecks
+            if charged
+            else with_recheck(
+                current.pending_rechecks,
+                PendingRecheck(
+                    reason="memberRemoved",
+                    subject_id=None if group_left else principal_id,
+                    requested_by=actor.object_id,
+                ),
+            )
+        )
+        if explicit or pending != current.pending_rechecks:
             await self._repository.save_cost_center(
                 current.model_copy(
                     update={
@@ -420,6 +491,7 @@ class CostCenterService:
                             for member in current.members
                             if member.principal_id != principal_id
                         ],
+                        "pending_rechecks": pending,
                         "updated_at": utc_now(),
                     },
                     deep=True,
@@ -428,7 +500,7 @@ class CostCenterService:
                     actor,
                     "costCenter.memberRemoved",
                     cost_center_id,
-                    {"principalId": principal_id},
+                    {"principalId": principal_id, "listed": explicit},
                 ),
             )
         if is_default and principal is not None:
@@ -444,24 +516,24 @@ class CostCenterService:
                     resource_type="principal",
                 ),
             )
-        # Everyone may charge the tenant's default, so leaving it revokes nothing.
-        revoked: list[str] = []
-        if not charged:
-            for grant in await self._entitlement_records.list_entitlements(
-                actor.tenant_id, subject_id=principal_id
-            ):
-                if grant.cost_center_id != current.id or grant.revocation is not None:
-                    continue
-                await self._entitlements.revoke_for_cost_center(actor, grant.id, current.id)
-                revoked.append(grant.id)
-            # People may have charged it only through the group that left. A member whose
-            # principal is gone may have been one, so it's checked too.
-            if explicit and (principal is None or principal.kind == PrincipalKind.SECURITY_GROUP):
-                revoked.extend(await self._entitlements.recheck_cost_center(actor, current.id))
+        revoked = [] if charged else await self._entitlements.resume_rechecks(actor, current.id)
         logger.info(
             "cost_center_member_removed",
             cost_center_id=cost_center_id,
             principal_id=principal_id,
+            revoked_grants=len(revoked),
+            tenant_id=actor.tenant_id,
+        )
+        return await self.get_cost_center(actor, cost_center_id)
+
+    async def recheck(self, actor: Actor, cost_center_id: str) -> CostCenterView:
+        """Check again the grants the cost center's pending rechecks cover, and settle them."""
+
+        await self._stored(actor, cost_center_id)
+        revoked = await self._entitlements.resume_rechecks(actor, cost_center_id)
+        logger.info(
+            "cost_center_rechecked",
+            cost_center_id=cost_center_id,
             revoked_grants=len(revoked),
             tenant_id=actor.tenant_id,
         )
@@ -474,43 +546,60 @@ class CostCenterService:
 
         Everyone may charge the tenant default, so moving it off a cost center revokes the grants
         under that cost center whose subjects may charge it no other way: as a listed member,
-        through a listed security group, or as their own default.
+        through a listed security group, or as their own default. The recheck is recorded before
+        the move, and every pending recheck runs after it, so repeating the request finishes one
+        that couldn't. If the move fails, the recheck runs anyway and finds nothing changed.
         """
 
-        async with scope_lease(
-            self._gateways, actor.tenant_id, COST_CENTERS_SCOPE, busy_message=COST_CENTERS_BUSY
-        ):
-            book = await self.book(actor.tenant_id)
-            if book.get(request.default_cost_center_id) is None:
-                raise ValidationError(
-                    "No cost center has that ID",
-                    details={"defaultCostCenterId": request.default_cost_center_id},
+        recorded: str | None = None
+        try:
+            async with scope_lease(
+                self._gateways,
+                actor.tenant_id,
+                COST_CENTERS_SCOPE,
+                busy_message=COST_CENTERS_BUSY,
+            ):
+                book = await self.book(actor.tenant_id)
+                if book.get(request.default_cost_center_id) is None:
+                    raise ValidationError(
+                        "No cost center has that ID",
+                        details={"defaultCostCenterId": request.default_cost_center_id},
+                    )
+                await self._stored(actor, request.default_cost_center_id)
+                current = await self._repository.get_settings(actor.tenant_id)
+                previous = tenant_default_id(current, actor.tenant_id)
+                if previous != request.default_cost_center_id:
+                    await self._entitlements.request_recheck(
+                        actor, previous, reason="tenantDefaultChanged"
+                    )
+                    recorded = previous
+                settings = (current or default_settings(actor.tenant_id)).model_copy(
+                    update={
+                        "default_cost_center_id": request.default_cost_center_id,
+                        "updated_at": utc_now(),
+                        "etag": current.etag if current else None,
+                    }
                 )
-            await self._stored(actor, request.default_cost_center_id)
-            current = await self._repository.get_settings(actor.tenant_id)
-            previous = tenant_default_id(current, actor.tenant_id)
-            settings = (current or default_settings(actor.tenant_id)).model_copy(
-                update={
-                    "default_cost_center_id": request.default_cost_center_id,
-                    "updated_at": utc_now(),
-                    "etag": current.etag if current else None,
-                }
-            )
-            await self._repository.save_settings(
-                settings,
-                self._audit(
-                    actor,
-                    "costCenter.settingsUpdated",
-                    settings.id,
-                    {
-                        "defaultCostCenterId": request.default_cost_center_id,
-                        "previousDefaultCostCenterId": previous,
-                    },
-                    resource_type="costCenterSettings",
-                ),
-            )
+                await self._repository.save_settings(
+                    settings,
+                    self._audit(
+                        actor,
+                        "costCenter.settingsUpdated",
+                        settings.id,
+                        {
+                            "defaultCostCenterId": request.default_cost_center_id,
+                            "previousDefaultCostCenterId": previous,
+                        },
+                        resource_type="costCenterSettings",
+                    ),
+                )
+        except Exception:
+            if recorded is not None:
+                with suppress(Exception):
+                    await self._entitlements.resume_rechecks(actor, recorded)
+            raise
+        revoked = await self._entitlements.resume_rechecks(actor)
         if previous != request.default_cost_center_id:
-            revoked = await self._entitlements.recheck_cost_center(actor, previous)
             logger.info(
                 "cost_center_tenant_default_changed",
                 previous_cost_center_id=previous,

@@ -104,11 +104,24 @@ function errorMessage(error: unknown, fallback: string) {
   return error instanceof Error ? error.message : fallback
 }
 
+function pendingRecheckText(costCenter: CostCenter) {
+  const rechecks = costCenter.pendingRechecks ?? []
+  const grants = new Set(rechecks.flatMap((item) => item.entitlementIds ?? []))
+  const counted = rechecks.every((item) => item.entitlementIds !== null)
+  const which = counted && grants.size > 0
+    ? `${grants.size.toLocaleString()} grant${grants.size === 1 ? '' : 's'} under this cost center`
+    : 'Some grants under this cost center'
+  return `${which} may no longer be chargeable here, and MOSAIC couldn't finish checking them because their models were busy. Applies leave them out until it does.`
+}
+
 function CostCenterBadges({ costCenter, showKeys = true }: { costCenter: CostCenter; showKeys?: boolean }) {
   return (
     <span className={styles.badges}>
       {costCenter.isTenantDefault && <Badge appearance="tint" color="brand">Tenant default</Badge>}
       {costCenter.builtIn && <Badge appearance="tint">Built in</Badge>}
+      {(costCenter.pendingRechecks?.length ?? 0) > 0 && (
+        <Badge appearance="tint" color="warning">Recheck pending</Badge>
+      )}
       {showKeys && (
         <Badge appearance={costCenter.keysAllowed ? 'tint' : 'outline'} color={costCenter.keysAllowed ? 'success' : 'warning'}>
           {costCenter.keysAllowed ? 'Keys allowed' : 'Keys off'}
@@ -371,7 +384,7 @@ export function CostCenterDetailPage() {
     mutationFn: (principalId: string) => api.removeCostCenterMember(costCenterId, principalId),
     onSuccess: async () => {
       setRemoveMember(null)
-      await queryClient.invalidateQueries({ queryKey: ['cost-centers', costCenterId] })
+      await queryClient.invalidateQueries({ queryKey: ['cost-centers'] })
     },
   })
   const saveLimits = useMutation({
@@ -381,6 +394,15 @@ export function CostCenterDetailPage() {
   const deleteCostCenter = useMutation({
     mutationFn: () => api.deleteCostCenter(costCenterId),
     onSuccess: () => navigate('/cost-centers'),
+  })
+  const recheck = useMutation({
+    mutationFn: () => api.recheckCostCenter(costCenterId),
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['cost-centers'] }),
+        queryClient.invalidateQueries({ queryKey: ['entitlements'] }),
+      ])
+    },
   })
 
   function addLimit(event: FormEvent) {
@@ -449,6 +471,22 @@ export function CostCenterDetailPage() {
           </Button>
         }
       />
+      {(data.pendingRechecks?.length ?? 0) > 0 && (
+        <MessageBar intent="warning">
+          <MessageBarBody>
+            <MessageBarTitle>Recheck pending</MessageBarTitle>
+            {pendingRecheckText(data)}{' '}
+            <Button size="small" onClick={() => recheck.mutate()} disabled={recheck.isPending}>
+              Check grants again
+            </Button>
+          </MessageBarBody>
+        </MessageBar>
+      )}
+      {recheck.isError && (
+        <MessageBar intent="error">
+          <MessageBarBody>{errorMessage(recheck.error, 'Unable to check the grants again.')}</MessageBarBody>
+        </MessageBar>
+      )}
       <div className={styles.grid}>
         <div className={styles.card}>
           <form className={styles.form} onSubmit={(event) => { event.preventDefault(); if (!codeInvalid) update.mutate() }}>
@@ -498,7 +536,7 @@ export function CostCenterDetailPage() {
       <div className={styles.stack}>
         <div className={styles.card}>
           <Title3 as="h2">Members</Title3>
-          <Text className={styles.muted}>Removing a member revokes their grants under this cost center and deletes their keys on the next apply. Removing a security group re-checks grants that relied on it.</Text>
+          <Text className={styles.muted}>Removing a member revokes their grants under this cost center, unless they may still charge it another way, such as through a listed security group. The next apply deletes their keys. Removing a security group revokes the grants that relied on it.</Text>
           <form className={styles.addMember} onSubmit={(event) => { event.preventDefault(); if (memberId) addMember.mutate() }}>
             <Field label="Add member">
               <Select aria-label="Add member" value={memberId} onChange={(_, selectData) => setMemberId(selectData.value)}>
@@ -615,8 +653,8 @@ export function CostCenterDetailPage() {
             <DialogTitle>Remove member</DialogTitle>
             <DialogContent>
               <Text>
-                Remove <strong>{removeMember?.label}</strong>? This revokes their grants under this cost center and deletes their keys on the next apply.
-                {removeMember?.securityGroup ? ' Removing a security group also re-checks grants that relied on it.' : ''}
+                Remove <strong>{removeMember?.label}</strong>? This revokes their grants under this cost center, unless they may still charge it another way, and the next apply deletes their keys.
+                {removeMember?.securityGroup ? ' Grants people charged only through this group are revoked too.' : ''}
               </Text>
             </DialogContent>
             <DialogActions>

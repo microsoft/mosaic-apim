@@ -359,7 +359,7 @@ function CostCenterUsageSection({ costCenters }: { costCenters?: CostCenterUsage
       <div className="section-header">
         <div>
           <h2 id="cost-center-usage-heading">Cost centers</h2>
-          <p>Each cost center's total this month, from everyone who charges it. MOSAIC shows only the total, never who used it.</p>
+          <p>Each cost center's total this month, from everyone who charges it, and its pooled quotas on what you hold there. MOSAIC shows only totals, never who used them.</p>
         </div>
       </div>
       <div className="cost-center-usage-list">
@@ -374,7 +374,7 @@ function CostCenterUsageSection({ costCenters }: { costCenters?: CostCenterUsage
             </div>
             <div className="quota-stack">
               {costCenter.resources.length === 0 ? (
-                <Text size={200}>No resource usage yet.</Text>
+                <Text size={200}>No pooled quotas on what you hold here.</Text>
               ) : (
                 costCenter.resources.map((resource) => (
                   <div

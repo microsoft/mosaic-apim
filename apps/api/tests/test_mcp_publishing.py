@@ -8,7 +8,7 @@ from conftest import (
     reviewed_unpublish,
 )
 from mcp_double import FakeMcpServer
-from mosaic_api.cost_centers import CostCenterBook
+from mosaic_api.cost_centers import CostCenterBook, PendingRecheck, general_cost_center
 from mosaic_api.domain import (
     AuditEvent,
     CapabilitySupport,
@@ -49,6 +49,7 @@ from mosaic_api.domain import (
 from mosaic_api.errors import ConflictError, NotFoundError, ValidationError
 from mosaic_api.observed import ObservedApi
 from mosaic_api.repositories import (
+    InMemoryCostCenterRepository,
     InMemoryDirectoryRepository,
     InMemoryEntitlementRepository,
     InMemoryGatewayRepository,
@@ -1191,3 +1192,53 @@ async def test_model_reaper_skips_mcp_runs_and_mcp_reaper_handles_them(harness: 
     stored = await harness.gateway_repository.get_publish_run(TENANT_ID, run.id)
     assert stored is not None
     assert stored.status == PublishRunStatus.FAILED
+
+
+async def test_a_pending_recheck_keeps_its_grants_out_of_the_snapshot(harness: Harness) -> None:
+    """A grant whose subject may have lost the right to charge its cost center stays out of every
+    apply until MOSAIC has checked it. See ADR 0021."""
+
+    cost_centers = InMemoryCostCenterRepository()
+    service = build_mcp_publishing_service(
+        harness.apim,
+        harness.gateway_repository,
+        harness.mcp_repository,
+        directory_repository=harness.directory_repository,
+        entitlement_repository=harness.entitlement_repository,
+        cost_center_repository=cost_centers,
+    )
+    publication_id = await harness.create()
+    publication = await harness.service.get_publication(ACTOR, publication_id)
+    user = await harness.principal("principal-user", "44444444-4444-4444-4444-444444444444")
+    other = await harness.principal("principal-other", "55555555-5555-5555-5555-555555555555")
+    waiting = await harness.entitlement(
+        "entitlement-waiting", EntitlementSubjectKind.USER, user.id, publication.mcp_server_id
+    )
+    kept = await harness.entitlement(
+        "entitlement-kept", EntitlementSubjectKind.USER, other.id, publication.mcp_server_id
+    )
+    general = general_cost_center(TENANT_ID).model_copy(
+        update={
+            "pending_rechecks": [PendingRecheck(reason="defaultChanged", subject_id=user.id)]
+        }
+    )
+    await cost_centers.create_cost_center(
+        general,
+        AuditEvent(
+            id=new_id("audit"),
+            tenant_id=TENANT_ID,
+            action="costCenter.created",
+            resource_type="costCenter",
+            resource_id=general.id,
+            actor_object_id=ACTOR.object_id,
+        ),
+    )
+
+    plan = await service.plan(ACTOR, publication_id)
+
+    assert plan.mcp_access_snapshot is not None
+    assert [grant.entitlement_id for grant in plan.mcp_access_snapshot.grants] == [kept.id]
+    assert any(
+        waiting.id in warning and "waiting for MOSAIC to check" in warning
+        for warning in plan.warnings
+    )

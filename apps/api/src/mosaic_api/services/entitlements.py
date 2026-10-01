@@ -14,7 +14,13 @@ from typing import Any
 import structlog
 from pydantic import ValidationError as SchemaValidationError
 
-from mosaic_api.cost_centers import CostCenter, CostCenterBook, may_charge
+from mosaic_api.cost_centers import (
+    CostCenter,
+    CostCenterBook,
+    PendingRecheck,
+    RecheckReason,
+    may_charge,
+)
 from mosaic_api.domain import (
     AccessRequest,
     AccessRequestApproval,
@@ -67,7 +73,7 @@ from mosaic_api.repositories import (
     GatewayRepository,
     ModelEndpointRepository,
 )
-from mosaic_api.services.cost_centers import load_book
+from mosaic_api.services.cost_centers import load_book, record_recheck
 from mosaic_api.services.directory import Actor, DirectoryService
 from mosaic_api.services.mcp_access import (
     decorate_mcp_entitlement,
@@ -984,7 +990,7 @@ class EntitlementService:
                     {"costCenterId": record.cost_center_id},
                 ),
             )
-        saved = await self._revoke_if_ineligible(actor, saved)
+            saved = await self._revoke_held_if_ineligible(actor, saved)
         logger.info(
             "entitlement_created",
             entitlement_id=record.id,
@@ -1002,10 +1008,10 @@ class EntitlementService:
         entitlement = await self.get_entitlement(actor, entitlement_ref)
         async with self._mutation(entitlement):
             saved = await self._update_entitlement(actor, entitlement_ref, request)
-        if saved.enabled and not entitlement.enabled:
-            saved = await self._revoke_if_ineligible(
-                actor, saved, group_principal_ids=await self._recorded_groups(actor, saved.id)
-            )
+            if saved.enabled and not entitlement.enabled:
+                saved = await self._revoke_held_if_ineligible(
+                    actor, saved, group_principal_ids=await self._recorded_groups(actor, saved.id)
+                )
         return await self._decorate(saved)
 
     async def _update_entitlement(
@@ -1063,44 +1069,73 @@ class EntitlementService:
             self._audit(actor, "entitlement.updated", "entitlement", updated.id),
         )
 
-    async def _revoke_if_ineligible(
+    async def _may_still_charge(
+        self,
+        actor: Actor,
+        grant: Entitlement,
+        *,
+        group_principal_ids: list[str] | None = None,
+    ) -> bool:
+        """Whether the grant's subject may still charge its cost center.
+
+        MOSAIC groups never reach the gateway, so their grants aren't checked, and a revoked grant
+        has nothing left to lose.
+        """
+
+        if grant.subject.kind == EntitlementSubjectKind.GROUP or grant.revocation is not None:
+            return True
+        book = await self.cost_center_book(actor.tenant_id)
+        cost_center = book.get(grant.cost_center_id)
+        if cost_center is None:
+            return False
+        try:
+            await self._require_may_charge(
+                actor, grant.subject, cost_center, book, group_principal_ids=group_principal_ids
+            )
+        except ValidationError:
+            return False
+        return True
+
+    async def _revoke_held_if_ineligible(
         self,
         actor: Actor,
         saved: Entitlement,
         *,
         group_principal_ids: list[str] | None = None,
     ) -> Entitlement:
-        """Check again, after writing a grant, that its subject may still charge its cost center.
+        """Check again, after writing a grant and before its publication's lock is released, that
+        its subject may still charge its cost center, and revoke it if not.
 
-        Removing a member writes the cost center first and then revokes the member's grants. A
-        grant written while that runs was either checked against the new member list here, or
-        already saved when the removal listed the member's grants, so it can't outlive the
-        membership it relied on.
+        A change that can stop subjects charging a cost center records a recheck and saves the
+        change before the recheck lists the grants it covers. A grant written meanwhile was either
+        checked here against the change, or already saved when the recheck listed the grants, so
+        it can't outlive the right it relied on. The lock is still held, so no apply can take the
+        grant before it's checked.
         """
 
-        if saved.subject.kind == EntitlementSubjectKind.GROUP or saved.revocation is not None:
+        if await self._may_still_charge(actor, saved, group_principal_ids=group_principal_ids):
             return saved
-        book = await self.cost_center_book(actor.tenant_id)
-        cost_center = book.get(saved.cost_center_id)
-        if cost_center is not None:
-            try:
-                await self._require_may_charge(
-                    actor,
-                    saved.subject,
-                    cost_center,
-                    book,
-                    group_principal_ids=group_principal_ids,
-                )
-                return saved
-            except ValidationError:
-                pass
-        logger.warning(
-            "entitlement_revoked_after_cost_center_change",
-            entitlement_id=saved.id,
-            cost_center_id=saved.cost_center_id,
-            tenant_id=actor.tenant_id,
-        )
-        return await self.revoke_for_cost_center(actor, saved.id, saved.cost_center_id)
+        current = await self._repository.get_entitlement(actor.tenant_id, saved.id)
+        if current is None or current.revocation is not None:
+            return current or saved
+        return await self._write_revocation(actor, current, current.cost_center_id)
+
+    async def _revoke_if_ineligible(
+        self,
+        actor: Actor,
+        grant: Entitlement,
+        *,
+        group_principal_ids: list[str] | None = None,
+    ) -> Entitlement:
+        """Revoke the grant if its subject may no longer charge its cost center.
+
+        Takes the lock of the grant's publication to revoke it, so it raises ``ConflictError``
+        while that publication is busy, for example while its model is applied.
+        """
+
+        if await self._may_still_charge(actor, grant, group_principal_ids=group_principal_ids):
+            return grant
+        return await self.revoke_for_cost_center(actor, grant.id, grant.cost_center_id)
 
     async def _recorded_group_map(self, tenant_id: str) -> dict[str, list[str]] | None:
         """Without Microsoft Graph, the security groups each approved request recorded, by grant.
@@ -1122,38 +1157,151 @@ class EntitlementService:
         recorded = await self._recorded_group_map(actor.tenant_id)
         return None if recorded is None else recorded.get(entitlement_id, [])
 
-    async def recheck_cost_center(
-        self, actor: Actor, cost_center_id: str, *, subject_id: str | None = None
-    ) -> list[str]:
-        """Revoke grants under a cost center whose subjects may no longer charge it.
+    async def request_recheck(
+        self,
+        actor: Actor,
+        cost_center_id: str,
+        *,
+        reason: RecheckReason,
+        subject_id: str | None = None,
+    ) -> None:
+        """Record that grants under a cost center need checking again: ``subject_id``'s, or
+        everyone's.
 
-        Run whenever the right to charge it may have narrowed without naming the grants: a
-        security group leaving it, a principal's default moving off it, or the tenant default
-        moving off it. ``subject_id`` limits the check to one subject's grants. Microsoft Graph
-        says which listed groups each subject is still in. Without it, a grant keeps only the
-        groups its approved request recorded from the requester's token, and a grant nothing
-        proves eligible is revoked: this fails closed.
+        Called before a change that may stop subjects charging the cost center, so the recheck
+        survives a failure after the change. ``resume_rechecks`` then checks them. A cost center
+        MOSAIC has no record of has no grants to check.
         """
 
+        if self._cost_centers is None:
+            return
+        try:
+            await record_recheck(
+                self._cost_centers,
+                actor,
+                cost_center_id,
+                PendingRecheck(reason=reason, subject_id=subject_id, requested_by=actor.object_id),
+            )
+        except NotFoundError:
+            return
+
+    async def resume_rechecks(self, actor: Actor, cost_center_id: str | None = None) -> list[str]:
+        """Check the grants each pending recheck covers, the cost center's or the tenant's, and
+        settle the rechecks. Returns the grants it revoked.
+
+        A covered grant whose subject may no longer charge its cost center is revoked. Microsoft
+        Graph says which listed groups a subject is still in. Without it, a grant keeps only the
+        groups its approved request recorded from the requester's token, and a grant nothing
+        proves eligible is revoked: this fails closed. A grant whose publication is busy, for
+        example while its model is applied, can't be revoked yet, so its recheck stays pending,
+        narrowed to the grants it has left, and applies keep leaving those grants out.
+        """
+
+        if self._cost_centers is None:
+            return []
+        if cost_center_id is None:
+            candidates = await self._cost_centers.list_cost_centers(actor.tenant_id)
+        else:
+            found = await self._cost_centers.get_cost_center(actor.tenant_id, cost_center_id)
+            candidates = [] if found is None else [found]
+        pending = [item for item in candidates if item.pending_rechecks]
+        if not pending:
+            return []
         recorded = await self._recorded_group_map(actor.tenant_id)
+        everyone = await self._repository.list_entitlements(actor.tenant_id)
         revoked: list[str] = []
-        for grant in await self._repository.list_entitlements(
-            actor.tenant_id, subject_id=subject_id
-        ):
-            if (
-                grant.cost_center_id != cost_center_id
-                or grant.revocation is not None
-                or grant.subject.kind == EntitlementSubjectKind.GROUP
-            ):
-                continue
+        for cost_center in pending:
+            grants = [
+                grant
+                for grant in everyone
+                if grant.cost_center_id == cost_center.id
+                and grant.revocation is None
+                and grant.subject.kind != EntitlementSubjectKind.GROUP
+            ]
+            outcomes: dict[str, str] = {}
+            left: dict[str, list[str]] = {}
+            for recheck in cost_center.pending_rechecks:
+                unchecked: list[str] = []
+                for grant in grants:
+                    if not recheck.covers(grant.id, grant.subject.id):
+                        continue
+                    if grant.id not in outcomes:
+                        outcomes[grant.id] = await self._recheck_grant(actor, grant, recorded)
+                    if outcomes[grant.id] == "unchecked":
+                        unchecked.append(grant.id)
+                left[recheck.id] = unchecked
+            revoked.extend(
+                grant_id for grant_id, outcome in outcomes.items() if outcome == "revoked"
+            )
+            await self._settle_rechecks(actor, cost_center.id, left)
+        return revoked
+
+    async def _recheck_grant(
+        self, actor: Actor, grant: Entitlement, recorded: dict[str, list[str]] | None
+    ) -> str:
+        """``revoked``, ``kept``, or ``unchecked`` when its publication is busy."""
+
+        try:
             result = await self._revoke_if_ineligible(
                 actor,
                 grant,
                 group_principal_ids=None if recorded is None else recorded.get(grant.id, []),
             )
-            if result.revocation is not None:
-                revoked.append(grant.id)
-        return revoked
+        except NotFoundError:
+            return "kept"
+        except ConflictError:
+            return "unchecked"
+        return "revoked" if result.revocation is not None else "kept"
+
+    async def _settle_rechecks(
+        self, actor: Actor, cost_center_id: str, left: dict[str, list[str]]
+    ) -> None:
+        """Remove the rechecks that finished, and narrow the rest to the grants they have left.
+
+        A recheck recorded while this ran stays for the next pass. If the cost center keeps
+        changing meanwhile, the rechecks stay as they were: their grants stay out of applies, and
+        a later pass settles them.
+        """
+
+        assert self._cost_centers is not None
+        for _ in range(3):
+            current = await self._cost_centers.get_cost_center(actor.tenant_id, cost_center_id)
+            if current is None:
+                return
+            pending: list[PendingRecheck] = []
+            for recheck in current.pending_rechecks:
+                if recheck.id not in left:
+                    pending.append(recheck)
+                elif left[recheck.id]:
+                    pending.append(
+                        recheck.model_copy(update={"entitlement_ids": sorted(left[recheck.id])})
+                    )
+            if pending == current.pending_rechecks:
+                return
+            try:
+                await self._cost_centers.save_cost_center(
+                    current.model_copy(
+                        update={"pending_rechecks": pending, "updated_at": utc_now()}, deep=True
+                    ),
+                    self._audit(
+                        actor,
+                        "costCenter.rechecked",
+                        "costCenter",
+                        cost_center_id,
+                        {
+                            "finished": sorted(key for key, items in left.items() if not items),
+                            "pending": [recheck.id for recheck in pending],
+                        },
+                    ),
+                )
+                return
+            except ConflictError:
+                continue
+        logger.warning(
+            "cost_center_recheck_unsettled",
+            cost_center_id=cost_center_id,
+            tenant_id=actor.tenant_id,
+        )
 
     async def revoke_for_cost_center(
         self, actor: Actor, entitlement_ref: str, cost_center_id: str
@@ -1171,7 +1319,16 @@ class EntitlementService:
                 raise NotFoundError("Entitlement was not found", details={"id": entitlement_ref})
             if current.revocation is not None:
                 return await self._decorate(current)
-            updated = current.model_copy(
+            saved = await self._write_revocation(actor, current, cost_center_id)
+        return await self._decorate(saved)
+
+    async def _write_revocation(
+        self, actor: Actor, current: Entitlement, cost_center_id: str
+    ) -> Entitlement:
+        """Turn the grant off and record why. The caller holds its publication's lock."""
+
+        saved = await self._repository.save_entitlement(
+            current.model_copy(
                 update={
                     "enabled": False,
                     "revocation": GrantRevocation(
@@ -1180,18 +1337,22 @@ class EntitlementService:
                     "updated_at": utc_now(),
                     "runtime": None,
                 }
-            )
-            saved = await self._repository.save_entitlement(
-                updated,
-                self._audit(
-                    actor,
-                    "entitlement.revoked",
-                    "entitlement",
-                    current.id,
-                    {"reason": "costCenterMembership", "costCenterId": cost_center_id},
-                ),
-            )
-        return await self._decorate(saved)
+            ),
+            self._audit(
+                actor,
+                "entitlement.revoked",
+                "entitlement",
+                current.id,
+                {"reason": "costCenterMembership", "costCenterId": cost_center_id},
+            ),
+        )
+        logger.warning(
+            "entitlement_revoked_for_cost_center",
+            entitlement_id=current.id,
+            cost_center_id=cost_center_id,
+            tenant_id=actor.tenant_id,
+        )
+        return saved
 
     async def delete_entitlement(self, actor: Actor, entitlement_ref: str) -> None:
         entitlement = await self.get_entitlement(actor, entitlement_ref)
@@ -1777,13 +1938,22 @@ class EntitlementService:
                 },
             ),
         ]
+        written = False
         try:
             async with self._mutation(entitlement):
                 await self._validate_subject(actor, subject)
                 saved = await self._repository.approve_access_request(
                     approved, entitlement, audit_events
                 )
+                written = True
+                granted = await self._repository.get_entitlement(actor.tenant_id, entitlement.id)
+                if granted is not None:
+                    await self._revoke_held_if_ineligible(
+                        actor, granted, group_principal_ids=trusted_groups
+                    )
         except ConflictError:
+            if written:
+                raise
             # Nothing was written. Work out why, so a concurrent approval converges on its
             # result instead of failing, and any other conflict is reported precisely.
             current = await self.get_access_request(actor, request_id)
@@ -1794,7 +1964,6 @@ class EntitlementService:
             if existing is not None:
                 raise _existing_grant_conflict(existing) from None
             raise
-        await self._revoke_if_ineligible(actor, entitlement, group_principal_ids=trusted_groups)
         logger.info(
             "access_request_approved",
             access_request_id=request_id,
@@ -1875,7 +2044,9 @@ class EntitlementService:
             ) from exc
         try:
             return await DirectoryService(
-                self._directory, cost_center_repository=self._cost_centers
+                self._directory,
+                gateway_repository=self._gateways,
+                cost_center_repository=self._cost_centers,
             ).create_principal(actor, request)
         except ConflictError:
             # A concurrent approval for the same person registered them first.

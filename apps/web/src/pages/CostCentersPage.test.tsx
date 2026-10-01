@@ -47,6 +47,7 @@ const api = {
   addCostCenterMember: vi.fn(),
   removeCostCenterMember: vi.fn(),
   updateCostCenterLimits: vi.fn(),
+  recheckCostCenter: vi.fn(),
   getCostCenterSettings: vi.fn(),
   updateCostCenterSettings: vi.fn(),
   listPrincipals: vi.fn(),
@@ -129,13 +130,42 @@ describe('Cost centers pages', () => {
     expect(await screen.findByRole('heading', { name: 'General' })).toBeVisible()
     expect(screen.getByText(/revokes their grants under this cost center/i)).toBeVisible()
     await user.click(screen.getByRole('button', { name: 'Remove' }))
-    expect(screen.getAllByText(/deletes their keys on the next apply/i).length).toBeGreaterThan(0)
+    expect(screen.getAllByText(/the next apply deletes their keys/i).length).toBeGreaterThan(0)
     await user.click(screen.getByRole('button', { name: 'Cancel' }))
     await user.selectOptions(screen.getByLabelText('Resource'), 'modelApi:model-1')
     await user.type(screen.getByLabelText('Tokens per minute'), '1000')
     await user.click(screen.getByRole('button', { name: 'Add limit' }))
     await user.click(screen.getByRole('button', { name: 'Save limits' }))
     await waitFor(() => expect(api.updateCostCenterLimits).toHaveBeenCalledWith('cc-general', expect.arrayContaining([expect.objectContaining({ resource: { kind: 'modelApi', id: 'model-1' } })])))
+  })
+
+  it('says which grants wait for a recheck, and checks them again', async () => {
+    const user = userEvent.setup()
+    const pending: CostCenter = {
+      ...general,
+      pendingRechecks: [
+        { id: 'recheck-1', reason: 'memberRemoved', subjectId: null, entitlementIds: ['grant-1', 'grant-2'], requestedAt: '', requestedBy: 'admin' },
+      ],
+    }
+    api.getCostCenter.mockResolvedValueOnce(pending).mockResolvedValue(general)
+    api.recheckCostCenter.mockResolvedValue(general)
+    renderRoute('/cost-centers/cc-general')
+
+    expect(await screen.findByText(/2 grants under this cost center may no longer be chargeable here/)).toBeVisible()
+    expect(screen.getAllByText('Recheck pending').length).toBeGreaterThan(0)
+    await user.click(screen.getByRole('button', { name: 'Check grants again' }))
+
+    await waitFor(() => expect(api.recheckCostCenter).toHaveBeenCalledWith('cc-general'))
+    await waitFor(() => expect(screen.queryByText(/may no longer be chargeable here/)).not.toBeInTheDocument())
+  })
+
+  it('marks a cost center whose grants wait for a recheck in the list', async () => {
+    api.listCostCenters.mockResolvedValue([
+      { ...general, pendingRechecks: [{ id: 'recheck-1', reason: 'tenantDefaultChanged', subjectId: null, entitlementIds: null, requestedAt: '', requestedBy: null }] },
+    ])
+    renderRoute()
+
+    expect(await screen.findByText('Recheck pending')).toBeVisible()
   })
 
   it('adds a pool-only limit and refuses an empty limit', async () => {

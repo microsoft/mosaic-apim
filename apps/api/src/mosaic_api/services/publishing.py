@@ -1155,6 +1155,19 @@ class PublishingService:
                         "from runtime access."
                     )
                     continue
+                charged = book.get(entitlement.cost_center_id)
+                if charged is not None and charged.recheck_pending(
+                    entitlement.id, entitlement.subject.id
+                ):
+                    # Its subject may have lost the right to charge the cost center, and MOSAIC
+                    # hasn't finished checking: it stays out rather than outlive that right.
+                    warnings.append(
+                        f"Grant {entitlement.id} is waiting for MOSAIC to check that its subject "
+                        f"may still charge {charged.name} ({charged.code}); it is excluded from "
+                        "runtime access until then. Open the cost center and choose Check grants "
+                        "again."
+                    )
+                    continue
                 enforcement = effective_enforcement(entitlement, intent)
                 if (
                     publication.enforcement is None

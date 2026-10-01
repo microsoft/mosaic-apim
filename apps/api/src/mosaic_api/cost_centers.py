@@ -38,6 +38,7 @@ from mosaic_api.domain import (
     TokenEnforcement,
     deterministic_id,
     general_cost_center_id,
+    new_id,
     utc_now,
 )
 
@@ -48,6 +49,8 @@ _EMAIL = r"[^@\s]+@[^@\s]+\.[^@\s]+"
 MAX_OWNERS = 20
 MAX_MEMBERS = 500
 MAX_LIMITS = 200
+# More pending rechecks than this become one recheck of every grant under the cost center.
+MAX_PENDING_RECHECKS = 50
 # The lease every change to cost centers, the tenant default or a principal's default holds, so
 # deleting a cost center can't race a change that makes it someone's default.
 COST_CENTERS_SCOPE = "cost-centers"
@@ -82,6 +85,53 @@ class CostCenterMember(MosaicModel):
     principal_id: str
     added_at: datetime = Field(default_factory=utc_now)
     added_by: str | None = None
+
+
+RecheckReason = Literal["memberRemoved", "defaultChanged", "tenantDefaultChanged"]
+
+
+class PendingRecheck(MosaicModel):
+    """Grants under the cost center to check again, because their subjects may have lost the right
+    to charge it.
+
+    MOSAIC records one before the change that may cause it, and removes it once every grant it
+    covers has been checked: revoked if its subject can no longer charge the cost center, kept if
+    it still can. Revoking a grant needs its publication's lock, which an apply holds while it
+    runs. A grant that can't be revoked yet keeps the recheck pending, narrowed to the grants it
+    hasn't finished, and applies leave every grant a pending recheck covers out of runtime access.
+    See ADR 0021.
+    """
+
+    id: str = Field(default_factory=lambda: new_id("recheck"))
+    reason: RecheckReason
+    # The principal whose grants to check, or None for every grant under the cost center.
+    subject_id: str | None = None
+    # Once a check couldn't finish, the grants it has left; None until then.
+    entitlement_ids: list[str] | None = None
+    requested_at: datetime = Field(default_factory=utc_now)
+    requested_by: str | None = None
+
+    def covers(self, entitlement_id: str, subject_id: str) -> bool:
+        if self.entitlement_ids is not None:
+            return entitlement_id in self.entitlement_ids
+        return self.subject_id is None or self.subject_id == subject_id
+
+
+def with_recheck(pending: list[PendingRecheck], recheck: PendingRecheck) -> list[PendingRecheck]:
+    """``pending`` with ``recheck`` added, unless a recheck already there covers what it does."""
+
+    if any(
+        item.entitlement_ids is None
+        and (item.subject_id is None or item.subject_id == recheck.subject_id)
+        for item in pending
+    ):
+        return pending
+    if recheck.subject_id is None:
+        return [recheck]
+    combined = [*pending, recheck]
+    if len(combined) > MAX_PENDING_RECHECKS:
+        return [PendingRecheck(reason=recheck.reason, requested_by=recheck.requested_by)]
+    return combined
 
 
 class PersonLimits(MosaicModel):
@@ -202,9 +252,16 @@ class CostCenter(Entity):
     limits: list[CostCenterLimit] = Field(default_factory=list)
     # General, which every tenant has. It can be renamed and recoded, never deleted.
     built_in: bool = False
+    # Grants to check again after a change that may have stopped their subjects charging it.
+    pending_rechecks: list[PendingRecheck] = Field(default_factory=list)
 
     def ref(self) -> CostCenterRef:
         return CostCenterRef(id=self.id, name=self.name, code=self.code)
+
+    def recheck_pending(self, entitlement_id: str, subject_id: str) -> bool:
+        """Whether a pending recheck covers the grant, which keeps it out of every apply."""
+
+        return any(item.covers(entitlement_id, subject_id) for item in self.pending_rechecks)
 
     def member_ids(self) -> set[str]:
         return {member.principal_id for member in self.members}

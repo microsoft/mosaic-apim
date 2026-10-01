@@ -80,6 +80,17 @@ async def remove_cost_center_member(
     return await _cost_centers(request).remove_member(_actor(auth), cost_center_id, principal_id)
 
 
+@cost_centers_router.post(
+    "/cost-centers/{cost_center_id}/recheck", response_model=CostCenterView
+)
+async def recheck_cost_center(
+    request: Request, auth: Admin, cost_center_id: str
+) -> CostCenterView:
+    """Check again the grants the cost center's pending rechecks cover. See ADR 0021."""
+
+    return await _cost_centers(request).recheck(_actor(auth), cost_center_id)
+
+
 @cost_centers_router.put("/cost-centers/{cost_center_id}/limits", response_model=CostCenterView)
 async def set_cost_center_limits(
     request: Request, auth: Admin, cost_center_id: str, payload: CostCenterLimitsUpdate

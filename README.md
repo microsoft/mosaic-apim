@@ -175,7 +175,8 @@ one under **Settings > Appearance**.
       <img src="docs/images/screenshots/console-cost-center-detail.png" alt="A cost center's details and summary, its members with their kind and default badges, and its per-person limits and pooled monthly quotas">
       <p><b>Cost center.</b> One cost center's people, applications, agents, and security groups,
       and its limits: per-person defaults and pooled monthly quotas for each model and MCP server.
-      Removing a member revokes their grants under it and deletes their keys on the next apply.</p>
+      Removing a member revokes the grants that relied on it and deletes their keys on the next
+      apply.</p>
     </td>
   </tr>
   <tr>
@@ -306,12 +307,12 @@ one under **Settings > Appearance**.
       show when they used it.</p>
     </td>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/portal-usage-resources.png" alt="Each of a person's cost centers with this month's total against its pooled quotas, then usage by resource with each grant's requests, tokens, estimated cost, quota use, busiest minute, and usage tracking">
+      <img src="docs/images/screenshots/portal-usage-resources.png" alt="Each of a person's cost centers with this month's total, and each pooled resource's total against its quota, then usage by resource with each grant's requests, tokens, estimated cost, quota use, busiest minute, and usage tracking">
       <p><b>Cost centers and usage by resource.</b> Each cost center the person charges, with this
-      month's total from everyone who charges it against its pooled quotas: a total only, never who
-      used it. Below, their own figures by granted resource, with each one's estimated cost, or
-      <b>No price</b> and why, each quota's use, the busiest minute against each rate limit, and how
-      its calls are linked.</p>
+      month's total from everyone who charges it, and each pooled resource they hold there against
+      its quota: totals only, never who used them. Below, their own figures by granted resource,
+      with each one's estimated cost, or <b>No price</b> and why, each quota's use, the busiest
+      minute against each rate limit, and how its calls are linked.</p>
     </td>
   </tr>
 </table>
@@ -1720,8 +1721,10 @@ records the design.
   `llm-token-limit`, or a `quota-by-key` for calls, counted per cost center and model. Responses
   report what's left in `x-mosaic-remaining-tokens`, `x-mosaic-remaining-quota-tokens`,
   `x-mosaic-remaining-calls`, and `x-mosaic-cost-center-remaining-quota-tokens`.
-- Removing a member revokes their grants under the cost center, and the next apply deletes their
-  keys.
+- Losing the right to charge a cost center revokes the grants that relied on it: removing a member,
+  moving a principal's default or the tenant's default, or turning a grant back on. The next apply
+  deletes their keys. A revocation that has to wait for a busy model leaves the cost center
+  **Recheck pending**, and applies leave its grants out until it finishes.
 - Analytics filters every tab by cost center, the chargeback names each row's cost center, and the
   portal shows each of a person's cost centers' totals against their pooled quotas, never anyone
   else's use.
@@ -1730,7 +1733,8 @@ records the design.
 | --- | --- | --- |
 | GET, POST | `/cost-centers` | List cost centers, or create one; 409 `codeInUse` for a code already taken |
 | GET, PATCH, DELETE | `/cost-centers/{id}` | Read, change, or delete one; deleting is refused while it's in use |
-| PUT, DELETE | `/cost-centers/{id}/members/{principalId}` | Add a member, or remove one and revoke their grants under it |
+| PUT, DELETE | `/cost-centers/{id}/members/{principalId}` | Add a member, or remove one and revoke the grants that relied on it |
+| POST | `/cost-centers/{id}/recheck` | Check again the grants its pending rechecks cover |
 | PUT | `/cost-centers/{id}/limits` | Replace its per-person defaults and pooled quotas |
 | GET, PUT | `/cost-center-settings` | The tenant's default cost center for new people |
 | POST, DELETE | `/entitlements/{id}/keys` | Create or delete any direct grant's key, such as an application's |
@@ -1848,9 +1852,9 @@ throttling for each grant they hold. It breaks them down by day, by hour over th
 environment, and by resource, and shows each quota's use within that quota's own window and the
 busiest minute against each rate limit. It reads `GET /api/v1/me/usage?period=7d|30d|90d`, which
 returns only the caller's own usage. A security-group grant's figures count only the caller's own
-calls. For each [cost center](#cost-centers) the caller holds a grant under, the page adds the cost
-center's total this month, everyone's calls together, against its pooled quotas, and never shows
-who else called or how much.
+calls. For each [cost center](#cost-centers) the caller holds an enabled grant under, the page adds
+the cost center's total this month, everyone's calls together, and the total on each resource they
+hold there that has a pooled quota, against that quota. It never shows who else called or how much.
 
 In Azure the figures are measured, and the page says how current they are. The gateway applies
 limits as calls arrive, so someone can reach one before the page shows it. A row with nothing to

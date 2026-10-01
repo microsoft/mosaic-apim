@@ -19,6 +19,8 @@ import {
   QUOTA_PERIODS,
   buildEnforcement,
   callRateError,
+  describePersonLimits,
+  emptyLimitForm,
   limitFormFrom,
   type LimitForm,
 } from '../entitlement-limits'
@@ -31,6 +33,13 @@ import {
 import type { AccessRequest, AccessRequestApproval, CostCenter, EnvironmentCatalogView, Publication, QuotaPeriod } from '../types'
 import { ErrorState } from './AsyncState'
 import styles from '../pages/EntitlementsPage.module.css'
+
+/** The per-person defaults a cost center sets on the requested resource, if any. */
+function personDefaultsFor(costCenter: CostCenter | undefined, resource: AccessRequest['resource']) {
+  return costCenter?.limits.find(
+    (limit) => limit.resource.kind === resource.kind && limit.resource.id === resource.id,
+  )?.person ?? null
+}
 
 export interface ApprovalRequester {
   /**
@@ -77,9 +86,18 @@ export function ApproveAccessRequestDialog({
   onCancel: () => void
   onApprove: (approval: AccessRequestApproval) => void
 }) {
-  const [limits, setLimits] = useState<LimitForm>(() => limitFormFrom(publication?.enforcement))
+  const requestedCostCenterId = accessRequest.costCenterId ?? ''
   const [note, setNote] = useState('')
-  const [costCenterId, setCostCenterId] = useState(accessRequest.costCenterId ?? '')
+  const [costCenterId, setCostCenterId] = useState(requestedCostCenterId)
+  // The grant is charged to the cost center chosen here, or else the requested one, or else, for a
+  // request that names none, the requester's default.
+  const charged = costCenters.find((item) => item.id === (costCenterId || requestedCostCenterId))
+  const personDefaults = personDefaultsFor(charged, accessRequest.resource)
+  // A grant that sets no limits takes its cost center's per-person defaults, so a publication's limit
+  // prefills only when there are none. Until an administrator edits the limits, they follow the choice.
+  const [editedLimits, setEditedLimits] = useState<LimitForm | null>(null)
+  const limits =
+    editedLimits ?? (personDefaults ? emptyLimitForm : limitFormFrom(publication?.enforcement))
   const [confirmedMove, setConfirmedMove] = useState(false)
   const [currentEnvironment, setCurrentEnvironment] = useState<string | null>(
     () => accessRequest.resourceSummary?.environment ?? null,
@@ -107,6 +125,10 @@ export function ApproveAccessRequestDialog({
   useEffect(() => {
     setConfirmedMove(false)
   }, [requestedEnvironment, currentEnvironment])
+
+  function editLimits(next: LimitForm) {
+    setEditedLimits(next)
+  }
 
   function submit(event: FormEvent) {
     event.preventDefault()
@@ -227,27 +249,35 @@ export function ApproveAccessRequestDialog({
                     ? `Approving creates grant intent only. API Management is unchanged until the ${publication.displayName} model plan is reviewed and applied.`
                     : 'Approving creates grant intent only. MOSAIC does not apply grants for this resource to API Management, so the grant stays desired state.'}
               </Text>
-              {mcp ? (
+              {personDefaults && charged ? (
+                <Text size={200}>
+                  {charged.name} sets per-person defaults here: {describePersonLimits(personDefaults)}.
+                  Leave every limit empty to apply them; any limit you set replaces them all.
+                  Inherited publication safeguards still apply.
+                </Text>
+              ) : mcp ? (
                 <Text size={200}>
                   MCP servers are limited by calls, not tokens. Leave the call rate empty to add no
                   grant-specific limit.
                 </Text>
               ) : (
+                <Text size={200}>
+                  {prefilled && publication
+                    ? `Limits are prefilled from the ${publication.displayName} publication's token limit. Change or clear them before approving.`
+                    : 'This resource has no default limits to prefill.'}{' '}
+                  Leave a limit empty to add no grant-specific restriction. Inherited publication
+                  safeguards still apply; this does not mean unrestricted gateway access.
+                </Text>
+              )}
+              {!mcp && (
                 <>
-                  <Text size={200}>
-                    {prefilled && publication
-                      ? `Limits are prefilled from the ${publication.displayName} publication's token limit. Change or clear them before approving.`
-                      : 'This resource has no default limits to prefill.'}{' '}
-                    Leave a limit empty to add no grant-specific restriction. Inherited publication
-                    safeguards still apply; this does not mean unrestricted gateway access.
-                  </Text>
                   <div className={styles.dialogGrid}>
                     <Field label="Tokens per minute">
                       <Input
                         type="number"
                         min={1}
                         value={limits.tokensPerMinute}
-                        onChange={(_, data) => setLimits({ ...limits, tokensPerMinute: data.value })}
+                        onChange={(_, data) => editLimits({ ...limits, tokensPerMinute: data.value })}
                       />
                     </Field>
                     <Field label="Token quota">
@@ -255,14 +285,14 @@ export function ApproveAccessRequestDialog({
                         type="number"
                         min={1}
                         value={limits.tokenQuota}
-                        onChange={(_, data) => setLimits({ ...limits, tokenQuota: data.value })}
+                        onChange={(_, data) => editLimits({ ...limits, tokenQuota: data.value })}
                       />
                     </Field>
                     <Field label="Quota period">
                       <Select
                         value={limits.tokenQuotaPeriod}
                         onChange={(_, data) =>
-                          setLimits({ ...limits, tokenQuotaPeriod: data.value as QuotaPeriod })
+                          editLimits({ ...limits, tokenQuotaPeriod: data.value as QuotaPeriod })
                         }
                       >
                         {QUOTA_PERIODS.map((period) => (
@@ -281,7 +311,7 @@ export function ApproveAccessRequestDialog({
                     type="number"
                     min={1}
                     value={limits.calls}
-                    onChange={(_, data) => setLimits({ ...limits, calls: data.value })}
+                    onChange={(_, data) => editLimits({ ...limits, calls: data.value })}
                   />
                 </Field>
                 <Field label="Per how many seconds">
@@ -290,22 +320,33 @@ export function ApproveAccessRequestDialog({
                     min={1}
                     value={limits.renewalPeriodSeconds}
                     onChange={(_, data) =>
-                      setLimits({ ...limits, renewalPeriodSeconds: data.value })
+                      editLimits({ ...limits, renewalPeriodSeconds: data.value })
                     }
                   />
                 </Field>
               </div>
-              <Field label="Cost center" hint="Choose another cost center the requester may charge.">
+              <Field label="Cost center" hint="The grant is charged here. Choose another cost center the requester may charge.">
                 <Select value={costCenterId} onChange={(_, data) => setCostCenterId(data.value)}>
-                  <option value="">Requester default cost center</option>
+                  {requestedCostCenterId ? (
+                    !costCenters.some((costCenter) => costCenter.id === requestedCostCenterId) && (
+                      <option value={requestedCostCenterId}>
+                        {accessRequest.costCenter
+                          ? `${accessRequest.costCenter.name} (${accessRequest.costCenter.code})`
+                          : requestedCostCenterId}{' '}
+                        — requested
+                      </option>
+                    )
+                  ) : (
+                    <option value="">Requester&apos;s default cost center</option>
+                  )}
                   {costCenters.map((costCenter) => (
                     <option key={costCenter.id} value={costCenter.id}>
                       {costCenter.name} ({costCenter.code})
+                      {costCenter.id === requestedCostCenterId ? ' — requested' : ''}
                     </option>
                   ))}
                 </Select>
               </Field>
-              <Text size={200}>Leaving limits empty applies this cost center&apos;s per-person defaults when it has them.</Text>
               <Field label="Decision note" hint="Optional. Recorded with the approval.">
                 <Input value={note} onChange={(_, data) => setNote(data.value)} />
               </Field>

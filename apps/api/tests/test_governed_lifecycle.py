@@ -1285,3 +1285,35 @@ async def test_governed_claude_on_a_classic_tier_keeps_call_limits_and_drops_tok
         assert 'resource="https://ai.azure.com"' in fragment
     finally:
         await harness.close()
+
+
+async def test_a_pending_recheck_keeps_its_grants_out_of_every_apply(harness: Harness) -> None:
+    """Until MOSAIC has checked that a grant's subject may still charge its cost center, applies
+    leave the grant out, so no apply gives back access a change took away. See ADR 0021."""
+
+    kept = await harness.grant()
+    waiting = await harness.grant(APPLICATION, application=True)
+    await harness.govern()
+    general = general_cost_center_id(TENANT)
+    await harness.grants.request_recheck(
+        ACTOR, general, reason="memberRemoved", subject_id=waiting.subject.id
+    )
+
+    plan = await harness.service.plan(ACTOR, harness.publication_id)
+    assert plan.access_snapshot
+    assert {g.entitlement_id for g in plan.access_snapshot.grants if g.enabled} == {kept.id}
+    assert any(
+        waiting.id in warning and "waiting for MOSAIC to check" in warning
+        for warning in plan.warnings
+    )
+
+    # General is the tenant's default, which everyone may charge, so the recheck keeps the grant.
+    assert await harness.grants.resume_rechecks(ACTOR) == []
+    settled = await harness.cost_center_records.get_cost_center(TENANT, general)
+    assert settled is not None and settled.pending_rechecks == []
+    plan = await harness.service.plan(ACTOR, harness.publication_id)
+    assert plan.access_snapshot
+    assert {g.entitlement_id for g in plan.access_snapshot.grants if g.enabled} == {
+        kept.id,
+        waiting.id,
+    }

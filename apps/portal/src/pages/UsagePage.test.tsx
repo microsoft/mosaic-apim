@@ -460,7 +460,7 @@ describe('UsagePage', () => {
     renderPage()
 
     expect(await screen.findByText('Cost centers')).toBeVisible()
-    expect(screen.getByText("Each cost center's total this month, from everyone who charges it. MOSAIC shows only the total, never who used it.")).toBeVisible()
+    expect(screen.getByText("Each cost center's total this month, from everyone who charges it, and its pooled quotas on what you hold there. MOSAIC shows only totals, never who used them.")).toBeVisible()
     expect(screen.getAllByText('Research · RES')[0]).toBeVisible()
     expect(screen.getByText(/300 requests/)).toBeVisible()
     expect(screen.getByText('40,000 tokens of 100,000 pooled tokens')).toBeVisible()

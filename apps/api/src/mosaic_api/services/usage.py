@@ -1141,7 +1141,9 @@ class UsageService:
 
         Only cost centers the caller holds an enabled grant under, and only totals: the figures
         are summed over every grant charged to the cost center, so nothing in them is any one
-        person's. Someone whose grants were turned off or revoked no longer sees its totals.
+        person's. Someone whose grants were turned off or revoked no longer sees its totals. A
+        resource's own total is shown only against a pooled quota on it, which is what it's for:
+        without one, a model that one other person uses would show their use.
         """
 
         if self._grants is None:
@@ -1185,10 +1187,12 @@ class UsageService:
                 if key in seen:
                     continue
                 seen.add(key)
-                metrics = by_resource.get(key) or UsageMetrics()
-                is_mcp = resource.kind == EntitlementResourceKind.MCP_SERVER
                 limit = cost_center.limit_for(resource)
                 pool = limit.pool if limit is not None else None
+                if pool is None:
+                    continue
+                metrics = by_resource.get(key) or UsageMetrics()
+                is_mcp = resource.kind == EntitlementResourceKind.MCP_SERVER
                 shares = [
                     used / allowed
                     for used, allowed in (
@@ -1222,7 +1226,9 @@ class UsageService:
                     ),
                 )
             )
-        return found
+        return sorted(
+            found, key=lambda item: (item.cost_center.name.casefold(), item.cost_center.id)
+        )
 
     def _earliest_quota_window_start(
         self, entitlements: Sequence[ResolvedEntitlement], now: datetime

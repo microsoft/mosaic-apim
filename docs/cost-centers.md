@@ -69,9 +69,10 @@ A principal may charge a cost center when:
 A security group may charge only the tenant's default and the cost centers that list it.
 
 Removing a member stops them charging the cost center:
-- Their grants under it are revoked: turned off, with the reason recorded. The next apply of each
-  model deletes their keys. You can turn a revoked grant back on only once they may charge the
-  cost center again.
+- Their grants under it are revoked, unless they may still charge it another way, such as through
+  a security group it lists. A revoked grant is turned off, with the reason recorded, and the next
+  apply of its model deletes its key. You can turn it back on only once they may charge the cost
+  center again.
 - If it was their default, their default goes back to the tenant's.
 - Removing a security group also checks every grant whose subject might have charged the cost
   center only through that group. With Microsoft Graph lookup off, a grant that came from a request
@@ -88,6 +89,12 @@ Losing the right to charge a cost center any other way revokes grants the same w
   they keep theirs.
 - **Turning a grant back on** checks again that its subject may charge its cost center, whether it
   was revoked or turned off by hand.
+
+Revoking a grant waits for its model's lock, which an apply holds while it runs. If a grant can't
+be revoked yet, the cost center shows **Recheck pending**:
+- Applies leave the grants still to be checked out of runtime access, and the plan says which.
+- To finish, open the cost center and choose **Check grants again**. Any later member removal or
+  default change finishes it too, and so does repeating the change.
 
 ## Limits and pooled quotas
 
@@ -184,9 +191,10 @@ for when keys are allowed again. Security-group grants never have keys.
   **Unattributed calls** and **Reserved capacity with no calls** belong to no grant, so their cost
   center is empty. See [Pricing](pricing.md#chargeback).
 - **Portal:** **Usage & cost** shows a person their own use, limits, and rate-limit use, as before.
-  For each cost center they hold a grant under, it adds the cost center's total this month, from
-  everyone's calls, against its pooled quotas on the resources they hold there. It never shows who
-  else called or how much any one person used.
+  For each cost center they hold an enabled grant under, it adds the cost center's total this
+  month, from everyone's calls, and the total on each resource they hold there that has a pooled
+  quota, against that quota. It never shows who else called, how many did, or what any one person
+  used.
 
 ## API
 
@@ -200,7 +208,8 @@ Administrators (`Admin`):
 | PATCH | `/cost-centers/{id}` | Change its name, code, description, owners, or keys allowed |
 | DELETE | `/cost-centers/{id}` | Delete it; 409 `builtIn`, `tenantDefault`, `isDefault`, or `hasGrants` |
 | PUT | `/cost-centers/{id}/members/{principalId}` | Add a member |
-| DELETE | `/cost-centers/{id}/members/{principalId}` | Remove a member, and revoke their grants under it |
+| DELETE | `/cost-centers/{id}/members/{principalId}` | Remove a member, and revoke the grants that relied on it |
+| POST | `/cost-centers/{id}/recheck` | Check again the grants its pending rechecks cover |
 | PUT | `/cost-centers/{id}/limits` | Replace its per-person defaults and pooled quotas |
 | GET, PUT | `/cost-center-settings` | The tenant's default cost center |
 | GET | `/entitlements?costCenter={id}` | Grants charged to a cost center |
@@ -223,7 +232,8 @@ People (`User`), for themselves only:
 - Group membership comes from the token at call time, so removing someone from a group takes effect
   when their token expires, usually within about an hour.
 - A pool counts per gateway. The same model on two gateways has two pools.
-- A cost center's total in the portal is a total. When only two people share a cost center, each can
-  work out the other's use from it and their own.
+- A cost center's totals in the portal are totals, including the person's own calls. When only one
+  other grant charges the cost center, or a pooled resource under it, subtracting their own use
+  from that total shows the other's.
 - Calls MOSAIC couldn't attribute belong to no cost center, so a cost center's figures can be lower
   than its gateway's.
