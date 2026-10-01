@@ -4,7 +4,8 @@ import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApiError } from '../api'
 import { MosaicThemeProvider } from '../theme'
-import type { EnvironmentCatalogView } from '../types'
+import { emailSettingsFixture } from '../test/budget-fixtures'
+import type { EmailSettings, EnvironmentCatalogView } from '../types'
 import { SettingsPage } from './SettingsPage'
 
 vi.mock('@azure/msal-react', () => ({
@@ -20,6 +21,9 @@ const api = {
   updateEnvironmentSettings: vi.fn(),
   listEnvironmentSuggestions: vi.fn(),
   assignEnvironments: vi.fn(),
+  getEmailSettings: vi.fn(),
+  saveEmailSettings: vi.fn(),
+  sendTestEmail: vi.fn(),
 }
 
 vi.mock('../api', async (importOriginal) => {
@@ -94,6 +98,7 @@ describe('SettingsPage', () => {
       generatedAt: '2026-09-01T12:00:00Z',
     })
     api.listEnvironmentSuggestions.mockResolvedValue({ items: [] })
+    api.getEmailSettings.mockResolvedValue(emailSettingsFixture)
   })
 
   it('applies and persists appearance preferences', async () => {
@@ -109,8 +114,9 @@ describe('SettingsPage', () => {
 
   it('renders the live environment catalog', async () => {
     renderSettings()
-    expect(await screen.findByRole('heading', { name: 'Environments' })).toBeVisible()
-    expect(screen.getByText('Live data')).toBeVisible()
+    const heading = await screen.findByRole('heading', { name: 'Environments' })
+    expect(heading).toBeVisible()
+    expect(within(heading.parentElement!).getByText('Live data')).toBeVisible()
     expect(await screen.findByText('Development')).toBeVisible()
     expect(
       screen.getByText(/3 resources need classification: 1 gateway, 1 model endpoint, 1 MCP server\./),
@@ -243,5 +249,94 @@ describe('SettingsPage', () => {
       }),
     )
     expect(await screen.findByText(/Gateway: applied/)).toBeVisible()
+  })
+
+  it('saves email settings, offering the deployment’s own Communication Services', async () => {
+    const user = userEvent.setup()
+    const saved: EmailSettings = {
+      ...emailSettingsFixture,
+      enabled: true,
+      endpoint: 'https://contoso-mosaic.communication.azure.com',
+      sender: 'DoNotReply@contoso.azurecomm.net',
+      ready: true,
+      updatedAt: '2026-09-01T12:00:00Z',
+    }
+    api.saveEmailSettings.mockResolvedValue(saved)
+    renderSettings()
+
+    const form = await screen.findByRole('form', { name: 'Email settings' })
+    expect(screen.getByText('Not set up')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Send test email' })).toBeDisabled()
+    await user.click(within(form).getByRole('button', { name: 'Use them' }))
+    expect(within(form).getByRole('textbox', { name: 'Communication Services endpoint' })).toHaveValue(
+      'https://contoso-mosaic.communication.azure.com',
+    )
+    await user.click(within(form).getByRole('switch', { name: 'Send budget email' }))
+    await user.click(within(form).getByRole('button', { name: 'Save email settings' }))
+
+    await waitFor(() =>
+      expect(api.saveEmailSettings).toHaveBeenCalledWith({
+        enabled: true,
+        endpoint: 'https://contoso-mosaic.communication.azure.com',
+        sender: 'DoNotReply@contoso.azurecomm.net',
+      }),
+    )
+    expect(await screen.findByText(/Budget email goes out through this Communication Services/)).toBeVisible()
+    expect(screen.getByText('On')).toBeVisible()
+    expect(within(form).queryByRole('button', { name: 'Use them' })).not.toBeInTheDocument()
+  })
+
+  it('refuses to turn email on without an endpoint and a sender', async () => {
+    const user = userEvent.setup()
+    renderSettings()
+    const form = await screen.findByRole('form', { name: 'Email settings' })
+    await user.click(within(form).getByRole('switch', { name: 'Send budget email' }))
+    await user.click(within(form).getByRole('button', { name: 'Save email settings' }))
+    expect(
+      await screen.findByText(/Email can be on only with a Communication Services endpoint/),
+    ).toBeVisible()
+    expect(api.saveEmailSettings).not.toHaveBeenCalled()
+  })
+
+  it('sends a test email from the saved settings, and shows why one failed', async () => {
+    const user = userEvent.setup()
+    api.getEmailSettings.mockResolvedValue({
+      ...emailSettingsFixture,
+      endpoint: 'https://contoso-mosaic.communication.azure.com',
+      sender: 'DoNotReply@contoso.azurecomm.net',
+      lastTestAt: '2026-09-01T12:00:00Z',
+      lastTestError: 'Communication Services refused the call (403)',
+    })
+    api.sendTestEmail
+      .mockResolvedValueOnce({ sent: true, to: 'avery@contoso.com', operationId: 'op-1', error: null })
+      .mockRejectedValueOnce(new ApiError('A test email went less than 30 seconds ago', 429))
+    renderSettings()
+
+    const test = await screen.findByRole('form', { name: 'Test email' })
+    expect(screen.getByText('Off')).toBeVisible()
+    expect(within(test).getByText(/failed: Communication Services refused the call \(403\)/)).toBeVisible()
+    await user.type(within(test).getByRole('textbox', { name: 'Send to' }), 'avery@contoso.com')
+    await user.click(within(test).getByRole('button', { name: 'Send test email' }))
+    await waitFor(() => expect(api.sendTestEmail).toHaveBeenCalledWith('avery@contoso.com'))
+    expect(await within(test).findByText(/accepted a test email to avery@contoso.com/)).toBeVisible()
+
+    await user.click(within(test).getByRole('button', { name: 'Send test email' }))
+    expect(await within(test).findByText('A test email went less than 30 seconds ago')).toBeVisible()
+  })
+
+  it('makes unsaved email changes wait before a test', async () => {
+    const user = userEvent.setup()
+    api.getEmailSettings.mockResolvedValue({
+      ...emailSettingsFixture,
+      endpoint: 'https://contoso-mosaic.communication.azure.com',
+      sender: 'DoNotReply@contoso.azurecomm.net',
+    })
+    renderSettings()
+    const form = await screen.findByRole('form', { name: 'Email settings' })
+    const test = screen.getByRole('form', { name: 'Test email' })
+    expect(within(test).getByRole('button', { name: 'Send test email' })).toBeEnabled()
+    await user.type(within(form).getByRole('textbox', { name: 'Sender address' }), 'x')
+    expect(within(test).getByRole('button', { name: 'Send test email' })).toBeDisabled()
+    expect(within(test).getByText(/Save your changes first/)).toBeVisible()
   })
 })

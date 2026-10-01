@@ -169,6 +169,40 @@
   align-self: flex-start;
 }
 
+.emailLayout {
+  display: grid;
+  grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+  gap: 20px;
+  align-items: start;
+}
+
+.emailSwitch {
+  display: grid;
+  gap: 4px;
+}
+
+.emailTest {
+  padding: 16px;
+  display: grid;
+  gap: 12px;
+  border-radius: 8px;
+  background: var(--mosaic-surface-subtle);
+}
+
+.emailTest h3 {
+  margin: 0;
+}
+
+.emailTestButton {
+  justify-self: start;
+}
+
+@media (max-width: 900px) {
+  .emailLayout {
+    grid-template-columns: 1fr;
+  }
+}
+
 .envDialogContent {
   display: grid;
   gap: 16px;

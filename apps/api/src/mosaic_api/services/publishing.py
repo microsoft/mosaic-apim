@@ -23,6 +23,7 @@ from typing import Any
 
 import structlog
 
+from mosaic_api.budgets import BLOCKED_COST_CENTERS_NAMED_VALUE
 from mosaic_api.domain import (
     AiBackendKind,
     ApimResourceId,
@@ -97,6 +98,7 @@ from mosaic_api.repositories import (
     GatewayRepository,
     ModelEndpointRepository,
 )
+from mosaic_api.services.budget_gate import BlockedListGate, ensure_blocked_list, is_blocked_list
 from mosaic_api.services.cost_centers import load_book
 from mosaic_api.services.directory import Actor
 from mosaic_api.services.environments import load_environment_catalog
@@ -447,9 +449,13 @@ class PublishingService:
         security_group_claims: bool = True,
         environment_repository: EnvironmentRepository | None = None,
         cost_center_repository: CostCenterRepository | None = None,
+        blocked_list: BlockedListGate | None = None,
     ) -> None:
         self._repository = repository
         self._cost_centers = cost_center_repository
+        # What a new blocked list holds. Without it, a list MOSAIC creates blocks nothing until
+        # the budget check writes it.
+        self._blocked_list = blocked_list
         self._endpoints = endpoint_repository
         self._client_factory = client_factory
         self._writer_factory = writer_factory
@@ -1301,6 +1307,13 @@ class PublishingService:
     ) -> list[PublishPlanStep]:
         steps: list[PublishPlanStep] = []
         base: dict[tuple[PublishedResourceKind, str], PublishPlanStep] = {}
+        # First of all: every governed policy reads the gateway's blocked list. See ADR 0023.
+        steps.append(
+            BlockedListGate.plan_step(
+                resource,
+                exists=await client.get_named_value(BLOCKED_COST_CENTERS_NAMED_VALUE) is not None,
+            )
+        )
         for item in _desired_resources(publication):
             exists = await self._exists(client, publication, item)
             if exists and not self._owns(publication, item.kind, item.name):
@@ -1975,6 +1988,15 @@ class PublishingService:
                     )
                     write_started = False
                     try:
+                        if is_blocked_list(step.kind, step.name):
+                            # Before any policy that reads it. MOSAIC keeps it for the gateway, so
+                            # the publication never owns it, and no rollback deletes it.
+                            await ensure_blocked_list(
+                                self._blocked_list, client, writer, publication.tenant_id
+                            )
+                            result.status = PublishStepStatus.SUCCEEDED
+                            await self._progress(publication, run, results, owned)
+                            continue
                         if step.action == PublishAction.DELETE:
                             owned = await self._delete_revoked_key(
                                 publication, client, writer, step, owned
@@ -2304,6 +2326,10 @@ class PublishingService:
                 try:
                     await self._assert_lock(publication, run)
                     restored = self._policy(publication, candidate)
+                    # The restored policy reads the gateway's blocked list, so it must exist.
+                    await ensure_blocked_list(
+                        self._blocked_list, client, writer, publication.tenant_id
+                    )
                     await writer.put_policy_fragment(
                         publication.fragment_name,
                         restored.fragment_xml,
@@ -2703,6 +2729,8 @@ class PublishingService:
                 for result in results
                 if result.status == PublishStepStatus.SUCCEEDED
                 and result.action != PublishAction.DELETE
+                # The gateway's blocked list is the gateway's, not this publication's.
+                and not is_blocked_list(result.kind, result.name)
             ],
         )
         await self._record_state(

@@ -59,6 +59,7 @@ from mosaic_api.services.analytics.models import (
     AnalyticsSpend,
     AnalyticsStatus,
     AnalyticsUnattributed,
+    BudgetSpend,
     ExportView,
 )
 from mosaic_api.services.analytics.rows import entries
@@ -566,6 +567,51 @@ class AnalyticsService:
         window = resolve_window(filters, self._clock())
         scope = await self._scope(actor, filters)
         return await self._spend(scope, await self._costs(scope, window))
+
+    async def budget_spend(
+        self, tenant_id: str, cost_center_ids: Sequence[str], *, organization: bool = True
+    ) -> BudgetSpend | None:
+        """This month's spend for the organization and for several cost centers, in one read.
+
+        Each cost center's figures are exactly what ``cost_center_spend`` returns for it. The
+        organization's are the whole estate's, as the Dashboard shows them: unattributed calls
+        and reserved capacity nobody called count there, and nowhere else. One scope, one price
+        list, and one read of the month's grant figures serve them all, so the budget check costs
+        the same however many budgets there are. None when this deployment has no price list.
+        """
+
+        actor = Actor(object_id="system:budgets", tenant_id=tenant_id)
+        filters = AnalyticsFilters()
+        window = resolve_window(filters, self._clock())
+        scope = await self._scope(actor, filters)
+        costs = await self._costs(scope, window)
+        if costs is None:
+            return None
+        spend = BudgetSpend(organization=await self._spend(scope, costs) if organization else None)
+        wanted = list(dict.fromkeys(cost_center_ids))
+        if not wanted:
+            return spend
+        today = costs.today
+        coverage = coverage_of(scope.live_states())
+        through = min(self._clock(), coverage.through) if coverage is not None else None
+        grants = (
+            await self._repository.list_summaries(
+                scope.tenant_id,
+                period="day",
+                start=month_first(today).isoformat(),
+                end=today.isoformat(),
+                dimensions=["grant"],
+                gateway_ids=scope.gateway_ids,
+            )
+            if scope.gateway_ids is None or scope.gateway_ids
+            else []
+        )
+        for cost_center_id in wanted:
+            narrowed = replace(scope, filters=replace(filters, cost_center_id=cost_center_id))
+            book = CostBook(costs.pricer, narrowed, today, costs.provisioned_tokens)
+            api = await self._from_grants(narrowed, grants, ["api"])
+            spend.cost_centers[cost_center_id] = spend_report(book, narrowed, api, today, through)
+        return spend
 
     async def _facts(self, scope: Scope, day: date, links: set[str]) -> list[UsageFact]:
         if not links or (scope.gateway_ids is not None and not scope.gateway_ids):

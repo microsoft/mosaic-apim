@@ -244,6 +244,8 @@ def test_every_mcp_refusal_records_a_fixed_reason_before_it_responds() -> None:
         "cost-center",
         "groups-overage",
         "no-grant",
+        "budget-list",
+        "budget",
     }
     assert reasons["no-credential"] == "mosaic-deny v=1 r=no-credential"
     assert reasons["no-grant"] == (

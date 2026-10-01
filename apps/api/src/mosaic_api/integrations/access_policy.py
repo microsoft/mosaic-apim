@@ -19,6 +19,7 @@ from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from typing import Protocol
 
+from mosaic_api.budgets import BLOCKED_COST_CENTERS_NAMED_VALUE, BLOCKED_LIST_PATTERN, budget_key
 from mosaic_api.domain import (
     COST_CENTER_CODE_PATTERN,
     COST_CENTER_HEADER,
@@ -98,6 +99,7 @@ _CLIENT = '(string)context.Variables["mosaic-client"]'
 GRANT_ATTRIBUTION_TRACE_PREFIX = "mosaic-attribution v=1"
 DENIAL_TRACE_PREFIX = "mosaic-deny v=1"
 _DENIAL_REASON = re.compile(r"[a-z][a-z-]{1,31}")
+_STATUS_REASONS = {401: "Unauthorized", 403: "Forbidden", 503: "Service Unavailable"}
 _DENIED = "Model access denied."
 _GROUPS_OVERAGE_DENIED = (
     "Model access denied. Your token doesn't list your groups because you belong to too many; "
@@ -114,6 +116,20 @@ COST_CENTER_MISMATCH_DENIED = (
 COST_CENTER_KEYS_OFF_DENIED = (
     "Model access denied. Keys are turned off for this grant's cost center; use a Microsoft Entra "
     "token."
+)
+# The matched grant's cost center's key on the gateway's blocked list. See ADR 0023.
+_BUDGET_KEY = '(string)context.Variables["mosaic-budget-key"]'
+# Deliberately not _literal(): API Management replaces this reference with the list, which MOSAIC
+# writes as hex keys, commas and "-" only, so nothing it holds can end the string early.
+_BLOCKED_LIST = '"{{' + BLOCKED_COST_CENTERS_NAMED_VALUE + '}}"'
+BUDGET_DENIED = (
+    '@("Access denied. Cost center " + (string)context.Variables["mosaic-cost-center"] + '
+    '" has used its monthly budget, so its calls are refused until an administrator raises the '
+    'budget or the month ends.")'
+)
+BLOCKED_LIST_UNREADABLE = (
+    "Access is unavailable: this gateway's list of cost centers whose budgets block their calls "
+    "isn't one MOSAIC wrote."
 )
 # Response headers the gateway adds from the limits that applied to a call.
 REMAINING_TOKENS_HEADER = "x-mosaic-remaining-tokens"
@@ -196,7 +212,7 @@ def _deny(
     ET.SubElement(
         response,
         "set-status",
-        {"code": str(code), "reason": "Unauthorized" if code == 401 else "Forbidden"},
+        {"code": str(code), "reason": _STATUS_REASONS.get(code, "Forbidden")},
     )
     ET.SubElement(response, "set-body").text = message
 
@@ -353,6 +369,52 @@ def _cost_center_ids(parent: ET.Element, grants: Sequence[AccessPolicyGrant]) ->
     for code, cost_center_id in codes:
         lines.append(f"if (code == {_literal(code)}) {{ return {_literal(cost_center_id)}; }}")
     _variable(parent, "mosaic-cost-center-id", _expression([*lines, 'return "";']))
+
+
+def append_budget_check(parent: ET.Element, grants: Sequence[AccessPolicyGrant]) -> None:
+    """Refuse a call charged to a cost center whose budget blocks its calls. See ADR 0023.
+
+    Runs once the grant and its cost center are known, and before anything counts the call. The
+    gateway's ``mosaic-blocked-cost-centers`` named value lists the blocked cost centers' keys,
+    which MOSAIC writes, so a block needs no new policy. The keys are compared between commas, so
+    one can't match inside another. A list that isn't one MOSAIC wrote refuses every call: a
+    damaged list must never let a blocked cost center's calls through.
+    """
+
+    keys = sorted(
+        {_code(grant): budget_key(grant.cost_center_id) for grant in grants if _code(grant)}.items()
+    )
+    lines = [f"var code = {_GRANT_COST_CENTER};"]
+    for code, key in keys:
+        lines.append(f"if (code == {_literal(code)}) {{ return {_literal(key)}; }}")
+    _variable(parent, "mosaic-budget-key", _expression([*lines, 'return "";']))
+    pattern = _literal(f"^(?:{BLOCKED_LIST_PATTERN.pattern})$")
+    _reject(
+        parent,
+        _expression(
+            [
+                f"var blocked = {_BLOCKED_LIST};",
+                f"return !System.Text.RegularExpressions.Regex.IsMatch(blocked, {pattern});",
+            ]
+        ),
+        reason="budget-list",
+        with_caller=True,
+        code=503,
+        message=BLOCKED_LIST_UNREADABLE,
+    )
+    _reject(
+        parent,
+        _expression(
+            [
+                f"var blocked = {_BLOCKED_LIST};",
+                f"var key = {_BUDGET_KEY};",
+                'return key != "" && ("," + blocked + ",").Contains("," + key + ",");',
+            ]
+        ),
+        reason="budget",
+        with_caller=True,
+        message=BUDGET_DENIED,
+    )
 
 
 def governed_counter_key_expression(
@@ -900,6 +962,7 @@ def _authentication(
         f"@({_HAS_KEY} ? {_KEY_COST_CENTER} : {_TOKEN_COST_CENTER})",
     )
     _cost_center_ids(fragment, grants)
+    append_budget_check(fragment, grants)
 
 
 def _resolve_token_grant(

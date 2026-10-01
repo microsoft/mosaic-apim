@@ -37,6 +37,7 @@ from mosaic_api.domain import (
     PrincipalKind,
     Publication,
     PublicationStatus,
+    PublishAction,
     PublishedResource,
     PublishedResourceKind,
     PublishPlan,
@@ -748,6 +749,8 @@ async def test_plan_new_publication_is_fail_closed_before_activation(harness: Ha
     assert plan.target == "mcp"
     assert plan.mcp_access_snapshot is not None
     assert [step.kind for step in plan.steps] == [
+        # The gateway's blocked list, before the fragment that reads it. See ADR 0023.
+        PublishedResourceKind.NAMED_VALUE,
         PublishedResourceKind.BACKEND,
         PublishedResourceKind.POLICY_FRAGMENT,
         PublishedResourceKind.API,
@@ -757,7 +760,9 @@ async def test_plan_new_publication_is_fail_closed_before_activation(harness: Ha
         PublishedResourceKind.API_POLICY,
         PublishedResourceKind.API,
     ]
-    assert plan.steps[2].stage == "prepare"
+    assert plan.steps[0].name == "mosaic-blocked-cost-centers"
+    assert plan.steps[0].action == PublishAction.CREATE
+    assert plan.steps[3].stage == "prepare"
     assert plan.steps[-1].stage == "activate"
     assert any("0 bytes" in warning for warning in plan.warnings)
 
@@ -782,9 +787,12 @@ async def test_plan_backend_change_denies_first(harness: Harness) -> None:
 
     changed = await harness.service.plan(ACTOR, publication_id)
 
-    assert changed.steps[0].kind == PublishedResourceKind.API_POLICY
-    assert changed.steps[0].name == "mosaic-mcp-orders-mcp"
-    assert changed.steps[0].stage == "prepare"
+    # The blocked list the first apply created stays, so the plan only keeps it.
+    assert changed.steps[0].name == "mosaic-blocked-cost-centers"
+    assert changed.steps[0].action == PublishAction.NO_CHANGE
+    assert changed.steps[1].kind == PublishedResourceKind.API_POLICY
+    assert changed.steps[1].name == "mosaic-mcp-orders-mcp"
+    assert changed.steps[1].stage == "prepare"
 
 
 async def test_apply_writes_mcp_api_policy_and_records_publication(harness: Harness) -> None:
@@ -1242,3 +1250,48 @@ async def test_a_pending_recheck_keeps_its_grants_out_of_the_snapshot(harness: H
         waiting.id in warning and "waiting for MOSAIC to check" in warning
         for warning in plan.warnings
     )
+
+
+async def test_an_mcp_apply_creates_the_gateways_blocked_list_and_never_owns_it(
+    harness: Harness,
+) -> None:
+    named = "namedValues/mosaic-blocked-cost-centers"
+    publication_id = await harness.create()
+    plan = await harness.service.plan(ACTOR, publication_id)
+
+    run = await harness.service.apply(ACTOR, publication_id, plan.id)
+    await harness.service.wait_for_idle()
+
+    completed = await harness.service.get_run(ACTOR, publication_id, run.id)
+    assert completed.status == PublishRunStatus.SUCCEEDED
+    puts = harness.apim.write_paths("PUT")
+    fragment = next(index for index, path in enumerate(puts) if path.startswith("policyFragments/"))
+    assert puts.index(named) < fragment
+    assert harness.apim.dangling_references == []
+    assert harness.apim.written[named]["properties"]["value"] == "-"
+    publication = await harness.service.get_publication(ACTOR, publication_id)
+    assert all(item.name != "mosaic-blocked-cost-centers" for item in publication.resources)
+
+    await reviewed_unpublish(harness.service, ACTOR, publication_id)
+    await harness.service.wait_for_idle()
+
+    # Other publications' policies on the gateway still read it, so unpublishing leaves it.
+    assert named not in harness.apim.write_paths("DELETE")
+    assert named in harness.apim.written
+
+
+async def test_an_mcp_apply_that_cant_create_the_list_writes_no_policy_that_reads_it(
+    harness: Harness,
+) -> None:
+    named = "namedValues/mosaic-blocked-cost-centers"
+    harness.apim.fail_write(named, 400)
+    publication_id = await harness.create()
+    plan = await harness.service.plan(ACTOR, publication_id)
+
+    run = await harness.service.apply(ACTOR, publication_id, plan.id)
+    await harness.service.wait_for_idle()
+
+    completed = await harness.service.get_run(ACTOR, publication_id, run.id)
+    assert completed.status == PublishRunStatus.FAILED
+    assert not any(path.startswith("policyFragments/") for path in harness.apim.write_paths("PUT"))
+    assert harness.apim.dangling_references == []

@@ -40,6 +40,7 @@ from mosaic_api.integrations.access_policy import (
     _validate_cost_center,
     _validate_pools,
     _variable,
+    append_budget_check,
     append_denial_trace,
     append_grant_attribution_trace,
     classify_traces,
@@ -358,6 +359,7 @@ def _mcp_authentication(
         fragment, "mosaic-cost-center", '@((string)context.Variables["mosaic-token-cost-center"])'
     )
     _cost_center_ids(fragment, grants)
+    append_budget_check(fragment, grants)
 
 
 def _strip_credentials(fragment: ET.Element) -> None:

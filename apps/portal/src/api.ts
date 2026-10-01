@@ -12,6 +12,7 @@ import type {
   McpConnection,
   ModelConnection,
   MyUsageReport,
+  PortalBudgetAlert,
   PortalCostCenter,
   PortalProfile,
   PortalEnvironment,
@@ -57,6 +58,8 @@ export interface PortalApi {
   createAccessRequest(payload: AccessRequestCreate): Promise<AccessRequest>
   withdrawAccessRequest(requestId: string): Promise<AccessRequest>
   getMyUsage(period: UsagePeriod): Promise<MyUsageReport>
+  /** Your cost centers whose monthly budgets are near, at, or past their limits. Totals only. */
+  getMyBudgets(): Promise<PortalBudgetAlert[]>
   /** Connection metadata for one of the caller's own direct model grants. Contains no secret. */
   getMyEntitlementConnection(entitlementId: string): Promise<ModelConnection>
   /** Connection metadata for one of the caller's own MCP grants. Contains no secret. */
@@ -126,6 +129,7 @@ export function usePortalApi(): PortalApi {
         }),
       getMyUsage: (period) =>
         request<MyUsageReport>(`/api/v1/me/usage?period=${encodeURIComponent(period)}`),
+      getMyBudgets: () => request<PortalBudgetAlert[]>('/api/v1/me/budgets'),
       getMyEntitlementConnection: (entitlementId) =>
         request<ModelConnection>(`${entitlementPath(entitlementId)}/connection`),
       getMcpConnection: (entitlementId) =>

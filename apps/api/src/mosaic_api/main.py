@@ -14,6 +14,7 @@ from fastapi.responses import JSONResponse
 from mosaic_api.analytics_api import analytics_router
 from mosaic_api.api import portal_router, router
 from mosaic_api.auth import EntraAuthenticator, LocalAuthenticator
+from mosaic_api.budgets_api import budgets_router, portal_budgets_router
 from mosaic_api.config import AuthMode, Environment, RepositoryBackend, Settings, get_settings
 from mosaic_api.cost_centers_api import cost_centers_router, portal_cost_centers_router
 from mosaic_api.directory_api import directory_router
@@ -24,6 +25,7 @@ from mosaic_api.integrations.aoai.client import SubscriptionScanner
 from mosaic_api.integrations.aoai.key_check import EndpointKeyProbe
 from mosaic_api.integrations.apim import ApimClient, ApimWriter, ArmClient
 from mosaic_api.integrations.apim.credentials import ApimCredentialClient, ApimKeyManager
+from mosaic_api.integrations.email import AcsEmailClient
 from mosaic_api.integrations.graph import DirectoryLookup, GraphDirectoryLookup
 from mosaic_api.integrations.key_vault import KeyVaultSecretWriter
 from mosaic_api.integrations.loganalytics import LogAnalyticsClient
@@ -33,6 +35,8 @@ from mosaic_api.observability import configure_logging, configure_telemetry
 from mosaic_api.pricing import load_seed
 from mosaic_api.pricing_api import pricing_router
 from mosaic_api.repositories import (
+    BudgetRepository,
+    CosmosBudgetRepository,
     CosmosCostCenterRepository,
     CosmosDirectoryRepository,
     CosmosEntitlementRepository,
@@ -47,6 +51,7 @@ from mosaic_api.repositories import (
     EntitlementRepository,
     EnvironmentRepository,
     GatewayRepository,
+    InMemoryBudgetRepository,
     InMemoryCostCenterRepository,
     InMemoryDirectoryRepository,
     InMemoryEntitlementRepository,
@@ -74,6 +79,8 @@ from mosaic_api.services import (
     UsageService,
 )
 from mosaic_api.services.analytics import AnalyticsService
+from mosaic_api.services.budget_gate import BlockedListGate
+from mosaic_api.services.budgets import BudgetService
 from mosaic_api.services.cost_centers import CostCenterService
 from mosaic_api.services.mcp_endpoints import build_mcp_client_factory
 from mosaic_api.services.mcp_publishing import McpPublishingService
@@ -110,6 +117,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         rollup_repository: UsageRollupRepository
         pricing_repository: PricingRepository
         cost_center_repository: CostCenterRepository
+        budget_repository: BudgetRepository
         if app_settings.repository_backend is RepositoryBackend.MEMORY:
             repository = InMemoryDirectoryRepository()
             gateway_repository = InMemoryGatewayRepository()
@@ -122,6 +130,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             rollup_repository = InMemoryUsageRollupRepository()
             pricing_repository = InMemoryPricingRepository()
             cost_center_repository = InMemoryCostCenterRepository()
+            budget_repository = InMemoryBudgetRepository()
         else:
             cosmos_client = CosmosClient(
                 str(app_settings.cosmos_endpoint), credential=credential
@@ -194,6 +203,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 app_settings.cosmos_audit_events_container,
                 owns_client=False,
             )
+            budget_repository = CosmosBudgetRepository(
+                cosmos_client,
+                app_settings.cosmos_database,
+                app_settings.cosmos_desired_state_container,
+                app_settings.cosmos_audit_events_container,
+                app_settings.cosmos_usage_rollups_container,
+                owns_client=False,
+            )
         authenticator = (
             LocalAuthenticator(app_settings.tenant_id, app_settings.local_roles)
             if app_settings.auth_mode is AuthMode.LOCAL
@@ -225,6 +242,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # that follows no redirects and shares nothing with the ARM pool.
         endpoint_key_probe = EndpointKeyProbe()
         subscription_scanner = SubscriptionScanner(arm_client)
+        # Every gateway MOSAIC manages holds the list of cost centers whose budgets block their
+        # calls, which every governed policy reads. See ADR 0023.
+        blocked_list = BlockedListGate(
+            budget_repository,
+            gateway_repository=gateway_repository,
+            enabled=app_settings.budgets_enabled,
+        )
         model_endpoint_service = ModelEndpointService(
             endpoint_repository,
             gateway_repository=gateway_repository,
@@ -258,6 +282,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             security_group_claims=app_settings.entra_group_claims,
             environment_repository=environment_repository,
             cost_center_repository=cost_center_repository,
+            blocked_list=blocked_list,
         )
         mcp_publishing_service = McpPublishingService(
             gateway_repository,
@@ -270,6 +295,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             security_group_claims=app_settings.entra_group_claims,
             environment_repository=environment_repository,
             cost_center_repository=cost_center_repository,
+            blocked_list=blocked_list,
         )
         # A dedicated client for outbound MCP calls: redirects are refused per request, and the
         # connection pool for operator-supplied hosts is kept away from the ARM one.
@@ -435,6 +461,29 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             retention_days=app_settings.usage_rollup_retention_days,
             cost_center_repository=cost_center_repository,
         )
+        email_client = AcsEmailClient(credential)
+        budget_service = BudgetService(
+            budget_repository,
+            cost_center_repository=cost_center_repository,
+            gateway_repository=gateway_repository,
+            gate=blocked_list,
+            client_factory=lambda resource: ApimClient(arm_client, resource),
+            writer_factory=lambda resource: ApimWriter(arm_client, resource),
+            analytics=app.state.analytics_service,
+            email=email_client,
+            portal=app.state.portal_service,
+            tenant_id=app_settings.tenant_id,
+            priced=uses_rollups,
+            interval_seconds=app_settings.budget_interval_seconds,
+            fast_interval_seconds=app_settings.budget_fast_interval_seconds,
+            suggested_endpoint=app_settings.email_suggested_endpoint,
+            suggested_sender=app_settings.email_suggested_sender,
+            enabled=app_settings.budgets_enabled,
+        )
+        app.state.budget_repository = budget_repository
+        app.state.budget_service = budget_service
+        # Budgets are judged from rolled-up usage, so the check runs only where there is some.
+        budget_loop = app_settings.budgets_enabled and uses_rollups
         app.state.authenticator = authenticator
         try:
             reaped = await gateway_service.reap_stale_sync_runs(app_settings.tenant_id)
@@ -470,7 +519,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             logger.exception("mcp_endpoint_sync_reap_failed")
         gateway_service.schedule_bootstrap(app_settings.tenant_id)
         if rollup_service is not None:
+            if budget_loop:
+                rollup_service.add_listener(budget_service.rollups_changed)
             rollup_service.start()
+        if budget_loop:
+            budget_service.start()
         logger.info(
             "application_started",
             environment=app_settings.environment,
@@ -479,6 +532,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         try:
             yield
         finally:
+            await budget_service.aclose()
             if rollup_service is not None:
                 await rollup_service.aclose()
             await gateway_service.aclose()
@@ -494,6 +548,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if key_vault_writer is not None:
                 await key_vault_writer.close()
             await endpoint_key_probe.close()
+            await email_client.close()
             await mcp_http_client.aclose()
             if log_client is not None:
                 await log_client.close()
@@ -506,6 +561,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             await rollup_repository.close()
             await pricing_repository.close()
             await cost_center_repository.close()
+            await budget_repository.close()
             if cosmos_client:
                 await cosmos_client.close()
             await credential.close()
@@ -557,6 +613,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         rollup_repository = getattr(request.app.state, "usage_rollup_repository", None)
         pricing_repository = getattr(request.app.state, "pricing_repository", None)
         cost_center_repository = getattr(request.app.state, "cost_center_repository", None)
+        budget_repository = getattr(request.app.state, "budget_repository", None)
         is_ready = (
             repository is not None
             and await repository.ready()
@@ -576,6 +633,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             and await pricing_repository.ready()
             and cost_center_repository is not None
             and await cost_center_repository.ready()
+            and budget_repository is not None
+            and await budget_repository.ready()
         )
         return JSONResponse(
             status_code=status.HTTP_200_OK if is_ready else status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -589,5 +648,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(pricing_router)
     app.include_router(cost_centers_router)
     app.include_router(portal_cost_centers_router)
+    app.include_router(budgets_router)
+    app.include_router(portal_budgets_router)
     app.include_router(portal_router)
     return app

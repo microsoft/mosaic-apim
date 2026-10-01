@@ -121,6 +121,25 @@ class ApimWriter:
     async def delete_named_value(self, name: str) -> bool:
         return await self._delete(f"namedValues/{name}")
 
+    async def put_plain_named_value(self, name: str, value: str) -> JsonObject | None:
+        """Create or replace a named value that holds plain text, such as the blocked list.
+
+        Never a secret: API Management shows a plain named value's text to anyone who may read
+        the service, and MOSAIC reads it back to check what a gateway holds. See ADR 0023.
+        """
+
+        return await self._put(
+            f"namedValues/{name}",
+            {
+                "properties": {
+                    "displayName": name,
+                    "value": value,
+                    "secret": False,
+                    "tags": ["mosaic"],
+                }
+            },
+        )
+
     async def put_api(
         self,
         name: str,

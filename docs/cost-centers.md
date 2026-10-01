@@ -3,7 +3,9 @@
 Every grant in MOSAIC, and so every call through it, is charged to a cost center: a team, project,
 or budget line that pays for AI. People choose one when they ask for access, and name one on each
 call when they hold several. Analytics, the chargeback, and the portal report spend and quotas per
-cost center. [ADR 0022](adr/0022-cost-centers.md) records the design.
+cost center, and a cost center's monthly budget can warn its owners and block its calls; see
+[Budgets and alerts](budgets-and-alerts.md). [ADR 0022](adr/0022-cost-centers.md) records the
+design.
 
 - [What a cost center holds](#what-a-cost-center-holds)
 - [Set up cost centers](#set-up-cost-centers)
@@ -195,6 +197,9 @@ for when keys are allowed again. Security-group grants never have keys.
   month, from everyone's calls, and the total on each resource they hold there that has a pooled
   quota, against that quota. It never shows who else called, how many did, or what any one person
   used.
+- **Budgets:** a cost center's page shows its monthly budget's progress, forecast, and emails, and
+  the Dashboard shows every budget. The owners get its emails by default. See
+  [Budgets and alerts](budgets-and-alerts.md).
 
 ## API
 
@@ -211,6 +216,7 @@ Administrators (`Admin`):
 | DELETE | `/cost-centers/{id}/members/{principalId}` | Remove a member, and revoke the grants that relied on it |
 | POST | `/cost-centers/{id}/recheck` | Check again the grants its pending rechecks cover |
 | PUT | `/cost-centers/{id}/limits` | Replace its per-person defaults and pooled quotas |
+| GET, PUT, DELETE | `/cost-centers/{id}/budget` | Its monthly budget; see [Budgets and alerts](budgets-and-alerts.md#api) |
 | GET, PUT | `/cost-center-settings` | The tenant's default cost center |
 | GET | `/entitlements?costCenter={id}` | Grants charged to a cost center |
 | POST, DELETE | `/entitlements/{id}/keys` | Create or delete any direct grant's key |

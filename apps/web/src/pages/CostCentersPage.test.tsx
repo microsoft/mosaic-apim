@@ -1,9 +1,15 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApiError } from '../api'
+import {
+  budgetOverviewFixture,
+  emptyBudgetOverviewFixture,
+  organizationBudgetFixture,
+  researchBudgetFixture,
+} from '../test/budget-fixtures'
 import type { CostCenter, Principal } from '../types'
 import { CostCenterDetailPage, CostCentersPage } from './CostCentersPage'
 
@@ -53,6 +59,12 @@ const api = {
   listPrincipals: vi.fn(),
   listModelApis: vi.fn(),
   listMcpServers: vi.fn(),
+  getBudgets: vi.fn(),
+  getCostCenterBudget: vi.fn(),
+  setCostCenterBudget: vi.fn(),
+  deleteCostCenterBudget: vi.fn(),
+  setOrganizationBudget: vi.fn(),
+  deleteOrganizationBudget: vi.fn(),
 }
 
 vi.mock('../api', async (importOriginal) => {
@@ -88,6 +100,105 @@ describe('Cost centers pages', () => {
     api.addCostCenterMember.mockResolvedValue(general)
     api.removeCostCenterMember.mockResolvedValue(general)
     api.updateCostCenterLimits.mockResolvedValue(general)
+    api.getBudgets.mockResolvedValue(emptyBudgetOverviewFixture)
+    api.getCostCenterBudget.mockResolvedValue(null)
+  })
+
+  it('sets a budget that blocks at 100%, emailing the owners and anyone else', async () => {
+    const user = userEvent.setup()
+    api.setCostCenterBudget.mockResolvedValue(researchBudgetFixture)
+    renderRoute('/cost-centers/cc-general')
+
+    expect(await screen.findByText('No budget')).toBeVisible()
+    await user.type(screen.getByLabelText('Monthly amount (USD)'), '4000')
+    await user.clear(screen.getByLabelText('Warn at (%)'))
+    await user.type(screen.getByLabelText('Warn at (%)'), '100, 50 , 80')
+    await user.type(screen.getByLabelText('Also email'), 'finance@contoso.com, ops@fabrikam.com')
+    expect(screen.getByRole('switch', { name: 'Email the owners (1)' })).toBeChecked()
+    await user.click(screen.getByRole('radio', { name: /Block calls at the gateway/ }))
+    await user.click(screen.getByRole('button', { name: 'Set budget' }))
+
+    await waitFor(() =>
+      expect(api.setCostCenterBudget).toHaveBeenCalledWith('cc-general', {
+        amount: 4000,
+        thresholds: [50, 80, 100],
+        recipients: ['finance@contoso.com', 'ops@fabrikam.com'],
+        notifyOwners: true,
+        action: 'block',
+      }),
+    )
+    // Saving judges the budget at once, so everything that shows budgets reloads.
+    await waitFor(() => expect(api.getCostCenterBudget).toHaveBeenCalledTimes(2))
+  })
+
+  it('refuses an amount or thresholds it can not judge, before saving', async () => {
+    const user = userEvent.setup()
+    renderRoute('/cost-centers/cc-general')
+
+    await screen.findByText('No budget')
+    await user.click(screen.getByRole('button', { name: 'Set budget' }))
+    expect(screen.getByText('Enter a monthly amount in US dollars, at least $0.01.')).toBeVisible()
+    // Under a cent rounds to nothing.
+    await user.type(screen.getByLabelText('Monthly amount (USD)'), '0.004')
+    await user.click(screen.getByRole('button', { name: 'Set budget' }))
+    expect(screen.getByText('Enter a monthly amount in US dollars, at least $0.01.')).toBeVisible()
+    await user.clear(screen.getByLabelText('Monthly amount (USD)'))
+    await user.type(screen.getByLabelText('Monthly amount (USD)'), '100')
+    await user.clear(screen.getByLabelText('Warn at (%)'))
+    await user.type(screen.getByLabelText('Warn at (%)'), 'half')
+    await user.click(screen.getByRole('button', { name: 'Set budget' }))
+    expect(screen.getByText(/Warn at one to five whole percentages/)).toBeVisible()
+    expect(api.setCostCenterBudget).not.toHaveBeenCalled()
+  })
+
+  it('shows a blocked budget, where it is enforced, the emails it sent, and removes it', async () => {
+    const user = userEvent.setup()
+    api.getCostCenterBudget.mockResolvedValue(researchBudgetFixture)
+    api.deleteCostCenterBudget.mockResolvedValue(undefined)
+    renderRoute('/cost-centers/cc-general')
+
+    expect(await screen.findByText('$4,320.00')).toBeVisible()
+    expect(screen.getByText('of $4,000.00')).toBeVisible()
+    expect(screen.getByText('Blocked')).toBeVisible()
+    expect(screen.getByText(/refused at the gateway until an administrator raises the budget/)).toBeVisible()
+    const gateways = screen.getByRole('list', { name: 'Gateways that enforce this budget' })
+    expect(within(gateways).getByText('Production gateway')).toBeVisible()
+    expect(within(gateways).getByText('Refusing calls')).toBeVisible()
+    const emails = screen.getByRole('list', { name: 'Budget emails this month' })
+    expect(within(emails).getByText('Block notice sent to 2 people')).toBeVisible()
+    expect(within(emails).getByText('80% email sent to 2 people')).toBeVisible()
+    expect(screen.getByLabelText('Monthly amount (USD)')).toHaveValue(4000)
+    expect(screen.getByRole('radio', { name: /Block calls at the gateway/ })).toBeChecked()
+
+    await user.click(screen.getByRole('button', { name: 'Remove budget' }))
+    await waitFor(() => expect(api.deleteCostCenterBudget).toHaveBeenCalledWith('cc-general'))
+  })
+
+  it('badges budgets near or past their limit, and sets an organization budget that only warns', async () => {
+    const user = userEvent.setup()
+    api.listCostCenters.mockResolvedValue([{ ...general, id: 'costCenter_research', name: 'Research', code: 'RES', isTenantDefault: false }])
+    api.getBudgets.mockResolvedValue({ ...budgetOverviewFixture, organization: null })
+    api.setOrganizationBudget.mockResolvedValue(organizationBudgetFixture)
+    renderRoute()
+
+    const table = await screen.findByRole('table', { name: 'Cost centers' })
+    expect(await within(table).findByText('Blocked')).toBeVisible()
+    const form = screen.getByRole('form', { name: 'Organization budget' })
+    expect(within(form).queryByRole('radio')).not.toBeInTheDocument()
+    expect(within(form).queryByRole('switch')).not.toBeInTheDocument()
+    await user.type(within(form).getByLabelText('Monthly amount (USD)'), '50000')
+    await user.type(within(form).getByLabelText('Email'), 'cfo@contoso.com')
+    await user.click(within(form).getByRole('button', { name: 'Set budget' }))
+
+    await waitFor(() =>
+      expect(api.setOrganizationBudget).toHaveBeenCalledWith({
+        amount: 50000,
+        thresholds: [80, 100],
+        recipients: ['cfo@contoso.com'],
+        notifyOwners: false,
+        action: 'continue',
+      }),
+    )
   })
 
   it('lists cost centers and validates codes before creating', async () => {

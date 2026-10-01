@@ -404,6 +404,12 @@ code,
   border-left: 3px solid var(--mosaic-primary);
 }
 
+/* A notice that wraps to two lines must not squeeze its badge. */
+.preview-notice > .source-badge {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
 .panel,
 .form-grid,
 .table-scroll,

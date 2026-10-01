@@ -1,9 +1,10 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { render, screen, within } from '@testing-library/react'
-import { MemoryRouter } from 'react-router-dom'
+import { fireEvent, render, screen, within } from '@testing-library/react'
+import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { DashboardPage } from './DashboardPage'
 import { overviewFixture, pricedOverviewFixture, spendFixture, statusFixture } from '../test/analytics-fixtures'
+import { budgetOverviewFixture, emptyBudgetOverviewFixture } from '../test/budget-fixtures'
 
 const timestamps = { createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:00Z' }
 
@@ -14,6 +15,7 @@ const api = {
   listEnvironmentFindings: vi.fn(),
   getAnalyticsOverview: vi.fn(),
   getAnalyticsStatus: vi.fn(),
+  getBudgets: vi.fn(),
 }
 vi.mock('../api', () => ({
   useMosaicApi: () => api,
@@ -25,8 +27,12 @@ function renderPage() {
   })
   render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter>
-        <DashboardPage />
+      <MemoryRouter initialEntries={['/dashboard']}>
+        <Routes>
+          <Route path="/dashboard" element={<DashboardPage />} />
+          <Route path="/cost-centers/:costCenterId" element={<p>Cost center page</p>} />
+          <Route path="/cost-centers" element={<p>Cost centers page</p>} />
+        </Routes>
       </MemoryRouter>
     </QueryClientProvider>,
   )
@@ -99,6 +105,41 @@ describe('DashboardPage', () => {
     })
     api.getAnalyticsOverview.mockResolvedValue(overviewFixture)
     api.getAnalyticsStatus.mockResolvedValue(statusFixture)
+    api.getBudgets.mockResolvedValue(emptyBudgetOverviewFixture)
+  })
+
+  it('shows each budget worst first, with the organization on top, and opens its cost center', async () => {
+    api.getBudgets.mockResolvedValue(budgetOverviewFixture)
+    renderPage()
+
+    const list = await screen.findByRole('list', { name: 'Budgets' })
+    const rows = within(list).getAllByRole('button')
+    expect(rows.map((row) => row.querySelector('strong')?.textContent)).toEqual([
+      'Organization',
+      'Research',
+      'Customer Support',
+    ])
+    expect(screen.getByText('March 2026 so far, against each monthly budget · 1 cost center blocked')).toBeVisible()
+    const research = rows[1]
+    expect(within(research).getByText('Blocked')).toBeVisible()
+    expect(within(research).getByText('$4,320.00')).toBeVisible()
+    expect(within(research).getByText('of $4,000.00')).toBeVisible()
+    expect(within(research).getByText('108% used · Projected $7,440.00 by Mar 31')).toBeVisible()
+    expect(within(rows[2]).getByText('Near its limit')).toBeVisible()
+    expect(within(rows[0]).getByText('Every call, warns only')).toBeVisible()
+    expect(screen.getByText('2 cost centers without a budget.')).toBeVisible()
+
+    fireEvent.click(research)
+    expect(await screen.findByText('Cost center page')).toBeVisible()
+  })
+
+  it('says how to start when there are no budgets, and that email is off', async () => {
+    renderPage()
+
+    expect(await screen.findByText(/No budgets yet/)).toBeVisible()
+    expect(
+      screen.getByText('4 cost centers without a budget. Email is off, so budgets email no one. Set it up in Settings.'),
+    ).toBeVisible()
   })
 
   it('shows live desired state and real usage analytics', async () => {

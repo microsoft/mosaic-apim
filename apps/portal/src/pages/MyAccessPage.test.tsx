@@ -3,7 +3,13 @@ import { render, screen, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { describe, expect, it, vi } from 'vitest'
 import type { PortalApi } from '../api'
-import type { Entitlement, PortalProfile, ResolvedEntitlement, ResourceSummary } from '../types'
+import type {
+  Entitlement,
+  PortalBudgetAlert,
+  PortalProfile,
+  ResolvedEntitlement,
+  ResourceSummary,
+} from '../types'
 import { MyAccessPage } from './MyAccessPage'
 
 const mocks = vi.hoisted(() => ({
@@ -74,13 +80,18 @@ const baseSummary: ResourceSummary = {
 const research = { id: 'cc-research', name: 'Research', code: 'RES' }
 const finance = { id: 'cc-finance', name: 'Finance', code: 'FIN' }
 
-function renderPage(entitlements: ResolvedEntitlement[], profileOverride: Partial<PortalProfile> = {}) {
+function renderPage(
+  entitlements: ResolvedEntitlement[],
+  profileOverride: Partial<PortalProfile> = {},
+  budgets: PortalBudgetAlert[] = [],
+) {
   const api = {
     getProfile: async () => ({ ...profile, ...profileOverride }),
     listEntitlements: async () => entitlements,
     listEnvironments: async () => [
       { key: 'production', displayName: 'Production', description: null, color: 'danger', production: true, order: 50 },
     ],
+    getMyBudgets: async () => budgets,
     getMyEntitlementConnection: vi.fn(),
     getMcpConnection: vi.fn(),
     revealMyEntitlementKey: vi.fn(),
@@ -98,6 +109,59 @@ function renderPage(entitlements: ResolvedEntitlement[], profileOverride: Partia
 }
 
 describe('MyAccessPage', () => {
+  it('says when a cost center is blocked or near its budget, with totals only', async () => {
+    renderPage(
+      [{ entitlement: baseEntitlement, resourceSummary: baseSummary, via: 'direct', viaGroupId: null, viaGroupName: null }],
+      {},
+      [
+        { costCenter: research, level: 'blocked', month: '2026-03', used: 1.02, action: 'block' },
+        { costCenter: finance, level: 'warning', month: '2026-03', used: 0.876, action: 'block' },
+      ],
+    )
+
+    const banners = await screen.findByRole('region', { name: 'Cost center budgets' })
+    expect(within(banners).getByText('Research has used its monthly budget')).toBeVisible()
+    // Its share, and only what its own budget does: nothing about other cost centers' calls.
+    expect(
+      within(banners).getByText(
+        /It has used 102% of this month’s budget, so calls charged to RES are refused until the budget is raised or a new month starts/,
+      ),
+    ).toBeVisible()
+    expect(banners).not.toHaveTextContent(/other cost centers/)
+    expect(within(banners).getByText('Finance is near its monthly budget')).toBeVisible()
+    expect(within(banners).getByText(/It has used 87% of this month’s budget\. At 100%, calls charged to FIN/)).toBeVisible()
+    expect(within(banners).getByText(/each cost center’s total, from everyone who charges it/)).toBeVisible()
+  })
+
+  it('says a cost center is over budget when its calls continue', async () => {
+    renderPage([], {}, [
+      { costCenter: finance, level: 'exceeded', month: '2026-03', used: 1.124, action: 'continue' },
+    ])
+
+    expect(await screen.findByText('Finance is over its monthly budget')).toBeVisible()
+    expect(
+      screen.getByText(/It has used 112% of this month’s budget\. This budget only warns, so it doesn’t stop calls charged to FIN\./),
+    ).toBeVisible()
+  })
+
+  it('says what happens at 100% when a budget only warns', async () => {
+    renderPage([], {}, [
+      { costCenter: finance, level: 'warning', month: '2026-03', used: 0.81, action: 'continue' },
+    ])
+
+    expect(await screen.findByText('Finance is near its monthly budget')).toBeVisible()
+    expect(
+      screen.getByText(/It has used 81% of this month’s budget\. At 100%, this budget only warns, so it doesn’t stop calls charged to FIN\./),
+    ).toBeVisible()
+  })
+
+  it('shows no budget banner while every budget is on track', async () => {
+    renderPage([{ entitlement: baseEntitlement, resourceSummary: baseSummary, via: 'direct', viaGroupId: null, viaGroupName: null }])
+
+    expect(await screen.findByText('Chat completions')).toBeVisible()
+    expect(screen.queryByRole('region', { name: 'Cost center budgets' })).not.toBeInTheDocument()
+  })
+
   it('renders group attribution for entitlements', async () => {
     renderPage([
       {

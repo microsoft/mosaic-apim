@@ -162,6 +162,29 @@
   <set-variable name="mosaic-grant" value="@((bool)context.Variables[&quot;mosaic-has-key&quot;] ? (string)context.Variables[&quot;mosaic-key-grant&quot;] : (string)context.Variables[&quot;mosaic-token-grant&quot;])" />
   <set-variable name="mosaic-cost-center" value="@((bool)context.Variables[&quot;mosaic-has-key&quot;] ? (string)context.Variables[&quot;mosaic-key-cost-center&quot;] : (string)context.Variables[&quot;mosaic-token-cost-center&quot;])" />
   <set-variable name="mosaic-cost-center-id" value="@{&#10;var code = (string)context.Variables[&quot;mosaic-cost-center&quot;];&#10;if (code == &quot;general&quot;) { return &quot;costCenter-general&quot;; }&#10;if (code == &quot;research&quot;) { return &quot;costCenter-research&quot;; }&#10;if (code == &quot;sales.emea&quot;) { return &quot;costCenter-sales&quot;; }&#10;return &quot;&quot;;&#10;}" />
+  <set-variable name="mosaic-budget-key" value="@{&#10;var code = (string)context.Variables[&quot;mosaic-cost-center&quot;];&#10;if (code == &quot;general&quot;) { return &quot;a75599c96042&quot;; }&#10;if (code == &quot;research&quot;) { return &quot;4dd533d3ddfa&quot;; }&#10;if (code == &quot;sales.emea&quot;) { return &quot;8b2d2c963e9a&quot;; }&#10;return &quot;&quot;;&#10;}" />
+  <choose>
+    <when condition="@{&#10;var blocked = &quot;{{mosaic-blocked-cost-centers}}&quot;;&#10;return !System.Text.RegularExpressions.Regex.IsMatch(blocked, &quot;^(?:-|[0-9a-f]\u007b12\u007d(?:,[0-9a-f]\u007b12\u007d)*)$&quot;);&#10;}">
+      <trace source="mosaic" severity="information">
+        <message>@("mosaic-deny v=1 r=budget-list o=" + (string)context.Variables["mosaic-caller"] + " a=" + (string)context.Variables["mosaic-client"])</message>
+      </trace>
+      <return-response>
+        <set-status code="503" reason="Service Unavailable" />
+        <set-body>Access is unavailable: this gateway's list of cost centers whose budgets block their calls isn't one MOSAIC wrote.</set-body>
+      </return-response>
+    </when>
+  </choose>
+  <choose>
+    <when condition="@{&#10;var blocked = &quot;{{mosaic-blocked-cost-centers}}&quot;;&#10;var key = (string)context.Variables[&quot;mosaic-budget-key&quot;];&#10;return key != &quot;&quot; &amp;&amp; (&quot;,&quot; + blocked + &quot;,&quot;).Contains(&quot;,&quot; + key + &quot;,&quot;);&#10;}">
+      <trace source="mosaic" severity="information">
+        <message>@("mosaic-deny v=1 r=budget o=" + (string)context.Variables["mosaic-caller"] + " a=" + (string)context.Variables["mosaic-client"])</message>
+      </trace>
+      <return-response>
+        <set-status code="403" reason="Forbidden" />
+        <set-body>@("Access denied. Cost center " + (string)context.Variables["mosaic-cost-center"] + " has used its monthly budget, so its calls are refused until an administrator raises the budget or the month ends.")</set-body>
+      </return-response>
+    </when>
+  </choose>
   <choose>
     <when condition="@(context.Operation == null || context.Request.Method != &quot;POST&quot; || !(context.Operation.Id == &quot;chat-completions&quot; || context.Operation.Id == &quot;responses&quot;))">
       <trace source="mosaic" severity="information">

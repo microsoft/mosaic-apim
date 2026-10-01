@@ -23,10 +23,12 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { type FormEvent, useEffect, useMemo, useState } from 'react'
 import { Link as RouterLink, useNavigate, useParams } from 'react-router-dom'
 import { ApiError, useMosaicApi } from '../api'
+import { BUDGET_LEVEL_LABELS, budgetBadgeColor } from '../budgets'
 import { EmptyState, ErrorState, Loading } from '../components/AsyncState'
+import { BudgetDetails, BudgetForm, BudgetMeter } from '../components/BudgetEditor'
 import { PageHeader } from '../components/PageHeader'
 import { PRINCIPAL_KIND_LABELS } from '../labels'
-import type { CostCenter, CostCenterLimit, QuotaPeriod } from '../types'
+import type { BudgetUpdate, BudgetView, CostCenter, CostCenterLimit, QuotaPeriod } from '../types'
 import styles from './CostCentersPage.module.css'
 
 const CODE_PATTERN = /^[A-Za-z0-9._-]{1,64}$/
@@ -131,7 +133,7 @@ function CostCenterBadges({ costCenter, showKeys = true }: { costCenter: CostCen
   )
 }
 
-function CostCenterTable({ costCenters }: { costCenters: CostCenter[] }) {
+function CostCenterTable({ costCenters, budgets }: { costCenters: CostCenter[]; budgets: Map<string, BudgetView> }) {
   return (
     <div className={styles.tableWrap}>
       <table aria-label="Cost centers">
@@ -146,21 +148,31 @@ function CostCenterTable({ costCenters }: { costCenters: CostCenter[] }) {
           </tr>
         </thead>
         <tbody>
-          {costCenters.map((costCenter) => (
-            <tr key={costCenter.id}>
-              <td>
-                <div className={styles.nameCell}>
-                  <RouterLink to={`/cost-centers/${costCenter.id}`}>{costCenter.name}</RouterLink>
-                  <CostCenterBadges costCenter={costCenter} showKeys={false} />
-                </div>
-              </td>
-              <td><code className={styles.code}>{costCenter.code}</code></td>
-              <td>{costCenter.isTenantDefault ? 'Everyone' : costCenter.members.length}</td>
-              <td>{costCenter.enabledGrantCount} / {costCenter.grantCount}</td>
-              <td>{costCenter.keysAllowed ? 'Yes' : 'No'}</td>
-              <td>{ownerText(costCenter)}</td>
-            </tr>
-          ))}
+          {costCenters.map((costCenter) => {
+            const budget = budgets.get(costCenter.id)
+            return (
+              <tr key={costCenter.id}>
+                <td>
+                  <div className={styles.nameCell}>
+                    <RouterLink to={`/cost-centers/${costCenter.id}`}>{costCenter.name}</RouterLink>
+                    <span className={styles.badges}>
+                      <CostCenterBadges costCenter={costCenter} showKeys={false} />
+                      {budget && budget.status.level !== 'ok' && (
+                        <Badge appearance="tint" color={budgetBadgeColor(budget.status.level)}>
+                          {BUDGET_LEVEL_LABELS[budget.status.level]}
+                        </Badge>
+                      )}
+                    </span>
+                  </div>
+                </td>
+                <td><code className={styles.code}>{costCenter.code}</code></td>
+                <td>{costCenter.isTenantDefault ? 'Everyone' : costCenter.members.length}</td>
+                <td>{costCenter.enabledGrantCount} / {costCenter.grantCount}</td>
+                <td>{costCenter.keysAllowed ? 'Yes' : 'No'}</td>
+                <td>{ownerText(costCenter)}</td>
+              </tr>
+            )
+          })}
         </tbody>
       </table>
     </div>
@@ -174,11 +186,25 @@ export function CostCentersPage() {
   const [defaultCostCenterId, setDefaultCostCenterId] = useState('')
   const costCenters = useQuery({ queryKey: ['cost-centers'], queryFn: api.listCostCenters })
   const settings = useQuery({ queryKey: ['cost-center-settings'], queryFn: api.getCostCenterSettings })
+  const budgets = useQuery({ queryKey: ['budgets'], queryFn: api.getBudgets })
   const codeInvalid = Boolean(form.code) && !CODE_PATTERN.test(form.code)
+  const budgetsByCostCenter = useMemo(
+    () => new Map((budgets.data?.costCenters ?? []).flatMap((item) => (item.costCenter ? [[item.costCenter.id, item] as const] : []))),
+    [budgets.data],
+  )
 
   useEffect(() => {
     if (settings.data) setDefaultCostCenterId(settings.data.defaultCostCenterId)
   }, [settings.data])
+
+  const saveOrganizationBudget = useMutation({
+    mutationFn: (payload: BudgetUpdate) => api.setOrganizationBudget(payload),
+    onSuccess: async () => queryClient.invalidateQueries({ queryKey: ['budgets'] }),
+  })
+  const removeOrganizationBudget = useMutation({
+    mutationFn: () => api.deleteOrganizationBudget(),
+    onSuccess: async () => queryClient.invalidateQueries({ queryKey: ['budgets'] }),
+  })
 
   const create = useMutation({
     mutationFn: () => api.createCostCenter(costCenterPayload(form)),
@@ -218,21 +244,54 @@ export function CostCentersPage() {
       {(costCenters.isError || settings.isError) && <ErrorState error={costCenters.error ?? settings.error} />}
       {costCenters.data && settings.data && (
         <div className={styles.grid}>
-          <div className={styles.card}>
-            <div className={styles.cardHeader}>
-              <Title3 as="h2">Cost centers</Title3>
-              <Text className={styles.muted}>
-                Every grant, and so every call, is charged to one. Everyone may charge the tenant
-                default; others only their members.
-              </Text>
+          <div className={styles.stack}>
+            <div className={styles.card}>
+              <div className={styles.cardHeader}>
+                <Title3 as="h2">Cost centers</Title3>
+                <Text className={styles.muted}>
+                  Every grant, and so every call, is charged to one. Everyone may charge the tenant
+                  default; others only their members.
+                </Text>
+              </div>
+              {costCenters.data.length ? (
+                <CostCenterTable costCenters={costCenters.data} budgets={budgetsByCostCenter} />
+              ) : (
+                <EmptyState title="No cost centers">
+                  Create a cost center to charge grants separately.
+                </EmptyState>
+              )}
             </div>
-            {costCenters.data.length ? (
-              <CostCenterTable costCenters={costCenters.data} />
-            ) : (
-              <EmptyState title="No cost centers">
-                Create a cost center to charge grants separately.
-              </EmptyState>
-            )}
+
+            <div className={styles.card}>
+              <div className={styles.cardHeader}>
+                <Title3 as="h2">Organization budget</Title3>
+                <Text className={styles.muted}>
+                  Every priced call this month, across every cost center and gateway, including calls MOSAIC couldn&apos;t
+                  link to a grant and reserved capacity nobody called. It emails at each threshold and never blocks.
+                </Text>
+              </div>
+              {budgets.isError && <ErrorState error={budgets.error} />}
+              {budgets.data?.organization && (
+                <BudgetMeter budget={budgets.data.organization} label="Organization" />
+              )}
+              {budgets.data && (
+                <BudgetForm
+                  budget={budgets.data.organization}
+                  organization
+                  saving={saveOrganizationBudget.isPending}
+                  removing={removeOrganizationBudget.isPending}
+                  error={
+                    saveOrganizationBudget.isError
+                      ? errorMessage(saveOrganizationBudget.error, 'Unable to save the organization budget.')
+                      : removeOrganizationBudget.isError
+                        ? errorMessage(removeOrganizationBudget.error, 'Unable to remove the organization budget.')
+                        : null
+                  }
+                  onSave={(payload) => saveOrganizationBudget.mutate(payload)}
+                  onRemove={() => removeOrganizationBudget.mutate()}
+                />
+              )}
+            </div>
           </div>
 
           <div className={styles.card}>
@@ -346,6 +405,11 @@ export function CostCenterDetailPage() {
   const [limits, setLimits] = useState<CostCenterLimit[]>([])
 
   const costCenter = useQuery({ queryKey: ['cost-centers', costCenterId], queryFn: () => api.getCostCenter(costCenterId), enabled: Boolean(costCenterId) })
+  const budget = useQuery({
+    queryKey: ['budgets', costCenterId],
+    queryFn: () => api.getCostCenterBudget(costCenterId),
+    enabled: Boolean(costCenterId),
+  })
   const principals = useQuery({ queryKey: ['principals'], queryFn: api.listPrincipals })
   const modelApis = useQuery({ queryKey: ['model-apis'], queryFn: () => api.listModelApis() })
   const mcpServers = useQuery({ queryKey: ['mcp-servers'], queryFn: () => api.listMcpServers() })
@@ -411,6 +475,15 @@ export function CostCenterDetailPage() {
         queryClient.invalidateQueries({ queryKey: ['entitlements'] }),
       ])
     },
+  })
+  // Saving judges the budget at once, so a raised budget lifts its block in the same request.
+  const saveBudget = useMutation({
+    mutationFn: (payload: BudgetUpdate) => api.setCostCenterBudget(costCenterId, payload),
+    onSuccess: async () => queryClient.invalidateQueries({ queryKey: ['budgets'] }),
+  })
+  const removeBudget = useMutation({
+    mutationFn: () => api.deleteCostCenterBudget(costCenterId),
+    onSuccess: async () => queryClient.invalidateQueries({ queryKey: ['budgets'] }),
   })
 
   function addLimit(event: FormEvent) {
@@ -539,6 +612,50 @@ export function CostCenterDetailPage() {
             </>
           )}
         </div>
+      </div>
+
+      <div className={styles.card}>
+        <div className={styles.cardHeader}>
+          <Title3 as="h2">Budget</Title3>
+          <Text className={styles.muted}>
+            A monthly amount in US dollars for every grant under this cost center, across every gateway, priced as the
+            Cost tab prices it. MOSAIC emails at each threshold, once a month, and can block calls at 100%.
+          </Text>
+        </div>
+        {budget.isError && <ErrorState error={budget.error} />}
+        {budget.isPending && <Loading label="Loading budget" />}
+        {budget.isSuccess && (
+          <div className={styles.budgetLayout}>
+            <div className={styles.budgetStatus}>
+              {budget.data ? (
+                <>
+                  <BudgetMeter budget={budget.data} label={data.name} />
+                  <BudgetDetails budget={budget.data} />
+                </>
+              ) : (
+                <EmptyState title="No budget">
+                  Set a monthly amount to email this cost center&apos;s owners at 80% and 100% of it. Choose to block
+                  its calls at 100% if spending past it must stop.
+                </EmptyState>
+              )}
+            </div>
+            <BudgetForm
+              budget={budget.data}
+              owners={data.owners}
+              saving={saveBudget.isPending}
+              removing={removeBudget.isPending}
+              error={
+                saveBudget.isError
+                  ? errorMessage(saveBudget.error, 'Unable to save the budget.')
+                  : removeBudget.isError
+                    ? errorMessage(removeBudget.error, 'Unable to remove the budget.')
+                    : null
+              }
+              onSave={(payload) => saveBudget.mutate(payload)}
+              onRemove={() => removeBudget.mutate()}
+            />
+          </div>
+        )}
       </div>
 
       <div className={styles.stack}>

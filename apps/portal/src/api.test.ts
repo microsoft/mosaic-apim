@@ -55,6 +55,20 @@ describe('usePortalApi', () => {
     expect(options.body).toBeUndefined()
   })
 
+  it('reads budget alerts for the caller’s own cost centers', async () => {
+    const fetchMock = stubFetch(() => jsonResponse([
+      { costCenter: { id: 'cc-research', name: 'Research', code: 'RES' }, level: 'blocked', month: '2026-03', used: 1.02, action: 'block' },
+    ]))
+    const { result } = renderHook(() => usePortalApi())
+
+    const alerts = await result.current.getMyBudgets()
+
+    expect(alerts[0].level).toBe('blocked')
+    const [url, options] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(url).toBe('http://localhost:8000/api/v1/me/budgets')
+    expect(options.method).toBe('GET')
+  })
+
   it('lists portal environments from the portal-scoped API', async () => {
     const fetchMock = stubFetch(() => jsonResponse([
       { key: 'production', displayName: 'Production', description: null, color: 'danger', production: true, order: 50 },

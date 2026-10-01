@@ -46,6 +46,12 @@
     },
     "apiScope": {
       "value": "${MOSAIC_API_SCOPE}"
+    },
+    "deployEmail": {
+      "value": "${MOSAIC_DEPLOY_EMAIL=false}"
+    },
+    "emailDataLocation": {
+      "value": "${MOSAIC_EMAIL_DATA_LOCATION=United States}"
     }
   }
 }

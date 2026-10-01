@@ -13,6 +13,7 @@ import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { usePortalApi } from '../api'
 import { EmptyState, ErrorState, Loading } from '../components/AsyncState'
+import { BudgetBanner } from '../components/BudgetBanner'
 import { EnvironmentBadge } from '../components/EnvironmentBadge'
 import { PageHeader } from '../components/PageHeader'
 import { RecentHoursChart, UsageTrendChart } from '../components/UsageTrendChart'
@@ -576,6 +577,7 @@ export function UsagePage() {
           ) : undefined
         }
       />
+      <BudgetBanner />
       {usage.isLoading && <Loading label="Loading usage" />}
       {usage.isError && (
         <>

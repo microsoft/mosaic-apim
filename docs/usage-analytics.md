@@ -409,7 +409,10 @@ belong to no grant, so the filter leaves them out and the tab says so. Overview 
 Consumers lists each cost center with its grants, callers, and cost, and the Cost tab shows cost by
 cost center. Grant, limit, and hygiene rows name their cost center. The policy refuses a call whose
 `x-mosaic-cost-center` header names no grant of the caller's, or a key with another cost center's
-header, with the denial reasons `cost-center` and `cost-center-mismatch`.
+header, with the denial reasons `cost-center` and `cost-center-mismatch`. A call charged to a cost
+center whose [budget](budgets-and-alerts.md) blocks its calls is refused with `budget`, and every
+governed call on a gateway whose list of blocked cost centers MOSAIC didn't write with
+`budget-list`.
 
 ### Cost
 
