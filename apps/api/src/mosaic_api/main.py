@@ -7,6 +7,7 @@ import structlog
 from azure.cosmos.aio import CosmosClient
 from azure.identity.aio import DefaultAzureCredential, ManagedIdentityCredential
 from fastapi import FastAPI, Request, status
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -15,7 +16,7 @@ from mosaic_api.api import portal_router, router
 from mosaic_api.auth import EntraAuthenticator, LocalAuthenticator
 from mosaic_api.config import AuthMode, Environment, RepositoryBackend, Settings, get_settings
 from mosaic_api.directory_api import directory_router
-from mosaic_api.errors import DomainError, domain_error_handler
+from mosaic_api.errors import DomainError, domain_error_handler, request_validation_error_handler
 from mosaic_api.integrations.aoai import CognitiveServicesClient
 from mosaic_api.integrations.aoai.backend_key_access import KeyVaultLocator
 from mosaic_api.integrations.aoai.client import SubscriptionScanner
@@ -23,6 +24,7 @@ from mosaic_api.integrations.aoai.key_check import EndpointKeyProbe
 from mosaic_api.integrations.apim import ApimClient, ApimWriter, ArmClient
 from mosaic_api.integrations.apim.credentials import ApimCredentialClient
 from mosaic_api.integrations.graph import DirectoryLookup, GraphDirectoryLookup
+from mosaic_api.integrations.key_vault import KeyVaultSecretWriter
 from mosaic_api.integrations.loganalytics import LogAnalyticsClient
 from mosaic_api.integrations.mcp import EntraTokenProvider, KeyVaultSecretReader
 from mosaic_api.mcp_publishing_api import mcp_publishing_router
@@ -198,6 +200,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             environment_repository=environment_repository,
         )
         key_vault_reader = KeyVaultSecretReader(credential)
+        # Where MOSAIC keeps an API key an administrator gives it (ADR 0021). Without a vault of
+        # its own, MOSAIC takes only the URI of a secret someone else stored.
+        key_vault_writer = (
+            KeyVaultSecretWriter(credential, str(app_settings.key_vault_uri))
+            if app_settings.key_vault_uri
+            else None
+        )
         # A key-authenticated endpoint's key goes only to its own Azure AI host, over a client
         # that follows no redirects and shares nothing with the ARM pool.
         endpoint_key_probe = EndpointKeyProbe()
@@ -222,6 +231,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     else []
                 ),
             ),
+            key_store=key_vault_writer,
         )
         publishing_service = PublishingService(
             gateway_repository,
@@ -449,6 +459,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             await authenticator.close()
             await arm_client.close()
             await key_vault_reader.close()
+            if key_vault_writer is not None:
+                await key_vault_writer.close()
             await endpoint_key_probe.close()
             await mcp_http_client.aclose()
             if log_client is not None:
@@ -473,6 +485,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     app.state.settings = app_settings
     app.add_exception_handler(DomainError, domain_error_handler)
+    app.add_exception_handler(RequestValidationError, request_validation_error_handler)
     if app_settings.cors_origins:
         app.add_middleware(
             CORSMiddleware,

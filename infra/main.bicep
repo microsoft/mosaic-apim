@@ -476,7 +476,7 @@ resource apiKeyVaultSecretsUser 'Microsoft.Authorization/roleAssignments@2022-04
 
 // An endpoint MOSAIC reaches with an API key keeps that key in Key Vault, and API Management reads
 // it there itself, through a Key Vault-backed named value, with its system-assigned identity. See
-// ADR 0018. The key never passes through MOSAIC.
+// ADR 0018. MOSAIC stores only the secret's identifier.
 resource apimKeyVaultSecretsUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   name: guid(keyVaultName, apimName, 'KeyVaultSecretsUser')
   scope: keyVaultResource
@@ -501,6 +501,24 @@ resource apiKeyVaultReader 'Microsoft.Authorization/roleAssignments@2022-04-01' 
     principalId: apiApp.outputs.principalId
     principalType: 'ServicePrincipal'
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'acdd72a7-3385-48ef-bd42-f606fba81ae7')
+  }
+  dependsOn: [
+    #disable-next-line no-unnecessary-dependson
+    keyVault
+  ]
+}
+
+// An administrator who can't store a resource's API key in Key Vault can give it to MOSAIC, which
+// writes it into this vault as a secret, writes a new version when the key is replaced, and deletes
+// the secret when the endpoint is removed. See ADR 0021. The secret-write role is scoped to this
+// one vault, and Key Vault Secrets User above stays for reading.
+resource apiKeyVaultSecretsOfficer 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(keyVaultName, apiWebAppName, 'KeyVaultSecretsOfficer')
+  scope: keyVaultResource
+  properties: {
+    principalId: apiApp.outputs.principalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'b86a8fe4-44ce-4948-aee5-eccb2c155cd7')
   }
   dependsOn: [
     #disable-next-line no-unnecessary-dependson

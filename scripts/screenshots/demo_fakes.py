@@ -47,6 +47,7 @@ from apim_double import (  # noqa: E402
 from key_vault_double import (  # noqa: E402
     KEY_VAULT_SECRETS_USER_ROLE_ID,
     VAULT_ID,
+    FakeKeyStore,
     FakeKeyVaultArm,
     vault_role_assignment,
 )
@@ -68,6 +69,7 @@ __all__ = [
     "FakeCredential",
     "TrafficStream",
     "build_cognitive_accounts",
+    "build_key_store",
     "build_key_vault",
     "build_mcp_servers",
     "cognitive_handler",
@@ -990,6 +992,12 @@ def build_key_vault() -> FakeKeyVaultArm:
         vault_role_assignment(KEY_VAULT_SECRETS_USER_ROLE_ID, VAULT_ID, APIM_PRINCIPAL_ID)
     )
     return vault
+
+
+def build_key_store() -> FakeKeyStore:
+    """The same vault's secrets, where MOSAIC keeps the partner's Foundry key it was given."""
+
+    return FakeKeyStore()
 
 
 @dataclass

@@ -241,6 +241,55 @@ describe('useMosaicApi', () => {
     })
   })
 
+  it('sends a pasted key to register or replace, and reads why a request did not validate', async () => {
+    const created = { id: 'endpoint_key', keyStoredByMosaic: true }
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(created), {
+        status: 201, headers: { 'Content-Type': 'application/json' },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(created), {
+        status: 200, headers: { 'Content-Type': 'application/json' },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        detail: [
+          {
+            type: 'value_error',
+            loc: ['body', 'apiKey'],
+            msg: 'Value error, An API key is 16 to 512 letters, digits and symbols, with no spaces or line breaks',
+          },
+          { type: 'missing', loc: ['body', 'endpoint'], msg: 'Field required' },
+        ],
+      }), { status: 422, headers: { 'Content-Type': 'application/json' } }))
+    vi.stubGlobal('fetch', fetchMock)
+    const { result } = renderHook(() => useMosaicApi())
+
+    await result.current.registerModelEndpoint({
+      endpoint: 'https://fabrikam-foundry.services.ai.azure.com',
+      apiKey: 'fictional-key-for-a-test-only',
+    })
+    await result.current.updateModelEndpoint('endpoint_key', { apiKey: 'fictional-new-key-for-a-test' })
+
+    const [registerUrl, registerOptions] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(String(registerUrl).replace(/^https?:\/\/[^/]+/, '')).toBe('/api/v1/model-endpoints')
+    expect(JSON.parse(String(registerOptions.body))).toEqual({
+      endpoint: 'https://fabrikam-foundry.services.ai.azure.com',
+      apiKey: 'fictional-key-for-a-test-only',
+    })
+    const [replaceUrl, replaceOptions] = fetchMock.mock.calls[1] as [string, RequestInit]
+    expect(String(replaceUrl).replace(/^https?:\/\/[^/]+/, '')).toBe('/api/v1/model-endpoints/endpoint_key')
+    expect(replaceOptions.method).toBe('PATCH')
+    expect(JSON.parse(String(replaceOptions.body))).toEqual({ apiKey: 'fictional-new-key-for-a-test' })
+
+    await expect(
+      result.current.registerModelEndpoint({ apiKey: 'has a space so it is refused' }),
+    ).rejects.toMatchObject({
+      status: 422,
+      message:
+        'An API key is 16 to 512 letters, digits and symbols, with no spaces or line breaks. ' +
+        'Field required.',
+    })
+  })
+
   it('uses the environment catalog contract paths', async () => {
     const fetchMock = vi
       .fn()

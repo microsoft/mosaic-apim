@@ -396,8 +396,16 @@ export interface PolicyPreview {
 export interface ApiErrorBody {
   code?: string
   message?: string
-  detail?: string
+  /** A message, or, when the request itself didn't validate, where and why it didn't. */
+  detail?: string | ValidationIssue[]
   details?: Record<string, unknown>
+}
+
+/** One reason a request didn't validate. MOSAIC never repeats what the request sent. */
+export interface ValidationIssue {
+  loc?: Array<string | number>
+  msg?: string
+  type?: string
 }
 
 export type GatewayStatus =
@@ -957,6 +965,11 @@ export interface ModelEndpoint {
   environmentLabel?: string | null
   authMode: EndpointAuthMode
   credentialReferenceId?: string | null
+  /**
+   * True when MOSAIC keeps this endpoint's API key in its own Key Vault, because an administrator
+   * gave MOSAIC the key. MOSAIC replaces it on request and deletes it with the endpoint.
+   */
+  keyStoredByMosaic?: boolean
   /** Present only on an Azure endpoint registered with an API key. */
   declaredDeployments?: DeclaredDeployment[]
   status: ModelEndpointStatus

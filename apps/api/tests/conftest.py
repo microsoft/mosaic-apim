@@ -167,6 +167,7 @@ def build_endpoint_service(
         secret_resolver=kwargs.pop("secret_resolver", None),
         key_probe=kwargs.pop("key_probe", None),
         vault_locator=kwargs.pop("vault_locator", None),
+        key_store=kwargs.pop("key_store", None),
     )
 
 
