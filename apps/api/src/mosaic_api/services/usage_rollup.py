@@ -661,8 +661,14 @@ class UsageRollupService:
         self._cycle = asyncio.Lock()
         self._task: asyncio.Task[None] | None = None
         self._last_tenant_refresh: datetime | None = None
+        self._listeners: list[Callable[[], None]] = []
 
     # -- lifecycle -------------------------------------------------------------------------
+
+    def add_listener(self, listener: Callable[[], None]) -> None:
+        """Call ``listener`` after each cycle, such as to judge budgets against the new figures."""
+
+        self._listeners.append(listener)
 
     def start(self) -> None:
         if self._task is None:
@@ -687,6 +693,11 @@ class UsageRollupService:
                 raise
             except Exception:
                 logger.exception("usage_rollup_cycle_failed")
+            for listener in self._listeners:
+                try:
+                    listener()
+                except Exception:
+                    logger.exception("usage_rollup_listener_failed")
             try:
                 await asyncio.wait_for(
                     self._wake.wait(), timeout=BACKFILL_PAUSE_SECONDS if busy else self._interval

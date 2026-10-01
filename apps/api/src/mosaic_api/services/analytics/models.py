@@ -5,7 +5,7 @@ has no rolled-up telemetry for reports None rather than zero, so a chart shows a
 quiet day that never happened.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Literal
 
@@ -225,6 +225,14 @@ class AnalyticsSpend(MosaicModel):
     projected: bool = True
     unpriced_tokens: int = 0
     unpriced_items: int = 0
+
+
+@dataclass
+class BudgetSpend:
+    """This month's spend for the budget check: the organization's, and each cost center's."""
+
+    organization: AnalyticsSpend | None = None
+    cost_centers: dict[str, AnalyticsSpend] = field(default_factory=dict)
 
 
 class AnalyticsOverview(AnalyticsReport):

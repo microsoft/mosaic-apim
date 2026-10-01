@@ -1,4 +1,5 @@
 from .base import (
+    BudgetRepository,
     CostCenterRepository,
     DirectoryRepository,
     EndpointStateRepository,
@@ -11,6 +12,7 @@ from .base import (
     UsageRollupRepository,
 )
 from .cosmos import CosmosDirectoryRepository, CosmosRepositoryBase
+from .cosmos_budgets import CosmosBudgetRepository
 from .cosmos_cost_centers import CosmosCostCenterRepository
 from .cosmos_endpoint_state import CosmosEndpointStateBase
 from .cosmos_endpoints import CosmosModelEndpointRepository
@@ -21,6 +23,7 @@ from .cosmos_mcp_endpoints import CosmosMcpEndpointRepository
 from .cosmos_pricing import CosmosPricingRepository
 from .cosmos_usage import CosmosUsageRollupRepository
 from .memory import InMemoryDirectoryRepository
+from .memory_budgets import InMemoryBudgetRepository
 from .memory_cost_centers import InMemoryCostCenterRepository
 from .memory_endpoint_state import InMemoryEndpointStateBase
 from .memory_endpoints import InMemoryModelEndpointRepository
@@ -32,6 +35,8 @@ from .memory_pricing import InMemoryPricingRepository
 from .memory_usage import InMemoryUsageRollupRepository
 
 __all__ = [
+    "BudgetRepository",
+    "CosmosBudgetRepository",
     "CosmosCostCenterRepository",
     "CosmosDirectoryRepository",
     "CosmosEndpointStateBase",
@@ -49,6 +54,7 @@ __all__ = [
     "EntitlementRepository",
     "EnvironmentRepository",
     "GatewayRepository",
+    "InMemoryBudgetRepository",
     "InMemoryCostCenterRepository",
     "InMemoryDirectoryRepository",
     "InMemoryEndpointStateBase",

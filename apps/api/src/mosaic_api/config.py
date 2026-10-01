@@ -79,6 +79,34 @@ class Settings(BaseSettings):
         ),
     )
     usage_rollup_backfill_max_days: int = Field(default=90, ge=1, le=730)
+    budgets_enabled: bool = Field(
+        default=True,
+        description=(
+            "Run the background check that judges budgets, emails at thresholds, and blocks cost "
+            "centers whose budgets block at 100%. It runs only where usage comes from rollups."
+        ),
+    )
+    budget_interval_seconds: int = Field(default=900, ge=60, le=86_400)
+    budget_fast_interval_seconds: int = Field(
+        default=300,
+        ge=60,
+        le=3_600,
+        description=(
+            "How often a budget that has spent 90% or more of its amount is checked, while a "
+            "threshold or a block is still to come."
+        ),
+    )
+    email_suggested_endpoint: str | None = Field(
+        default=None,
+        description=(
+            "The endpoint of a Communication Services resource azd deployed for email. It only "
+            "pre-fills Settings: email stays off until an administrator saves it there."
+        ),
+    )
+    email_suggested_sender: str | None = Field(
+        default=None,
+        description="The sender address of the email domain azd deployed. Pre-fills Settings.",
+    )
     log_analytics_endpoint: AnyHttpUrl = Field(
         default=AnyHttpUrl("https://api.loganalytics.azure.com"),
         description=(

@@ -383,6 +383,8 @@ def test_every_refusal_records_a_fixed_reason_before_it_responds() -> None:
         "groups-overage",
         "no-grant",
         "grant-mismatch",
+        "budget-list",
+        "budget",
         "operation",
         "model",
     }

@@ -10,6 +10,7 @@ from typing import Any
 
 import structlog
 
+from mosaic_api.budgets import BLOCKED_COST_CENTERS_NAMED_VALUE
 from mosaic_api.domain import (
     ApimResourceId,
     AppliedCostCenterPool,
@@ -78,6 +79,7 @@ from mosaic_api.repositories import (
     GatewayRepository,
     McpEndpointRepository,
 )
+from mosaic_api.services.budget_gate import BlockedListGate, ensure_blocked_list, is_blocked_list
 from mosaic_api.services.cost_centers import load_book
 from mosaic_api.services.directory import Actor
 from mosaic_api.services.environments import load_environment_catalog
@@ -304,9 +306,11 @@ class McpPublishingService:
         security_group_claims: bool = True,
         environment_repository: EnvironmentRepository | None = None,
         cost_center_repository: CostCenterRepository | None = None,
+        blocked_list: BlockedListGate | None = None,
     ) -> None:
         self._repository = repository
         self._cost_centers = cost_center_repository
+        self._blocked_list = blocked_list
         self._endpoints = mcp_endpoint_repository
         self._entitlements = entitlement_repository
         self._directory = directory_repository
@@ -1277,7 +1281,13 @@ class McpPublishingService:
                 existed=exists,
                 stage="prepare",
             )
-        steps: list[PublishPlanStep] = []
+        # First of all: every governed policy reads the gateway's blocked list. See ADR 0023.
+        steps: list[PublishPlanStep] = [
+            BlockedListGate.plan_step(
+                resource,
+                exists=await client.get_named_value(BLOCKED_COST_CENTERS_NAMED_VALUE) is not None,
+            )
+        ]
         mcp_api = base[(PublishedResourceKind.API, publication.api_name)]
         mcp_policy = base[(PublishedResourceKind.API_POLICY, publication.api_name)]
         if mcp_api.existed and await self._needs_backend_deny(client, publication, endpoint):
@@ -1501,7 +1511,6 @@ class McpPublishingService:
             try:
                 for step in plan.steps:
                     await self._assert_lock(publication, run)
-                    item = self._resource_for_step(publication, step)
                     result = PublishStepResult(
                         kind=step.kind,
                         name=step.name,
@@ -1510,6 +1519,22 @@ class McpPublishingService:
                         stage=step.stage,
                     )
                     results.append(result)
+                    if is_blocked_list(step.kind, step.name):
+                        # Before any policy that reads it. MOSAIC keeps it for the gateway, so the
+                        # publication never owns it, and no recovery or unpublish deletes it.
+                        try:
+                            await ensure_blocked_list(
+                                self._blocked_list, client, writer, publication.tenant_id
+                            )
+                        except Exception as error:
+                            result.status = PublishStepStatus.FAILED
+                            result.error = str(error)
+                            failure = f"{step.kind} {step.name}: {error}"
+                            break
+                        result.status = PublishStepStatus.SUCCEEDED
+                        await self._progress(publication, run, results, owned)
+                        continue
+                    item = self._resource_for_step(publication, step)
                     write_started = False
                     try:
                         exists = await self._exists(client, publication, item)
@@ -1886,6 +1911,8 @@ class McpPublishingService:
                 )
                 for result in results
                 if result.status == PublishStepStatus.SUCCEEDED
+                # The gateway's blocked list is the gateway's, not this publication's.
+                and not is_blocked_list(result.kind, result.name)
             ],
         )
         await self._record_state(

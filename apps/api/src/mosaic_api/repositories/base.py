@@ -1,6 +1,7 @@
 from collections.abc import Callable, Sequence
 from typing import Protocol
 
+from mosaic_api.budgets import Budget, BudgetState, EmailSettings, GateState
 from mosaic_api.cost_centers import CostCenter, CostCenterSettings
 from mosaic_api.domain import (
     AccessRequest,
@@ -655,4 +656,71 @@ class CostCenterRepository(Protocol):
         self, settings: CostCenterSettings, audit_event: AuditEvent
     ) -> CostCenterSettings:
         """Create the settings, or replace the version that was read."""
+        ...
+
+
+class BudgetRepository(Protocol):
+    """Budgets and email settings in ``desired-state``, and where each stands in ``usage-rollups``.
+
+    A budget or the email settings are saved with their audit event, and only over the version
+    that was read. A budget's state and a gateway's blocked-list state are operational: the
+    evaluator saves them through ``update_*_state``, which applies a change to the state as
+    currently saved and writes it only if nobody saved since. See ADR 0023.
+    """
+
+    async def ready(self) -> bool: ...
+
+    async def close(self) -> None: ...
+
+    async def record_audit(self, event: AuditEvent) -> None: ...
+
+    async def list_budgets(self, tenant_id: str) -> list[Budget]: ...
+
+    async def get_budget(self, tenant_id: str, budget_id: str) -> Budget | None: ...
+
+    async def save_budget(self, budget: Budget, audit_event: AuditEvent) -> Budget:
+        """Create a budget whose ``etag`` is None, or replace the version that was read.
+
+        Raises ``ConflictError`` when someone created or saved it since it was read.
+        """
+        ...
+
+    async def delete_budget(self, budget: Budget, audit_event: AuditEvent) -> None: ...
+
+    async def get_email_settings(self, tenant_id: str) -> EmailSettings | None: ...
+
+    async def save_email_settings(
+        self, settings: EmailSettings, audit_event: AuditEvent
+    ) -> EmailSettings:
+        """Create the settings, or replace the version that was read."""
+        ...
+
+    async def list_budget_states(self, tenant_id: str) -> list[BudgetState]: ...
+
+    async def get_budget_state(self, tenant_id: str, budget_id: str) -> BudgetState | None: ...
+
+    async def update_budget_state(
+        self,
+        tenant_id: str,
+        budget_id: str,
+        change: Callable[[BudgetState], BudgetState],
+    ) -> BudgetState:
+        """Apply ``change`` to the budget's state as saved, or to a new one, and save it.
+
+        The save succeeds only if nobody saved the state since it was read; otherwise the state
+        is read again and ``change`` applied again. ``change`` can raise to save nothing.
+        """
+        ...
+
+    async def delete_budget_state(self, tenant_id: str, budget_id: str) -> None: ...
+
+    async def list_gate_states(self, tenant_id: str) -> list[GateState]: ...
+
+    async def update_gate_state(
+        self,
+        tenant_id: str,
+        gateway_id: str,
+        change: Callable[[GateState], GateState],
+    ) -> GateState:
+        """Apply ``change`` to a gateway's blocked-list state as saved, as for a budget's."""
         ...

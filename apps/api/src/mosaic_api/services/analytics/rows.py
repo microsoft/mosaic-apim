@@ -33,6 +33,8 @@ DENIAL_LABELS = {
     "grant-mismatch": "Key and token name different grants",
     "cost-center": "No grant under the named cost center",
     "cost-center-mismatch": "Key belongs to a different cost center",
+    "budget": "Cost center's budget is used up",
+    "budget-list": "Gateway's list of blocked cost centers unreadable",
     "operation": "Operation not allowed",
     "model": "Model not allowed",
     "access-off": "Access is turned off",
