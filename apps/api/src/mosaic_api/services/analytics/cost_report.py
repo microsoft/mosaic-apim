@@ -51,7 +51,8 @@ def spend_report(
     """This calendar month so far, and the month's end at the same pace.
 
     Pay-as-you-go spend is projected from the time MOSAIC has figures for, to the hour. Reserved
-    capacity costs the same every day, so its whole month is known, not projected.
+    capacity costs what its hours cost, so each provisioned deployment's share is projected to its
+    whole month, counting only the days it exists.
     """
 
     first = month_first(today)
@@ -63,7 +64,12 @@ def spend_report(
     forecast: float | None = None
     if so_far is not None and elapsed >= 1:
         metered = so_far - tally.reserved
-        forecast = metered * length / elapsed + tally.reserved * length / today.day
+        reserved = 0.0
+        for key, amount in tally.reserved_by_key.items():
+            to_date = costs.reserved_month(key, first)
+            month = costs.pricer.reserved_cost(key, first, month_last(first))
+            reserved += amount * month / to_date if to_date and month is not None else amount
+        forecast = metered * length / elapsed + reserved
     return AnalyticsSpend(
         month_start=first,
         days_in_month=length,
@@ -187,11 +193,9 @@ def cost_report(
 
     consumer_report = consumers_report(context, callers=callers, clients=[], costs=costs)
     by_consumer: dict[str, tuple[str, str | None, str | None, UsageMetrics, float | None]] = {}
-    for row in [
-        *consumer_report.people,
-        *consumer_report.applications,
-        *consumer_report.groups,
-    ]:
+    # Callers only: a security group's row repeats its members' calls, so ranking it beside them
+    # would count those calls twice.
+    for row in [*consumer_report.people, *consumer_report.applications]:
         metrics = UsageMetrics(requests=row.requests, total_tokens=row.total_tokens)
         by_consumer[f"{row.kind}:{row.key}"] = (row.label, row.detail, row.kind, metrics, row.cost)
 

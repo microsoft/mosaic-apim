@@ -167,7 +167,7 @@ def window_cost(
     for key in costs.idle_keys():
         idle = costs.idle(key, first, last)
         if idle > 0:
-            tally.add_amount(idle, idle)
+            tally.add_amount(idle, idle, key)
     return tally
 
 

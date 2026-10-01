@@ -187,7 +187,9 @@ def _price(
     return price
 
 
-def _facts(region: str = "eastus", deployment_type: str = "GlobalStandard") -> DeploymentFacts:
+def _facts(
+    region: str = "eastus", deployment_type: str = "GlobalStandard", version: str | None = None
+) -> DeploymentFacts:
     return DeploymentFacts(
         key="endpoint/gpt-test",
         endpoint_id="endpoint",
@@ -200,7 +202,7 @@ def _facts(region: str = "eastus", deployment_type: str = "GlobalStandard") -> D
         region=region,
         publisher="OpenAI",
         model="gpt-test",
-        version=None,
+        version=version,
         deployment_type=deployment_type,
         deployment_type_source="observed",
         capacity=None,
@@ -303,6 +305,48 @@ class CarryForwardTests(unittest.TestCase):
             sorted(price["id"] for price in third["prices"]), ["gpt", "gpt.until-2026-11-30"]
         )
         self.assertEqual(_input_price(third, _facts(), date(2026, 6, 1)), 2.5)
+
+    def test_a_price_for_every_region_that_changed_region_by_region_keeps_each_region_s_days(
+        self,
+    ) -> None:
+        # The API lists one new price everywhere, but East US changed first.
+        index = Index(date(2026, 9, 30))
+        rows = []
+        for region, start in (
+            ("eastus", "2025-06-01"),
+            ("westus", "2025-09-01"),
+            ("swedencentral", "2025-09-01"),
+        ):
+            rows.append(_row("Test Inp glbl Tokens", region, 0.002, start=start))
+            rows.append(_row("Test Outp glbl Tokens", region, 0.008, start=start))
+        index.add("Azure OpenAI", rows)
+        [fresh] = [
+            price
+            for price in model_prices(MODEL, index)
+            if price.get("deploymentType") == "GlobalStandard"
+        ]
+        self.assertNotIn("regions", fresh)
+        self.assertEqual(fresh["effectiveFrom"], "2025-06-01")
+        old = {**fresh, "inputPerMillion": 2.5, "outputPerMillion": 10.0}
+        old["effectiveFrom"] = "2025-01-01"
+        current = _seed("2025-05-15", old)
+        rebuilt = _seed("2026-09-30", fresh)
+
+        notes = carry_forward(current, rebuilt, index)
+
+        self.assertFalse([note for note in notes if note.startswith("warning")], notes)
+        version = MODEL.version
+
+        def price(region: str, day: date) -> float | None:
+            return _input_price(rebuilt, _facts(region, version=version), day)
+
+        self.assertEqual(price("eastus", date(2025, 5, 31)), 2.5)
+        self.assertEqual(price("eastus", date(2025, 6, 1)), 2.0)
+        self.assertEqual(price("westus", date(2025, 8, 31)), 2.5)
+        self.assertEqual(price("westus", date(2025, 9, 1)), 2.0)
+        self.assertEqual(price("swedencentral", date(2025, 8, 31)), 2.5)
+        # A region the API doesn't list follows the price for every region.
+        self.assertEqual(price("japaneast", date(2025, 7, 1)), 2.0)
 
 
 if __name__ == "__main__":

@@ -18,7 +18,8 @@ function points(values: Array<number | null | undefined>, max: number): string {
     .map((value, index) => {
       if (value == null) return null
       const x = values.length === 1 ? 50 : (index / (values.length - 1)) * 100
-      const y = 94 - (value / Math.max(1, max)) * 82
+      // Costs peak below 1, so scale to the real peak whenever there is one.
+      const y = 94 - (value / (max > 0 ? max : 1)) * 82
       return `${x},${y}`
     })
     .filter(Boolean)
@@ -32,12 +33,17 @@ export function TrendChart({
   primaryLabel,
   secondaryLabel,
   caption,
+  primaryFormat,
+  secondaryFormat,
 }: {
   title: string
   points: Point[]
   primaryLabel: string
   secondaryLabel?: string
   caption?: ReactNode
+  /** How to show a line's values, such as money. Counts are shown compactly. */
+  primaryFormat?: (value: number) => string
+  secondaryFormat?: (value: number) => string
 }) {
   const primaryValues = chartPoints.map((point) => point.primary)
   const secondaryValues = chartPoints.map((point) => point.secondary)
@@ -50,9 +56,9 @@ export function TrendChart({
   return (
     <figure className={styles.figure}>
       <div className={styles.legend}>
-        <span><i className={styles.swatch} />{primaryLabel}, peak {compact.format(primaryPeak)}</span>
+        <span><i className={styles.swatch} />{primaryLabel}, peak {(primaryFormat ?? compact.format)(primaryPeak)}</span>
         {secondaryLabel && (
-          <span><i className={`${styles.swatch} ${styles.swatchSecondary}`} />{secondaryLabel}, peak {compact.format(secondaryPeak)}</span>
+          <span><i className={`${styles.swatch} ${styles.swatchSecondary}`} />{secondaryLabel}, peak {(secondaryFormat ?? compact.format)(secondaryPeak)}</span>
         )}
       </div>
       <svg className={styles.chart} viewBox="0 0 100 100" preserveAspectRatio="none" role="img" aria-label={title}>
@@ -85,8 +91,8 @@ export function TrendChart({
           {chartPoints.map((point) => (
             <tr key={point.label}>
               <td>{point.label}</td>
-              <td>{point.primary ?? 'No data'}</td>
-              {secondaryLabel && <td>{point.secondary ?? 'No data'}</td>}
+              <td>{point.primary == null ? 'No data' : primaryFormat ? primaryFormat(point.primary) : point.primary}</td>
+              {secondaryLabel && <td>{point.secondary == null ? 'No data' : secondaryFormat ? secondaryFormat(point.secondary) : point.secondary}</td>}
             </tr>
           ))}
         </tbody>

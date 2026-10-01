@@ -89,14 +89,21 @@ class CostTally:
 
     total: float | None = None
     reserved: float = 0.0
+    # The reserved part of ``reserved`` by provisioned deployment, keyed without case.
+    reserved_by_key: dict[str, float] = field(default_factory=dict)
     priced_tokens: int = 0
     unpriced_tokens: int = 0
     unpriced_requests: int = 0
     left: dict[str, _Left] = field(default_factory=dict)
 
-    def add_amount(self, amount: float | None, reserved: float = 0.0) -> None:
+    def add_amount(
+        self, amount: float | None, reserved: float = 0.0, key: str | None = None
+    ) -> None:
         self.total = add_cost(self.total, amount)
         self.reserved += reserved
+        if reserved and key is not None:
+            folded = key.casefold()
+            self.reserved_by_key[folded] = self.reserved_by_key.get(folded, 0.0) + reserved
 
     def record(
         self,
@@ -112,7 +119,9 @@ class CostTally:
         share = 1.0 if priced.amount is None else priced.unpriced_share
         left_tokens = round(tokens * share)
         if priced.amount is not None:
-            self.add_amount(priced.amount, priced.reserved)
+            self.add_amount(
+                priced.amount, priced.reserved, key if kind == "deployment" else None
+            )
             self.priced_tokens += tokens - left_tokens
         if left_tokens <= 0 or priced.unpriced is None:
             return
@@ -204,6 +213,9 @@ class CostBook:
         days = self._days(period, start)
         if not days:
             return Priced(0.0)
+        facts = self.pricer.facts_for(key)
+        if key is not None and facts is not None and facts.provisioned:
+            return self._reserved_share(key, days, metrics)
         prompt, completion = metrics.prompt_tokens, metrics.completion_tokens
         total = metrics.total_tokens or prompt + completion
         if total <= 0:
@@ -213,7 +225,6 @@ class CostBook:
             )
         count = len(days)
         amount = 0.0
-        reserved = 0.0
         priced = False
         unpriced_days = 0
         first: Unpriced | None = None
@@ -231,16 +242,6 @@ class CostBook:
                 else:
                     amount += value
                     priced = True
-            elif rate.kind == "provisioned" and key is not None:
-                month = month_first(day)
-                monthly = self.reserved_month(key, month)
-                shared = max(self.month_tokens(key, month), total)
-                if monthly is not None and shared > 0:
-                    part = monthly * (total / count) / shared
-                    amount += part
-                    reserved += part
-                    priced = True
-                    self.note(RESERVED_NOTE)
             else:
                 unpriced_days += 1
                 first = first or rate.unpriced or UNKNOWN_DEPLOYMENT
@@ -248,9 +249,33 @@ class CostBook:
             self.note(AVERAGED_NOTE)
         if not priced:
             return Priced(None, unpriced=first, unpriced_share=1.0)
-        return Priced(
-            amount, reserved=reserved, unpriced=first, unpriced_share=unpriced_days / count
-        )
+        return Priced(amount, unpriced=first, unpriced_share=unpriced_days / count)
+
+    def _reserved_share(self, key: str, days: list[date], metrics: UsageMetrics) -> Priced:
+        """A provisioned deployment's calls share its month's reserved cost by their tokens.
+
+        Every call in a month shares that month's cost, whichever day it was made, so a month
+        MOSAIC reads only as a total is priced just as its days would be.
+        """
+
+        month = month_first(days[0])
+        monthly = self.reserved_month(key, month)
+        if monthly is None:
+            reason = next(
+                (
+                    rate.unpriced
+                    for day in days
+                    if (rate := self.pricer.rate(key, day)).unpriced is not None
+                ),
+                None,
+            )
+            return Priced(None, unpriced=reason or UNKNOWN_DEPLOYMENT, unpriced_share=1.0)
+        self.note(RESERVED_NOTE)
+        total = metrics.total_tokens or metrics.prompt_tokens + metrics.completion_tokens
+        if total <= 0:
+            return Priced(0.0)
+        part = monthly * total / max(self.month_tokens(key, month), total)
+        return Priced(part, reserved=part)
 
     def idle(self, key: str, first: date, last: date) -> float:
         """Reserved capacity on days in months that had no calls to share it among."""

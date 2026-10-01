@@ -126,7 +126,7 @@ describe('DashboardPage', () => {
     expect(screen.getByText('3 governed APIs · 15 min behind')).toBeVisible()
     expect(screen.queryByText(/Estimated cost/)).not.toBeInTheDocument()
     // Without a price list there's no spend, never $0.
-    expect(within(screen.getByText('Spend this month').closest('.fui-Card') as HTMLElement).getByText('No price list')).toBeVisible()
+    expect(within(screen.getByText('This month').closest('.fui-Card') as HTMLElement).getByText('No price list')).toBeVisible()
     expect(await screen.findByRole('heading', { name: 'Environments' })).toBeVisible()
     expect(screen.getByText('2 gateways')).toBeVisible()
     expect(screen.getByText('3 MCP servers')).toBeVisible()
@@ -138,7 +138,7 @@ describe('DashboardPage', () => {
     api.getAnalyticsOverview.mockResolvedValue(pricedOverviewFixture)
     renderPage()
 
-    const spend = (await screen.findByText('Spend this month')).closest('.fui-Card') as HTMLElement
+    const spend = (await screen.findByText('This month')).closest('.fui-Card') as HTMLElement
     expect(await within(spend).findByText('$4,355.25')).toBeVisible()
     expect(within(spend).getByText('Projected $7,502.10 by Mar 31')).toBeVisible()
   })
@@ -147,7 +147,7 @@ describe('DashboardPage', () => {
     api.getAnalyticsOverview.mockResolvedValue({ ...pricedOverviewFixture, spend: { ...spendFixture, forecast: null } })
     renderPage()
 
-    const spend = (await screen.findByText('Spend this month')).closest('.fui-Card') as HTMLElement
+    const spend = (await screen.findByText('This month')).closest('.fui-Card') as HTMLElement
     expect(await within(spend).findByText('Forecast after a day of this month’s figures')).toBeVisible()
   })
 

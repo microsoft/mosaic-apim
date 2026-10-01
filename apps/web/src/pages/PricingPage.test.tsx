@@ -114,6 +114,7 @@ const endpoints: EndpointPricingView[] = [
     deployments: [
       { deploymentName: 'claude', model: 'claude-sonnet-4-5', version: null, deploymentType: null, deploymentTypeSource: null, capacity: null, declared: true, priced: false, reason: 'noDeploymentType' },
     ],
+    version: 'etag-partner-1',
   },
 ]
 
@@ -274,7 +275,8 @@ describe('PricingPage', () => {
     await user.click(within(dialog).getByRole('button', { name: 'Cancel' }))
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
 
-    await user.click(claude.getByRole('button', { name: 'Set facts' }))
+    // The page behind a modal stays hidden until the dialog has finished closing.
+    await user.click(await within(screen.getByRole('table', { name: 'Unpriced deployments' })).findByRole('button', { name: 'Set facts' }, { timeout: 5000 }))
     expect(await screen.findByRole('table', { name: 'Endpoint pricing' })).toBeVisible()
     expect(screen.getByLabelText('claude deployment type')).toBeVisible()
   })
@@ -296,7 +298,23 @@ describe('PricingPage', () => {
       cloud: 'government',
       region: null,
       deployments: [{ deploymentName: 'claude', deploymentType: 'GlobalStandard', capacity: null }],
+      // The version the form opened on, so a save over another administrator's change fails.
+      version: 'etag-partner-1',
     }))
+  })
+
+  it('says when someone else changed an endpoint’s facts first', async () => {
+    const user = userEvent.setup()
+    api.updateEndpointPricing.mockRejectedValue(new Error('Someone changed this endpoint’s pricing after you opened it. Reload it and make your change again.'))
+    renderPage('/pricing?tab=endpoints')
+
+    const table = await screen.findByRole('table', { name: 'Endpoint pricing' })
+    const partner = within(within(table).getByText('Fabrikam partner Foundry').closest('tr') as HTMLElement)
+    await user.click(partner.getByRole('button', { name: 'Edit' }))
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+
+    expect(await screen.findByText(/Someone changed this endpoint’s pricing after you opened it/)).toBeVisible()
+    await waitFor(() => expect(api.listEndpointPricing).toHaveBeenCalledTimes(2))
   })
 
   it('lists the seed’s sources', async () => {

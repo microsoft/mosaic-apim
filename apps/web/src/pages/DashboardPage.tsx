@@ -328,7 +328,7 @@ export function DashboardPage() {
         <SparkMetric label="Active callers" value={analytics.isLoading ? '—' : formatCompact(analytics.data?.kpis.activeCallers)} detail="Linked people, apps, and groups" icon={<PersonAccountsRegular />} />
         <SparkMetric label="Error rate" value={analytics.isLoading ? '—' : formatPercent(analytics.data?.kpis.errorRate)} detail={`${formatCompact(analytics.data?.kpis.errors)} error calls`} icon={<ChartMultipleRegular />} />
         <SparkMetric label="P95 latency" value={analytics.isLoading ? '—' : formatLatency(analytics.data?.kpis.p95LatencyMs)} detail="Estimated from latency buckets" icon={<CloudDatabaseRegular />} />
-        <SparkMetric label="Spend this month" value={analytics.isLoading ? '—' : formatCostCompact(analytics.data?.spend?.monthToDate, '—')} detail={analytics.isLoading ? 'Loading' : spendDetail(analytics.data?.spend)} icon={<MoneyRegular />} />
+        <SparkMetric label="This month" value={analytics.isLoading ? '—' : formatCostCompact(analytics.data?.spend?.monthToDate, '—')} detail={analytics.isLoading ? 'Loading' : spendDetail(analytics.data?.spend)} icon={<MoneyRegular />} />
       </div>
 
       <div className={styles.dashboardGrid}>

@@ -369,6 +369,51 @@ async def test_endpoint_clouds_and_declared_types_can_be_set(admin: TestClient) 
     ] * 3
 
 
+async def test_a_form_opened_before_another_admins_save_cant_undo_it(admin: TestClient) -> None:
+    await _seed(admin)
+    url = "/api/v1/pricing/endpoints/endpoint-partner"
+    endpoints = {item["endpointId"]: item for item in admin.get("/api/v1/pricing/endpoints").json()}
+    opened = endpoints["endpoint-partner"]["version"]
+    assert opened is None
+
+    # One administrator sets the declared deployment's type from the form they opened.
+    first = admin.patch(
+        url,
+        json={
+            "cloud": None,
+            "region": None,
+            "deployments": [{"deploymentName": "gpt-4-1-mini", "deploymentType": "GlobalStandard"}],
+            "version": opened,
+        },
+    )
+    assert first.status_code == 200, first.text
+    assert first.json()["version"]
+
+    # Another saved only a region from a form opened before that, which still shows no type.
+    stale = admin.patch(
+        url,
+        json={
+            "cloud": None,
+            "region": "eastus2",
+            "deployments": [{"deploymentName": "gpt-4-1-mini", "deploymentType": None}],
+            "version": opened,
+        },
+    )
+    assert stale.status_code == 409, stale.text
+    assert "after you opened it" in stale.json()["message"]
+    partner = next(
+        item for item in admin.get("/api/v1/pricing/endpoints").json()
+        if item["endpointId"] == "endpoint-partner"
+    )
+    assert partner["deployments"][0]["deploymentType"] == "GlobalStandard"
+    assert partner["region"] is None
+
+    # Saved from the current version, the change goes through.
+    current = admin.patch(url, json={"region": "eastus2", "version": partner["version"]})
+    assert current.status_code == 200, current.text
+    assert current.json()["deployments"][0]["deploymentType"] == "GlobalStandard"
+
+
 async def test_azure_reported_types_cant_be_overridden(admin: TestClient) -> None:
     await _seed(admin)
 

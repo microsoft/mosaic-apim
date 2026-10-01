@@ -690,6 +690,13 @@ def provisioned_prices(index: Index) -> list[dict[str, Any]]:
 
 
 def build(today: date, cache: Path | None = None) -> dict[str, Any]:
+    return build_with_index(today, cache)[0]
+
+
+def build_with_index(today: date, cache: Path | None = None) -> tuple[dict[str, Any], Index]:
+    """The seed, and the API's rows it was built from, which a refresh reads regions' starts
+    from."""
+
     products = sorted(
         {model.product for model in CATALOG}
         | {meters.product for model in CATALOG for meters in model.types.values() if meters.product}
@@ -733,7 +740,25 @@ def build(today: date, cache: Path | None = None) -> dict[str, Any]:
         ],
     }
     PriceSeed.model_validate(seed)
-    return seed
+    return seed, index
+
+
+def region_starts(price: dict[str, Any], index: Index) -> dict[str, date]:
+    """The day each region started charging a price, as the API dates its meters."""
+
+    meters = price.get("retailMeters") or {}
+    product = meters.get("product")
+    starts: dict[str, date] = {}
+    if not product:
+        return starts
+    for name in ("input", "output", "cachedInput", "provisioned"):
+        meter = meters.get(name)
+        if not meter:
+            continue
+        for region, row in index.regions(product, meter, price["cloud"]).items():
+            day = date.fromisoformat(str(row["effectiveStartDate"])[:10])
+            starts[region] = max(starts.get(region, day), day)
+    return starts
 
 
 def _dump(value: Any) -> str:
@@ -782,15 +807,19 @@ def _same(left: dict[str, Any], right: dict[str, Any]) -> bool:
     return all(left.get(name) == right.get(name) for name in FIELD_ORDER if name != "id")
 
 
-def carry_forward(current: dict[str, Any], rebuilt: dict[str, Any]) -> list[str]:
+def carry_forward(
+    current: dict[str, Any], rebuilt: dict[str, Any], index: Index | None = None
+) -> list[str]:
     """Keep each price a refresh replaces, so the days it covered keep their price.
 
     The Retail Prices API lists only today's prices. A replaced price is kept with
     ``effectiveUntil`` set to the day before its replacement takes effect, and cites its sources
     as they were on the day they were read. A price the API no longer lists is kept without an
-    end, since nothing replaces it. The API is the record: if it dates a replacement before the
-    day the old price was last read, the refresh follows it and warns. Changes ``rebuilt`` in
-    place, and says what it kept and what it warns about.
+    end, since nothing replaces it. A price for every region can change region by region: given
+    ``index``, the API's rows, each region keeps the old price until its own change. The API is
+    the record: if it dates a replacement before the day the old price was last read, the
+    refresh follows it and warns. Changes ``rebuilt`` in place, and says what it kept and what
+    it warns about.
     """
 
     fresh = list(rebuilt["prices"])
@@ -861,6 +890,17 @@ def carry_forward(current: dict[str, Any], rebuilt: dict[str, Any]) -> list[str]
             return None
         return replaced_on - timedelta(days=1)
 
+    starts_by_price: dict[str, dict[str, date]] = {}
+
+    def begins(price: dict[str, Any], region: str) -> date:
+        """When a price took over in one region. A regionless one starts region by region."""
+
+        if price.get("regions") is not None or index is None:
+            return _start(price)
+        if price["id"] not in starts_by_price:
+            starts_by_price[price["id"]] = region_starts(price, index)
+        return max(_start(price), starts_by_price[price["id"]].get(region, _start(price)))
+
     for old in current.get("prices", []):
         if any(_same(old, price) for price in fresh):
             continue
@@ -880,8 +920,19 @@ def carry_forward(current: dict[str, Any], rebuilt: dict[str, Any]) -> list[str]
             elif _amounts(successor) == _amounts(old):
                 if _start(successor) > start:
                     successor["effectiveFrom"] = old["effectiveFrom"]
-            elif (until := ended(old, _start(successor))) is not None:
-                carry(old, None, until)
+            else:
+                if (until := ended(old, _start(successor))) is not None:
+                    carry(old, None, until)
+                # The replacement starts where the first region changed. Regions that changed
+                # later keep the old price until then, as regional prices that outrank it.
+                later: dict[date, list[str]] = defaultdict(list)
+                if index is not None:
+                    for region in region_starts(successor, index):
+                        if (day := begins(successor, region)) > _start(successor):
+                            later[day].append(region)
+                for day, names in sorted(later.items()):
+                    if (until := ended(old, day)) is not None:
+                        carry(old, sorted(names), until)
             continue
         ends: dict[date | None, list[str]] = defaultdict(list)
         for region in regions:
@@ -893,11 +944,12 @@ def carry_forward(current: dict[str, Any], rebuilt: dict[str, Any]) -> list[str]
             if not covering:
                 ends[None].append(region)
                 continue
-            first = min(covering, key=_start)
+            first = min(covering, key=lambda price: begins(price, region))
+            first_start = begins(first, region)
             if _amounts(first) == _amounts(old):
-                if _start(first) > start:
-                    ends[_start(first) - timedelta(days=1)].append(region)
-            elif (until := ended(old, _start(first))) is not None:
+                if first_start > start:
+                    ends[first_start - timedelta(days=1)].append(region)
+            elif (until := ended(old, first_start)) is not None:
                 ends[until].append(region)
         for until, names in sorted(ends.items(), key=lambda item: item[0] or date.max):
             carry(old, sorted(names), until)
@@ -948,9 +1000,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
     today = args.date or datetime.now(UTC).date()
-    rebuilt = build(today, args.cache)
+    rebuilt, index = build_with_index(today, args.cache)
     current = json.loads(SEED_PATH.read_text(encoding="utf-8")) if SEED_PATH.exists() else {}
-    kept = carry_forward(current, rebuilt)
+    kept = carry_forward(current, rebuilt, index)
     PriceSeed.model_validate(rebuilt)
     changes = differences(current, rebuilt)
     if args.check:

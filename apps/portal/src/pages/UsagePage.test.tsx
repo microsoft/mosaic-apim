@@ -397,6 +397,26 @@ describe('UsagePage', () => {
     expect(screen.getByText('Excludes 3 resources with unknown cost')).toBeVisible()
     expect(screen.getByText(/Estimated costs use list prices from MOSAIC's price list/)).toBeVisible()
   })
+  it('shows the priced part of a resource with why the rest has no price', async () => {
+    const report = usageReport({ dataSource: 'logAnalytics', notes: [] })
+    renderPage({
+      ...report,
+      byResource: report.byResource.map((row) =>
+        row.entitlementId === 'grant-model'
+          ? {
+              ...row,
+              attribution: 'measured',
+              estimatedCost: 0.75,
+              costNote: 'Part of this usage has no price. The first price for gpt-4o takes effect on 2026-03-10.',
+            }
+          : row,
+      ),
+    })
+
+    const chat = within(await findResourceRow('Chat completions'))
+    expect(chat.getByText('$0.75')).toBeVisible()
+    expect(chat.getByText(/Part of this usage has no price/)).toBeVisible()
+  })
   it('renders MCP null token fields as not metered instead of zero', async () => {
     renderPage()
 

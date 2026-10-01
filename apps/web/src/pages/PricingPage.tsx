@@ -706,6 +706,8 @@ function EndpointEditor({ endpoint, clouds, onDone }: { endpoint: EndpointPricin
           deploymentType: item.deploymentType || null,
           capacity: item.capacity.trim() ? Number(item.capacity) : null,
         })),
+        // The form holds every fact as it was when opened, so a save after someone else's must fail.
+        version: endpoint.version ?? null,
       }
       return api.updateEndpointPricing(endpoint.endpointId, payload)
     },
@@ -714,6 +716,8 @@ function EndpointEditor({ endpoint, clouds, onDone }: { endpoint: EndpointPricin
       await queryClient.invalidateQueries({ queryKey: ['analytics'] })
       onDone()
     },
+    // Someone else's save leaves this form stale, so fetch what they saved for the next try.
+    onError: () => queryClient.invalidateQueries({ queryKey: ['pricing', 'endpoints'] }),
   })
   const editable = Object.keys(draft.deployments)
   return (

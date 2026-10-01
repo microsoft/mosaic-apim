@@ -444,33 +444,45 @@ class _MeasuredPricing:
     today: date
     reserved: bool = False
 
-    def cost(self, key: str | None, day: date, usage: DailyUsage) -> float | None:
-        rate = self.pricer.rate(key, day)
-        prompt = usage.prompt_tokens or 0
-        completion = usage.completion_tokens or 0
+    def _provisioned(self, key: str) -> bool:
+        facts = self.pricer.facts_for(key)
+        return facts is not None and facts.provisioned
+
+    def cost(self, key: str, day: date, usage: DailyUsage) -> float | None:
+        """What one day's calls cost, or None when MOSAIC can't price them."""
+
         total = usage.total_tokens or 0
-        if rate.kind == "tokens" and rate.entry is not None:
-            return token_amount(rate.entry, prompt, completion)
-        if rate.kind == "provisioned" and key is not None:
-            # A provisioned deployment's month is shared by its callers' share of its tokens.
+        if self._provisioned(key):
+            # A provisioned deployment's month is shared by its callers' share of its tokens,
+            # whichever day of the month they called.
+            month = month_first(day)
+            monthly = self.pricer.reserved_cost(key, month, self.today)
+            if monthly is None:
+                return None
             self.reserved = True
             if total <= 0:
                 return 0.0
-            month = month_first(day)
-            monthly = self.pricer.reserved_cost(key, month, self.today)
             shared = max(self.tokens.get((key.casefold(), month), 0), total)
-            return None if monthly is None else monthly * total / shared
+            return monthly * total / shared
+        rate = self.pricer.rate(key, day)
+        if rate.kind == "tokens" and rate.entry is not None:
+            return token_amount(rate.entry, usage.prompt_tokens or 0, usage.completion_tokens or 0)
         return None
 
+    def why(self, key: str, day: date) -> str:
+        """Why calls on ``day`` have no cost."""
+
+        rate = self.pricer.rate(key, day)
+        if rate.unpriced is not None:
+            return rate.unpriced.message
+        if rate.kind == "tokens":
+            return "The price lists no output price for this model."
+        return "MOSAIC has no price for this model."
+
     def note(
-        self,
-        entitlement: Entitlement,
-        key: str | None,
-        series: Mapping[date, DailyUsage] | None,
-        start: date,
-        end: date,
+        self, entitlement: Entitlement, key: str | None, series: Mapping[date, DailyUsage] | None
     ) -> str | None:
-        """Why a grant has no cost in the period, or None when some of it can be priced."""
+        """Why a grant can't be priced at all, whatever its usage, or None when it might be."""
 
         kind = entitlement.resource.kind
         if kind == EntitlementResourceKind.MCP_SERVER:
@@ -481,16 +493,45 @@ class _MeasuredPricing:
             return UNKNOWN_DEPLOYMENT_NOTE
         if series is None:
             return "MOSAIC can't measure this grant's usage yet, so it can't price it."
-        used = [
-            day
-            for day, usage in series.items()
-            if start <= day <= end and (usage.total_tokens or 0) > 0
-        ]
-        for day in used or [end]:
-            if self.pricer.rate(key, day).kind != "unpriced":
-                return None
-        rate = self.pricer.rate(key, (used or [end])[-1])
-        return rate.unpriced.message if rate.unpriced else "MOSAIC has no price for this model."
+        return None
+
+    def price_days(
+        self, key: str, figures: Sequence[tuple[date, DailyUsage | None]], end: date
+    ) -> tuple[float | None, dict[date, float | None], str | None]:
+        """A grant's cost over the period, each day's cost, and why any of it has no price.
+
+        Usage nothing prices is never counted as free: a grant whose calls can't be priced has
+        no cost, and one only some of whose calls can be priced says so. A grant nobody called
+        costs nothing if its deployment has a price today.
+        """
+
+        costs: dict[date, float | None] = {}
+        total: float | None = None
+        missing: str | None = None
+        used = False
+        for day, usage in figures:
+            if usage is None:
+                continue
+            value = self.cost(key, day, usage)
+            costs[day] = value
+            if (usage.total_tokens or 0) <= 0:
+                continue
+            used = True
+            if value is None:
+                missing = missing or self.why(key, day)
+            else:
+                total = (total or 0.0) + value
+        if not used:
+            if self._provisioned(key):
+                priced = self.pricer.reserved_cost(key, month_first(end), self.today) is not None
+            else:
+                priced = self.pricer.rate(key, end).kind == "tokens"
+            return (0.0, costs, None) if priced else (None, costs, self.why(key, end))
+        if total is None:
+            return None, costs, missing
+        if missing is not None:
+            return total, costs, f"Part of this usage has no price. {missing}"
+        return total, costs, None
 
 
 def binding_link_keys(binding: EntitlementBinding) -> list[str]:
@@ -814,14 +855,11 @@ class UsageService:
             series = usage.get(entitlement.id)
             if pricing is not None:
                 key, model = pricing.deployments.get(entitlement.id, (None, None))
-                cost_note = pricing.note(entitlement, key, series, start, end)
+                cost_note = pricing.note(entitlement, key, series)
             else:
                 key = None
                 model = await self._model_for(actor.tenant_id, entitlement)
                 cost_note = _cost_note(entitlement, model, priced=not measured)
-            cost_known = cost_note is None
-            if not cost_known:
-                cost_excluded_resources += 1
             attribution: UsageAttribution = (
                 "simulated"
                 if not measured
@@ -833,8 +871,24 @@ class UsageService:
                 (day, None if series is None else series.get(day)) for day in _days(start, end)
             ]
             present = [item for _, item in report_figures if item is not None]
-            # A grant MOSAIC can price costs nothing until it's called; one it can't has no cost.
-            resource_cost = 0.0 if cost_known else None
+            resource_cost: float | None = None
+            point_costs: dict[date, float | None] = {}
+            if cost_note is None and pricing is not None and key is not None:
+                resource_cost, point_costs, cost_note = pricing.price_days(
+                    key, report_figures, end
+                )
+            elif cost_note is None:
+                # Simulated figures use illustrative rates. A grant costs nothing until called.
+                simulated_cost = 0.0
+                for day, item in report_figures:
+                    if item is None:
+                        continue
+                    value = _price(model, item.prompt_tokens, item.completion_tokens)
+                    point_costs[day] = value
+                    simulated_cost += value or 0.0
+                resource_cost = simulated_cost
+            if cost_note is not None:
+                cost_excluded_resources += 1
             resource_requests = _sum_optional(item.requests for item in present)
             resource_prompt = _sum_optional(item.prompt_tokens for item in present)
             resource_completion = _sum_optional(item.completion_tokens for item in present)
@@ -847,15 +901,7 @@ class UsageService:
                 resource_cost = None
 
             for day, item in report_figures:
-                point_cost = None
-                if item is not None and cost_known:
-                    point_cost = (
-                        pricing.cost(key, day, item)
-                        if pricing is not None
-                        else _price(model, item.prompt_tokens, item.completion_tokens)
-                    )
-                    if point_cost is not None:
-                        resource_cost = (resource_cost or 0.0) + point_cost
+                point_cost = None if item is None else point_costs.get(day)
                 timeline.append(
                     UsageTimelinePoint(
                         date=day.isoformat(),

@@ -299,7 +299,15 @@ function ResourceUsageValue({
 }
 
 function CostCell({ row, currency }: { row: UsageResourceRow; currency: string }) {
-  if (row.estimatedCost !== null) return <>{formatCurrency(row.estimatedCost, currency)}</>
+  if (row.estimatedCost !== null) {
+    // Part of a grant's usage can lack a price, so its cost comes with why.
+    return (
+      <>
+        {formatCurrency(row.estimatedCost, currency)}
+        {row.costNote && <small>{row.costNote}</small>}
+      </>
+    )
+  }
   return (
     <>
       <span className="no-price">No price</span>

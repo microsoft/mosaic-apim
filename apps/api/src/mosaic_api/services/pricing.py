@@ -182,6 +182,8 @@ class EndpointPricingView(MosaicModel):
     deployments: list[DeploymentPricingView]
     updated_by: str | None = None
     updated_at: datetime | None = None
+    # The version of the saved facts, to send back with an update. None until any are saved.
+    version: str | None = None
 
 
 def _status(entry: PriceEntry, versions: list[PriceEntry], today: date) -> PriceStatus:
@@ -345,7 +347,13 @@ class PricingService:
     async def provisioned_tokens(
         self, tenant_id: str, keys: Iterable[str], first: date, last: date
     ) -> dict[tuple[str, date], int]:
-        """Each provisioned deployment's tokens by month, across every gateway and caller."""
+        """Each provisioned deployment's tokens by month, across every gateway and caller.
+
+        The rollup job folds a month's total only after a cycle succeeds, so this month's and
+        last month's totals can trail their days. For those two months the days are added up
+        too, and the larger figure counts, so a lagging total never lets each caller's share
+        of the month's reserved cost add up to more than the whole.
+        """
 
         wanted = {key.casefold() for key in keys}
         if not wanted or self._rollups is None:
@@ -363,6 +371,24 @@ class PricingService:
             for entry in summary.entries:
                 if entry.key.casefold() in wanted:
                     totals[(entry.key.casefold(), month)] += entry.metrics.total_tokens
+        today = self._today()
+        recent = max(month_first(first), month_first(month_first(today) - timedelta(days=1)))
+        until = min(last, today)
+        if recent <= until:
+            days: dict[tuple[str, date], int] = defaultdict(int)
+            for summary in await self._rollups.list_summaries(
+                tenant_id,
+                period="day",
+                start=recent.isoformat(),
+                end=until.isoformat(),
+                dimensions=["deployment"],
+            ):
+                month = month_first(date.fromisoformat(summary.period_start))
+                for entry in summary.entries:
+                    if entry.key.casefold() in wanted:
+                        days[(entry.key.casefold(), month)] += entry.metrics.total_tokens
+            for month_key, tokens in days.items():
+                totals[month_key] = max(totals.get(month_key, 0), tokens)
         return dict(totals)
 
     # -- the price list -------------------------------------------------------------------------
@@ -712,6 +738,7 @@ class PricingService:
                     deployments=deployments,
                     updated_by=current.updated_by if current else None,
                     updated_at=current.updated_at if current else None,
+                    version=current.etag if current else None,
                 )
             )
         return views
@@ -751,6 +778,12 @@ class PricingService:
         fields = update.model_fields_set
         for attempt in range(SAVE_ATTEMPTS):
             current = await self._repository.get_endpoint_pricing(tenant, endpoint_id)
+            if "version" in fields and update.version != (current.etag if current else None):
+                raise ConflictError(
+                    "Someone changed this endpoint's pricing after you opened it. Reload it and "
+                    "make your change again.",
+                    details={"endpointId": endpoint_id},
+                )
             settings = current or EndpointPricing(
                 id=endpoint_pricing_id(tenant, endpoint_id),
                 tenant_id=tenant,

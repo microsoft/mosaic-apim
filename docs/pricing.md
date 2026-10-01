@@ -64,7 +64,9 @@ another sovereign cloud. Its key is up to 40 lowercase letters, digits, and hyph
 prices for custom clouds, so their prices are entered like any other.
 
 The same tab can override an endpoint's region, which MOSAIC otherwise reads from the endpoint.
-Choosing the cloud MOSAIC detected clears the override.
+Choosing the cloud MOSAIC detected clears the override. If another administrator saves an
+endpoint's facts after you open its form, your save is refused rather than undoing theirs. Open the
+form again, and make your change to what they saved.
 
 ## How a deployment finds its price
 
@@ -160,9 +162,11 @@ MOSAIC charges a deployment from the day Azure created it. When it can't read th
 the day it first saw a governed API that fronts the deployment.
 
 Each month's cost is shared among the deployment's callers by their share of its tokens that month,
-counted across every gateway. Filtering Analytics to one gateway doesn't inflate anyone's share. A
-month nobody called the deployment, its cost is idle: Analytics adds it to totals, and the
-chargeback export charges it to **Reserved capacity with no calls**.
+whichever day they called, counted across every gateway. Filtering Analytics to one gateway doesn't
+inflate anyone's share. A month's total can trail its days when a rollup cycle fails, so for this
+month and last MOSAIC also adds up the days, and uses the larger figure. A month nobody called the
+deployment, its cost is idle: Analytics adds it to totals, and the chargeback export charges it to
+**Reserved capacity with no calls**.
 
 The **Deployments** table on the **Cost** tab shows each provisioned deployment's monthly cost,
 idle cost, and utilization: its tokens against what its PTUs could serve in the range, by Microsoft
@@ -172,17 +176,19 @@ Utilization is blank for a model Learn has no figures for.
 ## Reading cost
 
 - **Analytics > Cost** shows the total and trend for the chosen range, cost by model, deployment,
-  caller, and API, and this month's spend and forecast. The other tabs add a cost column where
-  usage has one.
+  caller, and API, and this month's spend and forecast. **Cost by consumer** ranks the people and
+  applications that called, so a security group's calls count once, under its members. The other
+  tabs add a cost column where usage has one.
 - **Spend this month** is the calendar month so far, in UTC. The **Month-end forecast**, marked
   **Projected**, is pay-as-you-go spend so far, times the days in the month, divided by the days
-  MOSAIC has figures for, to the hour, plus the whole month of any reserved capacity. It appears
-  once MOSAIC has a day of figures. The Dashboard shows both.
+  MOSAIC has figures for, to the hour, plus each provisioned deployment's whole month, from the
+  day it was deployed. It appears once MOSAIC has a day of figures. The Dashboard shows both.
 - **Monthly totals:** a range reaching past daily retention reads whole months. If a price changed
   in such a month, the month is priced as if its calls were spread evenly across it, and the
   report says so.
 - **The portal** shows each person the cost of their own calls, per grant and in total, and how many
-  of their resources have no price.
+  of their resources have no price. A grant only some of whose calls have a price shows the priced
+  part, says why the rest has none, and counts among the resources the total leaves out.
 
 ## Chargeback
 
@@ -212,9 +218,10 @@ again, and `--date` records another day as the day the prices were read.
 
 The API lists only today's prices, so a refresh keeps each price it replaces. The old price gets an
 `effectiveUntil`, the day before its replacement takes effect, and cites its source as it was read
-before. So the days it priced keep their price. A price the API no longer lists is kept without an
-end. If the API dates a replacement before the day the old price was last read, the refresh follows
-the API, which is the record, and prints a warning.
+before. So the days it priced keep their price. A price for every region can change region by
+region, so each region keeps the old price until the day the API dates its own change. A price
+the API no longer lists is kept without an end. If the API dates a replacement before the day the
+old price was last read, the refresh follows the API, which is the record, and prints a warning.
 
 The script decides which meters make up each price from a catalog at its top. To add a model, add
 its meters there and rebuild. Review the diff, and run the API's tests, which check that every price

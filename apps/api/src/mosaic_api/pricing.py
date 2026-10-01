@@ -453,11 +453,17 @@ class DeploymentPricingUpdate(MosaicModel):
 
 
 class EndpointPricingUpdate(MosaicModel):
-    """The whole of an endpoint's pricing facts. Leave a field empty to use what MOSAIC detects."""
+    """The whole of an endpoint's pricing facts. Leave a field empty to use what MOSAIC detects.
+
+    Only the fields sent change. ``version`` is the version the caller read, as the endpoint's
+    view reports it, or null if nothing was saved yet. When it's sent, the update is refused if
+    someone saved the endpoint's facts since, so a form opened earlier can't undo their change.
+    """
 
     cloud: str | None = Field(default=None, max_length=40)
     region: str | None = Field(default=None, max_length=60)
     deployments: list[DeploymentPricingUpdate] = Field(default_factory=list, max_length=50)
+    version: str | None = Field(default=None, max_length=200)
 
     @field_validator("cloud")
     @classmethod

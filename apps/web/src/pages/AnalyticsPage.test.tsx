@@ -277,6 +277,10 @@ describe('AnalyticsPage', () => {
     expect(within(forecast).getByText('$7,502.10')).toBeVisible()
     expect(within(forecast).getByText('Projected')).toBeVisible()
     expect(within(forecast).getByText('At this month’s pace so far, over 17.7 of 31 days')).toBeVisible()
+    const reserved = screen.getByText('Reserved capacity').closest('.fui-Card') as HTMLElement
+    expect(within(reserved).getByText('$7,200.00')).toBeVisible()
+    // The trend's cost line is labelled in dollars, not as a bare count.
+    expect(screen.getByText(/^Cost, peak \$/)).toBeVisible()
 
     const deployments = screen.getByRole('table', { name: 'Deployment cost' })
     const row = (name: string) => within(within(deployments).getByText(name).closest('tr') as HTMLElement)
@@ -300,6 +304,16 @@ describe('AnalyticsPage', () => {
     const forecast = (await screen.findByText('Month-end forecast')).closest('.fui-Card') as HTMLElement
     expect(within(forecast).getByText('—')).toBeVisible()
     expect(within(forecast).getByText('Forecast after a day of this month’s figures')).toBeVisible()
+  })
+
+  it('says no reserved capacity was charged rather than showing $0', async () => {
+    api.getAnalyticsCost.mockResolvedValue({ ...costFixture, cost: { ...costFixture.cost, reserved: null } })
+    renderPage('/analytics?tab=cost')
+
+    const reserved = (await screen.findByText('Reserved capacity')).closest('.fui-Card') as HTMLElement
+    expect(within(reserved).getByText('None')).toBeVisible()
+    expect(within(reserved).getByText('No provisioned deployment was charged in this range')).toBeVisible()
+    expect(within(reserved).queryByText('$0.00')).not.toBeInTheDocument()
   })
 
   it('exports the chargeback from the Cost tab', async () => {

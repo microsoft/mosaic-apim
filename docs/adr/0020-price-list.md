@@ -54,9 +54,10 @@ each query's URL as a source with the day it was read.
   guidance, also cited.
 - The API lists only today's prices. A refresh keeps each price it replaces, with
   `effectiveUntil` set to the day before its replacement takes effect, and cites the source as it
-  was read then. So a refresh doesn't change the cost of a day already priced. The one exception
-  is a replacement the API dates before the day the old price was last read. The refresh follows
-  the API, which is the record, and reports it.
+  was read then. A price for every region can change region by region, so each region keeps the
+  old price until the day the API dates its own change. So a refresh doesn't change the cost of a
+  day already priced. The one exception is a replacement the API dates before the day the old
+  price was last read. The refresh follows the API, which is the record, and reports it.
 
 **Administrators add and override prices as dated versions, and nothing is rewritten.** Each
 version is a `priceVersion` item in `desired-state`, written in one transactional batch with its
@@ -89,8 +90,10 @@ audit event, `pricing.priceRecorded`. It's never updated or deleted.
   sets their deployment type, and the capacity of a provisioned one. MOSAIC never overrides a type
   Azure reports.
 - These facts are an `endpointPricing` item per endpoint in `desired-state`, saved only over the
-  version that was read and audited as `pricing.endpointUpdated`. A change merges field by field
-  into what's saved, so two administrators' changes to different fields both survive.
+  version that was read and audited as `pricing.endpointUpdated`. The console's form sends the
+  version it was opened on, and a save is refused if someone saved since, so a form opened
+  earlier can't undo a newer change. A request without a version changes only the fields it
+  names, merged into what's saved.
 - A price applies when its cloud matches, its model or one of its aliases names the deployment's
   model, or it's for every model, and every other fact it names matches. A publisher is compared
   only when the deployment's is known. A regional price applies only in a known region. A PTU
@@ -124,8 +127,10 @@ only the days from its date, and a correction changes history the next time anyo
 - It costs that from the day Azure created it, as its `systemData.createdAt` records. When MOSAIC
   didn't read that, it's from the day MOSAIC first saw a governed API fronting it.
 - Each month's cost is shared among the deployment's callers by their share of its tokens that
-  month, counted across every gateway, so filtering a report never inflates anyone's share. A
-  month with no calls leaves its cost idle, and reports and the chargeback show it apart.
+  month, whichever day they called, so a month MOSAIC reads only as a total costs the same as its
+  days. Tokens are counted across every gateway, so filtering a report never inflates anyone's
+  share, and for this month and last, whose totals can trail their days, the days are added up
+  too. A month with no calls leaves its cost idle, and reports and the chargeback show it apart.
 - Utilization compares the deployment's tokens with what its PTUs serve, by Microsoft Learn's
   figures for the model, and is shown next to its cost.
 
@@ -136,13 +141,14 @@ only the days from its date, and a correction changes history the next time anyo
   caller, and API. Each deployment row shows its price, and for provisioned throughput, its
   monthly cost, utilization, and idle cost.
 - Spend this month is the calendar month so far, in UTC. The forecast is pay-as-you-go spend so
-  far, times the days in the month, divided by the days the figures cover, to the hour. Reserved
-  capacity costs the same every day, so its whole month is added as it is. The forecast appears
-  once the figures cover a day, and is labelled projected.
+  far, times the days in the month, divided by the days the figures cover, to the hour. Each
+  provisioned deployment's reserved cost is projected to its whole month, counting only the days
+  it exists. The forecast appears once the figures cover a day, and is labelled projected.
 - The `/pricing` routes need `Admin`, like every other administrative route.
 - The portal prices only the caller's own calls. For a security-group grant, that's their own
   share of the group's calls, and a provisioned deployment's cost is shared the same way as in
-  Analytics.
+  Analytics. A grant only some of whose calls have a price shows the priced part and says why
+  the rest has none.
 
 **Chargeback is a CSV by month, party, and model.** The `chargeback` export has one row for each
 month, party, model, deployment, and endpoint. A grant's calls are charged to its subject: the

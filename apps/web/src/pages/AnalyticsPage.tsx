@@ -445,12 +445,16 @@ function CostTab({ report }: { report: AnalyticsCost }) {
         />
         <KpiCard label="Month-end forecast" value={formatCostCompact(spend?.forecast, '—')} badge="Projected" detail={forecastDetail(report)} />
         <KpiCard label="Cost in this range" value={hourly ? '—' : formatCostCompact(cost.total)} detail={hourly ? 'Priced by whole days; choose 7 days or more' : costDetail(cost, null, null)} />
-        <KpiCard label="Reserved capacity" value={formatCostCompact(cost.reserved ?? 0)} detail="Provisioned deployments’ PTUs in this range" />
+        <KpiCard
+          label="Reserved capacity"
+          value={cost.reserved == null ? 'None' : formatCostCompact(cost.reserved)}
+          detail={cost.reserved == null ? 'No provisioned deployment was charged in this range' : 'Provisioned deployments’ PTUs in this range'}
+        />
       </div>
       {!hourly && (
         <Card className={styles.wideCard}>
           <Title3 as="h2">Cost and tokens</Title3>
-          <TrendChart title="Cost and tokens trend" points={trend} primaryLabel="Cost" secondaryLabel="Tokens" caption="Each line is scaled to its own peak. A day MOSAIC has no figures for is left blank." />
+          <TrendChart title="Cost and tokens trend" points={trend} primaryLabel="Cost" secondaryLabel="Tokens" primaryFormat={(value) => formatCost(value)} caption="Each line is scaled to its own peak. A day MOSAIC has no figures for is left blank." />
         </Card>
       )}
       <div className={styles.analyticsGrid}>

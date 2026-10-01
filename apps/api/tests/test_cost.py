@@ -393,13 +393,35 @@ async def seed(harness: Harness) -> None:
     harness.logs.calls = calls
 
 
-async def rolled_up(harness: Harness) -> Harness:
-    await seed(harness)
+async def _roll_up(harness: Harness) -> None:
     for _ in range(10):
         states = await harness.job.run_cycle()
         if all(state.backfill_status != "running" for state in states):
-            return harness
+            return
     raise AssertionError("The backfill never finished")
+
+
+async def rolled_up(harness: Harness) -> Harness:
+    await seed(harness)
+    await _roll_up(harness)
+    return harness
+
+
+async def _deploy_reserved_on(harness: Harness, day: datetime) -> None:
+    """Redeploy the provisioned deployment as if Azure had created it on ``day``."""
+
+    await harness.state.model_endpoint_repository.replace_observed_for_endpoint(
+        TENANT,
+        ENDPOINT,
+        [
+            _deployment("chat", "gpt-4o", "2024-11-20", "GlobalStandard", 450),
+            _deployment(
+                "reserved", "gpt-4o", "2024-11-20", "GlobalProvisionedManaged", 10
+            ).model_copy(update={"deployed_at": day}),
+            _deployment("mystery", "contoso-llm", "1", "GlobalStandard", 1),
+        ],
+        "snapshot",
+    )
 
 
 async def test_overview_prices_the_window_and_projects_the_month(harness: Harness) -> None:
@@ -560,8 +582,59 @@ async def test_the_cost_report_explains_each_deployment(harness: Harness) -> Non
     assert report["spend"]["monthToDate"] == pytest.approx(CHAT_COST + MARCH_SO_FAR)
     consumers = {row["label"]: row["cost"] for row in report["consumers"]}
     assert consumers["Bob"] == pytest.approx(MARCH_SO_FAR * 0.75)
+    # Callers only: the Analysts group's calls are Carol's, so they're counted once.
+    assert consumers["Carol"] == pytest.approx(MARCH_SO_FAR * 0.25)
+    assert "Analysts" not in consumers
+    assert sum(row["costShare"] or 0 for row in report["consumers"]) <= 1 + 1e-6
     assert report["models"][0]["label"] == "gpt-4o"
     assert report["priced"] is True
+
+
+async def test_a_deployment_created_mid_month_costs_the_same_by_day_or_by_month(
+    harness: Harness,
+) -> None:
+    await seed(harness)
+    await _deploy_reserved_on(harness, datetime(2026, 3, 10, tzinfo=UTC))
+    await _roll_up(harness)
+    # Reserved from 10 March: nine days so far, and 22 in the whole month.
+    so_far = DAILY * 9
+
+    for window in ("30d", "12m"):
+        report = harness.get("/api/v1/analytics/consumers", range=window)
+        people = {row["label"]: row["cost"] for row in report["people"]}
+        assert people["Bob"] == pytest.approx(so_far * 0.75), window
+        assert people["Carol"] == pytest.approx(so_far * 0.25), window
+        # Calls after the deployment existed are never left out as before it.
+        assert report["cost"]["unpricedTokens"] == 4_000, window
+        models = harness.get("/api/v1/analytics/models", range=window)
+        deployments = {row["deploymentName"]: row["cost"] for row in models["deployments"]}
+        assert deployments["reserved"] == pytest.approx(so_far), window
+
+    spend = harness.get("/api/v1/analytics/overview", range="30d")["spend"]
+    elapsed = 17 + 15.5 / 24
+    # The reserved part is the month it's billed for, not this month's pace stretched to 31 days.
+    assert spend["forecast"] == pytest.approx(CHAT_COST * 31 / elapsed + DAILY * 22, abs=1e-3)
+
+
+async def test_a_month_total_that_lags_its_days_never_overcharges_a_share(
+    harness: Harness,
+) -> None:
+    await rolled_up(harness)
+    # A cycle that failed after writing its days leaves the month's total behind them.
+    summaries = harness.state.usage_rollup_repository._summaries
+    for item_key, summary in list(summaries.items()):
+        if summary.period == "month" and summary.dimension == "deployment":
+            del summaries[item_key]
+
+    report = harness.get("/api/v1/analytics/consumers", range="30d")
+
+    people = {row["label"]: row["cost"] for row in report["people"]}
+    assert people["Bob"] == pytest.approx(MARCH_SO_FAR * 0.75)
+    assert people["Carol"] == pytest.approx(MARCH_SO_FAR * 0.25)
+    harness.sign_in(CAROL, ["User"])
+    carol = harness.get("/api/v1/me/usage", period="30d")
+    [row] = carol["byResource"]
+    assert row["estimatedCost"] == pytest.approx(MARCH_SO_FAR * 0.25)
 
 
 async def test_unattributed_calls_carry_cost(harness: Harness) -> None:
@@ -664,6 +737,63 @@ async def test_an_unpriced_grant_says_why(harness: Harness) -> None:
     assert "No price for contoso-llm" in row["costNote"]
     assert report["totals"]["estimatedCost"] is None
     assert report["totals"]["costExcludedResources"] == 1
+
+
+async def test_usage_nothing_prices_is_never_shown_as_free(harness: Harness) -> None:
+    await rolled_up(harness)
+    # From 14 March, a price with no output rate, which can't price calls that return tokens.
+    response = harness.client.post(
+        "/api/v1/pricing/prices",
+        json={
+            "cloud": "commercial",
+            "publisher": "OpenAI",
+            "model": "gpt-4o",
+            "version": "2024-11-20",
+            "deploymentType": "GlobalStandard",
+            "inputPerMillion": 2.0,
+            "effectiveFrom": "2026-03-14",
+            "sourceUrl": "https://contoso.example/agreement",
+            "note": "Input rate only",
+        },
+    )
+    assert response.status_code == 201, response.text
+
+    alice = harness.get("/api/v1/me/usage", period="30d")
+
+    chat = next(row for row in alice["byResource"] if row["entitlementId"] == "grant-alice")
+    # Five days the seed prices, and five nothing can, which are left out and said so.
+    assert chat["estimatedCost"] == pytest.approx(5 * 3.5)
+    assert chat["costNote"].startswith("Part of this usage has no price.")
+    assert "no output price" in chat["costNote"]
+    days = {point["date"]: point["estimatedCost"] for point in alice["timeline"]
+            if point["entitlementId"] == "grant-alice"}
+    assert days["2026-03-13"] == pytest.approx(3.5)
+    assert days["2026-03-14"] is None
+    assert alice["totals"]["costExcludedResources"] == 2
+
+    # With the same price from 9 March too, nothing prices any of her calls, so there's no cost.
+    earlier = harness.client.post(
+        "/api/v1/pricing/prices",
+        json={
+            "cloud": "commercial",
+            "publisher": "OpenAI",
+            "model": "gpt-4o",
+            "version": "2024-11-20",
+            "deploymentType": "GlobalStandard",
+            "inputPerMillion": 2.0,
+            "effectiveFrom": "2026-03-09",
+            "sourceUrl": "https://contoso.example/agreement",
+            "note": "Input rate only, from earlier",
+        },
+    )
+    assert earlier.status_code == 201, earlier.text
+    alice = harness.get("/api/v1/me/usage", period="30d")
+    chat = next(row for row in alice["byResource"] if row["entitlementId"] == "grant-alice")
+    assert chat["estimatedCost"] is None
+    assert chat["costNote"] == "The price lists no output price for this model."
+    # Her uncalled Analysts grant is priced at nothing; the total says what it leaves out.
+    assert alice["totals"]["estimatedCost"] == 0.0
+    assert alice["totals"]["costExcludedResources"] == 2
 
 
 async def test_an_administrator_price_changes_cost_from_its_date(harness: Harness) -> None:

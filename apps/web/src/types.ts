@@ -2332,6 +2332,8 @@ export interface EndpointPricingView {
   deployments: DeploymentPricingView[]
   updatedBy?: string | null
   updatedAt?: string | null
+  /** The saved facts' version, sent back with an update. Null until any are saved. */
+  version?: string | null
 }
 
 export interface EndpointPricingUpdate {
@@ -2342,4 +2344,6 @@ export interface EndpointPricingUpdate {
     deploymentType?: string | null
     capacity?: number | null
   }>
+  /** The version the form was opened on. A save over someone else's newer change is refused. */
+  version?: string | null
 }
