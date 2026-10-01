@@ -148,7 +148,10 @@ def _validate(
         if not grant.entitlement_id.strip() or grant.entitlement_id.casefold() in seen:
             raise ValidationError("MCP access grants must have nonempty, unambiguous identities.")
         seen.add(grant.entitlement_id.casefold())
-        _validate_cost_center(grant.cost_center_id, grant.cost_center_code, cost_centers)
+        if grant.enabled:
+            # Only enabled grants are compiled; a disabled one carried forward may keep a code
+            # its cost center has since changed or given up.
+            _validate_cost_center(grant.cost_center_id, grant.cost_center_code, cost_centers)
         if not _GUID.fullmatch(grant.object_id):
             raise ValidationError("MCP access grants require GUID object IDs.")
         if grant.enforcement is not None and grant.enforcement.tokens is not None:
@@ -165,7 +168,12 @@ def _validate(
                 "Governed request rate renewal must not exceed 300 seconds. Use a call quota "
                 "for longer periods."
             )
-    _validate_pools(snapshot.pools, cost_centers, tokens_allowed=False)
+    _validate_pools(
+        snapshot.pools,
+        cost_centers,
+        tokens_allowed=False,
+        codes={grant.cost_center_code.casefold() for grant in snapshot.grants if grant.enabled},
+    )
 
 
 def _runtime_origin_lines() -> list[str]:

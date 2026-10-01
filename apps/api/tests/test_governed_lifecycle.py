@@ -18,6 +18,7 @@ from apim_double import (
 )
 from azure.core.credentials_async import AsyncTokenCredential
 from conftest import build_endpoint_service, build_gateway_service, reviewed_unpublish
+from mosaic_api.cost_centers import CostCenterUpdate
 from mosaic_api.domain import (
     BindingSource,
     CatalogEntryUpdate,
@@ -46,6 +47,7 @@ from mosaic_api.domain import (
     PublishStepStatus,
     RequestEnforcement,
     TokenEnforcement,
+    general_cost_center_id,
     model_access_subscription_name,
 )
 from mosaic_api.errors import ConflictError, ValidationError
@@ -515,6 +517,71 @@ async def test_failed_activation_never_retains_new_or_revoked_entra_access(
     assert f"subscriptions/{harness.subscription(newcomer)}" not in harness.apim.written
     assert not harness.apim.write_paths("DELETE")
     assert await harness.gateways.get_publication_lock(TENANT, publication.id) is None
+
+
+async def test_failed_activation_restores_the_safe_snapshot_when_grants_have_no_key(
+    harness: Harness,
+) -> None:
+    # Keys are created on request, so recovery must not mistake a grant without one for a lost
+    # key and shut the whole model off.
+    keyed = await harness.grant(APPLICATION, application=True)
+    keyless = await harness.grant()
+    revoked = await harness.grant(NEW_USER)
+    await harness.govern()
+    assert (await harness.apply()).status == PublishRunStatus.SUCCEEDED
+    await harness.key(keyed)
+    await harness.grants.update_entitlement(ACTOR, revoked.id, EntitlementUpdate(enabled=False))
+    harness.apim.fail_activation = f"subscriptions/{harness.subscription(keyed)}"
+    harness.apim.activation_failures = MAX_ATTEMPTS
+
+    assert (await harness.apply()).status == PublishRunStatus.FAILED
+
+    publication = await harness.service.get_publication(ACTOR, harness.publication_id)
+    assert publication.access_state == "failed"
+    assert publication.applied_access
+    assert publication.applied_access.settings == ModelAccessSettings()
+    assert {g.entitlement_id for g in publication.applied_access.grants if g.enabled} == {
+        keyed.id,
+        keyless.id,
+    }
+    assert (
+        harness.apim.written[f"subscriptions/{harness.subscription(keyed)}"]["properties"][
+            "state"
+        ]
+        == "active"
+    )
+    # Recovery never creates a key.
+    for grant in (keyless, revoked):
+        assert f"subscriptions/{harness.subscription(grant)}" not in harness.apim.written
+    assert await harness.gateways.get_publication_lock(TENANT, publication.id) is None
+
+
+async def test_recoding_a_cost_center_after_deleting_an_applied_grant_still_plans(
+    harness: Harness,
+) -> None:
+    kept = await harness.grant()
+    removed = await harness.grant(APPLICATION, application=True)
+    await harness.govern()
+    assert (await harness.apply()).status == PublishRunStatus.SUCCEEDED
+    await harness.grants.update_entitlement(ACTOR, removed.id, EntitlementUpdate(enabled=False))
+    assert (await harness.apply()).status == PublishRunStatus.SUCCEEDED
+    # Without a key it can be deleted, and later snapshots carry it forward, disabled, with the
+    # code its cost center had then.
+    await harness.grants.delete_entitlement(ACTOR, removed.id)
+    await harness.cost_centers.update_cost_center(
+        ACTOR, general_cost_center_id(TENANT), CostCenterUpdate(code="gen")
+    )
+
+    assert (await harness.apply()).status == PublishRunStatus.SUCCEEDED
+
+    publication = await harness.service.get_publication(ACTOR, harness.publication_id)
+    assert publication.applied_access
+    grants = {
+        grant.entitlement_id: (grant.enabled, grant.cost_center_code)
+        for grant in publication.applied_access.grants
+    }
+    assert grants[kept.id] == (True, "gen")
+    assert grants[removed.id] == (False, "general")
 
 
 async def test_restricting_limits_does_not_restore_old_permissions_on_failure(

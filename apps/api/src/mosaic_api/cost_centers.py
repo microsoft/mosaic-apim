@@ -48,6 +48,10 @@ _EMAIL = r"[^@\s]+@[^@\s]+\.[^@\s]+"
 MAX_OWNERS = 20
 MAX_MEMBERS = 500
 MAX_LIMITS = 200
+# The lease every change to cost centers, the tenant default or a principal's default holds, so
+# deleting a cost center can't race a change that makes it someone's default.
+COST_CENTERS_SCOPE = "cost-centers"
+COST_CENTERS_BUSY = "Another cost center change is in progress. Try again in a moment."
 
 
 def normalize_code(value: str) -> str:

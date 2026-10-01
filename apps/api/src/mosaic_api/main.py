@@ -286,19 +286,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.environment_repository = environment_repository
         app.state.mcp_endpoint_repository = mcp_repository
         app.state.cost_center_repository = cost_center_repository
-        app.state.directory_service = DirectoryService(
-            repository,
-            gateway_repository=gateway_repository,
-            entitlement_repository=entitlement_repository,
-            directory_lookup=directory_lookup,
-            group_claims_enabled=app_settings.entra_group_claims,
-            cost_center_repository=cost_center_repository,
-        )
-        app.state.gateway_service = gateway_service
-        app.state.model_endpoint_service = model_endpoint_service
-        app.state.publishing_service = publishing_service
-        app.state.mcp_publishing_service = mcp_publishing_service
-        app.state.mcp_endpoint_service = mcp_endpoint_service
         entitlement_service = EntitlementService(
             entitlement_repository,
             directory_repository=repository,
@@ -307,6 +294,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             directory_lookup=directory_lookup,
             cost_center_repository=cost_center_repository,
         )
+        app.state.directory_service = DirectoryService(
+            repository,
+            gateway_repository=gateway_repository,
+            entitlement_repository=entitlement_repository,
+            directory_lookup=directory_lookup,
+            group_claims_enabled=app_settings.entra_group_claims,
+            cost_center_repository=cost_center_repository,
+            cost_center_checks=entitlement_service,
+        )
+        app.state.gateway_service = gateway_service
+        app.state.model_endpoint_service = model_endpoint_service
+        app.state.publishing_service = publishing_service
+        app.state.mcp_publishing_service = mcp_publishing_service
+        app.state.mcp_endpoint_service = mcp_endpoint_service
         app.state.entitlement_service = entitlement_service
         app.state.cost_center_service = CostCenterService(
             cost_center_repository,

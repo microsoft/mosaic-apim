@@ -1139,14 +1139,17 @@ class UsageService:
     ) -> list[CostCenterUsage]:
         """Each of the caller's cost centers' month so far, totalled over everyone's calls.
 
-        Only cost centers the caller holds a grant under, and only totals: the figures are summed
-        over every grant charged to the cost center, so nothing in them is any one person's.
+        Only cost centers the caller holds an enabled grant under, and only totals: the figures
+        are summed over every grant charged to the cost center, so nothing in them is any one
+        person's. Someone whose grants were turned off or revoked no longer sees its totals.
         """
 
         if self._grants is None:
             return []
         mine: dict[str, list[ResolvedEntitlement]] = defaultdict(list)
         for item in entitlements:
+            if not item.entitlement.enabled or item.entitlement.revocation is not None:
+                continue
             mine[item.entitlement.cost_center_id].append(item)
         if not mine:
             return []

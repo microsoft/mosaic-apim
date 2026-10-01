@@ -2184,9 +2184,26 @@ class PublishingService:
                         state="suspended",
                     )
                 else:
+                    # A grant's key keeps its name, which ends with its cost center's code.
+                    grant = next(
+                        (
+                            item
+                            for item in (
+                                publication.applied_access.grants
+                                if publication.applied_access
+                                else []
+                            )
+                            if item.subscription_name == resource.name
+                        ),
+                        None,
+                    )
                     await writer.put_api_subscription(
                         resource.name,
-                        display_name=publication.display_name,
+                        display_name=(
+                            grant_key_display_name(grant.display_name, grant.cost_center_code)
+                            if grant
+                            else publication.display_name
+                        ),
                         api_name=publication.api_name,
                         state="suspended",
                     )
@@ -2303,19 +2320,21 @@ class PublishingService:
                     for grant in candidate.grants:
                         if (
                             not grant.enabled
+                            or not grant.keys_allowed
                             or not candidate.settings.keys_enabled
                             or grant.subscription_name is None
                         ):
                             continue
+                        # Keys are created on request, so most grants own none. Recovery only
+                        # reactivates keys the publication owns and that still exist; it never
+                        # creates one.
                         if not self._owns(
                             actual, PublishedResourceKind.SUBSCRIPTION, grant.subscription_name
                         ):
-                            raise ConflictError(
-                                "A previously active subscription lost its ownership"
-                            )
+                            continue
                         live = await client.get_subscription(grant.subscription_name)
                         if live is None:
-                            raise ConflictError("A previously active subscription no longer exists")
+                            continue
                         self._validate_subscription_scope(
                             publication, writer.resource, grant.subscription_name, live
                         )

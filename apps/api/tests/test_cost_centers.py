@@ -28,6 +28,7 @@ from mosaic_api.domain import (
     AccessRequestApproval,
     AccessRequestCreate,
     AuditEvent,
+    Entitlement,
     EntitlementCreate,
     EntitlementResource,
     EntitlementSubject,
@@ -44,6 +45,7 @@ from mosaic_api.repositories import InMemoryCostCenterRepository, InMemoryGatewa
 from mosaic_api.services.cost_centers import CostCenterService
 from mosaic_api.services.directory import Actor
 from mosaic_api.services.entitlements import EntitlementService
+from mosaic_api.services.model_access import cost_center_intent, entitlement_intent_digest
 
 TENANT = "tenant-test"
 ADMIN = Actor(object_id="local-admin", tenant_id=TENANT)
@@ -270,6 +272,31 @@ def test_grant_identity_includes_the_cost_center() -> None:
     assert entitlement_id(TENANT, subject, RESOURCE, GENERAL) == entitlement_id(
         TENANT, subject, RESOURCE, GENERAL
     )
+
+
+def test_turning_keys_off_changes_only_the_intent_of_grants_that_can_have_a_key() -> None:
+    person = _person("principal", default=GENERAL)
+    allowed = CostCenterBook(TENANT, [_cost_center(GENERAL)], None)
+    off = CostCenterBook(
+        TENANT, [_cost_center(GENERAL).model_copy(update={"keys_allowed": False})], None
+    )
+
+    def digests(resource: EntitlementResource, subject_kind: str = "user") -> set[str]:
+        grant = Entitlement(
+            id="grant",
+            tenant_id=TENANT,
+            subject=EntitlementSubject(kind=subject_kind, id="principal"),
+            resource=resource,
+            cost_center_id=GENERAL,
+        )
+        return {
+            entitlement_intent_digest(grant, person, cost_center_intent(grant, person, book))
+            for book in (allowed, off)
+        }
+
+    assert len(digests(RESOURCE)) == 2
+    assert len(digests(EntitlementResource(kind="mcpServer", id="mcp_seed"))) == 1
+    assert len(digests(RESOURCE, "securityGroup")) == 1
 
 
 # -- administering cost centers -----------------------------------------------------------------
@@ -663,3 +690,84 @@ async def test_removing_someone_who_never_charged_it_is_not_found(client: TestCl
 
     with pytest.raises(NotFoundError):
         await _cost_centers(client).remove_member(ADMIN, research["id"], person["id"])
+
+
+# -- losing the right to charge another way -----------------------------------------------------
+
+
+async def test_moving_a_default_revokes_grants_charged_only_through_it(client: TestClient) -> None:
+    await _seed_model(client)
+    research = _create(client, "Research", "RES")
+    person = _principal(client, PERSON, defaultCostCenterId=research["id"])
+    listed = _principal(client, OTHER, defaultCostCenterId=research["id"])
+    _ok(client.put(f"/api/v1/cost-centers/{research['id']}/members/{listed['id']}"))
+    charged = _ok(_grant(client, person, research["id"]), 201)
+    kept = _ok(_grant(client, listed, research["id"]), 201)
+
+    for principal in (person, listed):
+        _ok(
+            client.patch(
+                f"/api/v1/principals/{principal['id']}", json={"defaultCostCenterId": GENERAL}
+            )
+        )
+
+    revoked = _ok(client.get(f"/api/v1/entitlements/{charged['id']}"))
+    assert revoked["enabled"] is False
+    assert revoked["revocation"]["costCenterId"] == research["id"]
+    # A listed member still charges it as a member.
+    assert _ok(client.get(f"/api/v1/entitlements/{kept['id']}"))["enabled"] is True
+
+
+async def test_moving_the_tenant_default_revokes_grants_charged_only_through_it(
+    client: TestClient,
+) -> None:
+    await _seed_model(client)
+    research = _create(client, "Research", "RES")
+    # Onboarded while General was the tenant default, so General is their own default too.
+    onboarded = _principal(client, PERSON)
+    elsewhere = _principal(client, OTHER, defaultCostCenterId=research["id"])
+    _ok(client.put(f"/api/v1/cost-centers/{research['id']}/members/{elsewhere['id']}"))
+    own_default = _ok(_grant(client, onboarded, GENERAL), 201)
+    through_tenant_default = _ok(_grant(client, elsewhere, GENERAL), 201)
+
+    _ok(client.put("/api/v1/cost-center-settings", json={"defaultCostCenterId": research["id"]}))
+
+    assert _ok(client.get(f"/api/v1/entitlements/{own_default['id']}"))["enabled"] is True
+    revoked = _ok(client.get(f"/api/v1/entitlements/{through_tenant_default['id']}"))
+    assert revoked["enabled"] is False
+    assert revoked["revocation"]["costCenterId"] == GENERAL
+
+
+async def test_a_principal_a_cost_center_lists_is_not_deleted(client: TestClient) -> None:
+    research = _create(client, "Research", "RES")
+    group = _principal(client, GROUP, kind="securityGroup")
+    _ok(client.put(f"/api/v1/cost-centers/{research['id']}/members/{group['id']}"))
+
+    refused = client.delete(f"/api/v1/principals/{group['id']}")
+    assert refused.status_code == 409
+    assert refused.json()["details"] == {
+        "reason": "costCenterMember",
+        "costCenterIds": [research["id"]],
+    }
+
+    _ok(client.delete(f"/api/v1/cost-centers/{research['id']}/members/{group['id']}"))
+    _ok(client.delete(f"/api/v1/principals/{group['id']}"), 204)
+
+
+async def test_turning_a_grant_back_on_checks_its_cost_center_again(client: TestClient) -> None:
+    await _seed_model(client)
+    research = _create(client, "Research", "RES")
+    person = _principal(client, PERSON)
+    _ok(client.put(f"/api/v1/cost-centers/{research['id']}/members/{person['id']}"))
+    granted = _ok(_grant(client, person, research["id"], enabled=False), 201)
+    # Their membership ends without the grant being revoked, as a concurrent change could.
+    repository: InMemoryCostCenterRepository = client.app.state.cost_center_repository
+    current = await repository.get_cost_center(TENANT, research["id"])
+    assert current is not None
+    await repository.save_cost_center(current.model_copy(update={"members": []}), _audit())
+
+    refused = client.patch(f"/api/v1/entitlements/{granted['id']}", json={"enabled": True})
+
+    assert refused.status_code == 422
+    assert refused.json()["details"]["reason"] == "notACostCenterMember"
+    assert _ok(client.get(f"/api/v1/entitlements/{granted['id']}"))["enabled"] is False

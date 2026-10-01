@@ -501,7 +501,11 @@ def _validate(publication: Publication, snapshot: ModelAccessSnapshot) -> None:
                     "Governed access grants must have nonempty, unambiguous identities."
                 )
             seen[kind].add(identity.casefold())
-        _validate_cost_center(grant.cost_center_id, grant.cost_center_code, seen)
+        if grant.enabled:
+            # Only enabled grants are compiled. A disabled grant carried forward from an earlier
+            # apply may keep a code its cost center has since changed, or one a deleted cost
+            # center gave up, and must not stop the plan that removes it.
+            _validate_cost_center(grant.cost_center_id, grant.cost_center_code, seen)
         if grant.subscription_name is not None:
             if (
                 not grant.subscription_name.strip()
@@ -539,7 +543,12 @@ def _validate(publication: Publication, snapshot: ModelAccessSnapshot) -> None:
             "Governed access replaces the standard subscription counter with a stable grant "
             "counter; custom counter expressions are not supported."
         )
-    _validate_pools(snapshot.pools, seen, tokens_allowed=metered)
+    _validate_pools(
+        snapshot.pools,
+        seen,
+        tokens_allowed=metered,
+        codes={grant.cost_center_code.casefold() for grant in snapshot.grants if grant.enabled},
+    )
 
 
 def _validate_cost_center(cost_center_id: str, code: str, seen: dict[str, set[str]]) -> None:
@@ -567,14 +576,21 @@ def _validate_cost_center(cost_center_id: str, code: str, seen: dict[str, set[st
 
 
 def _validate_pools(
-    pools: Sequence[AppliedCostCenterPool], seen: dict[str, set[str]], *, tokens_allowed: bool
+    pools: Sequence[AppliedCostCenterPool],
+    seen: dict[str, set[str]],
+    *,
+    tokens_allowed: bool,
+    codes: set[str],
 ) -> None:
+    """Check each pool; ``codes`` are the enabled grants' codes, the pools the policy compiles."""
+
     pooled: set[str] = set()
     for pool in pools:
         if not pool.cost_center_code or pool.cost_center_id in pooled:
             raise ValidationError("Each cost center has at most one pooled quota per publication.")
         pooled.add(pool.cost_center_id)
-        _validate_cost_center(pool.cost_center_id, pool.cost_center_code, seen)
+        if pool.cost_center_code.casefold() in codes:
+            _validate_cost_center(pool.cost_center_id, pool.cost_center_code, seen)
         if pool.monthly_tokens is not None and not tokens_allowed:
             raise ValidationError(
                 "This publication can't be token-metered on its gateway's tier, so a cost "

@@ -6,6 +6,8 @@ from typing import Any
 import structlog
 
 from mosaic_api.cost_centers import (
+    COST_CENTERS_BUSY,
+    COST_CENTERS_SCOPE,
     CostCenter,
     CostCenterBook,
     CostCenterCreate,
@@ -40,9 +42,6 @@ from mosaic_api.services.directory import Actor
 from mosaic_api.services.model_access import scope_lease
 
 logger = structlog.get_logger()
-
-COST_CENTERS_SCOPE = "cost-centers"
-COST_CENTERS_BUSY = "Another cost center change is in progress. Try again in a moment."
 
 
 async def load_book(repository: CostCenterRepository | None, tenant_id: str) -> CostCenterBook:
@@ -455,12 +454,9 @@ class CostCenterService:
                     continue
                 await self._entitlements.revoke_for_cost_center(actor, grant.id, current.id)
                 revoked.append(grant.id)
-            # People may have charged it only through the group that left.
-            if (
-                explicit
-                and principal is not None
-                and principal.kind == PrincipalKind.SECURITY_GROUP
-            ):
+            # People may have charged it only through the group that left. A member whose
+            # principal is gone may have been one, so it's checked too.
+            if explicit and (principal is None or principal.kind == PrincipalKind.SECURITY_GROUP):
                 revoked.extend(await self._entitlements.recheck_cost_center(actor, current.id))
         logger.info(
             "cost_center_member_removed",
@@ -474,31 +470,54 @@ class CostCenterService:
     async def update_settings(
         self, actor: Actor, request: CostCenterSettingsUpdate
     ) -> CostCenterSettings:
-        book = await self.book(actor.tenant_id)
-        if book.get(request.default_cost_center_id) is None:
-            raise ValidationError(
-                "No cost center has that ID",
-                details={"defaultCostCenterId": request.default_cost_center_id},
+        """Name the tenant's default cost center.
+
+        Everyone may charge the tenant default, so moving it off a cost center revokes the grants
+        under that cost center whose subjects may charge it no other way: as a listed member,
+        through a listed security group, or as their own default.
+        """
+
+        async with scope_lease(
+            self._gateways, actor.tenant_id, COST_CENTERS_SCOPE, busy_message=COST_CENTERS_BUSY
+        ):
+            book = await self.book(actor.tenant_id)
+            if book.get(request.default_cost_center_id) is None:
+                raise ValidationError(
+                    "No cost center has that ID",
+                    details={"defaultCostCenterId": request.default_cost_center_id},
+                )
+            await self._stored(actor, request.default_cost_center_id)
+            current = await self._repository.get_settings(actor.tenant_id)
+            previous = tenant_default_id(current, actor.tenant_id)
+            settings = (current or default_settings(actor.tenant_id)).model_copy(
+                update={
+                    "default_cost_center_id": request.default_cost_center_id,
+                    "updated_at": utc_now(),
+                    "etag": current.etag if current else None,
+                }
             )
-        await self._stored(actor, request.default_cost_center_id)
-        current = await self._repository.get_settings(actor.tenant_id)
-        settings = (current or default_settings(actor.tenant_id)).model_copy(
-            update={
-                "default_cost_center_id": request.default_cost_center_id,
-                "updated_at": utc_now(),
-                "etag": current.etag if current else None,
-            }
-        )
-        await self._repository.save_settings(
-            settings,
-            self._audit(
-                actor,
-                "costCenter.settingsUpdated",
-                settings.id,
-                {"defaultCostCenterId": request.default_cost_center_id},
-                resource_type="costCenterSettings",
-            ),
-        )
+            await self._repository.save_settings(
+                settings,
+                self._audit(
+                    actor,
+                    "costCenter.settingsUpdated",
+                    settings.id,
+                    {
+                        "defaultCostCenterId": request.default_cost_center_id,
+                        "previousDefaultCostCenterId": previous,
+                    },
+                    resource_type="costCenterSettings",
+                ),
+            )
+        if previous != request.default_cost_center_id:
+            revoked = await self._entitlements.recheck_cost_center(actor, previous)
+            logger.info(
+                "cost_center_tenant_default_changed",
+                previous_cost_center_id=previous,
+                cost_center_id=request.default_cost_center_id,
+                revoked_grants=len(revoked),
+                tenant_id=actor.tenant_id,
+            )
         return await self.get_settings(actor)
 
     # -- the caller's own ---------------------------------------------------------------------

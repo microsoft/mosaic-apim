@@ -1,8 +1,10 @@
 from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
+from typing import Protocol
 from uuid import UUID
 
+from mosaic_api.cost_centers import COST_CENTERS_BUSY, COST_CENTERS_SCOPE
 from mosaic_api.domain import (
     AuditEvent,
     DirectoryMemberPage,
@@ -31,7 +33,11 @@ from mosaic_api.repositories import (
     EntitlementRepository,
     GatewayRepository,
 )
-from mosaic_api.services.model_access import entitlement_publication, publication_lock
+from mosaic_api.services.model_access import (
+    entitlement_publication,
+    publication_lock,
+    scope_lease,
+)
 
 
 @dataclass(frozen=True)
@@ -46,6 +52,14 @@ class Actor:
     groups_overage: bool = False
 
 
+class CostCenterChecks(Protocol):
+    """Revokes grants whose subjects may no longer charge their cost center; see ADR 0021."""
+
+    async def recheck_cost_center(
+        self, actor: Actor, cost_center_id: str, *, subject_id: str | None = None
+    ) -> list[str]: ...
+
+
 class DirectoryService:
     def __init__(
         self,
@@ -56,6 +70,7 @@ class DirectoryService:
         directory_lookup: DirectoryLookup | None = None,
         group_claims_enabled: bool = True,
         cost_center_repository: CostCenterRepository | None = None,
+        cost_center_checks: CostCenterChecks | None = None,
     ) -> None:
         self._repository = repository
         self._gateways = gateway_repository
@@ -63,6 +78,9 @@ class DirectoryService:
         self._directory = directory_lookup
         self._group_claims_enabled = group_claims_enabled
         self._cost_centers = cost_center_repository
+        # The EntitlementService, which revokes a principal's grants under a former default
+        # cost center it may no longer charge.
+        self._cost_center_checks = cost_center_checks
 
     async def _onboarding_default(
         self, actor: Actor, kind: PrincipalKind, requested: str | None
@@ -267,8 +285,33 @@ class DirectoryService:
     async def update_principal(
         self, actor: Actor, principal_id: str, request: PrincipalUpdate
     ) -> Principal:
-        async with self._principal_mutation(actor, principal_id):
-            return await self._update_principal(actor, principal_id, request)
+        async with AsyncExitStack() as stack:
+            await stack.enter_async_context(self._principal_mutation(actor, principal_id))
+            if self._gateways is not None and (
+                {"default_cost_center_id", "kind"} & request.model_fields_set
+            ):
+                # Deleting a cost center checks, under this lease, that it's no one's default.
+                await stack.enter_async_context(
+                    scope_lease(
+                        self._gateways,
+                        actor.tenant_id,
+                        COST_CENTERS_SCOPE,
+                        busy_message=COST_CENTERS_BUSY,
+                    )
+                )
+            before = await self.get_principal(actor, principal_id)
+            saved = await self._update_principal(actor, principal_id, request)
+        former = before.default_cost_center_id
+        if (
+            former is not None
+            and former != saved.default_cost_center_id
+            and self._cost_center_checks is not None
+        ):
+            # They may have charged their former default only because it was theirs.
+            await self._cost_center_checks.recheck_cost_center(
+                actor, former, subject_id=saved.id
+            )
+        return saved
 
     async def _update_principal(
         self, actor: Actor, principal_id: str, request: PrincipalUpdate
@@ -356,6 +399,18 @@ class DirectoryService:
                 "Remove this principal from all groups before deleting it",
                 details={"membershipCount": len(memberships)},
             )
+        if self._cost_centers is not None:
+            listing = sorted(
+                item.id
+                for item in await self._cost_centers.list_cost_centers(actor.tenant_id)
+                if principal_id in item.member_ids()
+            )
+            if listing:
+                # Removing it from each cost center first revokes what relied on it there.
+                raise ConflictError(
+                    "Remove this principal from its cost centers before deleting it",
+                    details={"reason": "costCenterMember", "costCenterIds": listing},
+                )
         await self._repository.delete_principal(
             principal,
             self._audit_event(actor, "principal.deleted", "principal", principal_id),

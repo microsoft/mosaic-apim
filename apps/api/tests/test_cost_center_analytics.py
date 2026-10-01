@@ -169,3 +169,20 @@ async def test_a_member_sees_their_cost_centers_total_and_no_one_elses_use(
     harness.sign_in(BOB, ["User"], frozenset())
     bob = harness.get("/api/v1/me/usage", period="30d")
     assert [item["costCenter"]["code"] for item in bob["costCenters"]] == ["RES"]
+
+
+async def test_someone_whose_grant_is_off_no_longer_sees_its_cost_centers_total(
+    harness: Harness,
+) -> None:
+    await _charge_research(harness)
+    entitlements = harness.state.entitlement_repository
+    current = await entitlements.get_entitlement(TENANT, "grant-bob")
+    assert current is not None
+    await entitlements.save_entitlement(
+        current.model_copy(update={"enabled": False}), _audit("entitlement")
+    )
+    harness.sign_in(BOB, ["User"], frozenset())
+
+    report = harness.get("/api/v1/me/usage", period="30d")
+
+    assert report["costCenters"] == []

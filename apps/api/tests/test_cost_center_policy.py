@@ -414,6 +414,45 @@ def test_codes_must_be_valid_and_name_exactly_one_cost_center(
         render_governed_policy(_publication(), _snapshot(grants=grants))
 
 
+def test_a_disabled_grant_keeping_an_old_or_reused_code_does_not_block_the_plan() -> None:
+    """A grant gone from desired state is carried forward disabled, with the code it had.
+
+    Its cost center may have changed code since, or been deleted and its code reused. It is never
+    compiled, so it mustn't stop the plan that removes it.
+    """
+
+    general = ("costCenter-general", "gen")
+    current = _grant(1, **_charged(general))
+    recoded = _grant(2, **_charged(GENERAL), enabled=False)
+    reused = _grant(3, cost_center_id="costCenter-deleted", cost_center_code="gen", enabled=False)
+    pool = AppliedCostCenterPool(
+        cost_center_id=general[0], cost_center_code=general[1], monthly_calls=10
+    )
+    fragment = _fragment(_snapshot(grants=[current, recoded, reused], pools=[pool]))
+    assert [value.split("|")[1] for value in _token_returns(fragment)] == ["gen"]
+
+    _mcp_render(
+        _mcp_publication(),
+        _mcp_snapshot(
+            grants=[
+                _mcp_grant(1, **_charged(general)),
+                _mcp_grant(2, **_charged(GENERAL), enabled=False),
+                _mcp_grant(
+                    3, cost_center_id="costCenter-deleted", cost_center_code="gen", enabled=False
+                ),
+            ],
+            pools=[pool],
+        ),
+    )
+
+    # Enabled grants are still held to one code per cost center.
+    with pytest.raises(ValidationError, match="exactly one code"):
+        render_governed_policy(
+            _publication(),
+            _snapshot(grants=[current, reused.model_copy(update={"enabled": True})]),
+        )
+
+
 def test_keys_only_publications_still_select_by_key_and_refuse_a_mismatched_header() -> None:
     fragment = _fragment(
         _snapshot(

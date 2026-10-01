@@ -13,6 +13,7 @@ from mosaic_api.domain import (
     BindingSource,
     Entitlement,
     EntitlementEnforcement,
+    EntitlementResourceKind,
     EntitlementRuntime,
     EntitlementSubjectKind,
     ModelAccessGrant,
@@ -69,12 +70,15 @@ class CostCenterIntent:
     # The cost center's per-person limits, when the grant sets none of its own.
     inherited: EntitlementEnforcement | None
     pool: PooledQuota | None
+    # Whether the grant can have a key: a direct grant on a model API. Only then does turning
+    # keys on or off change what its policy compiles.
+    keyed: bool = True
 
     def payload(self) -> dict[str, Any]:
         return {
             "id": self.cost_center_id,
             "code": self.code.casefold(),
-            "keysAllowed": self.keys_allowed,
+            **({"keysAllowed": self.keys_allowed} if self.keyed else {}),
             "default": self.default_for_subject,
             "inherited": self.inherited.model_dump(mode="json") if self.inherited else None,
             "pool": self.pool.model_dump(mode="json") if self.pool else None,
@@ -109,6 +113,7 @@ def cost_center_intent(
             else None
         ),
         pool=limit.pool if limit is not None else None,
+        keyed=direct and entitlement.resource.kind == EntitlementResourceKind.MODEL_API,
     )
 
 

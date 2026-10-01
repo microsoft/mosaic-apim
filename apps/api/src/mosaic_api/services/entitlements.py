@@ -1002,8 +1002,10 @@ class EntitlementService:
         entitlement = await self.get_entitlement(actor, entitlement_ref)
         async with self._mutation(entitlement):
             saved = await self._update_entitlement(actor, entitlement_ref, request)
-        if entitlement.revocation is not None and saved.revocation is None:
-            saved = await self._revoke_if_ineligible(actor, saved)
+        if saved.enabled and not entitlement.enabled:
+            saved = await self._revoke_if_ineligible(
+                actor, saved, group_principal_ids=await self._recorded_groups(actor, saved.id)
+            )
         return await self._decorate(saved)
 
     async def _update_entitlement(
@@ -1035,15 +1037,16 @@ class EntitlementService:
         # nullable and keep their clear-on-null behaviour.
         if changes.get("enabled") is None:
             changes.pop("enabled", None)
-        if changes.get("enabled") is True and entitlement.revocation is not None:
-            # Revoked when its subject left the cost center: it can come back only once the
-            # subject may charge the cost center again.
+        if changes.get("enabled") is True and not entitlement.enabled:
+            # A grant comes back on only while its subject may charge its cost center, whether it
+            # was revoked when the subject left it or turned off by hand before they did.
             book = await self.cost_center_book(actor.tenant_id)
             await self._require_may_charge(
                 actor,
                 entitlement.subject,
                 self._require_cost_center(book, entitlement.cost_center_id),
                 book,
+                group_principal_ids=await self._recorded_groups(actor, entitlement.id),
             )
             changes["revocation"] = None
         updated = Entitlement.model_validate(
@@ -1099,39 +1102,54 @@ class EntitlementService:
         )
         return await self.revoke_for_cost_center(actor, saved.id, saved.cost_center_id)
 
-    async def recheck_cost_center(self, actor: Actor, cost_center_id: str) -> list[str]:
-        """Revoke direct grants under a cost center whose subjects may no longer charge it.
+    async def _recorded_group_map(self, tenant_id: str) -> dict[str, list[str]] | None:
+        """Without Microsoft Graph, the security groups each approved request recorded, by grant.
 
-        Run after a security group leaves the cost center, since people may have charged it only
-        through that group. Microsoft Graph says which listed groups each subject is still in.
-        Without it, a grant keeps only the groups its approved request recorded from the
-        requester's token, and a grant nothing proves eligible is revoked: this fails closed.
+        None when Graph can say which groups a subject is in now.
         """
 
-        recorded: dict[str, list[str]] = {}
-        if self._directory_lookup is None:
-            recorded = {
-                item.granted_entitlement_id: item.cost_center_group_ids
-                for item in await self._repository.list_access_requests(
-                    actor.tenant_id, state=str(AccessRequestState.APPROVED)
-                )
-                if item.granted_entitlement_id
-            }
+        if self._directory_lookup is not None:
+            return None
+        return {
+            item.granted_entitlement_id: item.cost_center_group_ids
+            for item in await self._repository.list_access_requests(
+                tenant_id, state=str(AccessRequestState.APPROVED)
+            )
+            if item.granted_entitlement_id
+        }
+
+    async def _recorded_groups(self, actor: Actor, entitlement_id: str) -> list[str] | None:
+        recorded = await self._recorded_group_map(actor.tenant_id)
+        return None if recorded is None else recorded.get(entitlement_id, [])
+
+    async def recheck_cost_center(
+        self, actor: Actor, cost_center_id: str, *, subject_id: str | None = None
+    ) -> list[str]:
+        """Revoke grants under a cost center whose subjects may no longer charge it.
+
+        Run whenever the right to charge it may have narrowed without naming the grants: a
+        security group leaving it, a principal's default moving off it, or the tenant default
+        moving off it. ``subject_id`` limits the check to one subject's grants. Microsoft Graph
+        says which listed groups each subject is still in. Without it, a grant keeps only the
+        groups its approved request recorded from the requester's token, and a grant nothing
+        proves eligible is revoked: this fails closed.
+        """
+
+        recorded = await self._recorded_group_map(actor.tenant_id)
         revoked: list[str] = []
-        for grant in await self._repository.list_entitlements(actor.tenant_id):
+        for grant in await self._repository.list_entitlements(
+            actor.tenant_id, subject_id=subject_id
+        ):
             if (
                 grant.cost_center_id != cost_center_id
                 or grant.revocation is not None
-                or grant.subject.kind
-                not in {EntitlementSubjectKind.USER, EntitlementSubjectKind.APPLICATION}
+                or grant.subject.kind == EntitlementSubjectKind.GROUP
             ):
                 continue
             result = await self._revoke_if_ineligible(
                 actor,
                 grant,
-                group_principal_ids=(
-                    None if self._directory_lookup is not None else recorded.get(grant.id, [])
-                ),
+                group_principal_ids=None if recorded is None else recorded.get(grant.id, []),
             )
             if result.revocation is not None:
                 revoked.append(grant.id)
