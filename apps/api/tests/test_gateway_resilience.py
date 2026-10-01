@@ -181,9 +181,15 @@ async def test_routing_policy_credentials_are_not_exposed(fake_apim: FakeApim) -
 
     view = await service.policy_view(ACTOR, gateway.id)
     serialized = json.dumps(view.model_dump(mode="json"))
+    routes = [
+        facet.attributes.get("base-url")
+        for document in view.documents
+        for facet in document.facets
+        if facet.element == "set-backend-service"
+    ]
 
     assert "FunctionKeySecret" not in serialized
-    assert "contoso-fn.azurewebsites.net" in serialized
+    assert routes == ["https://contoso-fn.azurewebsites.net/api (parameters hidden)"]
 
 
 def test_sanitize_url_drops_only_the_credential_bearing_parts() -> None:
@@ -204,4 +210,6 @@ def test_backend_routing_facet_hides_query_credentials() -> None:
     serialized = json.dumps([facet.model_dump(mode="json") for facet in analysis.facets])
 
     assert "TopSecret" not in serialized
-    assert "fn.azurewebsites.net" in serialized
+    assert [facet.attributes for facet in analysis.facets] == [
+        {"base-url": "https://fn.azurewebsites.net/api (parameters hidden)"}
+    ]

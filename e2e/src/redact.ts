@@ -146,3 +146,14 @@ export function truncate(text: string, maxChars: number): string {
   if (text.length <= maxChars) return text
   return `${text.slice(0, maxChars)}\n… truncated ${text.length - maxChars} characters`
 }
+
+/**
+ * The error text the live driver's RPC reply carries. An Error keeps its message up to Playwright's log
+ * section. Anything else thrown keeps only its first line, so no stack trace reaches the caller.
+ */
+export function rpcErrorText(error: unknown): string {
+  const message = error instanceof Error
+    ? error.message.split('\n=========================== logs')[0]
+    : String(error).split('\n')[0]
+  return truncate(redact(message), 4_000)
+}

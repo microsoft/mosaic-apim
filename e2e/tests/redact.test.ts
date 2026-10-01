@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { redact, redactErrors, redactUrl, truncate } from '../src/redact.ts'
+import { redact, redactErrors, redactUrl, rpcErrorText, truncate } from '../src/redact.ts'
 
 const jwt = 'eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4ifQ.c2lnbmF0dXJlLXZhbHVlLWhlcmU'
 const apimKey = '0123456789abcdef0123456789abcdef'
@@ -94,4 +94,14 @@ test('keeps browser page URLs readable and hides inline content', () => {
 test('truncates long output with a marker', () => {
   assert.equal(truncate('abcdef', 10), 'abcdef')
   assert.equal(truncate('abcdefghij', 4), 'abcd\n… truncated 6 characters')
+})
+
+test('an RPC error keeps only the first line of a thrown non-Error, redacted', () => {
+  const thrown = `Lookup failed for key ${apimKey}\n    at handler (tools/live.ts:740:11)\n    at Server.<anonymous> (tools/live.ts:744:26)`
+  assert.equal(rpcErrorText(thrown), 'Lookup failed for key [redacted-key]')
+})
+
+test('an RPC error keeps an Error message up to the Playwright log section', () => {
+  const error = new Error('locator.click: Timeout 15000ms exceeded.\nwaiting for button\n=========================== logs ===========================\nnavigated to "https://web.example/"')
+  assert.equal(rpcErrorText(error), 'locator.click: Timeout 15000ms exceeded.\nwaiting for button')
 })
