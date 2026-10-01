@@ -208,6 +208,67 @@
   grid-column: span 2;
 }
 
+.budgetsPanel {
+  grid-column: 1 / -1;
+}
+
+.budgetRows {
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 24px;
+  list-style: none;
+}
+
+.budgetRow {
+  width: 100%;
+  padding: 12px;
+  display: grid;
+  grid-template-columns: minmax(120px, 0.6fr) minmax(0, 1.4fr);
+  align-items: center;
+  gap: 16px;
+  border: 1px solid var(--mosaic-border-soft);
+  border-radius: 8px;
+  background: var(--mosaic-surface);
+  color: var(--mosaic-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.budgetRow:hover {
+  border-color: var(--mosaic-primary);
+}
+
+.budgetRow:focus-visible {
+  outline: 2px solid var(--mosaic-primary);
+  outline-offset: 2px;
+}
+
+.budgetName {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.budgetName strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.budgetName small {
+  color: var(--mosaic-text-muted);
+  font-size: 12px;
+}
+
+.budgetNote {
+  margin-top: 12px;
+  display: block;
+  color: var(--mosaic-text-muted);
+}
+
 .panelHeading {
   display: grid;
   gap: 2px;
@@ -264,11 +325,19 @@
   .volumePanel {
     grid-column: auto;
   }
+
+  .budgetRows {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 760px) {
   .liveGrid,
   .metricGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .budgetRow {
     grid-template-columns: 1fr;
   }
 }

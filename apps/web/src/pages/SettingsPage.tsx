@@ -1,5 +1,5 @@
 import { useMsal } from '@azure/msal-react'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Badge,
   Button,
@@ -15,6 +15,7 @@ import {
   Input,
   Label,
   MessageBar,
+  MessageBarActions,
   MessageBarBody,
   MessageBarTitle,
   Radio,
@@ -47,9 +48,16 @@ import {
   useEnvironmentCatalog,
 } from '../environments'
 import { plural } from '../labels'
+import { formatTimestamp } from '../publication-state'
 import { runtimeConfig } from '../runtime-config'
 import { type ThemePreference, useMosaicTheme } from '../theme-context'
-import type { EnvironmentCatalogView, EnvironmentColor, EnvironmentCreate, EnvironmentUpdate } from '../types'
+import type {
+  EmailSettings,
+  EnvironmentCatalogView,
+  EnvironmentColor,
+  EnvironmentCreate,
+  EnvironmentUpdate,
+} from '../types'
 import styles from './SettingsPage.module.css'
 interface LocalIntegrationSettings {
   supportAlias: string
@@ -616,6 +624,280 @@ function EnvironmentsSettingsSection() {
   )
 }
 
+interface EmailFormState {
+  enabled: boolean
+  endpoint: string
+  sender: string
+}
+
+function emailForm(settings: EmailSettings): EmailFormState {
+  return {
+    enabled: settings.enabled,
+    endpoint: settings.endpoint ?? '',
+    sender: settings.sender ?? '',
+  }
+}
+
+function emailStatus(settings: EmailSettings): {
+  label: string
+  color: 'success' | 'informative' | 'warning'
+} {
+  if (settings.ready) return { label: 'On', color: 'success' }
+  if (settings.endpoint && settings.sender) return { label: 'Off', color: 'informative' }
+  return { label: 'Not set up', color: 'warning' }
+}
+
+function lastTestText(settings: EmailSettings): string {
+  if (!settings.lastTestAt) return 'No test email has been sent.'
+  const when = formatTimestamp(settings.lastTestAt)
+  return settings.lastTestError
+    ? `The last test, ${when}, failed: ${settings.lastTestError}`
+    : `The last test, ${when}, was accepted by Communication Services.`
+}
+
+function errorText(error: unknown, fallback: string): string {
+  return error instanceof Error && error.message ? error.message : fallback
+}
+
+interface Outcome {
+  intent: 'success' | 'error'
+  text: string
+}
+
+function EmailSettingsSection() {
+  const api = useMosaicApi()
+  const queryClient = useQueryClient()
+  const settings = useQuery({ queryKey: ['email-settings'], queryFn: () => api.getEmailSettings() })
+  const [form, setForm] = useState<EmailFormState>({ enabled: false, endpoint: '', sender: '' })
+  const [syncedWith, setSyncedWith] = useState<string | null>(null)
+  const [saveOutcome, setSaveOutcome] = useState<Outcome | null>(null)
+  const [testTo, setTestTo] = useState('')
+  const [testOutcome, setTestOutcome] = useState<Outcome | null>(null)
+  const switchHintId = useId('email-switch-hint-')
+
+  // Reset the form whenever the saved configuration changes, but not when only the last test does.
+  const saved = settings.data ? emailForm(settings.data) : null
+  const savedKey = saved ? `${saved.enabled}|${saved.endpoint}|${saved.sender}` : null
+  if (saved && savedKey !== syncedWith) {
+    setSyncedWith(savedKey)
+    setForm(saved)
+  }
+
+  const save = useMutation({
+    mutationFn: () =>
+      api.saveEmailSettings({
+        enabled: form.enabled,
+        endpoint: form.endpoint.trim() || null,
+        sender: form.sender.trim() || null,
+      }),
+    onSuccess: (updated) => {
+      queryClient.setQueryData(['email-settings'], updated)
+      void queryClient.invalidateQueries({ queryKey: ['budgets'] })
+      setSaveOutcome({
+        intent: 'success',
+        text: updated.ready
+          ? 'Saved. Budget email goes out through this Communication Services resource.'
+          : 'Saved. Budget email stays off until you turn it on.',
+      })
+    },
+    onError: (error) =>
+      setSaveOutcome({ intent: 'error', text: errorText(error, 'The email settings could not be saved.') }),
+  })
+  const test = useMutation({
+    mutationFn: (to: string) => api.sendTestEmail(to),
+    onSuccess: (result) => {
+      void queryClient.invalidateQueries({ queryKey: ['email-settings'] })
+      setTestOutcome(
+        result.sent
+          ? {
+              intent: 'success',
+              text: `Communication Services accepted a test email to ${result.to}. If it doesn't arrive in a few minutes, check the junk folder.`,
+            }
+          : {
+              intent: 'error',
+              text: `Communication Services didn't accept the test email: ${result.error ?? 'no reason was given'}.`,
+            },
+      )
+    },
+    onError: (error) =>
+      setTestOutcome({ intent: 'error', text: errorText(error, 'The test email could not be sent.') }),
+  })
+
+  const dirty =
+    saved != null &&
+    (form.enabled !== saved.enabled ||
+      form.endpoint.trim() !== saved.endpoint ||
+      form.sender.trim() !== saved.sender)
+  const data = settings.data
+  const suggestion =
+    data?.suggestedEndpoint &&
+    data.suggestedSender &&
+    (data.suggestedEndpoint !== form.endpoint.trim() || data.suggestedSender !== form.sender.trim())
+      ? { endpoint: data.suggestedEndpoint, sender: data.suggestedSender }
+      : null
+  const configured = Boolean(saved?.endpoint && saved.sender)
+
+  function update(change: Partial<EmailFormState>) {
+    setForm((current) => ({ ...current, ...change }))
+    setSaveOutcome(null)
+  }
+
+  function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (form.enabled && !(form.endpoint.trim() && form.sender.trim())) {
+      setSaveOutcome({
+        intent: 'error',
+        text: 'Email can be on only with a Communication Services endpoint and a sender address.',
+      })
+      return
+    }
+    save.mutate()
+  }
+
+  function sendTest(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const to = testTo.trim()
+    if (!to) {
+      setTestOutcome({ intent: 'error', text: 'Enter the address to send the test email to.' })
+      return
+    }
+    setTestOutcome(null)
+    test.mutate(to)
+  }
+
+  const status = data ? emailStatus(data) : null
+  return (
+    <Card className={`${styles.card} ${styles.wideCard}`}>
+      <div className={styles.cardHeader}>
+        <div>
+          <div className={styles.liveHeading}>
+            <Title3 as="h2">Email</Title3>
+            <DataSourceBadge kind="live" />
+          </div>
+          <Text className={styles.cardDescription}>
+            Budget warnings and blocks are emailed through Azure Communication Services. MOSAIC
+            signs in to it as its own managed identity, so no key or connection string is kept.
+          </Text>
+        </div>
+        {status && (
+          <Badge appearance="tint" color={status.color} size="large">
+            {status.label}
+          </Badge>
+        )}
+      </div>
+      {settings.isLoading && <Spinner label="Loading email settings" />}
+      {settings.error && (
+        <MessageBar intent="error">
+          <MessageBarBody>{errorText(settings.error, 'Email settings could not be loaded.')}</MessageBarBody>
+        </MessageBar>
+      )}
+      {data && (
+        <div className={styles.emailLayout}>
+          <form className={styles.integrationForm} onSubmit={submit} noValidate aria-label="Email settings">
+            <div className={styles.emailSwitch}>
+              <Switch
+                checked={form.enabled}
+                onChange={(_, change) => update({ enabled: change.checked })}
+                label="Send budget email"
+                aria-describedby={switchHintId}
+              />
+              <Text id={switchHintId} size={200} className={styles.caption}>
+                While it’s off, budgets still show on the Dashboard and still block calls, but
+                nobody is emailed.
+              </Text>
+            </div>
+            <Field
+              label="Communication Services endpoint"
+              hint="Like https://contoso-mosaic.communication.azure.com"
+            >
+              <Input
+                type="url"
+                value={form.endpoint}
+                onChange={(_, change) => update({ endpoint: change.value })}
+              />
+            </Field>
+            <Field
+              label="Sender address"
+              hint="An address on a domain connected to that resource, like DoNotReply@contoso.com"
+            >
+              <Input
+                type="email"
+                value={form.sender}
+                onChange={(_, change) => update({ sender: change.value })}
+              />
+            </Field>
+            {suggestion && (
+              <MessageBar intent="info">
+                <MessageBarBody>
+                  <MessageBarTitle>This deployment has Communication Services</MessageBarTitle>
+                  It created an email resource and a sender address for MOSAIC.
+                </MessageBarBody>
+                <MessageBarActions>
+                  <Button size="small" onClick={() => update(suggestion)}>
+                    Use them
+                  </Button>
+                </MessageBarActions>
+              </MessageBar>
+            )}
+            <div className={styles.formActions}>
+              <Button appearance="primary" type="submit" disabled={save.isPending || !dirty}>
+                {save.isPending ? 'Saving…' : 'Save email settings'}
+              </Button>
+            </div>
+            {saveOutcome && (
+              <MessageBar intent={saveOutcome.intent}>
+                <MessageBarBody>{saveOutcome.text}</MessageBarBody>
+              </MessageBar>
+            )}
+          </form>
+          <form className={styles.emailTest} onSubmit={sendTest} noValidate aria-label="Test email">
+            <Title3 as="h3">Send a test</Title3>
+            <Text className={styles.caption}>
+              {configured
+                ? 'Sends from the saved settings, even while email is off, to check the endpoint, the sender, and MOSAIC’s role on the resource.'
+                : 'Save an endpoint and a sender address first.'}
+            </Text>
+            <Field label="Send to">
+              <Input
+                type="email"
+                value={testTo}
+                onChange={(_, change) => {
+                  setTestTo(change.value)
+                  setTestOutcome(null)
+                }}
+              />
+            </Field>
+            <Button
+              type="submit"
+              className={styles.emailTestButton}
+              disabled={!configured || dirty || test.isPending}
+            >
+              {test.isPending ? 'Sending…' : 'Send test email'}
+            </Button>
+            {dirty && configured && (
+              <Text size={200} className={styles.caption}>
+                Save your changes first. The test uses the saved settings.
+              </Text>
+            )}
+            {testOutcome && (
+              <MessageBar intent={testOutcome.intent}>
+                <MessageBarBody>{testOutcome.text}</MessageBarBody>
+              </MessageBar>
+            )}
+            <Text size={200} className={styles.caption}>
+              {lastTestText(data)}
+            </Text>
+          </form>
+        </div>
+      )}
+      <Text className={styles.caption}>
+        MOSAIC’s managed identity needs the Communication and Email Service Owner role, or a
+        narrower custom role that can send email, on the Communication Services resource.
+      </Text>
+    </Card>
+  )
+}
+
 export function SettingsPage() {
   const { accounts } = useMsal()
   const { preference, resolvedTheme, setPreference } = useMosaicTheme()
@@ -659,16 +941,17 @@ export function SettingsPage() {
     <section className={styles.page}>
       <PageHeader
         title="Settings"
-        description="Review safe runtime details, personalize appearance, and preview local integration values without changing shared MOSAIC configuration."
-        source="local"
+        description="Classify environments, set up budget email, review safe runtime details, and personalize appearance."
       />
       <PreviewNotice kind="local">
-        Integration values on this page are a browser-side preview only. MOSAIC keeps runtime
-        configuration in deployed settings and never displays secrets here.
+        Environments and Email are saved to MOSAIC. Integration overview is a browser-side preview
+        only. MOSAIC keeps the rest of its configuration in deployed settings and never displays
+        secrets here.
       </PreviewNotice>
 
       <EnvironmentsSettingsSection />
       <EnvironmentFindings title="Findings" />
+      <EmailSettingsSection />
 
       <div className={styles.grid}>
         <Card className={styles.card}>

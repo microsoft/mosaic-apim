@@ -19,7 +19,9 @@ import { useQuery } from '@tanstack/react-query'
 import { type ReactNode, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useMosaicApi } from '../api'
+import { budgetName, formatBudgetMonth } from '../budgets'
 import { ErrorState } from '../components/AsyncState'
+import { BudgetMeter } from '../components/BudgetEditor'
 import { BarList, type BarListItem } from '../components/charts/BarList'
 import { TrendChart } from '../components/charts/TrendChart'
 import { EnvironmentBadge } from '../components/EnvironmentBadge'
@@ -27,7 +29,7 @@ import { DataSourceBadge, PageHeader } from '../components/PageHeader'
 import { formatCostCompact } from '../cost-format'
 import { environmentFindingsQueryKey, useEnvironmentCatalog } from '../environments'
 import { FRESHNESS_STATUS_LABELS, plural, type PrincipalTab, principalTabForKind } from '../labels'
-import type { AnalyticsRankRow, AnalyticsSpend } from '../types'
+import type { AnalyticsRankRow, AnalyticsSpend, BudgetOverview } from '../types'
 import styles from './DashboardPage.module.css'
 
 function SparkMetric({
@@ -124,6 +126,85 @@ function statusColor(status: string): 'success' | 'warning' | 'danger' | 'subtle
   return 'subtle'
 }
 
+// The dashboard shows the budgets most at risk; each cost center's page has the rest.
+const BUDGET_ROWS = 6
+
+/** Each budget's month so far against its amount, worst first, with the organization's on top. */
+function BudgetsPanel({
+  overview,
+  loading,
+  error,
+  onOpen,
+}: {
+  overview: BudgetOverview | undefined
+  loading: boolean
+  error: unknown
+  onOpen: (costCenterId: string | null) => void
+}) {
+  const budgets = overview
+    ? [...(overview.organization ? [overview.organization] : []), ...overview.costCenters.slice(0, BUDGET_ROWS)]
+    : []
+  const blocked = overview?.costCenters.filter((item) => item.status.blocked).length ?? 0
+  const hidden = overview ? Math.max(0, overview.costCenters.length - BUDGET_ROWS) : 0
+  return (
+    <div className={`panel ${styles.budgetsPanel}`}>
+      <div className="panel-header">
+        <div className={styles.panelHeading}>
+          <Title3 as="h2">Budgets</Title3>
+          <Text size={200}>
+            {overview
+              ? `${formatBudgetMonth(overview.month)} so far, against each monthly budget${blocked ? ` · ${plural(blocked, 'cost center')} blocked` : ''}`
+              : 'This month so far, against each monthly budget'}
+          </Text>
+        </div>
+        <Button appearance="subtle" size="small" onClick={() => onOpen(null)}>
+          Open cost centers
+        </Button>
+      </div>
+      <div className={styles.panelBody}>
+        {loading && <Spinner size="tiny" label="Loading budgets" />}
+        {Boolean(error) && <ErrorState error={error} />}
+        {overview && budgets.length === 0 && (
+          <Text>
+            No budgets yet. Set one on a cost center to email its owners at 80% and 100% of a monthly amount, and
+            to block its calls at 100% if you choose.
+          </Text>
+        )}
+        {budgets.length > 0 && (
+          <ul className={styles.budgetRows} aria-label="Budgets">
+            {budgets.map((budget) => (
+              <li key={budget.id}>
+                <button
+                  type="button"
+                  className={styles.budgetRow}
+                  onClick={() => onOpen(budget.costCenter?.id ?? null)}
+                >
+                  <span className={styles.budgetName}>
+                    <strong>{budgetName(budget)}</strong>
+                    <small>{budget.costCenter ? budget.costCenter.code : 'Every call, warns only'}</small>
+                  </span>
+                  <BudgetMeter budget={budget} label={budgetName(budget)} />
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+        {overview && (hidden > 0 || overview.unbudgeted > 0 || !overview.email.ready) && (
+          <Text size={200} className={styles.budgetNote}>
+            {[
+              hidden > 0 ? `${plural(hidden, 'more budget')} on the Cost centers page.` : null,
+              overview.unbudgeted > 0 ? `${plural(overview.unbudgeted, 'cost center')} without a budget.` : null,
+              overview.email.ready ? null : 'Email is off, so budgets email no one. Set it up in Settings.',
+            ]
+              .filter(Boolean)
+              .join(' ')}
+          </Text>
+        )}
+      </div>
+    </div>
+  )
+}
+
 function InventoryCard({
   icon,
   count,
@@ -172,6 +253,7 @@ export function DashboardPage() {
     queryKey: ['analytics-status'],
     queryFn: api.getAnalyticsStatus,
   })
+  const budgets = useQuery({ queryKey: ['budgets'], queryFn: api.getBudgets })
   const trend = useMemo(
     () =>
       (analytics.data?.trend ?? []).map((point) => ({
@@ -377,6 +459,13 @@ export function DashboardPage() {
             {!analyticsStatus.isLoading && (analyticsStatus.data?.gateways.length ?? 0) === 0 && <Text>No gateway health yet.</Text>}
           </div>
         </div>
+
+        <BudgetsPanel
+          overview={budgets.data}
+          loading={budgets.isLoading}
+          error={budgets.error}
+          onOpen={(costCenterId) => navigate(costCenterId ? `/cost-centers/${encodeURIComponent(costCenterId)}` : '/cost-centers')}
+        />
 
         <RankingPanel title="Top models" caption="By tokens" items={(analytics.data?.topModels ?? []).slice(0, TOP).map(byTokens)} loading={analytics.isLoading} />
         <RankingPanel title="Top callers" caption="By tokens" items={(analytics.data?.topCallers ?? []).slice(0, TOP).map(byTokens)} loading={analytics.isLoading} />

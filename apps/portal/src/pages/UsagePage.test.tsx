@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { describe, expect, it, vi } from 'vitest'
 import type { PortalApi } from '../api'
-import type { MyUsageReport, UsageResourceRow } from '../types'
+import type { MyUsageReport, PortalBudgetAlert, UsageResourceRow } from '../types'
 import { UsagePage } from './UsagePage'
 
 const mocks = vi.hoisted(() => ({
@@ -304,13 +304,14 @@ function usageReport(overrides: Partial<MyUsageReport> = {}): MyUsageReport {
   }
 }
 
-function renderPage(report: MyUsageReport | Error = usageReport()) {
+function renderPage(report: MyUsageReport | Error = usageReport(), budgets: PortalBudgetAlert[] = []) {
   const getMyUsage = vi.fn(async () => {
     if (report instanceof Error) throw report
     return report
   })
   mocks.api = {
     getMyUsage,
+    getMyBudgets: async () => budgets,
     listEnvironments: async () => environments,
   } as unknown as PortalApi
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -469,6 +470,23 @@ describe('UsagePage', () => {
     expect(screen.getByText('5% of pooled quota used')).toBeVisible()
     expect(document.body).not.toHaveTextContent('Mallory')
     expect(document.body).not.toHaveTextContent('00000000-1111-2222-3333-444444444444')
+  })
+
+  it('warns above usage when a cost center is past its budget', async () => {
+    renderPage(usageReport(), [
+      {
+        costCenter: { id: 'cc-research', name: 'Research', code: 'RES' },
+        level: 'blocked',
+        month: '2026-03',
+        used: 1.01,
+        action: 'block',
+      },
+    ])
+
+    const banners = await screen.findByRole('region', { name: 'Cost center budgets' })
+    expect(within(banners).getByText('Research has used its monthly budget')).toBeVisible()
+    expect(within(banners).getByText(/Calls charged to your other cost centers still work/)).toBeVisible()
+    expect(await screen.findByText('Busiest resource')).toBeVisible()
   })
 
   it('shows cost center tags on resource rows', async () => {

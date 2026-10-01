@@ -143,6 +143,116 @@ export interface CostCenterSettings {
   updatedAt?: string
 }
 
+/** What happens when a cost center has spent all its monthly budget. See ADR 0023. */
+export type BudgetAction = 'block' | 'continue'
+export type BudgetLevel = 'ok' | 'warning' | 'exceeded' | 'blocked'
+export type BudgetUnblockReason = 'newMonth' | 'budgetRaised' | 'blockingOff' | 'budgetRemoved'
+
+export interface BudgetNotification {
+  id: string
+  kind: 'threshold' | 'blocked' | 'unblocked'
+  threshold: number | null
+  reason: 'budgetUsed' | BudgetUnblockReason | null
+  status: 'sending' | 'sent' | 'failed' | 'skipped'
+  recipients: number
+  attempts: number
+  createdAt: string
+  firstAttemptAt: string | null
+  sentAt: string | null
+  error: string | null
+}
+
+/** Whether one managed gateway is refusing a blocked cost center's calls yet. */
+export interface BudgetGateway {
+  gatewayId: string
+  name: string
+  enforcing: boolean
+  syncedAt: string | null
+  error: string | null
+}
+
+export interface BudgetStatus {
+  level: BudgetLevel
+  month: string
+  monthToDate: number | null
+  forecast: number | null
+  /** Spend so far as a share of the amount: 0.5 is half the budget. */
+  used: number | null
+  forecastUsed: number | null
+  through: string | null
+  unpricedTokens: number
+  crossed: number[]
+  blocked: boolean
+  blockedAt: string | null
+  unblockedAt: string | null
+  unblockReason: BudgetUnblockReason | null
+  notifications: BudgetNotification[]
+  evaluatedAt: string | null
+  error: string | null
+  gateways: BudgetGateway[]
+}
+
+export interface BudgetView {
+  id: string
+  scope: 'costCenter' | 'organization'
+  costCenter: CostCenterRef | null
+  amount: number
+  currency: 'USD'
+  thresholds: number[]
+  recipients: string[]
+  notifyOwners: boolean
+  owners: string[]
+  action: BudgetAction
+  updatedAt: string
+  updatedBy: string | null
+  status: BudgetStatus
+}
+
+export interface BudgetUpdate {
+  amount: number
+  thresholds: number[]
+  recipients: string[]
+  notifyOwners: boolean
+  action: BudgetAction
+}
+
+export interface BudgetOverview {
+  month: string
+  organization: BudgetView | null
+  costCenters: BudgetView[]
+  unbudgeted: number
+  email: { enabled: boolean; ready: boolean }
+  priced: boolean
+  notes: string[]
+}
+
+/** How MOSAIC sends email, through Azure Communication Services as its managed identity. */
+export interface EmailSettings {
+  enabled: boolean
+  endpoint: string | null
+  sender: string | null
+  ready: boolean
+  updatedAt: string | null
+  updatedBy: string | null
+  lastTestAt: string | null
+  lastTestError: string | null
+  suggestedEndpoint: string | null
+  suggestedSender: string | null
+}
+
+export interface EmailSettingsUpdate {
+  enabled: boolean
+  endpoint: string | null
+  sender: string | null
+}
+
+export interface EmailTestResult {
+  sent: boolean
+  to: string
+  operationId: string | null
+  error: string | null
+}
+
 export interface GrantKey {
   entitlementId: string
   subscriptionName: string

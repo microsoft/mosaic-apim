@@ -10,6 +10,7 @@ import {
 import { useQuery } from '@tanstack/react-query'
 import { usePortalApi } from '../api'
 import { EmptyState, ErrorState, Loading } from '../components/AsyncState'
+import { BudgetBanner } from '../components/BudgetBanner'
 import { ConnectionDetails } from '../components/ConnectionDetails'
 import { EnvironmentBadge } from '../components/EnvironmentBadge'
 import { PageHeader } from '../components/PageHeader'
@@ -53,6 +54,7 @@ export function MyAccessPage() {
         title="My access"
         description="Your recorded grants and their last reported APIM deployment state. Applied configuration is not proof of a successful model call."
       />
+      <BudgetBanner />
       {profile.data?.groupsOverage && (
         <MessageBar intent="warning" className="access-overage-notice">
           <MessageBarBody>

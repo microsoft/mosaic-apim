@@ -16,6 +16,9 @@ import type {
   AnalyticsStatus,
   AnalyticsUnattributed,
   ApiErrorBody,
+  BudgetOverview,
+  BudgetUpdate,
+  BudgetView,
   CatalogVisibility,
   ConsoleAccess,
   CostCenter,
@@ -26,6 +29,9 @@ import type {
   DirectoryObject,
   DirectorySearchKind,
   DirectoryStatus,
+  EmailSettings,
+  EmailSettingsUpdate,
+  EmailTestResult,
   EndpointPricingUpdate,
   EndpointPricingView,
   Entitlement,
@@ -199,6 +205,19 @@ export interface MosaicApi {
   recheckCostCenter(costCenterId: string): Promise<CostCenter>
   getCostCenterSettings(): Promise<CostCenterSettings>
   updateCostCenterSettings(payload: { defaultCostCenterId: string }): Promise<CostCenterSettings>
+  /** Every budget, worst first, and whether email can reach anyone. */
+  getBudgets(): Promise<BudgetOverview>
+  checkBudgets(): Promise<BudgetOverview>
+  /** A cost center's budget, or null when it has none. */
+  getCostCenterBudget(costCenterId: string): Promise<BudgetView | null>
+  setCostCenterBudget(costCenterId: string, payload: BudgetUpdate): Promise<BudgetView>
+  deleteCostCenterBudget(costCenterId: string): Promise<void>
+  getOrganizationBudget(): Promise<BudgetView | null>
+  setOrganizationBudget(payload: BudgetUpdate): Promise<BudgetView>
+  deleteOrganizationBudget(): Promise<void>
+  getEmailSettings(): Promise<EmailSettings>
+  saveEmailSettings(payload: EmailSettingsUpdate): Promise<EmailSettings>
+  sendTestEmail(to: string): Promise<EmailTestResult>
   listPrincipals(): Promise<Principal[]>
   createPrincipal(payload: {
     objectId: string
@@ -635,6 +654,32 @@ export function useMosaicApi(): MosaicApi {
         request<CostCenterSettings>('/api/v1/cost-center-settings', {
           method: 'PUT',
           body: payload,
+        }),
+      getBudgets: () => request<BudgetOverview>('/api/v1/budgets'),
+      checkBudgets: () => request<BudgetOverview>('/api/v1/budgets/check', { method: 'POST' }),
+      getCostCenterBudget: (id) =>
+        request<BudgetView | null>(`/api/v1/cost-centers/${encodeURIComponent(id)}/budget`),
+      setCostCenterBudget: (id, payload) =>
+        request<BudgetView>(`/api/v1/cost-centers/${encodeURIComponent(id)}/budget`, {
+          method: 'PUT',
+          body: payload,
+        }),
+      deleteCostCenterBudget: (id) =>
+        request<void>(`/api/v1/cost-centers/${encodeURIComponent(id)}/budget`, {
+          method: 'DELETE',
+        }),
+      getOrganizationBudget: () => request<BudgetView | null>('/api/v1/budgets/organization'),
+      setOrganizationBudget: (payload) =>
+        request<BudgetView>('/api/v1/budgets/organization', { method: 'PUT', body: payload }),
+      deleteOrganizationBudget: () =>
+        request<void>('/api/v1/budgets/organization', { method: 'DELETE' }),
+      getEmailSettings: () => request<EmailSettings>('/api/v1/settings/email'),
+      saveEmailSettings: (payload) =>
+        request<EmailSettings>('/api/v1/settings/email', { method: 'PUT', body: payload }),
+      sendTestEmail: (to) =>
+        request<EmailTestResult>('/api/v1/settings/email/test', {
+          method: 'POST',
+          body: { to },
         }),
       listPrincipals: () => request<Principal[]>('/api/v1/principals'),
       createPrincipal: (payload) =>

@@ -358,6 +358,21 @@ export interface CostCenterUsage {
   resources: CostCenterResourceUsage[]
 }
 
+/**
+ * One of your cost centers whose monthly budget is near, at, or past its limit. A total for the
+ * cost center, from everyone who charges it: never anyone's own share.
+ */
+export interface PortalBudgetAlert {
+  costCenter: CostCenterRef
+  level: 'warning' | 'exceeded' | 'blocked'
+  /** The UTC month, like "2026-03". */
+  month: string
+  /** The cost center's spend this month as a share of its budget: 0.8 is 80%. */
+  used: number
+  /** What happens at 100%: calls charged to the cost center are refused, or they continue. */
+  action: 'block' | 'continue'
+}
+
 export interface ConnectionOperation {
   name: string
   method: string
