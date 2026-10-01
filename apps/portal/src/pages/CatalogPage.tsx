@@ -12,7 +12,7 @@ import {
   sameResource,
 } from '../entitlement-format'
 import { usePortalEnvironments } from '../environments'
-import type { CatalogEntry, PortalEnvironment, PortalResourceKind } from '../types'
+import type { CatalogEntry, PortalCostCenter, PortalEnvironment, PortalResourceKind } from '../types'
 
 function environmentOptions(entries: CatalogEntry[], environments: PortalEnvironment[] | undefined) {
   const present = new Set(entries.map((entry) => entry.environment).filter((key): key is string => key !== null))
@@ -25,20 +25,48 @@ function environmentOptions(entries: CatalogEntry[], environments: PortalEnviron
   return { known, unknown, hasUnclassified: entries.some((entry) => entry.environment === null) }
 }
 
+function costCenterLabel(costCenter: PortalCostCenter) {
+  return `${costCenter.name} (${costCenter.code})`
+}
+
 function CatalogAction({ entry }: { entry: CatalogEntry }) {
   const api = usePortalApi()
   const queryClient = useQueryClient()
   const requests = useQuery({ queryKey: ['portal', 'requests'], queryFn: api.listAccessRequests })
+  const costCenters = useQuery({ queryKey: ['portal', 'cost-centers'], queryFn: api.listCostCenters })
   const [justification, setJustification] = useState('')
+  const [selectedCostCenterId, setSelectedCostCenterId] = useState<string | undefined>(undefined)
   const resource = resourceFromCatalog(entry)
+  const entitledCostCenters = new Set(entry.entitledCostCenterIds ?? [])
+  const requestedCostCenters = new Set(entry.requestedCostCenterIds ?? [])
+  const olderEntitledState = !entry.entitledCostCenterIds && entry.entitled
+  const olderPendingState = !entry.requestedCostCenterIds && entry.requestState === 'pending'
+  const loadedCostCenters = costCenters.data ?? []
+  const defaultCostCenterId = costCenters.data
+    ? (costCenters.data.find((costCenter) => costCenter.isDefault) ?? costCenters.data[0])?.id
+    : undefined
+  const effectiveCostCenterId = selectedCostCenterId ?? defaultCostCenterId
+  const allCostCentersUsed =
+    costCenters.isSuccess &&
+    loadedCostCenters.length > 0 &&
+    loadedCostCenters.every((costCenter) => entitledCostCenters.has(costCenter.id) || requestedCostCenters.has(costCenter.id))
+  const selectedAlreadyGranted = effectiveCostCenterId ? entitledCostCenters.has(effectiveCostCenterId) || olderEntitledState : entry.entitled
+  const selectedAlreadyRequested = effectiveCostCenterId
+    ? requestedCostCenters.has(effectiveCostCenterId) || olderPendingState
+    : entry.requestState === 'pending'
+  const selectedUnavailable = selectedAlreadyGranted || selectedAlreadyRequested
   const pendingRequest = requests.data?.find(
-    (request) => request.state === 'pending' && sameResource(request.resource, resource),
+    (request) =>
+      request.state === 'pending' &&
+      sameResource(request.resource, resource) &&
+      (!effectiveCostCenterId || request.costCenterId === effectiveCostCenterId || olderPendingState),
   )
   const invalidate = async () => {
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: ['portal', 'catalog'] }),
       queryClient.invalidateQueries({ queryKey: ['portal', 'requests'] }),
       queryClient.invalidateQueries({ queryKey: ['portal', 'profile'] }),
+      queryClient.invalidateQueries({ queryKey: ['portal', 'cost-centers'] }),
     ])
   }
 
@@ -46,6 +74,7 @@ function CatalogAction({ entry }: { entry: CatalogEntry }) {
     mutationFn: () =>
       api.createAccessRequest({
         resource,
+        costCenterId: costCenters.isSuccess ? effectiveCostCenterId : undefined,
         justification: justification.trim() || undefined,
       }),
     onSuccess: invalidate,
@@ -55,40 +84,75 @@ function CatalogAction({ entry }: { entry: CatalogEntry }) {
     onSuccess: invalidate,
   })
 
-  if (entry.entitled) {
+  if (entry.entitled && !entry.entitledCostCenterIds && !costCenters.isSuccess) {
     return (
       <div className="action-stack">
         <Badge appearance="filled">Already entitled</Badge>
       </div>
     )
   }
-  if (entry.requestState === 'pending') {
-    return (
-      <div className="action-stack">
-        <Text>A request is already open.</Text>
-        <Button
-          onClick={() => pendingRequest && withdraw.mutate(pendingRequest.id)}
-          disabled={!pendingRequest || withdraw.isPending}
-        >
-          Withdraw
-        </Button>
-        {withdraw.isError && <Text className="form-error">{withdraw.error.message}</Text>}
-      </div>
-    )
-  }
 
   return (
     <div className="action-stack">
-      <Textarea
-        value={justification}
-        aria-label={`Justification for ${entry.displayName}`}
-        placeholder="Optional justification"
-        resize="vertical"
-        onChange={(_, data) => setJustification(data.value)}
-      />
-      <Button appearance="primary" onClick={() => create.mutate()} disabled={create.isPending}>
-        Request access
-      </Button>
+      {costCenters.isLoading && <Text size={200}>Loading cost centers. The request can use your default if needed.</Text>}
+      {costCenters.isError && (
+        <Text size={200} className="connection-note">
+          Cost centers could not load. You can still request access; MOSAIC will use your default cost center.
+        </Text>
+      )}
+      {costCenters.isSuccess && loadedCostCenters.length > 0 && (
+        <label className="cost-center-select">
+          <span>Cost center</span>
+          <select
+            aria-label={`Cost center for ${entry.displayName}`}
+            value={effectiveCostCenterId ?? ''}
+            onChange={(event) => setSelectedCostCenterId(event.currentTarget.value)}
+          >
+            {loadedCostCenters.map((costCenter) => {
+              const suffix = entitledCostCenters.has(costCenter.id)
+                ? ' — already entitled'
+                : requestedCostCenters.has(costCenter.id)
+                  ? ' — request open'
+                  : ''
+              return (
+                <option key={costCenter.id} value={costCenter.id}>
+                  {costCenterLabel(costCenter)}
+                  {suffix}
+                </option>
+              )
+            })}
+          </select>
+        </label>
+      )}
+      {selectedAlreadyGranted && <Badge appearance="filled">Already entitled for this cost center</Badge>}
+      {selectedAlreadyRequested && !selectedAlreadyGranted && <Text>A request is already open for this cost center.</Text>}
+      {selectedAlreadyRequested && pendingRequest && (
+        <Button
+          onClick={() => withdraw.mutate(pendingRequest.id)}
+          disabled={withdraw.isPending}
+        >
+          Withdraw
+        </Button>
+      )}
+      {allCostCentersUsed && (
+        <Text size={200} className="connection-note">
+          All cost centers already have access or an open request.
+        </Text>
+      )}
+      {!selectedUnavailable && !allCostCentersUsed && (
+        <>
+          <Textarea
+            value={justification}
+            aria-label={`Justification for ${entry.displayName}`}
+            placeholder="Optional justification"
+            resize="vertical"
+            onChange={(_, data) => setJustification(data.value)}
+          />
+          <Button appearance="primary" onClick={() => create.mutate()} disabled={create.isPending}>
+            Request access
+          </Button>
+        </>
+      )}
       {create.isError && <Text className="form-error">{create.error.message}</Text>}
     </div>
   )
@@ -180,7 +244,7 @@ export function CatalogPage() {
           </div>
           {filteredCatalog.length === 0 ? (
             <EmptyState title="No catalog entries match these filters">
-              <p>Clear filters to see all catalog entries.</p>
+              Clear filters to see all catalog entries.
               <Button onClick={clearFilters}>Clear filters</Button>
             </EmptyState>
           ) : (

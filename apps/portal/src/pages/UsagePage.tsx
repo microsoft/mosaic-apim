@@ -29,6 +29,7 @@ import type {
   UsageQuota,
   UsageRateLimit,
   UsageResourceRow,
+  CostCenterUsage,
 } from '../types'
 import {
   accessLabel,
@@ -335,6 +336,71 @@ function RateLimitView({ limit }: { limit: UsageRateLimit }) {
   )
 }
 
+function pooledShare(utilization: number) {
+  if (utilization > 0 && utilization < 0.01) return 'Less than 1% of pooled quota used'
+  return `${Math.round(utilization * 100)}% of pooled quota used`
+}
+
+function PoolLimitText({ row }: { row: CostCenterUsage['resources'][number] }) {
+  const parts = [
+    row.poolTokens === null ? null : `${formatCount(row.totalTokens ?? 0, 'token')} of ${formatNumber(row.poolTokens)} pooled tokens`,
+    row.poolCalls === null ? null : `${formatCount(row.requests, 'request')} of ${formatNumber(row.poolCalls)} pooled calls`,
+  ].filter(Boolean)
+  if (parts.length === 0) {
+    return <small>{formatCount(row.requests, 'request')}{row.totalTokens === null ? '' : ` · ${formatCount(row.totalTokens, 'token')}`}</small>
+  }
+  return <small>{parts.join(' · ')}</small>
+}
+
+function CostCenterUsageSection({ costCenters }: { costCenters?: CostCenterUsage[] }) {
+  if (!costCenters || costCenters.length === 0) return null
+  return (
+    <section className="usage-section" aria-labelledby="cost-center-usage-heading">
+      <div className="section-header">
+        <div>
+          <h2 id="cost-center-usage-heading">Cost centers</h2>
+          <p>Each cost center's total this month, from everyone who charges it. MOSAIC shows only the total, never who used it.</p>
+        </div>
+      </div>
+      <div className="cost-center-usage-list">
+        {costCenters.map((costCenter) => (
+          <div key={costCenter.costCenter.id} className="cost-center-usage-row">
+            <div>
+              <strong>{costCenter.costCenter.name} · {costCenter.costCenter.code}</strong>
+              <small>
+                Since {formatUtcDate(costCenter.monthStart)} · {formatCount(costCenter.requests, 'request')} ·{' '}
+                {formatCount(costCenter.totalTokens, 'token')}
+              </small>
+            </div>
+            <div className="quota-stack">
+              {costCenter.resources.length === 0 ? (
+                <Text size={200}>No resource usage yet.</Text>
+              ) : (
+                costCenter.resources.map((resource) => (
+                  <div
+                    key={`${costCenter.costCenter.id}:${resource.resource.kind}:${resource.resource.id}:${resource.resource.scopeId ?? ''}`}
+                    className="quota-progress"
+                  >
+                    <span>{resource.displayName ?? 'Resource'}</span>
+                    {resource.utilization !== null && (
+                      <ProgressBar
+                        value={Math.min(resource.utilization, 1)}
+                        aria-label={`${resource.displayName ?? 'Resource'} pooled quota`}
+                      />
+                    )}
+                    <PoolLimitText row={resource} />
+                    {resource.utilization !== null && <small>{pooledShare(resource.utilization)}</small>}
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
+  )
+}
+
 function ResourceTable({
   rows,
   currency,
@@ -383,6 +449,11 @@ function ResourceTable({
                     {!row.enabled && <Badge color="danger">Disabled</Badge>}
                   </span>
                   <small>{gatewayLabel(row.resourceSummary)}</small>
+                  {row.costCenter && (
+                    <small>
+                      {row.costCenter.name} · <span className="nowrap">{row.costCenter.code}</span>
+                    </small>
+                  )}
                 </th>
                 <td>
                   <EnvironmentBadge environment={row.environment} environments={environments} />
@@ -634,6 +705,7 @@ export function UsagePage() {
                 environments={environments.data}
                 showCost={showCost}
               />
+              <CostCenterUsageSection costCenters={usage.data.costCenters} />
               <ResourceTable
                 rows={filtered.byResource}
                 currency={usage.data.currency}

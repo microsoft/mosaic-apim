@@ -132,6 +132,8 @@ class FakeGrant:
     principal_kind: str | None = None
     required_app_role: str = "Models.Invoke.Application"
     keys_available: bool | None = None
+    # False until the grant's key is created: applies don't create keys.
+    key_exists: bool = True
     calls: dict[str, list[float]] = field(default_factory=dict)
     tokens_used: int = 0
 
@@ -282,7 +284,14 @@ class FakeWorld:
             visible = grant is not None
         else:
             return httpx.Response(401)
+        if grant is not None and visible and parts[2:] == ["keys"] and request.method == "POST":
+            if grant.key_exists:
+                return httpx.Response(409)
+            grant.key_exists = True
+            return httpx.Response(201, json={"entitlementId": grant.id, "exists": True})
         if grant is not None and parts[2:] == ["keys", "reveal"]:
+            if visible and not grant.key_exists:
+                return httpx.Response(409)
             if not mine and grant.kind == "securityGroup":
                 return httpx.Response(409)
             if mine and grant.kind == "application":
@@ -380,6 +389,7 @@ class FakeWorld:
                 "entraEnabled": self.entra_applied(grant.publication),
             },
             "keysAvailable": keys_available,
+            "keyExists": grant.key_exists,
             "entraAudience": AUDIENCE,
             "entraScope": f"api://{AUDIENCE}/{'Models.Invoke' if user else '.default'}",
             "entraClientId": self.model_client if user else None,
@@ -801,6 +811,53 @@ class ModelAccessVerifierTests(unittest.TestCase):
         self.assertIn("Live checks passed for 4 grant(s)", out)
         self.assertNotIn("SKIP", out)
         self.assert_nothing_secret(world, out + err)
+
+    def test_a_grant_without_a_key_gets_one_before_its_key_is_read(self) -> None:
+        world = standard_world()
+        for grant_id in ("user-aoai", "app-aoai"):
+            world.grants[grant_id].key_exists = False
+        code, out, err = self.verify(
+            world, ["--user-entitlement", "user-aoai", "--application-entitlement", "app-aoai"]
+        )
+        self.assertEqual(code, 0, err)
+        created = [
+            (request.method, request.url.path)
+            for request in world.requests
+            if request.url.path.endswith("/keys")
+        ]
+        self.assertEqual(
+            created,
+            [
+                ("POST", "/api/v1/me/entitlements/user-aoai/keys"),
+                ("POST", "/api/v1/entitlements/app-aoai/keys"),
+            ],
+        )
+        self.assertIn("INFO: User grant 1 (gpt-4o-mini) had no key, so the check created one", out)
+        self.assertIn("PASS: User grant 1 (gpt-4o-mini) reached the model with its key", out)
+        self.assert_nothing_secret(world, out + err)
+
+    def test_a_cost_center_without_keys_leaves_the_grant_to_its_token(self) -> None:
+        world = standard_world()
+        connection = {
+            **world.connection(world.grants["user-aoai"]),
+            "keysAllowedByCostCenter": False,
+        }
+        grant = verifier.grant_from(
+            connection,
+            kind="user",
+            entitlement_id="user-aoai",
+            label="User grant 1",
+            control_token="fixture-token",
+            options=verifier.Options(
+                origin=ORIGIN,
+                api_version="2024-10-21",
+                models_api_version=None,
+                token_parameter=None,
+                payload=None,
+                proof=None,
+            ),
+        )
+        self.assertFalse(grant.keys_enabled)
 
     def test_a_gateway_that_accepts_another_subject_s_token_fails(self) -> None:
         world = standard_world()

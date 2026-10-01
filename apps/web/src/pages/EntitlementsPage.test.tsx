@@ -36,6 +36,8 @@ const api = {
   listGroups: vi.fn(),
   listModelApis: vi.fn(),
   listMcpServers: vi.fn(),
+  listCostCenters: vi.fn(),
+  getCostCenterSettings: vi.fn(),
   listMcpPublications: vi.fn(),
   listGateways: vi.fn(),
   listModelEndpoints: vi.fn(),
@@ -54,6 +56,11 @@ const api = {
   denyAccessRequest: vi.fn(),
   getGrantOverlaps: vi.fn(),
   getMcpConnection: vi.fn(),
+  getEntitlementConnection: vi.fn(),
+  createEntitlementKey: vi.fn(),
+  rotateEntitlementKey: vi.fn(),
+  deleteEntitlementKey: vi.fn(),
+  revealEntitlementKey: vi.fn(),
 }
 
 const catalog: EnvironmentCatalogView = {
@@ -184,11 +191,11 @@ vi.mock('../api', async (importOriginal) => {
   return { ...actual, useMosaicApi: () => api }
 })
 
-function renderPage() {
+function renderPage(initial = '/entitlements') {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter>
+      <MemoryRouter initialEntries={[initial]}>
         <FluentProvider theme={webLightTheme}>
           <EntitlementsPage />
         </FluentProvider>
@@ -218,6 +225,8 @@ describe('EntitlementsPage', () => {
     ])
     api.listModelApis.mockResolvedValue([{ ...publishedModelApi, publicationId: null, importedFromSnapshotId: 'snapshot_1' }])
     api.listMcpServers.mockResolvedValue([])
+    api.listCostCenters.mockResolvedValue([{ id: 'cc_general', tenantId: 'tenant', entityType: 'costCenter', name: 'General', code: 'general', description: null, owners: [], members: [], keysAllowed: true, limits: [], builtIn: true, createdAt: '', updatedAt: '', isTenantDefault: true, memberDetails: [], grantCount: 0, enabledGrantCount: 0, defaultFor: 0 }])
+    api.getCostCenterSettings.mockResolvedValue({ id: 'settings', tenantId: 'tenant', defaultCostCenterId: 'cc_general' })
     api.listMcpPublications.mockResolvedValue([])
     api.listAccessRequests.mockResolvedValue([])
     api.listPublications.mockResolvedValue([])
@@ -242,6 +251,67 @@ describe('EntitlementsPage', () => {
     expect(screen.getByText('Not bound')).toBeVisible()
     expect(screen.getByText('Live data')).toBeVisible()
     expect(screen.queryByText('Sample data')).not.toBeInTheDocument()
+  })
+
+  it('shows cost-center names and codes in the grants table', async () => {
+    api.listCostCenters.mockResolvedValue([
+      { id: 'cc-support', tenantId: 'tenant', entityType: 'costCenter', name: 'Support', code: 'support', description: null, owners: [], members: [], keysAllowed: true, limits: [], builtIn: false, createdAt: '', updatedAt: '', isTenantDefault: false, memberDetails: [], grantCount: 1, enabledGrantCount: 1, defaultFor: 0 },
+    ])
+    api.listEntitlements.mockResolvedValue([{ ...entitlement, costCenterId: 'cc-support', costCenter: { id: 'cc-support', name: 'Support', code: 'support' } }])
+    renderPage()
+
+    const table = await screen.findByRole('table', { name: 'Entitlements' })
+    const row = within(table).getAllByRole('row').find((item) => item.textContent?.includes('Engineering'))
+    await waitFor(() => expect(row).toHaveTextContent('Support'))
+    expect(row).toHaveTextContent('support')
+    // The cost center sits under its own heading, not under Resource.
+    const headings = within(table).getAllByRole('columnheader').map((cell) => cell.textContent)
+    const cells = within(row as HTMLElement).getAllByRole('cell')
+    expect(cells[headings.indexOf('Cost center')]).toHaveTextContent('Supportsupport')
+  })
+
+  it('filters grants by cost center from the query string and from the filter', async () => {
+    const user = userEvent.setup()
+    api.listCostCenters.mockResolvedValue([
+      { id: 'cc-general', tenantId: 'tenant', entityType: 'costCenter', name: 'General', code: 'general', description: null, owners: [], members: [], keysAllowed: true, limits: [], builtIn: true, createdAt: '', updatedAt: '', isTenantDefault: true, memberDetails: [], grantCount: 0, enabledGrantCount: 0, defaultFor: 0 },
+      { id: 'cc-support', tenantId: 'tenant', entityType: 'costCenter', name: 'Support', code: 'support', description: null, owners: [], members: [], keysAllowed: true, limits: [], builtIn: false, createdAt: '', updatedAt: '', isTenantDefault: false, memberDetails: [], grantCount: 0, enabledGrantCount: 0, defaultFor: 0 },
+    ])
+    renderPage('/entitlements?costCenter=cc-support')
+
+    const filter = await screen.findByRole('combobox', { name: 'Filter grants by cost center' })
+    await waitFor(() => expect(filter).toHaveValue('cc-support'))
+    await waitFor(() => expect(api.listEntitlements).toHaveBeenCalledWith({ costCenter: 'cc-support' }))
+
+    await user.selectOptions(filter, 'cc-general')
+    await waitFor(() => expect(api.listEntitlements).toHaveBeenLastCalledWith({ costCenter: 'cc-general' }))
+  })
+
+  it('sends the selected cost center when creating a grant', async () => {
+    const user = userEvent.setup()
+    api.listCostCenters.mockResolvedValue([
+      { id: 'cc-support', tenantId: 'tenant', entityType: 'costCenter', name: 'Support', code: 'support', description: null, owners: [], members: [], keysAllowed: true, limits: [], builtIn: false, createdAt: '', updatedAt: '', isTenantDefault: false, memberDetails: [], grantCount: 0, enabledGrantCount: 0, defaultFor: 0 },
+    ])
+    renderPage()
+
+    await user.click(await screen.findByRole('button', { name: 'Add entitlement' }))
+    const dialog = await screen.findByRole('dialog')
+    const selects = within(dialog).getAllByRole('combobox')
+    await user.selectOptions(selects[0], 'group_1')
+    await user.selectOptions(selects[1], 'modelApi_1')
+    await user.selectOptions(selects[2], 'cc-support')
+    await user.click(within(dialog).getByRole('button', { name: 'Grant access' }))
+
+    await waitFor(() => expect(api.createEntitlement).toHaveBeenCalledWith(expect.objectContaining({ costCenterId: 'cc-support' })))
+  })
+
+  it('shows when a grant was revoked because its subject left the cost center', async () => {
+    api.listEntitlements.mockResolvedValue([{
+      ...entitlement,
+      revocation: { reason: 'costCenterMembership', costCenterId: 'cc-general', revokedAt: '2026-09-01T12:00:00Z', revokedBy: 'admin' },
+    }])
+    renderPage()
+
+    expect(await screen.findByText('Revoked when its subject left the cost center.')).toBeVisible()
   })
 
   it('keeps the whole APIM subscription name in the binding cell, with its source on a line of its own', async () => {

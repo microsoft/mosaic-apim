@@ -1,0 +1,156 @@
+.page {
+  display: grid;
+  gap: 20px;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) minmax(320px, 0.8fr);
+  align-items: start;
+  gap: 20px;
+}
+
+.stack {
+  display: grid;
+  gap: 20px;
+}
+
+.card {
+  padding: 20px;
+  display: grid;
+  align-content: start;
+  gap: 16px;
+  border: 1px solid var(--mosaic-border);
+  border-radius: 8px;
+  background: var(--mosaic-surface);
+  box-shadow: var(--mosaic-shadow);
+}
+
+.card h2 {
+  margin: 0;
+}
+
+.cardHeader {
+  display: grid;
+  gap: 4px;
+}
+
+.nameCell {
+  min-width: 180px;
+  display: grid;
+  justify-items: start;
+  gap: 6px;
+}
+
+.addMember {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 12px;
+}
+
+.addMember > :first-child {
+  flex: 1 1 320px;
+}
+
+.tableWrap {
+  overflow: auto;
+}
+
+.tableWrap :global(table) {
+  width: 100%;
+}
+
+.tableWrap :global(th) {
+  background: var(--mosaic-surface-subtle);
+  color: var(--mosaic-text-muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.tableWrap :global(th),
+.tableWrap :global(td) {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--mosaic-border-soft);
+  vertical-align: top;
+}
+
+.form {
+  display: grid;
+  gap: 14px;
+}
+
+.formGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  align-items: start;
+  gap: 12px;
+}
+
+.rowActions,
+.badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.muted {
+  color: var(--mosaic-text-muted);
+}
+
+.primary {
+  font-weight: 600;
+}
+
+.code {
+  white-space: nowrap;
+  color: var(--mosaic-text);
+}
+
+.detailList {
+  margin: 0;
+  display: grid;
+  gap: 12px;
+}
+
+.detailList div {
+  display: grid;
+  gap: 4px;
+}
+
+.detailList dt {
+  color: var(--mosaic-text-muted);
+  font-size: 12px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.detailList dd {
+  margin: 0;
+}
+
+.limitList {
+  display: grid;
+  gap: 10px;
+}
+
+.limitRow {
+  padding: 10px 12px;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid var(--mosaic-border-soft);
+  border-radius: 8px;
+}
+
+.dangerButton {
+  color: var(--mosaic-danger) !important;
+}
+
+@media (max-width: 980px) {
+  .grid {
+    grid-template-columns: 1fr;
+  }
+}

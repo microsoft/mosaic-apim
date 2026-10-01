@@ -6,7 +6,7 @@ import type { ComponentProps } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 import { modelPublication } from '../test/model-access'
 import { ApiError } from '../api'
-import type { AccessRequest, AccessRequestApproval, EnvironmentCatalogView } from '../types'
+import type { AccessRequest, AccessRequestApproval, CostCenter, EnvironmentCatalogView } from '../types'
 import { ApproveAccessRequestDialog, type ApprovalRequester } from './ApproveAccessRequestDialog'
 
 const accessRequest: AccessRequest = {
@@ -52,6 +52,27 @@ const catalog: EnvironmentCatalogView = {
   unclassified: { gateways: 0, modelEndpoints: 0, mcpEndpoints: 0 },
   compatibility: [],
   updatedAt: null,
+}
+
+const supportCostCenter: CostCenter = {
+  id: 'cc-support',
+  tenantId: 'tenant',
+  entityType: 'costCenter',
+  name: 'Support',
+  code: 'support',
+  description: null,
+  owners: [],
+  members: [],
+  keysAllowed: true,
+  limits: [],
+  builtIn: false,
+  createdAt: '',
+  updatedAt: '',
+  isTenantDefault: false,
+  memberDetails: [],
+  grantCount: 0,
+  enabledGrantCount: 0,
+  defaultFor: 0,
 }
 
 type DialogProps = ComponentProps<typeof ApproveAccessRequestDialog>
@@ -174,6 +195,31 @@ describe('ApproveAccessRequestDialog', () => {
 
     await screen.findByRole('dialog')
     expect(requesterLines()).toEqual(lines)
+  })
+
+  it('shows the requested cost center', async () => {
+    renderDialog({
+      accessRequest: {
+        ...accessRequest,
+        costCenterId: supportCostCenter.id,
+        costCenter: { id: supportCostCenter.id, name: supportCostCenter.name, code: supportCostCenter.code },
+      },
+      costCenters: [supportCostCenter],
+    })
+
+    expect((await screen.findAllByText('Support (support)')).length).toBeGreaterThan(0)
+  })
+
+  it('sends the selected cost center in the approval', async () => {
+    const user = userEvent.setup()
+    const researchCostCenter = { ...supportCostCenter, id: 'cc-research', name: 'Research', code: 'research' }
+    const { onApprove } = renderDialog({ costCenters: [supportCostCenter, researchCostCenter] })
+
+    const dialog = await screen.findByRole('dialog')
+    await user.selectOptions(within(dialog).getByRole('combobox', { name: 'Cost center' }), researchCostCenter.id)
+    await user.click(within(dialog).getByRole('button', { name: 'Approve and create grant' }))
+
+    expect(onApprove).toHaveBeenCalledWith(expect.objectContaining({ costCenterId: researchCostCenter.id }))
   })
 
   it('sends the confirmed limits on the governed counter, with the decision note', async () => {

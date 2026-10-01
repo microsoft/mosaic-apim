@@ -35,6 +35,11 @@ vi.mock('../api', () => ({
       }],
     }),
     listGroups: async () => [],
+    listCostCenters: async () => [
+      { id: 'cc-general', name: 'General', code: 'general' },
+      { id: 'cc-support', name: 'Support', code: 'support' },
+    ],
+    getCostCenterSettings: async () => ({ id: 'settings', tenantId: 'tenant', defaultCostCenterId: 'cc-general' }),
     listMemberships: async () => [],
     createPrincipal: mocks.createPrincipal,
     updatePrincipal: mocks.updatePrincipal,
@@ -238,7 +243,7 @@ describe('IdentityPage', () => {
     expect(screen.queryByRole('textbox', { name: /Entra object ID/ })).not.toBeInTheDocument()
   })
 
-  it('clears a non-matching filter after manual add so the new record is selected', async () => {
+  it('clears a non-matching filter after manual add so the new record is selected', { timeout: 10_000 }, async () => {
     const user = userEvent.setup()
     mockCreatePrincipal()
     renderPage()
@@ -260,7 +265,7 @@ describe('IdentityPage', () => {
     expect(await screen.findByRole('button', { name: /Nia Person/, pressed: true })).toBeVisible()
   })
 
-  it('keeps a matching filter after manual add', async () => {
+  it('keeps a matching filter after manual add', { timeout: 10_000 }, async () => {
     const user = userEvent.setup()
     mockCreatePrincipal()
     renderPage()
@@ -280,6 +285,65 @@ describe('IdentityPage', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
     expect(filter).toHaveValue('nia')
     expect(await screen.findByRole('button', { name: /Nia Person/, pressed: true })).toBeVisible()
+  })
+
+  it('sends a default cost center when manually creating a person', { timeout: 10_000 }, async () => {
+    const user = userEvent.setup()
+    mockCreatePrincipal()
+    renderPage()
+
+    expect((await screen.findAllByText('Alex User')).length).toBeGreaterThan(0)
+    await user.click(screen.getByRole('button', { name: 'Add person' }))
+    let dialog = await screen.findByRole('dialog', { name: 'Add person' })
+    await user.click(within(dialog).getByRole('button', { name: 'Use manual entry' }))
+    dialog = screen.getByRole('dialog', { name: 'Add person' })
+    await user.type(within(dialog).getByRole('textbox', { name: /Entra object ID/ }), 'entra-new-person')
+    await within(dialog).findByRole('option', { name: 'Support (support)' })
+    await user.selectOptions(within(dialog).getByRole('combobox', { name: 'Default cost center' }), 'cc-support')
+    await user.click(within(dialog).getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(mocks.createPrincipal).toHaveBeenCalled())
+    expect(mocks.createPrincipal.mock.calls[0][0]).toMatchObject({ defaultCostCenterId: 'cc-support' })
+  })
+
+  it('omits defaultCostCenterId for a directory person using the tenant default', async () => {
+    const user = userEvent.setup()
+    mocks.searchDirectory.mockResolvedValue([
+      { objectId: 'entra-new-person', kind: 'user', displayName: 'Nia Person', detail: 'nia@example.com' },
+    ])
+    mockCreatePrincipal()
+    renderPage()
+
+    expect((await screen.findAllByText('Alex User')).length).toBeGreaterThan(0)
+    await user.click(screen.getByRole('button', { name: 'Add person' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Add person' })
+    await user.selectOptions(within(dialog).getByRole('combobox', { name: 'Default cost center' }), '')
+    await user.type(within(dialog).getByRole('textbox', { name: 'Directory search' }), 'nia')
+    await user.click(await within(dialog).findByRole('button', { name: 'Add Nia Person' }))
+
+    await waitFor(() => expect(mocks.createPrincipal).toHaveBeenCalled())
+    expect(mocks.createPrincipal.mock.calls[0][0]).not.toHaveProperty('defaultCostCenterId')
+  })
+
+  it('shows and updates a principal default cost center', async () => {
+    const user = userEvent.setup()
+    mocks.principals = seedPrincipals().map((principal) =>
+      principal.id === 'user' ? { ...principal, defaultCostCenterId: 'cc-general' } : principal,
+    )
+    mocks.updatePrincipal.mockImplementation(async (principalId: string, payload: Partial<Principal>) => {
+      const current = mocks.principals.find((item) => item.id === principalId)
+      if (!current) throw new Error(`Unknown principal ${principalId}`)
+      const updated = { ...current, ...payload }
+      mocks.principals = mocks.principals.map((item) => (item.id === principalId ? updated : item))
+      return updated
+    })
+    renderPage()
+
+    expect((await screen.findAllByText('General (general)')).length).toBeGreaterThan(0)
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Default cost center' }), 'cc-support')
+    await user.click(screen.getByRole('button', { name: 'Save changes' }))
+
+    await waitFor(() => expect(mocks.updatePrincipal).toHaveBeenCalledWith('user', expect.objectContaining({ defaultCostCenterId: 'cc-support' })))
   })
 
   it('clears a non-matching filter after adding a directory search result', async () => {

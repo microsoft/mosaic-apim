@@ -11,7 +11,14 @@ const auth = vi.hoisted(() => ({
   accounts: [{ homeAccountId: 'actor-a', localAccountId: 'actor-a', tenantId: 'tenant' }],
 }))
 vi.mock('@azure/msal-react', () => ({ useMsal: () => auth }))
-const api = { getEntitlementConnection: vi.fn(), getMcpConnection: vi.fn(), revealEntitlementKey: vi.fn() }
+const api = {
+  getEntitlementConnection: vi.fn(),
+  getMcpConnection: vi.fn(),
+  revealEntitlementKey: vi.fn(),
+  createEntitlementKey: vi.fn(),
+  rotateEntitlementKey: vi.fn(),
+  deleteEntitlementKey: vi.fn(),
+}
 vi.mock('../api', () => ({ useMosaicApi: () => api }))
 
 const revealed: KeyRevealResult = {
@@ -485,6 +492,70 @@ describe('EntitlementConnectionDialog', () => {
     await waitFor(() => expect(screen.getByRole('alert')).not.toBe(alert))
     expect(screen.getByRole('alert')).toHaveTextContent(/Could not copy the key/)
     expect(copyButton).toHaveFocus()
+  })
+
+  it('creates a missing key on request', async () => {
+    const user = userEvent.setup()
+    api.getEntitlementConnection.mockResolvedValue({ ...connectionInfo, keyExists: false })
+    api.createEntitlementKey.mockResolvedValue({ entitlementId: directGrant.id, subscriptionName: 'dedicated-user-sub', exists: true, costCenter: null, rotated: null })
+
+    renderDialog({ ...directGrant, runtime: { ...directGrant.runtime!, keyExists: false } })
+
+    await user.click(await screen.findByRole('button', { name: 'Create key' }))
+
+    await waitFor(() => expect(api.createEntitlementKey).toHaveBeenCalledWith(directGrant.id))
+  })
+
+  it('rotates the secondary key after confirmation', async () => {
+    const user = userEvent.setup()
+    api.rotateEntitlementKey.mockResolvedValue({ entitlementId: directGrant.id, subscriptionName: 'dedicated-user-sub', exists: true, costCenter: null, rotated: 'secondary' })
+
+    renderDialog()
+
+    await user.click(await screen.findByRole('button', { name: 'Rotate secondary key' }))
+    expect(screen.getByText('Clients using the old secondary value stop working now. The other slot keeps working.')).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Rotate key' }))
+
+    await waitFor(() => expect(api.rotateEntitlementKey).toHaveBeenCalledWith(directGrant.id, 'secondary'))
+  })
+
+  it('deletes the key after confirmation', async () => {
+    const user = userEvent.setup()
+    api.deleteEntitlementKey.mockResolvedValue({ entitlementId: directGrant.id, subscriptionName: 'dedicated-user-sub', exists: false, costCenter: null, rotated: null })
+
+    renderDialog()
+
+    await user.click(await screen.findByRole('button', { name: 'Delete key' }))
+    expect(screen.getByText('Every client using this key stops working now. You can create a new key afterwards.')).toBeVisible()
+    await user.click(screen.getAllByRole('button', { name: 'Delete key' }).at(-1)!)
+
+    await waitFor(() => expect(api.deleteEntitlementKey).toHaveBeenCalledWith(directGrant.id))
+  })
+
+  it('shows cost-center connection metadata', async () => {
+    api.getEntitlementConnection.mockResolvedValue({
+      ...connectionInfo,
+      costCenter: { id: 'cc-support', name: 'Support', code: 'support' },
+      costCenterHeader: 'x-mosaic-cost-center',
+    })
+
+    renderDialog()
+
+    expect(await screen.findByText('Support (support)')).toBeVisible()
+    expect(screen.getByText('x-mosaic-cost-center: support')).toBeVisible()
+  })
+
+  it('hides key buttons when keys are off for the cost center', async () => {
+    api.getEntitlementConnection.mockResolvedValue({
+      ...connectionInfo,
+      keysAllowedByCostCenter: false,
+    })
+
+    renderDialog()
+
+    expect(await screen.findByText(/Keys are off for this cost center/)).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Reveal primary key' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Create key' })).not.toBeInTheDocument()
   })
 
   it('closes on Escape while a reveal is in flight, and drops the late key', async () => {

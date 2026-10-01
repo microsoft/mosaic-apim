@@ -7,7 +7,7 @@ import {
   Text,
 } from '@fluentui/react-components'
 import { CopyRegular, EyeOffRegular, EyeRegular } from '@fluentui/react-icons'
-import { useMutation } from '@tanstack/react-query'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useId, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
 import { usePortalApi } from '../api'
@@ -60,6 +60,7 @@ export function KeyReveal({
   focusHandoff?: FocusHandoff
 }) {
   const api = usePortalApi()
+  const queryClient = useQueryClient()
   const headingId = useId()
   const availability: KeyAvailability =
     connection.entitlementId === entitlementId
@@ -71,6 +72,7 @@ export function KeyReveal({
   const [secret, setSecret] = useState<{ slot: KeySlot; key: string } | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [copyFailed, setCopyFailed] = useState(false)
+  const [confirming, setConfirming] = useState<{ kind: 'rotate'; slot: KeySlot } | { kind: 'delete' } | null>(null)
   const generation = useRef(0)
   const controller = useRef<AbortController | null>(null)
   const mounted = useRef(false)
@@ -101,6 +103,70 @@ export function KeyReveal({
         if (!current()) return { slot, shown: false }
         throw failure
       }
+    },
+    onError: (failure) => {
+      if (isConflict(failure)) onConflict()
+    },
+  })
+  const keyExists = connection.keyExists ?? connection.runtime?.keyExists ?? true
+  const costCenterLabel = connection.costCenter
+    ? `${connection.costCenter.name} (${connection.costCenter.code})`
+    : 'this grant'
+  const refreshAfterKeyChange = async () => {
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ['portal', 'entitlements'] }),
+      queryClient.invalidateQueries({ queryKey: ['portal', 'connection'] }),
+    ])
+    onConflict()
+  }
+  const createKey = useMutation({
+    mutationFn: () => api.createMyEntitlementKey(entitlementId),
+    onMutate: () => {
+      generation.current += 1
+      controller.current?.abort()
+      setSecret(null)
+      setNotice(null)
+      setCopyFailed(false)
+    },
+    onSuccess: async () => {
+      setNotice('Key created. You can show either slot now.')
+      await refreshAfterKeyChange()
+    },
+    onError: (failure) => {
+      if (isConflict(failure)) onConflict()
+    },
+  })
+  const rotateKey = useMutation({
+    mutationFn: (slot: KeySlot) => api.rotateMyEntitlementKey(entitlementId, slot),
+    onMutate: () => {
+      generation.current += 1
+      controller.current?.abort()
+      setSecret(null)
+      setNotice(null)
+      setCopyFailed(false)
+    },
+    onSuccess: async (_result, slot) => {
+      setConfirming(null)
+      setNotice(`${slotLabels[slot]} rotated. Apps using that old value must be updated.`)
+      await refreshAfterKeyChange()
+    },
+    onError: (failure) => {
+      if (isConflict(failure)) onConflict()
+    },
+  })
+  const deleteKey = useMutation({
+    mutationFn: () => api.deleteMyEntitlementKey(entitlementId),
+    onMutate: () => {
+      generation.current += 1
+      controller.current?.abort()
+      setSecret(null)
+      setNotice(null)
+      setCopyFailed(false)
+    },
+    onSuccess: async () => {
+      setConfirming(null)
+      setNotice('Key deleted. You can create a new one if you need key access again.')
+      await refreshAfterKeyChange()
     },
     onError: (failure) => {
       if (isConflict(failure)) onConflict()
@@ -182,10 +248,19 @@ export function KeyReveal({
   }
 
   const visible = availability.available ? secret : null
-  const problem = reveal.isError ? keyRevealProblem(reveal.error) : null
+  const keyActionError = createKey.error ?? rotateKey.error ?? deleteKey.error
+  const problem = reveal.isError
+    ? keyRevealProblem(reveal.error)
+    : keyActionError
+      ? keyRevealProblem(keyActionError)
+      : null
   const entraOnlyGroupGrant = !availability.available && availability.reason === GROUP_GRANT_ENTRA_ONLY
+  // Applies don't create keys: until someone asks for one, there's nothing to show or rotate.
+  const awaitingKey = availability.available && !keyExists
+  const costCenterKeysOff =
+    !availability.available && availability.reason.startsWith('Subscription keys are turned off for this cost center')
 
-  if (entraOnlyGroupGrant) {
+  if (entraOnlyGroupGrant || costCenterKeysOff) {
     return (
       <section className="connection-section" aria-labelledby={headingId} ref={section}>
         <h3 id={headingId} ref={heading} tabIndex={-1}>
@@ -204,59 +279,118 @@ export function KeyReveal({
         Subscription key
       </h3>
       <Text as="p" size={200} className="connection-note">
-        APIM holds your keys. MOSAIC reads the current key only when you ask, shows it for 60
-        seconds, and never saves it in this browser. Anyone with the key can use this grant, so do
-        not share it.
+        This grant charges {costCenterLabel}. APIM holds your keys. MOSAIC reads the current key
+        only when you ask, shows it for 60 seconds, and never saves it in this browser. Anyone with
+        the key can use this grant, so do not share it.
       </Text>
-      <div className="key-display" ref={display}>
-        <span className="key-display-label">{visible ? slotLabels[visible.slot] : 'Key'}</span>
-        {visible ? (
-          <code className="secret-value" data-secret="true">
-            {visible.key}
-          </code>
-        ) : reveal.isPending ? (
-          <Spinner size="tiny" label="Retrieving the current key from APIM" />
-        ) : (
-          <span className="masked-key">
-            <span aria-hidden="true">••••••••••••••••••••••••</span>
-            <span className="visually-hidden">Hidden</span>
-          </span>
-        )}
-        {visible && (
+      {awaitingKey && (
+        <>
+          <Text as="p" size={200} className="connection-note">
+            No subscription key exists yet. Create one when an app needs key-based access.
+          </Text>
           <div className="key-actions">
-            <Button icon={<CopyRegular />} onClick={() => void copy()}>
-              Copy key
-            </Button>
-            <Button icon={<EyeOffRegular />} onClick={hide}>
-              Hide key
+            <Button
+              appearance="primary"
+              onClick={() => createKey.mutate()}
+              disabled={createKey.isPending}
+            >
+              Create key
             </Button>
           </div>
-        )}
-      </div>
-      <div className="key-actions">
-        <Button
-          ref={(element) => {
-            showButtons.current.primary = element
-          }}
-          icon={<EyeRegular />}
-          disabled={!availability.available}
-          disabledFocusable={availability.available && reveal.isPending}
-          onClick={() => show('primary')}
-        >
-          Show primary key
-        </Button>
-        <Button
-          ref={(element) => {
-            showButtons.current.secondary = element
-          }}
-          icon={<EyeRegular />}
-          disabled={!availability.available}
-          disabledFocusable={availability.available && reveal.isPending}
-          onClick={() => show('secondary')}
-        >
-          Show secondary key
-        </Button>
-      </div>
+        </>
+      )}
+      {!awaitingKey && (
+        <>
+          <div className="key-display" ref={display}>
+            <span className="key-display-label">{visible ? slotLabels[visible.slot] : 'Key'}</span>
+            {visible ? (
+              <code className="secret-value" data-secret="true">
+                {visible.key}
+              </code>
+            ) : reveal.isPending ? (
+              <Spinner size="tiny" label="Retrieving the current key from APIM" />
+            ) : (
+              <span className="masked-key">
+                <span aria-hidden="true">••••••••••••••••••••••••</span>
+                <span className="visually-hidden">Hidden</span>
+              </span>
+            )}
+            {visible && (
+              <div className="key-actions">
+                <Button icon={<CopyRegular />} onClick={() => void copy()}>
+                  Copy key
+                </Button>
+                <Button icon={<EyeOffRegular />} onClick={hide}>
+                  Hide key
+                </Button>
+              </div>
+            )}
+          </div>
+          <div className="key-actions">
+            <Button
+              ref={(element) => {
+                showButtons.current.primary = element
+              }}
+              icon={<EyeRegular />}
+              disabled={!availability.available || !keyExists}
+              disabledFocusable={availability.available && keyExists && reveal.isPending}
+              onClick={() => show('primary')}
+            >
+              Show primary key
+            </Button>
+            <Button
+              ref={(element) => {
+                showButtons.current.secondary = element
+              }}
+              icon={<EyeRegular />}
+              disabled={!availability.available || !keyExists}
+              disabledFocusable={availability.available && keyExists && reveal.isPending}
+              onClick={() => show('secondary')}
+            >
+              Show secondary key
+            </Button>
+            {availability.available && keyExists && (
+              <>
+                <Button disabled={rotateKey.isPending} onClick={() => setConfirming({ kind: 'rotate', slot: 'primary' })}>
+                  Rotate primary key
+                </Button>
+                <Button disabled={rotateKey.isPending} onClick={() => setConfirming({ kind: 'rotate', slot: 'secondary' })}>
+                  Rotate secondary key
+                </Button>
+                <Button disabled={deleteKey.isPending} onClick={() => setConfirming({ kind: 'delete' })}>
+                  Delete key
+                </Button>
+              </>
+            )}
+          </div>
+        </>
+      )}
+      {confirming?.kind === 'rotate' && (
+        <div className="inline-confirmation" role="group" aria-label={`Confirm rotate ${confirming.slot} key`}>
+          <Text>
+            Apps using the old {confirming.slot} value stop working. The other slot keeps working.
+          </Text>
+          <div className="key-actions">
+            <Button appearance="primary" onClick={() => rotateKey.mutate(confirming.slot)} disabled={rotateKey.isPending}>
+              Rotate {confirming.slot} key
+            </Button>
+            <Button onClick={() => setConfirming(null)} disabled={rotateKey.isPending}>Cancel</Button>
+          </div>
+        </div>
+      )}
+      {confirming?.kind === 'delete' && (
+        <div className="inline-confirmation" role="group" aria-label="Confirm delete key">
+          <Text>
+            Every app using this key stops working. You can create a new one later.
+          </Text>
+          <div className="key-actions">
+            <Button appearance="primary" onClick={() => deleteKey.mutate()} disabled={deleteKey.isPending}>
+              Delete key
+            </Button>
+            <Button onClick={() => setConfirming(null)} disabled={deleteKey.isPending}>Cancel</Button>
+          </div>
+        </div>
+      )}
       {!availability.available && (
         <Text as="p" className="connection-note" ref={reasonText} tabIndex={-1}>
           {availability.reason}

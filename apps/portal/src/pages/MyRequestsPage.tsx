@@ -104,6 +104,14 @@ export function MyRequestsPage() {
                   <dt>Gateway</dt>
                   <dd>{gatewayLabel(request.resourceSummary, request.resourceSnapshot?.gatewayName)}</dd>
                 </div>
+                {request.costCenter && (
+                  <div>
+                    <dt>Cost center</dt>
+                    <dd>
+                      {request.costCenter.name} ({request.costCenter.code})
+                    </dd>
+                  </div>
+                )}
                 <div>
                   <dt>Justification</dt>
                   <dd>{request.justification || 'No justification provided.'}</dd>

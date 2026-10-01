@@ -113,6 +113,23 @@ export class KeyReveal {
     return this.root.getByRole('status')
   }
 
+  /** Shown while the grant has no key. Applies don't create keys: the grant's holder asks for one. */
+  get createButton(): Locator {
+    return this.root.getByRole('button', { name: 'Create key', exact: true })
+  }
+
+  /** Creates the grant's key when it has none yet, and waits until a slot can be shown. */
+  async ensureKey(): Promise<Response | undefined> {
+    const show = this.root.getByRole('button', { name: 'Show primary key', exact: true })
+    await expect(show.or(this.createButton).first()).toBeVisible()
+    if (!(await this.createButton.isVisible())) return undefined
+    const response = await responseTo(this.page, this.#apiOrigin, 'POST', /^\/api\/v1\/me\/entitlements\/[^/]+\/keys$/, () =>
+      this.createButton.click(),
+    )
+    if (response.ok()) await expect(show).toBeEnabled()
+    return response
+  }
+
   get secret(): Locator {
     return this.root.locator(KeyReveal.secretSelector)
   }

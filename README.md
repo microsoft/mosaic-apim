@@ -65,8 +65,9 @@ one under **Settings > Appearance**.
   <tr>
     <td colspan="2"><b>Portal catalog.</b> The model APIs and MCP servers published to portal
     users, each labelled with its environment and, for an MCP server, whether the gateway enforces
-    it. People request the development or production copy with an optional justification, and can
-    see what they already hold or have asked for.</td>
+    it. People request the development or production copy, charged to one of their cost centers,
+    with an optional justification, and can see what they already hold or have asked for under
+    each.</td>
   </tr>
 </table>
 
@@ -124,18 +125,20 @@ one under **Settings > Appearance**.
       a tool.</p>
     </td>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/console-identity.png" alt="The Identity page's Agents tab listing agent identities and an agent user, with a detail panel">
+      <img src="docs/images/screenshots/console-identity.png" alt="The Identity page's Agents tab listing agent identities and an agent user, with a detail panel that shows the agent's default cost center">
       <p><b>Identity.</b> The people, agents, applications, and security groups MOSAIC references
       by Entra object ID, each on its own tab. The Agents tab shows each agent's blueprint or
-      parent agent; Entra stays the source of truth, and MOSAIC keeps only a local label and type.</p>
+      parent agent; Entra stays the source of truth, and MOSAIC keeps only a local label, a type,
+      and the default cost center a principal's calls are charged to.</p>
     </td>
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/console-directory-picker.png" alt="The Add agent dialog with agent search results and already-added badges">
+      <img src="docs/images/screenshots/console-directory-picker.png" alt="The Add agent dialog with a default cost center, agent search results, and already-added badges">
       <p><b>Directory picker.</b> <b>Add agent</b> on the Agents tab searches Microsoft Entra for
       agents, and the same picker finds people and security groups. Results show what is already
-      in MOSAIC and what can still be added.</p>
+      in MOSAIC and what can still be added, and whoever is added gets the default cost center
+      chosen above them: the tenant's, unless the administrator picks another.</p>
     </td>
     <td width="50%" valign="top">
       <img src="docs/images/screenshots/console-security-group-members.png" alt="A security group detail page with members loaded from Microsoft Graph">
@@ -146,17 +149,33 @@ one under **Settings > Appearance**.
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/console-entitlements.png" alt="Grants with subjects, resources, environments, limits, desired and applied state, and bindings">
+      <img src="docs/images/screenshots/console-entitlements.png" alt="Grants with subjects, resources, cost centers, environments, limits, desired and applied state, and bindings, filtered by environment and cost center">
       <p><b>Entitlements.</b> Grants of model APIs and MCP servers to people, agents,
-      applications, MOSAIC groups, and Entra security groups, with each grant's environment,
-      limits, desired and applied state, and APIM binding. Gateway enforcement changes only
-      through a reviewed apply.</p>
+      applications, MOSAIC groups, and Entra security groups, each charged to a cost center, with
+      its environment, limits, desired and applied state, and APIM binding, filtered by environment
+      and cost center. Gateway enforcement changes only through a reviewed apply.</p>
     </td>
     <td width="50%" valign="top">
       <img src="docs/images/screenshots/console-overlapping-grants.png" alt="Overlapping grants showing which grant applies, each grant's limits, and links to the grants">
-      <p><b>Overlapping grants.</b> MOSAIC explains when multiple grants can reach the same
-      caller on the same resource, with each grant's limits and a link to it. Direct grants win
-      over group grants, and the most generous security-group grant wins among groups.</p>
+      <p><b>Overlapping grants.</b> MOSAIC explains when multiple grants under one cost center
+      can reach the same caller on the same resource, with each grant's limits and a link to it.
+      Direct grants win over group grants, and the most generous security-group grant wins among
+      groups.</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/images/screenshots/console-cost-centers.png" alt="The Cost centers page listing each cost center's code, members, grants, whether keys are allowed, and owners, beside the forms that create one and choose the tenant default">
+      <p><b>Cost centers.</b> Every grant, and so every call, is charged to a cost center, which
+      spans gateways and has a unique code callers can name in a header, owners, members, and a
+      switch for whether its grants may use keys. Administrators create them here and choose the
+      tenant default that new people are charged to.</p>
+    </td>
+    <td width="50%" valign="top">
+      <img src="docs/images/screenshots/console-cost-center-detail.png" alt="A cost center's details and summary, its members with their kind and default badges, and its per-person limits and pooled monthly quotas">
+      <p><b>Cost center.</b> One cost center's people, applications, agents, and security groups,
+      and its limits: per-person defaults and pooled monthly quotas for each model and MCP server.
+      Removing a member revokes their grants under it and deletes their keys on the next apply.</p>
     </td>
   </tr>
   <tr>
@@ -167,19 +186,20 @@ one under **Settings > Appearance**.
       resources that will change.</p>
     </td>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/console-analytics.png" alt="Analytics with request, token, cost, caller, error, and latency figures, a daily trend, and the top models, callers, and APIs">
+      <img src="docs/images/screenshots/console-analytics.png" alt="Analytics with request, token, cost, caller, error, and latency figures, a daily trend, and the top models, callers, and cost centers">
       <p><b>Analytics.</b> Real gateway usage rolled up from Log Analytics, filtered by time range,
-      gateway, environment, resource, and kind of subject. The overview compares the headline
-      figures, cost among them, with the previous period and ranks the top models, callers, and
-      APIs, and every tab exports CSV.</p>
+      gateway, environment, resource, cost center, and kind of subject. The overview compares the
+      headline figures, cost among them, with the previous period and ranks the top models,
+      callers, cost centers, and APIs, and every tab exports CSV.</p>
     </td>
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/console-analytics-cost.png" alt="The Cost tab with this month's spend, the month-end forecast, the range's cost, a cost and token trend, and cost by model, consumer, and API">
+      <img src="docs/images/screenshots/console-analytics-cost.png" alt="The Cost tab with this month's spend, the month-end forecast, the range's cost, a cost and token trend, and cost by model, consumer, and cost center">
       <p><b>Cost.</b> What measured usage cost at list price: this month's spend and its month-end
-      forecast, the range's cost and trend, and cost by model, consumer, API, and deployment, with
-      a chargeback export. Usage MOSAIC can't price shows <b>No price</b>, never $0.</p>
+      forecast, the range's cost and trend, and cost by model, consumer, cost center, API, and
+      deployment, with a chargeback export that names each row's cost center. Usage MOSAIC can't
+      price shows <b>No price</b>, never $0.</p>
     </td>
     <td width="50%" valign="top">
       <img src="docs/images/screenshots/console-pricing.png" alt="The Pricing page listing one GPT-4o version's list prices by deployment type and region, each with its source, and a scheduled change">
@@ -194,13 +214,14 @@ one under **Settings > Appearance**.
       <img src="docs/images/screenshots/console-analytics-consumers.png" alt="The Consumers tab listing people, agents, applications, and security groups with their requests, tokens, grants, resources, last call, and cost">
       <p><b>Consumers.</b> Each person, agent, application, and security group that called a
       governed API, with requests, tokens, grants, resources, when they were last seen, and what
-      their calls cost. Below it, the same usage by grant and by client application.</p>
+      their calls cost. Below it, the same usage by grant, by cost center, and by client
+      application.</p>
     </td>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/console-analytics-limits.png" alt="The Limits tab showing each grant's quota and rate-limit use with reached, near-limit, and OK badges">
+      <img src="docs/images/screenshots/console-analytics-limits.png" alt="The Limits tab showing each grant's cost center and its quota and rate-limit use with reached, near-limit, and OK badges">
       <p><b>Grant limits.</b> How close each grant is to its quotas and rate limits, busiest first,
-      with the calls the gateway throttled or refused for quota. A grant is near its limit at 80%
-      and has reached it once the gateway refuses its calls.</p>
+      with its cost center and the calls the gateway throttled or refused for quota. A grant is
+      near its limit at 80% and has reached it once the gateway refuses its calls.</p>
     </td>
   </tr>
   <tr>
@@ -235,10 +256,10 @@ one under **Settings > Appearance**.
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/console-unpublish-review.png" alt="The unpublish review listing the grants that lose access and the resources MOSAIC deletes">
+      <img src="docs/images/screenshots/console-unpublish-review.png" alt="The unpublish review listing the grants that lose access with their cost centers, and the resources MOSAIC deletes">
       <p><b>Unpublish review.</b> Before MOSAIC removes a model from API Management, the
-      administrator sees which grants lose access, what stops working for each, and every resource
-      MOSAIC deletes. Only confirming this review unpublishes it.</p>
+      administrator sees which grants lose access, the cost center each charges, what stops working
+      for each, and every resource MOSAIC deletes. Only confirming this review unpublishes it.</p>
     </td>
     <td width="50%" valign="top"></td>
   </tr>
@@ -249,10 +270,11 @@ one under **Settings > Appearance**.
 <table>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/portal-access.png" alt="A model grant with its environment, limits, and expanded connection details">
-      <p><b>My access.</b> Each grant with its environment, limits, APIM state, and how its usage is
-      tracked. A direct model grant expands to show its endpoint, operations, accepted credentials,
-      and Entra details, with code samples and an on-demand key reveal below.</p>
+      <img src="docs/images/screenshots/portal-access.png" alt="A model grant with its cost center, environment, limits, and expanded connection details">
+      <p><b>My access.</b> Each grant with the cost center it charges, its environment, limits,
+      APIM state, and how its usage is tracked. A direct model grant expands to show its endpoint,
+      operations, cost-center header, accepted credentials, and Entra details, with code samples
+      and its key below.</p>
     </td>
     <td width="50%" valign="top">
       <img src="docs/images/screenshots/portal-mcp-connection.png" alt="An enforced MCP grant with VS Code mcp.json connection details">
@@ -263,11 +285,17 @@ one under **Settings > Appearance**.
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/portal-requests.png" alt="Approved, denied, and pending access requests with their environments">
-      <p><b>My requests.</b> Access requests with their environment, justification, state, and the
-      administrator's decision note. A pending request can be withdrawn.</p>
+      <img src="docs/images/screenshots/portal-connection-cost-center.png" alt="A grant's cost-center header with its name and value, a curl sample that sends it with an Entra token, the response headers that report what's left, and a Create key button">
+      <p><b>Choosing a cost center.</b> Each grant names the cost center it charges and the
+      <code>x-mosaic-cost-center</code> header that picks it on a call, with a copy-ready curl for a
+      Microsoft Entra token and the response headers that say what's left of each limit. Keys are
+      created on request, so a grant without one offers <b>Create key</b>.</p>
     </td>
-    <td width="50%" valign="top"></td>
+    <td width="50%" valign="top">
+      <img src="docs/images/screenshots/portal-requests.png" alt="Approved, denied, and pending access requests with their environments and cost centers">
+      <p><b>My requests.</b> Access requests with their environment, cost center, justification,
+      state, and the administrator's decision note. A pending request can be withdrawn.</p>
+    </td>
   </tr>
   <tr>
     <td width="50%" valign="top">
@@ -278,11 +306,12 @@ one under **Settings > Appearance**.
       show when they used it.</p>
     </td>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/portal-usage-resources.png" alt="Usage by resource with each grant's requests, tokens, estimated cost, quota use, busiest minute, and usage tracking">
-      <p><b>Usage by resource.</b> The same figures by environment and by granted resource, with
-      each one's estimated cost, or <b>No price</b> and why, each quota's use in its current window,
-      and the busiest minute against each rate limit. Usage tracking says how a grant's calls are
-      linked, or that its usage can't be measured yet.</p>
+      <img src="docs/images/screenshots/portal-usage-resources.png" alt="Each of a person's cost centers with this month's total against its pooled quotas, then usage by resource with each grant's requests, tokens, estimated cost, quota use, busiest minute, and usage tracking">
+      <p><b>Cost centers and usage by resource.</b> Each cost center the person charges, with this
+      month's total from everyone who charges it against its pooled quotas: a total only, never who
+      used it. Below, their own figures by granted resource, with each one's estimated cost, or
+      <b>No price</b> and why, each quota's use, the busiest minute against each rate limit, and how
+      its calls are linked.</p>
     </td>
   </tr>
 </table>
@@ -428,14 +457,20 @@ explicit local/test modes and application startup rejects them when `MOSAIC_ENVI
   throughput shared by each caller's share of its tokens, and a chargeback export. Usage MOSAIC
   can't price shows **No price**, never $0. See [Pricing](docs/pricing.md) and
   [ADR 0020](docs/adr/0020-price-list.md)
+- Cost centers: every grant, and so every call, is charged to a cost center that spans gateways,
+  with owners, members (people, applications, agents, and Entra security groups), a keys allowed
+  switch, per-person default limits, and pooled monthly quotas per model. People choose one when
+  they ask for access and name one per call with the `x-mosaic-cost-center` header, and keys are
+  created on request. Analytics, the chargeback, and the portal report spend and quotas per cost
+  center. See [Cost centers](docs/cost-centers.md) and [ADR 0021](docs/adr/0021-cost-centers.md)
 - ACR remote builds for every image, so deployment does not depend on a local Docker daemon
 - `azd` and modular Bicep for three Linux Web Apps on one plan, ACR, Cosmos, Key Vault, APIM,
   Log Analytics, Application Insights, diagnostics, managed identities, and narrow RBAC
 - Idempotent Entra application/service-principal setup through `azd` hooks
 
 The Gateways workspace, the Identity workspace, the Models and MCPs workspaces, the Entitlements
-workspace, Settings → Environments, model publishing, the Dashboard, Analytics, Pricing, the
-end-user portal, and the deterministic policy preview use live API contracts. Usage figures in
+workspace, Cost centers, Settings → Environments, model publishing, the Dashboard, Analytics,
+Pricing, the end-user portal, and the deterministic policy preview use live API contracts. Usage figures in
 Azure are measured from gateway logs; only local and test runs simulate the portal's, labeled
 **Sample figures**. Policy metadata and other future operational experiences are interactive
 frontend previews labeled **Sample data** or **Local preview**. They never claim to mutate Azure
@@ -679,10 +714,14 @@ not. The domain distinguishes:
 - `Publication`: intent to expose one model deployment through one gateway, plus the API Management
   resources an apply created and whether MOSAIC created each one
 - `PublishPlan`, `PublishRun`: the reviewed changes and the audited result of applying them
-- `Entitlement`: a grant of a governed resource to a user, group, or application, its token and
-  request limits, and the binding that realizes it in API Management: a product or subscription,
-  or the grant tag an applied publication emits at the gateway
-- `AccessRequest`: a portal user's request for a resource they can see but are not entitled to
+- `Entitlement`: a grant of a governed resource to a user, group, or application, charged to one
+  cost center, its token and request limits, and the binding that realizes it in API Management: a
+  product or subscription, or the grant tag an applied publication emits at the gateway
+- `AccessRequest`: a portal user's request for a resource they can see but are not entitled to,
+  and the cost center they chose
+- `CostCenter`: who grants and calls are charged to, with its code, owners, members, keys switch,
+  per-person defaults and pooled quotas; `CostCenterSettings` names the tenant's default
+  ([ADR 0021](docs/adr/0021-cost-centers.md))
 - `CredentialReference`: Key Vault secret URI only
 - `PriceVersion`: a price an administrator added, or a new version of a listed one, with the day it
   takes effect, its source, and a note; never edited or deleted
@@ -1270,8 +1309,12 @@ application client IDs are not interchangeable except for agent identities, whos
 ID are the same. Prefer the subscription-key header over putting credentials in URLs.
 
 Opting in deliberately stops the publication's former generic/bootstrap key from authorizing
-requests. Each direct grant gets its own API-scoped subscription. Both primary and secondary keys
-and the subject's Entra token share that grant's counters. A key is still a transferable bearer
+requests. Each direct grant can have its own API-scoped subscription, created on request rather
+than by an apply: the grant's holder creates, rotates, or deletes it in the portal, and an
+administrator does so for applications and agents on the Entitlements page. Its name is fixed by
+the grant, so the applied policy recognizes it at once. Keys work only when the publication accepts
+keys and the grant's [cost center](#cost-centers) allows them. Both primary and secondary keys and
+the subject's Entra token share that grant's counters. A key is still a transferable bearer
 credential, not proof that the named person is using it. Disabling both authentication methods
 denies everyone; it never makes the API anonymous.
 
@@ -1299,7 +1342,10 @@ Administrators can explicitly reveal/copy an applied grant's key. Portal clients
 | Method | Route under `/api/v1` | Result |
 | --- | --- | --- |
 | GET | `/me/entitlements` | The caller's own direct grants and deployment state; no keys |
-| GET | `/me/entitlements/{id}/connection` | Endpoint, operations, runtime audience/scope, model client ID, and limits |
+| GET | `/me/entitlements/{id}/connection` | Endpoint, operations, runtime audience/scope, model client ID, limits, cost center, and the `x-mosaic-cost-center` header |
+| POST | `/me/entitlements/{id}/keys` | Create the grant's key; 201 |
+| POST | `/me/entitlements/{id}/keys/rotate` | Regenerate one slot; body `{"slot":"primary"}` or `{"slot":"secondary"}` |
+| DELETE | `/me/entitlements/{id}/keys` | Delete the grant's key |
 | POST | `/me/entitlements/{id}/keys/reveal` | The requested key; body `{"slot":"primary"}` or `{"slot":"secondary"}` |
 | GET | `/me/usage?period=30d` | The caller's own usage and limits per grant, measured from gateway logs; see [Usage and cost in the portal](#usage-and-cost-in-the-portal) |
 
@@ -1322,8 +1368,9 @@ the administrator routes return it.
 
 In the portal, each model grant on **My access** has a **Connection details** button. The
 connection loads only when it is expanded, and it shows the endpoint, full operation URLs,
-deployment, key header, accepted methods, Entra tenant, client ID, scope and audience, limits, and
-whether the grant is applied to APIM. If the last apply failed, the panel says so and asks the
+deployment, key header, accepted methods, Entra tenant, client ID, scope and audience, limits, the
+cost center and its `x-mosaic-cost-center` header with a copy-ready curl, and whether the grant is
+applied to APIM. If the last apply failed, the panel says so and asks the
 person to have an administrator retry it. When the connection has an `entraClientId`, a **Get a token
 (Python)** sample signs the person in with the model client using a device code. Without one, the
 panel asks them to get the client ID from an administrator. **Show primary key** and **Show
@@ -1651,6 +1698,47 @@ Settings, and in the import dialog. MOSAIC doesn't inspect backends referenced o
 
 [ADR 0014](docs/adr/0014-environments.md) records these rules.
 
+## Cost centers
+
+Every grant is charged to a cost center, and so is every call it carries. A cost center spans
+gateways. It has a name and a unique code, owners, members (people, applications, agents, and Entra
+security groups), a **keys allowed** switch, per-person default limits for each model or MCP
+server, and optional pooled monthly quotas. **General** is built in, and a tenant setting names the
+default cost center for new people; an administrator can pick another when onboarding someone.
+[Cost centers](docs/cost-centers.md) is the guide, and [ADR 0021](docs/adr/0021-cost-centers.md)
+records the design.
+
+- A grant's identity is its subject, resource, and cost center, so one person can hold a model
+  under two cost centers, as two grants with their own limits and keys. People choose a cost
+  center from a dropdown when they ask for access, and an approval can charge another they may
+  charge.
+- A call names its cost center with the `x-mosaic-cost-center: <code>` header. Without it, the
+  gateway uses the caller's grant under their default cost center, then their other direct grants,
+  oldest first, then group grants. An unknown cost center, or a key sent with another cost center's
+  code, is refused with 403, and the header never reaches the backend.
+- Per-person defaults apply to grants that set no limits of their own. A pooled quota is a second
+  `llm-token-limit`, or a `quota-by-key` for calls, counted per cost center and model. Responses
+  report what's left in `x-mosaic-remaining-tokens`, `x-mosaic-remaining-quota-tokens`,
+  `x-mosaic-remaining-calls`, and `x-mosaic-cost-center-remaining-quota-tokens`.
+- Removing a member revokes their grants under the cost center, and the next apply deletes their
+  keys.
+- Analytics filters every tab by cost center, the chargeback names each row's cost center, and the
+  portal shows each of a person's cost centers' totals against their pooled quotas, never anyone
+  else's use.
+
+| Method | Route under `/api/v1` | Result |
+| --- | --- | --- |
+| GET, POST | `/cost-centers` | List cost centers, or create one; 409 `codeInUse` for a code already taken |
+| GET, PATCH, DELETE | `/cost-centers/{id}` | Read, change, or delete one; deleting is refused while it's in use |
+| PUT, DELETE | `/cost-centers/{id}/members/{principalId}` | Add a member, or remove one and revoke their grants under it |
+| PUT | `/cost-centers/{id}/limits` | Replace its per-person defaults and pooled quotas |
+| GET, PUT | `/cost-center-settings` | The tenant's default cost center for new people |
+| POST, DELETE | `/entitlements/{id}/keys` | Create or delete any direct grant's key, such as an application's |
+| POST | `/entitlements/{id}/keys/rotate` | Regenerate one slot of a grant's key |
+| GET | `/portal/cost-centers` | The caller's own cost centers, their default marked (`User`) |
+
+The administrator routes need `Admin`. Grants list with `GET /entitlements?costCenter={id}`.
+
 ## Usage and analytics
 
 MOSAIC measures usage from API Management's own resource logs, so it never sits in the traffic
@@ -1699,8 +1787,8 @@ diagnostic's verbosity to Error.
 The **Dashboard** shows the last 7 days: requests, tokens, active callers, error rate, and p95
 latency, spend this month and its month-end forecast, the daily trend, how current each gateway's
 telemetry is, and the top five models, callers, and APIs. **Analytics** covers the last 24 hours, 7,
-30, or 90 days, 12 months, or chosen dates, and filters by gateway, environment, resource, and kind
-of subject:
+30, or 90 days, 12 months, or chosen dates, and filters by gateway, environment, resource, kind of
+subject, and [cost center](#cost-centers):
 
 | Tab | What it shows |
 | --- | --- |
@@ -1714,13 +1802,13 @@ of subject:
 | Unattributed | Calls MOSAIC couldn't link to a grant, such as those made with a publication's shared key, and what they cost |
 
 Every tab exports CSV, and tables that show cost export it too. The Cost tab exports a chargeback by
-month, person, application, or group, and model. These routes need `Admin`:
+month, person, application, or group, cost center, and model. These routes need `Admin`:
 
 | Method | Route under `/api/v1` | Result |
 | --- | --- | --- |
 | GET | `/analytics/status` | Where the figures come from, and how current each gateway's rollup is |
 | POST | `/analytics/refresh` | Roll up every gateway now; 202, or 429 within a minute of the last |
-| GET | `/analytics/{view}` | `overview`, `cost`, `consumers`, `models`, `reliability`, `limits`, `hygiene`, or `unattributed`, filtered by `range` (`24h`, `7d`, `30d`, `90d`, `12m`, or `custom` with `start` and `end`), `gatewayId`, `environment`, `resourceId`, and `subjectKind` |
+| GET | `/analytics/{view}` | `overview`, `cost`, `consumers`, `models`, `reliability`, `limits`, `hygiene`, or `unattributed`, filtered by `range` (`24h`, `7d`, `30d`, `90d`, `12m`, or `custom` with `start` and `end`), `gatewayId`, `environment`, `resourceId`, `subjectKind`, and `costCenterId` |
 | GET | `/analytics/export?view=` | One table as CSV, with the same filters; `chargeback` is the chargeback by month, and `costDeployments` the cost of each deployment |
 | GET | `/gateways/{id}/telemetry` | The gateway's telemetry checks and each governed API's diagnostic |
 | POST | `/gateways/{id}/telemetry/enable` | Create the logger and set API diagnostics on what MOSAIC published; audited |
@@ -1760,7 +1848,9 @@ throttling for each grant they hold. It breaks them down by day, by hour over th
 environment, and by resource, and shows each quota's use within that quota's own window and the
 busiest minute against each rate limit. It reads `GET /api/v1/me/usage?period=7d|30d|90d`, which
 returns only the caller's own usage. A security-group grant's figures count only the caller's own
-calls.
+calls. For each [cost center](#cost-centers) the caller holds a grant under, the page adds the cost
+center's total this month, everyone's calls together, against its pooled quotas, and never shows
+who else called or how much.
 
 In Azure the figures are measured, and the page says how current they are. The gateway applies
 limits as calls arrive, so someone can reach one before the page shows it. A row with nothing to
@@ -1842,8 +1932,10 @@ records.
    the portal against each grant's own limits and in the console's Dashboard and Analytics; see
    [ADR 0019](docs/adr/0019-usage-telemetry.md). A sourced, dated price list turns that usage into
    cost at list price, with a month-end forecast and a chargeback export; see
-   [ADR 0020](docs/adr/0020-price-list.md). Still to come: cost centers that allocate it to teams,
-   and budgets that warn by email and can block.
+   [ADR 0020](docs/adr/0020-price-list.md). Cost centers charge every grant and call to a team or
+   budget line, with pooled quotas and spend per cost center; see
+   [ADR 0021](docs/adr/0021-cost-centers.md). Still to come: budgets that warn by email and can
+   block.
 8. **Catalog ecosystem:** API Center experiences, MCP tool-level governance, broader self-service
    workflows, and environment chains that relate the same model across environments and clouds.
 9. **Production hardening:** private networking, multi-region/production APIM tiers, CMK where

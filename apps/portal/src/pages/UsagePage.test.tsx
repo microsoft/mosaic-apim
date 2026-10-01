@@ -37,6 +37,7 @@ function resourceRow(overrides: Partial<UsageResourceRow>): UsageResourceRow {
       environment: 'production',
       available: true,
     },
+    costCenter: { id: 'cc-research', name: 'Research', code: 'RES' },
     environment: 'production',
     via: 'direct',
     viaGroupName: null,
@@ -264,6 +265,36 @@ function usageReport(overrides: Partial<MyUsageReport> = {}): MyUsageReport {
       },
     ],
     byResource: rows,
+    costCenters: [
+      {
+        costCenter: { id: 'cc-research', name: 'Research', code: 'RES' },
+        monthStart: '2026-09-01',
+        requests: 300,
+        totalTokens: 45_000,
+        resources: [
+          {
+            resource: { kind: 'modelApi', id: 'chat', scopeId: null },
+            displayName: 'Chat completions',
+            requests: 250,
+            totalTokens: 40_000,
+            poolTokens: 100_000,
+            poolCalls: null,
+            utilization: 0.4,
+            callerName: 'Mallory',
+            objectId: '00000000-1111-2222-3333-444444444444',
+          } as never,
+          {
+            resource: { kind: 'mcpServer', id: 'docs-mcp', scopeId: null },
+            displayName: 'Docs MCP',
+            requests: 50,
+            totalTokens: null,
+            poolTokens: null,
+            poolCalls: 1_000,
+            utilization: 0.05,
+          },
+        ],
+      },
+    ],
     notes: [
       "Figures are simulated from your real grants and limits.",
       "Costs are estimates at illustrative rates and aren't a bill.",
@@ -423,6 +454,29 @@ describe('UsagePage', () => {
     const row = await findResourceRow('Docs MCP')
     expect(within(row).getByText('Not metered')).toBeVisible()
     expect(within(row).queryByText(/^0$/)).not.toBeInTheDocument()
+  })
+
+  it('shows cost center aggregates without per-person details', async () => {
+    renderPage()
+
+    expect(await screen.findByText('Cost centers')).toBeVisible()
+    expect(screen.getByText("Each cost center's total this month, from everyone who charges it. MOSAIC shows only the total, never who used it.")).toBeVisible()
+    expect(screen.getAllByText('Research · RES')[0]).toBeVisible()
+    expect(screen.getByText(/300 requests/)).toBeVisible()
+    expect(screen.getByText('40,000 tokens of 100,000 pooled tokens')).toBeVisible()
+    expect(screen.getByText('40% of pooled quota used')).toBeVisible()
+    expect(screen.getByText('50 requests of 1,000 pooled calls')).toBeVisible()
+    expect(screen.getByText('5% of pooled quota used')).toBeVisible()
+    expect(document.body).not.toHaveTextContent('Mallory')
+    expect(document.body).not.toHaveTextContent('00000000-1111-2222-3333-444444444444')
+  })
+
+  it('shows cost center tags on resource rows', async () => {
+    renderPage()
+
+    const row = await findResourceRow('Chat completions')
+    const tag = within(row).getByText((_content, element) => element?.tagName === 'SMALL' && element.textContent === 'Research · RES')
+    expect(tag).toBeVisible()
   })
 
   it('explains unattributed and unbound grants', async () => {

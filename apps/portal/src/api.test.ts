@@ -69,6 +69,20 @@ describe('usePortalApi', () => {
     expect(options.method).toBe('GET')
   })
 
+  it('lists portal cost centers from the portal-scoped API', async () => {
+    const fetchMock = stubFetch(() => jsonResponse([
+      { id: 'cc-research', name: 'Research', code: 'RES', isDefault: true, keysAllowed: true },
+    ]))
+    const { result } = renderHook(() => usePortalApi())
+
+    const costCenters = await result.current.listCostCenters()
+
+    expect(costCenters[0].code).toBe('RES')
+    const [url, options] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(url).toBe('http://localhost:8000/api/v1/portal/cost-centers')
+    expect(options.method).toBe('GET')
+  })
+
   it('reads my usage with an explicit period from the owner-scoped API', async () => {
     const fetchMock = stubFetch(() => jsonResponse({
       dataSource: 'simulated',
@@ -113,6 +127,30 @@ describe('usePortalApi', () => {
     expect(options).toMatchObject({ method: 'POST', cache: 'no-store', signal: controller.signal })
     expect(JSON.parse(String(options.body))).toEqual({ slot: 'secondary' })
     expect(new Headers(options.headers).get('Content-Type')).toBe('application/json')
+  })
+
+  it('creates, rotates, and deletes keys with no-store', async () => {
+    const fetchMock = stubFetch(() => jsonResponse({
+      entitlementId: 'grant_1',
+      subscriptionName: 'grant-subscription',
+      exists: true,
+      costCenter: { id: 'cc-research', name: 'Research', code: 'RES' },
+      rotated: null,
+    }))
+    const { result } = renderHook(() => usePortalApi())
+
+    await result.current.createMyEntitlementKey('grant_1')
+    await result.current.rotateMyEntitlementKey('grant_1', 'primary')
+    await result.current.deleteMyEntitlementKey('grant_1')
+
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+    expect(fetchMock.mock.calls[0][0]).toBe('http://localhost:8000/api/v1/me/entitlements/grant_1/keys')
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({ method: 'POST', cache: 'no-store' })
+    expect(fetchMock.mock.calls[1][0]).toBe('http://localhost:8000/api/v1/me/entitlements/grant_1/keys/rotate')
+    expect(fetchMock.mock.calls[1][1]).toMatchObject({ method: 'POST', cache: 'no-store' })
+    expect(JSON.parse(String((fetchMock.mock.calls[1][1] as RequestInit).body))).toEqual({ slot: 'primary' })
+    expect(fetchMock.mock.calls[2][0]).toBe('http://localhost:8000/api/v1/me/entitlements/grant_1/keys')
+    expect(fetchMock.mock.calls[2][1]).toMatchObject({ method: 'DELETE', cache: 'no-store' })
   })
 
   it.each([

@@ -28,7 +28,7 @@ import {
   environmentLabel,
   findEnvironment,
 } from '../environments'
-import type { AccessRequest, AccessRequestApproval, EnvironmentCatalogView, Publication, QuotaPeriod } from '../types'
+import type { AccessRequest, AccessRequestApproval, CostCenter, EnvironmentCatalogView, Publication, QuotaPeriod } from '../types'
 import { ErrorState } from './AsyncState'
 import styles from '../pages/EntitlementsPage.module.css'
 
@@ -51,6 +51,7 @@ export function ApproveAccessRequestDialog({
   accessRequest,
   requester,
   resourceLabel,
+  costCenters = [],
   environmentCatalog,
   publication,
   governed,
@@ -63,6 +64,7 @@ export function ApproveAccessRequestDialog({
   accessRequest: AccessRequest
   requester: ApprovalRequester
   resourceLabel: string
+  costCenters?: CostCenter[]
   environmentCatalog?: EnvironmentCatalogView
   /** The publication of the requested model API, the only source of default grant limits. */
   publication?: Publication
@@ -77,6 +79,7 @@ export function ApproveAccessRequestDialog({
 }) {
   const [limits, setLimits] = useState<LimitForm>(() => limitFormFrom(publication?.enforcement))
   const [note, setNote] = useState('')
+  const [costCenterId, setCostCenterId] = useState(accessRequest.costCenterId ?? '')
   const [confirmedMove, setConfirmedMove] = useState(false)
   const [currentEnvironment, setCurrentEnvironment] = useState<string | null>(
     () => accessRequest.resourceSummary?.environment ?? null,
@@ -112,6 +115,7 @@ export function ApproveAccessRequestDialog({
     onApprove({
       note: note.trim() || null,
       enforcement: buildEnforcement(limits, governed),
+      ...(costCenterId ? { costCenterId } : {}),
       ...(environmentMoved ? { confirmedEnvironment: currentEnvironment ?? 'unclassified' } : {}),
     })
   }
@@ -165,6 +169,10 @@ export function ApproveAccessRequestDialog({
                 <div>
                   <dt>Resource</dt>
                   <dd>{resourceLabel}</dd>
+                </div>
+                <div>
+                  <dt>Cost center</dt>
+                  <dd>{accessRequest.costCenter ? `${accessRequest.costCenter.name} (${accessRequest.costCenter.code})` : 'Subject default'}</dd>
                 </div>
                 <div>
                   <dt>Requested environment</dt>
@@ -287,6 +295,17 @@ export function ApproveAccessRequestDialog({
                   />
                 </Field>
               </div>
+              <Field label="Cost center" hint="Choose another cost center the requester may charge.">
+                <Select value={costCenterId} onChange={(_, data) => setCostCenterId(data.value)}>
+                  <option value="">Requester default cost center</option>
+                  {costCenters.map((costCenter) => (
+                    <option key={costCenter.id} value={costCenter.id}>
+                      {costCenter.name} ({costCenter.code})
+                    </option>
+                  ))}
+                </Select>
+              </Field>
+              <Text size={200}>Leaving limits empty applies this cost center&apos;s per-person defaults when it has them.</Text>
               <Field label="Decision note" hint="Optional. Recorded with the approval.">
                 <Input value={note} onChange={(_, data) => setNote(data.value)} />
               </Field>

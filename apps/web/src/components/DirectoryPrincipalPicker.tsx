@@ -48,12 +48,14 @@ export function DirectoryPrincipalPicker({
   onKindChange,
   onCreated,
   onManualFallback,
+  defaultCostCenterId,
 }: {
   /** What to search for. Leave it unset and the picker keeps its own choice, starting with people. */
   kind?: DirectorySearchKind
   onKindChange?: (kind: DirectorySearchKind) => void
   onCreated?: (principal: Principal) => void
   onManualFallback?: () => void
+  defaultCostCenterId?: string | null
 }) {
   const api = useMosaicApi()
   const queryClient = useQueryClient()
@@ -85,6 +87,9 @@ export function DirectoryPrincipalPicker({
         objectId: result.objectId,
         kind: result.kind,
         label: result.displayName?.trim() || undefined,
+        ...(result.kind !== 'securityGroup' && defaultCostCenterId
+          ? { defaultCostCenterId }
+          : {}),
       }),
     onSuccess: async (principal) => {
       await queryClient.invalidateQueries({ queryKey: ['principals'] })

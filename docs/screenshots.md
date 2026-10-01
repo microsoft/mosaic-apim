@@ -113,9 +113,12 @@ portal at `http://localhost:5174` signs you in as the demo end user, Megan Bowen
   queries from the gateways' generated logs, a day at a time.
 - `demo_api.py` runs the production FastAPI app with in-memory repositories and swaps its
   Azure-facing services for the fakes. It then seeds the estate through MOSAIC's own services, in
-  the order an operator would: add a custom Partner environment, register, classify, and sync
-  gateways, register a partner's Foundry resource by URL with its Key Vault secret and declare its
-  deployments, import, publish, grant, and request, approve, and deny access. One MCP server keeps
+  the order an operator would: add a custom Partner environment, create cost centers with their
+  owners, members, per-person limits, and pooled quotas, onboard people and workloads with their
+  default cost centers, register, classify, and sync gateways, register a partner's Foundry
+  resource by URL with its Key Vault secret and declare its deployments, import, publish, grant
+  under cost centers, and request, approve, and deny access. Keys exist only where someone asked
+  for one: the support copilot's, and the one Megan Bowen's notebook uses. One MCP server keeps
   only a legacy label, so Settings has something to classify, and the development gateway's
   routes to production produce environment findings. Grants and decided requests are then dated
   back as far as 120 days. Last, it enables API diagnostics on the production gateway and
@@ -218,6 +221,8 @@ shows both themes. Keep new shots in that pattern.
 | `console-security-group-members` | Console | `/identity?tab=workloads`, filtered to **AI Model Users** | Dark | Security group members |
 | `console-entitlements` | Console | `/entitlements`, scrolled to **Grants** | Light | Entitlements |
 | `console-overlapping-grants` | Console | `/entitlements`, scrolled to **Overlapping grants** | Dark | Overlapping grants |
+| `console-cost-centers` | Console | `/cost-centers` | Light | Cost centers |
+| `console-cost-center-detail` | Console | `/cost-centers`, **Customer Insights** opened | Dark | Cost center |
 | `console-mcp-publish` | Console | `/mcps`, **Plan and apply** review for the published Docs MCP server | Light | MCP publish review |
 | `console-unpublish-review` | Console | `/models`, **Unpublish** review for GPT-4o, never confirmed | Light | Unpublish review |
 | `console-analytics` | Console | `/analytics`, **Overview** tab | Dark | Analytics |
@@ -230,7 +235,8 @@ shows both themes. Keep new shots in that pattern.
 | `console-environments` | Console | `/settings` | Light | Environments |
 | `console-environment-findings` | Console | `/settings`, scrolled to **Findings** | Dark | Environment findings |
 | `portal-access` | Portal | `/access`, with a grant's **Connection details** open | Light | My access |
+| `portal-connection-cost-center` | Portal | `/access`, the GPT-4o grant under General with **Connection details** open, scrolled to **Cost center header** | Light | Choosing a cost center |
 | `portal-mcp-connection` | Portal | `/access`, with an enforced MCP grant's **Connection details** open | Dark | MCP connection |
 | `portal-requests` | Portal | `/requests` | Dark | My requests |
 | `portal-usage` | Portal | `/usage` | Light | Usage & cost |
-| `portal-usage-resources` | Portal | `/usage`, scrolled to **By resource** | Dark | Usage by resource |
+| `portal-usage-resources` | Portal | `/usage`, scrolled to **Cost centers** | Dark | Cost centers and usage by resource |

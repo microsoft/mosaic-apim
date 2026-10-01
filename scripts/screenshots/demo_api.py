@@ -34,12 +34,21 @@ from mosaic_api.config import (
     Settings,
     UsageSourceMode,
 )
+from mosaic_api.cost_centers import (
+    CostCenterCreate,
+    CostCenterLimit,
+    CostCenterLimitsUpdate,
+    CostCenterUpdate,
+    PersonLimits,
+    PooledQuota,
+)
 from mosaic_api.domain import (
     AccessRequestApproval,
     AccessRequestCreate,
     AccessRequestState,
     CatalogEntryUpdate,
     DirectoryObject,
+    Entitlement,
     EntitlementCreate,
     EntitlementEnforcement,
     EntitlementResource,
@@ -58,6 +67,7 @@ from mosaic_api.domain import (
     PublishRunStatus,
     RequestEnforcement,
     TokenEnforcement,
+    general_cost_center_id,
     mcp_server_id,
     model_api_id,
     subject_kind_for,
@@ -69,7 +79,7 @@ from mosaic_api.integrations.aoai.backend_key_access import KeyVaultLocator
 from mosaic_api.integrations.aoai.client import SubscriptionScanner
 from mosaic_api.integrations.aoai.key_check import KeyCheckOutcome, KeyCheckResult
 from mosaic_api.integrations.apim import ApimClient, ApimWriter, ArmClient
-from mosaic_api.integrations.apim.credentials import ApimCredentialClient
+from mosaic_api.integrations.apim.credentials import ApimCredentialClient, ApimKeyManager
 from mosaic_api.integrations.graph.fake import FakeDirectoryLookup
 from mosaic_api.main import create_app
 from mosaic_api.pricing import DeploymentPricingUpdate, EndpointPricingUpdate, PriceCreate
@@ -85,6 +95,7 @@ from mosaic_api.services import (
     UsageService,
 )
 from mosaic_api.services.analytics import AnalyticsService
+from mosaic_api.services.cost_centers import CostCenterService
 from mosaic_api.services.directory import Actor
 from mosaic_api.services.mcp_endpoints import build_mcp_client_factory
 from mosaic_api.services.mcp_publishing import McpPublishingService
@@ -278,6 +289,59 @@ GROUPS: list[tuple[str, str, list[Person]]] = [
     ("Finance Analysts", "Forecasting and reporting.", [DIEGO, LIDIA]),
 ]
 
+# The cost centers Contoso charges its AI use to, beside the built-in General, which stays the
+# tenant's default: code, name, description, owners, and whether their grants may use keys.
+COST_CENTERS: list[tuple[str, str, str, list[str], bool]] = [
+    (
+        "CI-204",
+        "Customer Insights",
+        "Churn analysis, research notebooks and the market research agent.",
+        ["megan.bowen@contoso.com", "lidia.holloway@contoso.com"],
+        True,
+    ),
+    (
+        "CS-110",
+        "Customer Support",
+        "The support copilot and the frontline support team.",
+        ["patti.fernandez@contoso.com"],
+        True,
+    ),
+    (
+        "FIN-310",
+        "Finance",
+        "Forecasting, invoices and the finance AI pilot. Microsoft Entra tokens only.",
+        ["diego.siciliani@contoso.com"],
+        False,
+    ),
+    (
+        "CLM-520",
+        "Claims Operations",
+        "Claims triage automation.",
+        ["johanna.lorenz@contoso.com"],
+        True,
+    ),
+]
+# Who an administrator charged to which cost center when onboarding them. Everyone else gets the
+# tenant's default, General.
+DEFAULT_COST_CENTERS = {
+    MEGAN.object_id: "CI-204",
+    ISAIAH.object_id: "CI-204",
+    MARKET_RESEARCH_AGENT.object_id: "CI-204",
+    PATTI.object_id: "CS-110",
+    NESTOR.object_id: "CS-110",
+    SUPPORT_COPILOT.object_id: "CS-110",
+    DIEGO.object_id: "FIN-310",
+    INVOICE_RECONCILIATION_AGENT.object_id: "FIN-310",
+    CLAIMS_TRIAGE.object_id: "CLM-520",
+}
+# Each cost center's listed members: people, applications, agents and Entra security groups.
+COST_CENTER_MEMBERS: dict[str, list[Person]] = {
+    "CI-204": [MEGAN, ISAIAH, MARKET_RESEARCH_AGENT, AI_MODEL_USERS],
+    "CS-110": [SUPPORT_COPILOT, PATTI, NESTOR],
+    "FIN-310": [DIEGO, INVOICE_RECONCILIATION_AGENT, FINANCE_AI_PILOT],
+    "CLM-520": [CLAIMS_TRIAGE],
+}
+
 # Every string that identifies a resource, endpoint, or account in the estate. Captures blur these
 # wherever they render, alongside the generic patterns in capture.py.
 SENSITIVE_LITERALS = [
@@ -396,6 +460,8 @@ class DemoServices:
     telemetry: TelemetryService
     usage_rollups: UsageRollupService
     pricing: PricingService
+    cost_centers: CostCenterService
+    portal_access: PortalAccessService
     clients: list[httpx.AsyncClient] = field(default_factory=list)
 
     async def aclose(self) -> None:
@@ -439,6 +505,7 @@ def install_demo_services(app: FastAPI, portal_origins: Iterable[str]) -> DemoSe
         entitlement_repository=state.entitlement_repository,
         directory_lookup=lookup,
         group_claims_enabled=settings.entra_group_claims,
+        cost_center_repository=state.cost_center_repository,
     )
 
     # Built as create_app builds them, with only the Azure-facing clients swapped for fakes.
@@ -468,6 +535,7 @@ def install_demo_services(app: FastAPI, portal_origins: Iterable[str]) -> DemoSe
         entitlement_repository=state.entitlement_repository,
         model_runtime_client_id=settings.model_runtime_client_id,
         environment_repository=state.environment_repository,
+        cost_center_repository=state.cost_center_repository,
     )
     mcp_publishing = McpPublishingService(
         state.gateway_repository,
@@ -479,6 +547,7 @@ def install_demo_services(app: FastAPI, portal_origins: Iterable[str]) -> DemoSe
         runtime_client_id=settings.model_runtime_client_id,
         security_group_claims=settings.entra_group_claims,
         environment_repository=state.environment_repository,
+        cost_center_repository=state.cost_center_repository,
     )
     mcp_endpoints = McpEndpointService(
         state.mcp_endpoint_repository,
@@ -499,7 +568,7 @@ def install_demo_services(app: FastAPI, portal_origins: Iterable[str]) -> DemoSe
     state.publishing_service = publishing
     state.mcp_publishing_service = mcp_publishing
     state.mcp_endpoint_service = mcp_endpoints
-    state.portal_access_service = PortalAccessService(
+    portal_access = PortalAccessService(
         state.entitlement_service,
         repository=state.entitlement_repository,
         directory_repository=state.repository,
@@ -507,7 +576,9 @@ def install_demo_services(app: FastAPI, portal_origins: Iterable[str]) -> DemoSe
         credential_factory=lambda resource: ApimCredentialClient(gateway_arm, resource),
         model_runtime_client_id=settings.model_runtime_client_id,
         model_client_id=settings.model_client_id,
+        key_manager_factory=lambda resource: ApimKeyManager(gateway_arm, resource),
     )
+    state.portal_access_service = portal_access
     # Usage and analytics read the demo's gateway logs through MOSAIC's own rollup job.
     logs = DemoLogs()
     telemetry = TelemetryService(
@@ -532,6 +603,7 @@ def install_demo_services(app: FastAPI, portal_origins: Iterable[str]) -> DemoSe
         interval_seconds=settings.usage_rollup_interval_seconds,
         retention_days=settings.usage_rollup_retention_days,
         backfill_max_days=settings.usage_rollup_backfill_max_days,
+        cost_center_repository=state.cost_center_repository,
     )
     state.telemetry_service = telemetry
     state.usage_rollup_service = usage_rollups
@@ -547,6 +619,8 @@ def install_demo_services(app: FastAPI, portal_origins: Iterable[str]) -> DemoSe
         endpoint_repository=state.model_endpoint_repository,
         environment_repository=state.environment_repository,
         pricing=pricing,
+        entitlement_repository=state.entitlement_repository,
+        cost_center_repository=state.cost_center_repository,
     )
     state.analytics_service = AnalyticsService(
         state.usage_rollup_repository,
@@ -561,6 +635,7 @@ def install_demo_services(app: FastAPI, portal_origins: Iterable[str]) -> DemoSe
         configured=True,
         interval_seconds=settings.usage_rollup_interval_seconds,
         retention_days=settings.usage_rollup_retention_days,
+        cost_center_repository=state.cost_center_repository,
     )
     state.authenticator = DemoAuthenticator(settings.tenant_id, portal_origins)
     return DemoServices(
@@ -578,6 +653,8 @@ def install_demo_services(app: FastAPI, portal_origins: Iterable[str]) -> DemoSe
         telemetry=telemetry,
         usage_rollups=usage_rollups,
         pricing=pricing,
+        cost_centers=state.cost_center_service,
+        portal_access=portal_access,
         clients=[gateway_http, ai_http, vault_http, mcp_http],
     )
 
@@ -635,6 +712,8 @@ class Estate:
     docs_mcp_api: str = ""
     principals: dict[str, str] = field(default_factory=dict)
     groups: dict[str, str] = field(default_factory=dict)
+    # Cost center IDs by code.
+    cost_centers: dict[str, str] = field(default_factory=dict)
 
 
 def _require_synced(run: Any, label: str) -> None:
@@ -666,6 +745,32 @@ async def _publish_mcp(
 
 # How long ago the estate's grants were made, other than those that came from a request.
 GRANT_AGE = timedelta(days=120)
+
+
+def _held_grant(
+    services: DemoServices,
+    estate: Estate,
+    subject: Person,
+    resource_id: str,
+    cost_center: str | None = None,
+) -> Entitlement:
+    """The subject's enabled grant on a resource, under one cost center when it holds several."""
+
+    subject_id = estate.principals[subject.label]
+    wanted = estate.cost_centers[cost_center] if cost_center else None
+    found = [
+        item
+        for item in services.entitlement_repository.entitlements.values()
+        if item.enabled
+        and item.subject.id == subject_id
+        and item.resource.id == resource_id
+        and (wanted is None or item.cost_center_id == wanted)
+    ]
+    if len(found) != 1:
+        raise SeedError(
+            f"{subject.label} holds {len(found)} grants on {resource_id} under {cost_center}"
+        )
+    return found[0]
 
 
 def _date_history(
@@ -704,14 +809,45 @@ async def seed_estate(services: DemoServices, tenant_id: str) -> Estate:
     admin = Actor(ADMIN.object_id, tenant_id)
     estate = Estate()
 
+    # Cost centers first, so onboarding can charge each person to theirs.
+    estate.cost_centers["general"] = general_cost_center_id(tenant_id)
+    for code, name, description, owners, keys_allowed in COST_CENTERS:
+        cost_center = await services.cost_centers.create_cost_center(
+            admin,
+            CostCenterCreate(
+                name=name,
+                code=code,
+                description=description,
+                owners=owners,
+                keys_allowed=keys_allowed,
+            ),
+        )
+        estate.cost_centers[code] = cost_center.id
+    await services.cost_centers.update_cost_center(
+        admin,
+        estate.cost_centers["general"],
+        CostCenterUpdate(owners=["adele.vance@contoso.com"]),
+    )
+
     for person in PEOPLE:
+        default = DEFAULT_COST_CENTERS.get(person.object_id)
         principal = await services.directory.create_principal(
             admin,
             PrincipalCreate.model_validate(
-                {"object_id": person.object_id, "kind": person.kind, "label": person.label}
+                {
+                    "object_id": person.object_id,
+                    "kind": person.kind,
+                    "label": person.label,
+                    "default_cost_center_id": estate.cost_centers[default] if default else None,
+                }
             ),
         )
         estate.principals[person.label] = principal.id
+    for code, members in COST_CENTER_MEMBERS.items():
+        for member in members:
+            await services.cost_centers.add_member(
+                admin, estate.cost_centers[code], estate.principals[member.label]
+            )
     for name, description, members in GROUPS:
         group = await services.directory.create_group(
             admin, GroupCreate(name=name, description=description)
@@ -998,7 +1134,11 @@ async def seed_estate(services: DemoServices, tenant_id: str) -> Estate:
         resource_id: str,
         enforcement: EntitlementEnforcement | None = None,
         notes: str | None = None,
+        *,
+        cost_center: str | None = None,
     ) -> None:
+        """Grant a resource, charged to ``cost_center`` by code, or to the subject's default."""
+
         if isinstance(subject, Person):
             kind = subject_kind_for(PrincipalKind(subject.kind)).value
             subject_id = estate.principals[subject.label]
@@ -1012,6 +1152,7 @@ async def seed_estate(services: DemoServices, tenant_id: str) -> Estate:
                 resource=EntitlementResource.model_validate(
                     {"kind": resource_kind, "id": resource_id}
                 ),
+                cost_center_id=estate.cost_centers[cost_center] if cost_center else None,
                 enforcement=enforcement,
                 notes=notes,
             ),
@@ -1051,6 +1192,49 @@ async def seed_estate(services: DemoServices, tenant_id: str) -> Estate:
     published_docs_mcp = estate.mcp_servers[published_docs.api_name]
     orders_mcp = estate.mcp_servers["orders-mcp"]
     service_desk_mcp = estate.mcp_servers["service-desk-mcp"]
+
+    # Per-person defaults for grants that set no limits of their own, and monthly quotas each
+    # cost center's grants share on a model.
+    def model(resource_id: str) -> EntitlementResource:
+        return EntitlementResource.model_validate({"kind": "modelApi", "id": resource_id})
+
+    cost_center_limits: dict[str, list[CostCenterLimit]] = {
+        "CI-204": [
+            CostCenterLimit(
+                resource=model(gpt4o),
+                person=PersonLimits(tokens_per_minute=20_000),
+                pool=PooledQuota(monthly_tokens=40_000_000),
+            ),
+            CostCenterLimit(
+                resource=EntitlementResource.model_validate(
+                    {"kind": "mcpServer", "id": published_docs_mcp}
+                ),
+                person=PersonLimits(calls_per_minute=60),
+                pool=PooledQuota(monthly_calls=60_000),
+            ),
+        ],
+        "CS-110": [
+            CostCenterLimit(
+                resource=model(gpt4o_mini), pool=PooledQuota(monthly_tokens=60_000_000)
+            ),
+        ],
+        "FIN-310": [
+            CostCenterLimit(
+                resource=model(phi4),
+                person=PersonLimits(
+                    tokens_per_minute=15_000, token_quota=6_000_000, token_quota_period="Monthly"
+                ),
+                pool=PooledQuota(monthly_tokens=12_000_000),
+            ),
+        ],
+        "CLM-520": [
+            CostCenterLimit(resource=model(phi4), pool=PooledQuota(monthly_calls=200_000)),
+        ],
+    }
+    for code, limits in cost_center_limits.items():
+        await services.cost_centers.set_limits(
+            admin, estate.cost_centers[code], CostCenterLimitsUpdate(limits=limits)
+        )
 
     await grant(
         SUPPORT_COPILOT,
@@ -1098,6 +1282,7 @@ async def seed_estate(services: DemoServices, tenant_id: str) -> Estate:
         "mcpServer",
         published_docs_mcp,
         EntitlementEnforcement(requests=_calls(quota=10_000, period="Monthly")),
+        cost_center="CI-204",
     )
     await grant(
         MARKET_RESEARCH_AGENT,
@@ -1113,12 +1298,15 @@ async def seed_estate(services: DemoServices, tenant_id: str) -> Estate:
     )
     await grant("Finance Analysts", "modelApi", embeddings)
     await grant("AI Platform Engineers", "mcpServer", service_desk_mcp)
+    # Both groups' GPT-4o grants are charged to General, so they overlap: someone in both gets
+    # the more generous one.
     await grant(
         AI_MODEL_USERS,
         "modelApi",
         gpt4o,
         EntitlementEnforcement(tokens=_tokens(per_minute=10_000)),
         "Per-member access for the broad AI model user population.",
+        cost_center="general",
     )
     await grant(
         FINANCE_AI_PILOT,
@@ -1126,6 +1314,16 @@ async def seed_estate(services: DemoServices, tenant_id: str) -> Estate:
         gpt4o,
         EntitlementEnforcement(tokens=_tokens(per_minute=5_000)),
         "Finance pilot users share a smaller per-member allowance.",
+        cost_center="general",
+    )
+    # Megan's own experiments, charged to General rather than to her team.
+    await grant(
+        PORTAL_USER,
+        "modelApi",
+        gpt4o,
+        EntitlementEnforcement(tokens=_tokens(per_minute=5_000)),
+        "Personal experiments, charged to General.",
+        cost_center="general",
     )
     await grant(
         MARKET_RESEARCH_AGENT,
@@ -1227,6 +1425,14 @@ async def seed_estate(services: DemoServices, tenant_id: str) -> Estate:
     await _publish_mcp(services, admin, published_docs.id, published_docs.display_name)
     for display_name in ("GPT-4o", "GPT-4o mini", "Phi-4"):
         await _publish(services, admin, estate.publications[display_name], display_name)
+    # Keys exist only where someone asked for one: the support copilot's, and the key Megan's
+    # notebook uses. Her General grant has none yet.
+    for subject, resource_id, code in (
+        (SUPPORT_COPILOT, gpt4o_mini, "CS-110"),
+        (PORTAL_USER, gpt4o, "CI-204"),
+    ):
+        held = _held_grant(services, estate, subject, resource_id, code)
+        await services.portal_access.create_key(admin, held.id, administrator=True)
     await grant(NESTOR, "modelApi", gpt4o)
 
     _require_synced(await services.gateways.sync_now(admin, gateway.id), gateway.name)
@@ -1291,11 +1497,17 @@ async def traffic_streams(
         caller: Person | None = None,
         client_app: str = "",
         key: bool = False,
+        cost_center: str | None = None,
         **shape: Any,
     ) -> TrafficStream:
-        """Calls under an applied grant, from the day it was made. ``caller`` is a group member."""
+        """Calls under an applied grant, from the day it was made. ``caller`` is a group member.
+
+        ``cost_center`` picks, by code, among a subject's grants on the same resource, as the
+        ``x-mosaic-cost-center`` header does.
+        """
 
         subject_id = estate.principals[subject.label]
+        wanted = estate.cost_centers[cost_center] if cost_center else None
         entitlement = next(
             (
                 item
@@ -1303,6 +1515,7 @@ async def traffic_streams(
                 if item.enabled
                 and item.subject.id == subject_id
                 and item.resource.id == resource_id
+                and (wanted is None or item.cost_center_id == wanted)
                 and item.binding is not None
                 and item.binding.attribution_key
             ),
@@ -1400,13 +1613,15 @@ async def traffic_streams(
             backend_throttle_rate=0.004,
             **chat("gpt-4o", 2100, 480, 3200),
         ),
-        # Megan's own grant, from the request approved seven weeks ago: a notebook that uses her
-        # key, and scripts that sign in as her.
+        # Megan's grant from the request approved seven weeks ago, charged to Customer Insights:
+        # a notebook that uses her key. Her scripts sign in as her and name General with the
+        # cost-center header, so they charge her own grant there.
         granted(
             "megan-key",
             MEGAN,
             gpt4o,
             key=True,
+            cost_center="CI-204",
             per_day=30,
             tokens_per_minute=20_000,
             **chat("gpt-4o", 1100, 380, 2200),
@@ -1416,8 +1631,9 @@ async def traffic_streams(
             MEGAN,
             gpt4o,
             client_app=AZURE_CLI,
+            cost_center="general",
             per_day=14,
-            tokens_per_minute=20_000,
+            tokens_per_minute=5_000,
             **chat("gpt-4o", 1300, 450, 2400),
         ),
         granted(
@@ -1442,7 +1658,7 @@ async def traffic_streams(
             **chat("Phi-4", 520, 90, 500),
         ),
         # AI Model Users' members call under the group's grant, unless they have their own. Lidia
-        # is in Finance AI Pilot too, whose smaller allowance loses.
+        # is in Finance AI Pilot too: naming no cost center, she gets the more generous grant.
         granted(
             "isaiah",
             AI_MODEL_USERS,

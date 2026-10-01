@@ -275,6 +275,23 @@ export class ConnectionDialog {
     return `pre[data-secret="true"][aria-label="Revealed ${slot} key"]`
   }
 
+  /** Shown while the grant has no key. Applies don't create keys: an administrator creates an application's. */
+  get createButton(): Locator {
+    return this.root.getByRole('button', { name: 'Create key', exact: true })
+  }
+
+  /** Creates the grant's key when it has none yet, and waits until a slot can be revealed. */
+  async ensureKey(): Promise<Response | undefined> {
+    const reveal = this.root.getByRole('button', { name: 'Reveal primary key', exact: true })
+    await expect(reveal.or(this.createButton).first()).toBeVisible()
+    if (!(await this.createButton.isVisible())) return undefined
+    const response = await responseTo(this.page, this.#apiOrigin, 'POST', /^\/api\/v1\/entitlements\/[^/]+\/keys$/, () =>
+      this.createButton.click(),
+    )
+    if (response.ok()) await expect(reveal).toBeEnabled()
+    return response
+  }
+
   /**
    * Reveals a key and reports what a person can see and what the browser kept, never the key itself: the
    * response's status and caching, how many characters the page shows, and where else the page holds it.

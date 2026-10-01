@@ -132,6 +132,10 @@
   vertical-align: middle;
 }
 
+.statusBadge {
+  white-space: nowrap;
+}
+
 .noPrice {
   color: var(--mosaic-warning);
   font-weight: 600;

@@ -699,6 +699,12 @@ described below.
 | R7 | `--watch-revocation <grant-id>` waits while the admin revokes the grant, which disables it, and applies the plan (A14). Rejections count only once MOSAIC reports the grant revoked, and must repeat |
 | R8 | Manual: find the calls in Application Insights and Log Analytics. With [ADR 0019](../adr/0019-usage-telemetry.md) deployed, the gateway's **Telemetry** section must pass its checks, and within about 20 minutes the portal's **Usage & cost** and the console's **Analytics** must count the run's calls against the right grant and client, and its refusals under their reasons |
 | R9 | Manual: after R8, with [ADR 0020](../adr/0020-price-list.md) deployed, **Analytics > Cost** must price each deployment the run called at its seeded list price, its tokens times the price per million, and the portal's **Usage & cost** must show the user only their own cost. Then check that **Pricing > Unpriced deployments** lists the declared Claude deployment until its type is set, and compare a month's estimate for one pay-as-you-go deployment with its Cost Management line at list price |
+| R10 | Manual, with [ADR 0021](../adr/0021-cost-centers.md) deployed: grant the `user` persona one model under two cost centers, apply, and create a key under one. With an Entra token, a call with `x-mosaic-cost-center` set to either code, in any letter case, must be attributed to that cost center's grant in **Analytics** (filter by cost center); a call without the header must go to the grant under the persona's default; a call naming an unknown code must return 403 with `mosaic-deny v=1 r=cost-center`. The key with the other cost center's code must return 403 with `r=cost-center-mismatch`, and with its own code or none must work. Capture a backend request, for example with a test MCP server or the deployment's diagnostic logs, to confirm the header never reaches the backend |
+| R11 | Manual, with ADR 0021: give a cost center a pooled monthly token quota on a model, smaller than the grant's own limits, a few hundred tokens. Spend it with two different grants under that cost center. Each response must carry `x-mosaic-cost-center-remaining-quota-tokens`, falling across both grants, and once it's spent both grants must get 429 from the pool's `llm-token-limit` while a grant under another cost center still works. Check that `x-mosaic-remaining-tokens` and `x-mosaic-remaining-quota-tokens` report the grant's own limits on the same responses. Repeat with a pooled call quota on an MCP server, which must return 403 or 429 from `quota-by-key` once spent |
+
+Since [ADR 0021](../adr/0021-cost-centers.md), applies don't create keys. When a grant the
+verifier reads has none, it creates the key through MOSAIC first, as its holder or the
+administrator would, and says so.
 
 Method toggles (A14) are checked by rerunning the verifier after each reviewed plan. The verifier
 reveals a grant's keys only while keys are on, so it can't show that a key stops working once keys
@@ -914,6 +920,8 @@ has passed, and ❌ means the latest run failed on the product gap named.
 | R7 | After revocation propagates, calls fail | 8 | ⬜ |
 | R8 | Calls show up in Application Insights and Log Analytics, and with ADR 0019, in MOSAIC's usage and analytics (optional) | 8 | 🔄 |
 | R9 | With ADR 0020, the run's calls are priced at list price in Analytics, the Dashboard, and the user's own portal page (optional) | 8 | ⬜ |
+| R10 | With ADR 0021, `x-mosaic-cost-center` selects the grant, a missing header falls back to the default cost center, and an unknown code or a key with another cost center's code is refused with 403; the backend never sees the header | 8 | ⬜ |
+| R11 | With ADR 0021, a cost center's pooled `llm-token-limit` is shared by its grants, reports `x-mosaic-cost-center-remaining-quota-tokens`, and returns 429 once spent, alongside each grant's own limits | 8 | ⬜ |
 
 ## Findings
 

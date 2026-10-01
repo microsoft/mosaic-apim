@@ -34,6 +34,7 @@ const api = {
   listGateways: vi.fn(),
   listModelApis: vi.fn(),
   listMcpServers: vi.fn(),
+  listCostCenters: vi.fn(),
   getAnalyticsOverview: vi.fn(),
   getAnalyticsConsumers: vi.fn(),
   getAnalyticsModels: vi.fn(),
@@ -75,6 +76,7 @@ describe('AnalyticsPage', () => {
     api.listGateways.mockResolvedValue([{ id: 'gateway-prod', name: 'Production gateway' }])
     api.listModelApis.mockResolvedValue([{ id: 'model-api-chat', displayName: 'Chat' }])
     api.listMcpServers.mockResolvedValue([{ id: 'mcp-tickets', displayName: 'Ticket tools' }])
+    api.listCostCenters.mockResolvedValue([{ id: 'cc-support', name: 'Support', code: 'support' }])
     api.getAnalyticsOverview.mockResolvedValue(overviewFixture)
     api.getAnalyticsConsumers.mockResolvedValue(consumersFixture)
     api.getAnalyticsModels.mockResolvedValue(modelsFixture)
@@ -101,6 +103,7 @@ describe('AnalyticsPage', () => {
     expect(within(models).getByText('45K tokens')).toBeVisible()
     expect(within(models).getByText('153 calls')).toBeVisible()
     expect(within(screen.getByRole('list', { name: 'Top callers' })).getByText('alice@contoso · 106 calls')).toBeVisible()
+    expect(within(screen.getByRole('list', { name: 'Top cost centers' })).getByText('support · 120 calls')).toBeVisible()
     const apis = screen.getByRole('list', { name: 'Top APIs' })
     expect(within(apis).getByText('154 calls')).toBeVisible()
     expect(within(apis).getByText('Production gateway · 45K tokens')).toBeVisible()
@@ -109,6 +112,18 @@ describe('AnalyticsPage', () => {
     await waitFor(() => expect(api.exportAnalytics).toHaveBeenCalledWith('trend', expect.objectContaining({ range: '30d' })))
     // The file keeps the name the API gave it, which carries the view and its dates.
     await waitFor(() => expect(vi.mocked(HTMLAnchorElement.prototype.click).mock.contexts[0]).toHaveProperty('download', 'mosaic-trend-20260219-20260320.csv'))
+  })
+
+  it('passes the cost-center filter to report requests and exports', async () => {
+    const user = userEvent.setup()
+    renderPage()
+
+    await screen.findByText('Alice Admin')
+    await user.selectOptions(screen.getByLabelText('Cost center'), 'cc-support')
+
+    await waitFor(() => expect(api.getAnalyticsOverview).toHaveBeenLastCalledWith(expect.objectContaining({ costCenterId: 'cc-support' })))
+    await user.click(screen.getByRole('button', { name: 'Export CSV' }))
+    await waitFor(() => expect(api.exportAnalytics).toHaveBeenCalledWith('trend', expect.objectContaining({ costCenterId: 'cc-support' })))
   })
 
   it.each([
@@ -142,6 +157,9 @@ describe('AnalyticsPage', () => {
     const grants = screen.getByRole('table', { name: 'Grant usage' })
     expect(within(grants).getByText('Person · alice@contoso')).toBeVisible()
     expect(within(grants).getByText('Active')).toBeVisible()
+    const costCenters = screen.getByRole('table', { name: 'Cost center usage' })
+    expect(within(costCenters).getByText('Support')).toBeVisible()
+    expect(within(costCenters).getByText('support')).toBeVisible()
 
     await user.click(screen.getByRole('tab', { name: 'Limits' }))
 
@@ -155,6 +173,14 @@ describe('AnalyticsPage', () => {
     expect(within(scheduler).getByText('Calls per minute')).toBeVisible()
   })
 
+  it('renders cost by cost center', async () => {
+    renderPage('/analytics?tab=cost')
+
+    const list = await screen.findByRole('list', { name: 'Cost by cost center' })
+    expect(within(list).getByText('Support')).toBeVisible()
+    expect(within(list).getByText('support · 11.1M tokens · 60.0% of the cost')).toBeVisible()
+  })
+
   it('exports the table picked for the open tab', async () => {
     const user = userEvent.setup()
     renderPage('/analytics?tab=consumers')
@@ -165,6 +191,7 @@ describe('AnalyticsPage', () => {
       'People',
       'Applications',
       'Security groups',
+      'Cost centers',
       'Grants',
       'Client applications',
     ])
@@ -334,6 +361,7 @@ describe('AnalyticsPage', () => {
     expect(within(picker).getAllByRole('option').map((option) => option.textContent)).toEqual([
       'Chargeback by month',
       'Cost by deployment',
+      'Cost centers',
     ])
     await user.click(screen.getByRole('button', { name: 'Export CSV' }))
 

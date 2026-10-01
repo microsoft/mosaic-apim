@@ -3,7 +3,7 @@ import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 import type { PortalApi } from '../api'
-import type { AccessRequest, CatalogEntry } from '../types'
+import type { AccessRequest, CatalogEntry, PortalCostCenter } from '../types'
 import { CatalogPage } from './CatalogPage'
 
 const mocks = vi.hoisted(() => ({
@@ -59,9 +59,19 @@ const pendingRequest: AccessRequest = {
   updatedAt: '2026-01-01T00:00:00Z',
 }
 
-function renderPage(entries: CatalogEntry[], requests: AccessRequest[]) {
+const costCenters: PortalCostCenter[] = [
+  { id: 'cc-general', name: 'General', code: 'GEN', isDefault: true, keysAllowed: true },
+  { id: 'cc-research', name: 'Research', code: 'RES', isDefault: false, keysAllowed: true },
+]
+
+function renderPage(entries: CatalogEntry[], requests: AccessRequest[], centers: PortalCostCenter[] | Error = costCenters) {
+  const createAccessRequest = vi.fn(async (payload) => ({ ...pendingRequest, ...payload }))
   mocks.api = {
     listCatalog: async () => entries,
+    listCostCenters: async () => {
+      if (centers instanceof Error) throw centers
+      return centers
+    },
     listEnvironments: async () => [
       {
         key: 'development',
@@ -81,7 +91,7 @@ function renderPage(entries: CatalogEntry[], requests: AccessRequest[]) {
       },
     ],
     listAccessRequests: async () => requests,
-    createAccessRequest: vi.fn(),
+    createAccessRequest,
     withdrawAccessRequest: vi.fn(),
   } as unknown as PortalApi
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -90,6 +100,7 @@ function renderPage(entries: CatalogEntry[], requests: AccessRequest[]) {
       <CatalogPage />
     </QueryClientProvider>,
   )
+  return { createAccessRequest }
 }
 
 describe('CatalogPage', () => {
@@ -101,12 +112,76 @@ describe('CatalogPage', () => {
     expect(screen.queryByRole('button', { name: 'Withdraw' })).not.toBeInTheDocument()
   })
 
+  it('preselects the default cost center and sends the selected id', async () => {
+    const user = userEvent.setup()
+    const { createAccessRequest } = renderPage([catalogEntry], [])
+
+    expect(await screen.findByText('Weather tools')).toBeVisible()
+    const selector = await screen.findByRole('combobox', { name: 'Cost center for Weather tools' })
+    expect(selector).toHaveValue('cc-general')
+    expect(screen.getByRole('option', { name: 'General (GEN)' })).toBeInTheDocument()
+    expect(screen.getByRole('option', { name: 'Research (RES)' })).toBeInTheDocument()
+
+    await user.selectOptions(selector, 'cc-research')
+    await user.click(screen.getByRole('button', { name: 'Request access' }))
+
+    await waitFor(() => expect(createAccessRequest).toHaveBeenCalled())
+    expect(createAccessRequest).toHaveBeenCalledWith({
+      resource: { kind: 'mcpServer', id: 'mcp-weather', scopeId: null },
+      costCenterId: 'cc-research',
+      justification: undefined,
+    })
+  })
+
+  it('marks cost centers that already have access or a request', async () => {
+    renderPage([
+      {
+        ...catalogEntry,
+        entitled: true,
+        requestState: 'pending',
+        entitledCostCenterIds: ['cc-general'],
+        requestedCostCenterIds: ['cc-research'],
+      },
+    ], [{ ...pendingRequest, costCenterId: 'cc-research' }])
+
+    expect(await screen.findByRole('option', { name: 'General (GEN) — already entitled' })).toBeInTheDocument()
+    expect(screen.getByRole('option', { name: 'Research (RES) — request open' })).toBeInTheDocument()
+    expect(screen.getByText('All cost centers already have access or an open request.')).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Request access' })).not.toBeInTheDocument()
+  })
+
+  it('falls back to the server default when cost centers cannot load', async () => {
+    const user = userEvent.setup()
+    const { createAccessRequest } = renderPage([catalogEntry], [], new Error('No cost centers'))
+
+    expect(await screen.findByText(/Cost centers could not load/)).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Request access' }))
+
+    await waitFor(() => expect(createAccessRequest).toHaveBeenCalledWith({
+      resource: { kind: 'mcpServer', id: 'mcp-weather', scopeId: null },
+      justification: undefined,
+    }))
+  })
+
   it('switches to withdraw when a request is pending', async () => {
     renderPage([{ ...catalogEntry, requestState: 'pending' }], [pendingRequest])
 
-    expect(await screen.findByText('A request is already open.')).toBeVisible()
+    expect(await screen.findByText('A request is already open for this cost center.')).toBeVisible()
     await waitFor(() => expect(screen.getByRole('button', { name: 'Withdraw' })).toBeEnabled())
     expect(screen.queryByRole('button', { name: 'Request access' })).not.toBeInTheDocument()
+  })
+
+  it('offers a request under another cost center when the default already has access', async () => {
+    const user = userEvent.setup()
+    renderPage([{ ...catalogEntry, entitled: true, entitledCostCenterIds: ['cc-general'] }], [])
+
+    const selector = await screen.findByRole('combobox', { name: 'Cost center for Weather tools' })
+    expect(selector).toHaveValue('cc-general')
+    expect(screen.getByText('Already entitled for this cost center')).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Request access' })).not.toBeInTheDocument()
+
+    await user.selectOptions(selector, 'cc-research')
+    expect(screen.getByRole('button', { name: 'Request access' })).toBeEnabled()
   })
 
   it.each([

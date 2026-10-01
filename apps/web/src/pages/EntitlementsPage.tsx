@@ -27,6 +27,7 @@ import {
 import { AddRegular } from '@fluentui/react-icons'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { type FormEvent, useCallback, useMemo, useRef, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { useMosaicApi } from '../api'
 import {
   ApproveAccessRequestDialog,
@@ -67,6 +68,7 @@ import type {
   EntitlementResourceKind,
   EntitlementSubject,
   EntitlementSubjectKind,
+  CostCenter,
   QuotaPeriod,
   Publication,
   PublishPlan,
@@ -93,6 +95,7 @@ interface ResourceOption {
 interface GrantForm extends LimitForm {
   subject: string
   resource: string
+  costCenter: string
   notes: string
 }
 
@@ -100,6 +103,7 @@ const emptyForm: GrantForm = {
   ...emptyLimitForm,
   subject: '',
   resource: '',
+  costCenter: '',
   notes: '',
 }
 
@@ -186,6 +190,8 @@ function overriddenByLabel(winner: ResolvedEntitlement | undefined): string {
 export function EntitlementsPage() {
   const api = useMosaicApi()
   const queryClient = useQueryClient()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const costCenterFilter = searchParams.get('costCenter') ?? 'all'
   const [dialogOpen, setDialogOpen] = useState(false)
   const [banner, setBanner] = useState<Banner | null>(null)
   const announce = useCallback((text: string) => setBanner({ text }), [])
@@ -202,13 +208,14 @@ export function EntitlementsPage() {
   const publishedModelSelectRef = useRef<HTMLSelectElement>(null)
 
   const entitlements = useQuery({
-    queryKey: ['entitlements'],
-    queryFn: () => api.listEntitlements(),
+    queryKey: ['entitlements', { costCenter: costCenterFilter }],
+    queryFn: () => api.listEntitlements(costCenterFilter === 'all' ? undefined : { costCenter: costCenterFilter }),
   })
   const principals = useQuery({ queryKey: ['principals'], queryFn: () => api.listPrincipals() })
   const groups = useQuery({ queryKey: ['groups'], queryFn: () => api.listGroups() })
   const modelApis = useQuery({ queryKey: ['model-apis'], queryFn: () => api.listModelApis() })
   const mcpServers = useQuery({ queryKey: ['mcp-servers'], queryFn: () => api.listMcpServers() })
+  const costCenters = useQuery({ queryKey: ['cost-centers'], queryFn: api.listCostCenters })
   const gateways = useQuery({ queryKey: ['gateways'], queryFn: () => api.listGateways() })
   const modelEndpoints = useQuery({
     queryKey: ['model-endpoints'],
@@ -281,6 +288,11 @@ export function EntitlementsPage() {
     return map
   }, [resourceOptions, subjectOptions])
 
+  const costCenterById = useMemo(
+    () => new Map((costCenters.data ?? []).map((costCenter: CostCenter) => [costCenter.id, costCenter])),
+    [costCenters.data],
+  )
+
   const resolved = useQuery({
     queryKey: ['entitlements', 'resolve', inspectedPrincipal],
     queryFn: () => api.resolveEntitlements(inspectedPrincipal),
@@ -291,6 +303,7 @@ export function EntitlementsPage() {
     mutationFn: (payload: {
       subject: EntitlementSubject
       resource: EntitlementResource
+      costCenterId?: string
       enforcement: EntitlementEnforcement | null
       notes: string | null
     }) => api.createEntitlement(payload),
@@ -418,7 +431,8 @@ export function EntitlementsPage() {
       existingGrant: Boolean(principal) && (entitlements.data ?? []).some(
         (item) => item.subject.kind === subject.kind && item.subject.id === subject.id
           && item.resource.kind === resource.kind && item.resource.id === resource.id
-          && (item.resource.scopeId ?? '') === (resource.scopeId ?? ''),
+          && (item.resource.scopeId ?? '') === (resource.scopeId ?? '')
+          && (item.costCenterId ?? '') === (accessRequest.costCenterId ?? ''),
       ),
     })
   }
@@ -459,6 +473,7 @@ export function EntitlementsPage() {
     }
     createMutation.mutate({
       ...target,
+      ...(form.costCenter ? { costCenterId: form.costCenter } : {}),
       enforcement: buildEnforcement(form, managedGrant(target)),
       notes: form.notes.trim() || null,
     })
@@ -637,6 +652,25 @@ export function EntitlementsPage() {
               <option value="unclassified">Unclassified</option>
             </Select>
           </Field>
+          <Field label="Cost center">
+            <Select
+              value={costCenterFilter}
+              onChange={(_, data) => {
+                const next = new URLSearchParams(searchParams)
+                if (data.value === 'all') next.delete('costCenter')
+                else next.set('costCenter', data.value)
+                setSearchParams(next)
+              }}
+              aria-label="Filter grants by cost center"
+            >
+              <option value="all">All cost centers</option>
+              {(costCenters.data ?? []).map((costCenter) => (
+                <option key={costCenter.id} value={costCenter.id}>
+                  {costCenter.name} ({costCenter.code})
+                </option>
+              ))}
+            </Select>
+          </Field>
         </div>
         <div className={styles.tableWrap}>
           {entitlements.isPending && <Loading label="Loading entitlements..." />}
@@ -657,6 +691,7 @@ export function EntitlementsPage() {
                   <TableRow>
                     <TableHeaderCell>Subject</TableHeaderCell>
                     <TableHeaderCell>Resource</TableHeaderCell>
+                    <TableHeaderCell>Cost center</TableHeaderCell>
                     <TableHeaderCell>Environment</TableHeaderCell>
                     <TableHeaderCell>Limits</TableHeaderCell>
                     <TableHeaderCell>Desired / applied</TableHeaderCell>
@@ -715,6 +750,17 @@ export function EntitlementsPage() {
                         </div>
                       </TableCell>
                       <TableCell>
+                        {(() => {
+                          const costCenter = entitlement.costCenter ?? (entitlement.costCenterId ? costCenterById.get(entitlement.costCenterId) : undefined)
+                          return costCenter ? (
+                            <div className={styles.cellStack}>
+                              <Text className={styles.primaryCell}>{costCenter.name}</Text>
+                              <Text className={styles.secondaryCell}>{costCenter.code}</Text>
+                            </div>
+                          ) : '—'
+                        })()}
+                      </TableCell>
+                      <TableCell>
                         <EnvironmentBadge environment={environment} catalog={environmentCatalog.data} />
                       </TableCell>
                       <TableCell>
@@ -743,7 +789,16 @@ export function EntitlementsPage() {
                           )}
                         </div>
                       </TableCell>
-                      <TableCell><EntitlementAccessState entitlement={entitlement} /></TableCell>
+                      <TableCell>
+                        <div className={styles.cellStack}>
+                          <EntitlementAccessState entitlement={entitlement} />
+                          {entitlement.revocation?.reason === 'costCenterMembership' && (
+                            <Text className={styles.secondaryCell}>
+                              Revoked when its subject left the cost center.
+                            </Text>
+                          )}
+                        </div>
+                      </TableCell>
                       <TableCell>
                         {entitlement.binding ? (
                           <div className={styles.cellStack}>
@@ -853,6 +908,11 @@ export function EntitlementsPage() {
                       </Text>
                     )}
                     <Text>{overlap.reason}</Text>
+                    {overlap.costCenterId && (
+                      <Text className={styles.secondaryCell}>
+                        Cost center: {costCenterById.get(overlap.costCenterId)?.name ?? overlap.costCenterId}
+                      </Text>
+                    )}
                     <dl className={`${styles.detailList} ${styles.overlapGrants}`}>
                       {[overlap.winner, ...overlap.shadowed].map((grant, index) => (
                         <div key={grant.entitlementId}>
@@ -914,6 +974,7 @@ export function EntitlementsPage() {
                     <TableRow>
                       <TableHeaderCell>Requester</TableHeaderCell>
                       <TableHeaderCell>Resource</TableHeaderCell>
+                      <TableHeaderCell>Cost center</TableHeaderCell>
                       <TableHeaderCell>Requested environment</TableHeaderCell>
                       <TableHeaderCell>Current environment</TableHeaderCell>
                       <TableHeaderCell>Justification</TableHeaderCell>
@@ -949,6 +1010,14 @@ export function EntitlementsPage() {
                               <Text className={styles.secondaryCell}>No longer available</Text>
                             )}
                           </div>
+                        </TableCell>
+                        <TableCell>
+                          {accessRequest.costCenter ? (
+                            <div className={styles.cellStack}>
+                              <Text className={styles.primaryCell}>{accessRequest.costCenter.name}</Text>
+                              <Text className={styles.secondaryCell}>{accessRequest.costCenter.code}</Text>
+                            </div>
+                          ) : 'Subject default'}
                         </TableCell>
                         <TableCell>
                           <EnvironmentBadge
@@ -1042,6 +1111,7 @@ export function EntitlementsPage() {
                     </dt>
                     <dd>
                       {grantPathLabel(item)}
+                      {item.costCenter && ` · ${item.costCenter.name} (${item.costCenter.code})`}
                       {' · '}
                       {!item.entitlement.enabled
                         ? 'Disabled'
@@ -1069,7 +1139,13 @@ export function EntitlementsPage() {
                 <Field label="Subject" required>
                   <Select
                     value={form.subject}
-                    onChange={(_, data) => setForm({ ...form, subject: data.value })}
+                    onChange={(_, data) => {
+                      setForm({
+                        ...form,
+                        subject: data.value,
+                        costCenter: '',
+                      })
+                    }}
                   >
                     <option value="">Select a user, group, or application</option>
                     {(['People', 'Agents', 'Security groups', 'Applications', 'MOSAIC groups'] as const).map((group) => {
@@ -1105,6 +1181,19 @@ export function EntitlementsPage() {
                     {resourceOptions.map((option) => (
                       <option key={option.id} value={option.id}>
                         {option.label}
+                      </option>
+                    ))}
+                  </Select>
+                </Field>
+                <Field label="Cost center" hint="Defaults to the subject's default cost center when MOSAIC knows it. The service validates membership.">
+                  <Select
+                    value={form.costCenter}
+                    onChange={(_, data) => setForm({ ...form, costCenter: data.value })}
+                  >
+                    <option value="">Subject default cost center</option>
+                    {(costCenters.data ?? []).map((costCenter) => (
+                      <option key={costCenter.id} value={costCenter.id}>
+                        {costCenter.name} ({costCenter.code})
                       </option>
                     ))}
                   </Select>
@@ -1214,6 +1303,7 @@ export function EntitlementsPage() {
           accessRequest={approving.accessRequest}
           requester={approving.requester}
           resourceLabel={approving.resourceLabel}
+          costCenters={costCenters.data ?? []}
           environmentCatalog={environmentCatalog.data}
           publication={approving.publication}
           governed={approving.governed}

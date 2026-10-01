@@ -43,6 +43,9 @@ const api = vi.hoisted(() => ({
   getMyEntitlementConnection: vi.fn(),
   getMcpConnection: vi.fn(),
   revealMyEntitlementKey: vi.fn(),
+  createMyEntitlementKey: vi.fn(),
+  rotateMyEntitlementKey: vi.fn(),
+  deleteMyEntitlementKey: vi.fn(),
 }))
 vi.mock('../api', () => ({ usePortalApi: () => api }))
 
@@ -170,6 +173,47 @@ describe('ConnectionDetails', () => {
     expect(operations).toHaveLength(2)
     expect(operations[0]).toHaveTextContent(`POST${chatUrl}chat-completions`)
     expect(operations[1]).toHaveTextContent(`POST${responsesUrl}responses`)
+  })
+
+  it('shows the cost center header with a copy-ready Entra token curl', async () => {
+    const user = userEvent.setup()
+    const copy = vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue(undefined)
+    renderDetails()
+    await openDetails(user)
+
+    const header = section('Cost center header')
+    expect(fact(header, 'Header name')).toHaveTextContent('x-mosaic-cost-center')
+    expect(fact(header, 'Header value')).toHaveTextContent('RES')
+    expect(header).toHaveTextContent(/Without the header, the gateway uses your grant under your default cost center first/)
+    expect(header).toHaveTextContent('A key always charges its own grant, so a key needs no header.')
+    expect(within(header).getAllByRole('listitem').map((item) => item.textContent)).toEqual([
+      'x-mosaic-remaining-tokens Your tokens this minute',
+      'x-mosaic-remaining-quota-tokens Your token quota',
+      'x-mosaic-remaining-calls Your calls in this rate window',
+      "x-mosaic-cost-center-remaining-quota-tokens The cost center's pooled tokens this month, shared with everyone who charges it",
+    ])
+    const tokenCurl = header.querySelector('pre.header-sample')?.textContent ?? ''
+    expect(tokenCurl).toContain(`curl "${chatUrl}?api-version=$MOSAIC_API_VERSION"`)
+    expect(tokenCurl).toContain(`-H "Authorization: ${'Bearer'} $MOSAIC_ACCESS_TOKEN"`)
+    expect(tokenCurl).toContain('-H "x-mosaic-cost-center: RES"')
+    expect(tokenCurl).not.toContain('MOSAIC_API_KEY')
+    // A key charges its own grant's cost center, so the key samples send no header.
+    expect(samples().join('\n')).not.toContain('x-mosaic-cost-center')
+
+    await user.click(screen.getByRole('button', { name: 'Copy cost center header value' }))
+    expect(copy).toHaveBeenCalledWith('RES')
+    await user.click(screen.getByRole('button', { name: 'Copy curl with the cost center header' }))
+    expect(copy).toHaveBeenLastCalledWith(tokenCurl)
+  })
+
+  it('leaves the token curl to the code samples when only tokens are accepted', async () => {
+    const user = userEvent.setup()
+    renderDetails()
+    await openDetails(user, { ...connection, appliedMethods: { keysEnabled: false, entraEnabled: true } })
+
+    const header = section('Cost center header')
+    expect(header.querySelector('pre.header-sample')).toBeNull()
+    expect(samples().join('\n')).toContain('-H "x-mosaic-cost-center: RES"')
   })
 
   it('shows the applied access methods and the Entra details needed for a token', async () => {
@@ -454,6 +498,8 @@ describe('ConnectionDetails', () => {
     const snippet = samples()[0]
     expect(snippet).toContain('"Weather tools"')
     expect(snippet).toContain(`"url": "${mcpServerUrl}"`)
+    expect(snippet).toContain('"x-mosaic-cost-center": "RES"')
+    expect(fact(section('Cost center header'), 'Header value')).toHaveTextContent('RES')
     expect(fact(section('Authentication'), 'Delegated scope')).toHaveTextContent(mcpConnection.delegatedScope!)
     expect(fact(section('Authentication'), 'Client ID')).toHaveTextContent(modelClientId)
     expect(section('Call limits')).toHaveTextContent('120 calls per 60 seconds')
@@ -541,10 +587,12 @@ describe('ConnectionDetails', () => {
     expect(token).toContain('msal.PublicClientApplication(')
     expect(curl).toContain(`curl "${chatUrl}?api-version=$MOSAIC_API_VERSION"`)
     expect(curl).toContain('-H "Ocp-Apim-Subscription-Key: $MOSAIC_API_KEY"')
+    expect(curl).not.toContain('x-mosaic-cost-center')
     expect(curl).toContain(`-d '{"model": "gpt-4o", "messages": [{"role": "user", "content": "Hello"}]}'`)
     expect(python).toContain(JSON.stringify(chatUrl))
     expect(python).toContain('params={"api-version": os.environ["MOSAIC_API_VERSION"]}')
-    expect(python).toContain('headers={"Ocp-Apim-Subscription-Key": os.environ["MOSAIC_API_KEY"]}')
+    expect(python).toContain('"Ocp-Apim-Subscription-Key": os.environ["MOSAIC_API_KEY"]')
+    expect(python).not.toContain('x-mosaic-cost-center')
     expect(screen.getByText(/To use a token instead/)).toBeVisible()
     expect(screen.getByText(/Samples use placeholders and never include your key/)).toBeVisible()
     expect(screen.queryByText(/uses the Anthropic Messages API/)).not.toBeInTheDocument()
@@ -558,8 +606,10 @@ describe('ConnectionDetails', () => {
     expect(sampleHeadings()).toEqual(['Get a token (Python)', 'curl (bash)', 'Python'])
     const [token, curl, python] = samples()
     expect(token).toContain('msal.PublicClientApplication(')
-    expect(curl).toContain('-H "Authorization: Bearer $MOSAIC_ACCESS_TOKEN"')
-    expect(python).toContain('headers={"Authorization": "Bearer " + os.environ["MOSAIC_ACCESS_TOKEN"]}')
+    expect(curl).toContain('-H "Authorization:')
+    expect(curl).toContain('-H "x-mosaic-cost-center: RES"')
+    expect(python).toContain('"Authorization": "Bearer " + os.environ["MOSAIC_ACCESS_TOKEN"]')
+    expect(python).toContain('"x-mosaic-cost-center": "RES"')
     expect(`${token}\n${curl}\n${python}`).not.toContain('MOSAIC_API_KEY')
   })
 

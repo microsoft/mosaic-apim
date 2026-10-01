@@ -18,6 +18,9 @@ import { KeyReveal } from './KeyReveal'
 const api = vi.hoisted(() => ({
   getMyEntitlementConnection: vi.fn(),
   revealMyEntitlementKey: vi.fn(),
+  createMyEntitlementKey: vi.fn(),
+  rotateMyEntitlementKey: vi.fn(),
+  deleteMyEntitlementKey: vi.fn(),
 }))
 vi.mock('../api', () => ({ usePortalApi: () => api }))
 
@@ -65,6 +68,9 @@ describe('KeyReveal', () => {
   beforeEach(() => {
     vi.resetAllMocks()
     api.revealMyEntitlementKey.mockResolvedValue(revealedPrimary)
+    api.createMyEntitlementKey.mockResolvedValue({ entitlementId: directGrant.id, subscriptionName: 'grant-subscription', exists: true, costCenter: connection.costCenter, rotated: null })
+    api.rotateMyEntitlementKey.mockResolvedValue({ entitlementId: directGrant.id, subscriptionName: 'grant-subscription', exists: true, costCenter: connection.costCenter, rotated: 'primary' })
+    api.deleteMyEntitlementKey.mockResolvedValue({ entitlementId: directGrant.id, subscriptionName: 'grant-subscription', exists: false, costCenter: connection.costCenter, rotated: null })
   })
 
   afterEach(() => {
@@ -78,6 +84,7 @@ describe('KeyReveal', () => {
     const { queryClient } = renderKeyReveal()
 
     expect(screen.getByText('Hidden')).toBeInTheDocument()
+    expect(screen.getByText(/This grant charges Research \(RES\)/)).toBeVisible()
     expect(document.querySelector('[data-secret]')).toBeNull()
     expect(screen.queryByRole('button', { name: 'Copy key' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Hide key' })).not.toBeInTheDocument()
@@ -94,6 +101,52 @@ describe('KeyReveal', () => {
     expect(document.body.innerHTML.split(revealedPrimary.key)).toHaveLength(2)
     expect(persistedText(queryClient)).not.toContain(revealedPrimary.key)
     expect(logs()).not.toContain(revealedPrimary.key)
+  })
+
+  it('creates a key when none exists yet', async () => {
+    const user = userEvent.setup()
+    const { onConflict } = renderKeyReveal({ ...connection, keyExists: false })
+
+    expect(screen.getByText(/No subscription key exists yet/)).toBeVisible()
+    // Nothing to show, rotate or delete until the key exists.
+    expect(screen.queryByRole('button', { name: 'Show primary key' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Rotate primary key' })).not.toBeInTheDocument()
+    expect(screen.queryByText('Hidden')).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Create key' }))
+
+    expect(api.createMyEntitlementKey).toHaveBeenCalledWith(directGrant.id)
+    expect(await screen.findByText('Key created. You can show either slot now.')).toBeVisible()
+    expect(onConflict).toHaveBeenCalled()
+  })
+
+  it('confirms rotation and hides any shown key', async () => {
+    const user = userEvent.setup()
+    renderKeyReveal()
+    await user.click(showPrimary())
+    expect(await screen.findByText(revealedPrimary.key)).toBeVisible()
+
+    await user.click(screen.getByRole('button', { name: 'Rotate primary key' }))
+    expect(screen.getByText(/Apps using the old primary value stop working/)).toBeVisible()
+    await user.click(screen.getByRole('group', { name: 'Confirm rotate primary key' }).querySelector('button')!)
+
+    expect(api.rotateMyEntitlementKey).toHaveBeenCalledWith(directGrant.id, 'primary')
+    expect(screen.queryByText(revealedPrimary.key)).not.toBeInTheDocument()
+    expect(await screen.findByText('Primary key rotated. Apps using that old value must be updated.')).toBeVisible()
+  })
+
+  it('confirms delete and hides any shown key', async () => {
+    const user = userEvent.setup()
+    renderKeyReveal()
+    await user.click(showPrimary())
+    expect(await screen.findByText(revealedPrimary.key)).toBeVisible()
+
+    await user.click(screen.getByRole('button', { name: 'Delete key' }))
+    expect(screen.getByText(/Every app using this key stops working/)).toBeVisible()
+    await user.click(screen.getByRole('group', { name: 'Confirm delete key' }).querySelector('button')!)
+
+    expect(api.deleteMyEntitlementKey).toHaveBeenCalledWith(directGrant.id)
+    expect(screen.queryByText(revealedPrimary.key)).not.toBeInTheDocument()
+    expect(await screen.findByText('Key deleted. You can create a new one if you need key access again.')).toBeVisible()
   })
 
   it('reveals the secondary key on request', async () => {
@@ -375,6 +428,30 @@ describe('KeyReveal', () => {
     expect(showPrimary()).toBeDisabled()
     expect(showSecondary()).toBeDisabled()
     expect(api.revealMyEntitlementKey).not.toHaveBeenCalled()
+  })
+
+  it('shows no key controls when cost center keys are off', () => {
+    renderKeyReveal({ ...connection, keysAllowedByCostCenter: false })
+
+    expect(screen.getByText('Subscription keys are turned off for this cost center. Use a Microsoft Entra ID token instead.')).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Show primary key' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Create key' })).not.toBeInTheDocument()
+  })
+
+  it('maps cost center key errors to plain copy', async () => {
+    const user = userEvent.setup()
+    api.createMyEntitlementKey.mockRejectedValue(
+      Object.assign(new Error('Conflict'), {
+        status: 409,
+        body: { details: { reason: 'costCenterKeysOff' } },
+      }),
+    )
+    renderKeyReveal({ ...connection, keyExists: false })
+
+    await user.click(screen.getByRole('button', { name: 'Create key' }))
+
+    expect(await screen.findByText('Keys are turned off for this cost center')).toBeVisible()
+    expect(screen.getByText('Use a Microsoft Entra ID token instead.')).toBeVisible()
   })
 
   it('does not offer key reveal for group grants without keys', () => {

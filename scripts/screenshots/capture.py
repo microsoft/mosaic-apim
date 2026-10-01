@@ -109,6 +109,42 @@ FIND_SENSITIVE_TEXT = """
         bottom: box.bottom + padding,
       }
     })
+  // A fixed or sticky bar, such as each app's top bar, paints over the page scrolled beneath it.
+  // A region it hides is cut back as one behind a dialog is, but only where the bar is opaque and
+  // really on top at that spot, so text it doesn't hide is still blurred.
+  const opaque = (style) => {
+    if (style.visibility !== 'visible' || Number(style.opacity) < 0.99) return false
+    const match = style.backgroundColor.match(/^rgba?\\(([^)]*)\\)$/)
+    if (!match) return false
+    const channels = match[1].split(/[\\s,/]+/).filter(Boolean)
+    return channels.length === 3 || (channels.length === 4 && Number(channels[3]) >= 0.99)
+  }
+  const bars = [...document.body.querySelectorAll('*')]
+    .filter((element) => {
+      const style = getComputedStyle(element)
+      return (style.position === 'fixed' || style.position === 'sticky') && opaque(style)
+    })
+    .filter((element) => element.getClientRects().length > 0)
+    .map((element) => {
+      const box = element.getBoundingClientRect()
+      return {
+        element,
+        box,
+        left: box.left - padding,
+        top: box.top - padding,
+        right: box.right + padding,
+        bottom: box.bottom + padding,
+      }
+    })
+  const hiddenBy = (piece, bar) => {
+    const left = Math.max(piece.x, bar.box.left)
+    const right = Math.min(piece.x + piece.width, bar.box.right)
+    const top = Math.max(piece.y, bar.box.top)
+    const bottom = Math.min(piece.y + piece.height, bar.box.bottom)
+    if (right <= left || bottom <= top) return false
+    const topmost = document.elementFromPoint((left + right) / 2, (top + bottom) / 2)
+    return topmost !== null && bar.element.contains(topmost)
+  }
   const around = (piece, cover) => {
     const right = piece.x + piece.width
     const bottom = piece.y + piece.height
@@ -141,6 +177,11 @@ FIND_SENSITIVE_TEXT = """
     for (const dialog of dialogs) {
       if (!dialog.element.contains(owner)) {
         pieces = pieces.flatMap((piece) => around(piece, dialog))
+      }
+    }
+    for (const bar of bars) {
+      if (!bar.element.contains(owner)) {
+        pieces = pieces.flatMap((piece) => (hiddenBy(piece, bar) ? around(piece, bar) : [piece]))
       }
     }
     for (const piece of pieces) {
@@ -475,6 +516,25 @@ SHOTS: list[Shot] = [
         height=1384,
     ),
     Shot(
+        "console-cost-centers",
+        "console",
+        "/cost-centers",
+        "light",
+        "Customer Insights",
+        # Tall enough for every cost center, the new cost center form, and the tenant default.
+        height=1100,
+    ),
+    Shot(
+        "console-cost-center-detail",
+        "console",
+        "/cost-centers",
+        "dark",
+        "Customer Insights",
+        actions=(click_link("Customer Insights"), wait_for_text("Membership")),
+        # Tall enough for the details, the members, and the per-person and pooled limits.
+        height=1840,
+    ),
+    Shot(
         "console-mcp-publish",
         "console",
         "/mcps",
@@ -581,11 +641,27 @@ SHOTS: list[Shot] = [
         "/access",
         "light",
         "My access",
+        # Megan's GPT-4o grant under Customer Insights, the first applied model grant on the page.
         actions=(
             click_card_button_matching(("Model API", "Applied to APIM"), "Connection details"),
             wait_for_text("Base URL"),
-            scroll_to_text("Model API", margin=90),
+            scroll_to_card_matching(("Model API", "Applied to APIM"), margin=58),
         ),
+    ),
+    Shot(
+        "portal-connection-cost-center",
+        "portal",
+        "/access",
+        "light",
+        "My access",
+        # Megan's own GPT-4o grant under General, which has no key yet: the cost-center header,
+        # the key she can create, and samples that name the cost center.
+        actions=(
+            click_card_button_matching(("GPT-4o", "General · general"), "Connection details"),
+            wait_for_text("Cost center header"),
+            scroll_to_text("Cost center header", margin=96),
+        ),
+        height=1240,
     ),
     Shot(
         "portal-mcp-connection",
@@ -608,7 +684,9 @@ SHOTS: list[Shot] = [
         "/usage",
         "dark",
         "Busiest resource",
-        actions=(scroll_to_text("By resource", margin=96),),
+        # Each of Megan's cost centers' totals this month, then her own usage by resource.
+        actions=(scroll_to_text("Each cost center's total this month", margin=150),),
+        height=1240,
     ),
 ]
 

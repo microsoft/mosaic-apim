@@ -66,6 +66,12 @@ export function keyAvailability(connection: ModelConnection): KeyAvailability {
       reason: GROUP_GRANT_ENTRA_ONLY,
     }
   }
+  if (connection.keysAllowedByCostCenter === false) {
+    return {
+      available: false,
+      reason: 'Subscription keys are turned off for this cost center. Use a Microsoft Entra ID token instead.',
+    }
+  }
   const runtime = connection.runtime
   const methods = connection.appliedMethods
   if (!runtime || !methods) {
@@ -121,6 +127,20 @@ function errorCode(error: unknown) {
     if (typeof body === 'object' && body !== null && 'code' in body) {
       const { code } = body as { code?: unknown }
       return typeof code === 'string' ? code : undefined
+    }
+  }
+  return undefined
+}
+
+function errorReason(error: unknown) {
+  if (typeof error === 'object' && error !== null && 'body' in error) {
+    const { body } = error as { body?: unknown }
+    if (typeof body === 'object' && body !== null && 'details' in body) {
+      const { details } = body as { details?: unknown }
+      if (typeof details === 'object' && details !== null && 'reason' in details) {
+        const { reason } = details as { reason?: unknown }
+        return typeof reason === 'string' ? reason : undefined
+      }
     }
   }
   return undefined
@@ -193,6 +213,7 @@ export function keyRevealProblem(error: unknown): Problem {
   }
   const status = errorStatus(error)
   const code = errorCode(error)
+  const reason = errorReason(error)
   const detail = serverMessage(error)
   if (code === 'gateway_forbidden') {
     return {
@@ -222,6 +243,21 @@ export function keyRevealProblem(error: unknown): Problem {
     }
   }
   if (status === 409) {
+    if (reason === 'noKey' || reason === 'keyMissing') {
+      return { title: 'No key exists yet', message: 'Create a key before you try to show it.' }
+    }
+    if (reason === 'keyExists') {
+      return { title: 'A key already exists', message: 'Show, rotate, or delete the existing key.' }
+    }
+    if (reason === 'costCenterKeysOff') {
+      return { title: 'Keys are turned off for this cost center', message: 'Use a Microsoft Entra ID token instead.' }
+    }
+    if (reason === 'keyNotOwned') {
+      return { title: 'This key is not yours to manage', message: 'Ask an administrator to check the grant owner.' }
+    }
+    if (reason === 'keyScopeChanged') {
+      return { title: 'The key changed in API Management', message: 'Refresh My access, then try again.' }
+    }
     return {
       title: 'The key is not available right now',
       message: sentence(detail ?? 'This grant has changes that are not applied to API Management yet'),
@@ -262,7 +298,14 @@ export interface ConnectionSamples {
 /** Placeholders only: this deliberately has no way to receive a revealed key. */
 export type SampleInput = Pick<
   ModelConnection,
-  'endpoint' | 'deploymentName' | 'subscriptionHeader' | 'operations' | 'appliedMethods' | 'keysAvailable'
+  | 'endpoint'
+  | 'deploymentName'
+  | 'subscriptionHeader'
+  | 'operations'
+  | 'appliedMethods'
+  | 'keysAvailable'
+  | 'costCenter'
+  | 'costCenterHeader'
 >
 
 function shellDoubleQuoted(text: string) {
@@ -281,10 +324,21 @@ function sampleFields(kind: SampleOperationKind, model: string) {
   return [`"model": ${model}`, messages]
 }
 
-export function buildSamples(connection: SampleInput): ConnectionSamples | null {
+/**
+ * `credential: 'token'` builds the Microsoft Entra token sample even when keys are accepted too.
+ * Only token samples send the cost-center header: a key always charges its own grant's cost center.
+ */
+export function buildSamples(
+  connection: SampleInput,
+  options: { credential?: 'token' } = {},
+): ConnectionSamples | null {
   const methods = connection.appliedMethods
   const credential =
-    connection.keysAvailable === false
+    options.credential === 'token'
+      ? methods?.entraEnabled
+        ? 'token'
+        : null
+      : connection.keysAvailable === false
       ? methods?.entraEnabled
         ? 'token'
         : null
@@ -310,18 +364,31 @@ export function buildSamples(connection: SampleInput): ConnectionSamples | null 
   const jsonBody = `{${fields.join(', ')}}`
   const pythonBody = fields.map((field) => `        ${field},`)
   const header = connection.subscriptionHeader
+  const costCenterHeader =
+    credential === 'token' && connection.costCenter && connection.costCenterHeader
+      ? { name: connection.costCenterHeader, value: connection.costCenter.code }
+      : null
   const curlCredential =
     credential === 'key'
       ? `${shellDoubleQuoted(header)}: $MOSAIC_API_KEY`
       : 'Authorization: Bearer $MOSAIC_ACCESS_TOKEN'
   const pythonCredential =
     credential === 'key'
-      ? `{${JSON.stringify(header)}: os.environ["MOSAIC_API_KEY"]}`
-      : '{"Authorization": "Bearer " + os.environ["MOSAIC_ACCESS_TOKEN"]}'
+      ? [`        ${JSON.stringify(header)}: os.environ["MOSAIC_API_KEY"],`]
+      : [`        "Authorization": "Bearer " + os.environ["MOSAIC_ACCESS_TOKEN"],`]
+  const pythonHeaders = [
+    ...pythonCredential,
+    ...(costCenterHeader
+      ? [`        ${JSON.stringify(costCenterHeader.name)}: ${JSON.stringify(costCenterHeader.value)},`]
+      : []),
+  ]
 
   const curl = [
     `curl "${shellDoubleQuoted(url)}${query}" \\`,
     `  -H "${curlCredential}" \\`,
+    ...(costCenterHeader
+      ? [`  -H "${shellDoubleQuoted(costCenterHeader.name)}: ${shellDoubleQuoted(costCenterHeader.value)}" \\`]
+      : []),
     '  -H "Content-Type: application/json" \\',
     `  -d ${shellSingleQuoted(jsonBody)}`,
   ].join('\n')
@@ -334,7 +401,9 @@ export function buildSamples(connection: SampleInput): ConnectionSamples | null 
     'response = requests.post(',
     `    ${JSON.stringify(url)},`,
     ...(needsApiVersion ? ['    params={"api-version": os.environ["MOSAIC_API_VERSION"]},'] : []),
-    `    headers=${pythonCredential},`,
+    '    headers={',
+    ...pythonHeaders,
+    '    },',
     '    json={',
     ...pythonBody,
     '    },',

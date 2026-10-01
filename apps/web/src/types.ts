@@ -22,6 +22,7 @@ export interface Principal {
   detail?: string | null
   identityParentId?: string | null
   blueprintId?: string | null
+  defaultCostCenterId?: string | null
   directoryVerifiedAt?: string | null
   createdAt: string
   updatedAt: string
@@ -54,6 +55,92 @@ export interface TokenEnforcement {
 }
 
 export type QuotaPeriod = 'Hourly' | 'Daily' | 'Weekly' | 'Monthly' | 'Yearly'
+
+export interface CostCenterRef {
+  id: string
+  name: string
+  code: string
+}
+
+export interface PersonLimits {
+  tokensPerMinute: number | null
+  tokenQuota: number | null
+  tokenQuotaPeriod: QuotaPeriod | null
+  callsPerMinute: number | null
+  callQuota: number | null
+  callQuotaPeriod: QuotaPeriod | null
+}
+
+export interface PooledQuota {
+  monthlyTokens: number | null
+  monthlyCalls: number | null
+}
+
+export interface CostCenterLimit {
+  resource: { kind: 'modelApi' | 'mcpServer'; id: string; scopeId?: string | null }
+  person: PersonLimits | null
+  pool: PooledQuota | null
+}
+
+export interface CostCenterMember {
+  principalId: string
+  addedAt: string
+  addedBy: string | null
+}
+
+export interface CostCenterMemberView {
+  principalId: string
+  objectId: string | null
+  label: string | null
+  kind: PrincipalKind | null
+  explicit: boolean
+  isDefault: boolean
+  addedAt: string | null
+}
+
+export interface CostCenter {
+  id: string
+  tenantId: string
+  entityType: 'costCenter'
+  name: string
+  code: string
+  description: string | null
+  owners: string[]
+  members: CostCenterMember[]
+  keysAllowed: boolean
+  limits: CostCenterLimit[]
+  builtIn: boolean
+  createdAt: string
+  updatedAt: string
+  isTenantDefault: boolean
+  memberDetails: CostCenterMemberView[]
+  grantCount: number
+  enabledGrantCount: number
+  defaultFor: number
+}
+
+export interface CostCenterSettings {
+  id: string
+  tenantId: string
+  defaultCostCenterId: string
+  createdAt?: string
+  updatedAt?: string
+}
+
+export interface GrantKey {
+  entitlementId: string
+  subscriptionName: string
+  exists: boolean
+  costCenter: CostCenterRef | null
+  rotated: KeySlot | null
+}
+
+export interface GrantRevocation {
+  reason: 'costCenterMembership'
+  costCenterId: string
+  revokedAt: string
+  revokedBy: string
+}
 
 export type CatalogVisibility = 'catalog' | 'private'
 
@@ -331,6 +418,7 @@ export interface EntitlementRuntime {
   status: 'pending' | 'applying' | 'applied' | 'revocationPending' | 'revoked' | 'failed' | 'unknown'
   appliedMethods?: ModelAccessSettings | null
   subscriptionName?: string | null
+  keyExists?: boolean
   appliedAt?: string | null
   error?: string | null
 }
@@ -340,6 +428,9 @@ export interface Entitlement {
   tenantId: string
   subject: EntitlementSubject
   resource: EntitlementResource
+  costCenterId?: string
+  costCenter?: CostCenterRef | null
+  revocation?: GrantRevocation | null
   enabled: boolean
   enforcement?: EntitlementEnforcement | null
   binding?: EntitlementBinding | null
@@ -354,6 +445,7 @@ export interface ResolvedEntitlement {
   via: 'direct' | 'group' | 'securityGroup'
   viaGroupId?: string | null
   viaGroupName?: string | null
+  costCenter?: CostCenterRef | null
   effective: boolean
   shadowedBy?: string | null
 }
@@ -366,6 +458,9 @@ export interface AccessRequest {
   requesterObjectId: string
   requesterPrincipalId?: string | null
   resource: EntitlementResource
+  costCenterId?: string | null
+  costCenter?: CostCenterRef | null
+  costCenterGroupIds?: string[]
   requestedEnvironment?: string | null
   resourceSnapshot?: AccessRequestResourceSnapshot | null
   resourceSummary?: ResourceSummary | null
@@ -384,6 +479,7 @@ export interface AccessRequestApproval {
   note?: string | null
   enforcement?: EntitlementEnforcement | null
   confirmedEnvironment?: string
+  costCenterId?: string
 }
 
 export interface PolicyPreview {
@@ -1053,9 +1149,14 @@ export interface ModelAccessGrant {
   objectId: string
   displayName: string
   subscriptionName?: string | null
+  /** The cost center the grant charges, and its code as the cost-center header names it. */
+  costCenterId?: string | null
+  costCenterCode?: string | null
   enabled: boolean
   enforcement?: EntitlementEnforcement | null
   intentDigest: string
+  /** False when the grant's cost center turned keys off, so its key is suspended. */
+  keysAllowed?: boolean
 }
 
 export interface ModelAccessSnapshot {
@@ -1072,6 +1173,8 @@ export interface McpAccessGrant {
   subject: EntitlementSubject
   objectId: string
   displayName: string
+  costCenterId?: string | null
+  costCenterCode?: string | null
   enabled: boolean
   enforcement?: EntitlementEnforcement | null
   intentDigest: string
@@ -1251,6 +1354,10 @@ export interface ModelConnection {
   endpoint: string
   deploymentName: string
   tenantId: string
+  costCenter?: CostCenterRef | null
+  costCenterHeader?: 'x-mosaic-cost-center'
+  keyExists?: boolean
+  keysAllowedByCostCenter?: boolean
   runtime?: EntitlementRuntime | null
   appliedMethods?: ModelAccessSettings | null
   entraAudience?: string | null
@@ -1276,6 +1383,8 @@ export interface McpConnection {
   gatewayId: string
   displayName: string
   tenantId: string
+  costCenter?: CostCenterRef | null
+  costCenterHeader?: 'x-mosaic-cost-center'
   serverUrl?: string | null
   transport: McpTransportType
   enforced: boolean
@@ -1324,6 +1433,7 @@ export interface OverlapGrant {
   entitlementId: string
   subject: EntitlementSubject
   subjectLabel: string
+  costCenterId?: string | null
   enabled: boolean
   enforcement?: EntitlementEnforcement | null
 }
@@ -1332,6 +1442,7 @@ export interface GrantOverlap {
   kind: GrantOverlapKind
   resource: EntitlementResource
   resourceLabel: string
+  costCenterId?: string | null
   principalId?: string | null
   principalLabel?: string | null
   winner: OverlapGrant
@@ -1353,6 +1464,7 @@ export interface KeyRevealResult {
   subscriptionName: string
   slot: KeySlot
   key: string
+  costCenter?: CostCenterRef | null
 }
 
 export interface ModelEndpointSyncRun {
@@ -1589,6 +1701,7 @@ export type ExportView =
   | 'unattributed'
   | 'costDeployments'
   | 'chargeback'
+  | 'costCenters'
 
 export interface AnalyticsFilters {
   range?: AnalyticsRange
@@ -1598,6 +1711,7 @@ export interface AnalyticsFilters {
   environment?: string
   resourceId?: string
   subjectKind?: EntitlementSubjectKind
+  costCenterId?: string
 }
 
 export interface UsageFreshness {
@@ -1714,6 +1828,7 @@ export interface AnalyticsOverview extends AnalyticsReport {
   modelTrend: AnalyticsSeries[]
   topModels: AnalyticsRankRow[]
   topCallers: AnalyticsRankRow[]
+  topCostCenters?: AnalyticsRankRow[]
   topApis: AnalyticsRankRow[]
   gateways: AnalyticsGatewayHealth[]
   cost?: AnalyticsCostSummary | null
@@ -1756,6 +1871,9 @@ export interface AnalyticsGrantRow extends AnalyticsUsage {
   subjectLabel: string
   subjectDetail?: string | null
   subjectPrincipalKind?: PrincipalKind | null
+  costCenterId?: string | null
+  costCenterCode?: string | null
+  costCenterName?: string | null
   resourceKind: EntitlementResourceKind | null
   resourceLabel: string
   gatewayId: string | null
@@ -1780,6 +1898,13 @@ export interface AnalyticsConsumers extends AnalyticsReport {
   people: AnalyticsConsumerRow[]
   applications: AnalyticsConsumerRow[]
   groups: AnalyticsConsumerRow[]
+  costCenters?: Array<{
+    key: string
+    label: string
+    code: string
+    grants: number
+    callers: number
+  } & AnalyticsUsage>
   grants: AnalyticsGrantRow[]
   clientApps: AnalyticsClientAppRow[]
   truncated: boolean
@@ -1918,6 +2043,8 @@ export interface AnalyticsLimitRow {
   subjectLabel: string
   subjectDetail: string | null
   subjectPrincipalKind?: PrincipalKind | null
+  costCenterCode?: string | null
+  costCenterName?: string | null
   memberObjectId: string | null
   memberLabel: string | null
   resourceKind: EntitlementResourceKind
@@ -1945,6 +2072,8 @@ export interface AnalyticsGrantRef {
   subjectLabel: string
   subjectDetail: string | null
   subjectPrincipalKind?: PrincipalKind | null
+  costCenterCode?: string | null
+  costCenterName?: string | null
   resourceKind: EntitlementResourceKind
   resourceLabel: string
   gatewayId: string | null
@@ -2165,6 +2294,7 @@ export interface AnalyticsCost extends AnalyticsReport {
   models: AnalyticsCostRow[]
   deployments: AnalyticsCostDeploymentRow[]
   consumers: AnalyticsCostRow[]
+  costCenters?: AnalyticsCostRow[]
   apis: AnalyticsCostRow[]
   priced: boolean
 }

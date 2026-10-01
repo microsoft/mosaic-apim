@@ -68,6 +68,78 @@ export function ConnectionDetails({ resolved }: { resolved: ResolvedEntitlement 
   )
 }
 
+function CostCenterHeaderSection({
+  connection,
+  kind,
+}: {
+  connection: ModelConnection | McpConnection
+  kind: 'modelApi' | 'mcpServer'
+}) {
+  const headingId = useId()
+  if (!connection.costCenter || !connection.costCenterHeader) return null
+  // The code samples below use a key when keys are accepted, and a key needs no header, so the
+  // token call that does is shown here.
+  const model = kind === 'modelApi' ? (connection as ModelConnection) : null
+  const tokenCurl =
+    model && buildSamples(model)?.credential === 'key'
+      ? (buildSamples(model, { credential: 'token' })?.curl ?? null)
+      : null
+  return (
+    <section className="connection-section" aria-labelledby={headingId}>
+      <h3 id={headingId}>Cost center header</h3>
+      <dl className="fact-list">
+        <div>
+          <dt>Header name</dt>
+          <dd><CopyableCode value={connection.costCenterHeader} label="cost center header name" /></dd>
+        </div>
+        <div>
+          <dt>Header value</dt>
+          <dd><CopyableCode value={connection.costCenter.code} label="cost center header value" /></dd>
+        </div>
+      </dl>
+      <Text as="p" size={200} className="connection-note">
+        This grant charges {connection.costCenter.name}. When you hold this{' '}
+        {kind === 'mcpServer' ? 'MCP server' : 'model'} under more than one cost center, send{' '}
+        <code className="nowrap">{connection.costCenterHeader}: {connection.costCenter.code}</code>{' '}
+        with your Microsoft Entra token to charge a call here. Without the header, the gateway uses
+        your grant under your default cost center first.
+        {kind === 'modelApi' && ' A key always charges its own grant, so a key needs no header.'}
+      </Text>
+      {tokenCurl && (
+        <>
+          <h4>curl with a Microsoft Entra token</h4>
+          <pre className="header-sample"><code>{tokenCurl}</code></pre>
+          <div className="key-actions">
+            <CopyButton value={tokenCurl} label="curl with the cost center header" />
+          </div>
+        </>
+      )}
+      {kind === 'modelApi' ? (
+        <>
+          <Text as="p" size={200} className="connection-note">
+            Responses say what's left of the limits that applied, when they apply:
+          </Text>
+          <ul className="header-list">
+            <li><code>x-mosaic-remaining-tokens</code> Your tokens this minute</li>
+            <li><code>x-mosaic-remaining-quota-tokens</code> Your token quota</li>
+            <li><code>x-mosaic-remaining-calls</code> Your calls in this rate window</li>
+            <li>
+              <code>x-mosaic-cost-center-remaining-quota-tokens</code> The cost center's pooled
+              tokens this month, shared with everyone who charges it
+            </li>
+          </ul>
+        </>
+      ) : (
+        <Text as="p" size={200} className="connection-note">
+          When your grant has a rate limit, responses carry{' '}
+          <code className="nowrap">x-mosaic-remaining-calls</code>, the calls left in the current
+          window.
+        </Text>
+      )}
+    </section>
+  )
+}
+
 function GroupGrantNotice({ resourceKind }: { resourceKind: 'modelApi' | 'mcpServer' }) {
   if (resourceKind === 'mcpServer') {
     return (
@@ -150,6 +222,7 @@ function DirectGrantConnection({ entitlement }: { entitlement: Entitlement }) {
     <>
       <RuntimeSummary connection={model} focusHandoff={focusHandoff} />
       <EndpointSection connection={model} />
+      <CostCenterHeaderSection connection={model} kind="modelApi" />
       <AuthenticationSection connection={model} />
       <KeyReveal
         key={keySession}
@@ -222,6 +295,7 @@ function McpConnectionPanel({
         )}
       </div>
       <McpEndpointSection connection={connection} />
+      <CostCenterHeaderSection connection={connection} kind="mcpServer" />
       <McpAuthenticationSection connection={connection} />
       <McpLimitsSection connection={connection} />
       <McpAdvancedSection connection={connection} />
@@ -276,12 +350,17 @@ function CopyableCode({ value, label }: { value: string; label: string }) {
 
 function mcpSnippet(connection: McpConnection) {
   if (!connection.serverUrl) return null
+  const headers =
+    connection.costCenter && connection.costCenterHeader
+      ? { [connection.costCenterHeader]: connection.costCenter.code }
+      : undefined
   return JSON.stringify(
     {
       servers: {
         [connection.displayName]: {
           type: 'http',
           url: connection.serverUrl,
+          ...(headers ? { headers } : {}),
         },
       },
     },

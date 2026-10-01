@@ -71,6 +71,9 @@ const baseSummary: ResourceSummary = {
   available: true,
 }
 
+const research = { id: 'cc-research', name: 'Research', code: 'RES' }
+const finance = { id: 'cc-finance', name: 'Finance', code: 'FIN' }
+
 function renderPage(entitlements: ResolvedEntitlement[], profileOverride: Partial<PortalProfile> = {}) {
   const api = {
     getProfile: async () => ({ ...profile, ...profileOverride }),
@@ -115,6 +118,59 @@ describe('MyAccessPage', () => {
     expect(screen.getByText('100,000 calls per month')).toBeVisible()
     expect(screen.getByText("Usage can't be measured for this grant yet.")).toBeVisible()
     expect(screen.getByText('Recorded grant')).toBeVisible()
+  })
+
+  it('shows one card for each cost center grant and keeps matching resources adjacent', async () => {
+    renderPage([
+      {
+        entitlement: { ...baseEntitlement, id: 'finance-grant', costCenterId: finance.id },
+        costCenter: finance,
+        resourceSummary: baseSummary,
+        via: 'direct',
+        viaGroupId: null,
+        viaGroupName: null,
+      },
+      {
+        entitlement: { ...baseEntitlement, id: 'research-grant', costCenterId: research.id },
+        costCenter: research,
+        resourceSummary: baseSummary,
+        via: 'direct',
+        viaGroupId: null,
+        viaGroupName: null,
+      },
+    ])
+
+    expect(await screen.findAllByRole('heading', { level: 2, name: 'Chat completions' })).toHaveLength(2)
+    const cards = Array.from(document.querySelectorAll('.access-card')) as HTMLElement[]
+    expect(within(cards[0]).getByText('Finance · FIN')).toBeVisible()
+    expect(within(cards[1]).getByText('Research · RES')).toBeVisible()
+  })
+
+  it('shows why a cost center grant was revoked', async () => {
+    renderPage([
+      {
+        entitlement: {
+          ...baseEntitlement,
+          id: 'revoked-grant',
+          enabled: false,
+          costCenterId: research.id,
+          revocation: {
+            reason: 'costCenterMembership',
+            costCenterId: research.id,
+            revokedAt: '2026-02-01T00:00:00Z',
+            revokedBy: 'admin-1',
+          },
+        },
+        costCenter: research,
+        resourceSummary: baseSummary,
+        via: 'direct',
+        viaGroupId: null,
+        viaGroupName: null,
+      },
+    ])
+
+    expect(await screen.findByText('Research · RES')).toBeVisible()
+    expect(screen.getByText('Revoked when you left Research.')).toBeVisible()
   })
 
   it('renders security group attribution and per-person limit guidance', async () => {

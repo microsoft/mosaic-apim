@@ -139,11 +139,35 @@ For Foundry Models, Responses and Anthropic Messages routes, set the request bod
 `deploymentName` shown in connection details. Claude models use `/anthropic/v1/messages` and do not
 take an `api-version` query parameter.
 
+### Choose the cost center a call charges
+
+Every grant is charged to a [cost center](cost-centers.md), shown as `costCenter` in connection
+details. An agent that holds the same model under several cost centers names the one a call charges
+with the `x-mosaic-cost-center` header, set to the cost center's `code`, compared without case:
+
+```python
+headers = {
+    "Authorization": "Bearer " + TOKEN,
+    "x-mosaic-cost-center": "<costCenter.code>",
+}
+```
+
+Without the header, the gateway uses the agent's grant under its default cost center, then its
+other direct grants, oldest first, then grants it holds through security groups. A header naming a
+cost center the agent holds no grant under is refused with 403. The gateway removes the header
+before the call reaches the model.
+
+Responses report what's left of the limits that applied: `x-mosaic-remaining-tokens` (tokens this
+minute), `x-mosaic-remaining-quota-tokens` (the grant's token quota), `x-mosaic-remaining-calls`
+(calls this rate window), and `x-mosaic-cost-center-remaining-quota-tokens` (the cost center's
+pooled tokens this month). Each is present only when that limit applies.
+
 ## Troubleshooting
 
 | What you see | Cause and fix |
 | --- | --- |
 | HTTP 401 from the gateway | The token could not be validated. Check that it is a runtime token for the model audience, not a MOSAIC control-plane token, Graph token or expired token. |
+| HTTP 403 that names the cost center | The `x-mosaic-cost-center` header names a cost center the agent holds no applied grant under, or isn't a valid code. Use `costCenter.code` from connection details, or leave the header out. |
 | HTTP 403 from the gateway | The token is valid but does not match an applied grant. Reapply the model access plan, confirm the grant is enabled, and check whether you are calling as the agent identity or the agent user you granted. |
 | Missing `Models.Invoke.Application` | Assign the app role directly to the agent identity, or configure inheritable permissions and grant the role on the blueprint principal. Group app-role assignment does not flow to service principals. |
 | Group grant does not work | Get a fresh runtime token and confirm the `groups` claim contains the granted security-group object ID. If the token has group overage, use a direct grant. |

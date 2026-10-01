@@ -54,16 +54,25 @@ const governedPlan: PublishPlan = {
   accessSnapshot: {
     ...accessSnapshot,
     grants: [
-      accessSnapshot.grants[0],
+      { ...accessSnapshot.grants[0], costCenterCode: 'CI-204' },
       {
         entitlementId: 'group_grant',
         subject: { kind: 'securityGroup', id: 'principal_group' },
         objectId: 'group-object-1',
         displayName: 'AI Model Users',
         subscriptionName: null,
+        costCenterCode: 'general',
         enabled: true,
         enforcement: null,
         intentDigest: 'group-digest',
+      },
+      // Keys are created on request: this grant never asked for one, so it has only its token.
+      {
+        ...accessSnapshot.grants[0],
+        entitlementId: 'keyless_grant',
+        displayName: 'Ada Lovelace',
+        subscriptionName: 'keyless-sub',
+        costCenterCode: 'general',
       },
       {
         ...accessSnapshot.grants[0],
@@ -251,7 +260,7 @@ describe('UnpublishDialog', () => {
       'The gateway stops serving it, and the portal stops listing it until you publish it again.',
     )
     expect(dialog).toHaveTextContent(
-      '2 grants lose access. Subscription keys for these grants stop working, and the gateway refuses their Entra tokens.',
+      '3 grants lose access. Subscription keys for these grants stop working, and the gateway refuses their Entra tokens.',
     )
     expect(
       within(losing)
@@ -259,8 +268,9 @@ describe('UnpublishDialog', () => {
         .slice(1)
         .map((row) => row.textContent),
     ).toEqual([
-      'Ada LovelacePersonKey and Entra token',
-      'AI Model UsersSecurity groupEntra token, for every member',
+      'Ada LovelacePersonCI-204Key and Entra token',
+      'AI Model UsersSecurity groupgeneralEntra token, for every member',
+      'Ada LovelacePersongeneralEntra token',
     ])
     expect(losing).not.toHaveTextContent('Former contractor')
     expect(dialog).toHaveTextContent('Grants stay in MOSAIC. Publish the model again, and apply its plan, to restore access.')
@@ -429,7 +439,7 @@ describe('UnpublishDialog', () => {
       expect(element).not.toContainElement(screen.getByRole('table', { name: 'Unpublish plan steps' }))
     })
     expect(within(dialog).getByText('Grace Hopper')).toBeVisible()
-    expect(dialog).toHaveTextContent('3 grants lose access.')
+    expect(dialog).toHaveTextContent('4 grants lose access.')
     expect(api.planUnpublishPublication).toHaveBeenCalledTimes(2)
 
     await user.click(within(dialog).getByRole('button', { name: 'Unpublish model' }))

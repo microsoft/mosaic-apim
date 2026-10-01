@@ -29,9 +29,21 @@ export interface PortalProfile {
   entitlementCount: number
   pendingRequestCount: number
   groupsOverage: boolean
+  defaultCostCenter?: CostCenterRef | null
 }
 
 export type PortalResourceKind = 'modelApi' | 'mcpServer'
+
+export interface CostCenterRef {
+  id: string
+  name: string
+  code: string
+}
+
+export interface PortalCostCenter extends CostCenterRef {
+  isDefault: boolean
+  keysAllowed: boolean
+}
 
 export interface CatalogEntry {
   kind: PortalResourceKind
@@ -44,6 +56,8 @@ export interface CatalogEntry {
   entitled: boolean
   requestState: AccessRequestState | null
   enforced?: boolean | null
+  entitledCostCenterIds?: string[]
+  requestedCostCenterIds?: string[]
 }
 
 export interface EntitlementResource {
@@ -54,6 +68,7 @@ export interface EntitlementResource {
 
 export interface AccessRequestCreate {
   resource: EntitlementResource
+  costCenterId?: string
   justification?: string
 }
 
@@ -99,6 +114,8 @@ export interface AccessRequest {
    * for example because the resource was deleted. Older APIs omit it.
    */
   resourceDisplayName?: string | null
+  costCenterId?: string | null
+  costCenter?: CostCenterRef | null
 }
 
 export interface TokenEnforcement {
@@ -147,6 +164,14 @@ export interface EntitlementRuntime {
    * An older API may still send the text, so it is never shown: `status` explains a failed apply.
    */
   error: string | null
+  keyExists?: boolean
+}
+
+export interface GrantRevocation {
+  reason: 'costCenterMembership'
+  costCenterId: string
+  revokedAt: string
+  revokedBy: string
 }
 
 export interface Entitlement {
@@ -158,6 +183,8 @@ export interface Entitlement {
   enabled: boolean
   enforcement: EntitlementEnforcement | null
   binding: EntitlementBinding | null
+  costCenterId?: string | null
+  revocation?: GrantRevocation | null
   runtime?: EntitlementRuntime | null
   notes: string | null
   createdAt: string
@@ -166,6 +193,7 @@ export interface Entitlement {
 
 export interface ResolvedEntitlement {
   entitlement: Entitlement
+  costCenter?: CostCenterRef | null
   resourceSummary: ResourceSummary | null
   via: 'direct' | 'group' | 'securityGroup'
   viaGroupId: string | null
@@ -259,6 +287,7 @@ export interface UsageResourceRow {
   entitlementId: string
   resource: EntitlementResource
   resourceSummary: ResourceSummary
+  costCenter?: CostCenterRef | null
   environment: string | null
   via: 'direct' | 'group' | 'securityGroup'
   viaGroupName: string | null
@@ -305,9 +334,28 @@ export interface MyUsageReport {
   timeline: UsageTimelinePoint[]
   byEnvironment: UsageEnvironmentBreakdown[]
   byResource: UsageResourceRow[]
+  costCenters?: CostCenterUsage[]
   notes: string[]
   freshness?: UsageFreshness | null
   recentHours?: UsageHourPoint[]
+}
+
+export interface CostCenterResourceUsage {
+  resource: { kind: PortalResourceKind; id: string; scopeId?: string | null }
+  displayName: string | null
+  requests: number
+  totalTokens: number | null
+  poolTokens: number | null
+  poolCalls: number | null
+  utilization: number | null
+}
+
+export interface CostCenterUsage {
+  costCenter: CostCenterRef
+  monthStart: string
+  requests: number
+  totalTokens: number
+  resources: CostCenterResourceUsage[]
 }
 
 export interface ConnectionOperation {
@@ -329,6 +377,10 @@ export interface ModelConnection {
   tenantId: string
   runtime?: EntitlementRuntime | null
   appliedMethods?: ModelAccessSettings | null
+  costCenter?: CostCenterRef | null
+  costCenterHeader?: string | null
+  keyExists?: boolean
+  keysAllowedByCostCenter?: boolean
   entraAudience?: string | null
   entraScope?: string | null
   /**
@@ -372,6 +424,8 @@ export interface McpConnection {
   enforced: boolean
   statusMessage: string
   runtime?: EntitlementRuntime | null
+  costCenter?: CostCenterRef | null
+  costCenterHeader?: string | null
   entraAudience?: string | null
   delegatedScope?: string | null
   applicationScope?: string | null
@@ -391,6 +445,15 @@ export interface KeyRevealResult {
   subscriptionName: string
   slot: KeySlot
   key: string
+  costCenter?: CostCenterRef | null
+}
+
+export interface GrantKey {
+  entitlementId: string
+  subscriptionName: string
+  exists: boolean
+  costCenter: CostCenterRef | null
+  rotated: KeySlot | null
 }
 
 export interface ApiErrorBody {
