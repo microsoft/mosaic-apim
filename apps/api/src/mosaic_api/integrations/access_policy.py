@@ -79,7 +79,7 @@ _MEMBER = '(string)context.Variables["mosaic-member"]'
 _TOKEN_GRANT = '(string)context.Variables["mosaic-token-grant"]'
 # The cost-center header's code, lowercased: empty when the call names none, "!" when the header
 # is malformed. A key's own cost center fills it in when the header is absent, so a token presented
-# with the key resolves to the key's grant. See ADR 0021.
+# with the key resolves to the key's grant. See ADR 0022.
 _COST_CENTER_HEADER = '(string)context.Variables["mosaic-cost-center-header"]'
 _SELECTED_COST_CENTER = '(string)context.Variables["mosaic-cc"]'
 _KEY_COST_CENTER = '(string)context.Variables["mosaic-key-cost-center"]'

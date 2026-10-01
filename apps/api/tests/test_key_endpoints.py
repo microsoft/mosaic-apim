@@ -26,6 +26,7 @@ from key_vault_double import (
     VAULT_NAME,
     VAULT_RESOURCE_GROUP,
     VAULT_SUBSCRIPTION_ID,
+    FakeKeyStore,
     FakeKeyVaultArm,
     vault_deny,
     vault_role_assignment,
@@ -128,14 +129,16 @@ def gateway(
 class KeyWorld:
     """MOSAIC with one Key Vault it can see, a key check, and a secret it may or may not read."""
 
-    def __init__(self, *, known_vault: bool = True) -> None:
+    def __init__(self, *, known_vault: bool = True, key_store: FakeKeyStore | None = None) -> None:
         self.aoai = FakeCognitiveServices()
         self.vault = FakeKeyVaultArm()
         self.gateway_repository = InMemoryGatewayRepository()
         self.endpoint_repository = InMemoryModelEndpointRepository()
+        self.key_store = key_store
         self.secret_reads: list[str] = []
         self.secret_value = KEY
         self.probes: list[tuple[str, bool]] = []
+        self.probed_keys: list[str] = []
         self.secret_error: Exception | None = None
         self.outcome = KeyCheckResult(KeyCheckOutcome.ACCEPTED, 200)
         self.arm = ArmClient(
@@ -156,16 +159,19 @@ class KeyWorld:
             secret_resolver=self.read_secret,
             key_probe=self.check_key,
             vault_locator=self.locator,
+            key_store=key_store,
         )
 
     async def read_secret(self, uri: str) -> str:
         self.secret_reads.append(uri)
         if self.secret_error is not None:
             raise self.secret_error
-        return self.secret_value
+        stored = self.key_store.current(uri) if self.key_store is not None else None
+        return stored if stored is not None else self.secret_value
 
     async def check_key(self, origin: str, key: str) -> KeyCheckResult:
         self.probes.append((origin, key == KEY))
+        self.probed_keys.append(key)
         return self.outcome
 
     async def add_gateway(self, **kwargs: Any) -> Gateway:

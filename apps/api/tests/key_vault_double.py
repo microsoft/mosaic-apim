@@ -3,13 +3,16 @@
 Serves the vault's own description, role assignments, role definitions and deny assignments at
 the vault's scope, and the subscription listing and resource search the vault locator uses. It
 never serves a secret: MOSAIC reads secrets through the data plane, which tests replace with a
-function.
+function. :class:`FakeKeyStore` stands in for the data-plane writes MOSAIC makes to its own vault.
 """
 
 from typing import Any
 
 import httpx
 from aoai_double import deny_assignment, role_assignment, role_definition_resource
+from mosaic_api.domain import KeyVaultSecretId
+from mosaic_api.errors import ConflictError
+from pydantic import SecretStr
 
 VAULT_SUBSCRIPTION_ID = "00000000-0000-0000-0000-000000000000"
 VAULT_RESOURCE_GROUP = "rg-contoso-ai"
@@ -165,3 +168,55 @@ def _collection(values: list[dict[str, Any]]) -> httpx.Response:
 
 def _denied() -> httpx.Response:
     return httpx.Response(403, json={"error": {"code": "AuthorizationFailed", "message": "no"}})
+
+
+class FakeKeyStore:
+    """MOSAIC's own Key Vault as its key store writes it: each secret's versions, and every call.
+
+    Deleting a secret keeps its name taken, as purge protection does, so writing a new secret
+    under a deleted name fails the way Key Vault fails it.
+    """
+
+    def __init__(self, vault_name: str = VAULT_NAME) -> None:
+        self.vault_name = vault_name
+        self.versions: dict[str, list[str]] = {}
+        self.tags: dict[str, dict[str, str]] = {}
+        self.deleted: set[str] = set()
+        self.calls: list[tuple[str, str]] = []
+        self.put_error: Exception | None = None
+        self.put_error_after_write: Exception | None = None
+        self.delete_error: Exception | None = None
+
+    def new_secret(self, name: str) -> KeyVaultSecretId:
+        return KeyVaultSecretId.parse(f"https://{self.vault_name}.vault.azure.net/secrets/{name}")
+
+    async def put(
+        self, secret: KeyVaultSecretId, value: SecretStr, *, tags: dict[str, str]
+    ) -> None:
+        self.calls.append(("put", secret.secret_name))
+        if self.put_error is not None:
+            raise self.put_error
+        if secret.secret_name in self.deleted:
+            raise ConflictError("A deleted secret of that name is still kept.")
+        self.versions.setdefault(secret.secret_name, []).append(value.get_secret_value())
+        self.tags[secret.secret_name] = dict(tags)
+        if self.put_error_after_write is not None:
+            raise self.put_error_after_write
+
+    async def delete(self, secret: KeyVaultSecretId) -> bool:
+        self.calls.append(("delete", secret.secret_name))
+        if self.delete_error is not None:
+            raise self.delete_error
+        if self.versions.pop(secret.secret_name, None) is None:
+            return False
+        self.deleted.add(secret.secret_name)
+        return True
+
+    def current(self, uri: str) -> str | None:
+        """The newest version of the secret a versionless identifier names, if MOSAIC wrote it."""
+
+        secret = KeyVaultSecretId.parse(uri)
+        if secret.vault_name != self.vault_name:
+            return None
+        versions = self.versions.get(secret.secret_name)
+        return versions[-1] if versions else None

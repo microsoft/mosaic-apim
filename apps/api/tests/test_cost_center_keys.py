@@ -1,7 +1,7 @@
 """Keys on request: a grant's holder, or an administrator, creates, rotates and deletes its key.
 
 An apply never creates a key. The subscription's name is fixed by the grant, so the gateway's
-policy recognizes a key the moment it's created, with nothing applied again. See ADR 0021.
+policy recognizes a key the moment it's created, with nothing applied again. See ADR 0022.
 """
 
 from collections.abc import AsyncIterator

@@ -1,6 +1,6 @@
 """Cost centers: codes, defaults, who may charge them, grants per cost center, and removal.
 
-See ADR 0021. The gateway side is in ``test_cost_center_policy`` and keys in
+See ADR 0022. The gateway side is in ``test_cost_center_policy`` and keys in
 ``test_cost_center_keys``.
 """
 

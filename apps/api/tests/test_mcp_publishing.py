@@ -1196,7 +1196,7 @@ async def test_model_reaper_skips_mcp_runs_and_mcp_reaper_handles_them(harness: 
 
 async def test_a_pending_recheck_keeps_its_grants_out_of_the_snapshot(harness: Harness) -> None:
     """A grant whose subject may have lost the right to charge its cost center stays out of every
-    apply until MOSAIC has checked it. See ADR 0021."""
+    apply until MOSAIC has checked it. See ADR 0022."""
 
     cost_centers = InMemoryCostCenterRepository()
     service = build_mcp_publishing_service(

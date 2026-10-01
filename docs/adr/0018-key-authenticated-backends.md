@@ -1,7 +1,9 @@
 # ADR 0018: Reach an Azure AI endpoint with an API key held in Key Vault
 
 **Status:** Accepted. Amends [ADR 0006](0006-model-endpoint-onboarding.md) and
-[ADR 0013](0013-runtime-readiness-by-data-actions.md) for endpoints registered this way.
+[ADR 0013](0013-runtime-readiness-by-data-actions.md) for endpoints registered this way. Amended by
+[ADR 0021](0021-keys-mosaic-keeps.md): an administrator can also give MOSAIC the key itself, which
+MOSAIC keeps in its own Key Vault.
 
 ## Context
 

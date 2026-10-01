@@ -1,4 +1,4 @@
-# ADR 0021: Cost centers
+# ADR 0022: Cost centers
 
 **Status:** Accepted
 

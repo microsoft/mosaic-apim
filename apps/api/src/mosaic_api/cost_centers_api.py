@@ -1,4 +1,4 @@
-"""Cost centers, which every grant and call is charged to. See ADR 0021.
+"""Cost centers, which every grant and call is charged to. See ADR 0022.
 
 The administrator routes need ``Admin``. ``GET /api/v1/portal/cost-centers`` answers for the
 caller only, from their own token: the cost centers they may charge when they ask for access.
@@ -86,7 +86,7 @@ async def remove_cost_center_member(
 async def recheck_cost_center(
     request: Request, auth: Admin, cost_center_id: str
 ) -> CostCenterView:
-    """Check again the grants the cost center's pending rechecks cover. See ADR 0021."""
+    """Check again the grants the cost center's pending rechecks cover. See ADR 0022."""
 
     return await _cost_centers(request).recheck(_actor(auth), cost_center_id)
 

@@ -111,7 +111,7 @@ recorded governance intent because MOSAIC does not own their gateway policy.
 
 ## Amendment 2026-10-01: Precedence is per cost center
 
-[ADR 0021](0021-cost-centers.md) charges every grant to a cost center and makes it part of the
+[ADR 0022](0022-cost-centers.md) charges every grant to a cost center and makes it part of the
 grant's identity. The precedence above now chooses one grant per resource and cost center: a direct
 grant still wins over a group grant, and the most generous group grant over the rest, but only
 among grants under the same cost center. Grants under different cost centers don't compete; a

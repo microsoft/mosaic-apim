@@ -210,7 +210,7 @@ records how the catalog and access requests treat an unpublished model.
 
 ## Amendment 2026-10-01: Keys are created on request, and grants carry a cost center
 
-[ADR 0021](0021-cost-centers.md) changes two things here:
+[ADR 0022](0022-cost-centers.md) changes two things here:
 - An apply no longer creates a grant's API-scoped subscription. A person creates, rotates, or
   deletes the key for their own applied direct grant in the portal, and an administrator does so
   for any direct grant. The subscription keeps its deterministic name, so the applied policy

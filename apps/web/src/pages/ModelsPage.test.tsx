@@ -213,6 +213,7 @@ const api = {
   listModelEndpoints: vi.fn(),
   listSuggestedModelEndpoints: vi.fn(),
   registerModelEndpoint: vi.fn(),
+  updateModelEndpoint: vi.fn(),
   syncModelEndpoint: vi.fn(),
   preflightModelEndpoint: vi.fn(),
   deleteModelEndpoint: vi.fn(),
@@ -1983,6 +1984,9 @@ describe('ModelsPage model endpoints', () => {
       return dialog
     }
 
+    // Fictional, and recognisable, so a test can tell where it went.
+    const API_KEY = 'fictional-key-VALUE-for-tests-1234'
+
     it('offers the key path as an explicit alternative to the resource ID', async () => {
       const user = userEvent.setup()
       const dialog = await openKeyTab(user)
@@ -1991,13 +1995,22 @@ describe('ModelsPage model endpoints', () => {
         within(dialog).getByText("Only when MOSAIC can't reach the resource"),
       ).toBeVisible()
       expect(within(dialog).getByText(/for example when the resource is in another/)).toBeVisible()
-      expect(
-        within(dialog).getByText(/Store the resource's API key as a secret in Key Vault yourself/),
-      ).toBeVisible()
-      expect(within(dialog).getByText(/Never paste the key/)).toBeVisible()
       expect(within(dialog).getByLabelText(/Endpoint URL/)).toBeVisible()
-      expect(within(dialog).getByLabelText(/Key Vault secret URI/)).toBeVisible()
       expect(within(dialog).queryByLabelText(/Azure resource ID/)).not.toBeInTheDocument()
+      // Pasting the key is the default; a key already in Key Vault is the alternative.
+      expect(within(dialog).getByRole('radio', { name: 'Paste the API key' })).toBeChecked()
+      const key = within(dialog).getByLabelText(/^API key/)
+      expect(key).toHaveAttribute('type', 'password')
+      expect(key).toHaveAttribute('autocomplete', 'new-password')
+      expect(within(dialog).getByText(/stores it as a secret in its own Key Vault/)).toBeVisible()
+      expect(within(dialog).getByText(/never shows the key again/)).toBeVisible()
+      expect(within(dialog).queryByLabelText(/Key Vault secret URI/)).not.toBeInTheDocument()
+
+      await user.click(within(dialog).getByRole('radio', { name: 'Use a key already in Key Vault' }))
+
+      expect(within(dialog).getByLabelText(/Key Vault secret URI/)).toBeVisible()
+      expect(within(dialog).getByText(/The secret you stored the resource's API key in/)).toBeVisible()
+      expect(within(dialog).queryByLabelText(/^API key/)).not.toBeInTheDocument()
     })
 
     it('registers the URL, the secret URI and the declared deployments', { timeout: 10_000 }, async () => {
@@ -2007,6 +2020,7 @@ describe('ModelsPage model endpoints', () => {
 
       await user.click(within(dialog).getByLabelText(/Endpoint URL/))
       await user.paste(PROJECT_URL)
+      await user.click(within(dialog).getByRole('radio', { name: 'Use a key already in Key Vault' }))
       await user.click(within(dialog).getByLabelText(/Key Vault secret URI/))
       await user.paste(SECRET_URI)
       await user.type(within(dialog).getByLabelText('Deployment 1 name'), 'claude-sonnet-4-5')
@@ -2039,6 +2053,73 @@ describe('ModelsPage model endpoints', () => {
       await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
     })
 
+    it('registers a pasted key, and never keeps it in the form', async () => {
+      const user = userEvent.setup()
+      api.registerModelEndpoint.mockResolvedValue(keyEndpoint({ keyStoredByMosaic: true }))
+      const dialog = await openKeyTab(user)
+
+      await user.click(within(dialog).getByLabelText(/Endpoint URL/))
+      await user.paste(PROJECT_URL)
+      await user.click(within(dialog).getByLabelText(/^API key/))
+      // A key copied from the portal often brings a space or line break along.
+      await user.paste(`  ${API_KEY}\n`)
+      await user.type(within(dialog).getByLabelText('Deployment 1 name'), 'claude-sonnet-4-5')
+      await user.type(within(dialog).getByLabelText('Deployment 1 model'), 'claude-sonnet-4-5')
+      await user.click(within(dialog).getByRole('button', { name: 'Register' }))
+
+      await waitFor(() => expect(api.registerModelEndpoint).toHaveBeenCalledTimes(1))
+      expect(api.registerModelEndpoint.mock.calls[0][0]).toEqual({
+        endpoint: PROJECT_URL,
+        apiKey: API_KEY,
+        name: undefined,
+        environment: 'development',
+        deployments: [
+          {
+            deploymentName: 'claude-sonnet-4-5',
+            modelName: 'claude-sonnet-4-5',
+            apiShape: 'anthropicMessages',
+          },
+        ],
+      })
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+
+      await user.click(await screen.findByRole('button', { name: 'Register endpoint' }))
+      const reopened = await screen.findByRole('dialog', { name: 'Register model endpoint' })
+      await user.click(within(reopened).getByRole('tab', { name: 'Azure AI with an API key' }))
+      expect(within(reopened).getByLabelText(/^API key/)).toHaveValue('')
+    })
+
+    it('asks for the key before registering', async () => {
+      const user = userEvent.setup()
+      const dialog = await openKeyTab(user)
+
+      await user.click(within(dialog).getByLabelText(/Endpoint URL/))
+      await user.paste(PROJECT_URL)
+      // An empty field is caught by the form itself; one holding only spaces by MOSAIC.
+      expect(within(dialog).getByLabelText(/^API key/)).toBeRequired()
+      await user.click(within(dialog).getByLabelText(/^API key/))
+      await user.paste('   ')
+      await user.click(within(dialog).getByRole('button', { name: 'Register' }))
+
+      expect(await within(dialog).findByText("Paste the resource's API key.")).toBeVisible()
+      expect(api.registerModelEndpoint).not.toHaveBeenCalled()
+    })
+
+    it('forgets a key typed into a dialog that was cancelled', async () => {
+      const user = userEvent.setup()
+      const dialog = await openKeyTab(user)
+
+      await user.click(within(dialog).getByLabelText(/^API key/))
+      await user.paste(API_KEY)
+      await user.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+
+      await user.click(await screen.findByRole('button', { name: 'Register endpoint' }))
+      const reopened = await screen.findByRole('dialog', { name: 'Register model endpoint' })
+      await user.click(within(reopened).getByRole('tab', { name: 'Azure AI with an API key' }))
+      expect(within(reopened).getByLabelText(/^API key/)).toHaveValue('')
+    })
+
     it('offers an Azure OpenAI resource only the Azure OpenAI API', async () => {
       const user = userEvent.setup()
       const dialog = await openKeyTab(user)
@@ -2063,8 +2144,8 @@ describe('ModelsPage model endpoints', () => {
       const dialog = await openKeyTab(user)
       await user.click(within(dialog).getByLabelText(/Endpoint URL/))
       await user.paste(PROJECT_URL)
-      await user.click(within(dialog).getByLabelText(/Key Vault secret URI/))
-      await user.paste(SECRET_URI)
+      await user.click(within(dialog).getByLabelText(/^API key/))
+      await user.paste(API_KEY)
       await user.click(within(dialog).getByRole('button', { name: 'Register' }))
 
       const busy = await within(dialog).findByRole('button', { name: 'Registering…' })
@@ -2092,6 +2173,8 @@ describe('ModelsPage model endpoints', () => {
 
       expect(screen.getByText('The endpoint accepts the key')).toBeVisible()
       expect(screen.getByText(/Authentication: API key from Key Vault/)).toBeVisible()
+      // MOSAIC doesn't hold this key, so it can't replace it.
+      expect(screen.queryByRole('button', { name: 'Replace API key' })).not.toBeInTheDocument()
       expect(screen.getByText("Development gateway: can't read the key")).toBeVisible()
       expect(screen.getByText(/sends the endpoint's API key, which it reads from Key Vault/)).toBeVisible()
       expect(screen.getByText(GRANT_COMMAND)).toBeVisible()
@@ -2175,6 +2258,124 @@ describe('ModelsPage model endpoints', () => {
         'Removed claude-sonnet-4-5 from Fabrikam partner Foundry. Nothing changed in Azure.',
       )
       await waitFor(() => expect(outcome).toHaveFocus())
+    })
+
+    describe('a key MOSAIC keeps', () => {
+      it('says where the key is and replaces it as the next version of the same secret', async () => {
+        const user = userEvent.setup()
+        api.listModelEndpoints.mockResolvedValue([keyEndpoint({ keyStoredByMosaic: true })])
+        api.updateModelEndpoint.mockResolvedValue(keyEndpoint({ keyStoredByMosaic: true }))
+
+        renderPage()
+
+        expect(
+          await screen.findByText(/Authentication: API key MOSAIC keeps in its own Key Vault/),
+        ).toBeVisible()
+        expect(screen.getByText(/Nobody can read it back from MOSAIC/)).toBeVisible()
+        const opener = screen.getByRole('button', { name: 'Replace API key' })
+        await user.click(opener)
+        const dialog = await screen.findByRole('dialog', {
+          name: 'Replace the API key for Fabrikam partner Foundry',
+        })
+        expect(within(dialog).getByText(/next version of the same Key Vault secret/)).toBeVisible()
+        expect(within(dialog).getByText(/paste the resource's other key/)).toBeVisible()
+        const field = within(dialog).getByLabelText(/New API key/)
+        expect(field).toHaveAttribute('type', 'password')
+        await user.click(field)
+        await user.paste(` ${API_KEY} `)
+        await user.click(within(dialog).getByRole('button', { name: 'Store new key' }))
+
+        await waitFor(() =>
+          expect(api.updateModelEndpoint).toHaveBeenCalledWith('endpoint_key', { apiKey: API_KEY }),
+        )
+        await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+        expect(
+          await screen.findByText(
+            'Stored the new key for Fabrikam partner Foundry, and the endpoint accepts it. API ' +
+              'Management picks it up within four hours.',
+          ),
+        ).toBeVisible()
+        // Fluent returns focus to the button that opened the dialog when it closes.
+        expect(opener).toHaveAttribute('data-tabster', expect.stringContaining('restorer'))
+      })
+
+      it('keeps the button focusable while busy and moves focus to a refusal', async () => {
+        const user = userEvent.setup()
+        let refuse: (reason: unknown) => void = () => undefined
+        api.listModelEndpoints.mockResolvedValue([keyEndpoint({ keyStoredByMosaic: true })])
+        api.updateModelEndpoint.mockReturnValue(
+          new Promise((_, reject) => {
+            refuse = reject
+          }),
+        )
+
+        renderPage()
+
+        await user.click(await screen.findByRole('button', { name: 'Replace API key' }))
+        const dialog = await screen.findByRole('dialog')
+        await user.click(within(dialog).getByLabelText(/New API key/))
+        await user.paste(API_KEY)
+        await user.click(within(dialog).getByRole('button', { name: 'Store new key' }))
+
+        const busy = await within(dialog).findByRole('button', { name: 'Storing…' })
+        expect(busy).toHaveAttribute('aria-disabled', 'true')
+        expect(within(dialog).getByRole('button', { name: 'Cancel' })).toHaveAttribute(
+          'aria-disabled',
+          'true',
+        )
+
+        const message =
+          "MOSAIC isn't allowed to store secrets in Key Vault kv-contoso-ai. Grant its identity " +
+          'Key Vault Secrets Officer on the vault.'
+        refuse(new TestApiError(message, 403, { message }))
+        const refusal = await within(dialog).findByText(message)
+        await waitFor(() => expect(refusal.closest('[tabindex="-1"]')).toHaveFocus())
+        expect(within(dialog).getByText("MOSAIC didn't replace the key")).toBeVisible()
+      })
+
+      it("treats an unrecorded replacement as using the new key", async () => {
+        const user = userEvent.setup()
+        const message =
+          "MOSAIC stored the new key in Key Vault, and MOSAIC and API Management use it from " +
+          "now on, but MOSAIC couldn't record the change. Check access to refresh this " +
+          "endpoint's status."
+        api.listModelEndpoints.mockResolvedValue([keyEndpoint({ keyStoredByMosaic: true })])
+        api.updateModelEndpoint.mockRejectedValueOnce(
+          new TestApiError(message, 503, {
+            message,
+            details: { reason: 'keyReplacedNotRecorded' },
+          }),
+        )
+
+        renderPage()
+
+        await user.click(await screen.findByRole('button', { name: 'Replace API key' }))
+        const dialog = await screen.findByRole('dialog')
+        await user.click(within(dialog).getByLabelText(/New API key/))
+        await user.paste(API_KEY)
+        await user.click(within(dialog).getByRole('button', { name: 'Store new key' }))
+
+        await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+        expect(await screen.findByText(message)).toBeVisible()
+        expect(screen.queryByText("MOSAIC didn't replace the key")).not.toBeInTheDocument()
+      })
+
+      it('asks for the new key before sending anything', async () => {
+        const user = userEvent.setup()
+        api.listModelEndpoints.mockResolvedValue([keyEndpoint({ keyStoredByMosaic: true })])
+
+        renderPage()
+
+        await user.click(await screen.findByRole('button', { name: 'Replace API key' }))
+        const dialog = await screen.findByRole('dialog')
+        expect(within(dialog).getByLabelText(/New API key/)).toBeRequired()
+        await user.click(within(dialog).getByLabelText(/New API key/))
+        await user.paste('  ')
+        await user.click(within(dialog).getByRole('button', { name: 'Store new key' }))
+
+        expect(await within(dialog).findByText("Paste the resource's new API key.")).toBeVisible()
+        expect(api.updateModelEndpoint).not.toHaveBeenCalled()
+      })
     })
   })
 })

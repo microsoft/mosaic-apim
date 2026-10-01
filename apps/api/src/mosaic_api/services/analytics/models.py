@@ -66,7 +66,7 @@ class AnalyticsFilters:
     # Narrows callers and grants, which carry a subject. API-level totals include every caller.
     subject_kind: EntitlementSubjectKind | None = None
     # Narrows callers, grants, limits, cost by consumer and the chargeback to the grants charged
-    # to one cost center, as the subject filter does. See ADR 0021.
+    # to one cost center, as the subject filter does. See ADR 0022.
     cost_center_id: str | None = None
 
 

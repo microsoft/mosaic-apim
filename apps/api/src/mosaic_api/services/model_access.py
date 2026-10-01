@@ -56,7 +56,7 @@ def endpoint_mutation_scope(endpoint_id: str) -> str:
 
 @dataclass(frozen=True)
 class CostCenterIntent:
-    """What a grant's cost center compiles into its publication's policy. See ADR 0021.
+    """What a grant's cost center compiles into its publication's policy. See ADR 0022.
 
     Part of the grant's intent, so changing the cost center's code, whether it allows keys, its
     limits on the resource, or the subject's default marks the grant pending until it's applied.

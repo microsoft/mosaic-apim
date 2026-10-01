@@ -1,7 +1,7 @@
 """Spend and usage by cost center: analytics, the chargeback file, budgets, and the portal.
 
 Built on ``test_cost``'s estate. Bob's grant and the Analysts group's grant on the provisioned
-deployment are charged to Research; everything else stays on General. See ADR 0021.
+deployment are charged to Research; everything else stays on General. See ADR 0022.
 """
 
 from __future__ import annotations

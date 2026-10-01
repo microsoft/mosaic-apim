@@ -53,7 +53,7 @@ class Actor:
 
 
 class CostCenterChecks(Protocol):
-    """Revokes grants whose subjects may no longer charge their cost center; see ADR 0021."""
+    """Revokes grants whose subjects may no longer charge their cost center; see ADR 0022."""
 
     async def request_recheck(
         self,

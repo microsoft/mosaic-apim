@@ -12,6 +12,7 @@ writes PNGs to ``docs/images/screenshots``. Run it from the repository root; see
 import argparse
 import contextlib
 import io
+import re
 import shutil
 import socket
 import subprocess
@@ -29,7 +30,7 @@ from playwright.sync_api import Locator, Page, sync_playwright
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 from scripts.screenshots.demo_api import (
-    PARTNER_FOUNDRY_SECRET_URI,
+    PARTNER_FOUNDRY_DEMO_KEY,
     PARTNER_FOUNDRY_URL,
     SENSITIVE_LITERALS,
 )
@@ -320,6 +321,15 @@ def fill_textbox(name: str, text: str) -> Action:
     return act
 
 
+def fill_labelled(pattern: str, text: str) -> Action:
+    """Fill the field whose label matches, such as a password field, which has no textbox role."""
+
+    def act(page: Page) -> None:
+        page.get_by_label(re.compile(pattern)).filter(visible=True).first.fill(text)
+
+    return act
+
+
 def click_card_button_matching(texts: Sequence[str], button_name: str) -> Action:
     def act(page: Page) -> None:
         _card_matching(page, texts).get_by_role("button", name=button_name).click()
@@ -423,7 +433,8 @@ SHOTS: list[Shot] = [
         actions=(
             click_tab("Azure AI with an API key"),
             fill_textbox("Endpoint URL", PARTNER_FOUNDRY_URL),
-            fill_textbox("Key Vault secret URI", PARTNER_FOUNDRY_SECRET_URI),
+            # Masked in the field, as every pasted key is.
+            fill_labelled(r"^API key", PARTNER_FOUNDRY_DEMO_KEY),
             fill_text("Deployment 1 name", "claude-sonnet-4-5"),
             fill_text("Deployment 1 model", "claude-sonnet-4-5"),
             click_button("Add a deployment"),

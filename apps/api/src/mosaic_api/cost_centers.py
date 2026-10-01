@@ -1,4 +1,4 @@
-"""Cost centers: who every grant, and so every call, is charged to. See ADR 0021.
+"""Cost centers: who every grant, and so every call, is charged to. See ADR 0022.
 
 A cost center spans gateways. Administrators author it as desired state: its name and unique code,
 its owners, its members, whether its grants may use keys, per-person default limits for each model
@@ -99,7 +99,7 @@ class PendingRecheck(MosaicModel):
     it still can. Revoking a grant needs its publication's lock, which an apply holds while it
     runs. A grant that can't be revoked yet keeps the recheck pending, narrowed to the grants it
     hasn't finished, and applies leave every grant a pending recheck covers out of runtime access.
-    See ADR 0021.
+    See ADR 0022.
     """
 
     id: str = Field(default_factory=lambda: new_id("recheck"))

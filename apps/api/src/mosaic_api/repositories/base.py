@@ -617,7 +617,7 @@ class PricingRepository(Protocol):
 
 
 class CostCenterRepository(Protocol):
-    """Cost centers and the tenant's cost-center settings, kept in ``desired-state``. ADR 0021.
+    """Cost centers and the tenant's cost-center settings, kept in ``desired-state``. ADR 0022.
 
     Each write commits with its audit event. A cost center and the settings are saved only over
     the version that was read, so two administrators editing at once can't undo each other.

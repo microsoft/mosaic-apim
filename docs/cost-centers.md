@@ -3,7 +3,7 @@
 Every grant in MOSAIC, and so every call through it, is charged to a cost center: a team, project,
 or budget line that pays for AI. People choose one when they ask for access, and name one on each
 call when they hold several. Analytics, the chargeback, and the portal report spend and quotas per
-cost center. [ADR 0021](adr/0021-cost-centers.md) records the design.
+cost center. [ADR 0022](adr/0022-cost-centers.md) records the design.
 
 - [What a cost center holds](#what-a-cost-center-holds)
 - [Set up cost centers](#set-up-cost-centers)

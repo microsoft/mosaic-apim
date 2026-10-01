@@ -1289,7 +1289,7 @@ async def test_governed_claude_on_a_classic_tier_keeps_call_limits_and_drops_tok
 
 async def test_a_pending_recheck_keeps_its_grants_out_of_every_apply(harness: Harness) -> None:
     """Until MOSAIC has checked that a grant's subject may still charge its cost center, applies
-    leave the grant out, so no apply gives back access a change took away. See ADR 0021."""
+    leave the grant out, so no apply gives back access a change took away. See ADR 0022."""
 
     kept = await harness.grant()
     waiting = await harness.grant(APPLICATION, application=True)

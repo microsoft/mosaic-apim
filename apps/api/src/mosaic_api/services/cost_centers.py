@@ -1,4 +1,4 @@
-"""Administering cost centers, and which of them a caller may charge. See ADR 0021."""
+"""Administering cost centers, and which of them a caller may charge. See ADR 0022."""
 
 from collections import Counter
 from contextlib import suppress
