@@ -1,4 +1,4 @@
-"""Capacity type and processing scope, derived from a deployment's SKU (ADR 0018)."""
+"""Capacity type and processing scope, derived from a deployment's SKU (ADR 0024)."""
 
 import pytest
 from mosaic_api.deployment_capacity import CapacityType, ProcessingScope, classify_sku

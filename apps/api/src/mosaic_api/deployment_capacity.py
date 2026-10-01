@@ -1,6 +1,6 @@
 """What capacity a model deployment runs on, and where Azure may process its requests.
 
-Both attributes are read from the deployment's SKU name, as ADR 0018 sets out. Azure fixes them when
+Both attributes are read from the deployment's SKU name, as ADR 0024 sets out. Azure fixes them when
 the deployment is created, so MOSAIC derives them rather than asking anyone to configure them.
 """
 

@@ -2067,8 +2067,11 @@ records.
      - **Breaker:** load-balanced, with circuit breakers.
      - **Linear:** ordered failover.
      - **Preferential:** provisioned throughput first, with pay-as-you-go overflow.
-   - People request access per model, and get one key for every model they hold in a pool.
-   - AWS Bedrock members follow in a later phase.
+   - People request access per model, under a cost center. They get one key for every model they
+     hold in a pool under that cost center, and only when they ask for it.
+   - Pools reuse cost center limits, budget blocking, and grant attribution. Each call is priced
+     at the member deployment that served it.
+   - Members reached with a key, on Azure and then AWS Bedrock, follow in a later phase.
    - Already built: the Models page shows each deployment's capacity type (provisioned,
      pay-as-you-go, or batch), its processing scope, and any Azure spillover.
 

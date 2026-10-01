@@ -1619,10 +1619,10 @@ export interface ModelEndpointSyncRun {
   errors: string[]
 }
 
-/** How a deployment's capacity is bought, read from its SKU (ADR 0018). */
+/** How a deployment's capacity is bought, read from its SKU (ADR 0024). */
 export type CapacityType = 'provisioned' | 'payAsYouGo' | 'batch' | 'unknown'
 
-/** Where Azure may process a deployment's requests, read from its SKU (ADR 0018). */
+/** Where Azure may process a deployment's requests, read from its SKU (ADR 0024). */
 export type ProcessingScope = 'global' | 'dataZone' | 'regional' | 'unknown'
 
 export interface ObservedModelDeployment {

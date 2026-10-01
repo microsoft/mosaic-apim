@@ -222,7 +222,7 @@ class ObservedModelDeployment(ObservedEndpointEntity):
     This is the callable unit an entitlement will later grant access to, so its ID is deterministic
     and stable across syncs.
 
-    ``capacity_type`` and ``processing_scope`` are derived from ``sku_name`` (ADR 0018), and any
+    ``capacity_type`` and ``processing_scope`` are derived from ``sku_name`` (ADR 0024), and any
     value supplied for them is replaced. ``spillover_deployment_name`` is the standard deployment
     Azure itself overflows a provisioned deployment to, before a gateway ever sees a 429.
     """
