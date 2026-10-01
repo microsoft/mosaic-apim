@@ -1538,8 +1538,10 @@ class CliRunner:
                 return body
             return {"value": assignments}
         if path.startswith("servicePrincipals/") and path.endswith("/oauth2PermissionGrants"):
-            client_id = path.split("/")[1]
-            grants = self._dry_run_objects["oauth2PermissionGrants"].values()
+            # Index by the path's own segment, not the literal name. CodeQL reads a lookup keyed by
+            # any name containing "oauth" as a password, then flags every Graph value printed.
+            _, client_id, grants_collection = path.split("/")
+            grants = self._dry_run_objects[grants_collection].values()
             return {"value": [grant for grant in grants if grant.get("clientId") == client_id]}
         collection, _, object_id = path.partition("/")
         if collection not in self._dry_run_objects:

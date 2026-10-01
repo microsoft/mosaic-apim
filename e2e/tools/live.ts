@@ -744,7 +744,10 @@ const server = createServer(async (request, response) => {
     const result = await handler(personaKey, args, abort.signal)
     send(response, 200, { ok: true, result })
   } catch (error) {
-    const message = error instanceof Error ? error.message.split('\n=========================== logs')[0] : String(error)
+    // A thrown non-Error keeps only its first line, so no stack trace reaches the driver.
+    const message = error instanceof Error
+      ? error.message.split('\n=========================== logs')[0]
+      : String(error).split('\n')[0]
     send(response, 200, { ok: false, error: truncate(redact(message), 4_000) })
   }
 })
