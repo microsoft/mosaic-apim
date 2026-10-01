@@ -174,3 +174,10 @@ route:
   resources whose usage MOSAIC can't link, which its figures leave out.
 - **Usage tracking is worded by its source.** The portal's labels now read Linked from gateway log
   traces, Linked from the APIM subscription, and Not linked yet.
+
+## Amendment 2026-10-01: Trace properties are never empty
+
+The trace's metadata repeats `mosaic-grant`, `mosaic-member`, and `mosaic-client` with `-` in place
+of a value the call doesn't have, such as `mosaic-member` for a direct grant. API Management fails
+a call whose trace property is empty. The message is unchanged. See the
+[ADR 0019 amendment](0019-usage-telemetry.md#amendment-2026-10-01-trace-properties-are-never-empty).
