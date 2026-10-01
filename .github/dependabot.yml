@@ -1,0 +1,13 @@
+version: 2
+updates:
+  # CI pins each action to a commit SHA. This keeps those pins current, a week after each release.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      github-actions:
+        patterns:
+          - "*"
