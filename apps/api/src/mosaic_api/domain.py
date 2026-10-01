@@ -6,7 +6,15 @@ from typing import Any, Literal, Self
 from urllib.parse import urlsplit, urlunsplit
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
-from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    AnyHttpUrl,
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    field_validator,
+    model_validator,
+)
 from pydantic.alias_generators import to_camel
 
 APIM_API_VERSION = "2024-05-01"
@@ -318,6 +326,26 @@ class KeyVaultSecretId(BaseModel):
     @property
     def versionless(self) -> str:
         return f"{self.vault_uri}/secrets/{self.secret_name}"
+
+
+# An Azure AI resource's keys are 32 or 84 printable characters. MOSAIC trims what was pasted around
+# a key, then refuses anything else that isn't printable ASCII, so a key with a stray line break is
+# never stored or sent. No message here ever repeats the value.
+_API_KEY_PATTERN = re.compile(r"^[\x21-\x7e]{16,512}$")
+
+
+def normalized_api_key(value: SecretStr) -> SecretStr:
+    """An API key an administrator pasted, trimmed, or a ValueError that never repeats it."""
+
+    key = value.get_secret_value().strip()
+    if not key:
+        raise ValueError("Paste the resource's API key")
+    if not _API_KEY_PATTERN.fullmatch(key):
+        raise ValueError(
+            "An API key is 16 to 512 letters, digits and symbols, with no spaces or line breaks. "
+            "Copy it again from the resource's Keys and Endpoint page"
+        )
+    return SecretStr(key)
 
 
 # Every public host an Azure AI (Cognitive Services) account answers on is its custom subdomain
@@ -1043,6 +1071,9 @@ class ModelEndpoint(Entity):
     azure_environment_tag: str | None = None
     auth_mode: EndpointAuthMode = EndpointAuthMode.MANAGED_IDENTITY
     credential_reference_id: str | None = None
+    # Set when MOSAIC wrote the key into its own Key Vault because an administrator gave it the key
+    # (ADR 0021). MOSAIC then replaces the key on request and deletes the secret with the endpoint.
+    key_stored_by_mosaic: bool = Field(default=False, exclude_if=_unset)
     # Authored by administrators, and only on an Azure endpoint registered with an API key.
     declared_deployments: list[DeclaredDeployment] = Field(
         default_factory=list, exclude_if=_unset
@@ -2482,7 +2513,14 @@ class ModelEndpointCreate(MosaicModel):
     endpoint (ADR 0018): the alternative for a resource MOSAIC's managed identity can't reach, such
     as one in another Microsoft Entra tenant. Its ``deployments`` are declared, because an API key
     can't list them. Any other URL is an OpenAI-compatible endpoint.
+
+    ``api_key`` takes the key itself, instead of a secret URI, for an administrator who can't put it
+    in Key Vault: MOSAIC writes it into its own Key Vault and keeps only the secret's identifier
+    (ADR 0021). It's write-only, and nothing MOSAIC returns, records or logs repeats it.
     """
+
+    # A validation error's text never shows what was sent, which can be a key.
+    model_config = ConfigDict(hide_input_in_errors=True)
 
     azure_resource_id: str | None = Field(default=None, max_length=512)
     endpoint: AnyHttpUrl | None = None
@@ -2496,6 +2534,14 @@ class ModelEndpointCreate(MosaicModel):
     environment: str | None = None
     provider: ModelProvider | None = None
     credential_secret_uri: AnyHttpUrl | None = None
+    api_key: SecretStr | None = Field(
+        default=None,
+        exclude=True,
+        description=(
+            "An Azure OpenAI or Foundry resource's API key, which MOSAIC stores in its own Key "
+            "Vault. Give this or credentialSecretUri, not both. It is never returned."
+        ),
+    )
     deployments: list[DeclaredDeploymentCreate] | None = Field(
         default=None, max_length=MAX_DECLARED_DEPLOYMENTS
     )
@@ -2506,6 +2552,11 @@ class ModelEndpointCreate(MosaicModel):
         if value is None or not value.strip():
             return None
         return CognitiveServicesResourceId.parse(value).canonical
+
+    @field_validator("api_key")
+    @classmethod
+    def validate_api_key(cls, value: SecretStr | None) -> SecretStr | None:
+        return None if value is None else normalized_api_key(value)
 
     @model_validator(mode="after")
     def validate_identification(self) -> Self:
@@ -2520,6 +2571,11 @@ class ModelEndpointCreate(MosaicModel):
                     "MOSAIC reads the deployments of an endpoint registered by resource ID, so "
                     "none can be declared"
                 )
+            if self.api_key is not None:
+                raise ValueError(
+                    "MOSAIC reaches an endpoint registered by resource ID with its managed "
+                    "identity, so it takes no API key"
+                )
             return self
         azure_host = azure_ai_host_suffix(urlsplit(str(self.endpoint)).hostname) is not None
         azure_provider = self.provider in {
@@ -2529,26 +2585,36 @@ class ModelEndpointCreate(MosaicModel):
         if self.provider == ModelProvider.OPENAI_COMPATIBLE and azure_host:
             raise ValueError(
                 "That's an Azure OpenAI or Foundry endpoint. Register it by resource ID, or by URL "
-                "with the Key Vault secret that holds its API key, so MOSAIC can publish it"
+                "with its API key, so MOSAIC can publish it"
             )
         if azure_provider or (self.provider is None and azure_host):
-            if self.credential_secret_uri is None:
+            if self.credential_secret_uri is None and self.api_key is None:
                 raise ValueError(
                     "Register an Azure OpenAI or Foundry resource by its resource ID, so MOSAIC "
                     "uses its managed identity. If MOSAIC can't reach the resource that way, for "
-                    "example because it's in another Microsoft Entra tenant, give the Key Vault "
-                    "secret URI that holds its API key"
+                    "example because it's in another Microsoft Entra tenant, give its API key, or "
+                    "the Key Vault secret URI that holds it"
+                )
+            if self.credential_secret_uri is not None and self.api_key is not None:
+                raise ValueError(
+                    "Give the API key, or the Key Vault secret URI that holds it, not both"
                 )
             url = AzureAiEndpointUrl.parse(str(self.endpoint))
             if self.provider is None:
                 self.provider = url.provider
-            KeyVaultSecretId.parse(str(self.credential_secret_uri))
+            if self.credential_secret_uri is not None:
+                KeyVaultSecretId.parse(str(self.credential_secret_uri))
             validate_declarations(self.deployments or [], self.provider)
             return self
         if self.deployments:
             raise ValueError(
                 "Deployments can be declared only for an Azure OpenAI or Foundry endpoint "
                 "registered with an API key"
+            )
+        if self.api_key is not None:
+            raise ValueError(
+                "MOSAIC stores an API key itself only for an Azure OpenAI or Foundry resource. "
+                "Give an OpenAI-compatible endpoint the Key Vault secret URI that holds its key"
             )
         self.provider = ModelProvider.OPENAI_COMPATIBLE
         if self.credential_secret_uri is None:
@@ -2559,6 +2625,9 @@ class ModelEndpointCreate(MosaicModel):
 
 
 class ModelEndpointUpdate(MosaicModel):
+    # A validation error's text never shows what was sent, which can be a key.
+    model_config = ConfigDict(hide_input_in_errors=True)
+
     name: str | None = Field(default=None, min_length=1, max_length=120)
     environment_label: str | None = Field(
         default=None,
@@ -2567,6 +2636,14 @@ class ModelEndpointUpdate(MosaicModel):
         json_schema_extra={"deprecated": True},
     )
     credential_secret_uri: AnyHttpUrl | None = None
+    api_key: SecretStr | None = Field(
+        default=None,
+        exclude=True,
+        description=(
+            "A new API key for an endpoint whose key MOSAIC stores. MOSAIC writes it as the next "
+            "version of the same Key Vault secret. It is never returned."
+        ),
+    )
 
     @field_validator("name")
     @classmethod
@@ -2576,6 +2653,17 @@ class ModelEndpointUpdate(MosaicModel):
         if value is None:
             raise ValueError("name cannot be null")
         return value
+
+    @field_validator("api_key")
+    @classmethod
+    def validate_api_key(cls, value: SecretStr | None) -> SecretStr | None:
+        return None if value is None else normalized_api_key(value)
+
+    @model_validator(mode="after")
+    def one_credential(self) -> Self:
+        if self.api_key is not None and self.credential_secret_uri is not None:
+            raise ValueError("Give a new API key or a new Key Vault secret URI, not both")
+        return self
 
 
 class McpEndpointCreate(MosaicModel):

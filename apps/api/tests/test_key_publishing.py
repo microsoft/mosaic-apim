@@ -80,8 +80,8 @@ def forwarded(fragment_xml: str, named_values: dict[str, str]) -> tuple[dict[str
 class KeyHarness:
     """A managed gateway, and a Foundry resource in another tenant reached with an API key."""
 
-    def __init__(self, *, governed: bool = False) -> None:
-        self.world = KeyWorld()
+    def __init__(self, *, governed: bool = False, world: KeyWorld | None = None) -> None:
+        self.world = world or KeyWorld()
         self.apim = FakeApim(permissions=CONTRIBUTOR_PERMISSIONS)
         self.gateways = build_gateway_service(self.apim, self.world.gateway_repository)
         arm = build_arm_client(self.apim)
@@ -96,7 +96,7 @@ class KeyHarness:
         self.gateway_id = ""
         self.endpoint_id = ""
 
-    async def setup(self) -> None:
+    async def setup(self, **register: object) -> None:
         gateway = await self.gateways.register(ACTOR, GatewayCreate(azure_resource_id=RESOURCE_ID))
         await self.gateways.sync_now(ACTOR, gateway.id)
         gateway = await self.gateways.update(
@@ -104,7 +104,7 @@ class KeyHarness:
         )
         self.gateway_id = gateway.id
         self.world.grant()
-        endpoint = await self.world.register()
+        endpoint = await self.world.register(**register)
         self.endpoint_id = endpoint.id
 
     async def publish(self, deployment: str = "claude-sonnet-4-5", **overrides: object) -> str:

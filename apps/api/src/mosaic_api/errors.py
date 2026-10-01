@@ -1,6 +1,8 @@
 from typing import Any
 
 from fastapi import Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict
 
@@ -123,3 +125,19 @@ async def domain_error_handler(_request: Request, exc: Exception) -> JSONRespons
         status_code=exc.status_code,
         content=ErrorBody(code=exc.code, message=exc.message, details=exc.details).model_dump(),
     )
+
+
+async def request_validation_error_handler(_request: Request, exc: Exception) -> JSONResponse:
+    """FastAPI's 422 response, without repeating what the request sent.
+
+    Each error normally carries its ``input``: the field's value, or the whole body when a rule
+    spans fields. A request can carry an API key (ADR 0021), and an error must never repeat it, so
+    no input is repeated at all. Where it went wrong and why are unchanged.
+    """
+
+    if not isinstance(exc, RequestValidationError):
+        raise exc
+    errors = [
+        {key: value for key, value in error.items() if key != "input"} for error in exc.errors()
+    ]
+    return JSONResponse(status_code=422, content={"detail": jsonable_encoder(errors)})

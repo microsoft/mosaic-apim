@@ -4,8 +4,16 @@ from typing import Any
 
 import structlog
 from azure.monitor.opentelemetry import configure_azure_monitor
+from structlog.tracebacks import ExceptionDictTransformer
 
 from mosaic_api.config import Environment, Settings
+
+# A logged exception is rendered without each frame's local variables. A frame on the way to an
+# error can hold an API key read from Key Vault or given by an administrator, or a token, and none
+# of those may reach a log.
+render_exceptions = structlog.processors.ExceptionRenderer(
+    ExceptionDictTransformer(show_locals=False)
+)
 
 
 def configure_logging(settings: Settings) -> None:
@@ -16,7 +24,7 @@ def configure_logging(settings: Settings) -> None:
             structlog.contextvars.merge_contextvars,
             structlog.processors.add_log_level,
             structlog.processors.TimeStamper(fmt="iso", utc=True),
-            structlog.processors.dict_tracebacks,
+            render_exceptions,
             structlog.processors.JSONRenderer(),
         ],
         wrapper_class=structlog.make_filtering_bound_logger(level),

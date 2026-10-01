@@ -99,6 +99,14 @@ class Settings(BaseSettings):
             "gateways can read a key stored there without searching subscriptions for the vault."
         ),
     )
+    key_vault_uri: AnyHttpUrl | None = Field(
+        default=None,
+        description=(
+            "The URI of the Key Vault deployed with MOSAIC. MOSAIC keeps an API key an "
+            "administrator gives it there, as a secret, and stores only the secret's identifier. "
+            "Without it MOSAIC takes only the URI of a secret someone else stored."
+        ),
+    )
     mcp_discovery_timeout_seconds: float = Field(default=20.0, gt=0, le=120)
     entra_directory_lookup: bool = Field(
         default=True,
