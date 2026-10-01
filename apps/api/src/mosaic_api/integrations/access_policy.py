@@ -489,7 +489,7 @@ def describe_grant_attribution_trace(facet: PolicyFacet, *, has_group_grants: bo
         facet.details.append("Security-group grants also record the caller's validated object ID.")
     facet.details.append(
         "The trace's Application Insights properties repeat these values, with "
-        f"{TRACE_METADATA_ABSENT} for any the call doesn't have."
+        f"{TRACE_METADATA_ABSENT} for any value the call doesn't have."
     )
 
 
