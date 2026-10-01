@@ -1098,10 +1098,12 @@ What MOSAIC does with it:
 - **It keeps a key it's given only in Key Vault.** `apiKey` is write-only: no response, record, log
   or error repeats it, and a request MOSAIC refuses isn't repeated back either. MOSAIC trims what
   was pasted around a key and refuses anything with a space or line break inside. To replace a key
-  MOSAIC keeps, use **Replace API key**, or `PATCH /api/v1/model-endpoints/{id}` with `apiKey`.
-  API Management picks up the new version within four hours, so paste the resource's other key
-  and regenerate the old one afterwards. A key MOSAIC keeps can't be swapped for a secret URI, or
-  the reverse: remove the endpoint and register it again.
+  MOSAIC keeps, use **Replace API key**, or `PATCH /api/v1/model-endpoints/{id}` with only
+  `apiKey`. After Key Vault accepts it, MOSAIC records the replacement with writes that can't
+  conflict. If that record still fails, MOSAIC says the new key is in use, and **Check access**
+  refreshes the status. API Management picks up the new version within four hours, so paste the
+  resource's other key and regenerate the old one afterwards. A key MOSAIC keeps can't be swapped
+  for a secret URI, or the reverse: remove the endpoint and register it again.
 - **It checks the key and keeps nothing.** Registration and **Check access** read the secret with
   MOSAIC's identity and send one request that runs no model (`GET /openai/models`) with the key in
   `api-key`. MOSAIC reads only the status code and drops the key. It never logs, stores or returns

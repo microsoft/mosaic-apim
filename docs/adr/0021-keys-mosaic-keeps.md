@@ -49,19 +49,26 @@ Two things FastAPI and structlog do by default would leak a key that passes thro
   identifier, exactly like a secret the administrator stored. From there, ADR 0018 applies
   unchanged: the key check, gateway readiness, the named value, the policy and unpublish.
 - The write comes after every check that could refuse the registration: a duplicate resource,
-  declarations and the environment. If registration fails after the write, MOSAIC deletes the
-  secret again. If that delete fails too, MOSAIC logs which endpoint and vault, without a
-  traceback, and the tags let an operator find the secret.
+  declarations and the environment. If registration fails or is cancelled around the write, MOSAIC
+  deletes the secret whatever happened, because the write may have reached Key Vault. If that
+  delete fails too, MOSAIC logs which endpoint and vault, without a traceback, and the tags let an
+  operator find the secret.
 - A deployment with no vault of its own (no `MOSAIC_KEY_VAULT_URI`) refuses a key with a `409`,
   and asks for a secret URI instead.
 
 **A key MOSAIC keeps is replaced in place and deleted with its endpoint.**
 
-- **Replace API key** in the console, or `PATCH /api/v1/model-endpoints/{id}` with `apiKey`,
+- **Replace API key** in the console, or `PATCH /api/v1/model-endpoints/{id}` with only `apiKey`,
   writes the next version of the same secret, under the endpoint's lease. The identifier doesn't
-  change, so publication digests don't either, and no plan needs a review. MOSAIC checks the new
-  key at once. API Management picks it up within four hours, so the console says to paste the
-  resource's other key and regenerate the old one afterwards.
+  change, so publication digests don't either, and no plan needs a review. A new key is sent on its
+  own, so once Key Vault accepts it nothing else is left to save. MOSAIC then records the
+  replacement with writes that don't depend on the endpoint record's version, so a concurrent change
+  can't make them conflict: an audit event on the unchanged credential reference, and a fresh check
+  merged as observed state. If recording fails anyway, MOSAIC answers `503` with reason
+  `keyReplacedNotRecorded`, saying the new key is stored and in use, rather than reporting no
+  change. The console shows that as replaced, and **Check access** refreshes the status. API
+  Management picks the key up within four hours, so the console says to paste the resource's other
+  key and regenerate the old one afterwards.
 - Removing the endpoint deletes the secret. The delete comes after the publication checks and
   before anything else is removed, so a vault that refuses it changes nothing. A secret that's
   already gone doesn't block the removal. The vault keeps the deleted secret, recoverable, for its
@@ -78,7 +85,9 @@ Two things FastAPI and structlog do by default would leak a key that passes thro
 - `KeyVaultSecretWriter` puts the value in one request body. It never reads Key Vault's response,
   which repeats the value. Its errors name the vault and the status, never the value or what the
   vault said. They're raised `from None`, so no chained exception carries the frames that held
-  the key.
+  the key. It follows no redirects, so only a 2xx answer confirms a write or a delete. A 3xx is a
+  failure, so MOSAIC never registers an endpoint whose secret wasn't written, or forgets one whose
+  secret is still live.
 - **422 responses no longer repeat the request.** A handler drops `input` from every validation
   error, for every route. Each error keeps its `loc`, `msg` and `type`, so where and why are
   unchanged. Nothing in MOSAIC's console, portal or e2e harness reads `input`. The console now

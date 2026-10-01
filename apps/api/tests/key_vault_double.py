@@ -184,6 +184,7 @@ class FakeKeyStore:
         self.deleted: set[str] = set()
         self.calls: list[tuple[str, str]] = []
         self.put_error: Exception | None = None
+        self.put_error_after_write: Exception | None = None
         self.delete_error: Exception | None = None
 
     def new_secret(self, name: str) -> KeyVaultSecretId:
@@ -199,6 +200,8 @@ class FakeKeyStore:
             raise ConflictError("A deleted secret of that name is still kept.")
         self.versions.setdefault(secret.secret_name, []).append(value.get_secret_value())
         self.tags[secret.secret_name] = dict(tags)
+        if self.put_error_after_write is not None:
+            raise self.put_error_after_write
 
     async def delete(self, secret: KeyVaultSecretId) -> bool:
         self.calls.append(("delete", secret.secret_name))

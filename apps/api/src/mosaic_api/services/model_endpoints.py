@@ -61,6 +61,7 @@ from mosaic_api.domain import (
 )
 from mosaic_api.environments import EnvironmentCatalog, azure_environment_tag, suggest_environment
 from mosaic_api.errors import (
+    ChangeNotRecordedError,
     ConflictError,
     DomainError,
     NotFoundError,
@@ -514,13 +515,20 @@ class ModelEndpointService:
             return await self._create_keyed(
                 actor, request, url, endpoint_id, secret, declarations, stored=False
             )
-        secret = await self._store_key(endpoint_id, url.subdomain, request.api_key)
+        secret = self._new_stored_secret(url.subdomain)
+        assert self._key_store is not None
         try:
+            await self._key_store.put(
+                secret, request.api_key, tags=self._stored_key_tags(endpoint_id)
+            )
             return await self._create_keyed(
                 actor, request, url, endpoint_id, secret, declarations, stored=True
             )
-        except Exception:
-            await self._discard_stored_key(secret, endpoint_id)
+        except BaseException:
+            # The write may have reached Key Vault even if the call failed, timed out or was
+            # cancelled. Delete the secret whatever happened, and shield cleanup so a cancelled
+            # request still finishes it.
+            await asyncio.shield(self._discard_stored_key(secret, endpoint_id))
             raise
 
     async def _create_keyed(
@@ -579,10 +587,8 @@ class ModelEndpointService:
         # Lets an operator looking at the vault see which secrets MOSAIC keeps, and for what.
         return {MANAGED_BY_TAG: MANAGED_BY, MODEL_ENDPOINT_TAG: endpoint_id}
 
-    async def _store_key(
-        self, endpoint_id: str, subdomain: str, key: SecretStr
-    ) -> KeyVaultSecretId:
-        """Write a key an administrator gave MOSAIC into a new secret in MOSAIC's Key Vault."""
+    def _new_stored_secret(self, subdomain: str) -> KeyVaultSecretId:
+        """Allocate a new secret identifier in MOSAIC's Key Vault."""
 
         if self._key_store is None:
             raise ConflictError(
@@ -590,9 +596,7 @@ class ModelEndpointService:
                 "Key Vault yourself, and give MOSAIC the secret's URI instead.",
                 details={"reason": "keyStoreUnavailable"},
             )
-        secret = self._key_store.new_secret(stored_key_name(subdomain))
-        await self._key_store.put(secret, key, tags=self._stored_key_tags(endpoint_id))
-        return secret
+        return self._key_store.new_secret(stored_key_name(subdomain))
 
     async def _discard_stored_key(self, secret: KeyVaultSecretId, endpoint_id: str) -> None:
         """Delete a key MOSAIC stored for a registration that didn't finish. Never raises."""
@@ -686,17 +690,15 @@ class ModelEndpointService:
             ):
                 endpoint = await self.get_endpoint(actor, endpoint_id)
                 await self._replace_stored_key(endpoint, request.api_key)
-                return await self._update(actor, endpoint, request, key_replaced=True)
+                return await self._record_stored_key_replacement(actor, endpoint)
         endpoint = await self.get_endpoint(actor, endpoint_id)
-        return await self._update(actor, endpoint, request, key_replaced=False)
+        return await self._update(actor, endpoint, request)
 
     async def _update(
         self,
         actor: Actor,
         endpoint: ModelEndpoint,
         request: ModelEndpointUpdate,
-        *,
-        key_replaced: bool,
     ) -> ModelEndpoint:
         changes = request.model_dump(exclude_unset=True, by_alias=False)
         secret_uri = changes.pop("credential_secret_uri", None)
@@ -743,21 +745,60 @@ class ModelEndpointService:
             }
         )
         saved = await self._repository.save_endpoint(
-            updated,
-            self._audit(
-                actor,
-                "modelEndpoint.updated",
-                updated.id,
-                {"apiKeyReplaced": True} if key_replaced else None,
-            ),
+            updated, self._audit(actor, "modelEndpoint.updated", updated.id)
         )
-        if (secret_uri is not None or key_replaced) and saved.uses_backend_key():
-            # A new key or secret makes every earlier check stale, MOSAIC's and the gateways'.
+        if secret_uri is not None and saved.uses_backend_key():
+            # A new secret makes every earlier check stale, MOSAIC's and the gateways' alike.
             recorded = await self._repository.record_endpoint_state(
                 await self._apply_preflight(saved)
             )
             return recorded or saved
         return saved
+
+    async def _record_stored_key_replacement(
+        self, actor: Actor, endpoint: ModelEndpoint
+    ) -> ModelEndpoint:
+        """Record a key replacement that Key Vault has already accepted.
+
+        Neither write depends on the endpoint record's version: the audit event rides on an upsert
+        of the unchanged credential reference, and the fresh check is merged as observed state. So
+        a concurrent change to the endpoint can't make them conflict. If recording fails anyway,
+        the error says the new key is in use, because it is, rather than reporting no change.
+        """
+
+        try:
+            if endpoint.credential_reference_id is None:
+                raise ConflictError("This endpoint has no credential reference.")
+            credential = await self._repository.get_credential(
+                actor.tenant_id, endpoint.credential_reference_id
+            )
+            if credential is None:
+                raise ConflictError("This endpoint has no credential reference.")
+            await self._repository.save_credential(
+                credential,
+                self._audit(
+                    actor,
+                    "credentialReference.keyReplaced",
+                    credential.id,
+                    {"modelEndpointId": endpoint.id},
+                ),
+            )
+            recorded = await self._repository.record_endpoint_state(
+                await self._apply_preflight(endpoint)
+            )
+            return recorded or endpoint
+        except Exception as error:
+            logger.warning(
+                "api_key_replacement_not_recorded",
+                endpoint_id=endpoint.id,
+                error_type=type(error).__name__,
+            )
+            raise ChangeNotRecordedError(
+                "MOSAIC stored the new key in Key Vault, and MOSAIC and API Management use it "
+                "from now on, but MOSAIC couldn't record the change. Check access to refresh "
+                "this endpoint's status.",
+                details={"id": endpoint.id, "reason": "keyReplacedNotRecorded"},
+            ) from None
 
     async def _replace_stored_key(self, endpoint: ModelEndpoint, key: SecretStr) -> None:
         """Write a new key as the next version of the secret MOSAIC keeps an endpoint's key in.

@@ -2333,6 +2333,33 @@ describe('ModelsPage model endpoints', () => {
         expect(within(dialog).getByText("MOSAIC didn't replace the key")).toBeVisible()
       })
 
+      it("treats an unrecorded replacement as using the new key", async () => {
+        const user = userEvent.setup()
+        const message =
+          "MOSAIC stored the new key in Key Vault, and MOSAIC and API Management use it from " +
+          "now on, but MOSAIC couldn't record the change. Check access to refresh this " +
+          "endpoint's status."
+        api.listModelEndpoints.mockResolvedValue([keyEndpoint({ keyStoredByMosaic: true })])
+        api.updateModelEndpoint.mockRejectedValueOnce(
+          new TestApiError(message, 503, {
+            message,
+            details: { reason: 'keyReplacedNotRecorded' },
+          }),
+        )
+
+        renderPage()
+
+        await user.click(await screen.findByRole('button', { name: 'Replace API key' }))
+        const dialog = await screen.findByRole('dialog')
+        await user.click(within(dialog).getByLabelText(/New API key/))
+        await user.paste(API_KEY)
+        await user.click(within(dialog).getByRole('button', { name: 'Store new key' }))
+
+        await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+        expect(await screen.findByText(message)).toBeVisible()
+        expect(screen.queryByText("MOSAIC didn't replace the key")).not.toBeInTheDocument()
+      })
+
       it('asks for the new key before sending anything', async () => {
         const user = userEvent.setup()
         api.listModelEndpoints.mockResolvedValue([keyEndpoint({ keyStoredByMosaic: true })])

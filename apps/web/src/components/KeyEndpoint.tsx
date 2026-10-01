@@ -23,7 +23,7 @@ import {
 import { AddRegular, DismissRegular } from '@fluentui/react-icons'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { type FormEvent, useEffect, useRef, useState } from 'react'
-import { useMosaicApi } from '../api'
+import { ApiError, useMosaicApi } from '../api'
 import { EmptyState, ErrorState } from './AsyncState'
 import {
   API_SHAPE_LABELS,
@@ -307,6 +307,16 @@ function ReplaceKeyDialog({
               'accepts it. Its Access card says why.',
       )
       close()
+    },
+    onError: async (error) => {
+      if (
+        error instanceof ApiError &&
+        error.body?.details?.reason === 'keyReplacedNotRecorded'
+      ) {
+        await queryClient.invalidateQueries({ queryKey: ['model-endpoints'] })
+        onReplaced(error.body.message ?? error.message)
+        close()
+      }
     },
   })
   // A refusal says why at the top of the dialog, and takes focus so a screen reader reads it.

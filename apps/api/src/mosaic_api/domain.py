@@ -2663,6 +2663,8 @@ class ModelEndpointUpdate(MosaicModel):
     def one_credential(self) -> Self:
         if self.api_key is not None and self.credential_secret_uri is not None:
             raise ValueError("Give a new API key or a new Key Vault secret URI, not both")
+        if self.api_key is not None and self.model_fields_set - {"api_key"}:
+            raise ValueError("Send a new API key on its own, without other changes")
         return self
 
 

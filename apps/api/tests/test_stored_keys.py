@@ -6,6 +6,7 @@ then on reads and publishes the key exactly as it does one the administrator sto
 These drive the real service, writer, API and logging against doubles of Key Vault.
 """
 
+import asyncio
 import json
 import logging
 import sys
@@ -27,6 +28,7 @@ from mosaic_api.domain import (
     PublishRunStatus,
 )
 from mosaic_api.errors import (
+    ChangeNotRecordedError,
     ConflictError,
     UpstreamAuthorizationError,
     UpstreamError,
@@ -181,6 +183,13 @@ class TestRequest:
         with pytest.raises(PydanticValidationError, match="not both"):
             ModelEndpointUpdate(api_key=SecretStr(KEY), credential_secret_uri=SECRET_URI)  # type: ignore[arg-type]
 
+    def test_an_update_takes_a_new_key_on_its_own(self) -> None:
+        with pytest.raises(PydanticValidationError) as refused:
+            ModelEndpointUpdate(api_key=SecretStr(KEY), name="New name")
+
+        assert "on its own" in str(refused.value)
+        assert KEY not in str(refused.value)
+
 
 class TestRegistration:
     async def test_the_key_goes_into_a_new_secret_and_only_its_identifier_is_kept(
@@ -241,7 +250,7 @@ class TestRegistration:
         assert world.endpoint_repository.endpoints == {}
 
     async def test_a_vault_that_refuses_the_key_leaves_nothing_registered(
-        self, world: KeyWorld, store: FakeKeyStore
+        self, world: KeyWorld, store: FakeKeyStore, logged: LogRecorder
     ) -> None:
         store.put_error = UpstreamAuthorizationError(
             "MOSAIC isn't allowed to store secrets in Key Vault kv-contoso-ai."
@@ -252,6 +261,40 @@ class TestRegistration:
 
         assert world.endpoint_repository.endpoints == {}
         assert world.endpoint_repository.credentials == {}
+        assert store.versions == {}
+        assert [call[0] for call in store.calls] == ["put", "delete"]
+        assert not [
+            entry for entry in logged.entries if entry["event"] == "stored_key_not_discarded"
+        ]
+
+    async def test_a_vault_write_that_commits_then_fails_is_deleted(
+        self, world: KeyWorld, store: FakeKeyStore
+    ) -> None:
+        store.put_error_after_write = UpstreamError("Key Vault timed out.")
+
+        with pytest.raises(UpstreamError, match="timed out"):
+            await world.service.register(ACTOR, pasted())
+
+        [(_, name)] = [call for call in store.calls if call[0] == "put"]
+        assert ("delete", name) in store.calls
+        assert store.versions == {}
+        assert world.endpoint_repository.endpoints == {}
+
+    async def test_a_cancelled_registration_deletes_the_stored_key(
+        self, world: KeyWorld, store: FakeKeyStore, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        async def cancel(*_: Any, **__: Any) -> Any:
+            raise asyncio.CancelledError()
+
+        monkeypatch.setattr(world.endpoint_repository, "create_endpoint", cancel)
+
+        with pytest.raises(asyncio.CancelledError):
+            await world.service.register(ACTOR, pasted())
+
+        [(_, name)] = [call for call in store.calls if call[0] == "put"]
+        assert ("delete", name) in store.calls
+        assert store.versions == {}
+        assert world.endpoint_repository.endpoints == {}
 
     async def test_a_registration_that_fails_after_the_key_is_stored_deletes_it(
         self, world: KeyWorld, store: FakeKeyStore, monkeypatch: pytest.MonkeyPatch
@@ -324,12 +367,76 @@ class TestReplacingTheKey:
         [audit] = [
             event
             for event in world.endpoint_repository.audit_events.values()
-            if event.details.get("apiKeyReplaced")
+            if event.action == "credentialReference.keyReplaced"
         ]
-        assert audit.action == "modelEndpoint.updated"
+        assert audit.details == {"modelEndpointId": endpoint.id}
         recorded = everything_recorded(world, logged.entries, updated.model_dump(mode="json"))
         assert NEW_KEY not in recorded
         assert KEY not in recorded
+
+    async def test_a_key_write_that_cant_be_recorded_reports_the_key_is_live(
+        self, world: KeyWorld, store: FakeKeyStore, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        endpoint = await world.service.register(ACTOR, pasted())
+
+        async def fail(*_: Any, **__: Any) -> Any:
+            raise RuntimeError("Cosmos is unreachable.")
+
+        monkeypatch.setattr(world.endpoint_repository, "save_credential", fail)
+
+        with pytest.raises(ChangeNotRecordedError) as refused:
+            await world.service.update(
+                ACTOR, endpoint.id, ModelEndpointUpdate(api_key=SecretStr(NEW_KEY))
+            )
+
+        assert "stored the new key" in refused.value.message
+        assert refused.value.details == {"id": endpoint.id, "reason": "keyReplacedNotRecorded"}
+        [name] = store.versions
+        assert store.versions[name] == [KEY, NEW_KEY]
+        recorded = json.dumps(
+            {"message": refused.value.message, "details": refused.value.details}, default=str
+        )
+        assert KEY not in recorded
+        assert NEW_KEY not in recorded
+
+    async def test_a_key_write_with_status_recording_failure_reports_the_key_is_live(
+        self, world: KeyWorld, store: FakeKeyStore, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        endpoint = await world.service.register(ACTOR, pasted())
+
+        async def fail(*_: Any, **__: Any) -> Any:
+            raise RuntimeError("Cosmos is unreachable.")
+
+        monkeypatch.setattr(world.endpoint_repository, "record_endpoint_state", fail)
+
+        with pytest.raises(ChangeNotRecordedError) as refused:
+            await world.service.update(
+                ACTOR, endpoint.id, ModelEndpointUpdate(api_key=SecretStr(NEW_KEY))
+            )
+
+        assert "stored the new key" in refused.value.message
+        assert refused.value.details["reason"] == "keyReplacedNotRecorded"
+        [name] = store.versions
+        assert store.versions[name] == [KEY, NEW_KEY]
+
+    async def test_a_save_endpoint_conflict_doesnt_break_a_key_replacement(
+        self, world: KeyWorld, store: FakeKeyStore, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        endpoint = await world.service.register(ACTOR, pasted())
+
+        async def conflict(*_: Any, **__: Any) -> Any:
+            raise ConflictError("The endpoint changed.")
+
+        monkeypatch.setattr(world.endpoint_repository, "save_endpoint", conflict)
+
+        updated = await world.service.update(
+            ACTOR, endpoint.id, ModelEndpointUpdate(api_key=SecretStr(NEW_KEY))
+        )
+
+        [name] = store.versions
+        assert store.versions[name] == [KEY, NEW_KEY]
+        assert world.probed_keys[-1] == NEW_KEY
+        assert updated.status == ModelEndpointStatus.CONNECTED
 
     async def test_a_key_mosaic_doesnt_keep_is_changed_where_it_is_kept(
         self, world: KeyWorld, store: FakeKeyStore
@@ -584,6 +691,25 @@ class TestHttpContract:
         for response in (created, replaced, listed):
             assert KEY not in response.text
             assert NEW_KEY not in response.text
+
+    def test_a_key_replacement_with_other_changes_is_refused_without_repeating_the_key(
+        self, client: TestClient
+    ) -> None:
+        created = client.post(
+            "/api/v1/model-endpoints",
+            json={"endpoint": PROJECT_URL, "apiKey": KEY, "name": "Fabrikam partner Foundry"},
+        )
+        assert created.status_code == 201, created.text
+        body = created.json()
+
+        refused = client.patch(
+            f"/api/v1/model-endpoints/{body['id']}",
+            json={"apiKey": NEW_KEY, "name": "Renamed"},
+        )
+
+        assert refused.status_code == 422
+        assert "on its own" in refused.text
+        assert NEW_KEY not in refused.text
 
     @pytest.mark.parametrize(
         "payload",

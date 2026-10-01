@@ -36,6 +36,13 @@ class ConflictError(DomainError):
     code = "conflict"
 
 
+class ChangeNotRecordedError(DomainError):
+    """A side effect succeeded, but MOSAIC could not persist its record of the change."""
+
+    status_code = 503
+    code = "change_not_recorded"
+
+
 class ValidationError(DomainError):
     status_code = 422
     code = "validation_error"
