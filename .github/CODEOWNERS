@@ -1,0 +1,3 @@
+# Code owners are asked to review every pull request that touches the files they own, and the main
+# branch ruleset requires one of them to approve it.
+* @paullizer

@@ -530,6 +530,12 @@ npm run lint
 npm run test
 npm run build
 
+Set-Location ..\portal
+npm run typecheck
+npm run lint
+npm run test
+npm run build
+
 Set-Location ..\..\e2e
 npm run test:unit
 npm run typecheck
@@ -537,9 +543,25 @@ npm run lint
 Set-Location ..
 
 az bicep build --file infra\main.bicep
-python -m unittest scripts.tests.test_mosaic_entra scripts.tests.test_verify_model_access
-python -m unittest scripts.tests.test_spa_nginx
+uv run python -m unittest discover -s scripts/tests -t .
 ```
+
+[CI](.github/workflows/ci.yml) runs these checks on every pull request to `main` and every push to
+it.
+
+### Merging into `main`
+
+Changes reach `main` only through a pull request. Two rulesets protect the branch:
+
+- **Protect main** applies to everyone, administrators included. A pull request must pass the
+  `CI result` check, the Microsoft CLA check (`license/cla`) and CodeQL code scanning, be up to
+  date with `main`, and have every review conversation resolved. It merges by squash or rebase, so
+  the history stays linear. Nobody can force-push to `main` or delete it. Copilot reviews each new
+  pull request.
+- **Require review on main** adds one approval from someone other than the last person to push,
+  and a [code owner](.github/CODEOWNERS) must approve. A new push dismisses earlier approvals.
+  Repository administrators can bypass this ruleset, and only this one, when merging a pull
+  request. That lets a sole maintainer merge their own work, and GitHub records each bypass.
 
 ## Deploy with `azd`
 
