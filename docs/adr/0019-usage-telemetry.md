@@ -221,3 +221,24 @@ Unit tests run the queries against a local double, not Log Analytics. On a real 
 - the default sampling and verbosity of an All APIs diagnostic;
 - whether `GatewayLogs` rows exist for an API that has no diagnostic;
 - whether a diagnostic setting created from the Azure CLI creates the `azuremonitor` logger.
+
+## Amendment 2026-10-01: Trace properties are never empty
+
+API Management checks each trace `metadata` value as a call runs. A value that evaluates to an
+empty string fails the whole call with 500 before it reaches the backend, and the gateway log
+records an `ExpressionValueValidationFailure` from `trace`: "The value field is required." The
+decision above added `mosaic-client`, which is empty for every call that brings only a key, and a
+key call to a governed model failed this way on a live gateway. `mosaic-member`, from
+[ADR 0015](0015-end-user-usage-report.md), is empty for every direct-grant call to a publication
+that also has security-group grants, so those calls fail the same way, for models and MCP servers.
+
+- **Each property records `-` for a value the call doesn't have.** One helper writes every
+  `metadata` element with that guard, and a test fails when a policy adds one any other way.
+- **The message doesn't change.** It still leaves `m=` and `a=` empty when a call has no member
+  or client. Resource logs and MOSAIC's queries read only the message, so no reader changes.
+- **An applied policy keeps its old fragment until it's applied again.** Plan and apply each
+  governed model and MCP publication applied before this change. Until then, a model applied
+  since this ADR fails every key call with 500, and any publication with security-group grants
+  fails its direct-grant calls.
+- **Confirm it live.** Once a publication is applied again, a key call and a direct-grant call
+  should succeed, and Application Insights should show `-` for the property the call lacks.

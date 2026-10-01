@@ -23,6 +23,7 @@ from mosaic_api.integrations.mcp_access_policy import (
     mcp_grant_counter_identity,
     render_mcp_policy,
 )
+from test_access_policy import _guarded_metadata
 
 TENANT = "11111111-1111-1111-1111-111111111111"
 AUDIENCE = "22222222-2222-2222-2222-222222222222"
@@ -216,9 +217,8 @@ def test_grant_trace_is_after_authentication_before_limits_and_members_only_for_
     assert trace.findtext("message") == _ATTRIBUTION_MESSAGE
     metadata = {item.attrib["name"]: item.attrib["value"] for item in trace.findall("metadata")}
     assert metadata == {
-        "mosaic-grant": '@((string)context.Variables["mosaic-grant"])',
-        "mosaic-member": '@((string)context.Variables["mosaic-member"])',
-        "mosaic-client": '@((string)context.Variables["mosaic-client"])',
+        name: _guarded_metadata(name)
+        for name in ("mosaic-grant", "mosaic-member", "mosaic-client")
     }
     assert any(
         facet.element == "trace"

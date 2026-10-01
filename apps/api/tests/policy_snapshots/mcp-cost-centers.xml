@@ -132,8 +132,8 @@ return "Bearer error=\"insufficient_scope\", scope=\"api://22222222-2222-2222-22
   </choose>
   <trace source="mosaic" severity="information">
     <message>@("mosaic-attribution v=1 g=" + (string)context.Variables["mosaic-grant"] + " m=" + (string)context.Variables["mosaic-member"] + " a=" + (string)context.Variables["mosaic-client"])</message>
-    <metadata name="mosaic-grant" value="@((string)context.Variables[&quot;mosaic-grant&quot;])" />
-    <metadata name="mosaic-client" value="@((string)context.Variables[&quot;mosaic-client&quot;])" />
+    <metadata name="mosaic-grant" value="@(String.IsNullOrWhiteSpace((string)context.Variables[&quot;mosaic-grant&quot;]) ? &quot;-&quot; : (string)context.Variables[&quot;mosaic-grant&quot;])" />
+    <metadata name="mosaic-client" value="@(String.IsNullOrWhiteSpace((string)context.Variables[&quot;mosaic-client&quot;]) ? &quot;-&quot; : (string)context.Variables[&quot;mosaic-client&quot;])" />
   </trace>
   <choose>
     <when condition="@((string)context.Variables[&quot;mosaic-cost-center&quot;] == &quot;research&quot;)">

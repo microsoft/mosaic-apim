@@ -98,6 +98,9 @@ _CLIENT = '(string)context.Variables["mosaic-client"]'
 # Only a change that breaks those readers bumps the version.
 GRANT_ATTRIBUTION_TRACE_PREFIX = "mosaic-attribution v=1"
 DENIAL_TRACE_PREFIX = "mosaic-deny v=1"
+# What a trace's metadata records in place of a value the call doesn't have, such as a key call's
+# client application. API Management refuses an empty one, and with it the whole call.
+TRACE_METADATA_ABSENT = "-"
 _DENIAL_REASON = re.compile(r"[a-z][a-z-]{1,31}")
 _STATUS_REASONS = {401: "Unauthorized", 403: "Forbidden", 503: "Service Unavailable"}
 _DENIED = "Model access denied."
@@ -179,6 +182,30 @@ def _expression(lines: list[str]) -> str:
 
 def _variable(parent: ET.Element, name: str, value: str) -> None:
     ET.SubElement(parent, "set-variable", {"name": name, "value": value})
+
+
+def trace_metadata_value(expression: str) -> str:
+    """A trace metadata value that can't be empty: the C# ``expression``, or ``-`` when it's blank.
+
+    API Management requires a value. One that evaluates to an empty or blank string fails the
+    whole call with 500, "The value field is required.", before it reaches the backend.
+    """
+
+    if not expression.strip() or expression.lstrip().startswith("@"):
+        raise ValueError(f"Expected a C# expression without its @(...): {expression!r}")
+    absent = _literal(TRACE_METADATA_ABSENT)
+    return f"@(String.IsNullOrWhiteSpace({expression}) ? {absent} : {expression})"
+
+
+def append_trace_metadata(trace: ET.Element, name: str, expression: str) -> None:
+    """Add a property to a trace's Application Insights telemetry.
+
+    Every ``metadata`` element is added here, so none can evaluate to an empty value.
+    """
+
+    if not name.strip():
+        raise ValueError("A trace metadata element needs a name.")
+    ET.SubElement(trace, "metadata", {"name": name, "value": trace_metadata_value(expression)})
 
 
 def append_denial_trace(parent: ET.Element, reason: str, *, with_caller: bool = False) -> None:
@@ -435,16 +462,17 @@ def append_grant_attribution_trace(
     fragment: ET.Element, grants: Sequence[AccessPolicyGrant]
 ) -> None:
     # Resource logs keep the message. APIM documents metadata only as Application Insights
-    # properties, so the message carries every value and the metadata repeats them there.
+    # properties, so the message carries every value and the metadata repeats them there. The
+    # message keeps an empty m= or a= for a value the call doesn't have; the metadata can't.
     trace = ET.SubElement(fragment, "trace", {"source": "mosaic", "severity": "information"})
     ET.SubElement(trace, "message").text = (
         f'@("{GRANT_ATTRIBUTION_TRACE_PREFIX} g=" + {_GRANT} + " m=" + {_MEMBER}'
         f' + " a=" + {_CLIENT})'
     )
-    ET.SubElement(trace, "metadata", {"name": "mosaic-grant", "value": f"@({_GRANT})"})
+    append_trace_metadata(trace, "mosaic-grant", _GRANT)
     if any(grant.enabled and grant.is_group_grant for grant in grants):
-        ET.SubElement(trace, "metadata", {"name": "mosaic-member", "value": f"@({_MEMBER})"})
-    ET.SubElement(trace, "metadata", {"name": "mosaic-client", "value": f"@({_CLIENT})"})
+        append_trace_metadata(trace, "mosaic-member", _MEMBER)
+    append_trace_metadata(trace, "mosaic-client", _CLIENT)
 
 
 def describe_grant_attribution_trace(facet: PolicyFacet, *, has_group_grants: bool) -> None:
@@ -459,6 +487,10 @@ def describe_grant_attribution_trace(facet: PolicyFacet, *, has_group_grants: bo
     ]
     if has_group_grants:
         facet.details.append("Security-group grants also record the caller's validated object ID.")
+    facet.details.append(
+        "The trace's Application Insights properties repeat these values, with "
+        f"{TRACE_METADATA_ABSENT} for any the call doesn't have."
+    )
 
 
 def describe_denial_trace(facet: PolicyFacet) -> None:

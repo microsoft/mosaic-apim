@@ -42,6 +42,13 @@ _ATTRIBUTION_MESSAGE = (
 )
 
 
+def _guarded_metadata(variable: str) -> str:
+    """A trace metadata value: the variable, or "-" when it's empty, which APIM would refuse."""
+
+    value = f'(string)context.Variables["{variable}"]'
+    return f'@(String.IsNullOrWhiteSpace({value}) ? "-" : {value})'
+
+
 def _tokens(**overrides: object) -> TokenEnforcement:
     return TokenEnforcement.model_validate(
         {
@@ -336,9 +343,8 @@ def test_grant_trace_is_after_operation_guard_before_limits_and_members_only_for
     assert trace.findtext("message") == _ATTRIBUTION_MESSAGE
     metadata = {item.attrib["name"]: item.attrib["value"] for item in trace.findall("metadata")}
     assert metadata == {
-        "mosaic-grant": '@((string)context.Variables["mosaic-grant"])',
-        "mosaic-member": '@((string)context.Variables["mosaic-member"])',
-        "mosaic-client": '@((string)context.Variables["mosaic-client"])',
+        name: _guarded_metadata(name)
+        for name in ("mosaic-grant", "mosaic-member", "mosaic-client")
     }
     assert any(
         facet.element == "trace"
