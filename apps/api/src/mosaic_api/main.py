@@ -10,6 +10,7 @@ from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from mosaic_api.analytics_api import analytics_router
 from mosaic_api.api import portal_router, router
 from mosaic_api.auth import EntraAuthenticator, LocalAuthenticator
 from mosaic_api.config import AuthMode, Environment, RepositoryBackend, Settings, get_settings
@@ -22,6 +23,7 @@ from mosaic_api.integrations.aoai.key_check import EndpointKeyProbe
 from mosaic_api.integrations.apim import ApimClient, ApimWriter, ArmClient
 from mosaic_api.integrations.apim.credentials import ApimCredentialClient
 from mosaic_api.integrations.graph import DirectoryLookup, GraphDirectoryLookup
+from mosaic_api.integrations.loganalytics import LogAnalyticsClient
 from mosaic_api.integrations.mcp import EntraTokenProvider, KeyVaultSecretReader
 from mosaic_api.mcp_publishing_api import mcp_publishing_router
 from mosaic_api.observability import configure_logging, configure_telemetry
@@ -32,6 +34,7 @@ from mosaic_api.repositories import (
     CosmosGatewayRepository,
     CosmosMcpEndpointRepository,
     CosmosModelEndpointRepository,
+    CosmosUsageRollupRepository,
     DirectoryRepository,
     EntitlementRepository,
     EnvironmentRepository,
@@ -42,8 +45,10 @@ from mosaic_api.repositories import (
     InMemoryGatewayRepository,
     InMemoryMcpEndpointRepository,
     InMemoryModelEndpointRepository,
+    InMemoryUsageRollupRepository,
     McpEndpointRepository,
     ModelEndpointRepository,
+    UsageRollupRepository,
 )
 from mosaic_api.services import (
     DirectoryService,
@@ -57,10 +62,13 @@ from mosaic_api.services import (
     PublishingService,
     UsageService,
 )
+from mosaic_api.services.analytics import AnalyticsService
 from mosaic_api.services.mcp_endpoints import build_mcp_client_factory
 from mosaic_api.services.mcp_publishing import McpPublishingService
 from mosaic_api.services.portal_access import PortalAccessService
-from mosaic_api.services.usage import SimulatedUsageSource
+from mosaic_api.services.telemetry import TelemetryService
+from mosaic_api.services.usage import RollupUsageSource, SimulatedUsageSource, UsageSource
+from mosaic_api.services.usage_rollup import UsageRollupService
 
 logger = structlog.get_logger()
 
@@ -86,6 +94,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         entitlement_repository: EntitlementRepository
         environment_repository: EnvironmentRepository
         mcp_repository: McpEndpointRepository
+        rollup_repository: UsageRollupRepository
         if app_settings.repository_backend is RepositoryBackend.MEMORY:
             repository = InMemoryDirectoryRepository()
             gateway_repository = InMemoryGatewayRepository()
@@ -95,9 +104,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             environment_repository = InMemoryEnvironmentRepository(
                 gateway_repository, endpoint_repository, mcp_repository
             )
+            rollup_repository = InMemoryUsageRollupRepository()
         else:
             cosmos_client = CosmosClient(
                 str(app_settings.cosmos_endpoint), credential=credential
+            )
+            rollup_repository = CosmosUsageRollupRepository(
+                cosmos_client,
+                app_settings.cosmos_database,
+                app_settings.cosmos_usage_rollups_container,
+                owns_client=False,
             )
             repository = CosmosDirectoryRepository(
                 cosmos_client,
@@ -287,12 +303,69 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             directory_repository=repository,
             gateway_repository=gateway_repository,
         )
+        uses_rollups = app_settings.uses_usage_rollups
+        log_client = (
+            LogAnalyticsClient(credential, endpoint=str(app_settings.log_analytics_endpoint))
+            if uses_rollups
+            else None
+        )
+        telemetry_service = TelemetryService(
+            gateway_repository=gateway_repository,
+            rollup_repository=rollup_repository,
+            entitlement_repository=entitlement_repository,
+            client_factory=lambda resource: ApimClient(arm_client, resource),
+            writer_factory=lambda resource: ApimWriter(arm_client, resource),
+            logs=log_client,
+            rollups_enabled=uses_rollups and app_settings.usage_rollup_enabled,
+            interval_seconds=app_settings.usage_rollup_interval_seconds,
+            principal_id=app_settings.managed_identity_principal_id,
+            identity_resolver=arm_client.caller_object_id,
+        )
+        rollup_service = (
+            UsageRollupService(
+                rollup_repository,
+                gateway_repository=gateway_repository,
+                entitlement_repository=entitlement_repository,
+                directory_repository=repository,
+                logs=log_client,
+                telemetry=telemetry_service,
+                tenant_id=app_settings.tenant_id,
+                interval_seconds=app_settings.usage_rollup_interval_seconds,
+                retention_days=app_settings.usage_rollup_retention_days,
+                backfill_max_days=app_settings.usage_rollup_backfill_max_days,
+            )
+            if log_client is not None and app_settings.usage_rollup_enabled
+            else None
+        )
+        usage_source: UsageSource = (
+            RollupUsageSource(
+                rollup_repository, interval_seconds=app_settings.usage_rollup_interval_seconds
+            )
+            if uses_rollups
+            else SimulatedUsageSource(environment_repository=environment_repository)
+        )
+        app.state.usage_rollup_repository = rollup_repository
+        app.state.telemetry_service = telemetry_service
+        app.state.usage_rollup_service = rollup_service
         app.state.usage_service = UsageService(
             app.state.portal_service,
-            source=SimulatedUsageSource(environment_repository=environment_repository),
+            source=usage_source,
             gateway_repository=gateway_repository,
             endpoint_repository=endpoint_repository,
             environment_repository=environment_repository,
+        )
+        app.state.analytics_service = AnalyticsService(
+            rollup_repository,
+            gateway_repository=gateway_repository,
+            entitlement_repository=entitlement_repository,
+            directory_repository=repository,
+            environment_repository=environment_repository,
+            endpoint_repository=endpoint_repository,
+            rollups=rollup_service,
+            directory_lookup=directory_lookup,
+            configured=uses_rollups,
+            interval_seconds=app_settings.usage_rollup_interval_seconds,
+            retention_days=app_settings.usage_rollup_retention_days,
         )
         app.state.authenticator = authenticator
         try:
@@ -328,10 +401,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except Exception:
             logger.exception("mcp_endpoint_sync_reap_failed")
         gateway_service.schedule_bootstrap(app_settings.tenant_id)
-        logger.info("application_started", environment=app_settings.environment)
+        if rollup_service is not None:
+            rollup_service.start()
+        logger.info(
+            "application_started",
+            environment=app_settings.environment,
+            usage_source="logAnalytics" if uses_rollups else "simulated",
+        )
         try:
             yield
         finally:
+            if rollup_service is not None:
+                await rollup_service.aclose()
             await gateway_service.aclose()
             await model_endpoint_service.aclose()
             await publishing_service.aclose()
@@ -344,12 +425,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             await key_vault_reader.close()
             await endpoint_key_probe.close()
             await mcp_http_client.aclose()
+            if log_client is not None:
+                await log_client.close()
             await repository.close()
             await gateway_repository.close()
             await endpoint_repository.close()
             await entitlement_repository.close()
             await environment_repository.close()
             await mcp_repository.close()
+            await rollup_repository.close()
             if cosmos_client:
                 await cosmos_client.close()
             await credential.close()
@@ -369,6 +453,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             allow_credentials=False,
             allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
             allow_headers=["Authorization", "Content-Type", "X-Correlation-ID"],
+            # The console saves each CSV export under the name the API gives it.
+            expose_headers=["Content-Disposition"],
         )
 
     @app.middleware("http")
@@ -395,6 +481,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         entitlement_repository = getattr(request.app.state, "entitlement_repository", None)
         mcp_repository = getattr(request.app.state, "mcp_endpoint_repository", None)
         environment_repository = getattr(request.app.state, "environment_repository", None)
+        rollup_repository = getattr(request.app.state, "usage_rollup_repository", None)
         is_ready = (
             repository is not None
             and await repository.ready()
@@ -408,6 +495,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             and await mcp_repository.ready()
             and environment_repository is not None
             and await environment_repository.ready()
+            and rollup_repository is not None
+            and await rollup_repository.ready()
         )
         return JSONResponse(
             status_code=status.HTTP_200_OK if is_ready else status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -417,5 +506,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(router)
     app.include_router(mcp_publishing_router)
     app.include_router(directory_router)
+    app.include_router(analytics_router)
     app.include_router(portal_router)
     return app

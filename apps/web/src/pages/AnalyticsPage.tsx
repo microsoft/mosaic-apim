@@ -2,979 +2,697 @@ import {
   Badge,
   Button,
   Card,
-  Dialog,
-  DialogActions,
-  DialogBody,
-  DialogContent,
-  DialogSurface,
-  DialogTitle,
+  Input,
+  MessageBar,
+  MessageBarBody,
+  MessageBarTitle,
   Select,
+  Spinner,
+  Tab,
+  TabList,
   Text,
   Title3,
 } from '@fluentui/react-components'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMemo, useState } from 'react'
-import { EnvironmentBadge } from '../components/EnvironmentBadge'
-import { PageHeader, PreviewNotice } from '../components/PageHeader'
+import { useSearchParams } from 'react-router-dom'
+import { ApiError, useMosaicApi } from '../api'
+import { EmptyState, ErrorState, Loading } from '../components/AsyncState'
+import { BarList, type BarListItem } from '../components/charts/BarList'
+import { Histogram } from '../components/charts/Histogram'
+import { TrendChart } from '../components/charts/TrendChart'
+import { DataSourceBadge, PageHeader } from '../components/PageHeader'
 import { environmentLabel, useEnvironmentCatalog } from '../environments'
+import { BACKFILL_STATUS_LABELS, ENTITLEMENT_SUBJECT_KIND_LABELS, FRESHNESS_STATUS_LABELS, PRINCIPAL_KIND_LABELS } from '../labels'
+import type {
+  AnalyticsApiRow,
+  AnalyticsConsumerRow,
+  AnalyticsConsumers,
+  AnalyticsDataSource,
+  AnalyticsDeploymentRow,
+  AnalyticsFilters,
+  AnalyticsGatewayHealth,
+  AnalyticsGranularity,
+  AnalyticsGrantRow,
+  AnalyticsHygiene,
+  AnalyticsKpis,
+  AnalyticsLimitRow,
+  AnalyticsLimits,
+  AnalyticsLimitUse,
+  AnalyticsModels,
+  AnalyticsOverview,
+  AnalyticsRange,
+  AnalyticsRankRow,
+  AnalyticsReliability,
+  AnalyticsReport,
+  AnalyticsTrendPoint,
+  AnalyticsUnattributed,
+  EntitlementSubjectKind,
+  ExportView,
+  Gateway,
+  McpServer,
+  ModelApi,
+  PrincipalKind,
+  UsageFreshness,
+} from '../types'
 import styles from './AnalyticsPage.module.css'
 
-type TimeRange = '24h' | '7d' | '30d'
-type ModelName = 'gpt-4o' | 'gpt-4o-mini' | 'text-embedding-3-small' | 'mistral-large'
-type ModelFilter = 'all' | ModelName
-type ErrorSeverity = 'Critical' | 'Warning' | 'Info'
-type IntegrationState = 'Healthy' | 'Delayed' | 'Planned'
-type EnvironmentKey = 'development' | 'test' | 'qc' | 'staging' | 'production' | 'sandbox'
-type EnvironmentFilter = 'all' | EnvironmentKey
+type TabKey = 'overview' | 'consumers' | 'models' | 'reliability' | 'limits' | 'hygiene' | 'unattributed'
 
-interface TimelinePoint {
-  label: string
-  requestsByModel: Record<ModelName, number>
-  tokensByModel: Record<ModelName, number>
-}
-
-interface GroupUsage {
-  group: string
-  owner: string
-  environment?: EnvironmentKey
-  tokensByModel: Record<ModelName, number>
-  requestsByModel: Record<ModelName, number>
-}
-
-interface EndpointModelLatency {
-  p50: number
-  p95: number
-  errorRate: number
-}
-
-interface EndpointLatency {
-  endpoint: string
-  operation: string
-  environment?: EnvironmentKey
-  byModel: Record<ModelName, EndpointModelLatency>
-}
-
-interface ErrorRecord {
-  id: string
-  timestamp: string
-  severity: ErrorSeverity
-  code: string
-  message: string
-  endpoint: string
-  model: ModelName
-  environment?: EnvironmentKey
-  count: number
-  impact: string
-  correlationId: string
-  remediation: string
-}
-
-interface IntegrationStatus {
-  name: string
-  status: IntegrationState
-  detail: string
-  freshness: string
-}
-
-interface RangeDataset {
-  timeline: TimelinePoint[]
-  estimatedCostUsdByModel: Record<ModelName, number>
-  successRateByModel: Record<ModelName, number>
-  groups: GroupUsage[]
-  endpoints: EndpointLatency[]
-  errors: ErrorRecord[]
-  integrations: IntegrationStatus[]
-}
-
-interface FilteredGroupUsage {
-  group: string
-  owner: string
-  tokens: number
-  requests: number
-}
-
-interface FilteredEndpointLatency {
-  endpoint: string
-  operation: string
-  p50: number
-  p95: number
-  errorRate: number
-}
-
-interface DerivedAnalytics {
-  filteredTimeline: Array<{ label: string; requests: number; tokens: number }>
-  filteredGroups: FilteredGroupUsage[]
-  filteredEndpoints: FilteredEndpointLatency[]
-  filteredErrors: ErrorRecord[]
-  environmentBreakdown: EnvironmentBreakdown[]
-  totalRequests: number
-  totalTokens: number
-  estimatedCost: number
-  successRate: number
-  p95Latency: number
-  criticalErrors: number
-}
-
-interface EnvironmentBreakdown {
-  environment: EnvironmentKey
-  requests: number
-  tokens: number
-  cost: number
-}
-
-const modelOptions: ModelFilter[] = [
-  'all',
-  'gpt-4o',
-  'gpt-4o-mini',
-  'text-embedding-3-small',
-  'mistral-large',
+const tabs: Array<{ key: TabKey; label: string; exports: ExportView[] }> = [
+  { key: 'overview', label: 'Overview', exports: ['trend'] },
+  { key: 'consumers', label: 'Consumers', exports: ['people', 'applications', 'groups', 'grants', 'clientApps'] },
+  { key: 'models', label: 'Models', exports: ['apis', 'models', 'deployments'] },
+  { key: 'reliability', label: 'Reliability', exports: ['denials', 'apis'] },
+  { key: 'limits', label: 'Limits', exports: ['limits'] },
+  { key: 'hygiene', label: 'Access hygiene', exports: ['unusedGrants', 'unusedKeys', 'untrackedGrants'] },
+  { key: 'unattributed', label: 'Unattributed', exports: ['unattributed'] },
 ]
 
-const environmentOptions: EnvironmentKey[] = ['development', 'test', 'qc', 'staging', 'production', 'sandbox']
-const environmentWeight: Record<EnvironmentKey, number> = {
-  development: 0.08,
-  test: 0.1,
-  qc: 0.12,
-  staging: 0.18,
-  production: 0.42,
-  sandbox: 0.1,
-}
-const groupEnvironments: Record<string, EnvironmentKey> = {
-  'Customer Support': 'production',
-  'Finance Insights': 'production',
-  'Search Enrichment': 'staging',
-  'Copilot Prototyping': 'development',
-}
-const endpointEnvironments: Record<string, EnvironmentKey> = {
-  '/chat/completions': 'production',
-  '/embeddings': 'staging',
-  '/responses': 'development',
+const exportLabels: Record<ExportView, string> = {
+  trend: 'Trend',
+  people: 'People',
+  applications: 'Applications',
+  groups: 'Security groups',
+  grants: 'Grants',
+  clientApps: 'Client applications',
+  apis: 'APIs and MCP servers',
+  models: 'Models',
+  deployments: 'Deployments',
+  denials: 'Denials by reason',
+  limits: 'Grant limits',
+  unusedGrants: 'Unused grants',
+  unusedKeys: 'Unused keys',
+  untrackedGrants: 'Untracked grants',
+  unattributed: 'Unattributed calls',
 }
 
-function recordEnvironment(record: { group?: string; endpoint?: string; environment?: EnvironmentKey }) {
-  if (record.environment) return record.environment
-  if (record.group) return groupEnvironments[record.group] ?? 'production'
-  if (record.endpoint) return endpointEnvironments[record.endpoint] ?? 'production'
-  return 'production'
+const apiKindLabels: Record<NonNullable<AnalyticsApiRow['kind']>, string> = {
+  model: 'Model API',
+  mcp: 'MCP server',
 }
 
-const sampleDatasets: Record<TimeRange, RangeDataset> = {
-  '24h': {
-    timeline: [
-      { label: '00:00', requestsByModel: { 'gpt-4o': 6800, 'gpt-4o-mini': 9200, 'text-embedding-3-small': 4600, 'mistral-large': 1300 }, tokensByModel: { 'gpt-4o': 4_800_000, 'gpt-4o-mini': 3_100_000, 'text-embedding-3-small': 1_400_000, 'mistral-large': 640_000 } },
-      { label: '04:00', requestsByModel: { 'gpt-4o': 7600, 'gpt-4o-mini': 9800, 'text-embedding-3-small': 5200, 'mistral-large': 1500 }, tokensByModel: { 'gpt-4o': 5_300_000, 'gpt-4o-mini': 3_350_000, 'text-embedding-3-small': 1_520_000, 'mistral-large': 690_000 } },
-      { label: '08:00', requestsByModel: { 'gpt-4o': 11_200, 'gpt-4o-mini': 15_600, 'text-embedding-3-small': 7600, 'mistral-large': 2100 }, tokensByModel: { 'gpt-4o': 7_900_000, 'gpt-4o-mini': 5_100_000, 'text-embedding-3-small': 2_120_000, 'mistral-large': 940_000 } },
-      { label: '12:00', requestsByModel: { 'gpt-4o': 12_800, 'gpt-4o-mini': 17_100, 'text-embedding-3-small': 7900, 'mistral-large': 2600 }, tokensByModel: { 'gpt-4o': 8_700_000, 'gpt-4o-mini': 5_550_000, 'text-embedding-3-small': 2_260_000, 'mistral-large': 1_060_000 } },
-      { label: '16:00', requestsByModel: { 'gpt-4o': 10_600, 'gpt-4o-mini': 14_900, 'text-embedding-3-small': 7100, 'mistral-large': 1900 }, tokensByModel: { 'gpt-4o': 7_300_000, 'gpt-4o-mini': 4_880_000, 'text-embedding-3-small': 2_060_000, 'mistral-large': 820_000 } },
-      { label: '20:00', requestsByModel: { 'gpt-4o': 8400, 'gpt-4o-mini': 11_800, 'text-embedding-3-small': 5900, 'mistral-large': 1600 }, tokensByModel: { 'gpt-4o': 5_900_000, 'gpt-4o-mini': 3_920_000, 'text-embedding-3-small': 1_720_000, 'mistral-large': 700_000 } },
-    ],
-    estimatedCostUsdByModel: { 'gpt-4o': 4380, 'gpt-4o-mini': 1460, 'text-embedding-3-small': 540, 'mistral-large': 290 },
-    successRateByModel: { 'gpt-4o': 99.42, 'gpt-4o-mini': 99.76, 'text-embedding-3-small': 99.91, 'mistral-large': 98.87 },
-    groups: [
-      { group: 'Customer Support', owner: 'Support engineering', tokensByModel: { 'gpt-4o': 14_800_000, 'gpt-4o-mini': 8_700_000, 'text-embedding-3-small': 3_500_000, 'mistral-large': 920_000 }, requestsByModel: { 'gpt-4o': 21_400, 'gpt-4o-mini': 26_000, 'text-embedding-3-small': 11_500, 'mistral-large': 1600 } },
-      { group: 'Copilot Prototyping', owner: 'Developer platform', tokensByModel: { 'gpt-4o': 12_600_000, 'gpt-4o-mini': 9_500_000, 'text-embedding-3-small': 1_100_000, 'mistral-large': 1_820_000 }, requestsByModel: { 'gpt-4o': 18_900, 'gpt-4o-mini': 28_200, 'text-embedding-3-small': 3600, 'mistral-large': 2300 } },
-      { group: 'Search Enrichment', owner: 'Knowledge systems', tokensByModel: { 'gpt-4o': 6_100_000, 'gpt-4o-mini': 5_900_000, 'text-embedding-3-small': 7_600_000, 'mistral-large': 0 }, requestsByModel: { 'gpt-4o': 8200, 'gpt-4o-mini': 12_400, 'text-embedding-3-small': 31_500, 'mistral-large': 0 } },
-      { group: 'Finance Insights', owner: 'FinOps analytics', tokensByModel: { 'gpt-4o': 8_900_000, 'gpt-4o-mini': 4_700_000, 'text-embedding-3-small': 2_100_000, 'mistral-large': 1_280_000 }, requestsByModel: { 'gpt-4o': 11_500, 'gpt-4o-mini': 9200, 'text-embedding-3-small': 5100, 'mistral-large': 1500 } },
-    ],
-    endpoints: [
-      { endpoint: '/chat/completions', operation: 'Interactive chat', byModel: { 'gpt-4o': { p50: 640, p95: 1180, errorRate: 0.42 }, 'gpt-4o-mini': { p50: 410, p95: 760, errorRate: 0.18 }, 'text-embedding-3-small': { p50: 160, p95: 280, errorRate: 0.05 }, 'mistral-large': { p50: 780, p95: 1480, errorRate: 0.93 } } },
-      { endpoint: '/embeddings', operation: 'Search index updates', byModel: { 'gpt-4o': { p50: 220, p95: 410, errorRate: 0.08 }, 'gpt-4o-mini': { p50: 190, p95: 320, errorRate: 0.04 }, 'text-embedding-3-small': { p50: 110, p95: 190, errorRate: 0.02 }, 'mistral-large': { p50: 0, p95: 0, errorRate: 0 } } },
-      { endpoint: '/responses', operation: 'Tool-enabled orchestration', byModel: { 'gpt-4o': { p50: 880, p95: 1710, errorRate: 0.61 }, 'gpt-4o-mini': { p50: 590, p95: 1120, errorRate: 0.27 }, 'text-embedding-3-small': { p50: 0, p95: 0, errorRate: 0 }, 'mistral-large': { p50: 1010, p95: 1860, errorRate: 1.04 } } },
-    ],
-    errors: [
-      { id: 'err-241', timestamp: '2026-08-13 09:44 ET', severity: 'Critical', code: '429', message: 'Burst quota exceeded for Finance Insights shared key.', endpoint: '/chat/completions', model: 'gpt-4o', count: 19, impact: 'Finance Insights responses delayed for 4 minutes.', correlationId: '9ef9c946-daa7-4752-ae97-0e767e2f0c21', remediation: 'Review downstream budget window and move Finance Insights to a dedicated entitlement when apply workflows are available.' },
-      { id: 'err-238', timestamp: '2026-08-13 08:17 ET', severity: 'Warning', code: '502', message: 'Gateway retry budget exhausted while calling tool-enabled orchestration.', endpoint: '/responses', model: 'mistral-large', count: 7, impact: 'Tool invocation degraded for developer prototypes.', correlationId: '1ed9f4f0-42d9-4fdd-b0d6-3d8d528d37a0', remediation: 'Validate backend retry policy and compare APIM timeout settings before enabling live rollout.' },
-      { id: 'err-232', timestamp: '2026-08-13 07:06 ET', severity: 'Info', code: '401', message: 'Expired developer token rejected before backend dispatch.', endpoint: '/chat/completions', model: 'gpt-4o-mini', count: 11, impact: 'Expected auth hygiene event; no backend capacity impact.', correlationId: '2be71e9d-1888-4f48-b3c7-fb0a6bf40a18', remediation: 'Monitor for sustained growth before treating as a user-experience issue.' },
-    ],
-    integrations: [
-      { name: 'Azure API Management', status: 'Healthy', detail: 'Gateway telemetry buffering within expected limits.', freshness: 'Updated 2 minutes ago' },
-      { name: 'Azure Monitor queries', status: 'Planned', detail: 'This page uses local sample datasets; no Log Analytics query is running.', freshness: 'Not connected' },
-      { name: 'Chargeback export', status: 'Delayed', detail: 'CSV export works locally, but finance system publication is not yet wired.', freshness: 'Pending rollout' },
-    ],
-  },
-  '7d': {
-    timeline: [
-      { label: 'Mon', requestsByModel: { 'gpt-4o': 61_000, 'gpt-4o-mini': 78_000, 'text-embedding-3-small': 36_000, 'mistral-large': 10_500 }, tokensByModel: { 'gpt-4o': 43_000_000, 'gpt-4o-mini': 25_000_000, 'text-embedding-3-small': 10_800_000, 'mistral-large': 4_700_000 } },
-      { label: 'Tue', requestsByModel: { 'gpt-4o': 58_400, 'gpt-4o-mini': 82_000, 'text-embedding-3-small': 38_000, 'mistral-large': 9800 }, tokensByModel: { 'gpt-4o': 40_600_000, 'gpt-4o-mini': 26_200_000, 'text-embedding-3-small': 11_000_000, 'mistral-large': 4_200_000 } },
-      { label: 'Wed', requestsByModel: { 'gpt-4o': 64_200, 'gpt-4o-mini': 89_000, 'text-embedding-3-small': 41_300, 'mistral-large': 11_900 }, tokensByModel: { 'gpt-4o': 45_100_000, 'gpt-4o-mini': 28_900_000, 'text-embedding-3-small': 12_500_000, 'mistral-large': 5_080_000 } },
-      { label: 'Thu', requestsByModel: { 'gpt-4o': 67_000, 'gpt-4o-mini': 92_400, 'text-embedding-3-small': 42_500, 'mistral-large': 12_800 }, tokensByModel: { 'gpt-4o': 47_200_000, 'gpt-4o-mini': 29_600_000, 'text-embedding-3-small': 13_100_000, 'mistral-large': 5_420_000 } },
-      { label: 'Fri', requestsByModel: { 'gpt-4o': 70_500, 'gpt-4o-mini': 95_000, 'text-embedding-3-small': 44_100, 'mistral-large': 13_600 }, tokensByModel: { 'gpt-4o': 50_100_000, 'gpt-4o-mini': 30_100_000, 'text-embedding-3-small': 13_600_000, 'mistral-large': 5_930_000 } },
-      { label: 'Sat', requestsByModel: { 'gpt-4o': 54_100, 'gpt-4o-mini': 74_200, 'text-embedding-3-small': 33_400, 'mistral-large': 8800 }, tokensByModel: { 'gpt-4o': 38_200_000, 'gpt-4o-mini': 23_400_000, 'text-embedding-3-small': 9_900_000, 'mistral-large': 3_900_000 } },
-      { label: 'Sun', requestsByModel: { 'gpt-4o': 51_600, 'gpt-4o-mini': 71_400, 'text-embedding-3-small': 31_800, 'mistral-large': 8200 }, tokensByModel: { 'gpt-4o': 36_400_000, 'gpt-4o-mini': 22_800_000, 'text-embedding-3-small': 9_400_000, 'mistral-large': 3_600_000 } },
-    ],
-    estimatedCostUsdByModel: { 'gpt-4o': 28_240, 'gpt-4o-mini': 9360, 'text-embedding-3-small': 3120, 'mistral-large': 1760 },
-    successRateByModel: { 'gpt-4o': 99.21, 'gpt-4o-mini': 99.68, 'text-embedding-3-small': 99.9, 'mistral-large': 98.55 },
-    groups: [
-      { group: 'Customer Support', owner: 'Support engineering', tokensByModel: { 'gpt-4o': 83_000_000, 'gpt-4o-mini': 51_000_000, 'text-embedding-3-small': 20_000_000, 'mistral-large': 5_400_000 }, requestsByModel: { 'gpt-4o': 120_000, 'gpt-4o-mini': 152_000, 'text-embedding-3-small': 68_000, 'mistral-large': 9100 } },
-      { group: 'Copilot Prototyping', owner: 'Developer platform', tokensByModel: { 'gpt-4o': 71_000_000, 'gpt-4o-mini': 55_000_000, 'text-embedding-3-small': 7_400_000, 'mistral-large': 10_200_000 }, requestsByModel: { 'gpt-4o': 102_000, 'gpt-4o-mini': 164_000, 'text-embedding-3-small': 21_500, 'mistral-large': 13_900 } },
-      { group: 'Search Enrichment', owner: 'Knowledge systems', tokensByModel: { 'gpt-4o': 36_000_000, 'gpt-4o-mini': 34_000_000, 'text-embedding-3-small': 58_000_000, 'mistral-large': 0 }, requestsByModel: { 'gpt-4o': 52_000, 'gpt-4o-mini': 69_000, 'text-embedding-3-small': 238_000, 'mistral-large': 0 } },
-      { group: 'Finance Insights', owner: 'FinOps analytics', tokensByModel: { 'gpt-4o': 42_000_000, 'gpt-4o-mini': 23_000_000, 'text-embedding-3-small': 10_500_000, 'mistral-large': 7_200_000 }, requestsByModel: { 'gpt-4o': 55_000, 'gpt-4o-mini': 47_000, 'text-embedding-3-small': 24_000, 'mistral-large': 8100 } },
-    ],
-    endpoints: [
-      { endpoint: '/chat/completions', operation: 'Interactive chat', byModel: { 'gpt-4o': { p50: 660, p95: 1260, errorRate: 0.51 }, 'gpt-4o-mini': { p50: 430, p95: 810, errorRate: 0.2 }, 'text-embedding-3-small': { p50: 170, p95: 290, errorRate: 0.06 }, 'mistral-large': { p50: 820, p95: 1540, errorRate: 1.02 } } },
-      { endpoint: '/embeddings', operation: 'Search index updates', byModel: { 'gpt-4o': { p50: 230, p95: 420, errorRate: 0.09 }, 'gpt-4o-mini': { p50: 200, p95: 330, errorRate: 0.04 }, 'text-embedding-3-small': { p50: 120, p95: 200, errorRate: 0.02 }, 'mistral-large': { p50: 0, p95: 0, errorRate: 0 } } },
-      { endpoint: '/responses', operation: 'Tool-enabled orchestration', byModel: { 'gpt-4o': { p50: 910, p95: 1790, errorRate: 0.74 }, 'gpt-4o-mini': { p50: 610, p95: 1160, errorRate: 0.32 }, 'text-embedding-3-small': { p50: 0, p95: 0, errorRate: 0 }, 'mistral-large': { p50: 1040, p95: 1910, errorRate: 1.21 } } },
-    ],
-    errors: [
-      { id: 'err-713', timestamp: '2026-08-11 15:32 ET', severity: 'Critical', code: '429', message: 'Rate-limit window saturated for shared Finance Insights traffic.', endpoint: '/chat/completions', model: 'gpt-4o', count: 51, impact: 'Repeated throttling during finance close operations.', correlationId: 'd72ea6fe-abd2-46a1-a6b2-f08ca4f9231b', remediation: 'Isolate finance workloads behind a dedicated key or model deployment before enabling live sync.' },
-      { id: 'err-706', timestamp: '2026-08-10 13:12 ET', severity: 'Warning', code: '504', message: 'Long-running tool response exceeded gateway timeout.', endpoint: '/responses', model: 'mistral-large', count: 18, impact: 'Prototype assistant answers retried by client workflows.', correlationId: 'a6f0fb75-75cf-4cf4-a4af-ac7ab8fd9dd9', remediation: 'Tune timeout envelope and reduce overly large tool payloads.' },
-      { id: 'err-699', timestamp: '2026-08-09 10:21 ET', severity: 'Info', code: '401', message: 'Expired token rejected at gateway edge.', endpoint: '/chat/completions', model: 'gpt-4o-mini', count: 38, impact: 'Authentication hygiene event only.', correlationId: '1da13b4d-c0c7-4507-bba2-d5ecac9fbda4', remediation: 'Continue observing token refresh patterns.' },
-    ],
-    integrations: [
-      { name: 'Azure API Management', status: 'Healthy', detail: 'Telemetry export remains within the expected ingestion window.', freshness: 'Updated 7 minutes ago' },
-      { name: 'Azure Monitor queries', status: 'Planned', detail: 'Log Analytics integration has not been connected; all values are local sample data.', freshness: 'Not connected' },
-      { name: 'Chargeback export', status: 'Delayed', detail: 'Finance workbook publication is queued behind analytics rollout.', freshness: 'Awaiting connector' },
-    ],
-  },
-  '30d': {
-    timeline: [
-      { label: 'W1', requestsByModel: { 'gpt-4o': 236_000, 'gpt-4o-mini': 318_000, 'text-embedding-3-small': 151_000, 'mistral-large': 42_000 }, tokensByModel: { 'gpt-4o': 165_000_000, 'gpt-4o-mini': 100_000_000, 'text-embedding-3-small': 43_000_000, 'mistral-large': 18_000_000 } },
-      { label: 'W2', requestsByModel: { 'gpt-4o': 248_000, 'gpt-4o-mini': 332_000, 'text-embedding-3-small': 159_000, 'mistral-large': 45_000 }, tokensByModel: { 'gpt-4o': 174_000_000, 'gpt-4o-mini': 105_000_000, 'text-embedding-3-small': 45_000_000, 'mistral-large': 19_400_000 } },
-      { label: 'W3', requestsByModel: { 'gpt-4o': 260_000, 'gpt-4o-mini': 346_000, 'text-embedding-3-small': 166_000, 'mistral-large': 47_000 }, tokensByModel: { 'gpt-4o': 182_000_000, 'gpt-4o-mini': 110_000_000, 'text-embedding-3-small': 47_000_000, 'mistral-large': 20_600_000 } },
-      { label: 'W4', requestsByModel: { 'gpt-4o': 272_000, 'gpt-4o-mini': 358_000, 'text-embedding-3-small': 171_000, 'mistral-large': 49_000 }, tokensByModel: { 'gpt-4o': 191_000_000, 'gpt-4o-mini': 114_000_000, 'text-embedding-3-small': 49_000_000, 'mistral-large': 21_300_000 } },
-    ],
-    estimatedCostUsdByModel: { 'gpt-4o': 116_000, 'gpt-4o-mini': 37_800, 'text-embedding-3-small': 12_600, 'mistral-large': 7300 },
-    successRateByModel: { 'gpt-4o': 99.18, 'gpt-4o-mini': 99.64, 'text-embedding-3-small': 99.89, 'mistral-large': 98.44 },
-    groups: [
-      { group: 'Customer Support', owner: 'Support engineering', tokensByModel: { 'gpt-4o': 325_000_000, 'gpt-4o-mini': 202_000_000, 'text-embedding-3-small': 79_000_000, 'mistral-large': 21_000_000 }, requestsByModel: { 'gpt-4o': 468_000, 'gpt-4o-mini': 606_000, 'text-embedding-3-small': 270_000, 'mistral-large': 35_000 } },
-      { group: 'Copilot Prototyping', owner: 'Developer platform', tokensByModel: { 'gpt-4o': 279_000_000, 'gpt-4o-mini': 221_000_000, 'text-embedding-3-small': 31_000_000, 'mistral-large': 42_000_000 }, requestsByModel: { 'gpt-4o': 401_000, 'gpt-4o-mini': 655_000, 'text-embedding-3-small': 92_000, 'mistral-large': 58_000 } },
-      { group: 'Search Enrichment', owner: 'Knowledge systems', tokensByModel: { 'gpt-4o': 143_000_000, 'gpt-4o-mini': 137_000_000, 'text-embedding-3-small': 229_000_000, 'mistral-large': 0 }, requestsByModel: { 'gpt-4o': 206_000, 'gpt-4o-mini': 278_000, 'text-embedding-3-small': 940_000, 'mistral-large': 0 } },
-      { group: 'Finance Insights', owner: 'FinOps analytics', tokensByModel: { 'gpt-4o': 169_000_000, 'gpt-4o-mini': 93_000_000, 'text-embedding-3-small': 44_000_000, 'mistral-large': 28_000_000 }, requestsByModel: { 'gpt-4o': 222_000, 'gpt-4o-mini': 191_000, 'text-embedding-3-small': 99_000, 'mistral-large': 31_000 } },
-    ],
-    endpoints: [
-      { endpoint: '/chat/completions', operation: 'Interactive chat', byModel: { 'gpt-4o': { p50: 670, p95: 1280, errorRate: 0.56 }, 'gpt-4o-mini': { p50: 440, p95: 830, errorRate: 0.23 }, 'text-embedding-3-small': { p50: 180, p95: 300, errorRate: 0.06 }, 'mistral-large': { p50: 850, p95: 1590, errorRate: 1.08 } } },
-      { endpoint: '/embeddings', operation: 'Search index updates', byModel: { 'gpt-4o': { p50: 240, p95: 430, errorRate: 0.1 }, 'gpt-4o-mini': { p50: 205, p95: 340, errorRate: 0.05 }, 'text-embedding-3-small': { p50: 125, p95: 205, errorRate: 0.02 }, 'mistral-large': { p50: 0, p95: 0, errorRate: 0 } } },
-      { endpoint: '/responses', operation: 'Tool-enabled orchestration', byModel: { 'gpt-4o': { p50: 930, p95: 1820, errorRate: 0.79 }, 'gpt-4o-mini': { p50: 620, p95: 1180, errorRate: 0.34 }, 'text-embedding-3-small': { p50: 0, p95: 0, errorRate: 0 }, 'mistral-large': { p50: 1060, p95: 1960, errorRate: 1.26 } } },
-    ],
-    errors: [
-      { id: 'err-3011', timestamp: '2026-08-03 12:05 ET', severity: 'Critical', code: '429', message: 'Sustained monthly burst quota overrun in finance tenant.', endpoint: '/chat/completions', model: 'gpt-4o', count: 118, impact: 'Finance assistant sessions were repeatedly throttled during close week.', correlationId: '86501c20-451b-4022-8b6f-d439436cde2e', remediation: 'Create separated quotas and revisit entitlement design before live rollout.' },
-      { id: 'err-2998', timestamp: '2026-08-01 16:40 ET', severity: 'Warning', code: '504', message: 'Gateway timeout spike for tool-enabled developer assistants.', endpoint: '/responses', model: 'mistral-large', count: 43, impact: 'Prototype workflows retried and increased local latency.', correlationId: '5bf8c49f-c73f-4a64-a4a4-45117b865335', remediation: 'Review timeout budgets and upstream dependency health.' },
-      { id: 'err-2975', timestamp: '2026-07-29 09:58 ET', severity: 'Info', code: '401', message: 'Expired developer bearer token rejected.', endpoint: '/chat/completions', model: 'gpt-4o-mini', count: 96, impact: 'Expected edge rejection pattern only.', correlationId: '8a3d8d88-c563-4866-80f7-f6152dffbf86', remediation: 'Continue monitoring token refresh behavior.' },
-    ],
-    integrations: [
-      { name: 'Azure API Management', status: 'Healthy', detail: 'Gateway ingestion stayed within monthly alerting thresholds.', freshness: 'Updated 12 minutes ago' },
-      { name: 'Azure Monitor queries', status: 'Planned', detail: 'This dashboard is still sample-only; no Azure Monitor data source is queried.', freshness: 'Not connected' },
-      { name: 'Chargeback export', status: 'Delayed', detail: 'Chargeback workbook publishing remains in rollout planning.', freshness: 'Pending approval' },
-    ],
-  },
+const subjectLabels: Record<EntitlementSubjectKind, string> = {
+  user: 'People',
+  application: 'Applications',
+  securityGroup: 'Entra security groups',
+  group: 'MOSAIC groups',
 }
 
-function sumByModel<T extends Record<ModelName, number>>(values: T, selectedModel: ModelFilter): number {
-  if (selectedModel === 'all') {
-    return Object.values(values).reduce((total, current) => total + current, 0)
+const consumerKindLabels: Record<AnalyticsConsumerRow['kind'], string> = {
+  person: 'Person',
+  application: 'Application',
+  group: 'Security group',
+}
+
+const grantStateLabels: Record<AnalyticsGrantRow['state'], string> = {
+  active: 'Active',
+  disabled: 'Disabled',
+  removed: 'Removed',
+}
+
+const limitStatusLabels: Record<AnalyticsLimitRow['status'], string> = {
+  ok: 'OK',
+  near: 'Near limit',
+  reached: 'Reached',
+  unknown: 'Unknown',
+}
+
+function consumerKindLabel(row: AnalyticsConsumerRow) {
+  return row.principalKind ? PRINCIPAL_KIND_LABELS[row.principalKind] : consumerKindLabels[row.kind]
+}
+
+// A grant's subject kind can't tell a person from an agent user, or an app from a managed
+// identity, so the directory's principal kind names it when MOSAIC knows it.
+function grantSubjectKindLabel(row: { subjectKind: EntitlementSubjectKind | null, subjectPrincipalKind?: PrincipalKind | null }) {
+  if (row.subjectPrincipalKind) return PRINCIPAL_KIND_LABELS[row.subjectPrincipalKind]
+  return row.subjectKind ? ENTITLEMENT_SUBJECT_KIND_LABELS[row.subjectKind] : 'Unknown'
+}
+
+function limitLabel(limit: AnalyticsLimitUse) {
+  const noun = limit.metric === 'tokens' ? 'Tokens' : 'Calls'
+  if (limit.kind === 'quota') return `${limit.period ?? 'Period'} ${limit.metric === 'tokens' ? 'token' : 'call'} quota`
+  if (limit.windowSeconds === 60) return `${noun} per minute`
+  if (limit.windowSeconds === 3600) return `${noun} per hour`
+  return limit.windowSeconds ? `${noun} per ${formatNumber(limit.windowSeconds)} s` : `${noun} rate limit`
+}
+
+function formatNumber(value: number | null | undefined) {
+  if (value == null) return '—'
+  return new Intl.NumberFormat('en-US').format(value)
+}
+
+function formatCompact(value: number | null | undefined) {
+  if (value == null) return '—'
+  return new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 }).format(value)
+}
+
+function formatPercent(value: number | null | undefined) {
+  if (value == null) return '—'
+  return `${(value * 100).toFixed(1)}%`
+}
+
+function formatLatency(value: number | null | undefined) {
+  if (value == null) return '—'
+  return value >= 1000 ? `≈${(value / 1000).toFixed(1)} s` : `≈${Math.round(value)} ms`
+}
+
+function formatDateTime(value: string | null | undefined) {
+  if (!value) return 'Never'
+  return new Intl.DateTimeFormat('en-US', {
+    timeZone: 'UTC',
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    timeZoneName: 'short',
+  }).format(new Date(value))
+}
+
+function formatDay(value: string) {
+  return new Intl.DateTimeFormat('en-US', { timeZone: 'UTC', month: 'short', day: 'numeric' }).format(new Date(`${value}T00:00:00Z`))
+}
+
+function trendLabel(point: AnalyticsTrendPoint, granularity: AnalyticsGranularity) {
+  const start = new Date(point.start)
+  if (granularity === 'month') {
+    return new Intl.DateTimeFormat('en-US', { timeZone: 'UTC', month: 'short', year: 'numeric' }).format(start)
   }
-  return values[selectedModel]
+  return new Intl.DateTimeFormat('en-US', {
+    timeZone: 'UTC',
+    month: 'short',
+    day: 'numeric',
+    hour: granularity === 'hour' ? '2-digit' : undefined,
+  }).format(start)
 }
 
-function formatCompactNumber(value: number): string {
-  return new Intl.NumberFormat('en-US', {
-    notation: 'compact',
-    maximumFractionDigits: value >= 1_000_000 ? 1 : 0,
-  }).format(value)
-}
-
-function formatTokenCount(value: number): string {
-  if (value >= 1_000_000_000) {
-    return `${(value / 1_000_000_000).toFixed(1)}B`
+function filtersFromSearch(params: URLSearchParams): AnalyticsFilters {
+  const range = (params.get('range') ?? '30d') as AnalyticsRange
+  return {
+    range,
+    start: range === 'custom' ? params.get('start') ?? undefined : undefined,
+    end: range === 'custom' ? params.get('end') ?? undefined : undefined,
+    gatewayId: params.get('gatewayId') ?? undefined,
+    environment: params.get('environment') ?? undefined,
+    resourceId: params.get('resourceId') ?? undefined,
+    subjectKind: (params.get('subjectKind') as EntitlementSubjectKind | null) ?? undefined,
   }
-  if (value >= 1_000_000) {
-    return `${(value / 1_000_000).toFixed(1)}M`
+}
+
+function tabFromSearch(params: URLSearchParams): TabKey {
+  const value = params.get('tab') as TabKey | null
+  return value && tabs.some((tab) => tab.key === value) ? value : 'overview'
+}
+
+function sourceKind(source: AnalyticsDataSource) {
+  return source === 'logAnalytics' ? 'live' : 'local'
+}
+
+function freshnessText(freshness: UsageFreshness) {
+  if (freshness.status === 'notLinked') return 'No gateway is linked.'
+  if (freshness.status === 'pending') return "MOSAIC hasn't read the gateways' telemetry yet."
+  const updated = freshness.updatedAt ? `Updated ${formatDateTime(freshness.updatedAt)}` : 'Not updated yet'
+  const cadence = freshness.intervalMinutes ? ` · every ${freshness.intervalMinutes} min` : ''
+  const message = freshness.message ? ` · ${freshness.message}` : ''
+  if (freshness.status === 'delayed') return `${updated}${cadence} · delayed${message}`
+  if (freshness.status === 'failing') return `${updated}${cadence} · failing${message}`
+  return `${updated}${cadence}`
+}
+
+function breakdownCaption(report: AnalyticsReport) {
+  if (report.window.range !== '24h') return null
+  return `Breakdowns and active caller/grant/API counts cover whole UTC days ${formatDay(report.window.breakdownStart)} through ${formatDay(report.window.breakdownEnd)}.`
+}
+
+function DataNotes({ report }: { report: AnalyticsReport }) {
+  if (report.dataSource === 'notConfigured') {
+    return (
+      <MessageBar intent="warning">
+        <MessageBarBody>
+          <MessageBarTitle>Usage telemetry is not configured</MessageBarTitle>
+          Local and test runs do not read gateway telemetry. In Azure, MOSAIC reads gateways' Log Analytics data; MOSAIC_USAGE_SOURCE controls this.
+          {report.notes.length > 0 && <ul>{report.notes.map((note) => <li key={note}>{note}</li>)}</ul>}
+        </MessageBarBody>
+      </MessageBar>
+    )
   }
-  if (value >= 1000) {
-    return `${(value / 1000).toFixed(1)}K`
-  }
-  return value.toString()
-}
-
-function formatCurrency(value: number): string {
-  return new Intl.NumberFormat('en-US', {
-    style: 'currency',
-    currency: 'USD',
-    maximumFractionDigits: 0,
-  }).format(value)
-}
-
-function formatPercent(value: number): string {
-  return `${value.toFixed(2)}%`
-}
-
-function formatLatency(value: number): string {
-  return `${Math.round(value)} ms`
-}
-
-function escapeCsvValue(value: string | number): string {
-  const text = String(value)
-  if (/[",\n]/.test(text)) {
-    return `"${text.replaceAll('"', '""')}"`
-  }
-  return text
-}
-
-function buildPolylinePoints(values: number[]): string {
-  const maximum = Math.max(...values, 1)
-  return values
-    .map((value, index) => {
-      const x = values.length === 1 ? 50 : (index / (values.length - 1)) * 100
-      const y = 92 - (value / maximum) * 76
-      return `${x},${y}`
-    })
-    .join(' ')
-}
-
-function KpiCard({
-  label,
-  value,
-  detail,
-  accent,
-}: {
-  label: string
-  value: string
-  detail: string
-  accent?: 'warning'
-}) {
   return (
-    <Card className={`${styles.kpiCard} ${accent === 'warning' ? styles.kpiWarning : ''}`}>
+    <div className={styles.notes}>
+      <DataSourceBadge kind="live" />
+      <Text>{freshnessText(report.freshness)}</Text>
+      {breakdownCaption(report) && <Text>{breakdownCaption(report)}</Text>}
+      {report.notes.map((note) => <Text key={note}>{note}</Text>)}
+    </div>
+  )
+}
+
+function KpiCard({ label, value, detail }: { label: string; value: string; detail?: string }) {
+  return (
+    <Card className={styles.kpiCard}>
       <Text className={styles.kpiLabel}>{label}</Text>
       <div className={styles.kpiValue}>{value}</div>
-      <Text size={200} className={accent === 'warning' ? styles.warningDetail : styles.kpiDetail}>
-        {detail}
-      </Text>
+      {detail && <Text size={200} className={styles.kpiDetail}>{detail}</Text>}
     </Card>
   )
 }
 
+function changeText(current: number | null | undefined, previous: number | null | undefined) {
+  if (current == null || previous == null || previous === 0) return 'No previous period comparison'
+  const change = (current - previous) / previous
+  return `${change >= 0 ? '+' : ''}${(change * 100).toFixed(1)}% vs previous period`
+}
+
+function reportEmpty(report: AnalyticsReport & { kpis?: AnalyticsKpis }) {
+  return report.dataSource === 'notConfigured' || report.kpis?.requests === 0
+}
+
+function TableEmpty({ children }: { children: string }) {
+  return (
+    <tr>
+      <td colSpan={8}>
+        <EmptyState title="No rows">{children}</EmptyState>
+      </td>
+    </tr>
+  )
+}
+
+function GatewayHealthRows({
+  gateways,
+  onRefresh,
+  busyGateway,
+}: {
+  gateways: AnalyticsGatewayHealth[]
+  onRefresh: (gatewayId: string) => void
+  busyGateway: string | null
+}) {
+  return (
+    <div className="table-scroll">
+      <table aria-label="Gateway telemetry health">
+        <thead>
+          <tr>
+            <th>Gateway</th>
+            <th>Status</th>
+            <th>Lag</th>
+            <th>Backfill</th>
+            <th>Last error</th>
+            <th><span className="sr-only">Actions</span></th>
+          </tr>
+        </thead>
+        <tbody>
+          {gateways.length === 0 ? (
+            <TableEmpty>No gateway telemetry health is available.</TableEmpty>
+          ) : gateways.map((gateway) => (
+            <tr key={gateway.gatewayId}>
+              <td>{gateway.name}<Text block size={200}>{gateway.environmentName}</Text></td>
+              <td><Badge color={gateway.status === 'current' ? 'success' : gateway.status === 'failing' ? 'danger' : gateway.status === 'notLinked' ? 'subtle' : 'warning'}>{FRESHNESS_STATUS_LABELS[gateway.status]}</Badge></td>
+              <td>{gateway.lagMinutes == null ? '—' : `${gateway.lagMinutes} min`}</td>
+              <td>{BACKFILL_STATUS_LABELS[gateway.backfillStatus]}{gateway.backfillNext ? ` · next ${gateway.backfillNext}` : ''}</td>
+              <td>{gateway.lastError ?? gateway.diagnosticsError ?? '—'}</td>
+              <td>
+                <Button size="small" onClick={() => onRefresh(gateway.gatewayId)} disabled={busyGateway === gateway.gatewayId}>
+                  {busyGateway === gateway.gatewayId ? 'Refreshing…' : 'Refresh now'}
+                </Button>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+function OverviewTab({ report }: { report: AnalyticsOverview }) {
+  const trend = report.trend.map((point) => ({ label: trendLabel(point, report.window.granularity), primary: point.requests, secondary: point.totalTokens }))
+  // Models and callers rank by tokens, which drive spend. APIs rank by calls, because MCP servers carry no tokens.
+  const byTokens = (row: AnalyticsRankRow): BarListItem => ({ key: row.key, label: row.label, value: row.totalTokens, valueLabel: `${formatCompact(row.totalTokens)} tokens`, detail: [row.detail, `${formatCompact(row.requests)} calls`].filter(Boolean).join(' · ') })
+  const topModels = report.topModels.map(byTokens)
+  const topCallers = report.topCallers.map(byTokens)
+  const topApis = report.topApis.map<BarListItem>((row) => ({ key: row.key, label: row.label, value: row.requests, valueLabel: `${formatCompact(row.requests)} calls`, detail: [row.detail, row.totalTokens ? `${formatCompact(row.totalTokens)} tokens` : null].filter(Boolean).join(' · ') }))
+
+  return (
+    <>
+      <div className={styles.kpiGrid}>
+        <KpiCard label="Requests" value={formatCompact(report.kpis.requests)} detail={changeText(report.kpis.requests, report.previous?.requests)} />
+        <KpiCard label="Tokens" value={formatCompact(report.kpis.totalTokens)} detail={changeText(report.kpis.totalTokens, report.previous?.totalTokens)} />
+        <KpiCard label="Active callers" value={formatNumber(report.kpis.activeCallers)} detail={report.window.range === '24h' ? 'Whole UTC-day breakdown' : undefined} />
+        <KpiCard label="Errors" value={formatPercent(report.kpis.errorRate)} detail={`${formatNumber(report.kpis.errors)} error calls`} />
+        <KpiCard label="P95 latency" value={formatLatency(report.kpis.p95LatencyMs)} detail="Estimated from latency buckets" />
+      </div>
+      {reportEmpty(report) ? <EmptyState title="No usage yet">MOSAIC has no rolled-up calls for these filters.</EmptyState> : (
+        <div className={styles.analyticsGrid}>
+          <Card className={styles.wideCard}>
+            <Title3 as="h2">Requests and tokens</Title3>
+            <TrendChart title="Requests and tokens trend" points={trend} primaryLabel="Requests" secondaryLabel="Tokens" />
+          </Card>
+          <Card className={styles.panelCard}><Title3 as="h2">Top models</Title3><BarList label="Top models" items={topModels} /></Card>
+          <Card className={styles.panelCard}><Title3 as="h2">Top callers</Title3><BarList label="Top callers" items={topCallers} /></Card>
+          <Card className={styles.panelCard}><Title3 as="h2">Top APIs</Title3><BarList label="Top APIs" items={topApis} /></Card>
+        </div>
+      )}
+    </>
+  )
+}
+
+function ConsumersTab({ report }: { report: AnalyticsConsumers }) {
+  return (
+    <div className={styles.stack}>
+      <div className={styles.kpiGrid}>
+        <KpiCard label="Linked requests" value={formatCompact(report.linkedRequests)} />
+        <KpiCard label="Linked tokens" value={formatCompact(report.linkedTokens)} />
+        <KpiCard label="Unidentified linked calls" value={formatCompact(report.unidentifiedRequests)} />
+      </div>
+      <Card className={styles.panelCard}>
+        <Title3 as="h2">People, applications, and Entra security groups</Title3>
+        <div className="table-scroll">
+          <table aria-label="Consumers">
+            <thead><tr><th>Name</th><th>Kind</th><th>Requests</th><th>Tokens</th><th>Grants</th><th>Resources</th><th>Last seen</th></tr></thead>
+            <tbody>
+              {[...report.people, ...report.applications, ...report.groups].length === 0 ? <TableEmpty>No linked consumers match these filters.</TableEmpty> :
+                [...report.people, ...report.applications, ...report.groups].map((row) => (
+                  <tr key={row.key}><td>{row.label}<Text block size={200}>{row.detail ?? (row.members != null ? `${row.members} active members` : '')}</Text></td><td>{consumerKindLabel(row)}</td><td>{formatNumber(row.requests)}</td><td>{formatNumber(row.totalTokens)}</td><td>{row.grants}</td><td>{row.resources}</td><td>{formatDateTime(row.lastSeen)}</td></tr>
+                ))}
+            </tbody>
+          </table>
+        </div>
+      </Card>
+      <Card className={styles.panelCard}>
+        <Title3 as="h2">Grants</Title3>
+        <div className="table-scroll">
+          <table aria-label="Grant usage">
+            <thead><tr><th>Subject</th><th>Resource</th><th>State</th><th>Requests</th><th>Key requests</th><th>Callers</th><th>Peak minute</th></tr></thead>
+            <tbody>
+              {report.grants.length === 0 ? <TableEmpty>No grants match these filters.</TableEmpty> : report.grants.map((row) => (
+                <tr key={row.key}><td>{row.subjectLabel}<Text block size={200}>{grantSubjectKindLabel(row)} · {row.subjectDetail ?? 'No detail'}</Text></td><td>{row.resourceLabel}<Text block size={200}>{row.gatewayName ?? 'No gateway'}</Text></td><td>{grantStateLabels[row.state]}</td><td>{formatNumber(row.requests)}</td><td>{formatNumber(row.keyRequests)}</td><td>{row.callers}</td><td>{row.peakMinuteTokens == null ? '—' : `${formatNumber(row.peakMinuteTokens)} tokens`}</td></tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Card>
+      <Card className={styles.panelCard}>
+        <Title3 as="h2">Client applications</Title3>
+        <BarList label="Client applications" items={report.clientApps.map((row) => ({ key: row.clientAppId, label: row.label, value: row.requests, valueLabel: `${formatCompact(row.requests)} calls`, detail: `${row.apis} APIs` }))} />
+      </Card>
+    </div>
+  )
+}
+
+// A model deployment's own 429 reaches the caller as the gateway's 429 too, so it counts as throttled
+// as well. Taking those out leaves the calls the gateway's limits refused.
+function gatewayThrottled(throttled: number, backendThrottled: number | null) {
+  return Math.max(throttled - (backendThrottled ?? 0), 0)
+}
+
+function ApiRows({ rows, label }: { rows: AnalyticsApiRow[]; label: string }) {
+  return (
+    <div className="table-scroll">
+      <table aria-label={label}>
+        <thead><tr><th>API</th><th>Kind</th><th>Requests</th><th>Denied</th><th>Errors</th><th>Backend 429s</th><th>P95</th><th>Models</th></tr></thead>
+        <tbody>
+          {rows.length === 0 ? <TableEmpty>No APIs match these filters.</TableEmpty> : rows.map((row) => (
+            <tr key={row.key}><td>{row.label}<Text block size={200}>{row.gatewayName} · {row.apiName}</Text></td><td>{row.kind ? apiKindLabels[row.kind] : 'Unknown'}</td><td>{formatNumber(row.requests)}</td><td>{formatNumber(row.denied)}</td><td>{formatNumber(row.errors)}</td><td>{formatNumber(row.backendThrottled)}</td><td>{formatLatency(row.p95LatencyMs)}</td><td>{row.models?.join(', ') ?? 'Not read in this view'}</td></tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+function ModelsTab({ report }: { report: AnalyticsModels }) {
+  return (
+    <div className={styles.stack}>
+      <Card className={styles.panelCard}>
+        <Title3 as="h2">Models</Title3>
+        <BarList label="Models by requests" items={report.models.map((row) => ({ key: row.model, label: row.model, value: row.requests, valueLabel: `${formatCompact(row.requests)} calls`, detail: `${formatCompact(row.totalTokens)} tokens across ${row.apis} APIs` }))} />
+      </Card>
+      <Card className={styles.panelCard}>
+        <Title3 as="h2">Deployments</Title3>
+        <Text size={200}>Deployment request counts include calls the gateway throttled. Backend 429s are shown separately from MOSAIC gateway throttling. Capacity and utilization appear for Azure OpenAI standard deployments, whose capacity is set in tokens a minute. Other models share a regional rate limit instead.</Text>
+        <div className="table-scroll">
+          <table aria-label="Deployments">
+            <thead><tr><th>Deployment</th><th>Model</th><th>Requests</th><th>Gateway throttled</th><th>Backend 429s</th><th>Peak TPM</th><th>Capacity</th><th>Utilization</th></tr></thead>
+            <tbody>
+              {report.deployments.length === 0 ? <TableEmpty>No deployments match these filters.</TableEmpty> : report.deployments.map((row: AnalyticsDeploymentRow) => (
+                <tr key={row.key}><td>{row.deploymentName}<Text block size={200}>{row.endpointName ?? row.endpointId}</Text></td><td>{row.modelName ?? 'Unknown'}</td><td>{formatNumber(row.requests)}</td><td>{formatNumber(gatewayThrottled(row.throttled, row.backendThrottled))}</td><td>{formatNumber(row.backendThrottled)}</td><td>{formatNumber(row.peakMinuteTokens)}</td><td>{formatNumber(row.capacityTokensPerMinute)}</td><td>{formatPercent(row.utilization)}</td></tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Card>
+      <Card className={styles.panelCard}><Title3 as="h2">APIs and MCP servers</Title3><ApiRows rows={report.apis} label="APIs and MCP servers" /></Card>
+    </div>
+  )
+}
+
+function ReliabilityTab({ report }: { report: AnalyticsReliability }) {
+  const mix = report.statusMix
+  return (
+    <div className={styles.stack}>
+      <div className={styles.kpiGrid}>
+        <KpiCard label="OK" value={formatCompact(mix.ok)} />
+        <KpiCard label="Gateway throttled" value={formatCompact(gatewayThrottled(mix.throttled, mix.backendThrottled))} detail="A rate or token limit at the gateway answered these with 429." />
+        <KpiCard label="Backend 429s" value={formatCompact(mix.backendThrottled)} detail="The model deployment returned 429, and the gateway passed it on." />
+        <KpiCard label="Denied" value={formatCompact(mix.denied)} />
+      </div>
+      <Card className={styles.panelCard}>
+        <Title3 as="h2">Latency</Title3>
+        <Text size={200}>Percentiles are estimated from latency buckets. Latency covers admitted calls only; denied calls are not timed, so the histogram total is requests minus denied calls.</Text>
+        <Histogram buckets={report.latency.buckets} label={`Estimated latency histogram; P50 ${formatLatency(report.latency.p50Ms)}, P95 ${formatLatency(report.latency.p95Ms)}, P99 ${formatLatency(report.latency.p99Ms)}.`} />
+      </Card>
+      <Card className={styles.panelCard}>
+        <Title3 as="h2">Denials by reason</Title3>
+        <BarList label="Denial reasons" items={report.denialReasons.map((row) => ({ key: row.reason, label: row.label, value: row.requests, valueLabel: `${formatCompact(row.requests)} calls`, detail: formatPercent(row.share) }))} />
+      </Card>
+      <Card className={styles.panelCard}><Title3 as="h2">Per-API reliability</Title3><ApiRows rows={report.apis} label="Per-API reliability" /></Card>
+    </div>
+  )
+}
+
+function LimitsTab({ report }: { report: AnalyticsLimits }) {
+  const rows = [...report.rows].sort((left, right) => (right.utilization ?? -1) - (left.utilization ?? -1))
+  return (
+    <Card className={styles.panelCard}>
+      <Title3 as="h2">Grant limits</Title3>
+      <Text size={200}>Reached means the gateway refused calls under the grant&apos;s limits in this range, or use is at a limit. Near means at least {Math.round(report.threshold * 100)}% used. Unknown means MOSAIC cannot tell how close the grant is. Throttled counts only the gateway&apos;s refusals, not a model deployment&apos;s own 429s.</Text>
+      <div className="table-scroll">
+        <table aria-label="Grant limit use">
+          <thead><tr><th>Grant</th><th>Resource</th><th>Status</th><th>Use vs limit</th><th>Throttled</th><th>Quota refused</th></tr></thead>
+          <tbody>
+            {rows.length === 0 ? <TableEmpty>No grant limits match these filters.</TableEmpty> : rows.map((row) => (
+              <tr key={row.key}>
+                <td>{row.subjectLabel}<Text block size={200}>{row.memberLabel ? `Member ${row.memberLabel}` : grantSubjectKindLabel(row)}</Text></td>
+                <td>{row.resourceLabel}<Text block size={200}>{row.gatewayName ?? 'No gateway'}</Text></td>
+                <td><Badge color={row.status === 'reached' ? 'danger' : row.status === 'near' ? 'warning' : row.status === 'ok' ? 'success' : 'subtle'}>{limitStatusLabels[row.status]}</Badge></td>
+                <td>
+                  <BarList label={`${row.subjectLabel} limits`} items={row.limits.map((limit) => ({ key: `${row.key}-${limit.kind}-${limit.metric}`, label: limitLabel(limit), value: limit.utilization ?? 0, valueLabel: `${formatNumber(limit.used)} / ${formatNumber(limit.limit)}`, detail: limit.partial ? 'Partial window' : undefined, tone: limit.utilization != null && limit.utilization >= 1 ? 'danger' : limit.utilization != null && limit.utilization >= report.threshold ? 'warning' : 'normal' }))} />
+                </td>
+                <td>{formatNumber(row.throttled)}</td>
+                <td>{formatNumber(row.quotaRefused)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </Card>
+  )
+}
+
+const untrackedReasons = {
+  mosaicGroup: "MOSAIC groups are desired state; the gateway enforces Entra security groups, so calls can't be tracked to this grant.",
+  notApplied: 'This grant is not applied to the gateway yet.',
+  noLink: 'This grant has no attribution link.',
+}
+
+const unattributedReasons: Record<AnalyticsUnattributed['rows'][number]['reason'], string> = {
+  noSubscription: 'No subscription key',
+  unknownSubscription: 'Unknown key',
+  sharedKey: "Publication's shared key",
+}
+
+function HygieneTab({ report }: { report: AnalyticsHygiene }) {
+  return (
+    <div className={styles.stack}>
+      <MessageBar>
+        <MessageBarBody>
+          <MessageBarTitle>{formatNumber(report.judgedGrants)} grants judged</MessageBarTitle>
+          A grant is judged only when data covers the whole window, is at most a day stale, and the grant predates the window.
+        </MessageBarBody>
+      </MessageBar>
+      <Card className={styles.panelCard}>
+        <Title3 as="h2">Unused grants</Title3>
+        <div className="table-scroll"><table aria-label="Unused grants"><thead><tr><th>Grant</th><th>Resource</th><th>Granted</th><th>Last used</th></tr></thead><tbody>{report.unusedGrants.length === 0 ? <TableEmpty>No unused grants in this window.</TableEmpty> : report.unusedGrants.map((row) => <tr key={row.entitlementId}><td>{row.subjectLabel}</td><td>{row.resourceLabel}</td><td>{formatDateTime(row.grantedAt)}</td><td>{formatDateTime(row.lastUsedAt)}</td></tr>)}</tbody></table></div>
+      </Card>
+      <Card className={styles.panelCard}>
+        <Title3 as="h2">Unused keys</Title3>
+        <Text size={200}>These grants have APIM subscription keys, but every call came without the key. Consider turning keys off.</Text>
+        <div className="table-scroll"><table aria-label="Unused keys"><thead><tr><th>Grant</th><th>Subscription</th><th>Token requests</th><th>Resource</th></tr></thead><tbody>{report.unusedKeys.length === 0 ? <TableEmpty>No unused keys in this window.</TableEmpty> : report.unusedKeys.map((row) => <tr key={row.entitlementId}><td>{row.subjectLabel}</td><td>{row.subscriptionName ?? '—'}</td><td>{formatNumber(row.tokenRequests)}</td><td>{row.resourceLabel}</td></tr>)}</tbody></table></div>
+      </Card>
+      <Card className={styles.panelCard}>
+        <Title3 as="h2">Untracked grants</Title3>
+        <div className="table-scroll"><table aria-label="Untracked grants"><thead><tr><th>Grant</th><th>Resource</th><th>Reason</th></tr></thead><tbody>{report.untrackedGrants.length === 0 ? <TableEmpty>No untracked grants in this window.</TableEmpty> : report.untrackedGrants.map((row) => <tr key={row.entitlementId}><td>{row.subjectLabel}</td><td>{row.resourceLabel}</td><td>{untrackedReasons[row.reason]}</td></tr>)}</tbody></table></div>
+      </Card>
+    </div>
+  )
+}
+
+function UnattributedTab({ report }: { report: AnalyticsUnattributed }) {
+  return (
+    <Card className={styles.panelCard}>
+      <Title3 as="h2">Unattributed calls</Title3>
+      <Text size={200}>{formatCompact(report.requests)} calls ({formatPercent(report.share)}) could not be linked to a grant. A publication&apos;s shared key belongs to no one caller, so grant access per caller to see who uses it.</Text>
+      <div className="table-scroll">
+        <table aria-label="Unattributed calls">
+          <thead><tr><th>API</th><th>Gateway</th><th>Subscription</th><th>Reason</th><th>Requests</th><th>Tokens</th><th>Last seen</th></tr></thead>
+          <tbody>
+            {report.rows.length === 0 ? <TableEmpty>No unattributed calls match these filters.</TableEmpty> : report.rows.map((row) => (
+              <tr key={`${row.gatewayId}-${row.apiName}-${row.subscription ?? 'none'}`}><td>{row.apiLabel}<Text block size={200}>{row.apiName}</Text></td><td>{row.gatewayName}</td><td>{row.subscription ?? 'No subscription'}</td><td>{unattributedReasons[row.reason]}</td><td>{formatNumber(row.requests)}</td><td>{formatNumber(row.totalTokens)}</td><td>{formatDateTime(row.lastSeen)}</td></tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </Card>
+  )
+}
+
+function ResourceOptions({ modelApis, mcpServers }: { modelApis?: ModelApi[]; mcpServers?: McpServer[] }) {
+  return (
+    <>
+      {(modelApis ?? []).map((item) => <option key={`model-${item.id}`} value={item.id}>{item.displayName}</option>)}
+      {(mcpServers ?? []).map((item) => <option key={`mcp-${item.id}`} value={item.id}>{item.displayName}</option>)}
+    </>
+  )
+}
+
+function downloadBlob(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  document.body.append(link)
+  link.click()
+  link.remove()
+  window.setTimeout(() => URL.revokeObjectURL(url), 0)
+}
+
 export function AnalyticsPage() {
-  const [timeRange, setTimeRange] = useState<TimeRange>('24h')
-  const [modelFilter, setModelFilter] = useState<ModelFilter>('all')
-  const [environmentFilter, setEnvironmentFilter] = useState<EnvironmentFilter>('all')
-  const [selectedError, setSelectedError] = useState<ErrorRecord | null>(null)
-  const [exportStatus, setExportStatus] = useState('Ready to export current sample view.')
-  const environmentCatalog = useEnvironmentCatalog()
+  const api = useMosaicApi()
+  const queryClient = useQueryClient()
+  const [params, setParams] = useSearchParams()
+  const filters = useMemo(() => filtersFromSearch(params), [params])
+  const tab = tabFromSearch(params)
+  const [exportStatus, setExportStatus] = useState<string | null>(null)
+  const [exportChoice, setExportChoice] = useState<ExportView | null>(null)
+  const [refreshMessage, setRefreshMessage] = useState<string | null>(null)
+  const catalog = useEnvironmentCatalog()
+  const gateways = useQuery({ queryKey: ['gateways'], queryFn: api.listGateways })
+  const modelApis = useQuery({ queryKey: ['model-apis'], queryFn: () => api.listModelApis() })
+  const mcpServers = useQuery({ queryKey: ['mcp-servers'], queryFn: () => api.listMcpServers() })
 
-  const dataset = sampleDatasets[timeRange]
+  const reportQuery = useQuery<AnalyticsReport>({
+    queryKey: ['analytics', tab, filters],
+    queryFn: () => {
+      if (tab === 'consumers') return api.getAnalyticsConsumers(filters)
+      if (tab === 'models') return api.getAnalyticsModels(filters)
+      if (tab === 'reliability') return api.getAnalyticsReliability(filters)
+      if (tab === 'limits') return api.getAnalyticsLimits(filters)
+      if (tab === 'hygiene') return api.getAnalyticsHygiene(filters)
+      if (tab === 'unattributed') return api.getAnalyticsUnattributed(filters)
+      return api.getAnalyticsOverview(filters)
+    },
+  })
 
-  const derived = useMemo<DerivedAnalytics>(() => {
-    const environmentMultiplier = environmentFilter === 'all' ? 1 : environmentWeight[environmentFilter]
-    const filteredTimeline = dataset.timeline.map((point) => ({
-      label: point.label,
-      requests: Math.round(sumByModel(point.requestsByModel, modelFilter) * environmentMultiplier),
-      tokens: Math.round(sumByModel(point.tokensByModel, modelFilter) * environmentMultiplier),
-    }))
-
-    const filteredGroups = dataset.groups
-      .filter((group) => environmentFilter === 'all' || recordEnvironment(group) === environmentFilter)
-      .map<FilteredGroupUsage>((group) => ({
-        group: group.group,
-        owner: group.owner,
-        tokens: sumByModel(group.tokensByModel, modelFilter),
-        requests: sumByModel(group.requestsByModel, modelFilter),
-      }))
-      .filter((group) => group.tokens > 0 || group.requests > 0)
-      .sort((left, right) => right.tokens - left.tokens)
-
-    const filteredEndpoints = dataset.endpoints
-      .filter((endpoint) => environmentFilter === 'all' || recordEnvironment(endpoint) === environmentFilter)
-      .map<FilteredEndpointLatency>((endpoint) => {
-        if (modelFilter === 'all') {
-          const metrics = Object.values(endpoint.byModel).filter((item) => item.p95 > 0)
-          const count = Math.max(metrics.length, 1)
-          return {
-            endpoint: endpoint.endpoint,
-            operation: endpoint.operation,
-            p50: metrics.reduce((total, item) => total + item.p50, 0) / count,
-            p95: metrics.reduce((total, item) => total + item.p95, 0) / count,
-            errorRate: metrics.reduce((total, item) => total + item.errorRate, 0) / count,
-          }
-        }
-
-        const selected = endpoint.byModel[modelFilter]
-        return {
-          endpoint: endpoint.endpoint,
-          operation: endpoint.operation,
-          p50: selected.p50,
-          p95: selected.p95,
-          errorRate: selected.errorRate,
-        }
-      })
-      .filter((endpoint) => endpoint.p95 > 0)
-      .sort((left, right) => right.p95 - left.p95)
-
-    const filteredErrors =
-      dataset.errors.filter((error) =>
-        (modelFilter === 'all' || error.model === modelFilter) &&
-        (environmentFilter === 'all' || recordEnvironment(error) === environmentFilter),
-      )
-
-    const totalRequests = filteredTimeline.reduce((total, point) => total + point.requests, 0)
-    const totalTokens = filteredTimeline.reduce((total, point) => total + point.tokens, 0)
-    const estimatedCost =
-      modelFilter === 'all'
-        ? Object.values(dataset.estimatedCostUsdByModel).reduce((total, value) => total + value, 0)
-        : dataset.estimatedCostUsdByModel[modelFilter]
-    const estimatedCostInEnvironment = estimatedCost * environmentMultiplier
-    const successRate =
-      modelFilter === 'all'
-        ? Object.values(dataset.successRateByModel).reduce((total, value) => total + value, 0) /
-          Object.values(dataset.successRateByModel).length
-        : dataset.successRateByModel[modelFilter]
-    const p95Latency =
-      filteredEndpoints.reduce((total, item) => total + item.p95, 0) /
-      Math.max(filteredEndpoints.length, 1)
-    const criticalErrors = filteredErrors
-      .filter((error) => error.severity === 'Critical')
-      .reduce((total, error) => total + error.count, 0)
-    const environmentBreakdown = environmentOptions.map<EnvironmentBreakdown>((environment) => {
-      const requests = dataset.groups
-        .filter((group) => recordEnvironment(group) === environment)
-        .reduce((total, group) => total + sumByModel(group.requestsByModel, modelFilter), 0)
-      const tokens = dataset.groups
-        .filter((group) => recordEnvironment(group) === environment)
-        .reduce((total, group) => total + sumByModel(group.tokensByModel, modelFilter), 0)
-      return {
-        environment,
-        requests,
-        tokens,
-        cost: estimatedCost * environmentWeight[environment],
+  const refreshGateway = useMutation({
+    mutationFn: api.refreshGatewayTelemetry,
+    onMutate: (gatewayId) => {
+      setRefreshMessage(null)
+      return gatewayId
+    },
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['analytics'] }),
+    onError: (error) => {
+      const status = error instanceof ApiError ? error.status : (error as { status?: number }).status
+      if (status === 429) {
+        setRefreshMessage('That gateway was refreshed less than a minute ago. Try again shortly.')
+      } else if (status === 409) {
+        setRefreshMessage("This deployment doesn't roll up gateway telemetry.")
+      } else {
+        setRefreshMessage(error instanceof Error ? error.message : 'Refresh failed.')
       }
-    }).filter((item) => environmentFilter === 'all' || item.environment === environmentFilter)
+    },
+  })
 
-    return {
-      filteredTimeline,
-      filteredGroups,
-      filteredEndpoints,
-      filteredErrors,
-      environmentBreakdown,
-      totalRequests,
-      totalTokens,
-      estimatedCost: estimatedCostInEnvironment,
-      successRate,
-      p95Latency,
-      criticalErrors,
+  const exportCsv = useMutation({
+    mutationFn: async (view: ExportView) => ({ view, file: await api.exportAnalytics(view, filters) }),
+    onSuccess: ({ view, file }) => {
+      downloadBlob(file.blob, file.filename ?? `mosaic-${view}.csv`)
+      setExportStatus(`${exportLabels[view]} CSV downloaded.`)
+    },
+    onError: (error) => setExportStatus(error instanceof Error ? error.message : 'Export failed.'),
+  })
+
+  function updateFilter(key: keyof AnalyticsFilters | 'tab', value: string) {
+    const next = new URLSearchParams(params)
+    if (value) next.set(key, value)
+    else next.delete(key)
+    if (key === 'range' && value !== 'custom') {
+      next.delete('start')
+      next.delete('end')
     }
-  }, [dataset, environmentFilter, modelFilter])
-
-  const requestPoints = useMemo(
-    () => buildPolylinePoints(derived.filteredTimeline.map((point) => point.requests)),
-    [derived.filteredTimeline],
-  )
-
-  const requestMax = Math.max(
-    ...derived.filteredTimeline.map((point) => point.requests),
-    1,
-  )
-  const largestGroupToken = Math.max(...derived.filteredGroups.map((group) => group.tokens), 1)
-  const largestEnvironmentRequests = Math.max(
-    ...derived.environmentBreakdown.map((environment) => environment.requests),
-    1,
-  )
-  const highestEndpointLatency = Math.max(
-    ...derived.filteredEndpoints.map((endpoint) => endpoint.p95),
-    1,
-  )
-
-  function exportCsv() {
-    const rows: string[] = []
-    rows.push('Section,Name,Value,Detail')
-    rows.push(
-      [
-        'Summary',
-        'Time range',
-        timeRange,
-        modelFilter === 'all' ? 'All models' : modelFilter,
-      ]
-        .map(escapeCsvValue)
-        .join(','),
-    )
-    rows.push(
-      ['Summary', 'Total requests', derived.totalRequests, formatCompactNumber(derived.totalRequests)]
-        .map(escapeCsvValue)
-        .join(','),
-    )
-    rows.push(
-      ['Summary', 'Total tokens', derived.totalTokens, formatTokenCount(derived.totalTokens)]
-        .map(escapeCsvValue)
-        .join(','),
-    )
-    rows.push(
-      ['Summary', 'Estimated cost', derived.estimatedCost, formatCurrency(derived.estimatedCost)]
-        .map(escapeCsvValue)
-        .join(','),
-    )
-    rows.push(
-      ['Summary', 'Success rate', derived.successRate, formatPercent(derived.successRate)]
-        .map(escapeCsvValue)
-        .join(','),
-    )
-    rows.push('')
-    rows.push('Timeline label,Environment,Requests,Tokens')
-    derived.filteredTimeline.forEach((point) => {
-      rows.push([
-        point.label,
-        environmentFilter === 'all'
-          ? 'All environments'
-          : environmentLabel(environmentCatalog.data, environmentFilter),
-        point.requests,
-        point.tokens,
-      ].map(escapeCsvValue).join(','))
-    })
-    rows.push('')
-    rows.push('Group,Owner,Environment,Requests,Tokens')
-    derived.filteredGroups.forEach((group) => {
-      rows.push([
-        group.group,
-        group.owner,
-        environmentLabel(environmentCatalog.data, recordEnvironment(group)),
-        group.requests,
-        group.tokens,
-      ].map(escapeCsvValue).join(','))
-    })
-    rows.push('')
-    rows.push('Environment,Requests,Tokens,Estimated cost')
-    derived.environmentBreakdown.forEach((environment) => {
-      rows.push([
-        environmentLabel(environmentCatalog.data, environment.environment),
-        environment.requests,
-        environment.tokens,
-        environment.cost.toFixed(2),
-      ].map(escapeCsvValue).join(','))
-    })
-    rows.push('')
-    rows.push('Endpoint,Operation,Environment,P50 ms,P95 ms,Error rate %')
-    derived.filteredEndpoints.forEach((endpoint) => {
-      rows.push(
-        [
-          endpoint.endpoint,
-          endpoint.operation,
-          environmentLabel(environmentCatalog.data, recordEnvironment(endpoint)),
-          endpoint.p50,
-          endpoint.p95,
-          endpoint.errorRate,
-        ]
-          .map(escapeCsvValue)
-          .join(','),
-      )
-    })
-    rows.push('')
-    rows.push('Error ID,Timestamp,Severity,Code,Endpoint,Model,Environment,Count,Message')
-    derived.filteredErrors.forEach((error) => {
-      rows.push(
-        [
-          error.id,
-          error.timestamp,
-          error.severity,
-          error.code,
-          error.endpoint,
-          error.model,
-          environmentLabel(environmentCatalog.data, recordEnvironment(error)),
-          error.count,
-          error.message,
-        ]
-          .map(escapeCsvValue)
-          .join(','),
-      )
-    })
-    rows.push('')
-    rows.push('Integration,Status,Freshness,Detail')
-    dataset.integrations.forEach((integration) => {
-      rows.push(
-        [integration.name, integration.status, integration.freshness, integration.detail]
-          .map(escapeCsvValue)
-          .join(','),
-      )
-    })
-
-    const blob = new Blob([rows.join('\n')], { type: 'text/csv;charset=utf-8' })
-    const objectUrl = URL.createObjectURL(blob)
-    const link = document.createElement('a')
-    const fileModel = modelFilter === 'all' ? 'all-models' : modelFilter
-    const fileEnvironment = environmentFilter === 'all' ? 'all-environments' : environmentFilter
-    link.href = objectUrl
-    link.download = `mosaic-analytics-${timeRange}-${fileModel}-${fileEnvironment}.csv`
-    document.body.append(link)
-    link.click()
-    link.remove()
-    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 0)
-    setExportStatus(`Exported ${link.download}`)
+    setParams(next)
   }
+
+  const report = reportQuery.data as AnalyticsReport | undefined
+  const activeExports = tabs.find((item) => item.key === tab)?.exports ?? ['trend']
+  const exportView = exportChoice && activeExports.includes(exportChoice) ? exportChoice : activeExports[0]
 
   return (
     <section className={styles.page}>
       <PageHeader
         title="Analytics"
-        description="Inspect sample observability, usage, and chargeback views for MOSAIC while Azure Monitor integration is still staged."
-        source="sample"
+        description="Inspect real gateway usage, reliability, limits, and access hygiene from MOSAIC usage rollups."
+        source={report ? sourceKind(report.dataSource) : undefined}
         actions={
           <div className={styles.headerControls}>
-            <label className={styles.filterControl}>
-              <span>Time range</span>
-              <Select
-                value={timeRange}
-                onChange={(event) => setTimeRange(event.target.value as TimeRange)}
-              >
-                <option value="24h">Last 24 hours</option>
-                <option value="7d">Last 7 days</option>
-                <option value="30d">Last 30 days</option>
-              </Select>
-            </label>
-            <label className={styles.filterControl}>
-              <span>Model</span>
-              <Select
-                value={modelFilter}
-                onChange={(event) => setModelFilter(event.target.value as ModelFilter)}
-              >
-                {modelOptions.map((option) => (
-                  <option key={option} value={option}>
-                    {option === 'all' ? 'All models' : option}
-                  </option>
-                ))}
-              </Select>
-            </label>
-            <label className={styles.filterControl}>
-              <span>Environment</span>
-              <Select
-                value={environmentFilter}
-                onChange={(event) => setEnvironmentFilter(event.target.value as EnvironmentFilter)}
-              >
-                <option value="all">All environments</option>
-                {environmentOptions.map((option) => (
-                  <option key={option} value={option}>
-                    {environmentLabel(environmentCatalog.data, option)}
-                  </option>
-                ))}
-              </Select>
-            </label>
-            <Button
-              appearance="primary"
-              onClick={exportCsv}
-            >
-              Export CSV
-            </Button>
+            <label className={styles.filterControl}><span>Range</span><Select value={filters.range ?? '30d'} onChange={(event) => updateFilter('range', event.target.value)}><option value="24h">Last 24 hours</option><option value="7d">Last 7 days</option><option value="30d">Last 30 days</option><option value="90d">Last 90 days</option><option value="12m">Last 12 months</option><option value="custom">Custom</option></Select></label>
+            {filters.range === 'custom' && <><label className={styles.filterControl}><span>Start</span><Input type="date" value={filters.start ?? ''} onChange={(event) => updateFilter('start', event.target.value)} /></label><label className={styles.filterControl}><span>End</span><Input type="date" value={filters.end ?? ''} onChange={(event) => updateFilter('end', event.target.value)} /></label></>}
+            <label className={styles.filterControl}><span>Gateway</span><Select value={filters.gatewayId ?? ''} onChange={(event) => updateFilter('gatewayId', event.target.value)}><option value="">All gateways</option>{(gateways.data ?? []).map((gateway: Gateway) => <option key={gateway.id} value={gateway.id}>{gateway.name}</option>)}</Select></label>
+            <label className={styles.filterControl}><span>Environment</span><Select value={filters.environment ?? ''} onChange={(event) => updateFilter('environment', event.target.value)}><option value="">All environments</option>{(catalog.data?.environments ?? []).map((environment) => <option key={environment.key} value={environment.key}>{environmentLabel(catalog.data, environment.key)}</option>)}</Select></label>
+            <label className={styles.filterControl}><span>Resource</span><Select value={filters.resourceId ?? ''} onChange={(event) => updateFilter('resourceId', event.target.value)}><option value="">All APIs and MCP servers</option><ResourceOptions modelApis={modelApis.data} mcpServers={mcpServers.data} /></Select></label>
+            <label className={styles.filterControl}><span>Subject kind</span><Select value={filters.subjectKind ?? ''} onChange={(event) => updateFilter('subjectKind', event.target.value)}><option value="">All subjects</option>{Object.entries(subjectLabels).map(([key, label]) => <option key={key} value={key}>{label}</option>)}</Select></label>
+            <label className={styles.filterControl}><span>Export</span><Select value={exportView} onChange={(event) => setExportChoice(event.target.value as ExportView)}>{activeExports.map((view) => <option key={view} value={view}>{exportLabels[view]}</option>)}</Select></label>
+            <Button appearance="primary" onClick={() => exportCsv.mutate(exportView)} disabled={exportCsv.isPending}>Export CSV</Button>
           </div>
         }
       />
 
-      <PreviewNotice>
-        Azure Monitor, Log Analytics, and chargeback systems are not queried here yet. Filters and
-        exports operate only on the local sample dataset rendered in this page.
-      </PreviewNotice>
+      <TabList className={styles.tabs} selectedValue={tab} onTabSelect={(_, data) => updateFilter('tab', data.value as string)}>
+        {tabs.map((item) => <Tab key={item.key} value={item.key}>{item.label}</Tab>)}
+      </TabList>
 
-      <div className={styles.exportStatus} role="status" aria-live="polite">
-        {exportStatus}
-      </div>
+      {exportStatus && <div className={styles.exportStatus} role="status">{exportStatus}</div>}
+      {refreshMessage && <MessageBar intent="warning"><MessageBarBody>{refreshMessage}</MessageBarBody></MessageBar>}
 
-      <div className={styles.kpiGrid}>
-        <KpiCard
-          label="Requests"
-          value={formatCompactNumber(derived.totalRequests)}
-          detail={`${timeRange} · ${modelFilter === 'all' ? 'all models' : modelFilter} · ${
-            environmentFilter === 'all'
-              ? 'all environments'
-              : environmentLabel(environmentCatalog.data, environmentFilter)
-          }`}
-        />
-        <KpiCard
-          label="Token usage"
-          value={formatTokenCount(derived.totalTokens)}
-          detail="Illustrative APIM-routed token volume"
-        />
-        <KpiCard
-          label="Success rate"
-          value={formatPercent(derived.successRate)}
-          detail={`${derived.filteredErrors.length} recent error patterns`}
-        />
-        <KpiCard
-          label="Estimated cost"
-          value={formatCurrency(derived.estimatedCost)}
-          detail={`${derived.criticalErrors} critical-error events in view`}
-          accent="warning"
-        />
-      </div>
-
-      <div className={styles.analyticsGrid}>
-        <div className={`panel ${styles.volumePanel}`}>
-          <div className="panel-header">
-            <div>
-              <Title3 as="h2">Request volume</Title3>
-              <Text size={200}>Sample demand curve for the selected time range</Text>
-            </div>
-            <Badge appearance="outline">{modelFilter === 'all' ? 'All models' : modelFilter}</Badge>
-          </div>
-          <div className={styles.chartArea}>
-            <div className={styles.chartGrid} aria-hidden="true">
-              <span />
-              <span />
-              <span />
-              <span />
-            </div>
-            <svg
-              className={styles.lineChart}
-              viewBox="0 0 100 100"
-              preserveAspectRatio="none"
-              role="img"
-              aria-label={`Sample request volume for ${timeRange}`}
-            >
-              <polyline className={styles.areaLine} points={`0,100 ${requestPoints} 100,100`} />
-              <polyline className={styles.dataLine} points={requestPoints} />
-            </svg>
-          </div>
-          <div className={styles.axisLabels}>
-            {derived.filteredTimeline.map((point) => (
-              <span key={point.label}>{point.label}</span>
-            ))}
-          </div>
-          <div className={styles.chartSummary}>
-            <div>
-              <span>Peak requests</span>
-              <strong>{formatCompactNumber(requestMax)}</strong>
-            </div>
-            <div>
-              <span>Average p95 latency</span>
-              <strong>{formatLatency(derived.p95Latency)}</strong>
-            </div>
-          </div>
+      {reportQuery.isPending && <Loading label="Loading analytics" />}
+      {reportQuery.isError && <ErrorState error={reportQuery.error} />}
+      {report && (
+        <div className={styles.stack}>
+          <DataNotes report={report} />
+          {tab === 'overview' && (
+            <>
+              <OverviewTab report={report as AnalyticsOverview} />
+              <Card className={styles.panelCard}>
+                <Title3 as="h2">Gateway health</Title3>
+                <GatewayHealthRows gateways={(report as AnalyticsOverview).gateways} onRefresh={(gatewayId) => refreshGateway.mutate(gatewayId)} busyGateway={refreshGateway.isPending ? refreshGateway.variables ?? null : null} />
+              </Card>
+            </>
+          )}
+          {tab === 'consumers' && <ConsumersTab report={report as AnalyticsConsumers} />}
+          {tab === 'models' && <ModelsTab report={report as AnalyticsModels} />}
+          {tab === 'reliability' && <ReliabilityTab report={report as AnalyticsReliability} />}
+          {tab === 'limits' && <LimitsTab report={report as AnalyticsLimits} />}
+          {tab === 'hygiene' && <HygieneTab report={report as AnalyticsHygiene} />}
+          {tab === 'unattributed' && <UnattributedTab report={report as AnalyticsUnattributed} />}
         </div>
-
-        <div className={`panel ${styles.groupsPanel}`}>
-          <div className="panel-header">
-            <div>
-              <Title3 as="h2">Token usage by group</Title3>
-              <Text size={200}>Sample chargeback distribution</Text>
-            </div>
-          </div>
-          <div className={styles.tableWrap}>
-            <table aria-label="Token usage by group">
-              <thead>
-                <tr>
-                  <th>Group</th>
-                  <th>Owner</th>
-                  <th>Requests</th>
-                  <th>Tokens</th>
-                </tr>
-              </thead>
-              <tbody>
-                {derived.filteredGroups.map((group) => (
-                  <tr key={group.group}>
-                    <td>{group.group}</td>
-                    <td>{group.owner}</td>
-                    <td>{formatCompactNumber(group.requests)}</td>
-                    <td>
-                      <div className={styles.metricBarCell}>
-                        <span>{formatTokenCount(group.tokens)}</span>
-                        <div className={styles.progressTrack} aria-hidden="true">
-                          <span style={{ width: `${(group.tokens / largestGroupToken) * 100}%` }} />
-                        </div>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-
-        <div className={`panel ${styles.environmentsPanel}`}>
-          <div className="panel-header">
-            <div>
-              <Title3 as="h2">Usage by environment</Title3>
-              <Text size={200}>Sample requests, tokens, and cost by classified environment</Text>
-            </div>
-            <Badge appearance="outline">Sample data</Badge>
-          </div>
-          <div className={styles.environmentBreakdown} role="list" aria-label="Usage by environment">
-            {derived.environmentBreakdown.map((item) => (
-              <div key={item.environment} className={styles.environmentUsageRow} role="listitem">
-                <div className={styles.environmentUsageHeader}>
-                  <EnvironmentBadge environment={item.environment} catalog={environmentCatalog.data} />
-                  <span>
-                    {formatCompactNumber(item.requests)} requests · {formatTokenCount(item.tokens)} ·{' '}
-                    {formatCurrency(item.cost)}
-                  </span>
-                </div>
-                <div className={styles.progressTrack} aria-hidden="true">
-                  <span style={{ width: `${(item.requests / largestEnvironmentRequests) * 100}%` }} />
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <div className={`panel ${styles.latencyPanel}`}>
-          <div className="panel-header">
-            <div>
-              <Title3 as="h2">Endpoint latency</Title3>
-              <Text size={200}>Filtered APIM endpoint performance sample</Text>
-            </div>
-          </div>
-          <div className={styles.endpointList} role="list" aria-label="Endpoint latency list">
-            {derived.filteredEndpoints.map((endpoint) => (
-              <div key={endpoint.endpoint} className={styles.endpointRow} role="listitem">
-                <div className={styles.endpointHeader}>
-                  <div>
-                    <code>{endpoint.endpoint}</code>
-                    <Text size={200}>{endpoint.operation}</Text>
-                  </div>
-                  <Badge appearance="outline">{formatPercent(endpoint.errorRate)}</Badge>
-                </div>
-                <div className={styles.endpointMetrics}>
-                  <span>P50 {formatLatency(endpoint.p50)}</span>
-                  <span>P95 {formatLatency(endpoint.p95)}</span>
-                </div>
-                <div className={styles.progressTrack} aria-hidden="true">
-                  <span style={{ width: `${(endpoint.p95 / highestEndpointLatency) * 100}%` }} />
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <div className={`panel ${styles.errorsPanel}`}>
-          <div className="panel-header">
-            <div>
-              <Title3 as="h2">Recent errors</Title3>
-              <Text size={200}>Select a row for drill-in details</Text>
-            </div>
-          </div>
-          <div className={styles.tableWrap}>
-            <table aria-label="Recent analytics errors">
-              <thead>
-                <tr>
-                  <th>Time</th>
-                  <th>Severity</th>
-                  <th>Issue</th>
-                  <th>Count</th>
-                  <th>
-                    <span className="sr-only">Details</span>
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {derived.filteredErrors.length > 0 ? (
-                  derived.filteredErrors.map((error) => (
-                    <tr key={error.id}>
-                      <td>{error.timestamp}</td>
-                      <td>
-                        <span
-                          className={`${styles.severityPill} ${
-                            error.severity === 'Critical'
-                              ? styles.severityCritical
-                              : error.severity === 'Warning'
-                                ? styles.severityWarning
-                                : styles.severityInfo
-                          }`}
-                        >
-                          {error.severity}
-                        </span>
-                      </td>
-                      <td>
-                        <div className={styles.errorMessage}>
-                          <strong>{error.code}</strong>
-                          <span>{error.message}</span>
-                        </div>
-                      </td>
-                      <td>{error.count}</td>
-                      <td>
-                        <Button appearance="subtle" onClick={() => setSelectedError(error)}>
-                          View
-                        </Button>
-                      </td>
-                    </tr>
-                  ))
-                ) : (
-                  <tr>
-                    <td colSpan={5}>
-                      <div className={styles.emptyState}>
-                        <Text>No sample errors match the selected model filter.</Text>
-                      </div>
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </div>
-
-        <div className={`panel ${styles.integrationPanel}`}>
-          <div className="panel-header">
-            <div>
-              <Title3 as="h2">Integration status</Title3>
-              <Text size={200}>Current sample integration posture</Text>
-            </div>
-          </div>
-          <div className={styles.integrationList}>
-            {dataset.integrations.map((integration) => (
-              <div key={integration.name} className={styles.integrationCard}>
-                <div className={styles.integrationHeader}>
-                  <strong>{integration.name}</strong>
-                  <span
-                    className={`${styles.integrationBadge} ${
-                      integration.status === 'Healthy'
-                        ? styles.integrationHealthy
-                        : integration.status === 'Delayed'
-                          ? styles.integrationDelayed
-                          : styles.integrationPlanned
-                    }`}
-                  >
-                    {integration.status}
-                  </span>
-                </div>
-                <Text>{integration.detail}</Text>
-                <Text size={200} className={styles.mutedText}>
-                  {integration.freshness}
-                </Text>
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
-
-      <Dialog
-        open={selectedError !== null}
-        onOpenChange={(_, data) => {
-          if (!data.open) {
-            setSelectedError(null)
-          }
-        }}
-      >
-        <DialogSurface>
-          <DialogBody>
-            <DialogTitle>{selectedError?.code ?? 'Error details'}</DialogTitle>
-            <DialogContent>
-              {selectedError && (
-                <div className={styles.dialogContent}>
-                  <div>
-                    <span>Timestamp</span>
-                    <strong>{selectedError.timestamp}</strong>
-                  </div>
-                  <div>
-                    <span>Endpoint</span>
-                    <code>{selectedError.endpoint}</code>
-                  </div>
-                  <div>
-                    <span>Model</span>
-                    <strong>{selectedError.model}</strong>
-                  </div>
-                  <div>
-                    <span>Impact</span>
-                    <Text>{selectedError.impact}</Text>
-                  </div>
-                  <div>
-                    <span>Correlation ID</span>
-                    <code>{selectedError.correlationId}</code>
-                  </div>
-                  <div>
-                    <span>Suggested follow-up</span>
-                    <Text>{selectedError.remediation}</Text>
-                  </div>
-                </div>
-              )}
-            </DialogContent>
-            <DialogActions>
-              <Button appearance="primary" onClick={() => setSelectedError(null)}>
-                Close
-              </Button>
-            </DialogActions>
-          </DialogBody>
-        </DialogSurface>
-      </Dialog>
+      )}
+      {reportQuery.isFetching && !reportQuery.isPending && <Spinner size="tiny" label="Refreshing analytics" />}
     </section>
   )
 }

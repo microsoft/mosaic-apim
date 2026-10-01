@@ -7,12 +7,22 @@ product really renders without touching a tenant, a subscription, or a real pers
 """
 
 import json
+import random
 import sys
-from dataclasses import dataclass
+from collections import OrderedDict, defaultdict
+from dataclasses import dataclass, field
+from datetime import UTC, date, datetime, timedelta
+from itertools import accumulate
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import httpx
+from mosaic_api.integrations.apim.diagnostics import (
+    AZURE_MONITOR,
+    api_diagnostic_payload,
+    azure_monitor_logger_payload,
+)
+from mosaic_api.integrations.loganalytics import Row
 
 TESTS_DIR = Path(__file__).resolve().parents[2] / "apps" / "api" / "tests"
 if str(TESTS_DIR) not in sys.path:
@@ -40,6 +50,7 @@ from key_vault_double import (  # noqa: E402
     FakeKeyVaultArm,
     vault_role_assignment,
 )
+from loganalytics_double import FakeLogs, GatewayCall  # noqa: E402
 from mcp_double import FakeMcpServer  # noqa: E402
 
 __all__ = [
@@ -48,17 +59,23 @@ __all__ = [
     "FOUNDRY_RESOURCE_ID",
     "GATEWAY_RESOURCE_ID",
     "KEY_VAULT_ID",
+    "LOG_WORKSPACE_ID",
     "PARTNER_GATEWAY_RESOURCE_ID",
     "DemoApim",
     "DemoCognitiveAccount",
+    "DemoLogs",
     "DemoMcpServer",
     "FakeCredential",
+    "TrafficStream",
     "build_cognitive_accounts",
     "build_key_vault",
     "build_mcp_servers",
     "cognitive_handler",
     "gateway_handler",
+    "log_every_call",
     "mcp_handler",
+    "send_logs_to_workspace",
+    "stream_calls",
 ]
 
 GATEWAY_RESOURCE_ID = RESOURCE_ID
@@ -1137,3 +1154,284 @@ def mcp_handler(servers: dict[str, DemoMcpServer]) -> Any:
         return server.handler(request)
 
     return handle
+
+
+# -- Gateway logs ----------------------------------------------------------------------------------
+
+Rhythm = Literal["office", "always", "nightly"]
+
+# The relative share of a stream's calls in each UTC hour, midnight to noon and then noon to
+# midnight. Contoso's people work US hours, about 13:00 to 23:00 UTC; its services run around the
+# clock with a daytime swell; its batch jobs run overnight.
+RHYTHMS: dict[Rhythm, tuple[float, ...]] = {
+    "office": (
+        *(0.3, 0.2, 0.1, 0.05, 0.05, 0.05, 0.05, 0.1, 0.2, 0.3, 0.5, 0.8),
+        *(1.4, 2.6, 3.6, 4.0, 3.8, 3.2, 3.5, 3.7, 3.2, 2.3, 1.3, 0.6),
+    ),
+    "always": (
+        *(0.6, 0.5, 0.45, 0.4, 0.4, 0.45, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0),
+        *(1.2, 1.4, 1.5, 1.6, 1.6, 1.5, 1.5, 1.4, 1.3, 1.1, 0.9, 0.7),
+    ),
+    "nightly": (0.0, 0.2, 1.0, 1.4, 1.4, 1.0, 0.3, *[0.0] * 17),
+}
+_CUMULATIVE = {rhythm: list(accumulate(weights)) for rhythm, weights in RHYTHMS.items()}
+_HOURS = range(24)
+
+# Adoption grew over the quarter: GROWTH_DAYS ago, each workload made this share fewer calls.
+GROWTH = 0.45
+GROWTH_DAYS = 90
+
+# Refusals the gateway makes before MOSAIC's policy can trace a caller, with the policy that failed.
+UNTRACED_REFUSALS = {"unauthenticated": "", "token-invalid": "validate-azure-ad-token"}
+# MOSAIC's policy refuses a missing or malformed credential with 401, and everything else with 403.
+UNAUTHORIZED_DENIALS = frozenset(
+    ("no-credential", "keys-off", "tokens-off", "key-malformed", "token-malformed")
+)
+
+# Where both Contoso gateways send their resource logs. Captures blur it as a resource ID.
+LOG_WORKSPACE_ID = (
+    f"/subscriptions/{SUBSCRIPTION_ID}/resourceGroups/rg-contoso-ai"
+    "/providers/Microsoft.OperationalInsights/workspaces/log-contoso-ai"
+)
+
+
+def send_logs_to_workspace(apim: DemoApim, workspace_id: str = LOG_WORKSPACE_ID) -> None:
+    """Give a gateway the diagnostic setting that sends its resource logs to the workspace."""
+
+    apim.seed(
+        "providers/Microsoft.Insights/diagnosticSettings",
+        {
+            "value": [
+                {
+                    "name": "contoso-ai-logs",
+                    "properties": {
+                        "workspaceId": workspace_id,
+                        "logAnalyticsDestinationType": "Dedicated",
+                        "logs": [{"categoryGroup": "allLogs", "enabled": True}],
+                        "metrics": [{"category": "AllMetrics", "enabled": True}],
+                    },
+                }
+            ]
+        },
+    )
+
+
+def log_every_call(apim: DemoApim) -> None:
+    """Give a gateway the Azure Monitor logging Contoso set up for All APIs in the portal.
+
+    It predates MOSAIC, which is why the gateway logs calls to the APIs MOSAIC adopted but didn't
+    publish: an API without a diagnostic of its own logs as the All APIs setting says.
+    """
+
+    apim.seed(f"loggers/{AZURE_MONITOR}", azure_monitor_logger_payload())
+    apim.seed(
+        f"diagnostics/{AZURE_MONITOR}",
+        api_diagnostic_payload(f"{apim.resource_id}/loggers/{AZURE_MONITOR}", llm=True),
+    )
+
+
+@dataclass(frozen=True)
+class TrafficStream:
+    """A steady flow of calls from one caller to one API, as the gateway would log them.
+
+    ``per_day`` is a weekday's calls at today's volume. Adoption grew over the quarter, so earlier
+    days carry fewer, and a weekend day carries ``weekend`` of a weekday. Calls over the stream's
+    per-minute limits are throttled as the gateway throttles them.
+    """
+
+    name: str
+    resource_id: str
+    api: str
+    per_day: float
+    rhythm: Rhythm = "office"
+    weekend: float = 0.1
+    # MOSAIC's attribution trace: the grant, and the caller and client app a token named.
+    grant: str = ""
+    member: str = ""
+    client_app: str = ""
+    # The API Management subscription whose key the calls carry.
+    subscription: str = ""
+    deployment: str | None = None
+    model: str | None = None
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    latency_ms: int = 900
+    tokens_per_minute: int | None = None
+    calls_per_minute: int | None = None
+    # Agents and services send several requests within the same minute.
+    burst: int = 1
+    since: date | None = None
+    until: date | None = None
+    # A refusal: MOSAIC's policy reason, or one of UNTRACED_REFUSALS.
+    denial: str = ""
+    error_rate: float = 0.004
+    backend_throttle_rate: float = 0.0
+
+
+def _call_times(rng: random.Random, day: date, count: int, stream: TrafficStream) -> list[datetime]:
+    start = datetime(day.year, day.month, day.day, tzinfo=UTC)
+    cumulative = _CUMULATIVE[stream.rhythm]
+    times: list[datetime] = []
+    while len(times) < count:
+        hour = rng.choices(_HOURS, cum_weights=cumulative)[0]
+        minute = start + timedelta(hours=hour, minutes=rng.randrange(60))
+        size = 1
+        if stream.burst > 1:
+            size = rng.randint(max(1, stream.burst * 2 // 3), stream.burst + stream.burst // 3)
+        size = min(size, count - len(times), 60)
+        for second in sorted(rng.sample(range(60), size)):
+            times.append(minute + timedelta(seconds=second, milliseconds=rng.randrange(1000)))
+    return sorted(times)
+
+
+def _tokens(rng: random.Random, mean: int) -> int:
+    return max(1, round(rng.gauss(mean, mean * 0.35))) if mean else 0
+
+
+def stream_calls(stream: TrafficStream, day: date, today: date) -> list[GatewayCall]:
+    """One day of a stream's calls: the same calls every time for the same stream and day."""
+
+    if (stream.since and day < stream.since) or (stream.until and day > stream.until):
+        return []
+    rng = random.Random(f"{stream.name}|{day.isoformat()}")
+    age = min(max((today - day).days, 0), GROWTH_DAYS)
+    volume = stream.per_day * (1 - GROWTH * age / GROWTH_DAYS)
+    if day.weekday() >= 5:
+        volume *= stream.weekend
+    count = int(volume * rng.uniform(0.85, 1.15) + rng.random())
+    minute_tokens: dict[datetime, int] = defaultdict(int)
+    minute_calls: dict[datetime, int] = defaultdict(int)
+    calls: list[GatewayCall] = []
+    for time in _call_times(rng, day, count, stream):
+        quick = rng.randint(3, 25)
+        if stream.denial in UNTRACED_REFUSALS:
+            calls.append(
+                GatewayCall(
+                    time=time,
+                    api=stream.api,
+                    response_code=401,
+                    backend_code=0,
+                    total_time_ms=quick,
+                    backend_time_ms=0,
+                    traced=False,
+                    last_error_source=UNTRACED_REFUSALS[stream.denial],
+                )
+            )
+            continue
+        if stream.denial:
+            calls.append(
+                GatewayCall(
+                    time=time,
+                    api=stream.api,
+                    response_code=401 if stream.denial in UNAUTHORIZED_DENIALS else 403,
+                    backend_code=0,
+                    total_time_ms=quick,
+                    backend_time_ms=0,
+                    traced=False,
+                    denial_reason=stream.denial,
+                    denied_caller=stream.member,
+                    client_app=stream.client_app,
+                )
+            )
+            continue
+        metered = stream.deployment is not None
+        prompt = _tokens(rng, stream.prompt_tokens) if metered else 0
+        completion = _tokens(rng, stream.completion_tokens) if metered else 0
+        minute = time.replace(second=0, microsecond=0)
+        code, backend, source = 200, 200, ""
+        if stream.tokens_per_minute and (
+            minute_tokens[minute] + prompt + completion > stream.tokens_per_minute
+        ):
+            code, backend, source = 429, 0, "llm-token-limit"
+        elif stream.calls_per_minute and minute_calls[minute] >= stream.calls_per_minute:
+            code, backend, source = 429, 0, "rate-limit-by-key"
+        else:
+            roll = rng.random()
+            if roll < stream.backend_throttle_rate:
+                code, backend, source = 429, 429, "forward-request"
+            elif roll < stream.backend_throttle_rate + stream.error_rate * 0.7:
+                code, backend, source = 400, 400, "forward-request"
+            elif roll < stream.backend_throttle_rate + stream.error_rate:
+                code = rng.choice((500, 502, 503))
+                backend, source = code, "forward-request"
+        admitted = code == 200
+        if admitted:
+            minute_tokens[minute] += prompt + completion
+            minute_calls[minute] += 1
+        total = max(40, round(stream.latency_ms * rng.lognormvariate(0, 0.45)))
+        if backend == 0:
+            total = quick
+        calls.append(
+            GatewayCall(
+                time=time,
+                api=stream.api,
+                response_code=code,
+                backend_code=backend,
+                total_time_ms=total,
+                backend_time_ms=max(0, total - rng.randint(6, 30)) if backend else 0,
+                subscription=stream.subscription,
+                grant=stream.grant,
+                member=stream.member,
+                client_app=stream.client_app,
+                traced=bool(stream.grant),
+                last_error_source=source,
+                prompt_tokens=prompt if metered and admitted else None,
+                completion_tokens=completion if metered and admitted else None,
+                deployment=stream.deployment if metered and admitted else None,
+                model=stream.model if metered and admitted else None,
+            )
+        )
+    return calls
+
+
+@dataclass
+class DemoLogs(FakeLogs):
+    """Log Analytics for the demo gateways, generated a day at a time from traffic streams.
+
+    A rollup cycle reads a handful of days, so only those stay cached; a quarter of calls never
+    sits in memory at once.
+    """
+
+    streams: list[TrafficStream] = field(default_factory=list)
+    # How long a call takes to reach the workspace: the newest calls can't be read yet.
+    ingestion_lag: timedelta = timedelta(minutes=3)
+    _days: OrderedDict[tuple[str, date], list[GatewayCall]] = field(
+        default_factory=OrderedDict, init=False, repr=False
+    )
+
+    async def query(
+        self, resource_id: str, query: str, *, start: datetime, end: datetime
+    ) -> list[Row]:
+        now = self.clock()
+        visible = now - self.ingestion_lag
+        day = start.astimezone(UTC).date()
+        last = (min(end, now) - timedelta(microseconds=1)).astimezone(UTC).date()
+        calls: list[GatewayCall] = []
+        while day <= last:
+            calls.extend(
+                call for call in self._day(resource_id, day, now.date()) if call.time <= visible
+            )
+            day += timedelta(days=1)
+        # The base class answers from ``calls`` without awaiting, so no other query sees these.
+        self.calls = calls
+        return await super().query(resource_id, query, start=start, end=end)
+
+    def _day(self, resource_id: str, day: date, today: date) -> list[GatewayCall]:
+        key = (resource_id.casefold(), day)
+        cached = self._days.get(key)
+        if cached is not None:
+            self._days.move_to_end(key)
+            return cached
+        calls = sorted(
+            (
+                call
+                for stream in self.streams
+                if stream.resource_id.casefold() == key[0]
+                for call in stream_calls(stream, day, today)
+            ),
+            key=lambda call: call.time,
+        )
+        self._days[key] = calls
+        while len(self._days) > 8:
+            self._days.popitem(last=False)
+        return calls

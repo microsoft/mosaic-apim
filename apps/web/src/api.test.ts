@@ -303,4 +303,77 @@ describe('useMosaicApi', () => {
     })
   })
 
+  it('calls analytics endpoints with filters and downloads CSV as a blob', async () => {
+    const fetchMock = vi.fn().mockImplementation(async (url: string) => {
+      if (url.includes('/export')) {
+        return new Response('csv', {
+          status: 200,
+          headers: {
+            'Content-Type': 'text/csv',
+            'Content-Disposition': 'attachment; filename="mosaic-people-20260219-20260320.csv"',
+          },
+        })
+      }
+      return new Response(JSON.stringify({
+        dataSource: 'logAnalytics',
+        rollupsEnabled: true,
+        generatedAt: '2026-03-18T15:30:00Z',
+        freshness: { status: 'current', gateways: 1, intervalMinutes: 15 },
+        gateways: [],
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const { result } = renderHook(() => useMosaicApi())
+
+    await result.current.getAnalyticsStatus()
+    await result.current.refreshAnalytics()
+    await result.current.getAnalyticsOverview({ range: 'custom', start: '2026-03-01', end: '2026-03-18', gatewayId: 'gateway 1', environment: 'production', resourceId: 'model-api-chat', subjectKind: 'user' })
+    await result.current.getAnalyticsConsumers({ range: '7d' })
+    await result.current.getAnalyticsModels({ range: '7d' })
+    await result.current.getAnalyticsReliability({ range: '7d' })
+    await result.current.getAnalyticsLimits({ range: '7d' })
+    await result.current.getAnalyticsHygiene({ range: '7d' })
+    await result.current.getAnalyticsUnattributed({ range: '7d' })
+    const file = await result.current.exportAnalytics('people', { range: '30d' })
+
+    expect(await file.blob.text()).toBe('csv')
+    expect(file.filename).toBe('mosaic-people-20260219-20260320.csv')
+    expect(fetchMock.mock.calls.map(([url]) => String(url).replace(/^https?:\/\/[^/]+/, ''))).toEqual([
+      '/api/v1/analytics/status',
+      '/api/v1/analytics/refresh',
+      '/api/v1/analytics/overview?range=custom&start=2026-03-01&end=2026-03-18&gatewayId=gateway+1&environment=production&resourceId=model-api-chat&subjectKind=user',
+      '/api/v1/analytics/consumers?range=7d',
+      '/api/v1/analytics/models?range=7d',
+      '/api/v1/analytics/reliability?range=7d',
+      '/api/v1/analytics/limits?range=7d',
+      '/api/v1/analytics/hygiene?range=7d',
+      '/api/v1/analytics/unattributed?range=7d',
+      '/api/v1/analytics/export?range=30d&view=people',
+    ])
+    expect(fetchMock.mock.calls[1][1].method).toBe('POST')
+    expect(new Headers(fetchMock.mock.calls[9][1].headers).get('Accept')).toBe('text/csv')
+  })
+
+  it('calls gateway telemetry action endpoints', async () => {
+    const fetchMock = vi.fn().mockImplementation(async () => new Response(JSON.stringify({ gatewayId: 'gateway_1' }), {
+      status: 200, headers: { 'Content-Type': 'application/json' },
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+    const { result } = renderHook(() => useMosaicApi())
+
+    await result.current.getGatewayTelemetry('gateway 1')
+    await result.current.enableGatewayTelemetry('gateway 1')
+    await result.current.refreshGatewayTelemetry('gateway 1')
+    await result.current.backfillGatewayTelemetry('gateway 1', 60)
+
+    expect(fetchMock.mock.calls.map(([url]) => String(url).replace(/^https?:\/\/[^/]+/, ''))).toEqual([
+      '/api/v1/gateways/gateway%201/telemetry',
+      '/api/v1/gateways/gateway%201/telemetry/enable',
+      '/api/v1/gateways/gateway%201/telemetry/refresh',
+      '/api/v1/gateways/gateway%201/telemetry/backfill',
+    ])
+    expect(fetchMock.mock.calls.map(([, options]) => options.method ?? 'GET')).toEqual(['GET', 'POST', 'POST', 'POST'])
+    expect(JSON.parse(String(fetchMock.mock.calls[3][1].body))).toEqual({ days: 60 })
+  })
+
 })

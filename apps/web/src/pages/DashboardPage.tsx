@@ -2,83 +2,112 @@ import {
   Badge,
   Button,
   Card,
-  Select,
   Spinner,
   Text,
   Title2,
   Title3,
 } from '@fluentui/react-components'
 import {
-  ArrowTrendingRegular,
   BotRegular,
   ChartMultipleRegular,
   CloudDatabaseRegular,
-  MoneyRegular,
   PeopleCommunityRegular,
   PersonAccountsRegular,
 } from '@fluentui/react-icons'
 import { useQuery } from '@tanstack/react-query'
-import { type ReactNode, useMemo, useState } from 'react'
+import { type ReactNode, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useMosaicApi } from '../api'
 import { ErrorState } from '../components/AsyncState'
+import { BarList, type BarListItem } from '../components/charts/BarList'
+import { TrendChart } from '../components/charts/TrendChart'
 import { EnvironmentBadge } from '../components/EnvironmentBadge'
-import { DataSourceBadge, PageHeader, PreviewNotice } from '../components/PageHeader'
+import { DataSourceBadge, PageHeader } from '../components/PageHeader'
 import { environmentFindingsQueryKey, useEnvironmentCatalog } from '../environments'
-import { plural, type PrincipalTab, principalTabForKind } from '../labels'
+import { FRESHNESS_STATUS_LABELS, plural, type PrincipalTab, principalTabForKind } from '../labels'
+import type { AnalyticsRankRow } from '../types'
 import styles from './DashboardPage.module.css'
-
-type TimeRange = '24h' | '7d' | '30d'
-
-const requestSeries: Record<TimeRange, number[]> = {
-  '24h': [2100, 2800, 1500, 5200, 6100, 8700, 7900, 12_100, 10_400, 13_800, 12_900],
-  '7d': [48_000, 61_000, 54_000, 72_000, 81_000, 68_000, 76_000],
-  '30d': [182_000, 214_000, 205_000, 248_000, 273_000, 291_000, 318_000, 302_000],
-}
-
-const metricCopy: Record<
-  TimeRange,
-  { requests: string; tokens: string; cost: string; trend: string }
-> = {
-  '24h': { requests: '12.4M', tokens: '4.2B', cost: '$3,420.50', trend: '+5.2%' },
-  '7d': { requests: '76.8M', tokens: '25.9B', cost: '$21,480', trend: '+3.8%' },
-  '30d': { requests: '318M', tokens: '108B', cost: '$88,920', trend: '+8.4%' },
-}
-
-const topModels = [
-  { name: 'gpt-4o', share: 52 },
-  { name: 'gpt-4o-mini', share: 28 },
-  { name: 'text-embedding-3-small', share: 14 },
-  { name: 'mistral-large', share: 6 },
-]
 
 function SparkMetric({
   label,
   value,
   detail,
   icon,
-  intent,
 }: {
   label: string
   value: string
   detail: string
   icon: ReactNode
-  intent?: 'warning'
 }) {
   return (
-    <Card className={`${styles.metricCard} ${intent === 'warning' ? styles.warningCard : ''}`}>
+    <Card className={styles.metricCard}>
       <div className={styles.metricLabel}>
         <Text>{label}</Text>
         <span className={styles.metricIcon}>{icon}</span>
       </div>
       <div className={styles.metricValue}>{value}</div>
-      <div className={intent === 'warning' ? styles.warningDetail : styles.trendDetail}>
-        {intent === 'warning' ? null : <ArrowTrendingRegular />}
+      <div className={styles.trendDetail}>
         <Text size={200}>{detail}</Text>
       </div>
-      <DataSourceBadge kind="sample" />
+      <DataSourceBadge kind="live" />
     </Card>
   )
+}
+
+function formatCompact(value: number | null | undefined) {
+  if (value == null) return '—'
+  return new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 }).format(value)
+}
+
+function formatPercent(value: number | null | undefined) {
+  if (value == null) return '—'
+  return `${(value * 100).toFixed(1)}%`
+}
+
+function formatLatency(value: number | null | undefined) {
+  if (value == null) return '—'
+  return value >= 1000 ? `≈${(value / 1000).toFixed(1)} s` : `≈${Math.round(value)} ms`
+}
+
+function dayLabel(start: string) {
+  return new Intl.DateTimeFormat('en-US', { timeZone: 'UTC', month: 'short', day: 'numeric' }).format(new Date(start))
+}
+
+// The overview shows the leaders; Analytics has the full rankings.
+const TOP = 5
+
+// Models and callers rank by tokens, which drive spend. APIs rank by calls, because MCP servers carry no tokens.
+function byTokens(row: AnalyticsRankRow): BarListItem {
+  return { key: row.key, label: row.label, value: row.totalTokens, valueLabel: `${formatCompact(row.totalTokens)} tokens`, detail: `${formatCompact(row.requests)} calls` }
+}
+
+function byCalls(row: AnalyticsRankRow): BarListItem {
+  // MCP servers carry no tokens, so a token count only shows where there is one.
+  const tokens = row.totalTokens ? `${formatCompact(row.totalTokens)} tokens` : null
+  return { key: row.key, label: row.label, value: row.requests, valueLabel: `${formatCompact(row.requests)} calls`, detail: [row.detail, tokens].filter(Boolean).join(' · ') }
+}
+
+function RankingPanel({ title, caption, items, loading }: { title: string; caption: string; items: BarListItem[]; loading: boolean }) {
+  return (
+    <div className="panel">
+      <div className="panel-header">
+        <div className={styles.panelHeading}>
+          <Title3 as="h2">{title}</Title3>
+          <Text size={200}>{caption}</Text>
+        </div>
+      </div>
+      <div className={styles.panelBody}>
+        {loading ? <Spinner size="tiny" label={`Loading ${title.toLowerCase()}`} /> : <BarList label={title} items={items} />}
+      </div>
+    </div>
+  )
+}
+
+function statusColor(status: string): 'success' | 'warning' | 'danger' | 'subtle' {
+  if (status === 'current') return 'success'
+  if (status === 'failing') return 'danger'
+  if (status === 'delayed') return 'warning'
+  return 'subtle'
 }
 
 function InventoryCard({
@@ -111,7 +140,6 @@ function InventoryCard({
 export function DashboardPage() {
   const api = useMosaicApi()
   const navigate = useNavigate()
-  const [timeRange, setTimeRange] = useState<TimeRange>('24h')
   const principals = useQuery({
     queryKey: ['principals'],
     queryFn: api.listPrincipals,
@@ -122,18 +150,23 @@ export function DashboardPage() {
     queryKey: environmentFindingsQueryKey(),
     queryFn: () => api.listEnvironmentFindings(),
   })
-  const metrics = metricCopy[timeRange]
-  const chartPoints = useMemo(() => {
-    const values = requestSeries[timeRange]
-    const maximum = Math.max(...values)
-    return values
-      .map((value, index) => {
-        const x = (index / (values.length - 1)) * 100
-        const y = 92 - (value / maximum) * 78
-        return `${x},${y}`
-      })
-      .join(' ')
-  }, [timeRange])
+  const analytics = useQuery({
+    queryKey: ['analytics', 'dashboard', '7d'],
+    queryFn: () => api.getAnalyticsOverview({ range: '7d' }),
+  })
+  const analyticsStatus = useQuery({
+    queryKey: ['analytics-status'],
+    queryFn: api.getAnalyticsStatus,
+  })
+  const trend = useMemo(
+    () =>
+      (analytics.data?.trend ?? []).map((point) => ({
+        label: dayLabel(point.start),
+        primary: point.requests,
+        secondary: point.totalTokens,
+      })),
+    [analytics.data],
+  )
   const liveError = principals.error ?? groups.error
   const principalCounts = useMemo(() => {
     const counts: Record<PrincipalTab, number> = { users: 0, agents: 0, workloads: 0 }
@@ -147,27 +180,14 @@ export function DashboardPage() {
     <section className={styles.page}>
       <PageHeader
         title="Overview"
-        description="Monitor MOSAIC desired state and preview the operational experience planned for Azure Monitor telemetry."
-        actions={
-          <label className={styles.rangeControl}>
-            <span>Time range</span>
-            <Select
-              value={timeRange}
-              onChange={(event) => setTimeRange(event.target.value as TimeRange)}
-            >
-              <option value="24h">Last 24 hours</option>
-              <option value="7d">Last 7 days</option>
-              <option value="30d">Last 30 days</option>
-            </Select>
-          </label>
-        }
+        description="Monitor MOSAIC desired state and real gateway usage from the last 7 days."
       />
 
       <div className={styles.liveSection}>
         <div className={styles.sectionHeading}>
           <div>
-            <Title2 as="h2">Desired-state inventory</Title2>
-            <Text>Live records stored and managed by MOSAIC.</Text>
+            <Title2 as="h2" block>Desired-state inventory</Title2>
+            <Text block>Live records stored and managed by MOSAIC.</Text>
           </div>
           <DataSourceBadge kind="live" />
         </div>
@@ -275,104 +295,77 @@ export function DashboardPage() {
         </Card>
       </div>
 
-      <PreviewNotice>
-        Telemetry, cost, model ranking, and service-health panels below use illustrative sample data.
-        MOSAIC is not querying Azure Monitor yet.
-      </PreviewNotice>
+      {analytics.data?.dataSource === 'notConfigured' && (
+        <Card className={styles.environmentsCard}>
+          <div className={styles.environmentsHeader}>
+            <div>
+              <Title3 as="h2">Usage telemetry is not configured</Title3>
+              <Text size={200}>Local and test runs do not read gateway telemetry. In Azure, MOSAIC reads gateways' Log Analytics data.</Text>
+            </div>
+            <Button appearance="primary" onClick={() => navigate('/analytics')}>Open analytics</Button>
+          </div>
+          {analytics.data.notes.map((note) => <Text key={note} size={200}>{note}</Text>)}
+        </Card>
+      )}
 
       <div className={styles.metricGrid}>
-        <SparkMetric
-          label="Total requests"
-          value={metrics.requests}
-          detail={`${metrics.trend} vs previous period`}
-          icon={<ChartMultipleRegular />}
-        />
-        <SparkMetric
-          label="Token consumption"
-          value={metrics.tokens}
-          detail="+1.1% vs previous period"
-          icon={<CloudDatabaseRegular />}
-        />
-        <SparkMetric
-          label="Estimated cost"
-          value={metrics.cost}
-          detail="Budget threshold at 82%"
-          icon={<MoneyRegular />}
-          intent="warning"
-        />
+        <SparkMetric label="Requests" value={analytics.isLoading ? '—' : formatCompact(analytics.data?.kpis.requests)} detail="Last 7 days" icon={<ChartMultipleRegular />} />
+        <SparkMetric label="Tokens" value={analytics.isLoading ? '—' : formatCompact(analytics.data?.kpis.totalTokens)} detail="Prompt and completion tokens" icon={<CloudDatabaseRegular />} />
+        <SparkMetric label="Active callers" value={analytics.isLoading ? '—' : formatCompact(analytics.data?.kpis.activeCallers)} detail="Linked people, apps, and groups" icon={<PersonAccountsRegular />} />
+        <SparkMetric label="Error rate" value={analytics.isLoading ? '—' : formatPercent(analytics.data?.kpis.errorRate)} detail={`${formatCompact(analytics.data?.kpis.errors)} error calls`} icon={<ChartMultipleRegular />} />
+        <SparkMetric label="P95 latency" value={analytics.isLoading ? '—' : formatLatency(analytics.data?.kpis.p95LatencyMs)} detail="Estimated from latency buckets" icon={<CloudDatabaseRegular />} />
       </div>
 
       <div className={styles.dashboardGrid}>
         <div className={`panel ${styles.volumePanel}`}>
           <div className="panel-header">
-            <div>
-              <Title3 as="h2">Request volume</Title3>
-              <Text size={200}>Illustrative requests routed through APIM</Text>
+            <div className={styles.panelHeading}>
+              <Title3 as="h2">Requests and tokens</Title3>
+              <Text size={200}>Gateway calls in the last 7 days, rolled up from Log Analytics.</Text>
             </div>
-            <Badge appearance="outline">{timeRange}</Badge>
-          </div>
-          <div className={styles.chartArea}>
-            <div className={styles.chartGrid} aria-hidden="true">
-              <span />
-              <span />
-              <span />
-              <span />
-            </div>
-            <svg
-              className={styles.lineChart}
-              viewBox="0 0 100 100"
-              preserveAspectRatio="none"
-              role="img"
-              aria-label={`Sample request volume for ${timeRange}`}
-            >
-              <polyline className={styles.areaLine} points={`0,100 ${chartPoints} 100,100`} />
-              <polyline className={styles.dataLine} points={chartPoints} />
-            </svg>
-          </div>
-        </div>
-
-        <div className={`panel ${styles.modelsPanel}`}>
-          <div className="panel-header">
-            <Title3 as="h2">Top models</Title3>
             <Button appearance="subtle" size="small" onClick={() => navigate('/analytics')}>
-              View analytics
+              Open analytics
             </Button>
           </div>
-          <div className={styles.modelList}>
-            {topModels.map((model) => (
-              <div key={model.name} className={styles.modelRow}>
-                <div>
-                  <code>{model.name}</code>
-                  <span>{model.share}%</span>
-                </div>
-                <div className={styles.progressTrack}>
-                  <span style={{ width: `${model.share}%` }} />
-                </div>
-              </div>
-            ))}
+          <div className={styles.panelBody}>
+            {analytics.isLoading ? <Spinner label="Loading request volume" /> : analytics.isError ? <ErrorState error={analytics.error} /> : (
+              <TrendChart title="Requests and tokens in the last 7 days" points={trend} primaryLabel="Requests" secondaryLabel="Tokens" />
+            )}
           </div>
         </div>
 
-        <div className={`panel ${styles.healthPanel}`}>
+        <div className="panel">
           <div className="panel-header">
-            <Title3 as="h2">System health</Title3>
-            <DataSourceBadge kind="sample" />
+            <div className={styles.panelHeading}>
+              <Title3 as="h2">Telemetry health</Title3>
+              <Text size={200}>How current each gateway&apos;s usage is.</Text>
+            </div>
+            <DataSourceBadge kind={analyticsStatus.data?.dataSource === 'logAnalytics' ? 'live' : 'local'} />
           </div>
           <div className={styles.healthList}>
-            <div>
-              <span>Azure API Management</span>
-              <Badge color="success">Healthy</Badge>
-            </div>
-            <div>
-              <span>Cosmos DB desired state</span>
-              <Badge color="success">99.99%</Badge>
-            </div>
-            <div>
-              <span>Foundry East US 2</span>
-              <Badge color="warning">Degraded</Badge>
-            </div>
+            {analyticsStatus.isLoading && <Spinner size="tiny" label="Loading telemetry health" />}
+            {analyticsStatus.data?.gateways.map((gateway) => (
+              <div key={gateway.gatewayId}>
+                <span className={styles.healthName}>
+                  <span>{gateway.name}</span>
+                  <small>
+                    {gateway.status === 'notLinked'
+                      ? 'Govern an API here to track its usage'
+                      : plural(gateway.governedApis, 'governed API')}
+                    {/* The badge already says a caught-up gateway is current, so only a real lag is spelled out. */}
+                    {gateway.lagMinutes != null && gateway.lagMinutes > 0 && ` · ${gateway.lagMinutes} min behind`}
+                  </small>
+                </span>
+                <Badge color={statusColor(gateway.status)}>{FRESHNESS_STATUS_LABELS[gateway.status]}</Badge>
+              </div>
+            ))}
+            {!analyticsStatus.isLoading && (analyticsStatus.data?.gateways.length ?? 0) === 0 && <Text>No gateway health yet.</Text>}
           </div>
         </div>
+
+        <RankingPanel title="Top models" caption="By tokens" items={(analytics.data?.topModels ?? []).slice(0, TOP).map(byTokens)} loading={analytics.isLoading} />
+        <RankingPanel title="Top callers" caption="By tokens" items={(analytics.data?.topCallers ?? []).slice(0, TOP).map(byTokens)} loading={analytics.isLoading} />
+        <RankingPanel title="Top APIs" caption="By calls, since MCP servers use no tokens" items={(analytics.data?.topApis ?? []).slice(0, TOP).map(byCalls)} loading={analytics.isLoading} />
       </div>
     </section>
   )

@@ -92,5 +92,16 @@ resource applicationInsightsDiagnostic 'Microsoft.ApiManagement/service/diagnost
   }
 }
 
+// The logger that API diagnostics write gateway logs through. MOSAIC gives each API it publishes
+// an azuremonitor diagnostic on this logger, and reads the resulting logs for usage. See ADR 0019.
+resource azureMonitorLogger 'Microsoft.ApiManagement/service/loggers@2022-08-01' = {
+  parent: service
+  name: 'azuremonitor'
+  properties: {
+    isBuffered: true
+    loggerType: 'azureMonitor'
+  }
+}
+
 output id string = service.id
 output name string = service.name

@@ -1,10 +1,13 @@
 import type {
   AiBackendKind,
   EntitlementSubjectKind,
+  FreshnessStatus,
   GrantOverlapKind,
   ManagementMode,
   PrincipalKind,
   EnvironmentAssignment,
+  RollupStatus,
+  TelemetryCheck,
 } from './types'
 
 /** A count with its noun, so a single resource reads "1 gateway" rather than "1 gateways". */
@@ -51,6 +54,29 @@ export const GRANT_OVERLAP_KIND_LABELS: Record<GrantOverlapKind, string> = {
   groups: 'Security groups overlap',
   directAndGroup: 'Direct grant overrides group grant',
   multipleGroups: 'Multiple security groups apply',
+}
+
+/** How current a gateway's rolled-up usage is. A gateway with no governed APIs has none to roll up. */
+export const FRESHNESS_STATUS_LABELS: Record<FreshnessStatus, string> = {
+  current: 'Current',
+  delayed: 'Delayed',
+  failing: 'Failing',
+  pending: 'Waiting for data',
+  notLinked: 'No governed APIs',
+}
+
+export const TELEMETRY_CHECK_STATUS_LABELS: Record<TelemetryCheck['status'], string> = {
+  ok: 'OK',
+  warning: 'Warning',
+  error: 'Error',
+  unknown: 'Unknown',
+}
+
+export const BACKFILL_STATUS_LABELS: Record<RollupStatus['backfillStatus'], string> = {
+  idle: 'Not requested',
+  running: 'Running',
+  done: 'Done',
+  failed: 'Failed',
 }
 
 /** An Identity page tab that lists principals. The dashboard counts principals by the same tabs. */

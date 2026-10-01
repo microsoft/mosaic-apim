@@ -263,7 +263,7 @@ test.describe('40 portal', { tag: '@portal' }, () => {
     if (report.byResource.length === 0) await expect(usage.empty).toBeVisible()
     else await expect(usage.resources).toHaveCount(report.byResource.length)
     if (report.dataSource === 'simulated') await expect(usage.sampleData).toBeVisible()
-    else await expect(usage.page.getByText('Sample data', { exact: true })).toHaveCount(0)
+    else await expect(usage.page.getByText('Sample figures', { exact: true })).toHaveCount(0)
   })
 
   test.describe('request, approve and apply', { tag: ['@writes', '@console'] }, () => {

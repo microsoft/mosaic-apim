@@ -26,14 +26,17 @@ from mosaic_api.integrations.access_policy import (
     _expression,
     _grant_counter_key,
     _grant_limits,
+    _initialize_caller,
     _literal,
+    _record_validated_caller,
     _reject,
     _token_groups_overage,
     _token_lookup,
     _token_member_lookup,
     _variable,
+    append_denial_trace,
     append_grant_attribution_trace,
-    describe_grant_attribution_trace,
+    classify_traces,
     grant_counter_identity,
 )
 from mosaic_api.integrations.apim.policy_semantics import analyze_policy
@@ -194,10 +197,13 @@ def _set_www_authenticate(parent: ET.Element, value: str) -> None:
 def _deny_with_auth(
     parent: ET.Element,
     *,
+    reason: str,
+    with_caller: bool = False,
     code: int,
     message: str,
     www_authenticate: str,
 ) -> None:
+    append_denial_trace(parent, reason, with_caller=with_caller)
     response = ET.SubElement(parent, "return-response")
     ET.SubElement(
         response,
@@ -212,12 +218,21 @@ def _reject_with_auth(
     parent: ET.Element,
     condition: str,
     *,
+    reason: str,
+    with_caller: bool = False,
     code: int,
     message: str,
     www_authenticate: str,
 ) -> None:
     when = ET.SubElement(ET.SubElement(parent, "choose"), "when", {"condition": condition})
-    _deny_with_auth(when, code=code, message=message, www_authenticate=www_authenticate)
+    _deny_with_auth(
+        when,
+        reason=reason,
+        with_caller=with_caller,
+        code=code,
+        message=message,
+        www_authenticate=www_authenticate,
+    )
 
 
 def _authorization_shape_invalid() -> str:
@@ -253,9 +268,11 @@ def _mcp_authentication(
         ),
         suffix='"',
     )
+    _initialize_caller(fragment)
     _reject_with_auth(
         fragment,
         '@(!context.Request.Headers.ContainsKey("Authorization"))',
+        reason="no-credential",
         code=401,
         message=_DENIED,
         www_authenticate=no_auth,
@@ -263,6 +280,7 @@ def _mcp_authentication(
     _reject_with_auth(
         fragment,
         _authorization_shape_invalid(),
+        reason="token-malformed",
         code=401,
         message=_DENIED,
         www_authenticate=invalid,
@@ -287,6 +305,7 @@ def _mcp_authentication(
         {"name": "ver", "match": "all"},
     )
     ET.SubElement(claim, "value").text = "2.0"
+    _record_validated_caller(fragment)
     _variable(
         fragment,
         "mosaic-token-grant",
@@ -299,10 +318,18 @@ def _mcp_authentication(
     )
     _variable(fragment, "mosaic-member", _token_member_lookup(publication, grants))
     if any(grant.is_group_grant for grant in grants):
-        _reject(fragment, _token_groups_overage(), message=_GROUPS_OVERAGE_DENIED)
+        _reject(
+            fragment,
+            _token_groups_overage(),
+            reason="groups-overage",
+            with_caller=True,
+            message=_GROUPS_OVERAGE_DENIED,
+        )
     _reject_with_auth(
         fragment,
         f"@(String.IsNullOrEmpty({_TOKEN_GRANT}))",
+        reason="no-grant",
+        with_caller=True,
         code=403,
         message=_DENIED,
         www_authenticate=insufficient,
@@ -512,15 +539,17 @@ def _facets(
                 )
             )
     analyses = [analyze_policy(_serialize(element)) for element in (fragment, api, metadata)]
-    for analysis in analyses:
-        for facet in analysis.facets:
+    analyzed: list[PolicyFacet] = []
+    for element, analysis in zip((fragment, api, metadata), analyses, strict=True):
+        for facet in classify_traces(
+            element, analysis.facets, has_group_grants=enabled_group_grants > 0
+        ):
             facet.managed_by_mosaic = True
-            if facet.element == "trace":
-                describe_grant_attribution_trace(facet, has_group_grants=enabled_group_grants > 0)
+            analyzed.append(facet)
     unrecognized = sorted(
         {item for analysis in analyses for item in analysis.unrecognized_elements}
     )
-    return [*facets, *(facet for analysis in analyses for facet in analysis.facets)], unrecognized
+    return [*facets, *analyzed], unrecognized
 
 
 def render_mcp_policy(

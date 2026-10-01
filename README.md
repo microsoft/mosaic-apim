@@ -52,10 +52,11 @@ one under **Settings > Appearance**.
   </tr>
   <tr>
     <td colspan="2"><b>Console overview.</b> Live counts of the people, agents, applications and
-    security groups, and MOSAIC groups registered in MOSAIC, each opening its tab under Identity.
-    An Environments card counts the gateways, model endpoints, and MCP servers in each environment.
-    Below them, the telemetry, cost, model-ranking, and service-health panels show labelled sample
-    data until MOSAIC queries Azure Monitor.</td>
+    security groups, and MOSAIC groups registered in MOSAIC, each opening its tab under Identity,
+    and of the gateways, model endpoints, and MCP servers in each environment. Below them, the last
+    7 days of gateway usage rolled up from Log Analytics: requests, tokens, active callers, errors,
+    and latency, the daily trend, how current each gateway's telemetry is, and the top models,
+    callers, and APIs.</td>
   </tr>
   <tr>
     <td><img src="docs/images/screenshots/portal-catalog-light.png" alt="The portal catalog in the light theme"></td>
@@ -166,10 +167,40 @@ one under **Settings > Appearance**.
       resources that will change.</p>
     </td>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/console-analytics.png" alt="Analytics with request, token, success-rate, and cost summaries">
-      <p><b>Analytics.</b> A preview of the usage, token, cost, and chargeback views, filtered by
-      time range, model, and environment. It shows labelled sample data until MOSAIC queries Azure
-      Monitor and Log Analytics.</p>
+      <img src="docs/images/screenshots/console-analytics.png" alt="Analytics with request, token, caller, error, and latency figures, a daily trend, and the top models, callers, and APIs">
+      <p><b>Analytics.</b> Real gateway usage rolled up from Log Analytics, filtered by time range,
+      gateway, environment, resource, and kind of subject. The overview compares the headline
+      figures with the previous period and ranks the top models, callers, and APIs, and every tab
+      exports CSV.</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/images/screenshots/console-analytics-consumers.png" alt="The Consumers tab listing people, agents, applications, and security groups with their requests, tokens, grants, resources, and last call">
+      <p><b>Consumers.</b> Each person, agent, application, and security group that called a
+      governed API, with requests, tokens, grants, resources, and when they were last seen. Below
+      it, the same usage by grant and by client application.</p>
+    </td>
+    <td width="50%" valign="top">
+      <img src="docs/images/screenshots/console-analytics-limits.png" alt="The Limits tab showing each grant's quota and rate-limit use with reached, near-limit, and OK badges">
+      <p><b>Grant limits.</b> How close each grant is to its quotas and rate limits, busiest first,
+      with the calls the gateway throttled or refused for quota. A grant is near its limit at 80%
+      and has reached it once the gateway refuses its calls.</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/images/screenshots/console-gateway-telemetry.png" alt="A gateway's Telemetry section with readiness checks and the diagnostic state of each governed API">
+      <p><b>Gateway telemetry.</b> Whether MOSAIC can measure a gateway's usage: its Azure Monitor
+      logger, logs sent to Log Analytics, MOSAIC's read access, API diagnostics, and rollups, with
+      the command that fixes a failing check. Administrators can enable API diagnostics on what
+      MOSAIC published, refresh now, or backfill from the workspace's retention.</p>
+    </td>
+    <td width="50%" valign="top">
+      <img src="docs/images/screenshots/console-analytics-reliability.png" alt="The Reliability tab with successful, throttled, backend 429, and denied counts, a latency histogram, and denials by reason">
+      <p><b>Reliability.</b> Successful calls, calls the gateway throttled, 429s from the model
+      deployments, and denied calls, with an estimated latency histogram. Denials are broken down by
+      reason, such as a caller who isn't signed in or a key the gateway doesn't know.</p>
     </td>
   </tr>
   <tr>
@@ -225,16 +256,17 @@ one under **Settings > Appearance**.
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/portal-usage.png" alt="Usage and cost totals with a daily trend per environment">
-      <p><b>Usage and cost.</b> A person's requests, tokens, and estimated cost across everything
-      they hold, with a daily trend per environment. It shows labelled sample data, simulated from
-      their real grants and limits, until MOSAIC queries Log Analytics.</p>
+      <img src="docs/images/screenshots/portal-usage.png" alt="Measured requests, tokens, errors and throttling, and busiest resource, with a daily trend and the last 24 hours">
+      <p><b>Usage &amp; cost.</b> A person's own requests, tokens, errors and throttling, and busiest
+      resource, measured from the gateway's logs across everything they hold. A daily trend by
+      environment or resource and the last 24 hours by hour show when they used it.</p>
     </td>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/portal-usage-resources.png" alt="Usage by resource with each grant's environment, quotas, rate limits, and usage tracking">
+      <img src="docs/images/screenshots/portal-usage-resources.png" alt="Usage by resource with each grant's requests, tokens, quota use, busiest minute, and usage tracking">
       <p><b>Usage by resource.</b> The same figures by environment and by granted resource, with
-      each grant's quotas, rate limits, and usage tracking: at the gateway, by APIM subscription,
-      or not linked yet.</p>
+      each quota's use in its current window and the busiest minute against each rate limit.
+      Usage tracking says how a grant's calls are linked, or that its usage can't be measured
+      yet.</p>
     </td>
   </tr>
 </table>
@@ -276,7 +308,7 @@ first asks `GET /api/v1/console/me` which MOSAIC role the caller holds, and rend
 | Backend credential references | Key Vault | Store secret URIs only, never secret values |
 | APIM subscription keys | APIM | Retrieve only for an explicitly authorized reveal; never persist or cache a copy |
 | Foundry deployments | Existing Azure AI/Foundry resources | Enumerate deployed models read-only; report, never grant, the gateway's runtime access |
-| Traffic/token telemetry | Azure Monitor stack | Emit application telemetry; query/chargeback is deferred |
+| Traffic/token telemetry | Azure Monitor stack | Read API Management's resource logs from Log Analytics and roll them up into Cosmos; set API diagnostics only on APIs MOSAIC published on managed gateways |
 
 MOSAIC never silently substitutes in-memory data or local authentication in Azure. Both are
 explicit local/test modes and application startup rejects them when `MOSAIC_ENVIRONMENT=azure`.
@@ -359,27 +391,36 @@ explicit local/test modes and application startup rejects them when `MOSAIC_ENVI
   stop. The portal shows each catalog entry's and grant's environment, so people request
   development and production access separately
 - End-user usage report: a caller-scoped `/me/usage` contract and the portal's **Usage & cost**
-  page. Until Log Analytics is wired in, it reports simulated usage built from the caller's real
-  grants and limits. Each governed model and MCP call is already tagged at the gateway with the
-  grant it matched, so token, security-group, and MCP grants can be attributed once real data
-  arrives
+  page, measured from the gateway's logs. Each governed model and MCP call is tagged at the
+  gateway with the grant it matched and the calling client, so key, token, security-group, and MCP
+  grants are each attributed to the right person. Only local and test runs simulate the figures,
+  from the caller's real grants and limits, and they label them **Sample figures**
+- Usage analytics: a background job rolls API Management's gateway and LLM logs up from Log
+  Analytics into Cosmos every 15 minutes, keeping daily and monthly figures after the workspace's
+  own retention ends. The console's Dashboard and Analytics pages show requests, tokens, callers,
+  errors, latency, quota and rate-limit use, denials, unused grants, and unattributed calls, by
+  range, gateway, environment, resource, and kind of subject, with CSV export. Each gateway's
+  Telemetry section checks that its usage can be measured and says how to fix what's missing. See
+  [Usage analytics](docs/usage-analytics.md) and
+  [ADR 0019](docs/adr/0019-usage-telemetry.md)
 - ACR remote builds for every image, so deployment does not depend on a local Docker daemon
 - `azd` and modular Bicep for three Linux Web Apps on one plan, ACR, Cosmos, Key Vault, APIM,
   Log Analytics, Application Insights, diagnostics, managed identities, and narrow RBAC
 - Idempotent Entra application/service-principal setup through `azd` hooks
 
 The Gateways workspace, the Identity workspace, the Models and MCPs workspaces, the Entitlements
-workspace, Settings → Environments, model publishing, the end-user portal, and the deterministic
-policy preview use live API contracts. The portal's **Usage & cost** page also uses a live API
-contract, but the figures it reports are simulated from the caller's real grants and labeled
-**Sample data**. Analytics, policy metadata, and other future operational experiences are
-interactive frontend previews labeled
-**Sample data** or **Local preview**. They never claim to mutate Azure, query Azure Monitor, or
-substitute sample data for a failed API request.
+workspace, Settings → Environments, model publishing, the Dashboard, Analytics, the end-user
+portal, and the deterministic policy preview use live API contracts. Usage figures in Azure are
+measured from gateway logs; only local and test runs simulate the portal's, labeled
+**Sample figures**. Policy metadata and other future operational experiences are interactive
+frontend previews labeled **Sample data** or **Local preview**. They never claim to mutate Azure
+or substitute sample data for a failed API request.
 
 Existing deployments need `azd provision` (or a manual role grant) before publishing works: the
 API's identity moves from the API Management reader role to contributor. Until it is granted,
 preflight reports the missing write permissions precisely rather than failing during an apply.
+Measured usage also needs `azd provision`, which adds the `usage-rollups` container, the
+gateway's `azuremonitor` logger, and Monitoring Reader on the gateway for the API's identity.
 
 ## Prerequisites
 
@@ -428,6 +469,17 @@ Directory lookup and group-claim enforcement have explicit switches:
 | --- | --- | --- |
 | `MOSAIC_ENTRA_DIRECTORY_LOOKUP` | `true` | Enables read-only Microsoft Graph lookup and verification for users, agent identities, agent users and Entra security groups. Set to `false` to require administrators to type object IDs. |
 | `MOSAIC_ENTRA_GROUP_CLAIMS` | `true` | Records whether bootstrap configures `groupMembershipClaims: SecurityGroup` on the runtime/API registrations. Set to `false` only when group grants should be stored but not matched at the gateway. |
+
+Usage figures have their own settings. See [Usage analytics](docs/usage-analytics.md).
+
+| Setting | Default | Purpose |
+| --- | --- | --- |
+| `MOSAIC_USAGE_SOURCE` | `auto` | `rollups` reads usage rolled up from gateway logs. `simulated` makes the portal's figures up from the caller's real grants, and Azure refuses it. `auto` means `rollups` in Azure and `simulated` elsewhere. |
+| `MOSAIC_USAGE_ROLLUP_ENABLED` | `true` | Runs the job that rolls gateway logs up into Cosmos. |
+| `MOSAIC_USAGE_ROLLUP_INTERVAL_SECONDS` | `900` | How often the job runs, from 60 to 86,400 seconds. |
+| `MOSAIC_USAGE_ROLLUP_RETENTION_DAYS` | `400` | How long daily figures are kept, from 62 to 3,650 days. Monthly figures are kept for good. |
+| `MOSAIC_USAGE_ROLLUP_BACKFILL_MAX_DAYS` | `90` | How far back a gateway's first rollup, a catch-up after downtime, and a backfill without `days` read, from 1 to 730 days. |
+| `MOSAIC_LOG_ANALYTICS_ENDPOINT` | `https://api.loganalytics.azure.com` | The Log Analytics query endpoint. `azd` sets the one for its cloud, such as `https://api.loganalytics.us` for Azure Government. |
 
 In a second terminal:
 
@@ -591,6 +643,7 @@ Cosmos uses:
 | `sync-operations` | `/tenantId` | Gateway and endpoint sync runs, publish plans, and publish runs |
 | `observed-state` | `/tenantId` | What MOSAIC observed in each registered gateway |
 | `audit-events` | `/tenantId` | Append-only administrator mutation history |
+| `usage-rollups` | `/tenantId` | Gateway usage rolled up from Log Analytics, per day and per month ([ADR 0019](docs/adr/0019-usage-telemetry.md)) |
 
 `observed-state` is deliberately separate from `desired-state`. It is disposable, rebuilt on every
 sync, and churns far more than administrator-authored governance intent. Observed documents use
@@ -630,13 +683,19 @@ measured scale, not speculation.
 - Cosmos local/key authentication and ACR admin credentials are disabled.
 - Key Vault uses RBAC, soft delete, and purge protection.
 - Backend access is scoped to Cosmos data contributor, Key Vault Secrets User and Reader on
-  MOSAIC's Key Vault, API Management contributor, Log Analytics Reader, and Monitoring Reader. The
-  deployed API Management's identity holds Key Vault Secrets User on the same vault, so it can read
-  the key of an endpoint reached with an API key.
+  MOSAIC's Key Vault, API Management contributor, Log Analytics Reader, and Monitoring Reader.
+  Monitoring Reader on each API Management service lets MOSAIC read that gateway's logs for usage
+  and check its diagnostic settings; MOSAIC never changes a diagnostic setting. The deployed API
+  Management's identity holds Key Vault Secrets User on the same vault, so it can read the key of
+  an endpoint reached with an API key.
 - API Management writes are bounded by two independent conditions rather than one: the role
   assignment, and a gateway an administrator explicitly moved to `manage`. MOSAIC refuses that
   switch until preflight has confirmed write access, and every write runs against a reviewed plan
-  whose digest still matches the intent it was produced from.
+  whose digest still matches the intent it was produced from. The one exception is telemetry: on
+  a managed gateway, MOSAIC creates the `azuremonitor` logger when an administrator enables API
+  diagnostics, and sets the `azuremonitor` diagnostic only on APIs it published. That diagnostic
+  logs no client IP addresses, headers, bodies, prompts, or completions, and each write is
+  audited.
 - The contributor role carries `subscriptions/listSecrets`. Only an explicit credential-reveal
   operation uses it, after checking caller ownership and a trusted, applied grant. Inventory and
   publishing do not read keys. Reveals are audited without their secret values; responses are
@@ -1188,7 +1247,7 @@ Administrators can explicitly reveal/copy an applied grant's key. Portal clients
 | GET | `/me/entitlements` | The caller's own direct grants and deployment state; no keys |
 | GET | `/me/entitlements/{id}/connection` | Endpoint, operations, runtime audience/scope, model client ID, and limits |
 | POST | `/me/entitlements/{id}/keys/reveal` | The requested key; body `{"slot":"primary"}` or `{"slot":"secondary"}` |
-| GET | `/me/usage?period=30d` | The caller's usage and estimated cost per grant, simulated for now; see [Usage and cost in the portal](#usage-and-cost-in-the-portal) |
+| GET | `/me/usage?period=30d` | The caller's own usage and limits per grant, measured from gateway logs; see [Usage and cost in the portal](#usage-and-cost-in-the-portal) |
 
 People use the connection's `tenantId`, `entraClientId` and `entraScope` to get a runtime token.
 See [Call a published model with an Entra token](docs/call-models-with-entra-tokens.md).
@@ -1416,6 +1475,31 @@ before rerunning the script. Verify rotation by changing a test subscription key
 and revealing it again: no MOSAIC synchronization should be needed. Do not report these live
 scenarios as passed when deployment, consent, credentials, or a test gateway are unavailable.
 
+For published MCP servers, `scripts\verify_mcp_access.py` checks the gateway's protected resource
+metadata flow and, when supplied, denied and granted runtime tokens. It never calls an MCP tool.
+Prepare a non-production published MCP server, then provide any optional tokens through environment
+variables:
+
+- `MOSAIC_SMOKE_MCP_DENIED_RUNTIME_TOKEN`: optional, a runtime token that has `Mcp.Invoke` or
+  `Mcp.Invoke.Application` but no applied MCP grant.
+- `MOSAIC_SMOKE_MCP_GRANTED_RUNTIME_TOKEN`: optional, a runtime token with an applied MCP grant.
+
+```powershell
+python scripts\verify_mcp_access.py `
+  --server-url https://<approved-apim-host>/<api-path>/mcp `
+  --tenant-id <tenant-id> `
+  --runtime-client-id <model-runtime-client-id> `
+  --check-denied-token `
+  --check-granted-token
+```
+
+The verifier confirms that an unauthenticated request receives a `401` with `resource_metadata`,
+that the metadata JSON names the server URL, tenant authorization server and
+`api://<runtime-client-id>/Mcp.Invoke`, that an ungranted token is denied with
+`insufficient_scope`, and that a granted token completes MCP `initialize` over streamable HTTP. Do
+not report live MCP interoperability as passed when the APIM preview contract, consent, credentials
+or a test server are unavailable.
+
 ### End-to-end UI testing
 
 [`e2e/`](e2e) holds a live, human-in-the-loop Playwright harness. People sign in their own test
@@ -1513,68 +1597,108 @@ Settings, and in the import dialog. MOSAIC doesn't inspect backends referenced o
 
 [ADR 0014](docs/adr/0014-environments.md) records these rules.
 
+## Usage and analytics
+
+MOSAIC measures usage from API Management's own resource logs, so it never sits in the traffic
+path. A background job in the API reads each gateway's logs from Log Analytics every 15 minutes
+and rolls them up into the `usage-rollups` container. The portal, the Dashboard, and Analytics read
+only those rollups, never Log Analytics, and the figures outlive the workspace's retention.
+[Usage analytics](docs/usage-analytics.md) covers setup, freshness, retention, privacy, and what
+each figure means. [ADR 0019](docs/adr/0019-usage-telemetry.md) records the design.
+
+### Measuring a gateway's usage
+
+MOSAIC can measure a gateway's usage when:
+- a diagnostic setting sends the gateway's `GatewayLogs` and `GatewayLlmLogs` categories to a Log
+  Analytics workspace as resource-specific tables;
+- MOSAIC's managed identity holds Monitoring Reader on the API Management service; and
+- each API MOSAIC governs logs every call at Information through the `azuremonitor` logger, with
+  LLM logs on for model APIs.
+
+`azd provision` sets up the first two, and the logger, on the gateway it deploys. For every
+gateway, the **Telemetry** section of its page checks each condition and shows the `az` command
+that fixes what's missing. MOSAIC never creates or changes a diagnostic setting.
+
+On a gateway in manage mode, **Enable API diagnostics** creates the logger and sets the
+`azuremonitor` diagnostic on every API MOSAIC published. Once the logger exists, whoever created
+it, the rollup job sets the diagnostic on each new publication too. MOSAIC doesn't change adopted
+APIs, so their owners set their diagnostics, or the one for All APIs, which an API without its own
+inherits. **Refresh now** runs a rollup straight away, at most once a minute. A gateway's first
+rollup reads back 90 days by default, and **Backfill** reads older days again from what the
+workspace still holds. A re-read never lowers a day's figures, so days the workspace has since
+deleted keep what MOSAIC rolled up.
+
+Each call a governed policy authorizes carries a trace naming the grant it matched, the member
+for a security-group grant, and the calling client:
+`mosaic-attribution v=1 g=<grant> m=<object ID> a=<client ID>`. A call the policy refuses carries
+`mosaic-deny v=1 r=<reason>`, plus the caller's object ID and client once its token was validated.
+Both are API Management `trace` policies with source `mosaic` at `information` severity, which
+`ApiManagementGatewayLogs` records in `TraceRecords`. A call MOSAIC can link neither by its trace
+nor by a grant's APIM subscription is reported as unattributed, never dropped. The traces hold
+Entra object and client IDs, which are personal data, so apply your retention and access rules to
+the workspace. The bootstrap gateway's Application Insights diagnostic logs at Information too, so
+each governed call also adds one trace there, whatever the sampling rate. To stop them, set that
+diagnostic's verbosity to Error.
+
+### Usage analytics in the console
+
+The **Dashboard** shows the last 7 days: requests, tokens, active callers, error rate, and p95
+latency, the daily trend, how current each gateway's telemetry is, and the top five models,
+callers, and APIs. **Analytics** covers the last 24 hours, 7, 30, or 90 days, 12 months, or chosen
+dates, and filters by gateway, environment, resource, and kind of subject:
+
+| Tab | What it shows |
+| --- | --- |
+| Overview | Requests, tokens, active callers, errors, and p95 latency against the previous period, the trend, and the top models, callers, and APIs |
+| Consumers | Each person, agent, application, and Entra security group, with requests, tokens, grants, resources, and when they were last seen; then each grant, and each client application |
+| Models | Each model, each deployment's busiest minute against its capacity, and each API and MCP server |
+| Reliability | Successful, gateway-throttled, backend 429, and denied calls, an estimated latency histogram, denials by reason, and each API's reliability |
+| Limits | How close each grant is to each quota and rate limit, and the calls the gateway throttled or refused for quota |
+| Access hygiene | Grants nobody used in the last 30 days, keys nobody used because every call brought a token, and grants MOSAIC can't track |
+| Unattributed | Calls MOSAIC couldn't link to a grant, such as those made with a publication's shared key |
+
+Every tab exports CSV. There's no cost yet, because MOSAIC has no price list. These routes need
+`Admin`:
+
+| Method | Route under `/api/v1` | Result |
+| --- | --- | --- |
+| GET | `/analytics/status` | Where the figures come from, and how current each gateway's rollup is |
+| POST | `/analytics/refresh` | Roll up every gateway now; 202, or 429 within a minute of the last |
+| GET | `/analytics/{view}` | `overview`, `consumers`, `models`, `reliability`, `limits`, `hygiene`, or `unattributed`, filtered by `range` (`24h`, `7d`, `30d`, `90d`, `12m`, or `custom` with `start` and `end`), `gatewayId`, `environment`, `resourceId`, and `subjectKind` |
+| GET | `/analytics/export?view=` | One table as CSV, with the same filters |
+| GET | `/gateways/{id}/telemetry` | The gateway's telemetry checks and each governed API's diagnostic |
+| POST | `/gateways/{id}/telemetry/enable` | Create the logger and set API diagnostics on what MOSAIC published; audited |
+| POST | `/gateways/{id}/telemetry/refresh` | Roll up this gateway now; 202, or 429 within a minute of the last |
+| POST | `/gateways/{id}/telemetry/backfill` | Re-read `days` of older logs, 1 to 730, or `MOSAIC_USAGE_ROLLUP_BACKFILL_MAX_DAYS` when omitted; 202, audited |
+
 ### Usage and cost in the portal
 
-The portal's **Usage & cost** page shows a person the requests, tokens, and estimated cost of each
-grant they hold. It breaks them down by day, by environment, and by resource, and shows each
-quota's utilization within that quota's own window. It reads
-`GET /api/v1/me/usage?period=7d|30d|90d`, which returns only the caller's own usage.
+The portal's **Usage & cost** page shows people their own requests, tokens, errors, and
+throttling for each grant they hold. It breaks them down by day, by hour over the last 24 hours, by
+environment, and by resource, and shows each quota's use within that quota's own window and the
+busiest minute against each rate limit. It reads `GET /api/v1/me/usage?period=7d|30d|90d`, which
+returns only the caller's own usage. A security-group grant's figures count only the caller's own
+calls.
 
-Until MOSAIC reads Log Analytics, the report is simulated:
-- The figures are deterministic, built from the caller's real grants and limits, and never exceed
-  a quota. A given day shows the same figures whichever period is selected.
-- A disabled grant shows no usage.
-- The page is labeled **Sample data**.
-- Costs are estimates at illustrative rates, only for models MOSAIC knows, and never a bill.
+In Azure the figures are measured, and the page says how current they are. The gateway applies
+limits as calls arrive, so someone can reach one before the page shows it. A row with nothing to
+link its calls has null figures, not zero. Cost isn't shown yet, because MOSAIC has no price list.
 
-Once a real source is configured, a failure is reported, never replaced with simulated data. See
+Local and test runs simulate the report instead, from the caller's real grants and limits. The
+figures are deterministic and never exceed a quota, costs are illustrative estimates, and the page
+is labeled **Sample figures**. An Azure deployment refuses to simulate, and a failure to read the
+rollups is reported, never replaced with simulated data. See
 [ADR 0015](docs/adr/0015-end-user-usage-report.md).
 
-The **Usage tracking** column says how each grant's real usage will be found:
-- **At the gateway:** a model or MCP publication MOSAIC applied tags every call it authorizes with
-  the grant it matched. This links Entra-token, security-group, and MCP grants, which have no APIM
-  subscription. A security-group grant's tag also carries the caller's object ID, so each member
-  sees only their own calls.
-- **By APIM subscription:** the grant's binding names the subscription that carries its calls.
-  Imported model APIs, imported MCP servers, products, and model deployments can be linked only
-  this way.
-- **Not linked yet:** nothing links the grant, so its real usage will show as unattributed. A
-  publication applied before gateway tagging existed starts tagging on its next apply.
-
-The tag is an API Management `trace` with source `mosaic` at `information` severity, emitted before
-any limit, so throttled calls are tagged too. Its message reads
-`mosaic-attribution v=1 g=<grant> m=<object ID>`, where `m` is empty unless a security-group grant
-matched. For it to reach Log Analytics, set the gateway's Azure Monitor diagnostic verbosity to
-Information or Verbose. `ApiManagementGatewayLogs` then records it in `TraceRecords`. The bootstrap
-gateway's Application Insights diagnostic logs at Information, so each governed call also adds one
-trace there, whatever the sampling rate. To stop them, set that diagnostic's verbosity to Error. A
-security-group tag includes an Entra object ID, which is personal data, so apply your retention and
-access rules to both destinations.
-
-For published MCP servers, `scripts\verify_mcp_access.py` checks the gateway's protected resource
-metadata flow and, when supplied, denied and granted runtime tokens. It never calls an MCP tool.
-Prepare a non-production published MCP server, then provide any optional tokens through environment
-variables:
-
-- `MOSAIC_SMOKE_MCP_DENIED_RUNTIME_TOKEN`: optional, a runtime token that has `Mcp.Invoke` or
-  `Mcp.Invoke.Application` but no applied MCP grant.
-- `MOSAIC_SMOKE_MCP_GRANTED_RUNTIME_TOKEN`: optional, a runtime token with an applied MCP grant.
-
-```powershell
-python scripts\verify_mcp_access.py `
-  --server-url https://<approved-apim-host>/<api-path>/mcp `
-  --tenant-id <tenant-id> `
-  --runtime-client-id <model-runtime-client-id> `
-  --check-denied-token `
-  --check-granted-token
-```
-
-The verifier confirms that an unauthenticated request receives a `401` with `resource_metadata`,
-that the metadata JSON names the server URL, tenant authorization server and
-`api://<runtime-client-id>/Mcp.Invoke`, that an ungranted token is denied with
-`insufficient_scope`, and that a granted token completes MCP `initialize` over streamable HTTP. Do
-not report live MCP interoperability as passed when the APIM preview contract, consent, credentials
-or a test server are unavailable.
+The **Usage tracking** column says how each grant's calls are found:
+- **Linked from gateway log traces:** a model or MCP publication MOSAIC applied tags every call it
+  authorizes with the grant it matched. This links Entra-token, security-group, and MCP grants,
+  which have no APIM subscription.
+- **Linked from the APIM subscription:** the grant's binding names the subscription that carries
+  its calls. Imported model APIs, imported MCP servers, products, and model deployments can be
+  linked only this way.
+- **Not linked yet:** nothing links the grant, so MOSAIC can't measure its usage. A publication
+  applied before gateway tagging existed starts tagging on its next apply.
 
 ## Reconciliation boundary
 
@@ -1629,12 +1753,12 @@ records.
    gateways with a passthrough MCP API, per-publication resource metadata, Entra-only grants, call
    limits and fail-closed recovery; see
    [ADR 0017](docs/adr/0017-mcp-gateway-enforcement.md).
-7. **Insights and chargeback:** Azure Monitor queries over `ApiManagementGatewayLogs` and
-   `ApiManagementGatewayLlmLog`, consumption measured against each entitlement's own enforcement
-   window, per-user attribution, token/traffic/cost allocation, budgets, and portal usage views
-   alongside administrator dashboards. The portal's Usage & cost page and its `/me/usage`
-   contract already exist on simulated data, and governed calls are already tagged with their
-   grant at the gateway; this phase supplies measured figures.
+7. **Insights and chargeback:** usage is measured now. Gateway and LLM logs are rolled up from Log
+   Analytics into Cosmos, attributed to each grant, member, and client application, and shown in
+   the portal against each grant's own limits and in the console's Dashboard and Analytics; see
+   [ADR 0019](docs/adr/0019-usage-telemetry.md). Still to come: a sourced, dated price list that
+   turns usage into cost, cost centers that allocate it to teams, and budgets that warn by email
+   and can block.
 8. **Catalog ecosystem:** API Center experiences, MCP tool-level governance, broader self-service
    workflows, and environment chains that relate the same model across environments and clouds.
 9. **Production hardening:** private networking, multi-region/production APIM tiers, CMK where

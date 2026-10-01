@@ -15,7 +15,7 @@ import { usePortalApi } from '../api'
 import { EmptyState, ErrorState, Loading } from '../components/AsyncState'
 import { EnvironmentBadge } from '../components/EnvironmentBadge'
 import { PageHeader } from '../components/PageHeader'
-import { UsageTrendChart } from '../components/UsageTrendChart'
+import { RecentHoursChart, UsageTrendChart } from '../components/UsageTrendChart'
 import { environmentLabel } from '../environments'
 import { formatNumber, gatewayLabel, resourceLabel } from '../entitlement-format'
 import { usePortalEnvironments } from '../environments'
@@ -23,19 +23,29 @@ import type {
   MyUsageReport,
   PortalEnvironment,
   UsageEnvironmentBreakdown,
+  UsageFreshness,
+  UsageHourPoint,
   UsagePeriod,
   UsageQuota,
+  UsageRateLimit,
   UsageResourceRow,
 } from '../types'
 import {
+  accessLabel,
   aggregateUsage,
+  attributionExplanation,
   environmentSort,
   formatCount,
   formatCurrency,
+  formatGeneratedAt,
   formatMetric,
-  metricLabel,
-  quotaWindowLabel,
+  formatUtcDate,
+  quotaDetail,
+  quotaLabel,
+  quotaStatus,
   rateLimitLabel,
+  rateLimitPeakLabel,
+  relativeTime,
   rowLabel,
   usageTrackingLabel,
 } from '../usage-format'
@@ -61,6 +71,43 @@ function inaccessible(value: string) {
   )
 }
 
+function hasCost(report: MyUsageReport) {
+  return report.totals.estimatedCost !== null || report.byResource.some((row) => row.estimatedCost !== null)
+}
+
+function combineRecentHours(rows: UsageResourceRow[], fallback: UsageHourPoint[] = []) {
+  if (rows.every((row) => !row.recentHours || row.recentHours.length === 0)) return fallback
+  const hours = new Map<string, UsageHourPoint>()
+  for (const row of rows) {
+    for (const point of row.recentHours ?? []) {
+      const current =
+        hours.get(point.hour) ??
+        ({
+          hour: point.hour,
+          requests: 0,
+          totalTokens: 0,
+          throttled: 0,
+          quotaRefused: 0,
+          errors: 0,
+          peakMinuteTokens: null,
+          peakMinuteRequests: null,
+        } satisfies UsageHourPoint)
+      current.requests = (current.requests ?? 0) + (point.requests ?? 0)
+      current.totalTokens = (current.totalTokens ?? 0) + (point.totalTokens ?? 0)
+      current.throttled = (current.throttled ?? 0) + (point.throttled ?? 0)
+      current.quotaRefused = (current.quotaRefused ?? 0) + (point.quotaRefused ?? 0)
+      current.errors = (current.errors ?? 0) + (point.errors ?? 0)
+      current.peakMinuteTokens = Math.max(current.peakMinuteTokens ?? 0, point.peakMinuteTokens ?? 0)
+      current.peakMinuteRequests = Math.max(
+        current.peakMinuteRequests ?? 0,
+        point.peakMinuteRequests ?? 0,
+      )
+      hours.set(point.hour, current)
+    }
+  }
+  return Array.from(hours.values()).sort((a, b) => a.hour.localeCompare(b.hour))
+}
+
 function KpiCard({ title, value, detail }: { title: string; value: string; detail?: string }) {
   return (
     <Card className="usage-kpi-card">
@@ -76,11 +123,11 @@ function KpiCard({ title, value, detail }: { title: string; value: string; detai
 function UsageNotice({ report }: { report: MyUsageReport }) {
   if (report.dataSource !== 'simulated') return null
   const fallback =
-    "Figures are simulated from your real grants and limits. Costs are estimates at illustrative rates, and this isn't a bill."
+    'These sample figures are generated from your real grants and limits for local or test runs only.'
   return (
     <MessageBar intent="info" className="usage-notice">
       <MessageBarBody>
-        <MessageBarTitle>Sample data</MessageBarTitle>
+        <MessageBarTitle>Sample figures</MessageBarTitle>
         {report.notes.length > 0 ? (
           <ul>
             {report.notes.map((note) => (
@@ -95,14 +142,81 @@ function UsageNotice({ report }: { report: MyUsageReport }) {
   )
 }
 
+function freshnessText(freshness: UsageFreshness, report: MyUsageReport) {
+  const refresh = `refreshed every ${freshness.intervalMinutes} min`
+  const late = "the gateway's logs arrive a few minutes late"
+  if (freshness.status === 'current' && freshness.updatedAt) {
+    return `Updated ${relativeTime(freshness.updatedAt)} · ${refresh} · ${late}`
+  }
+  if (freshness.status === 'delayed') {
+    const updated = freshness.updatedAt ? `last updated ${relativeTime(freshness.updatedAt)}` : 'not updated yet'
+    return `Delayed: ${updated} · figures may be out of date · ${refresh}`
+  }
+  if (freshness.status === 'failing') {
+    const updated = freshness.updatedAt ? `last successful update ${relativeTime(freshness.updatedAt)}` : 'no successful update yet'
+    return `MOSAIC is having trouble reading gateway logs; figures may be out of date · ${updated}`
+  }
+  if (freshness.status === 'pending') {
+    return "MOSAIC hasn't read the gateway's logs yet — check back soon."
+  }
+  if (freshness.status === 'notLinked') {
+    return "None of your grants are on a gateway MOSAIC reads."
+  }
+  return `Usage generated ${formatGeneratedAt(report.generatedAt)}`
+}
+
+function FreshnessNotice({ report }: { report: MyUsageReport }) {
+  if (report.dataSource !== 'logAnalytics') return null
+  const freshness = report.freshness
+  const body = freshness
+    ? freshnessText(freshness, report)
+    : "Measured from gateway logs. Recent calls can take a few minutes to appear."
+  const showDataFrom =
+    freshness?.dataFrom && freshness.dataFrom > report.start
+      ? `MOSAIC has complete data from ${formatUtcDate(freshness.dataFrom)}, later than the selected period.`
+      : null
+  const intent =
+    freshness?.status === 'failing'
+      ? 'error'
+      : freshness?.status === 'delayed' || freshness?.status === 'pending' || freshness?.status === 'notLinked'
+        ? 'warning'
+        : 'success'
+  return (
+    <MessageBar intent={intent} className="usage-notice">
+      <MessageBarBody>
+        <MessageBarTitle>Measured figures</MessageBarTitle>
+        {body}
+        {showDataFrom && <p>{showDataFrom}</p>}
+      </MessageBarBody>
+    </MessageBar>
+  )
+}
+
+function LiveQuotaNote() {
+  return (
+    <MessageBar intent="info" className="usage-notice">
+      <MessageBarBody>
+        <MessageBarTitle>Live remaining quota</MessageBarTitle>
+        While you call the gateway, read the gateway response headers for the live limit result:
+        token and request limits return <code>Retry-After</code> when a call is throttled, and
+        APIM's limit policies also expose remaining quota headers such as{' '}
+        <code>x-ratelimit-remaining-tokens</code> where configured. This page is a rollup, not a
+        real-time counter.
+      </MessageBarBody>
+    </MessageBar>
+  )
+}
+
 function EnvironmentBreakdown({
   rows,
   currency,
   environments,
+  showCost,
 }: {
   rows: UsageEnvironmentBreakdown[]
   currency: string
   environments?: PortalEnvironment[]
+  showCost: boolean
 }) {
   const maxRequests = Math.max(0, ...rows.map((row) => row.requests))
   const ordered = [...rows].sort((a, b) => environmentSort(environments, a, b))
@@ -111,12 +225,13 @@ function EnvironmentBreakdown({
       <div className="section-header">
         <div>
           <h2>By environment</h2>
-          <p>Request volume and estimated cost by environment.</p>
+          <p>Request and token volume by environment.</p>
         </div>
       </div>
       <div className="environment-bars">
         {ordered.map((row) => {
           const percent = maxRequests === 0 ? 0 : (row.requests / maxRequests) * 100
+          const measured = row.resources - row.unmeasuredResources
           return (
             <div key={row.environment ?? 'unclassified'} className="environment-bar-row">
               <EnvironmentBadge environment={row.environment} environments={environments} />
@@ -125,11 +240,18 @@ function EnvironmentBreakdown({
                   <span style={{ width: `${percent}%` }} />
                 </div>
                 <Text size={200}>
-                  {formatCount(row.requests, 'request')} · {formatCount(row.totalTokens, 'token')} ·{' '}
-                  {row.estimatedCost === null
-                    ? 'cost unknown'
-                    : formatCurrency(row.estimatedCost, currency)}{' '}
+                  {measured === 0
+                    ? 'Usage unavailable'
+                    : `${formatCount(row.requests, 'request')} · ${formatCount(row.totalTokens, 'token')}`}
+                  {showCost &&
+                    measured > 0 &&
+                    ` · ${
+                      row.estimatedCost === null
+                        ? 'cost unknown'
+                        : formatCurrency(row.estimatedCost, currency)
+                    }`}{' '}
                   · {formatCount(row.resources, 'resource')}
+                  {measured > 0 && row.unmeasuredResources > 0 && `, ${row.unmeasuredResources} not measured`}
                 </Text>
               </div>
             </div>
@@ -141,23 +263,26 @@ function EnvironmentBreakdown({
 }
 
 function QuotaView({ quota }: { quota: UsageQuota }) {
-  const utilization = quota.utilization
-  const label = `${metricLabel(quota.metric)}: ${
-    quota.used === null ? 'unknown' : formatNumber(quota.used)
-  } of ${formatNumber(quota.limit)} ${quotaWindowLabel(quota.period)}`
-  const value = utilization === null ? 0 : Math.min(utilization, 1)
+  const label = quotaLabel(quota)
+  const status = quotaStatus(quota)
   const className =
-    utilization === null
-      ? 'quota-progress'
-      : utilization >= 1
-        ? 'quota-progress quota-error'
-        : utilization >= 0.8
-          ? 'quota-progress quota-warning'
-          : 'quota-progress'
+    status === 'reached'
+      ? 'quota-progress quota-error'
+      : status === 'near'
+        ? 'quota-progress quota-warning'
+        : 'quota-progress'
   return (
     <div className={className}>
       <span>{label}</span>
-      <ProgressBar value={value} aria-label={label} />
+      {quota.utilization !== null && (
+        <ProgressBar
+          value={Math.min(quota.utilization, 1)}
+          aria-label={label}
+          aria-valuenow={quota.used ?? undefined}
+          aria-valuemax={quota.limit}
+        />
+      )}
+      <small>{quotaDetail(quota)}</small>
     </div>
   )
 }
@@ -183,14 +308,35 @@ function CostCell({ row, currency }: { row: UsageResourceRow; currency: string }
   )
 }
 
+function ErrorDetails({ row }: { row: UsageResourceRow }) {
+  const parts = [
+    row.throttled ? `${formatCount(row.throttled, 'throttled call')}` : null,
+    row.quotaRefused ? `${formatCount(row.quotaRefused, 'quota refusal')}` : null,
+    row.errors ? `${formatCount(row.errors, 'error')}` : null,
+  ].filter(Boolean)
+  return parts.length > 0 ? <small>{parts.join(' · ')}</small> : null
+}
+
+function RateLimitView({ limit }: { limit: UsageRateLimit }) {
+  const peak = rateLimitPeakLabel(limit)
+  return (
+    <li>
+      {rateLimitLabel(limit.metric, limit.limit, limit.windowSeconds)}
+      {peak && <small>{peak}</small>}
+    </li>
+  )
+}
+
 function ResourceTable({
   rows,
   currency,
   environments,
+  showCost,
 }: {
   rows: UsageResourceRow[]
   currency: string
   environments?: PortalEnvironment[]
+  showCost: boolean
 }) {
   return (
     <section className="usage-section">
@@ -209,7 +355,7 @@ function ResourceTable({
               <th scope="col">How granted</th>
               <th scope="col">Requests</th>
               <th scope="col">Tokens</th>
-              <th scope="col">Estimated cost</th>
+              {showCost && <th scope="col">Estimated cost</th>}
               <th scope="col">Quotas</th>
               <th scope="col">Rate limits</th>
               <th scope="col">Usage tracking</th>
@@ -234,15 +380,15 @@ function ResourceTable({
                   <EnvironmentBadge environment={row.environment} environments={environments} />
                 </td>
                 <td>
-                  {row.via === 'direct'
-                    ? 'Direct'
-                    : `Through ${row.viaGroupName ?? 'an assigned group'}`}
+                  {accessLabel(row)}
+                  {row.via === 'securityGroup' && <small>Your calls only.</small>}
                 </td>
                 <td>
                   <ResourceUsageValue
                     value={row.attribution === 'unattributed' ? null : row.requests}
                     unavailable="Usage unavailable"
                   />
+                  <ErrorDetails row={row} />
                 </td>
                 <td>
                   {row.attribution === 'unattributed' ? (
@@ -259,9 +405,11 @@ function ResourceTable({
                     </>
                   )}
                 </td>
-                <td>
-                  <CostCell row={row} currency={currency} />
-                </td>
+                {showCost && (
+                  <td>
+                    <CostCell row={row} currency={currency} />
+                  </td>
+                )}
                 <td>
                   {row.quotas.length > 0 ? (
                     <div className="quota-stack">
@@ -278,11 +426,12 @@ function ResourceTable({
                 </td>
                 <td>
                   {row.rateLimits.length > 0 ? (
-                    <ul className="plain-list">
+                    <ul className="plain-list rate-limit-list">
                       {row.rateLimits.map((limit) => (
-                        <li key={`${limit.metric}:${limit.limit}:${limit.windowSeconds}`}>
-                          {rateLimitLabel(limit.metric, limit.limit, limit.windowSeconds)}
-                        </li>
+                        <RateLimitView
+                          key={`${limit.metric}:${limit.limit}:${limit.windowSeconds}`}
+                          limit={limit}
+                        />
                       ))}
                     </ul>
                   ) : (
@@ -295,9 +444,7 @@ function ResourceTable({
                   ) : (
                     <span className="binding-hint">{usageTrackingLabel(row.linkedBy)}</span>
                   )}
-                  {row.attribution === 'unattributed' && (
-                    <small>Usage can't be measured for this grant yet.</small>
-                  )}
+                  {attributionExplanation(row) && <small>{attributionExplanation(row)}</small>}
                 </td>
               </tr>
             ))}
@@ -319,6 +466,13 @@ export function UsagePage() {
     if (!usage.data) return null
     return aggregateUsage(usage.data, { environment: environmentFilter, resource: resourceFilter })
   }, [usage.data, environmentFilter, resourceFilter])
+  const showCost = usage.data ? hasCost(usage.data) : false
+  const recentHours = useMemo(() => {
+    if (!usage.data || !filtered) return []
+    // The report's own hours cover every grant, so they can stand in only when nothing is filtered out.
+    const unfiltered = environmentFilter === 'all' && resourceFilter === 'all'
+    return combineRecentHours(filtered.byResource, unfiltered ? (usage.data.recentHours ?? []) : [])
+  }, [filtered, usage.data, environmentFilter, resourceFilter])
   const environmentFilterOptions = useMemo(
     () => environmentOptions(usage.data, environments.data),
     [usage.data, environments.data],
@@ -332,10 +486,14 @@ export function UsagePage() {
     <>
       <PageHeader
         title="Usage & cost"
-        description="Review your request volume, token usage, and estimated costs across granted resources."
+        description="Review your calls, tokens, and limits across granted resources, and their cost where MOSAIC has prices."
         actions={
           usage.data?.dataSource === 'simulated' ? (
-            <Badge appearance="filled">Sample data</Badge>
+            <Badge appearance="filled">Sample figures</Badge>
+          ) : usage.data?.dataSource === 'logAnalytics' ? (
+            <Badge appearance="filled" color="success">
+              Measured
+            </Badge>
           ) : undefined
         }
       />
@@ -357,6 +515,7 @@ export function UsagePage() {
       {usage.isSuccess && usage.data.byResource.length > 0 && filtered && (
         <>
           <UsageNotice report={usage.data} />
+          <FreshnessNotice report={usage.data} />
           <div className="filter-row" role="group" aria-label="Usage filters">
             <label>
               <span>Period</span>
@@ -424,33 +583,57 @@ export function UsagePage() {
                     filtered.totals.completionTokens,
                   )}`}
                 />
-                <KpiCard
-                  title="Estimated cost"
-                  value={formatCurrency(filtered.totals.estimatedCost, usage.data.currency)}
-                  detail={
-                    filtered.totals.costExcludedResources > 0
-                      ? `Excludes ${formatCount(filtered.totals.costExcludedResources, 'resource')} with unknown cost`
-                      : undefined
-                  }
-                />
+                {filtered.totals.errors !== null && filtered.totals.errors !== undefined && (
+                  <KpiCard
+                    title="Errors and throttling"
+                    value={formatNumber(filtered.totals.errors)}
+                    detail={`${formatNumber(filtered.totals.throttled ?? 0)} throttled · ${formatNumber(
+                      filtered.totals.quotaRefused ?? 0,
+                    )} quota refused`}
+                  />
+                )}
+                {showCost && (
+                  <KpiCard
+                    title="Estimated cost"
+                    value={formatCurrency(filtered.totals.estimatedCost, usage.data.currency)}
+                    detail={
+                      filtered.totals.costExcludedResources > 0
+                        ? `Excludes ${formatCount(filtered.totals.costExcludedResources, 'resource')} with unknown cost`
+                        : undefined
+                    }
+                  />
+                )}
                 <KpiCard
                   title="Busiest resource"
                   value={filtered.busiestResource ? rowLabel(filtered.busiestResource) : 'None'}
                 />
               </div>
-              <UsageTrendChart points={filtered.timeline} environments={environments.data} />
+              {filtered.totals.requests === 0 ? (
+                <EmptyState title="No calls in this period">
+                  Your grants are ready, but MOSAIC has no calls to show for this period.
+                </EmptyState>
+              ) : null}
+              <UsageTrendChart
+                points={filtered.timeline}
+                resources={filtered.byResource}
+                environments={environments.data}
+              />
+              {recentHours.length > 0 && <RecentHoursChart points={recentHours} />}
+              <LiveQuotaNote />
               <EnvironmentBreakdown
                 rows={filtered.byEnvironment}
                 currency={usage.data.currency}
                 environments={environments.data}
+                showCost={showCost}
               />
               <ResourceTable
                 rows={filtered.byResource}
                 currency={usage.data.currency}
                 environments={environments.data}
+                showCost={showCost}
               />
               <Text size={200} className="usage-generated">
-                Generated {new Date(usage.data.generatedAt).toLocaleString()} for{' '}
+                Generated {formatGeneratedAt(usage.data.generatedAt)} for{' '}
                 {environmentFilter === 'all'
                   ? 'all environments'
                   : environmentLabel(

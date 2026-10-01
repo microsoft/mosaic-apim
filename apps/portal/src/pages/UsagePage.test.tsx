@@ -62,7 +62,24 @@ function resourceRow(overrides: Partial<UsageResourceRow>): UsageResourceRow {
         utilization: 0.24,
       },
     ],
-    rateLimits: [{ metric: 'tokens', limit: 10_000, windowSeconds: 60 }],
+    rateLimits: [{ metric: 'tokens', limit: 10_000, windowSeconds: 60, peak: 8_000, utilization: 0.8 }],
+    throttled: 1,
+    quotaRefused: 0,
+    errors: 2,
+    peakMinuteTokens: 8_000,
+    peakMinuteRequests: 20,
+    recentHours: [
+      {
+        hour: '2026-09-02T10:00:00Z',
+        requests: 8,
+        totalTokens: 1_000,
+        throttled: 1,
+        quotaRefused: 0,
+        errors: 0,
+        peakMinuteTokens: 800,
+        peakMinuteRequests: 3,
+      },
+    ],
     ...overrides,
   }
 }
@@ -152,6 +169,10 @@ function usageReport(overrides: Partial<MyUsageReport> = {}): MyUsageReport {
       totalTokens: 12_000,
       estimatedCost: 1.23,
       costExcludedResources: 2,
+      throttled: 1,
+      quotaRefused: 0,
+      errors: 2,
+      lastUsedAt: '2026-09-02T10:30:00Z',
     },
     timeline: [
       {
@@ -163,6 +184,9 @@ function usageReport(overrides: Partial<MyUsageReport> = {}): MyUsageReport {
         completionTokens: 1_000,
         totalTokens: 4_000,
         estimatedCost: 0.4,
+        throttled: 0,
+        quotaRefused: 0,
+        errors: 1,
       },
       {
         date: '2026-09-02',
@@ -173,6 +197,9 @@ function usageReport(overrides: Partial<MyUsageReport> = {}): MyUsageReport {
         completionTokens: 3_000,
         totalTokens: 8_000,
         estimatedCost: 0.83,
+        throttled: 1,
+        quotaRefused: 0,
+        errors: 1,
       },
       {
         date: '2026-09-02',
@@ -183,6 +210,9 @@ function usageReport(overrides: Partial<MyUsageReport> = {}): MyUsageReport {
         completionTokens: null,
         totalTokens: null,
         estimatedCost: null,
+        throttled: 0,
+        quotaRefused: 0,
+        errors: 0,
       },
       {
         date: '2026-09-02',
@@ -193,6 +223,9 @@ function usageReport(overrides: Partial<MyUsageReport> = {}): MyUsageReport {
         completionTokens: null,
         totalTokens: null,
         estimatedCost: null,
+        throttled: null,
+        quotaRefused: null,
+        errors: null,
       },
     ],
     byEnvironment: [
@@ -205,6 +238,7 @@ function usageReport(overrides: Partial<MyUsageReport> = {}): MyUsageReport {
         totalTokens: 12_000,
         estimatedCost: 1.23,
         costExcludedResources: 0,
+        unmeasuredResources: 0,
       },
       {
         environment: null,
@@ -215,6 +249,7 @@ function usageReport(overrides: Partial<MyUsageReport> = {}): MyUsageReport {
         totalTokens: 0,
         estimatedCost: null,
         costExcludedResources: 1,
+        unmeasuredResources: 0,
       },
       {
         environment: 'development',
@@ -225,6 +260,7 @@ function usageReport(overrides: Partial<MyUsageReport> = {}): MyUsageReport {
         totalTokens: 0,
         estimatedCost: null,
         costExcludedResources: 1,
+        unmeasuredResources: 1,
       },
     ],
     byResource: rows,
@@ -232,6 +268,7 @@ function usageReport(overrides: Partial<MyUsageReport> = {}): MyUsageReport {
       "Figures are simulated from your real grants and limits.",
       "Costs are estimates at illustrative rates and aren't a bill.",
     ],
+    recentHours: rows[0].recentHours ?? [],
     ...overrides,
   }
 }
@@ -264,19 +301,59 @@ async function findResourceRow(name: string) {
 }
 
 describe('UsagePage', () => {
-  it('shows the sample data badge and notice for simulated data', async () => {
+  it('shows the sample figures badge and notice for simulated data', async () => {
     renderPage()
 
-    expect((await screen.findAllByText('Sample data')).length).toBeGreaterThan(0)
+    expect((await screen.findAllByText('Sample figures')).length).toBeGreaterThan(0)
     expect(screen.getByText('Figures are simulated from your real grants and limits.')).toBeVisible()
     expect(screen.getByText("Costs are estimates at illustrative rates and aren't a bill.")).toBeVisible()
   })
 
-  it('does not show sample data messaging for Log Analytics data', async () => {
-    renderPage(usageReport({ dataSource: 'logAnalytics', notes: [] }))
+  it('shows measured freshness for Log Analytics data', async () => {
+    renderPage(
+      usageReport({
+        dataSource: 'logAnalytics',
+        notes: [],
+        freshness: {
+          status: 'current',
+          updatedAt: '2026-09-02T11:48:00Z',
+          dataFrom: '2026-09-01',
+          gateways: 1,
+          intervalMinutes: 15,
+        },
+      }),
+    )
 
     expect(await screen.findByRole('table', { name: 'Usage by resource' })).toBeVisible()
-    expect(screen.queryByText('Sample data')).not.toBeInTheDocument()
+    expect(screen.getByText('Measured')).toBeVisible()
+    expect(screen.getByText(/refreshed every 15 min/)).toBeVisible()
+    expect(screen.queryByText('Sample figures')).not.toBeInTheDocument()
+  })
+
+  it.each([
+    ['delayed', /figures may be out of date/],
+    ['failing', /having trouble reading gateway logs/],
+    ['pending', /hasn't read the gateway's logs yet/],
+    ['notLinked', /None of your grants are on a gateway MOSAIC reads/],
+  ] as const)('renders the %s freshness state', async (status, text) => {
+    renderPage(
+      usageReport({
+        dataSource: 'logAnalytics',
+        notes: [],
+        freshness: {
+          status,
+          updatedAt: status === 'pending' || status === 'notLinked' ? null : '2026-09-02T10:00:00Z',
+          dataFrom: '2026-09-02',
+          gateways: status === 'notLinked' ? 0 : 1,
+          intervalMinutes: 15,
+        },
+      }),
+    )
+
+    expect(await screen.findByText(text)).toBeVisible()
+    if (status !== 'notLinked') {
+      expect(screen.getByText(/complete data from Sep 2/)).toBeVisible()
+    }
   })
 
   it('renders KPI values, unknown cost, and excluded-resource captions', async () => {
@@ -312,15 +389,25 @@ describe('UsagePage', () => {
   it('labels how usage is tracked for gateway and subscription rows', async () => {
     renderPage()
 
-    expect(within(await findResourceRow('Chat completions')).getByText('At the gateway')).toBeVisible()
-    expect(within(await findResourceRow('Docs MCP')).getByText('By APIM subscription')).toBeVisible()
+    expect(within(await findResourceRow('Chat completions')).getByText('Linked from gateway log traces')).toBeVisible()
+    expect(within(await findResourceRow('Docs MCP')).getByText('Linked from the APIM subscription')).toBeVisible()
   })
 
   it('summarizes each environment with its cost and resource count', async () => {
     renderPage()
 
     expect(await screen.findByText('100 requests · 12,000 tokens · $1.23 · 2 resources')).toBeVisible()
-    expect(screen.getByText('0 requests · 0 tokens · cost unknown · 1 resource')).toBeVisible()
+    // The development grant can't be measured, so its environment doesn't claim zero calls.
+    expect(screen.getByText('Usage unavailable · 1 resource')).toBeVisible()
+  })
+
+  it('says how many resources in an environment are not measured', async () => {
+    const [production] = usageReport().byEnvironment
+    renderPage(usageReport({ byEnvironment: [{ ...production, resources: 3, unmeasuredResources: 1 }] }))
+
+    expect(
+      await screen.findByText('100 requests · 12,000 tokens · $1.23 · 3 resources, 1 not measured'),
+    ).toBeVisible()
   })
 
   it('renders quota period text, rate limits, disabled badge, and removed resource badge', async () => {
@@ -328,10 +415,92 @@ describe('UsagePage', () => {
 
     expect((await screen.findAllByText('Tokens: 12,000 of 50,000 this month'))[0]).toBeVisible()
     expect(screen.getAllByText('10,000 tokens per minute')[0]).toBeVisible()
+    expect(screen.getAllByText('Busiest minute: 8,000 tokens (80%)')[0]).toBeVisible()
     expect(screen.getByText('60 requests per 60 seconds')).toBeVisible()
     expect(screen.getByText('Disabled')).toBeVisible()
     const row = await findResourceRow('Retired chat')
     expect(within(row).getByText('No longer available')).toBeVisible()
+  })
+
+  it('labels near and reached quota meters', async () => {
+    renderPage(
+      usageReport({
+        byResource: [
+          resourceRow({
+            entitlementId: 'near',
+            quotas: [
+              {
+                metric: 'tokens',
+                limit: 100,
+                period: 'Daily',
+                windowStart: '2026-09-02T00:00:00Z',
+                windowEnd: '2026-09-03T00:00:00Z',
+                used: 80,
+                utilization: 0.8,
+              },
+            ],
+          }),
+          resourceRow({
+            entitlementId: 'reached',
+            resourceSummary: {
+              kind: 'modelApi',
+              id: 'chat-2',
+              scopeId: null,
+              displayName: 'Reached chat',
+              gatewayId: 'gateway-1',
+              gatewayName: 'Production gateway',
+              environment: 'production',
+              available: true,
+            },
+            quotas: [
+              {
+                metric: 'requests',
+                limit: 10,
+                period: 'Daily',
+                windowStart: '2026-09-02T00:00:00Z',
+                windowEnd: '2026-09-03T00:00:00Z',
+                used: 10,
+                utilization: 1,
+              },
+            ],
+          }),
+        ],
+      }),
+    )
+
+    expect(await screen.findByText('80% used · Near limit')).toBeVisible()
+    expect(screen.getByText('100% used · Limit reached')).toBeVisible()
+  })
+
+  it("doesn't call a quota fine when its usage is unknown", async () => {
+    renderPage(
+      usageReport({
+        byResource: [
+          resourceRow({
+            entitlementId: 'unknown',
+            attribution: 'unattributed',
+            linkedBy: null,
+            quotas: [
+              {
+                metric: 'requests',
+                limit: 10_000,
+                period: 'Monthly',
+                windowStart: '2026-09-01T00:00:00Z',
+                windowEnd: '2026-10-01T00:00:00Z',
+                used: null,
+                utilization: null,
+              },
+            ],
+          }),
+        ],
+      }),
+    )
+
+    const row = await findResourceRow('Chat completions')
+    expect(within(row).getByText('Requests: up to 10,000 this month')).toBeVisible()
+    expect(within(row).getByText('Usage unknown')).toBeVisible()
+    expect(within(row).queryByRole('progressbar')).not.toBeInTheDocument()
+    expect(within(row).getAllByText("Usage can't be measured for this grant yet.")).toHaveLength(1)
   })
 
   it("refetches when the period changes to 7 days", async () => {
@@ -367,9 +536,58 @@ describe('UsagePage', () => {
     const user = userEvent.setup()
     renderPage()
 
-    await user.click(await screen.findByRole('button', { name: 'Show as table' }))
+    await screen.findByRole('table', { name: 'Usage by resource' })
+    await user.click(screen.getAllByRole('button', { name: 'Show as table' })[0])
     expect(screen.getByRole('table', { name: 'Daily requests by environment' })).toBeVisible()
     expect(screen.getByRole('columnheader', { name: 'Production' })).toBeVisible()
+  })
+
+  it('renders recent hours', async () => {
+    renderPage(usageReport({ dataSource: 'logAnalytics', freshness: null, notes: [] }))
+
+    expect(await screen.findByRole('img', { name: 'Hourly request chart for the last 24 hours in UTC' })).toBeVisible()
+  })
+
+  it("doesn't chart other grants' hours when the filtered grants have none", async () => {
+    const user = userEvent.setup()
+    const report = usageReport({ dataSource: 'logAnalytics', freshness: null, notes: [] })
+    renderPage({
+      ...report,
+      byResource: report.byResource.map((row) =>
+        row.entitlementId === 'grant-model' ? row : { ...row, recentHours: [] },
+      ),
+    })
+    const chartName = 'Hourly request chart for the last 24 hours in UTC'
+
+    expect(await screen.findByRole('img', { name: chartName })).toBeVisible()
+    await user.selectOptions(screen.getByLabelText('Environment'), 'development')
+    expect(screen.queryByRole('img', { name: chartName })).not.toBeInTheDocument()
+    await user.selectOptions(screen.getByLabelText('Environment'), 'all')
+    await user.selectOptions(screen.getByLabelText('Resource'), 'grant-mcp')
+    expect(screen.queryByRole('img', { name: chartName })).not.toBeInTheDocument()
+    await user.selectOptions(screen.getByLabelText('Resource'), 'grant-model')
+    expect(screen.getByRole('img', { name: chartName })).toBeVisible()
+  })
+
+  it('explains security-group grants show only the caller usage', async () => {
+    renderPage(
+      usageReport({
+        byResource: [
+          resourceRow({
+            via: 'securityGroup',
+            viaGroupName: 'Analysts',
+            attribution: 'measured',
+          }),
+        ],
+      }),
+    )
+
+    const row = await findResourceRow('Chat completions')
+    expect(within(row).getByText('Entra security group: Analysts')).toBeVisible()
+    expect(within(row).getByText('Your calls only.')).toBeVisible()
+    expect(
+      within(row).getByText('Only your own calls through this security-group grant are counted here.'),
+    ).toBeVisible()
   })
 
   it('shows the empty state', async () => {
@@ -377,6 +595,26 @@ describe('UsagePage', () => {
 
     expect(await screen.findByText('No grants yet')).toBeVisible()
     expect(screen.getByRole('link', { name: 'catalog' })).toHaveAttribute('href', '/catalog')
+  })
+
+  it('shows an empty state when grants have no calls in the period', async () => {
+    renderPage(
+      usageReport({
+        totals: {
+          requests: 0,
+          promptTokens: 0,
+          completionTokens: 0,
+          totalTokens: 0,
+          estimatedCost: null,
+          costExcludedResources: 0,
+        },
+        timeline: [],
+        byEnvironment: [{ ...usageReport().byEnvironment[0], requests: 0, totalTokens: 0 }],
+        byResource: [resourceRow({ requests: 0, promptTokens: 0, completionTokens: 0, totalTokens: 0 })],
+      }),
+    )
+
+    expect(await screen.findByText('No calls in this period')).toBeVisible()
   })
 
   it('shows the error state with retry', async () => {

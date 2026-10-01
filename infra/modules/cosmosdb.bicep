@@ -106,6 +106,26 @@ resource observedStateContainer 'Microsoft.DocumentDB/databaseAccounts/sqlDataba
   }
 }
 
+// Gateway telemetry rolled up from Log Analytics. See ADR 0019. Time to live is on without a
+// default (-1), so each item decides: daily facts and summaries expire after the retention
+// period (MOSAIC_USAGE_ROLLUP_RETENTION_DAYS) and monthly summaries are kept.
+resource usageRollupsContainer 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers@2024-05-15' = {
+  parent: sqlDatabase
+  name: 'usage-rollups'
+  properties: {
+    resource: {
+      id: 'usage-rollups'
+      defaultTtl: -1
+      partitionKey: {
+        kind: 'Hash'
+        paths: [
+          '/tenantId'
+        ]
+      }
+    }
+  }
+}
+
 output id string = account.id
 output endpoint string = account.properties.documentEndpoint
 output name string = account.name

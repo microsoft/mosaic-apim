@@ -559,6 +559,9 @@ Progress:
   entitlements are, so P7's foreign grants must not appear in it either (P9). The verifier's
   `--foreign-user-entitlement` check reads the route's 90-day report and fails if a foreign grant
   is in its rows or timeline. Against a MOSAIC without the route it says it skipped the check.
+  [ADR 0019](../adr/0019-usage-telemetry.md) has since replaced the simulation in Azure with
+  figures measured from the gateway's logs. A deployment with it shows **Measured figures** and
+  how current they are instead, and the verifier's check is unchanged.
 
 Progress:
 
@@ -694,7 +697,7 @@ described below.
 | R5 | `--prove-shared-budget`, on fresh grants limited to 2 calls per 300 seconds. The secondary key's 429 must come from the gateway's call limit, not the deployment |
 | R6 | `--prove-token-limit`, on fresh grants limited to at most 100 tokens per minute, on a model whose own limit for each grant is higher. The 429 must come from the gateway's token limit. Not Claude on the classic tier, which can't limit Anthropic tokens (G5) |
 | R7 | `--watch-revocation <grant-id>` waits while the admin revokes the grant, which disables it, and applies the plan (A14). Rejections count only once MOSAIC reports the grant revoked, and must repeat |
-| R8 | Manual: find the calls in Application Insights and Log Analytics |
+| R8 | Manual: find the calls in Application Insights and Log Analytics. With [ADR 0019](../adr/0019-usage-telemetry.md) deployed, the gateway's **Telemetry** section must pass its checks, and within about 20 minutes the portal's **Usage & cost** and the console's **Analytics** must count the run's calls against the right grant and client, and its refusals under their reasons |
 
 Method toggles (A14) are checked by rerunning the verifier after each reviewed plan. The verifier
 reveals a grant's keys only while keys are on, so it can't show that a key stops working once keys
@@ -894,7 +897,7 @@ has passed, and ❌ means the latest run failed on the product gap named.
 | P6 | Connection details appear, and key reveal is masked, transient and uncached (G3) | 7 | ✅ |
 | P7 | Another user's entitlement ID returns 403 or 404 | 7 | ✅ |
 | P8 | The admin shows as allowed in the portal | 7 | ✅ |
-| P9 | **Usage & cost** lists only the caller's grants and labels its figures as simulated; the verifier checks its route leaves out other people's grants (#40) | 7 | ✅ |
+| P9 | **Usage & cost** lists only the caller's grants and labels its figures as simulated, until ADR 0019 measures them; the verifier checks its route leaves out other people's grants (#40) | 7 | ✅ |
 
 ### Runtime (real calls through APIM)
 
@@ -907,7 +910,7 @@ has passed, and ❌ means the latest run failed on the product gap named.
 | R5 | A shared budget of 2 calls per 300 seconds, spent by primary key and token, returns 429 for the secondary key | 8 | ⬜ |
 | R6 | The tokens-per-minute limit returns 429 with `Retry-After` | 8 | ⬜ |
 | R7 | After revocation propagates, calls fail | 8 | ⬜ |
-| R8 | Calls show up in Application Insights and Log Analytics (optional) | 8 | 🔄 |
+| R8 | Calls show up in Application Insights and Log Analytics, and with ADR 0019, in MOSAIC's usage and analytics (optional) | 8 | 🔄 |
 
 ## Findings
 
@@ -984,5 +987,5 @@ before.
 
 ## Out of scope
 
-MCP servers, group-based grants, analytics and chargeback, production hardening, and running the
-live suite in CI (it needs interactive sign-in).
+MCP servers, group-based grants, analytics beyond R8's check, chargeback, production hardening,
+and running the live suite in CI (it needs interactive sign-in).

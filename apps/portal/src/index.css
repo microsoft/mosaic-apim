@@ -561,6 +561,10 @@ textarea { font: inherit; }
   padding-left: 18px;
 }
 
+.usage-notice p {
+  margin: 6px 0 0;
+}
+
 .usage-kpi-grid {
   margin-bottom: 16px;
   display: grid;
@@ -607,6 +611,21 @@ textarea { font: inherit; }
 .section-header p {
   margin: 4px 0 0;
   color: var(--mosaic-text-muted);
+}
+
+.chart-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  justify-content: end;
+  gap: 8px;
+}
+
+.chart-actions label {
+  display: grid;
+  gap: 4px;
+  color: var(--mosaic-text-muted);
+  font-size: 12px;
 }
 
 .usage-chart {
@@ -679,6 +698,24 @@ textarea { font: inherit; }
   width: 10px;
   height: 10px;
   border-radius: 50%;
+}
+
+.hour-bars {
+  display: grid;
+  grid-template-columns: repeat(24, minmax(4px, 1fr));
+  align-items: end;
+  gap: 4px;
+  height: 180px;
+  padding: 12px;
+  border: 1px solid var(--mosaic-border-soft);
+  border-radius: 8px;
+  background: linear-gradient(180deg, var(--mosaic-surface), var(--mosaic-surface-subtle));
+}
+
+.hour-bars span {
+  min-height: 2px;
+  border-radius: 999px 999px 0 0;
+  background: var(--mosaic-primary);
 }
 
 .environment-bars {
@@ -769,9 +806,15 @@ textarea { font: inherit; }
   gap: 4px;
 }
 
-.quota-progress span {
-  font-size: 12px;
-  color: var(--mosaic-text-muted);
+.quota-progress small {
+  margin-top: 0;
+}
+
+.rate-limit-list {
+  display: grid;
+  gap: 8px;
+  padding-left: 0;
+  list-style: none;
 }
 
 .quota-warning .fui-ProgressBar__bar { background: #ffaa44; }

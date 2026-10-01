@@ -4,6 +4,16 @@ import { runtimeConfig } from './runtime-config'
 import type {
   AccessRequest,
   AccessRequestApproval,
+  AnalyticsConsumers,
+  AnalyticsFilters,
+  AnalyticsGatewayHealth,
+  AnalyticsHygiene,
+  AnalyticsLimits,
+  AnalyticsModels,
+  AnalyticsOverview,
+  AnalyticsReliability,
+  AnalyticsStatus,
+  AnalyticsUnattributed,
   ApiErrorBody,
   CatalogVisibility,
   ConsoleAccess,
@@ -25,12 +35,14 @@ import type {
   EnvironmentSettingsUpdate,
   EnvironmentSuggestionList,
   EnvironmentUpdate,
+  ExportView,
   GrantOverlapReport,
   Gateway,
   GatewayPolicyView,
   GatewayRuntimeAccess,
   GatewaySuggestion,
   GatewaySyncRun,
+  GatewayTelemetry,
   Group,
   GroupMembership,
   KeyRevealResult,
@@ -99,8 +111,28 @@ interface RequestOptions {
   signal?: AbortSignal
 }
 
+export interface DownloadedFile {
+  blob: Blob
+  /** The name the API gave the file, or null when it named none. */
+  filename: string | null
+}
+
+function attachmentName(disposition: string | null) {
+  return disposition?.match(/filename="([^"]+)"/)?.[1] ?? null
+}
+
 export interface MosaicApi {
   getConsoleAccess(): Promise<ConsoleAccess>
+  getAnalyticsStatus(): Promise<AnalyticsStatus>
+  refreshAnalytics(): Promise<AnalyticsStatus>
+  getAnalyticsOverview(filters?: AnalyticsFilters): Promise<AnalyticsOverview>
+  getAnalyticsConsumers(filters?: AnalyticsFilters): Promise<AnalyticsConsumers>
+  getAnalyticsModels(filters?: AnalyticsFilters): Promise<AnalyticsModels>
+  getAnalyticsReliability(filters?: AnalyticsFilters): Promise<AnalyticsReliability>
+  getAnalyticsLimits(filters?: AnalyticsFilters): Promise<AnalyticsLimits>
+  getAnalyticsHygiene(filters?: AnalyticsFilters): Promise<AnalyticsHygiene>
+  getAnalyticsUnattributed(filters?: AnalyticsFilters): Promise<AnalyticsUnattributed>
+  exportAnalytics(view: ExportView, filters?: AnalyticsFilters): Promise<DownloadedFile>
   getEnvironmentCatalog(): Promise<EnvironmentCatalogView>
   createEnvironment(payload: EnvironmentCreate): Promise<EnvironmentCatalogView>
   updateEnvironment(key: string, payload: EnvironmentUpdate): Promise<EnvironmentCatalogView>
@@ -143,6 +175,10 @@ export interface MosaicApi {
     environment?: string | null
   }): Promise<Gateway>
   getGateway(gatewayId: string): Promise<Gateway>
+  getGatewayTelemetry(gatewayId: string): Promise<GatewayTelemetry>
+  enableGatewayTelemetry(gatewayId: string): Promise<GatewayTelemetry>
+  refreshGatewayTelemetry(gatewayId: string): Promise<AnalyticsGatewayHealth>
+  backfillGatewayTelemetry(gatewayId: string, days?: number | null): Promise<AnalyticsGatewayHealth>
   updateGateway(
     gatewayId: string,
     payload: {
@@ -332,9 +368,9 @@ export function useMosaicApi(): MosaicApi {
   const { instance, accounts } = useMsal()
 
   return useMemo(() => {
-    async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
+    async function requestHeaders(hasBody: boolean): Promise<Headers> {
       const headers = new Headers({ Accept: 'application/json' })
-      if (options.body !== undefined) {
+      if (hasBody) {
         headers.set('Content-Type', 'application/json')
       }
       if (runtimeConfig.authMode === 'entra') {
@@ -348,6 +384,11 @@ export function useMosaicApi(): MosaicApi {
         })
         headers.set('Authorization', `Bearer ${token.accessToken}`)
       }
+      return headers
+    }
+
+    async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
+      const headers = await requestHeaders(options.body !== undefined)
       const response = await fetch(`${runtimeConfig.apiBaseUrl}${path}`, {
         method: options.method ?? 'GET',
         body: options.body === undefined ? undefined : JSON.stringify(options.body),
@@ -374,8 +415,75 @@ export function useMosaicApi(): MosaicApi {
       return (await response.json()) as T
     }
 
+    async function requestBlob(path: string, options: RequestOptions = {}): Promise<DownloadedFile> {
+      const headers = await requestHeaders(options.body !== undefined)
+      headers.set('Accept', 'text/csv')
+      const response = await fetch(`${runtimeConfig.apiBaseUrl}${path}`, {
+        method: options.method ?? 'GET',
+        body: options.body === undefined ? undefined : JSON.stringify(options.body),
+        headers,
+        cache: options.cache,
+        signal: options.signal,
+      })
+      if (!response.ok) {
+        let body: ApiErrorBody | undefined
+        try {
+          body = (await response.json()) as ApiErrorBody
+        } catch {
+          body = undefined
+        }
+        throw new ApiError(
+          body?.message ?? body?.detail ?? `Request failed with status ${response.status}`,
+          response.status,
+          body,
+        )
+      }
+      return {
+        blob: await response.blob(),
+        filename: attachmentName(response.headers.get('Content-Disposition')),
+      }
+    }
+
+    function analyticsQuery(filters?: AnalyticsFilters, extra?: Record<string, string | undefined>) {
+      const params = new URLSearchParams()
+      const range = filters?.range ?? '30d'
+      params.set('range', range)
+      if (range === 'custom') {
+        if (filters?.start) params.set('start', filters.start)
+        if (filters?.end) params.set('end', filters.end)
+      }
+      if (filters?.gatewayId) params.set('gatewayId', filters.gatewayId)
+      if (filters?.environment) params.set('environment', filters.environment)
+      if (filters?.resourceId) params.set('resourceId', filters.resourceId)
+      if (filters?.subjectKind) params.set('subjectKind', filters.subjectKind)
+      for (const [key, value] of Object.entries(extra ?? {})) {
+        if (value) params.set(key, value)
+      }
+      const query = params.toString()
+      return query ? `?${query}` : ''
+    }
+
     return {
       getConsoleAccess: () => request<ConsoleAccess>('/api/v1/console/me'),
+      getAnalyticsStatus: () => request<AnalyticsStatus>('/api/v1/analytics/status'),
+      refreshAnalytics: () =>
+        request<AnalyticsStatus>('/api/v1/analytics/refresh', { method: 'POST' }),
+      getAnalyticsOverview: (filters) =>
+        request<AnalyticsOverview>(`/api/v1/analytics/overview${analyticsQuery(filters)}`),
+      getAnalyticsConsumers: (filters) =>
+        request<AnalyticsConsumers>(`/api/v1/analytics/consumers${analyticsQuery(filters)}`),
+      getAnalyticsModels: (filters) =>
+        request<AnalyticsModels>(`/api/v1/analytics/models${analyticsQuery(filters)}`),
+      getAnalyticsReliability: (filters) =>
+        request<AnalyticsReliability>(`/api/v1/analytics/reliability${analyticsQuery(filters)}`),
+      getAnalyticsLimits: (filters) =>
+        request<AnalyticsLimits>(`/api/v1/analytics/limits${analyticsQuery(filters)}`),
+      getAnalyticsHygiene: (filters) =>
+        request<AnalyticsHygiene>(`/api/v1/analytics/hygiene${analyticsQuery(filters)}`),
+      getAnalyticsUnattributed: (filters) =>
+        request<AnalyticsUnattributed>(`/api/v1/analytics/unattributed${analyticsQuery(filters)}`),
+      exportAnalytics: (view, filters) =>
+        requestBlob(`/api/v1/analytics/export${analyticsQuery(filters, { view })}`),
       getEnvironmentCatalog: () => request<EnvironmentCatalogView>('/api/v1/environment-catalog'),
       createEnvironment: (payload) =>
         request<EnvironmentCatalogView>('/api/v1/environment-catalog/environments', {
@@ -461,6 +569,22 @@ export function useMosaicApi(): MosaicApi {
       listSyncRuns: (id) => request<GatewaySyncRun[]>(`/api/v1/gateways/${id}/sync-runs`),
       listSuggestedGateways: () =>
         request<GatewaySuggestion[]>('/api/v1/gateways/suggested'),
+      getGatewayTelemetry: (id) =>
+        request<GatewayTelemetry>(`/api/v1/gateways/${encodeURIComponent(id)}/telemetry`),
+      enableGatewayTelemetry: (id) =>
+        request<GatewayTelemetry>(`/api/v1/gateways/${encodeURIComponent(id)}/telemetry/enable`, {
+          method: 'POST',
+        }),
+      refreshGatewayTelemetry: (id) =>
+        request<AnalyticsGatewayHealth>(
+          `/api/v1/gateways/${encodeURIComponent(id)}/telemetry/refresh`,
+          { method: 'POST' },
+        ),
+      backfillGatewayTelemetry: (id, days) =>
+        request<AnalyticsGatewayHealth>(
+          `/api/v1/gateways/${encodeURIComponent(id)}/telemetry/backfill`,
+          { method: 'POST', body: { days } },
+        ),
       listPublishableModels: (id) =>
         request<PublishableModel[]>(`/api/v1/gateways/${id}/publishable-models`),
       listPublications: (gatewayId) =>

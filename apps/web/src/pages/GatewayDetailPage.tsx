@@ -2,12 +2,16 @@ import {
   Badge,
   Button,
   Card,
+  Input,
   Menu,
   MenuButton,
   MenuItem,
   MenuList,
   MenuPopover,
   MenuTrigger,
+  MessageBar,
+  MessageBarBody,
+  MessageBarTitle,
   Tab,
   TabList,
   Text,
@@ -16,16 +20,16 @@ import {
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { useMosaicApi } from '../api'
+import { ApiError, useMosaicApi } from '../api'
 import { EmptyState, ErrorState, Loading } from '../components/AsyncState'
 import { ChangeEnvironmentDialog } from '../components/ChangeEnvironmentDialog'
 import { EnvironmentBadge } from '../components/EnvironmentBadge'
 import { EnvironmentFindings } from '../components/EnvironmentFindings'
 import { GatewayManagementMode } from '../components/GatewayManagementMode'
-import { AI_KIND_LABELS, MANAGEMENT_MODE_LABELS } from '../labels'
+import { AI_KIND_LABELS, BACKFILL_STATUS_LABELS, MANAGEMENT_MODE_LABELS, TELEMETRY_CHECK_STATUS_LABELS } from '../labels'
 import { PolicyDocumentCard, PolicyFragmentCard } from '../components/PolicyFacets'
 import { lastAppliedLabel, publicationStatusLabel } from '../publication-state'
-import type { AiBackendKind, Gateway } from '../types'
+import type { AiBackendKind, ApiDiagnosticGap, ApiTelemetry, Gateway, GatewayTelemetry } from '../types'
 import { environmentLabel, invalidateEnvironmentQueries, useEnvironmentCatalog } from '../environments'
 import { PageHeader } from '../components/PageHeader'
 import { AccessPanel, GatewayStatusBadge } from './GatewaysPage'
@@ -196,6 +200,179 @@ function Overview({ gateway, onChanged }: { gateway: Gateway; onChanged: (messag
         }}
       />
     </>
+  )
+}
+
+function checkColor(status: string): 'success' | 'warning' | 'danger' | 'subtle' {
+  if (status === 'ok') return 'success'
+  if (status === 'warning' || status === 'unknown') return 'warning'
+  if (status === 'error') return 'danger'
+  return 'subtle'
+}
+
+const diagnosticGaps: Record<ApiDiagnosticGap, string> = {
+  missing: 'No Azure Monitor diagnostic found',
+  logger: "Doesn't send to the azuremonitor logger",
+  verbosity: 'Verbosity below Information',
+  sampling: 'Sampling below 100%',
+  llmLogs: 'LLM logs off',
+}
+
+function diagnosticReadiness(api: ApiTelemetry) {
+  const text = api.gaps.length === 0 ? 'Ready' : api.gaps.map((gap) => diagnosticGaps[gap] ?? gap).join('; ')
+  return api.allApis ? `${text} (All APIs setting)` : text
+}
+
+/** The workspace's own name, from the end of its Azure resource ID. */
+function workspaceName(workspaceId: string) {
+  return workspaceId.split('/').filter(Boolean).pop() ?? workspaceId
+}
+
+function telemetryError(error: unknown) {
+  const status = error instanceof ApiError ? error.status : (error as { status?: number }).status
+  if (status === 409) {
+    return "This deployment doesn't check gateway telemetry."
+  }
+  if (status === 429) {
+    return 'Telemetry was refreshed less than a minute ago. Try again shortly.'
+  }
+  if (status === 422) {
+    return error instanceof Error && error.message
+      ? error.message
+      : 'Backfill days must be between 1 and 730.'
+  }
+  if (status === 403) {
+    return "MOSAIC's identity lacks permission for that telemetry action."
+  }
+  return error instanceof Error ? error.message : 'Telemetry action failed.'
+}
+
+function TelemetrySection({ gatewayId }: { gatewayId: string }) {
+  const api = useMosaicApi()
+  const queryClient = useQueryClient()
+  const [days, setDays] = useState('30')
+  const [message, setMessage] = useState<string | null>(null)
+  const telemetry = useQuery({
+    queryKey: ['gateway-telemetry', gatewayId],
+    queryFn: () => api.getGatewayTelemetry(gatewayId),
+    retry: false,
+  })
+  const actionOptions = {
+    onSuccess: async () => {
+      setMessage('Telemetry action accepted. MOSAIC will update rollups shortly.')
+      await queryClient.invalidateQueries({ queryKey: ['gateway-telemetry', gatewayId] })
+      await queryClient.invalidateQueries({ queryKey: ['analytics'] })
+    },
+    onError: (error: unknown) => setMessage(telemetryError(error)),
+  }
+  const enable = useMutation({ mutationFn: () => api.enableGatewayTelemetry(gatewayId), ...actionOptions })
+  const refresh = useMutation({ mutationFn: () => api.refreshGatewayTelemetry(gatewayId), ...actionOptions })
+  const backfill = useMutation({ mutationFn: () => api.backfillGatewayTelemetry(gatewayId, Number(days)), ...actionOptions })
+
+  if (telemetry.isPending) return <Loading label="Loading telemetry" />
+  if (telemetry.isError) {
+    const text = telemetryError(telemetry.error)
+    if (telemetry.error instanceof ApiError && telemetry.error.status === 409) {
+      return (
+        <Card className={styles.detailCard}>
+          <Title3 as="h2">Telemetry</Title3>
+          <Text>{text}</Text>
+        </Card>
+      )
+    }
+    return <ErrorState error={new Error(text)} title="Unable to load telemetry" />
+  }
+
+  const data: GatewayTelemetry = telemetry.data
+  return (
+    <Card className={`${styles.detailCard} ${styles.telemetryCard}`}>
+      <div className={styles.apiHeader}>
+        <div className={styles.apiHeaderText}>
+          <Title3 as="h2">Telemetry</Title3>
+          <Text size={200}>
+            {data.ready ? 'This gateway is ready for usage analytics.' : 'Telemetry still needs attention.'}
+          </Text>
+          <Text size={200}>
+            {data.workspaceId ? (
+              <>Log Analytics workspace <span title={data.workspaceId}>{workspaceName(data.workspaceId)}</span></>
+            ) : 'No Log Analytics workspace is linked yet.'}
+          </Text>
+        </div>
+        <Badge color={data.ready ? 'success' : 'warning'}>{data.ready ? 'Ready' : 'Needs setup'}</Badge>
+      </div>
+      {message && (
+        <MessageBar intent={message.includes('failed') || message.includes('lacks') ? 'error' : 'info'}>
+          <MessageBarBody>{message}</MessageBarBody>
+        </MessageBar>
+      )}
+      <div className={styles.telemetryActions}>
+        <Button appearance="secondary" disabled={!data.canEnable || enable.isPending} onClick={() => enable.mutate()}>
+          {enable.isPending ? 'Enabling…' : 'Enable API diagnostics'}
+        </Button>
+        <Button appearance="secondary" disabled={refresh.isPending} onClick={() => refresh.mutate()}>
+          {refresh.isPending ? 'Refreshing…' : 'Refresh now'}
+        </Button>
+        <label className={styles.daysControl}>
+          <span>Backfill days</span>
+          <Input type="number" min={1} max={730} value={days} onChange={(event) => setDays(event.target.value)} />
+        </label>
+        <Button appearance="secondary" disabled={backfill.isPending} onClick={() => backfill.mutate()}>
+          {backfill.isPending ? 'Starting…' : 'Backfill'}
+        </Button>
+      </div>
+      <div className="table-scroll">
+        <table aria-label="Telemetry checks">
+          <thead><tr><th>Check</th><th>Status</th><th>Message</th><th>Command</th></tr></thead>
+          <tbody>
+            {data.checks.map((check) => (
+              <tr key={check.id}>
+                <td>{check.title}</td>
+                <td><Badge color={checkColor(check.status)}>{TELEMETRY_CHECK_STATUS_LABELS[check.status]}</Badge></td>
+                <td>{check.detail}</td>
+                <td>{check.command ? <code className={styles.command}>{check.command}</code> : '—'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <Title3 as="h3">API diagnostics readiness</Title3>
+      <div className="table-scroll">
+        <table aria-label="API diagnostics readiness">
+          <thead><tr><th>API</th><th>Kind</th><th>Published by MOSAIC</th><th>Gaps</th></tr></thead>
+          <tbody>
+            {data.apis.length === 0 ? (
+              <tr><td colSpan={4}>MOSAIC governs no APIs on this gateway yet.</td></tr>
+            ) : data.apis.map((item) => (
+              <tr key={item.apiName}>
+                <td>{item.displayName}<Text block size={200}>{item.apiName}</Text></td>
+                <td>{item.kind === 'mcp' ? 'MCP server' : 'Model API'}</td>
+                <td>{item.published ? 'Yes' : 'No'}</td>
+                <td>{diagnosticReadiness(item)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <Title3 as="h3">Rollups</Title3>
+      {data.rollup ? (
+        <div className={styles.rollupGrid}>
+          <Text>Last success: {data.rollup.lastSuccessAt ? new Date(data.rollup.lastSuccessAt).toLocaleString() : 'Never'}</Text>
+          <Text>Queried through: {data.rollup.queriedThrough ? new Date(data.rollup.queriedThrough).toLocaleString() : 'Never'}</Text>
+          <Text>Lag: {data.rollup.lagMinutes == null ? 'unknown' : `${data.rollup.lagMinutes} min`}</Text>
+          <Text>Backfill: {BACKFILL_STATUS_LABELS[data.rollup.backfillStatus]}{data.rollup.backfillNext ? ` · next ${data.rollup.backfillNext}` : ''}</Text>
+          <Text>Rows written last run: {data.rollup.lastWritten}</Text>
+          {data.rollup.lastError && <Text className={styles.syncError}>Last error: {data.rollup.lastError}</Text>}
+        </div>
+      ) : (
+        <Text>MOSAIC has not created a rollup state for this gateway yet.</Text>
+      )}
+      <MessageBar>
+        <MessageBarBody>
+          <MessageBarTitle>Diagnostic settings are manual</MessageBarTitle>
+          MOSAIC can create the Azure Monitor logger and API diagnostics for APIs it published, but it does not write Azure Monitor diagnostic settings. Use the az commands above when a check provides one.
+        </MessageBarBody>
+      </MessageBar>
+    </Card>
   )
 }
 
@@ -725,6 +902,7 @@ export function GatewayDetailPage() {
         {tab === 'overview' && (
           <>
             <Overview gateway={gateway.data} onChanged={(text) => void environmentChanged(text)} />
+            <TelemetrySection gatewayId={gatewayId} />
             <EnvironmentFindings gatewayId={gatewayId} hideWhenEmpty />
             <PublishedModelsSection gatewayId={gatewayId} />
           </>
