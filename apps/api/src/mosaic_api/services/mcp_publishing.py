@@ -12,6 +12,7 @@ import structlog
 
 from mosaic_api.domain import (
     ApimResourceId,
+    AppliedCostCenterPool,
     AuditEvent,
     BindingSource,
     CapabilitySupport,
@@ -70,15 +71,19 @@ from mosaic_api.integrations.mcp_access_policy import (
 )
 from mosaic_api.observed import ObservedApi
 from mosaic_api.repositories import (
+    CostCenterRepository,
     DirectoryRepository,
     EntitlementRepository,
     EnvironmentRepository,
     GatewayRepository,
     McpEndpointRepository,
 )
+from mosaic_api.services.cost_centers import load_book
 from mosaic_api.services.directory import Actor
 from mosaic_api.services.environments import load_environment_catalog
 from mosaic_api.services.model_access import (
+    cost_center_intent,
+    effective_enforcement,
     entitlement_intent_digest,
     environment_guard,
     local_mutation_active,
@@ -298,8 +303,10 @@ class McpPublishingService:
         runtime_client_id: str | None,
         security_group_claims: bool = True,
         environment_repository: EnvironmentRepository | None = None,
+        cost_center_repository: CostCenterRepository | None = None,
     ) -> None:
         self._repository = repository
+        self._cost_centers = cost_center_repository
         self._endpoints = mcp_endpoint_repository
         self._entitlements = entitlement_repository
         self._directory = directory_repository
@@ -1109,9 +1116,11 @@ class McpPublishingService:
             "this snapshot will be applied together. MOSAIC groups remain desired-state only."
         ]
         grants: list[McpAccessGrant] = []
+        pools: dict[str, AppliedCostCenterPool] = {}
         entitlements = await self._entitlements.list_entitlements(
             publication.tenant_id, resource_id=publication.mcp_server_id
         )
+        book = await load_book(self._cost_centers, publication.tenant_id)
         saw_security_group_grant = False
         for entitlement in entitlements:
             if entitlement.resource.kind != "mcpServer":
@@ -1136,6 +1145,13 @@ class McpPublishingService:
                     "from runtime access."
                 )
                 continue
+            intent = cost_center_intent(entitlement, principal, book)
+            if intent is None:
+                warnings.append(
+                    f"Grant {entitlement.id}'s cost center no longer exists; it is excluded from "
+                    "runtime access."
+                )
+                continue
             is_security_group = entitlement.subject.kind == EntitlementSubjectKind.SECURITY_GROUP
             saw_security_group_grant = saw_security_group_grant or is_security_group
             grants.append(
@@ -1149,10 +1165,20 @@ class McpPublishingService:
                     ),
                     display_name=principal.label or principal.object_id,
                     enabled=entitlement.enabled,
-                    enforcement=entitlement.enforcement,
-                    intent_digest=entitlement_intent_digest(entitlement, principal),
+                    enforcement=effective_enforcement(entitlement, intent),
+                    intent_digest=entitlement_intent_digest(entitlement, principal, intent),
+                    cost_center_id=intent.cost_center_id,
+                    cost_center_code=intent.code,
+                    default_cost_center=intent.default_for_subject,
+                    granted_at=entitlement.created_at,
                 )
             )
+            if intent.pool is not None and intent.pool.monthly_calls is not None:
+                pools[intent.cost_center_id] = AppliedCostCenterPool(
+                    cost_center_id=intent.cost_center_id,
+                    cost_center_code=intent.code,
+                    monthly_calls=intent.pool.monthly_calls,
+                )
         if saw_security_group_grant and not self._security_group_claims:
             warnings.append(
                 "Group claims aren't configured for this deployment, so the gateway can't match "
@@ -1186,6 +1212,7 @@ class McpPublishingService:
                 version=publication.applied_access.version + 1 if publication.applied_access else 1,
                 audience=self._runtime_client_id,
                 grants=grants,
+                pools=sorted(pools.values(), key=lambda pool: pool.cost_center_id),
             ),
             warnings,
         )

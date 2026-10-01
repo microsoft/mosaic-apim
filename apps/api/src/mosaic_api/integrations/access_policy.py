@@ -15,11 +15,15 @@ import hashlib
 import json
 import re
 import xml.etree.ElementTree as ET
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
+from datetime import UTC, datetime
 from typing import Protocol
 
 from mosaic_api.domain import (
+    COST_CENTER_CODE_PATTERN,
+    COST_CENTER_HEADER,
     ApiShape,
+    AppliedCostCenterPool,
     EntitlementEnforcement,
     EntitlementSubject,
     EntitlementSubjectKind,
@@ -73,6 +77,18 @@ _HAS_TOKEN = '(bool)context.Variables["mosaic-has-token"]'
 _KEY_GRANT = '(string)context.Variables["mosaic-key-grant"]'
 _MEMBER = '(string)context.Variables["mosaic-member"]'
 _TOKEN_GRANT = '(string)context.Variables["mosaic-token-grant"]'
+# The cost-center header's code, lowercased: empty when the call names none, "!" when the header
+# is malformed. A key's own cost center fills it in when the header is absent, so a token presented
+# with the key resolves to the key's grant. See ADR 0021.
+_COST_CENTER_HEADER = '(string)context.Variables["mosaic-cost-center-header"]'
+_SELECTED_COST_CENTER = '(string)context.Variables["mosaic-cc"]'
+_KEY_COST_CENTER = '(string)context.Variables["mosaic-key-cost-center"]'
+_TOKEN_COST_CENTER = '(string)context.Variables["mosaic-token-cost-center"]'
+# The matched grant's cost center code, lowercased, set once the grant is resolved. Pooled quotas
+# read it, and so can later checks, such as one refusing a blocked cost center.
+_GRANT_COST_CENTER = '(string)context.Variables["mosaic-cost-center"]'
+# A key lookup's answer for a key whose grant's cost center turned keys off.
+_KEYS_OFF = "-"
 # The validated token's oid and azp, lowercased. Empty for a key-only call and until the token
 # validates, so nothing unvalidated is ever recorded.
 _CALLER = '(string)context.Variables["mosaic-caller"]'
@@ -87,6 +103,23 @@ _GROUPS_OVERAGE_DENIED = (
     "Model access denied. Your token doesn't list your groups because you belong to too many; "
     "ask an administrator for a direct grant."
 )
+COST_CENTER_DENIED = (
+    "Access denied. You hold no grant under the cost center the x-mosaic-cost-center header "
+    "names, or the header isn't a cost center code."
+)
+COST_CENTER_MISMATCH_DENIED = (
+    "Access denied. This key belongs to a grant under a different cost center than the "
+    "x-mosaic-cost-center header names."
+)
+COST_CENTER_KEYS_OFF_DENIED = (
+    "Model access denied. Keys are turned off for this grant's cost center; use a Microsoft Entra "
+    "token."
+)
+# Response headers the gateway adds from the limits that applied to a call.
+REMAINING_TOKENS_HEADER = "x-mosaic-remaining-tokens"
+REMAINING_QUOTA_TOKENS_HEADER = "x-mosaic-remaining-quota-tokens"
+REMAINING_CALLS_HEADER = "x-mosaic-remaining-calls"
+COST_CENTER_REMAINING_QUOTA_TOKENS_HEADER = "x-mosaic-cost-center-remaining-quota-tokens"
 _PERIOD_LABELS: dict[QuotaPeriod, str] = {
     "Hourly": "hour",
     "Daily": "day",
@@ -107,6 +140,10 @@ class AccessPolicyGrant(Protocol):
     object_id: str
     enabled: bool
     enforcement: EntitlementEnforcement | None
+    cost_center_id: str
+    cost_center_code: str
+    default_cost_center: bool
+    granted_at: datetime | None
 
     @property
     def is_group_grant(self) -> bool: ...
@@ -213,6 +250,109 @@ def grant_counter_identity(publication: AccessPolicyPublication, grant: AccessPo
         separators=(",", ":"),
     )
     return hashlib.sha256(identity.encode("utf-8")).hexdigest()
+
+
+def cost_center_counter_identity(
+    publication: AccessPolicyPublication, cost_center_id: str
+) -> str:
+    """A pooled quota's counter identity: one cost center on one publication."""
+
+    identity = json.dumps(
+        [publication.tenant_id, publication.id, "cost-center", cost_center_id],
+        ensure_ascii=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(identity.encode("utf-8")).hexdigest()
+
+
+def _code(grant: AccessPolicyGrant) -> str:
+    return grant.cost_center_code.casefold()
+
+
+def _match(publication: AccessPolicyPublication, grant: AccessPolicyGrant) -> str:
+    """What a lookup returns for a grant: its counter identity and its cost center's code."""
+
+    return f"{grant_counter_identity(publication, grant)}|{_code(grant)}"
+
+
+def _fallback_order(grant: AccessPolicyGrant) -> tuple[str, bool, datetime, str]:
+    """A caller's direct grants, in the order a call that names no cost center tries them.
+
+    The grant under the caller's default cost center first, then the others oldest first.
+    """
+
+    return (
+        grant.object_id.casefold(),
+        not grant.default_cost_center,
+        grant.granted_at or datetime.min.replace(tzinfo=UTC),
+        grant.entitlement_id,
+    )
+
+
+def _cost_center_filter() -> str:
+    # The lookups read the selected cost center into `cc` once, at the start.
+    return '(cc == "" || cc == '
+
+
+def _read_cost_center_header(parent: ET.Element) -> None:
+    """Read the cost-center header once, into a code the lookups compare without case."""
+
+    header = _literal(COST_CENTER_HEADER)
+    _variable(
+        parent,
+        "mosaic-cost-center-header",
+        _expression(
+            [
+                f'if (!context.Request.Headers.ContainsKey({header})) {{ return ""; }}',
+                f"var values = context.Request.Headers[{header}];",
+                'if (values == null || values.Length != 1 || values[0] == null) { return "!"; }',
+                "var code = values[0].Trim();",
+                "if (!System.Text.RegularExpressions.Regex.IsMatch(code, "
+                f'{_literal("^" + COST_CENTER_CODE_PATTERN.pattern + "$")})) {{ return "!"; }}',
+                "return code.ToLowerInvariant();",
+            ]
+        ),
+    )
+    _variable(parent, "mosaic-cc", f"@({_COST_CENTER_HEADER})")
+
+
+def _split_match(parent: ET.Element, source: str, grant: str, cost_center: str) -> None:
+    """Split a lookup's ``identity|code`` answer into the grant and its cost center's code."""
+
+    value = f'(string)context.Variables["{source}"]'
+    _variable(
+        parent,
+        grant,
+        _expression(
+            [
+                f"var match = {value};",
+                "var bar = match.IndexOf('|');",
+                "return bar < 0 ? match : match.Substring(0, bar);",
+            ]
+        ),
+    )
+    if cost_center:
+        _variable(
+            parent,
+            cost_center,
+            _expression(
+                [
+                    f"var match = {value};",
+                    "var bar = match.IndexOf('|');",
+                    'return bar < 0 ? "" : match.Substring(bar + 1);',
+                ]
+            ),
+        )
+
+
+def _cost_center_ids(parent: ET.Element, grants: Sequence[AccessPolicyGrant]) -> None:
+    """The matched grant's cost center ID, from its code: one line per cost center, not grant."""
+
+    codes = sorted({_code(grant): grant.cost_center_id for grant in grants if _code(grant)}.items())
+    lines = [f"var code = {_GRANT_COST_CENTER};"]
+    for code, cost_center_id in codes:
+        lines.append(f"if (code == {_literal(code)}) {{ return {_literal(cost_center_id)}; }}")
+    _variable(parent, "mosaic-cost-center-id", _expression([*lines, 'return "";']))
 
 
 def governed_counter_key_expression(
@@ -342,17 +482,26 @@ def _validate(publication: Publication, snapshot: ModelAccessSnapshot) -> None:
                 raise ValidationError("Security-group grants require governed Entra access.")
             if not _GUID.fullmatch(grant.object_id):
                 raise ValidationError("Security-group grants require a GUID object ID.")
+        if not all(
+            value.strip() for value in (grant.entitlement_id, grant.object_id, grant.subject.id)
+        ):
+            raise ValidationError(
+                "Governed access grants must have nonempty, unambiguous identities."
+            )
         identities = {
             "entitlement": grant.entitlement_id,
-            "object": grant.object_id,
-            "subject": grant.subject.id,
+            # A subject holds one grant per cost center, so the same object or subject appears
+            # once under each cost center it charges.
+            "object": f"{grant.object_id}|{grant.cost_center_id}",
+            "subject": f"{grant.subject.id}|{grant.cost_center_id}",
         }
         for kind, identity in identities.items():
-            if not identity.strip() or identity.casefold() in seen[kind]:
+            if identity.casefold() in seen[kind]:
                 raise ValidationError(
                     "Governed access grants must have nonempty, unambiguous identities."
                 )
             seen[kind].add(identity.casefold())
+        _validate_cost_center(grant.cost_center_id, grant.cost_center_code, seen)
         if grant.subscription_name is not None:
             if (
                 not grant.subscription_name.strip()
@@ -390,6 +539,47 @@ def _validate(publication: Publication, snapshot: ModelAccessSnapshot) -> None:
             "Governed access replaces the standard subscription counter with a stable grant "
             "counter; custom counter expressions are not supported."
         )
+    _validate_pools(snapshot.pools, seen, tokens_allowed=metered)
+
+
+def _validate_cost_center(cost_center_id: str, code: str, seen: dict[str, set[str]]) -> None:
+    """A grant's cost center code must be one the header can name, and name only one cost center.
+
+    A grant without a code is one the header can't select; a call naming no cost center still
+    reaches it.
+    """
+
+    if not code:
+        return
+    if not COST_CENTER_CODE_PATTERN.fullmatch(code):
+        raise ValidationError("A cost center's code must be 1 to 64 letters, digits, . - or _.")
+    pair = f"{code.casefold()}|{cost_center_id}"
+    codes = seen.setdefault("code", set())
+    if pair not in codes:
+        for item in codes:
+            known_code, known_id = item.split("|", 1)
+            if known_code == code.casefold() or known_id == cost_center_id:
+                raise ValidationError(
+                    "Each cost center needs exactly one code, and no two may share one, so the "
+                    "header can tell them apart."
+                )
+    codes.add(pair)
+
+
+def _validate_pools(
+    pools: Sequence[AppliedCostCenterPool], seen: dict[str, set[str]], *, tokens_allowed: bool
+) -> None:
+    pooled: set[str] = set()
+    for pool in pools:
+        if not pool.cost_center_code or pool.cost_center_id in pooled:
+            raise ValidationError("Each cost center has at most one pooled quota per publication.")
+        pooled.add(pool.cost_center_id)
+        _validate_cost_center(pool.cost_center_id, pool.cost_center_code, seen)
+        if pool.monthly_tokens is not None and not tokens_allowed:
+            raise ValidationError(
+                "This publication can't be token-metered on its gateway's tier, so a cost "
+                "center's pool on it must count calls, not tokens."
+            )
 
 
 def _key_shape_check() -> str:
@@ -419,6 +609,8 @@ def _key_shape_check() -> str:
 
 
 def _key_lookup(publication: Publication, grants: list[ModelAccessGrant]) -> str:
+    """A key's grant, as ``identity|code``; ``-`` for a key its cost center turned off."""
+
     lines = [
         'if (context.Subscription == null) { return ""; }',
         "var subscription = context.Subscription.Id;",
@@ -427,10 +619,11 @@ def _key_lookup(publication: Publication, grants: list[ModelAccessGrant]) -> str
         if grant.is_group_grant:
             continue
         assert grant.subscription_name is not None
+        answer = _match(publication, grant) if grant.keys_allowed else _KEYS_OFF
         lines.append(
             f"if (String.Equals(subscription, {_literal(grant.subscription_name)}, "
             "StringComparison.OrdinalIgnoreCase)) "
-            f"{{ return {_literal(grant_counter_identity(publication, grant))}; }}"
+            f"{{ return {_literal(answer)}; }}"
         )
     return _expression([*lines, 'return "";'])
 
@@ -442,11 +635,20 @@ def _token_lookup(
     delegated_scope: str = "Models.Invoke",
     application_role: str = "Models.Invoke.Application",
 ) -> str:
-    direct_grants = [grant for grant in grants if not grant.is_group_grant]
+    """A token's grant, as ``identity|code``, under the cost center the call names, if any.
+
+    A call that names none gets the caller's direct grant under their default cost center, then
+    their other direct grants oldest first, then the most generous of their group grants.
+    """
+
+    direct_grants = sorted(
+        (grant for grant in grants if not grant.is_group_grant), key=_fallback_order
+    )
     group_grants = sorted(
         (grant for grant in grants if grant.is_group_grant),
         key=lambda grant: grant_precedence_key(grant.enforcement, grant.entitlement_id),
     )
+    selected = _cost_center_filter()
     lines = [
         'var jwt = context.Variables.ContainsKey("mosaic-validated-token")'
         ' ? context.Variables["mosaic-validated-token"] as Jwt : null;',
@@ -455,6 +657,7 @@ def _token_lookup(
         "if (objects == null || objects.Length != 1 || String.IsNullOrWhiteSpace(objects[0]))"
         ' { return ""; }',
         "var oid = objects[0];",
+        f"var cc = {_SELECTED_COST_CENTER};",
         "bool delegated = false;",
         "bool application = false;",
         "bool hasRealScopes = false;",
@@ -478,8 +681,8 @@ def _token_lookup(
         kind = "delegated" if grant.subject.kind == EntitlementSubjectKind.USER else "application"
         lines.append(
             f"if ({kind} && String.Equals(oid, {_literal(grant.object_id)}, "
-            "StringComparison.OrdinalIgnoreCase)) "
-            f"{{ return {_literal(grant_counter_identity(publication, grant))}; }}"
+            f"StringComparison.OrdinalIgnoreCase) && {selected}{_literal(_code(grant))})) "
+            f"{{ return {_literal(_match(publication, grant))}; }}"
         )
     if group_grants:
         lines.extend(
@@ -493,8 +696,9 @@ def _token_lookup(
                 [
                     "    foreach (var group in groups) {",
                     f"        if (String.Equals(group, {_literal(grant.object_id.lower())}, "
-                    "StringComparison.OrdinalIgnoreCase)) "
-                    f"{{ return {_literal(grant_counter_identity(publication, grant))}; }}",
+                    f"StringComparison.OrdinalIgnoreCase) && {selected}"
+                    f"{_literal(_code(grant))})) "
+                    f"{{ return {_literal(_match(publication, grant))}; }}",
                     "    }",
                 ]
             )
@@ -577,8 +781,17 @@ def _authentication(
         _reject(fragment, f"@({_HAS_KEY})", reason="keys-off", code=401)
     if not snapshot.settings.entra_enabled:
         _reject(fragment, f"@({_HAS_TOKEN})", reason="tokens-off", code=401)
+    _read_cost_center_header(fragment)
+    _reject(
+        fragment,
+        f'@({_COST_CENTER_HEADER} == "!")',
+        reason="cost-center",
+        message=COST_CENTER_DENIED,
+    )
     _variable(fragment, "mosaic-key-grant", "")
+    _variable(fragment, "mosaic-key-cost-center", "")
     _variable(fragment, "mosaic-token-grant", "")
+    _variable(fragment, "mosaic-token-cost-center", "")
     _variable(fragment, "mosaic-member", "")
 
     if snapshot.settings.keys_enabled:
@@ -586,8 +799,27 @@ def _authentication(
             ET.SubElement(fragment, "choose"), "when", {"condition": f"@({_HAS_KEY})"}
         )
         _reject(key, _key_shape_check(), reason="key-malformed", code=401)
-        _variable(key, "mosaic-key-grant", _key_lookup(publication, grants))
+        _variable(key, "mosaic-key-match", _key_lookup(publication, grants))
+        _split_match(key, "mosaic-key-match", "mosaic-key-grant", "mosaic-key-cost-center")
+        if any(not grant.keys_allowed for grant in grants if not grant.is_group_grant):
+            _reject(
+                key,
+                f'@({_KEY_GRANT} == "{_KEYS_OFF}")',
+                reason="keys-off",
+                code=401,
+                message=COST_CENTER_KEYS_OFF_DENIED,
+            )
         _reject(key, f"@(String.IsNullOrEmpty({_KEY_GRANT}))", reason="key-unknown")
+        # A key belongs to one grant, so it charges that grant's cost center. A header naming
+        # another is refused rather than ignored; without one, a token sent with the key resolves
+        # under the key's cost center.
+        _reject(
+            key,
+            f'@({_COST_CENTER_HEADER} != "" && {_COST_CENTER_HEADER} != {_KEY_COST_CENTER})',
+            reason="cost-center-mismatch",
+            message=COST_CENTER_MISMATCH_DENIED,
+        )
+        _variable(key, "mosaic-cc", f"@({_KEY_COST_CENTER})")
 
     if snapshot.settings.entra_enabled:
         token = ET.SubElement(
@@ -630,30 +862,13 @@ def _authentication(
         )
         ET.SubElement(claim, "value").text = "2.0"
         _record_validated_caller(token)
-        _variable(
+        _resolve_token_grant(
             token,
-            "mosaic-token-grant",
-            _token_lookup(
-                publication,
-                grants,
-                delegated_scope=delegated_scope,
-                application_role=application_role,
-            ),
-        )
-        _variable(token, "mosaic-member", _token_member_lookup(publication, grants))
-        if any(grant.is_group_grant for grant in grants):
-            _reject(
-                token,
-                _token_groups_overage(),
-                reason="groups-overage",
-                with_caller=True,
-                message=_GROUPS_OVERAGE_DENIED,
-            )
-        _reject(
-            token,
-            f"@(String.IsNullOrEmpty({_TOKEN_GRANT}))",
-            reason="no-grant",
-            with_caller=True,
+            publication,
+            grants,
+            delegated_scope=delegated_scope,
+            application_role=application_role,
+            overage_message=_GROUPS_OVERAGE_DENIED,
         )
 
     _reject(
@@ -663,6 +878,64 @@ def _authentication(
         with_caller=True,
     )
     _variable(fragment, "mosaic-grant", f"@({_HAS_KEY} ? {_KEY_GRANT} : {_TOKEN_GRANT})")
+    _variable(
+        fragment,
+        "mosaic-cost-center",
+        f"@({_HAS_KEY} ? {_KEY_COST_CENTER} : {_TOKEN_COST_CENTER})",
+    )
+    _cost_center_ids(fragment, grants)
+
+
+def _resolve_token_grant(
+    parent: ET.Element,
+    publication: AccessPolicyPublication,
+    grants: Sequence[AccessPolicyGrant],
+    *,
+    delegated_scope: str,
+    application_role: str,
+    overage_message: str,
+    no_grant: Callable[[ET.Element], None] | None = None,
+) -> None:
+    """Match the validated token to a grant under the selected cost center, or refuse the call."""
+
+    _variable(
+        parent,
+        "mosaic-token-match",
+        _token_lookup(
+            publication,
+            grants,
+            delegated_scope=delegated_scope,
+            application_role=application_role,
+        ),
+    )
+    _split_match(parent, "mosaic-token-match", "mosaic-token-grant", "mosaic-token-cost-center")
+    _variable(parent, "mosaic-member", _token_member_lookup(publication, grants))
+    if any(grant.is_group_grant for grant in grants):
+        _reject(
+            parent,
+            _token_groups_overage(),
+            reason="groups-overage",
+            with_caller=True,
+            message=overage_message,
+        )
+    # Naming a cost center the caller holds no grant under is refused as such, so the caller
+    # learns their header is wrong rather than that they have no access at all.
+    _reject(
+        parent,
+        f'@(String.IsNullOrEmpty({_TOKEN_GRANT}) && {_COST_CENTER_HEADER} != "")',
+        reason="cost-center",
+        with_caller=True,
+        message=COST_CENTER_DENIED,
+    )
+    if no_grant is not None:
+        no_grant(parent)
+    else:
+        _reject(
+            parent,
+            f"@(String.IsNullOrEmpty({_TOKEN_GRANT}))",
+            reason="no-grant",
+            with_caller=True,
+        )
 
 
 def _operation_guard(
@@ -714,9 +987,14 @@ def _grant_counter_key(
 
 
 def _calendar_counter(
-    identity: str, period: QuotaPeriod, *, per_member: bool, prefix: str = _COUNTER_PREFIX
+    identity: str,
+    period: QuotaPeriod,
+    *,
+    per_member: bool,
+    prefix: str = _COUNTER_PREFIX,
+    namespace: str = "grant-request-quota",
 ) -> str:
-    key_prefix = _literal(f"{prefix}grant-request-quota:{identity}:{period}:")
+    key_prefix = _literal(f"{prefix}{namespace}:{identity}:{period}:")
     if period == "Weekly":
         date = "now.Date.AddDays(-(((int)now.DayOfWeek + 6) % 7))"
     else:
@@ -762,6 +1040,7 @@ def _grant_limits(
                             per_member=grant.is_group_grant,
                             prefix=prefix,
                         ),
+                        "remaining-calls-header-name": REMAINING_CALLS_HEADER,
                     },
                 )
             if requests.call_quota is not None:
@@ -780,6 +1059,68 @@ def _grant_limits(
                         ),
                     },
                 )
+
+
+def _pool_limits(
+    fragment: ET.Element,
+    publication: AccessPolicyPublication,
+    pools: Sequence[AppliedCostCenterPool],
+    *,
+    estimate_prompt_tokens: bool | None,
+    prefix: str = _COUNTER_PREFIX,
+) -> None:
+    """Each cost center's pooled monthly quota, shared by every grant under it here.
+
+    A second limit beside the grant's own, keyed on the cost center and the publication, so every
+    caller charging the cost center draws on the same count. ``estimate_prompt_tokens`` is None
+    where the gateway can't meter tokens, and then only call pools apply.
+    """
+
+    pooled = [pool for pool in pools if pool.cost_center_code]
+    if not pooled:
+        return
+    choose = ET.SubElement(fragment, "choose")
+    for pool in sorted(pooled, key=lambda item: item.cost_center_code.casefold()):
+        identity = cost_center_counter_identity(publication, pool.cost_center_id)
+        when = ET.SubElement(
+            choose,
+            "when",
+            {
+                "condition": (
+                    f"@({_GRANT_COST_CENTER} == {_literal(pool.cost_center_code.casefold())})"
+                )
+            },
+        )
+        if pool.monthly_tokens is not None and estimate_prompt_tokens is not None:
+            ET.SubElement(
+                when,
+                "llm-token-limit",
+                {
+                    "counter-key": f"{prefix}cost-center-tokens:{identity}",
+                    "estimate-prompt-tokens": "true" if estimate_prompt_tokens else "false",
+                    "token-quota": str(pool.monthly_tokens),
+                    "token-quota-period": "Monthly",
+                    "remaining-quota-tokens-header-name": (
+                        COST_CENTER_REMAINING_QUOTA_TOKENS_HEADER
+                    ),
+                },
+            )
+        if pool.monthly_calls is not None:
+            ET.SubElement(
+                when,
+                "quota-by-key",
+                {
+                    "calls": str(pool.monthly_calls),
+                    "renewal-period": "0",
+                    "counter-key": _calendar_counter(
+                        identity,
+                        "Monthly",
+                        per_member=False,
+                        prefix=prefix,
+                        namespace="cost-center-request-quota",
+                    ),
+                },
+            )
 
 
 def _limits(
@@ -820,6 +1161,11 @@ def _limits(
                 )
                 if when is None:
                     when = ET.SubElement(choose, "when", {"condition": condition})
+                headers: dict[str, str] = {}
+                if tokens.tokens_per_minute:
+                    headers["remaining-tokens-header-name"] = REMAINING_TOKENS_HEADER
+                if tokens.token_quota:
+                    headers["remaining-quota-tokens-header-name"] = REMAINING_QUOTA_TOKENS_HEADER
                 ET.SubElement(
                     when,
                     "llm-token-limit",
@@ -830,8 +1176,20 @@ def _limits(
                             identity,
                             per_member=grant.is_group_grant,
                         ),
+                        **headers,
                     },
                 )
+    enabled_codes = {_code(grant) for grant in grants}
+    _pool_limits(
+        fragment,
+        publication,
+        [pool for pool in snapshot.pools if pool.cost_center_code.casefold() in enabled_codes],
+        estimate_prompt_tokens=(
+            snapshot.publication_enforcement.estimate_prompt_tokens
+            if snapshot.publication_enforcement is not None
+            else None
+        ),
+    )
     if snapshot.publication_enforcement is not None:
         counter = f'@("{_COUNTER_PREFIX}publication-tokens:" + {_GRANT})'
         if any(grant.is_group_grant for grant in grants):
@@ -846,6 +1204,93 @@ def _limits(
                 **_token_limit_attributes(snapshot.publication_enforcement),
                 "counter-key": counter,
             },
+        )
+
+
+_COUNTER_NAMESPACES = (
+    "publication-tokens",
+    "grant-tokens",
+    "grant-request-rate",
+    "grant-request-quota",
+    "cost-center-tokens",
+    "cost-center-request-quota",
+)
+
+
+def cost_center_details() -> list[str]:
+    """How the policy picks a call's cost center, for the authorization facet."""
+
+    return [
+        f"A call names the cost center it charges with the {COST_CENTER_HEADER} header, "
+        "compared without case. It selects among the caller's grants under that cost center "
+        "and is removed before the call reaches the backend.",
+        "Without the header, the caller's direct grant under their default cost center applies, "
+        "then their other direct grants oldest first, then their group grants by precedence.",
+        "A malformed header, or one naming a cost center the caller holds no grant under, is "
+        "refused with 403; so is a key presented with a different cost center's header.",
+    ]
+
+
+def describe_limit_facet(facet: PolicyFacet, element: ET.Element, prefix: str) -> None:
+    """Explain a limit by what it counts: a grant, a cost center's pool, or the publication."""
+
+    counter = element.get("counter-key", "")
+    namespace = next(name for name in _COUNTER_NAMESPACES if f"{prefix}{name}:" in counter)
+    pooled = namespace.startswith("cost-center")
+    counted = (
+        "counted per cost center on this publication."
+        if pooled
+        else "counted per stable tenant/publication/entitlement grant."
+    )
+    facet.summary = re.sub(r"counted .+\.$", counted, facet.summary)
+    facet.attributes.update(
+        {
+            "counter-scope": "cost-center-pool" if pooled else "stable-grant",
+            "counter-namespace": namespace,
+        }
+    )
+    if pooled:
+        facet.details.extend(
+            [
+                "Every grant under the cost center on this publication shares this monthly "
+                "pool, whoever calls, beside each grant's own limits.",
+                "Native APIM limits are distributed/per gateway, not exact global or "
+                "billing totals.",
+            ]
+        )
+    else:
+        facet.details.extend(
+            [
+                "Primary and secondary subscription keys and Entra tokens share this "
+                "grant counter.",
+                "Counter identity is independent of key rotation, access method and "
+                "snapshot revision.",
+                "Native APIM limits are distributed/per gateway, not exact global or "
+                "billing totals.",
+            ]
+        )
+        if namespace == "publication-tokens":
+            facet.details.append(
+                "Publication token safeguards apply even to grants without limits."
+            )
+        else:
+            facet.details.append("Applies only to the matching enabled grant.")
+    headers = [
+        value
+        for name, value in sorted(element.attrib.items())
+        if name.endswith("-header-name")
+    ]
+    if headers:
+        facet.details.append(f"Reports what remains in the {', '.join(headers)} response header.")
+    if facet.element == "quota-by-key":
+        period = next(period for period in _PERIOD_LABELS if f":{period}:" in counter)
+        facet.summary = (
+            f"Caps requests at {element.get('calls')} per UTC calendar "
+            f"{_PERIOD_LABELS[period]}, {counted}"
+        )
+        facet.attributes["calendar-period"] = period
+        facet.details.append(
+            "A period-qualified key resets the quota at UTC calendar boundaries."
         )
 
 
@@ -929,6 +1374,9 @@ def _facets(
             ]
         )
         auth_attributes["security-group-grants"] = str(enabled_group_grants)
+    auth_details.extend(cost_center_details())
+    cost_centers = {grant.cost_center_id for grant in snapshot.grants if grant.enabled}
+    auth_attributes["cost-centers"] = str(len(cost_centers))
     facets = [
         PolicyFacet(
             kind=PolicyFacetKind.AUTHORIZATION,
@@ -957,52 +1405,7 @@ def _facets(
             facet.section = PolicySection.INBOUND
         if facet.element in {"llm-token-limit", "rate-limit-by-key", "quota-by-key"}:
             element = next(limit_elements)
-            counter = element.get("counter-key", "")
-            namespace = next(
-                name
-                for name in (
-                    "publication-tokens",
-                    "grant-tokens",
-                    "grant-request-rate",
-                    "grant-request-quota",
-                )
-                if f"{_COUNTER_PREFIX}{name}:" in counter
-            )
-            facet.summary = re.sub(
-                r"counted .+\.$",
-                "counted per stable tenant/publication/entitlement grant.",
-                facet.summary,
-            )
-            facet.attributes.update(
-                {"counter-scope": "stable-grant", "counter-namespace": namespace}
-            )
-            facet.details.extend(
-                [
-                    "Primary and secondary subscription keys and Entra tokens share this "
-                    "grant counter.",
-                    "Counter identity is independent of key rotation, access method and "
-                    "snapshot revision.",
-                    "Native APIM limits are distributed/per gateway, not exact global or "
-                    "billing totals.",
-                ]
-            )
-            if namespace == "publication-tokens":
-                facet.details.append(
-                    "Publication token safeguards apply even to grants without limits."
-                )
-            else:
-                facet.details.append("Applies only to the matching enabled grant.")
-            if facet.element == "quota-by-key":
-                period = next(period for period in _PERIOD_LABELS if f":{period}:" in counter)
-                facet.summary = (
-                    f"Caps requests at {element.get('calls')} per UTC calendar "
-                    f"{_PERIOD_LABELS[period]}, "
-                    "counted per stable tenant/publication/entitlement grant."
-                )
-                facet.attributes["calendar-period"] = period
-                facet.details.append(
-                    "A period-qualified key resets the quota at UTC calendar boundaries."
-                )
+            describe_limit_facet(facet, element, _COUNTER_PREFIX)
         elif facet.element == "set-backend-service":
             facet.summary = "Routes authorized requests to the publication's configured backend."
             facet.attributes = {"backend-id": "[redacted]"}
@@ -1069,7 +1472,12 @@ def render_governed_policy(
         _operation_guard(fragment, publication, operations)
         append_grant_attribution_trace(fragment, grants)
         _limits(fragment, publication, snapshot, grants)
-        removed_headers = ("Ocp-Apim-Subscription-Key", "api-key", "Authorization")
+        removed_headers = (
+            "Ocp-Apim-Subscription-Key",
+            "api-key",
+            "Authorization",
+            COST_CENTER_HEADER,
+        )
         for name in removed_headers:
             ET.SubElement(fragment, "set-header", {"name": name, "exists-action": "delete"})
         ET.SubElement(

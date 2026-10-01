@@ -9,6 +9,7 @@ from fastapi import Request
 from fastapi.testclient import TestClient
 from mosaic_api.auth import AuthContext
 from mosaic_api.config import AuthMode, Environment, RepositoryBackend, Settings
+from mosaic_api.cost_centers import CostCenterBook
 from mosaic_api.domain import (
     ApimResourceId,
     ApiShape,
@@ -45,7 +46,7 @@ from mosaic_api.repositories import (
 )
 from mosaic_api.services.directory import Actor
 from mosaic_api.services.entitlements import EntitlementService
-from mosaic_api.services.model_access import entitlement_intent_digest
+from mosaic_api.services.model_access import cost_center_intent, entitlement_intent_digest
 from mosaic_api.services.portal import PortalService
 from mosaic_api.services.portal_access import PortalAccessService
 from mosaic_api.services.publishing import PublishingService
@@ -200,7 +201,13 @@ class Harness:
                             snapshot.grants[0].model_copy(
                                 update={
                                     "intent_digest": entitlement_intent_digest(
-                                        self.entitlement, self.principal
+                                        self.entitlement,
+                                        self.principal,
+                                        cost_center_intent(
+                                            self.entitlement,
+                                            self.principal,
+                                            CostCenterBook(TENANT, [], None),
+                                        ),
                                     )
                                 }
                             )
@@ -294,7 +301,7 @@ async def test_manual_binding_does_not_prove_subscription_ownership(harness: Har
         }
     )
     await harness.repository.save_entitlement(entitlement, harness.audit())
-    with pytest.raises(ConflictError, match="ownership"):
+    with pytest.raises(ConflictError, match="no key yet"):
         await harness.service.reveal_key(ACTOR, "grant", "primary")
     assert harness.reader.calls == 0
 

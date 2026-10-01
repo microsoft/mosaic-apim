@@ -8,6 +8,7 @@ from conftest import (
     reviewed_unpublish,
 )
 from mcp_double import FakeMcpServer
+from mosaic_api.cost_centers import CostCenterBook
 from mosaic_api.domain import (
     AuditEvent,
     CapabilitySupport,
@@ -56,7 +57,7 @@ from mosaic_api.repositories import (
 )
 from mosaic_api.services import McpEndpointService
 from mosaic_api.services.directory import Actor
-from mosaic_api.services.model_access import entitlement_intent_digest
+from mosaic_api.services.model_access import cost_center_intent, entitlement_intent_digest
 from mosaic_api.services.publishing import DENY_ALL_FRAGMENT, DENY_ALL_POLICY
 
 TENANT_ID = "33333333-3333-3333-3333-333333333333"
@@ -713,7 +714,9 @@ async def test_plan_snapshot_rules_and_warnings(harness: Harness) -> None:
     grants = {grant.entitlement_id: grant for grant in snapshot.grants}
     assert grants["entitlement-b-group"].object_id == group_a.object_id.casefold()
     assert grants["entitlement-z-vanished"].enabled is False
-    assert grants[direct.id].intent_digest == entitlement_intent_digest(direct, user)
+    assert grants[direct.id].intent_digest == entitlement_intent_digest(
+        direct, user, cost_center_intent(direct, user, CostCenterBook(TENANT_ID, [], None))
+    )
     assert any("MOSAIC group" in warning for warning in plan.warnings)
     assert any("token limits" in warning for warning in plan.warnings)
     assert any("missing or mismatched principal" in warning for warning in plan.warnings)

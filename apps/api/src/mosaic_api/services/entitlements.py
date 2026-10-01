@@ -14,6 +14,7 @@ from typing import Any
 import structlog
 from pydantic import ValidationError as SchemaValidationError
 
+from mosaic_api.cost_centers import CostCenter, CostCenterBook, may_charge
 from mosaic_api.domain import (
     AccessRequest,
     AccessRequestApproval,
@@ -34,6 +35,7 @@ from mosaic_api.domain import (
     Gateway,
     GrantOverlapReport,
     GrantPath,
+    GrantRevocation,
     McpPublication,
     McpServer,
     ModelApi,
@@ -59,11 +61,13 @@ from mosaic_api.observed import (
     ObservedSubscription,
 )
 from mosaic_api.repositories import (
+    CostCenterRepository,
     DirectoryRepository,
     EntitlementRepository,
     GatewayRepository,
     ModelEndpointRepository,
 )
+from mosaic_api.services.cost_centers import load_book
 from mosaic_api.services.directory import Actor, DirectoryService
 from mosaic_api.services.mcp_access import (
     decorate_mcp_entitlement,
@@ -72,6 +76,7 @@ from mosaic_api.services.mcp_access import (
     mcp_server_offered,
 )
 from mosaic_api.services.model_access import (
+    cost_center_intent,
     decorate_entitlement,
     entitlement_publication,
     managed_grant_needs_retention,
@@ -188,6 +193,12 @@ def _resource_key(resource: EntitlementResource) -> tuple[str, str, str]:
     return (str(resource.kind), resource.id, resource.scope_id or "")
 
 
+def _grant_key(entitlement: Entitlement) -> tuple[str, str, str, str]:
+    """A resource under one cost center: each has one effective grant per caller."""
+
+    return (*_resource_key(entitlement.resource), entitlement.cost_center_id)
+
+
 def _outranks(item: ResolvedEntitlement, current: ResolvedEntitlement) -> bool:
     """Whether ``item`` decides access to its resource ahead of ``current``.
 
@@ -234,9 +245,13 @@ def _existing_grant_conflict(existing: Entitlement) -> ConflictError:
     # Refused rather than linked. The administrator confirmed limits for a new grant, and linking
     # would silently discard them. Linking could also report a disabled grant as access.
     return ConflictError(
-        "The requester already has a direct grant for this resource. Deny this request, or "
-        "change the existing grant instead.",
-        details={"entitlementId": existing.id, "enabled": existing.enabled},
+        "The requester already has a direct grant for this resource under this cost center. Deny "
+        "this request, or change the existing grant instead.",
+        details={
+            "entitlementId": existing.id,
+            "enabled": existing.enabled,
+            "costCenterId": existing.cost_center_id,
+        },
     )
 
 
@@ -260,17 +275,110 @@ class EntitlementService:
         gateway_repository: GatewayRepository,
         endpoint_repository: ModelEndpointRepository,
         directory_lookup: DirectoryLookup | None = None,
+        cost_center_repository: CostCenterRepository | None = None,
     ) -> None:
         self._repository = repository
         self._directory = directory_repository
         self._gateways = gateway_repository
         self._endpoints = endpoint_repository
         self._directory_lookup = directory_lookup
+        self._cost_centers = cost_center_repository
 
     def governed_records(self, tenant_id: str) -> GovernedRecords:
         """Records to share across the lookups that serve one response."""
 
         return GovernedRecords(self._gateways, tenant_id)
+
+    async def cost_center_book(self, tenant_id: str) -> CostCenterBook:
+        """Every cost center and the tenant's settings, read once for one operation."""
+
+        return await load_book(self._cost_centers, tenant_id)
+
+    # ------------------------------------------------------------------ cost centers
+
+    async def _group_principal_ids(
+        self, actor: Actor, principal: Principal, cost_center: CostCenter
+    ) -> list[str]:
+        """The security groups a cost center lists that Microsoft Graph says the principal is in.
+
+        Empty when the cost center lists no group, when directory lookup is off, or when Graph
+        can't answer: then only a direct membership or a default lets the principal charge it.
+        """
+
+        if principal.kind == PrincipalKind.SECURITY_GROUP or self._directory_lookup is None:
+            return []
+        listed = cost_center.member_ids()
+        groups = [
+            item
+            for item in await self._directory.list_principals(actor.tenant_id)
+            if item.kind == PrincipalKind.SECURITY_GROUP and item.id in listed
+        ]
+        if not groups:
+            return []
+        try:
+            found = {
+                object_id.casefold()
+                for object_id in await self._directory_lookup.member_groups(
+                    principal.object_id, [item.object_id for item in groups]
+                )
+            }
+        except DirectoryError as error:
+            logger.warning(
+                "cost_center_membership_lookup_failed",
+                tenant_id=actor.tenant_id,
+                error_code=error.code,
+            )
+            return []
+        return [item.id for item in groups if item.object_id.casefold() in found]
+
+    async def _require_may_charge(
+        self,
+        actor: Actor,
+        subject: EntitlementSubject,
+        cost_center: CostCenter,
+        book: CostCenterBook,
+        *,
+        group_principal_ids: list[str] | None = None,
+    ) -> None:
+        """Refuse a grant to a subject that may not charge its cost center.
+
+        MOSAIC groups aren't principals and never reach the gateway, so they're not checked.
+        """
+
+        if subject.kind == EntitlementSubjectKind.GROUP:
+            return
+        principal = await self._directory.get_principal(actor.tenant_id, subject.id)
+        if principal is None:
+            return
+        groups = group_principal_ids
+        if groups is None and not may_charge(
+            cost_center, principal=principal, settings=book.settings
+        ):
+            groups = await self._group_principal_ids(actor, principal, cost_center)
+        if may_charge(
+            cost_center,
+            principal=principal,
+            settings=book.settings,
+            group_principal_ids=groups or [],
+        ):
+            return
+        raise ValidationError(
+            f"{_principal_label(principal)} can't charge {cost_center.name} ({cost_center.code}). "
+            "Add them, or a security group they're in, as a member of the cost center first.",
+            details={
+                "reason": "notACostCenterMember",
+                "costCenterId": cost_center.id,
+                "subjectId": subject.id,
+            },
+        )
+
+    def _require_cost_center(self, book: CostCenterBook, cost_center_id: str) -> CostCenter:
+        cost_center = book.get(cost_center_id)
+        if cost_center is None:
+            raise ValidationError(
+                "No cost center has that ID", details={"costCenterId": cost_center_id}
+            )
+        return cost_center
 
     @staticmethod
     def _audit(
@@ -734,7 +842,9 @@ class EntitlementService:
 
     # ------------------------------------------------------------------ CRUD
 
-    async def _decorate(self, entitlement: Entitlement) -> Entitlement:
+    async def _decorate(
+        self, entitlement: Entitlement, book: CostCenterBook | None = None
+    ) -> Entitlement:
         publication = await entitlement_publication(self._gateways, entitlement)
         mcp_publication = await entitlement_mcp_publication(self._gateways, entitlement)
         principal = (
@@ -742,6 +852,9 @@ class EntitlementService:
             if entitlement.subject.kind != "group"
             else None
         )
+        if (publication is not None or mcp_publication is not None) and book is None:
+            book = await self.cost_center_book(entitlement.tenant_id)
+        intent = cost_center_intent(entitlement, principal, book)
         locked = bool(
             publication
             and await self._gateways.get_publication_lock(
@@ -756,9 +869,11 @@ class EntitlementService:
         )
         if entitlement.resource.kind == "mcpServer":
             return decorate_mcp_entitlement(
-                entitlement, mcp_publication, principal, locked=mcp_locked
+                entitlement, mcp_publication, principal, locked=mcp_locked, cost_center=intent
             )
-        return decorate_entitlement(entitlement, publication, principal, locked=locked)
+        return decorate_entitlement(
+            entitlement, publication, principal, locked=locked, cost_center=intent
+        )
 
     @asynccontextmanager
     async def _mutation(self, entitlement: Entitlement) -> AsyncIterator[None]:
@@ -777,11 +892,15 @@ class EntitlementService:
         *,
         subject_id: str | None = None,
         resource_id: str | None = None,
+        cost_center_id: str | None = None,
     ) -> list[Entitlement]:
         records = await self._repository.list_entitlements(
             actor.tenant_id, subject_id=subject_id, resource_id=resource_id
         )
-        return [await self._decorate(record) for record in records]
+        if cost_center_id is not None:
+            records = [item for item in records if item.cost_center_id == cost_center_id]
+        book = await self.cost_center_book(actor.tenant_id) if records else None
+        return [await self._decorate(record, book) for record in records]
 
     async def get_entitlement(self, actor: Actor, entitlement_ref: str) -> Entitlement:
         entitlement = await self._repository.get_entitlement(actor.tenant_id, entitlement_ref)
@@ -789,16 +908,30 @@ class EntitlementService:
             raise NotFoundError("Entitlement was not found", details={"id": entitlement_ref})
         return await self._decorate(entitlement)
 
+    async def _subject_default(
+        self, actor: Actor, subject: EntitlementSubject, book: CostCenterBook
+    ) -> str:
+        """The cost center a grant made without one is charged to: its subject's default."""
+
+        if subject.kind in {EntitlementSubjectKind.GROUP, EntitlementSubjectKind.SECURITY_GROUP}:
+            return book.tenant_default_id
+        principal = await self._directory.get_principal(actor.tenant_id, subject.id)
+        return book.default_for(principal)
+
     async def _prepare_entitlement(
         self,
         actor: Actor,
         request: EntitlementCreate,
         descriptor: ResourceDescriptor | None = None,
+        *,
+        book: CostCenterBook | None = None,
+        group_principal_ids: list[str] | None = None,
     ) -> Entitlement:
         """Validate a grant and build its record without writing it.
 
         Shared by direct creation and by access-request approval, so an approved request's grant
-        passes exactly the same subject, resource, and binding checks as one created directly.
+        passes exactly the same subject, resource, cost center, and binding checks as one created
+        directly.
         """
 
         if request.binding and request.binding.source == BindingSource.ORCHESTRATED:
@@ -807,14 +940,30 @@ class EntitlementService:
         if descriptor is None:
             descriptor = await self._describe_resource(actor, request.resource)
         _reject_mcp_token_limits(request.resource, request.enforcement)
+        if book is None:
+            book = await self.cost_center_book(actor.tenant_id)
+        cost_center_id = request.cost_center_id or await self._subject_default(
+            actor, request.subject, book
+        )
+        cost_center = self._require_cost_center(book, cost_center_id)
+        await self._require_may_charge(
+            actor,
+            request.subject,
+            cost_center,
+            book,
+            group_principal_ids=group_principal_ids,
+        )
         binding = request.binding
         if binding is None:
             binding = await self.infer_binding(actor, descriptor, request.subject)
         return Entitlement(
-            id=entitlement_id(actor.tenant_id, request.subject, request.resource),
+            id=entitlement_id(
+                actor.tenant_id, request.subject, request.resource, cost_center.id
+            ),
             tenant_id=actor.tenant_id,
             subject=request.subject,
             resource=request.resource,
+            cost_center_id=cost_center.id,
             enabled=request.enabled,
             enforcement=request.enforcement,
             binding=binding,
@@ -827,13 +976,21 @@ class EntitlementService:
             await self._validate_subject(actor, request.subject)
             saved = await self._repository.create_entitlement(
                 record,
-                self._audit(actor, "entitlement.created", "entitlement", record.id),
+                self._audit(
+                    actor,
+                    "entitlement.created",
+                    "entitlement",
+                    record.id,
+                    {"costCenterId": record.cost_center_id},
+                ),
             )
+        saved = await self._revoke_if_ineligible(actor, saved)
         logger.info(
             "entitlement_created",
             entitlement_id=record.id,
             subject_kind=str(request.subject.kind),
             resource_kind=str(request.resource.kind),
+            cost_center_id=record.cost_center_id,
             bound=record.binding is not None,
             tenant_id=actor.tenant_id,
         )
@@ -845,6 +1002,8 @@ class EntitlementService:
         entitlement = await self.get_entitlement(actor, entitlement_ref)
         async with self._mutation(entitlement):
             saved = await self._update_entitlement(actor, entitlement_ref, request)
+        if entitlement.revocation is not None and saved.revocation is None:
+            saved = await self._revoke_if_ineligible(actor, saved)
         return await self._decorate(saved)
 
     async def _update_entitlement(
@@ -876,6 +1035,17 @@ class EntitlementService:
         # nullable and keep their clear-on-null behaviour.
         if changes.get("enabled") is None:
             changes.pop("enabled", None)
+        if changes.get("enabled") is True and entitlement.revocation is not None:
+            # Revoked when its subject left the cost center: it can come back only once the
+            # subject may charge the cost center again.
+            book = await self.cost_center_book(actor.tenant_id)
+            await self._require_may_charge(
+                actor,
+                entitlement.subject,
+                self._require_cost_center(book, entitlement.cost_center_id),
+                book,
+            )
+            changes["revocation"] = None
         updated = Entitlement.model_validate(
             {
                 **entitlement.model_dump(by_alias=False),
@@ -889,6 +1059,121 @@ class EntitlementService:
             updated,
             self._audit(actor, "entitlement.updated", "entitlement", updated.id),
         )
+
+    async def _revoke_if_ineligible(
+        self,
+        actor: Actor,
+        saved: Entitlement,
+        *,
+        group_principal_ids: list[str] | None = None,
+    ) -> Entitlement:
+        """Check again, after writing a grant, that its subject may still charge its cost center.
+
+        Removing a member writes the cost center first and then revokes the member's grants. A
+        grant written while that runs was either checked against the new member list here, or
+        already saved when the removal listed the member's grants, so it can't outlive the
+        membership it relied on.
+        """
+
+        if saved.subject.kind == EntitlementSubjectKind.GROUP or saved.revocation is not None:
+            return saved
+        book = await self.cost_center_book(actor.tenant_id)
+        cost_center = book.get(saved.cost_center_id)
+        if cost_center is not None:
+            try:
+                await self._require_may_charge(
+                    actor,
+                    saved.subject,
+                    cost_center,
+                    book,
+                    group_principal_ids=group_principal_ids,
+                )
+                return saved
+            except ValidationError:
+                pass
+        logger.warning(
+            "entitlement_revoked_after_cost_center_change",
+            entitlement_id=saved.id,
+            cost_center_id=saved.cost_center_id,
+            tenant_id=actor.tenant_id,
+        )
+        return await self.revoke_for_cost_center(actor, saved.id, saved.cost_center_id)
+
+    async def recheck_cost_center(self, actor: Actor, cost_center_id: str) -> list[str]:
+        """Revoke direct grants under a cost center whose subjects may no longer charge it.
+
+        Run after a security group leaves the cost center, since people may have charged it only
+        through that group. Microsoft Graph says which listed groups each subject is still in.
+        Without it, a grant keeps only the groups its approved request recorded from the
+        requester's token, and a grant nothing proves eligible is revoked: this fails closed.
+        """
+
+        recorded: dict[str, list[str]] = {}
+        if self._directory_lookup is None:
+            recorded = {
+                item.granted_entitlement_id: item.cost_center_group_ids
+                for item in await self._repository.list_access_requests(
+                    actor.tenant_id, state=str(AccessRequestState.APPROVED)
+                )
+                if item.granted_entitlement_id
+            }
+        revoked: list[str] = []
+        for grant in await self._repository.list_entitlements(actor.tenant_id):
+            if (
+                grant.cost_center_id != cost_center_id
+                or grant.revocation is not None
+                or grant.subject.kind
+                not in {EntitlementSubjectKind.USER, EntitlementSubjectKind.APPLICATION}
+            ):
+                continue
+            result = await self._revoke_if_ineligible(
+                actor,
+                grant,
+                group_principal_ids=(
+                    None if self._directory_lookup is not None else recorded.get(grant.id, [])
+                ),
+            )
+            if result.revocation is not None:
+                revoked.append(grant.id)
+        return revoked
+
+    async def revoke_for_cost_center(
+        self, actor: Actor, entitlement_ref: str, cost_center_id: str
+    ) -> Entitlement:
+        """Turn a grant off because its subject left its cost center.
+
+        Saved as desired state under the grant's publication lock, like any grant change. The
+        next apply of its model removes its access and deletes its key.
+        """
+
+        entitlement = await self.get_entitlement(actor, entitlement_ref)
+        async with self._mutation(entitlement):
+            current = await self._repository.get_entitlement(actor.tenant_id, entitlement_ref)
+            if current is None:
+                raise NotFoundError("Entitlement was not found", details={"id": entitlement_ref})
+            if current.revocation is not None:
+                return await self._decorate(current)
+            updated = current.model_copy(
+                update={
+                    "enabled": False,
+                    "revocation": GrantRevocation(
+                        cost_center_id=cost_center_id, revoked_by=actor.object_id
+                    ),
+                    "updated_at": utc_now(),
+                    "runtime": None,
+                }
+            )
+            saved = await self._repository.save_entitlement(
+                updated,
+                self._audit(
+                    actor,
+                    "entitlement.revoked",
+                    "entitlement",
+                    current.id,
+                    {"reason": "costCenterMembership", "costCenterId": cost_center_id},
+                ),
+            )
+        return await self._decorate(saved)
 
     async def delete_entitlement(self, actor: Actor, entitlement_ref: str) -> None:
         entitlement = await self.get_entitlement(actor, entitlement_ref)
@@ -953,7 +1238,8 @@ class EntitlementService:
             if item.kind == PrincipalKind.SECURITY_GROUP
             and item.object_id.casefold() in group_object_ids
         }
-        winners: dict[tuple[str, str, str], ResolvedEntitlement] = {}
+        book = await self.cost_center_book(actor.tenant_id)
+        winners: dict[tuple[str, str, str, str], ResolvedEntitlement] = {}
         for entitlement in await self._repository.list_entitlements(actor.tenant_id):
             if (
                 entitlement.subject.kind != EntitlementSubjectKind.SECURITY_GROUP
@@ -962,18 +1248,18 @@ class EntitlementService:
             ):
                 continue
             item = ResolvedEntitlement(
-                entitlement=await self._decorate(entitlement),
+                entitlement=await self._decorate(entitlement, book),
                 via=GrantPath.SECURITY_GROUP,
                 via_group_id=groups[entitlement.subject.id].id,
                 via_group_name=_principal_label(groups[entitlement.subject.id]),
                 effective=entitlement.enabled,
             )
-            key = _resource_key(entitlement.resource)
+            key = _grant_key(entitlement)
             current = winners.get(key)
             if current is None or _outranks(item, current):
                 winners[key] = item
         return await self._with_resource_summaries(
-            actor, sorted(winners.values(), key=lambda item: item.entitlement.id), records
+            actor, sorted(winners.values(), key=lambda item: item.entitlement.id), records, book
         )
 
     async def resolve_for_principal(
@@ -989,9 +1275,11 @@ class EntitlementService:
         """Every grant that reaches a principal, each marked with whether it decides their access.
 
         A grant reaches a principal directly, through a MOSAIC group they belong to, or through a
-        security group they belong to. One grant per resource is effective: a direct grant wins,
-        then a security-group grant over a MOSAIC group grant, then the most generous of several
-        security-group grants. The others are marked with the grant that shadows them.
+        security group they belong to. One grant per resource and cost center is effective: a
+        direct grant wins, then a security-group grant over a MOSAIC group grant, then the most
+        generous of several security-group grants. The others are marked with the grant that
+        shadows them. Grants under different cost centers don't compete: the caller picks one with
+        the cost-center header.
 
         ``only_effective`` keeps just the grant that decides each resource. Disabled grants never
         decide access; with ``include_disabled`` a resource that only disabled grants cover keeps
@@ -1001,6 +1289,7 @@ class EntitlementService:
         principal = await self._directory.get_principal(actor.tenant_id, principal_id)
         if principal is None:
             raise NotFoundError("Principal was not found", details={"id": principal_id})
+        book = await self.cost_center_book(actor.tenant_id)
         reached: list[ResolvedEntitlement] = []
         for entitlement in await self._repository.list_entitlements(
             actor.tenant_id, subject_id=principal_id
@@ -1008,7 +1297,8 @@ class EntitlementService:
             if entitlement.subject.kind == subject_kind_for(principal.kind):
                 reached.append(
                     ResolvedEntitlement(
-                        entitlement=await self._decorate(entitlement), via=GrantPath.DIRECT
+                        entitlement=await self._decorate(entitlement, book),
+                        via=GrantPath.DIRECT,
                     )
                 )
 
@@ -1084,25 +1374,25 @@ class EntitlementService:
                     continue
                 reached.append(
                     ResolvedEntitlement(
-                        entitlement=await self._decorate(entitlement),
+                        entitlement=await self._decorate(entitlement, book),
                         via=GrantPath.SECURITY_GROUP,
                         via_group_id=security_group.id,
                         via_group_name=_principal_label(security_group),
                     )
                 )
 
-        winners: dict[tuple[str, str, str], ResolvedEntitlement] = {}
+        winners: dict[tuple[str, str, str, str], ResolvedEntitlement] = {}
         for item in reached:
             if not item.entitlement.enabled and not include_disabled:
                 continue
-            key = _resource_key(item.entitlement.resource)
+            key = _grant_key(item.entitlement)
             current = winners.get(key)
             if current is None or _outranks(item, current):
                 winners[key] = item
 
         resolved: list[ResolvedEntitlement] = []
         for item in reached:
-            winner = winners.get(_resource_key(item.entitlement.resource))
+            winner = winners.get(_grant_key(item.entitlement))
             decides = winner is not None and winner.entitlement.id == item.entitlement.id
             if only_effective and not decides:
                 continue
@@ -1118,7 +1408,7 @@ class EntitlementService:
                 )
             )
         return await self._with_resource_summaries(
-            actor, sorted(resolved, key=lambda item: item.entitlement.id), records
+            actor, sorted(resolved, key=lambda item: item.entitlement.id), records, book
         )
 
     async def _with_resource_summaries(
@@ -1126,6 +1416,7 @@ class EntitlementService:
         actor: Actor,
         items: list[ResolvedEntitlement],
         records: GovernedRecords | None,
+        book: CostCenterBook | None = None,
     ) -> list[ResolvedEntitlement]:
         summaries = await self.resource_summaries(
             actor.tenant_id,
@@ -1133,8 +1424,15 @@ class EntitlementService:
             visible=True,
             records=records,
         )
+        if book is None and items:
+            book = await self.cost_center_book(actor.tenant_id)
         return [
-            item.model_copy(update={"resource_summary": summaries[index]})
+            item.model_copy(
+                update={
+                    "resource_summary": summaries[index],
+                    "cost_center": book.ref(item.entitlement.cost_center_id) if book else None,
+                }
+            )
             for index, item in enumerate(items)
         ]
 
@@ -1179,11 +1477,28 @@ class EntitlementService:
             snapshots=[item.resource_snapshot for item in requests],
             requested_environments=[item.requested_environment for item in requests],
         )
+        book = await self.cost_center_book(actor.tenant_id) if requests else None
         return [
             AdminAccessRequestListItem.model_validate(
-                {**item.model_dump(by_alias=False), "resource_summary": summaries[index]}
+                {
+                    **item.model_dump(by_alias=False),
+                    "resource_summary": summaries[index],
+                    "cost_center": book.ref(item.cost_center_id) if book else None,
+                }
             )
             for index, item in enumerate(requests)
+        ]
+
+    async def caller_group_principal_ids(self, actor: Actor) -> list[str]:
+        """The security groups MOSAIC records that the caller's own token says they're in."""
+
+        if not actor.group_ids:
+            return []
+        return [
+            item.id
+            for item in await self._directory.list_principals(actor.tenant_id)
+            if item.kind == PrincipalKind.SECURITY_GROUP
+            and item.object_id.casefold() in actor.group_ids
         ]
 
     async def get_access_request(self, actor: Actor, request_id: str) -> AccessRequest:
@@ -1205,17 +1520,47 @@ class EntitlementService:
         principal = await self._directory.find_principal_by_object_id(
             actor.tenant_id, actor.object_id
         )
+        book = await self.cost_center_book(actor.tenant_id)
+        cost_center_id = request.cost_center_id or book.default_for(principal)
+        cost_center = book.get(cost_center_id)
+        groups = await self.caller_group_principal_ids(actor)
+        # Only the caller's own token decides which groups they're in, so a person can name only
+        # a cost center they may charge.
+        if cost_center is None or not may_charge(
+            cost_center,
+            principal=principal,
+            settings=book.settings,
+            group_principal_ids=groups,
+        ):
+            raise ValidationError(
+                "You can't charge that cost center. Choose one of yours.",
+                details={"reason": "notACostCenterMember", "costCenterId": cost_center_id},
+            )
+        if principal is not None:
+            existing = await self._repository.get_entitlement(
+                actor.tenant_id,
+                entitlement_id(
+                    actor.tenant_id, _subject_for(principal), request.resource, cost_center.id
+                ),
+            )
+            if existing is not None and existing.enabled:
+                raise ConflictError(
+                    f"You already have access to this under {cost_center.name}.",
+                    details={"reason": "alreadyGranted", "costCenterId": cost_center.id},
+                )
+        default_id = book.default_for(principal)
         open_requests = [
             item
             for item in await self._repository.list_access_requests(
                 actor.tenant_id, requester_object_id=actor.object_id, state="pending"
             )
             if _resource_key(item.resource) == _resource_key(request.resource)
+            and (item.cost_center_id or default_id) == cost_center.id
         ]
         if open_requests:
             raise ConflictError(
-                "You already have an open request for this resource",
-                details={"id": open_requests[0].id},
+                "You already have an open request for this resource under this cost center",
+                details={"id": open_requests[0].id, "costCenterId": cost_center.id},
             )
         record = AccessRequest(
             id=deterministic_id(
@@ -1223,12 +1568,15 @@ class EntitlementService:
                 actor.tenant_id,
                 actor.object_id,
                 descriptor.id,
+                cost_center.id,
                 utc_now().isoformat(),
             ),
             tenant_id=actor.tenant_id,
             requester_object_id=actor.object_id,
             requester_principal_id=principal.id if principal else None,
             resource=request.resource,
+            cost_center_id=cost_center.id,
+            cost_center_group_ids=sorted(set(groups) & cost_center.member_ids()),
             justification=request.justification,
             requested_environment=summary.environment,
             resource_snapshot=self._snapshot_from_summary(summary),
@@ -1240,7 +1588,10 @@ class EntitlementService:
                 "accessRequest.created",
                 "accessRequest",
                 record.id,
-                {"requestedEnvironment": record.requested_environment},
+                {
+                    "requestedEnvironment": record.requested_environment,
+                    "costCenterId": cost_center.id,
+                },
             ),
         )
 
@@ -1328,10 +1679,22 @@ class EntitlementService:
         await self._require_environment_confirmation(actor, access_request, approval)
 
         principal = await self._requester_principal(actor, access_request.requester_object_id)
+        book = await self.cost_center_book(actor.tenant_id)
+        cost_center = self._require_cost_center(
+            book,
+            approval.cost_center_id
+            or access_request.cost_center_id
+            or book.default_for(principal),
+        )
         if principal is not None:
             existing = await self._repository.get_entitlement(
                 actor.tenant_id,
-                entitlement_id(actor.tenant_id, _subject_for(principal), access_request.resource),
+                entitlement_id(
+                    actor.tenant_id,
+                    _subject_for(principal),
+                    access_request.resource,
+                    cost_center.id,
+                ),
             )
             if existing is not None:
                 raise _existing_grant_conflict(existing)
@@ -1339,15 +1702,26 @@ class EntitlementService:
         if principal is None:
             principal = await self._register_requester(actor, access_request.requester_object_id)
 
+        # The requester's token showed which of the cost center's groups they were in when they
+        # asked. Without Microsoft Graph to check again, that's the only evidence there is, and it
+        # counts only for the cost center they chose and only while it still lists those groups.
+        trusted_groups = (
+            sorted(set(access_request.cost_center_group_ids) & cost_center.member_ids())
+            if self._directory_lookup is None and cost_center.id == access_request.cost_center_id
+            else None
+        )
         subject = _subject_for(principal)
         entitlement = await self._prepare_entitlement(
             actor,
             EntitlementCreate(
                 subject=subject,
                 resource=access_request.resource,
+                cost_center_id=cost_center.id,
                 enforcement=approval.enforcement,
             ),
             descriptor,
+            book=book,
+            group_principal_ids=trusted_groups,
         )
         decided_at = utc_now()
         approved = AccessRequest.model_validate(
@@ -1369,7 +1743,7 @@ class EntitlementService:
                 "entitlement.created",
                 "entitlement",
                 entitlement.id,
-                {"accessRequestId": request_id},
+                {"accessRequestId": request_id, "costCenterId": entitlement.cost_center_id},
             ),
             self._audit(
                 actor,
@@ -1380,6 +1754,8 @@ class EntitlementService:
                     "grantedEntitlementId": entitlement.id,
                     "principalId": principal.id,
                     "principalCreated": principal_created,
+                    "costCenterId": entitlement.cost_center_id,
+                    "requestedCostCenterId": access_request.cost_center_id,
                 },
             ),
         ]
@@ -1400,6 +1776,7 @@ class EntitlementService:
             if existing is not None:
                 raise _existing_grant_conflict(existing) from None
             raise
+        await self._revoke_if_ineligible(actor, entitlement, group_principal_ids=trusted_groups)
         logger.info(
             "access_request_approved",
             access_request_id=request_id,
@@ -1479,7 +1856,9 @@ class EntitlementService:
                 details={"objectId": object_id},
             ) from exc
         try:
-            return await DirectoryService(self._directory).create_principal(actor, request)
+            return await DirectoryService(
+                self._directory, cost_center_repository=self._cost_centers
+            ).create_principal(actor, request)
         except ConflictError:
             # A concurrent approval for the same person registered them first.
             principal = await self._requester_principal(actor, object_id)

@@ -295,8 +295,14 @@ class CostBook:
         return total
 
     def idle_keys(self) -> list[str]:
-        """Provisioned deployments that a current governed API in scope fronts."""
+        """Provisioned deployments that a current governed API in scope fronts.
 
+        None under a cost-center filter: reserved capacity nobody called belongs to no grant, so
+        to no cost center.
+        """
+
+        if self.scope.filters.cost_center_id is not None:
+            return []
         keys: set[str] = set()
         for gateway_id, apis in self.scope.governed.items():
             if not self.scope.in_scope(gateway_id) or gateway_id not in self.scope.gateways:

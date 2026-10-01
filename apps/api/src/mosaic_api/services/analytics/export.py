@@ -44,6 +44,8 @@ _GRANT_REF = [
     ("Subject principal kind", "subject_principal_kind"),
     ("Resource", "resource_label"),
     ("Resource kind", "resource_kind"),
+    ("Cost center", "cost_center_code"),
+    ("Cost center name", "cost_center_name"),
     ("Gateway", "gateway_name"),
     ("Entitlement ID", "entitlement_id"),
 ]
@@ -92,6 +94,8 @@ COLUMNS: dict[ExportView, list[tuple[str, str]]] = {
         ("Subject principal kind", "subject_principal_kind"),
         ("Resource", "resource_label"),
         ("Resource kind", "resource_kind"),
+        ("Cost center", "cost_center_code"),
+        ("Cost center name", "cost_center_name"),
         ("Gateway", "gateway_name"),
         ("State", "state"),
         ("Entitlement ID", "entitlement_id"),
@@ -208,6 +212,14 @@ COLUMNS: dict[ExportView, list[tuple[str, str]]] = {
         ("Why it has no price", "unpriced_message"),
         ("Price ID", "price_id"),
     ],
+    "costCenters": [
+        ("Cost center", "label"),
+        ("Code", "code"),
+        ("Cost center ID", "key"),
+        *_USAGE,
+        ("Grants", "grants"),
+        ("Callers", "callers"),
+    ],
     # Built by the chargeback export itself; see cost_report.CHARGEBACK_COLUMNS.
     "chargeback": [],
 }
@@ -229,6 +241,7 @@ REPORT_FOR: dict[ExportView, str] = {
     "untrackedGrants": "hygiene",
     "unattributed": "unattributed",
     "costDeployments": "cost",
+    "costCenters": "consumers",
     "chargeback": "chargeback",
 }
 
@@ -275,6 +288,7 @@ def table(view: ExportView, report: BaseModel) -> list[dict[str, Any]]:
             "groups": report.groups,
             "grants": report.grants,
             "clientApps": report.client_apps,
+            "costCenters": report.cost_centers,
         }
         return _dump(chosen.get(view, []))
     if isinstance(report, AnalyticsModels):

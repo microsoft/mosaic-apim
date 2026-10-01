@@ -318,6 +318,16 @@ class ApimWriter:
     async def delete_subscription(self, name: str) -> bool:
         return await self._delete(f"subscriptions/{name}")
 
+    async def regenerate_subscription_key(
+        self, name: str, slot: Literal["primary", "secondary"]
+    ) -> None:
+        """Give a grant's key a new value in one slot. The other slot keeps working meanwhile."""
+
+        action = "regeneratePrimaryKey" if slot == "primary" else "regenerateSecondaryKey"
+        await self._arm.post_action(
+            self.resource_id(f"subscriptions/{name}/{action}"), params=self._params
+        )
+
     async def put_azure_monitor_logger(self) -> JsonObject | None:
         """Create the logger through which API diagnostics feed the service's resource logs."""
 

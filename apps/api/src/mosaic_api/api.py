@@ -24,6 +24,7 @@ from mosaic_api.domain import (
     GatewaySuggestion,
     GatewaySyncRun,
     GatewayUpdate,
+    GrantKey,
     GrantOverlapReport,
     Group,
     GroupCreate,
@@ -32,6 +33,7 @@ from mosaic_api.domain import (
     ImportRequest,
     KeyRevealRequest,
     KeyRevealResult,
+    KeyRotateRequest,
     McpConnection,
     McpEndpoint,
     McpEndpointCreate,
@@ -206,6 +208,29 @@ async def reveal_my_key(
     return await _portal_access(request).reveal_key(_actor(auth), entitlement_id, payload.slot)
 
 
+@portal_router.post(
+    "/entitlements/{entitlement_id}/keys",
+    response_model=GrantKey,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_my_key(request: Request, auth: PortalUser, entitlement_id: str) -> GrantKey:
+    """Create the key for one of the caller's own applied direct grants."""
+
+    return await _portal_access(request).create_key(_actor(auth), entitlement_id)
+
+
+@portal_router.post("/entitlements/{entitlement_id}/keys/rotate", response_model=GrantKey)
+async def rotate_my_key(
+    request: Request, auth: PortalUser, entitlement_id: str, payload: KeyRotateRequest
+) -> GrantKey:
+    return await _portal_access(request).rotate_key(_actor(auth), entitlement_id, payload.slot)
+
+
+@portal_router.delete("/entitlements/{entitlement_id}/keys", response_model=GrantKey)
+async def delete_my_key(request: Request, auth: PortalUser, entitlement_id: str) -> GrantKey:
+    return await _portal_access(request).delete_key(_actor(auth), entitlement_id)
+
+
 @router.get("/entitlements/{entitlement_id}/connection", response_model=ModelConnection)
 async def model_connection(
     request: Request, auth: Admin, entitlement_id: str
@@ -230,6 +255,35 @@ async def reveal_grant_key(
 ) -> KeyRevealResult:
     return await _portal_access(request).reveal_key(
         _actor(auth), entitlement_id, payload.slot, administrator=True
+    )
+
+
+@router.post(
+    "/entitlements/{entitlement_id}/keys",
+    response_model=GrantKey,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_grant_key(request: Request, auth: Admin, entitlement_id: str) -> GrantKey:
+    """Create the key for any applied direct grant, such as an application's or an agent's."""
+
+    return await _portal_access(request).create_key(
+        _actor(auth), entitlement_id, administrator=True
+    )
+
+
+@router.post("/entitlements/{entitlement_id}/keys/rotate", response_model=GrantKey)
+async def rotate_grant_key(
+    request: Request, auth: Admin, entitlement_id: str, payload: KeyRotateRequest
+) -> GrantKey:
+    return await _portal_access(request).rotate_key(
+        _actor(auth), entitlement_id, payload.slot, administrator=True
+    )
+
+
+@router.delete("/entitlements/{entitlement_id}/keys", response_model=GrantKey)
+async def delete_grant_key(request: Request, auth: Admin, entitlement_id: str) -> GrantKey:
+    return await _portal_access(request).delete_key(
+        _actor(auth), entitlement_id, administrator=True
     )
 
 
@@ -843,9 +897,10 @@ async def list_entitlements(
     auth: Admin,
     subject: str | None = None,
     resource: str | None = None,
+    cost_center: Annotated[str | None, Query(alias="costCenter")] = None,
 ) -> list[Entitlement]:
     return await _entitlements(request).list_entitlements(
-        _actor(auth), subject_id=subject, resource_id=resource
+        _actor(auth), subject_id=subject, resource_id=resource, cost_center_id=cost_center
     )
 
 

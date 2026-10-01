@@ -7,6 +7,7 @@ from fastapi import Request
 from fastapi.testclient import TestClient
 from mosaic_api.auth import AuthContext
 from mosaic_api.config import AuthMode, Environment, RepositoryBackend, Settings
+from mosaic_api.cost_centers import CostCenterBook
 from mosaic_api.domain import (
     AccessRequestApproval,
     AccessRequestCreate,
@@ -35,6 +36,7 @@ from mosaic_api.domain import (
     RequestEnforcement,
     TokenEnforcement,
     entitlement_id,
+    general_cost_center_id,
     mcp_publication_id,
     mcp_resource_metadata_url,
     mcp_server_id,
@@ -52,7 +54,7 @@ from mosaic_api.repositories import (
 )
 from mosaic_api.services.directory import Actor
 from mosaic_api.services.entitlements import EntitlementService
-from mosaic_api.services.model_access import entitlement_intent_digest
+from mosaic_api.services.model_access import cost_center_intent, entitlement_intent_digest
 from mosaic_api.services.portal_access import PortalAccessService
 
 TENANT = "tenant-test"
@@ -203,7 +205,7 @@ class Harness:
         subject = EntitlementSubject(kind=subject_kind_for(principal.kind), id=principal.id)
         resource = resource or EntitlementResource(kind="mcpServer", id=self.server.id)
         entitlement = Entitlement(
-            id=entitlement_id(TENANT, subject, resource),
+            id=entitlement_id(TENANT, subject, resource, general_cost_center_id(TENANT)),
             tenant_id=TENANT,
             subject=subject,
             resource=resource,
@@ -235,7 +237,11 @@ class Harness:
             enforcement=entitlement.enforcement,
             intent_digest=intent_digest
             if intent_digest is not None
-            else entitlement_intent_digest(entitlement, principal),
+            else entitlement_intent_digest(
+                entitlement,
+                principal,
+                cost_center_intent(entitlement, principal, CostCenterBook(TENANT, [], None)),
+            ),
         )
         self.publication = self.publication.model_copy(
             update={

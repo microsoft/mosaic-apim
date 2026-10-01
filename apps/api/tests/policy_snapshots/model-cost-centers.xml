@@ -1,0 +1,217 @@
+<fragment>
+  <set-variable name="mosaic-has-key" value="@(context.Request.Headers.ContainsKey(&quot;Ocp-Apim-Subscription-Key&quot;) || context.Request.Url.Query.ContainsKey(&quot;subscription-key&quot;))" />
+  <set-variable name="mosaic-has-token" value="@(context.Request.Headers.ContainsKey(&quot;Authorization&quot;))" />
+  <set-variable name="mosaic-caller" value="" />
+  <set-variable name="mosaic-client" value="" />
+  <choose>
+    <when condition="@(!(bool)context.Variables[&quot;mosaic-has-key&quot;] &amp;&amp; !(bool)context.Variables[&quot;mosaic-has-token&quot;])">
+      <trace source="mosaic" severity="information">
+        <message>mosaic-deny v=1 r=no-credential</message>
+      </trace>
+      <return-response>
+        <set-status code="401" reason="Unauthorized" />
+        <set-body>Model access denied.</set-body>
+      </return-response>
+    </when>
+  </choose>
+  <set-variable name="mosaic-cost-center-header" value="@{&#10;if (!context.Request.Headers.ContainsKey(&quot;x-mosaic-cost-center&quot;)) { return &quot;&quot;; }&#10;var values = context.Request.Headers[&quot;x-mosaic-cost-center&quot;];&#10;if (values == null || values.Length != 1 || values[0] == null) { return &quot;!&quot;; }&#10;var code = values[0].Trim();&#10;if (!System.Text.RegularExpressions.Regex.IsMatch(code, &quot;^[A-Za-z0-9._-]\u007b1,64\u007d$&quot;)) { return &quot;!&quot;; }&#10;return code.ToLowerInvariant();&#10;}" />
+  <set-variable name="mosaic-cc" value="@((string)context.Variables[&quot;mosaic-cost-center-header&quot;])" />
+  <choose>
+    <when condition="@((string)context.Variables[&quot;mosaic-cost-center-header&quot;] == &quot;!&quot;)">
+      <trace source="mosaic" severity="information">
+        <message>mosaic-deny v=1 r=cost-center</message>
+      </trace>
+      <return-response>
+        <set-status code="403" reason="Forbidden" />
+        <set-body>Access denied. You hold no grant under the cost center the x-mosaic-cost-center header names, or the header isn't a cost center code.</set-body>
+      </return-response>
+    </when>
+  </choose>
+  <set-variable name="mosaic-key-grant" value="" />
+  <set-variable name="mosaic-key-cost-center" value="" />
+  <set-variable name="mosaic-token-grant" value="" />
+  <set-variable name="mosaic-token-cost-center" value="" />
+  <set-variable name="mosaic-member" value="" />
+  <choose>
+    <when condition="@((bool)context.Variables[&quot;mosaic-has-key&quot;])">
+      <choose>
+        <when condition="@{&#10;var headers = context.Request.Headers;&#10;var query = context.Request.Url.Query;&#10;string header = null;&#10;string parameter = null;&#10;if (headers.ContainsKey(&quot;Ocp-Apim-Subscription-Key&quot;)) {&#10;    var values = headers[&quot;Ocp-Apim-Subscription-Key&quot;];&#10;    if (values == null || values.Length != 1 || String.IsNullOrWhiteSpace(values[0])) { return true; }&#10;    header = values[0];&#10;}&#10;if (query.ContainsKey(&quot;subscription-key&quot;)) {&#10;    var values = query[&quot;subscription-key&quot;];&#10;    if (values == null || values.Length != 1 || String.IsNullOrWhiteSpace(values[0])) { return true; }&#10;    parameter = values[0];&#10;}&#10;if (header != null &amp;&amp; parameter != null &amp;&amp; !String.Equals(header, parameter, StringComparison.Ordinal)) { return true; }&#10;return context.Subscription == null || String.IsNullOrEmpty(context.Subscription.Id);&#10;}">
+          <trace source="mosaic" severity="information">
+            <message>mosaic-deny v=1 r=key-malformed</message>
+          </trace>
+          <return-response>
+            <set-status code="401" reason="Unauthorized" />
+            <set-body>Model access denied.</set-body>
+          </return-response>
+        </when>
+      </choose>
+      <set-variable name="mosaic-key-match" value="@{&#10;if (context.Subscription == null) { return &quot;&quot;; }&#10;var subscription = context.Subscription.Id;&#10;if (String.Equals(subscription, &quot;mosaic-grant-1&quot;, StringComparison.OrdinalIgnoreCase)) { return &quot;82d6717d52e846faa8a5a830f974695f21d0ff719cf9bda91e0caf223bd29a6b|general&quot;; }&#10;if (String.Equals(subscription, &quot;mosaic-grant-2&quot;, StringComparison.OrdinalIgnoreCase)) { return &quot;4c9af819b759b8e9dfc7e64407a727a42e576450a91bfa82d5951005521bc5d1|research&quot;; }&#10;if (String.Equals(subscription, &quot;mosaic-grant-3&quot;, StringComparison.OrdinalIgnoreCase)) { return &quot;3d7abb22194627137690dc4329c3f475e34c9c7009ad3844003942e743294467|sales.emea&quot;; }&#10;if (String.Equals(subscription, &quot;mosaic-grant-4&quot;, StringComparison.OrdinalIgnoreCase)) { return &quot;1e48c4bfb436743094bbb70de287bcd0bbdac045434f569c1472eaa769a05638|research&quot;; }&#10;if (String.Equals(subscription, &quot;mosaic-grant-5&quot;, StringComparison.OrdinalIgnoreCase)) { return &quot;-&quot;; }&#10;return &quot;&quot;;&#10;}" />
+      <set-variable name="mosaic-key-grant" value="@{&#10;var match = (string)context.Variables[&quot;mosaic-key-match&quot;];&#10;var bar = match.IndexOf('|');&#10;return bar &lt; 0 ? match : match.Substring(0, bar);&#10;}" />
+      <set-variable name="mosaic-key-cost-center" value="@{&#10;var match = (string)context.Variables[&quot;mosaic-key-match&quot;];&#10;var bar = match.IndexOf('|');&#10;return bar &lt; 0 ? &quot;&quot; : match.Substring(bar + 1);&#10;}" />
+      <choose>
+        <when condition="@((string)context.Variables[&quot;mosaic-key-grant&quot;] == &quot;-&quot;)">
+          <trace source="mosaic" severity="information">
+            <message>mosaic-deny v=1 r=keys-off</message>
+          </trace>
+          <return-response>
+            <set-status code="401" reason="Unauthorized" />
+            <set-body>Model access denied. Keys are turned off for this grant's cost center; use a Microsoft Entra token.</set-body>
+          </return-response>
+        </when>
+      </choose>
+      <choose>
+        <when condition="@(String.IsNullOrEmpty((string)context.Variables[&quot;mosaic-key-grant&quot;]))">
+          <trace source="mosaic" severity="information">
+            <message>mosaic-deny v=1 r=key-unknown</message>
+          </trace>
+          <return-response>
+            <set-status code="403" reason="Forbidden" />
+            <set-body>Model access denied.</set-body>
+          </return-response>
+        </when>
+      </choose>
+      <choose>
+        <when condition="@((string)context.Variables[&quot;mosaic-cost-center-header&quot;] != &quot;&quot; &amp;&amp; (string)context.Variables[&quot;mosaic-cost-center-header&quot;] != (string)context.Variables[&quot;mosaic-key-cost-center&quot;])">
+          <trace source="mosaic" severity="information">
+            <message>mosaic-deny v=1 r=cost-center-mismatch</message>
+          </trace>
+          <return-response>
+            <set-status code="403" reason="Forbidden" />
+            <set-body>Access denied. This key belongs to a grant under a different cost center than the x-mosaic-cost-center header names.</set-body>
+          </return-response>
+        </when>
+      </choose>
+      <set-variable name="mosaic-cc" value="@((string)context.Variables[&quot;mosaic-key-cost-center&quot;])" />
+    </when>
+  </choose>
+  <choose>
+    <when condition="@((bool)context.Variables[&quot;mosaic-has-token&quot;])">
+      <choose>
+        <when condition="@{&#10;var values = context.Request.Headers[&quot;Authorization&quot;];&#10;if (values == null || values.Length != 1) { return true; }&#10;var authorization = values[0];&#10;return String.IsNullOrWhiteSpace(authorization) || !authorization.StartsWith(&quot;Bearer &quot;, StringComparison.OrdinalIgnoreCase) || String.IsNullOrWhiteSpace(authorization.Substring(7));&#10;}">
+          <trace source="mosaic" severity="information">
+            <message>mosaic-deny v=1 r=token-malformed</message>
+          </trace>
+          <return-response>
+            <set-status code="401" reason="Unauthorized" />
+            <set-body>Model access denied.</set-body>
+          </return-response>
+        </when>
+      </choose>
+      <validate-azure-ad-token tenant-id="11111111-1111-1111-1111-111111111111" header-name="Authorization" failed-validation-httpcode="401" failed-validation-error-message="Model access denied." output-token-variable-name="mosaic-validated-token">
+        <audiences>
+          <audience>22222222-2222-2222-2222-222222222222</audience>
+        </audiences>
+        <required-claims>
+          <claim name="ver" match="all">
+            <value>2.0</value>
+          </claim>
+        </required-claims>
+      </validate-azure-ad-token>
+      <set-variable name="mosaic-caller" value="@{&#10;var jwt = context.Variables.ContainsKey(&quot;mosaic-validated-token&quot;) ? context.Variables[&quot;mosaic-validated-token&quot;] as Jwt : null;&#10;if (jwt == null || jwt.Claims == null || !jwt.Claims.ContainsKey(&quot;oid&quot;)) { return &quot;&quot;; }&#10;var values = jwt.Claims[&quot;oid&quot;];&#10;if (values == null || values.Length != 1 || String.IsNullOrWhiteSpace(values[0])) { return &quot;&quot;; }&#10;return values[0].ToLowerInvariant();&#10;}" />
+      <set-variable name="mosaic-client" value="@{&#10;var jwt = context.Variables.ContainsKey(&quot;mosaic-validated-token&quot;) ? context.Variables[&quot;mosaic-validated-token&quot;] as Jwt : null;&#10;if (jwt == null || jwt.Claims == null || !jwt.Claims.ContainsKey(&quot;azp&quot;)) { return &quot;&quot;; }&#10;var values = jwt.Claims[&quot;azp&quot;];&#10;if (values == null || values.Length != 1 || String.IsNullOrWhiteSpace(values[0])) { return &quot;&quot;; }&#10;return values[0].ToLowerInvariant();&#10;}" />
+      <set-variable name="mosaic-token-match" value="@{&#10;var jwt = context.Variables.ContainsKey(&quot;mosaic-validated-token&quot;) ? context.Variables[&quot;mosaic-validated-token&quot;] as Jwt : null;&#10;if (jwt == null || jwt.Claims == null || !jwt.Claims.ContainsKey(&quot;oid&quot;)) { return &quot;&quot;; }&#10;var objects = jwt.Claims[&quot;oid&quot;];&#10;if (objects == null || objects.Length != 1 || String.IsNullOrWhiteSpace(objects[0])) { return &quot;&quot;; }&#10;var oid = objects[0];&#10;var cc = (string)context.Variables[&quot;mosaic-cc&quot;];&#10;bool delegated = false;&#10;bool application = false;&#10;bool hasRealScopes = false;&#10;if (jwt.Claims.ContainsKey(&quot;scp&quot;)) {&#10;    var scopes = jwt.Claims[&quot;scp&quot;];&#10;    if (scopes != null &amp;&amp; scopes.Length == 1 &amp;&amp; scopes[0] != null) {&#10;        foreach (var scope in scopes[0].Split(' ')) {&#10;            if (String.IsNullOrWhiteSpace(scope) || scope == &quot;/&quot;) { continue; }&#10;            hasRealScopes = true;&#10;            if (String.Equals(scope, &quot;Models.Invoke&quot;, StringComparison.Ordinal)) { delegated = true; }&#10;        }&#10;    }&#10;}&#10;if (!hasRealScopes &amp;&amp; jwt.Claims.ContainsKey(&quot;roles&quot;)) {&#10;    var roles = jwt.Claims[&quot;roles&quot;];&#10;    application = roles != null &amp;&amp; roles.Contains(&quot;Models.Invoke.Application&quot;);&#10;}&#10;if (delegated &amp;&amp; String.Equals(oid, &quot;00000001-3333-3333-3333-333333333333&quot;, StringComparison.OrdinalIgnoreCase) &amp;&amp; (cc == &quot;&quot; || cc == &quot;sales.emea&quot;)) { return &quot;3d7abb22194627137690dc4329c3f475e34c9c7009ad3844003942e743294467|sales.emea&quot;; }&#10;if (delegated &amp;&amp; String.Equals(oid, &quot;00000001-3333-3333-3333-333333333333&quot;, StringComparison.OrdinalIgnoreCase) &amp;&amp; (cc == &quot;&quot; || cc == &quot;research&quot;)) { return &quot;4c9af819b759b8e9dfc7e64407a727a42e576450a91bfa82d5951005521bc5d1|research&quot;; }&#10;if (delegated &amp;&amp; String.Equals(oid, &quot;00000001-3333-3333-3333-333333333333&quot;, StringComparison.OrdinalIgnoreCase) &amp;&amp; (cc == &quot;&quot; || cc == &quot;general&quot;)) { return &quot;82d6717d52e846faa8a5a830f974695f21d0ff719cf9bda91e0caf223bd29a6b|general&quot;; }&#10;if (delegated &amp;&amp; String.Equals(oid, &quot;00000004-3333-3333-3333-333333333333&quot;, StringComparison.OrdinalIgnoreCase) &amp;&amp; (cc == &quot;&quot; || cc == &quot;research&quot;)) { return &quot;1e48c4bfb436743094bbb70de287bcd0bbdac045434f569c1472eaa769a05638|research&quot;; }&#10;if (delegated &amp;&amp; String.Equals(oid, &quot;00000005-3333-3333-3333-333333333333&quot;, StringComparison.OrdinalIgnoreCase) &amp;&amp; (cc == &quot;&quot; || cc == &quot;sales.emea&quot;)) { return &quot;255687aa0a2718c6acca91305347e0d67cb1be1971e3aa2c41d79797509d581c|sales.emea&quot;; }&#10;var groups = jwt.Claims.ContainsKey(&quot;groups&quot;) ? jwt.Claims[&quot;groups&quot;] : null;&#10;if ((delegated || application) &amp;&amp; groups != null) {&#10;    foreach (var group in groups) {&#10;        if (String.Equals(group, &quot;00000006-aaaa-aaaa-aaaa-aaaaaaaaaaaa&quot;, StringComparison.OrdinalIgnoreCase) &amp;&amp; (cc == &quot;&quot; || cc == &quot;research&quot;)) { return &quot;2e64af47fc5a01b66e27779873345ab17e711fb02cf7b5c8177a1a0e51420c89|research&quot;; }&#10;    }&#10;}&#10;return &quot;&quot;;&#10;}" />
+      <set-variable name="mosaic-token-grant" value="@{&#10;var match = (string)context.Variables[&quot;mosaic-token-match&quot;];&#10;var bar = match.IndexOf('|');&#10;return bar &lt; 0 ? match : match.Substring(0, bar);&#10;}" />
+      <set-variable name="mosaic-token-cost-center" value="@{&#10;var match = (string)context.Variables[&quot;mosaic-token-match&quot;];&#10;var bar = match.IndexOf('|');&#10;return bar &lt; 0 ? &quot;&quot; : match.Substring(bar + 1);&#10;}" />
+      <set-variable name="mosaic-member" value="@{&#10;if (&#10;    (string)context.Variables[&quot;mosaic-token-grant&quot;] != &quot;2e64af47fc5a01b66e27779873345ab17e711fb02cf7b5c8177a1a0e51420c89&quot;&#10;) { return &quot;&quot;; }&#10;var jwt = context.Variables.ContainsKey(&quot;mosaic-validated-token&quot;) ? context.Variables[&quot;mosaic-validated-token&quot;] as Jwt : null;&#10;if (jwt == null || jwt.Claims == null || !jwt.Claims.ContainsKey(&quot;oid&quot;)) { return &quot;&quot;; }&#10;var objects = jwt.Claims[&quot;oid&quot;];&#10;if (objects == null || objects.Length != 1 || String.IsNullOrWhiteSpace(objects[0])) { return &quot;&quot;; }&#10;return objects[0].ToLowerInvariant();&#10;}" />
+      <choose>
+        <when condition="@{&#10;if (!String.IsNullOrEmpty((string)context.Variables[&quot;mosaic-token-grant&quot;])) { return false; }&#10;var jwt = context.Variables.ContainsKey(&quot;mosaic-validated-token&quot;) ? context.Variables[&quot;mosaic-validated-token&quot;] as Jwt : null;&#10;if (jwt == null || jwt.Claims == null) { return false; }&#10;if (jwt.Claims.ContainsKey(&quot;hasgroups&quot;)) { return true; }&#10;try {&#10;    if (!jwt.Claims.ContainsKey(&quot;_claim_names&quot;)) { return false; }&#10;    var values = jwt.Claims[&quot;_claim_names&quot;];&#10;    if (values == null) { return false; }&#10;    foreach (var value in values) {&#10;        if (value != null &amp;&amp; value.IndexOf(&quot;groups&quot;, StringComparison.OrdinalIgnoreCase) &gt;= 0) { return true; }&#10;    }&#10;} catch { return false; }&#10;return false;&#10;}">
+          <trace source="mosaic" severity="information">
+            <message>@("mosaic-deny v=1 r=groups-overage o=" + (string)context.Variables["mosaic-caller"] + " a=" + (string)context.Variables["mosaic-client"])</message>
+          </trace>
+          <return-response>
+            <set-status code="403" reason="Forbidden" />
+            <set-body>Model access denied. Your token doesn't list your groups because you belong to too many; ask an administrator for a direct grant.</set-body>
+          </return-response>
+        </when>
+      </choose>
+      <choose>
+        <when condition="@(String.IsNullOrEmpty((string)context.Variables[&quot;mosaic-token-grant&quot;]) &amp;&amp; (string)context.Variables[&quot;mosaic-cost-center-header&quot;] != &quot;&quot;)">
+          <trace source="mosaic" severity="information">
+            <message>@("mosaic-deny v=1 r=cost-center o=" + (string)context.Variables["mosaic-caller"] + " a=" + (string)context.Variables["mosaic-client"])</message>
+          </trace>
+          <return-response>
+            <set-status code="403" reason="Forbidden" />
+            <set-body>Access denied. You hold no grant under the cost center the x-mosaic-cost-center header names, or the header isn't a cost center code.</set-body>
+          </return-response>
+        </when>
+      </choose>
+      <choose>
+        <when condition="@(String.IsNullOrEmpty((string)context.Variables[&quot;mosaic-token-grant&quot;]))">
+          <trace source="mosaic" severity="information">
+            <message>@("mosaic-deny v=1 r=no-grant o=" + (string)context.Variables["mosaic-caller"] + " a=" + (string)context.Variables["mosaic-client"])</message>
+          </trace>
+          <return-response>
+            <set-status code="403" reason="Forbidden" />
+            <set-body>Model access denied.</set-body>
+          </return-response>
+        </when>
+      </choose>
+    </when>
+  </choose>
+  <choose>
+    <when condition="@((bool)context.Variables[&quot;mosaic-has-key&quot;] &amp;&amp; (bool)context.Variables[&quot;mosaic-has-token&quot;] &amp;&amp; (string)context.Variables[&quot;mosaic-key-grant&quot;] != (string)context.Variables[&quot;mosaic-token-grant&quot;])">
+      <trace source="mosaic" severity="information">
+        <message>@("mosaic-deny v=1 r=grant-mismatch o=" + (string)context.Variables["mosaic-caller"] + " a=" + (string)context.Variables["mosaic-client"])</message>
+      </trace>
+      <return-response>
+        <set-status code="403" reason="Forbidden" />
+        <set-body>Model access denied.</set-body>
+      </return-response>
+    </when>
+  </choose>
+  <set-variable name="mosaic-grant" value="@((bool)context.Variables[&quot;mosaic-has-key&quot;] ? (string)context.Variables[&quot;mosaic-key-grant&quot;] : (string)context.Variables[&quot;mosaic-token-grant&quot;])" />
+  <set-variable name="mosaic-cost-center" value="@((bool)context.Variables[&quot;mosaic-has-key&quot;] ? (string)context.Variables[&quot;mosaic-key-cost-center&quot;] : (string)context.Variables[&quot;mosaic-token-cost-center&quot;])" />
+  <set-variable name="mosaic-cost-center-id" value="@{&#10;var code = (string)context.Variables[&quot;mosaic-cost-center&quot;];&#10;if (code == &quot;general&quot;) { return &quot;costCenter-general&quot;; }&#10;if (code == &quot;research&quot;) { return &quot;costCenter-research&quot;; }&#10;if (code == &quot;sales.emea&quot;) { return &quot;costCenter-sales&quot;; }&#10;return &quot;&quot;;&#10;}" />
+  <choose>
+    <when condition="@(context.Operation == null || context.Request.Method != &quot;POST&quot; || !(context.Operation.Id == &quot;chat-completions&quot; || context.Operation.Id == &quot;responses&quot;))">
+      <trace source="mosaic" severity="information">
+        <message>@("mosaic-deny v=1 r=operation o=" + (string)context.Variables["mosaic-caller"] + " a=" + (string)context.Variables["mosaic-client"])</message>
+      </trace>
+      <return-response>
+        <set-status code="403" reason="Forbidden" />
+        <set-body>This operation is not available with governed token limits.</set-body>
+      </return-response>
+    </when>
+  </choose>
+  <choose>
+    <when condition="@{&#10;if (!(context.Operation.Id == &quot;responses&quot;)) { return false; }&#10;if (context.Request.Body == null) { return true; }&#10;try {&#10;    var body = context.Request.Body.As&lt;JObject&gt;(preserveContent: true);&#10;    var model = body == null ? null : body[&quot;model&quot;];&#10;    return model == null || model.Type != JTokenType.String ||&#10;        !String.Equals((string)model, &quot;gpt-4o-prod&quot;, StringComparison.Ordinal);&#10;} catch { return true; }&#10;}">
+      <trace source="mosaic" severity="information">
+        <message>@("mosaic-deny v=1 r=model o=" + (string)context.Variables["mosaic-caller"] + " a=" + (string)context.Variables["mosaic-client"])</message>
+      </trace>
+      <return-response>
+        <set-status code="403" reason="Forbidden" />
+        <set-body>The request must name this publication's model deployment.</set-body>
+      </return-response>
+    </when>
+  </choose>
+  <trace source="mosaic" severity="information">
+    <message>@("mosaic-attribution v=1 g=" + (string)context.Variables["mosaic-grant"] + " m=" + (string)context.Variables["mosaic-member"] + " a=" + (string)context.Variables["mosaic-client"])</message>
+    <metadata name="mosaic-grant" value="@((string)context.Variables[&quot;mosaic-grant&quot;])" />
+    <metadata name="mosaic-member" value="@((string)context.Variables[&quot;mosaic-member&quot;])" />
+    <metadata name="mosaic-client" value="@((string)context.Variables[&quot;mosaic-client&quot;])" />
+  </trace>
+  <choose>
+    <when condition="@((string)context.Variables[&quot;mosaic-grant&quot;] == &quot;1e48c4bfb436743094bbb70de287bcd0bbdac045434f569c1472eaa769a05638&quot;)">
+      <rate-limit-by-key calls="10" renewal-period="60" counter-key="mosaic:governed:grant-request-rate:1e48c4bfb436743094bbb70de287bcd0bbdac045434f569c1472eaa769a05638" remaining-calls-header-name="x-mosaic-remaining-calls" />
+      <llm-token-limit counter-key="mosaic:governed:grant-tokens:1e48c4bfb436743094bbb70de287bcd0bbdac045434f569c1472eaa769a05638" estimate-prompt-tokens="true" tokens-per-minute="1000" token-quota="90000" token-quota-period="Monthly" remaining-tokens-header-name="x-mosaic-remaining-tokens" remaining-quota-tokens-header-name="x-mosaic-remaining-quota-tokens" />
+    </when>
+  </choose>
+  <choose>
+    <when condition="@((string)context.Variables[&quot;mosaic-cost-center&quot;] == &quot;research&quot;)">
+      <llm-token-limit counter-key="mosaic:governed:cost-center-tokens:5cf47f31601c788504ecb394e60c4162e13f03eeda753ee8ccc8efdf04e52a2f" estimate-prompt-tokens="true" token-quota="2000000" token-quota-period="Monthly" remaining-quota-tokens-header-name="x-mosaic-cost-center-remaining-quota-tokens" />
+      <quota-by-key calls="40000" renewal-period="0" counter-key="@{&#10;var now = DateTime.UtcNow;&#10;return &quot;mosaic:governed:cost-center-request-quota:5cf47f31601c788504ecb394e60c4162e13f03eeda753ee8ccc8efdf04e52a2f:Monthly:&quot; + now.ToString(&quot;u&quot;).Substring(0, 7);&#10;}" />
+    </when>
+  </choose>
+  <llm-token-limit counter-key="@(&quot;mosaic:governed:publication-tokens:&quot; + (string)context.Variables[&quot;mosaic-grant&quot;] + (String.IsNullOrEmpty((string)context.Variables[&quot;mosaic-member&quot;]) ? &quot;&quot; : &quot;:&quot; + (string)context.Variables[&quot;mosaic-member&quot;]))" estimate-prompt-tokens="true" tokens-per-minute="5000" />
+  <set-header name="Ocp-Apim-Subscription-Key" exists-action="delete" />
+  <set-header name="api-key" exists-action="delete" />
+  <set-header name="Authorization" exists-action="delete" />
+  <set-header name="x-mosaic-cost-center" exists-action="delete" />
+  <set-query-parameter name="subscription-key" exists-action="delete" />
+  <authentication-managed-identity resource="https://cognitiveservices.azure.com" />
+  <set-backend-service backend-id="mosaic-model" />
+  <llm-emit-token-metric namespace="mosaic">
+    <dimension name="Publication" value="@(&quot;publication-model&quot;)" />
+    <dimension name="Deployment" value="@(&quot;gpt-4o-prod&quot;)" />
+  </llm-emit-token-metric>
+</fragment>

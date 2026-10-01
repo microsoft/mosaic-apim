@@ -26,6 +26,7 @@ import structlog
 from mosaic_api.domain import (
     AiBackendKind,
     ApimResourceId,
+    AppliedCostCenterPool,
     AuditEvent,
     BindingSource,
     CapabilitySupport,
@@ -89,18 +90,23 @@ from mosaic_api.integrations.backend_keys import backend_key_name
 from mosaic_api.integrations.policy import PublicationPolicy, render_publication_policy
 from mosaic_api.observed import ObservedApi, ObservedModelDeployment
 from mosaic_api.repositories import (
+    CostCenterRepository,
     DirectoryRepository,
     EntitlementRepository,
     EnvironmentRepository,
     GatewayRepository,
     ModelEndpointRepository,
 )
+from mosaic_api.services.cost_centers import load_book
 from mosaic_api.services.directory import Actor
 from mosaic_api.services.environments import load_environment_catalog
 from mosaic_api.services.model_access import (
+    cost_center_intent,
     denied_access_snapshot,
+    effective_enforcement,
     entitlement_intent_digest,
     environment_guard,
+    grant_key_display_name,
     local_mutation_active,
     publication_lock,
     safe_access_snapshot,
@@ -440,8 +446,10 @@ class PublishingService:
         model_runtime_client_id: str | None = None,
         security_group_claims: bool = True,
         environment_repository: EnvironmentRepository | None = None,
+        cost_center_repository: CostCenterRepository | None = None,
     ) -> None:
         self._repository = repository
+        self._cost_centers = cost_center_repository
         self._endpoints = endpoint_repository
         self._client_factory = client_factory
         self._writer_factory = writer_factory
@@ -1103,6 +1111,7 @@ class PublishingService:
             "subscription-key (query); each apply explicitly enforces these parameter names.",
         ]
         grants: list[ModelAccessGrant] = []
+        pools: dict[str, AppliedCostCenterPool] = {}
         if publication.model_api_id is not None:
             model = await self._repository.get_model_api(
                 publication.tenant_id, publication.model_api_id
@@ -1121,6 +1130,7 @@ class PublishingService:
             entitlements = await self._entitlements.list_entitlements(
                 publication.tenant_id, resource_id=model.id
             )
+            book = await load_book(self._cost_centers, publication.tenant_id)
             saw_security_group_grant = False
             for entitlement in entitlements:
                 if entitlement.resource.kind != "modelApi" or entitlement.subject.kind == "group":
@@ -1133,22 +1143,44 @@ class PublishingService:
                     entitlement.subject.kind == EntitlementSubjectKind.SECURITY_GROUP
                 )
                 saw_security_group_grant = saw_security_group_grant or is_security_group
+                principal = await self._directory.get_principal(
+                    publication.tenant_id, entitlement.subject.id
+                )
+                intent = cost_center_intent(entitlement, principal, book)
+                if intent is None:
+                    # Charged to a cost center MOSAIC no longer has, so it can't be charged at
+                    # all: it stays out rather than charge nobody.
+                    warnings.append(
+                        f"Grant {entitlement.id}'s cost center no longer exists; it is excluded "
+                        "from runtime access."
+                    )
+                    continue
+                enforcement = effective_enforcement(entitlement, intent)
                 if (
                     publication.enforcement is None
-                    and entitlement.enforcement is not None
-                    and entitlement.enforcement.tokens is not None
+                    and enforcement is not None
+                    and enforcement.tokens is not None
                 ):
                     # Granting access without the token limits an administrator set would widen
                     # it, so the grant stays out until its limits fit what the gateway can apply.
                     warnings.append(
-                        f"Grant {entitlement.id} sets token limits, which this gateway can't "
-                        "apply to this publication; it is excluded from runtime access. Remove "
-                        "its token limits and use call limits instead."
+                        f"Grant {entitlement.id} sets token limits, itself or through its cost "
+                        "center's per-person limits, which this gateway can't apply to this "
+                        "publication; it is excluded from runtime access. Use call limits "
+                        "instead."
                     )
                     continue
-                principal = await self._directory.get_principal(
-                    publication.tenant_id, entitlement.subject.id
-                )
+                if (
+                    publication.enforcement is None
+                    and intent.pool is not None
+                    and intent.pool.monthly_tokens is not None
+                ):
+                    warnings.append(
+                        f"Grant {entitlement.id}'s cost center pools tokens on this model, which "
+                        "this gateway can't meter; it is excluded from runtime access until the "
+                        "pool counts calls instead."
+                    )
+                    continue
                 if principal is None or entitlement.subject.kind != subject_kind_for(
                     principal.kind
                 ):
@@ -1183,10 +1215,23 @@ class PublishingService:
                             )
                         ),
                         enabled=entitlement.enabled,
-                        enforcement=entitlement.enforcement,
-                        intent_digest=entitlement_intent_digest(entitlement, principal),
+                        enforcement=enforcement,
+                        intent_digest=entitlement_intent_digest(entitlement, principal, intent),
+                        cost_center_id=intent.cost_center_id,
+                        cost_center_code=intent.code,
+                        default_cost_center=intent.default_for_subject,
+                        granted_at=entitlement.created_at,
+                        keys_allowed=intent.keys_allowed,
+                        revoked=entitlement.revocation is not None,
                     )
                 )
+                if intent.pool is not None:
+                    pools[intent.cost_center_id] = AppliedCostCenterPool(
+                        cost_center_id=intent.cost_center_id,
+                        cost_center_code=intent.code,
+                        monthly_tokens=intent.pool.monthly_tokens,
+                        monthly_calls=intent.pool.monthly_calls,
+                    )
             if saw_security_group_grant and not self._security_group_claims:
                 warnings.append(
                     "Group claims aren't configured for this deployment, so the gateway can't "
@@ -1222,6 +1267,7 @@ class PublishingService:
                 audience=self._runtime_audience,
                 publication_enforcement=publication.enforcement,
                 grants=grants,
+                pools=sorted(pools.values(), key=lambda pool: pool.cost_center_id),
             ),
             warnings,
         )
@@ -1296,6 +1342,7 @@ class PublishingService:
             if item.kind == PublishedResourceKind.SUBSCRIPTION and item.created_by_mosaic
         )
         subscriptions: list[PublishPlanStep] = []
+        deletions: list[PublishPlanStep] = []
         for name in sorted(subscription_names):
             live = await client.get_subscription(name)
             if live is not None and not self._owns(
@@ -1308,26 +1355,45 @@ class PublishingService:
             if live is not None:
                 self._validate_subscription_scope(publication, resource, name, live)
             grant = grants.get(name)
-            # Do not recreate obsolete bootstrap or orphaned subscriptions just to suspend them.
-            if live is None and grant is None:
+            # Keys are created on request, by a grant's holder or an administrator, and never by
+            # an apply. A grant without one keeps none; the policy already knows its name, so a
+            # key created later works without another apply.
+            if live is None:
+                continue
+            if grant is not None and grant.revoked:
+                deletions.append(
+                    PublishPlanStep(
+                        kind=PublishedResourceKind.SUBSCRIPTION,
+                        name=name,
+                        action=PublishAction.DELETE,
+                        reason=(
+                            f"Delete the key of grant {grant.entitlement_id}, revoked when its "
+                            "subject left its cost center."
+                        ),
+                        resource_id=f"{resource.canonical}/subscriptions/{name}",
+                        existed=True,
+                        entitlement_id=grant.entitlement_id,
+                        stage="prepare",
+                    )
+                )
                 continue
             step = PublishPlanStep(
                 kind=PublishedResourceKind.SUBSCRIPTION,
                 name=name,
-                action=PublishAction.UPDATE if live is not None else PublishAction.CREATE,
+                action=PublishAction.UPDATE,
                 reason=(
-                    f"Prepare the API-scoped subscription for grant {grant.entitlement_id}, "
-                    "without activating it."
+                    f"Suspend the key of grant {grant.entitlement_id} while access is applied."
                     if grant
                     else "Retire this publication's legacy or obsolete subscription."
                 ),
                 resource_id=f"{resource.canonical}/subscriptions/{name}",
-                existed=live is not None,
+                existed=True,
                 entitlement_id=grant.entitlement_id if grant else None,
                 subscription_state="suspended",
                 stage="prepare",
             )
             subscriptions.append(step)
+        steps.extend(deletions)
         steps.extend(subscriptions)
         for item in _desired_resources(publication):
             if item.kind in {
@@ -1363,7 +1429,12 @@ class PublishingService:
         )
         for step in subscriptions:
             grant = grants.get(step.name)
-            if grant and grant.enabled and snapshot.settings.keys_enabled:
+            if (
+                grant
+                and grant.enabled
+                and grant.keys_allowed
+                and snapshot.settings.keys_enabled
+            ):
                 steps.append(
                     step.model_copy(
                         update={
@@ -1570,7 +1641,10 @@ class PublishingService:
         if plan is None or plan.target != "model" or plan.publication_id != publication.id:
             raise NotFoundError("Publish plan was not found", details={"id": resolved})
         if plan.operation != "publish" or any(
-            step.action == PublishAction.DELETE for step in plan.steps
+            step.action == PublishAction.DELETE
+            # A publish plan deletes only a revoked grant's key, before it applies anything else.
+            and not (step.kind == PublishedResourceKind.SUBSCRIPTION and step.stage == "prepare")
+            for step in plan.steps
         ):
             # Plans saved before unpublishing was planned carry no operation, only delete steps.
             raise ConflictError(
@@ -1888,6 +1962,13 @@ class PublishingService:
                     )
                     write_started = False
                     try:
+                        if step.action == PublishAction.DELETE:
+                            owned = await self._delete_revoked_key(
+                                publication, client, writer, step, owned
+                            )
+                            result.status = PublishStepStatus.SUCCEEDED
+                            await self._progress(publication, run, results, owned)
+                            continue
                         exists = await self._exists(client, publication, item)
                         current = publication.model_copy(update={"resources": owned})
                         if exists and not self._owns(current, step.kind, step.name):
@@ -1963,6 +2044,34 @@ class PublishingService:
         finally:
             self._active.discard(publication.id)
 
+    async def _delete_revoked_key(
+        self,
+        publication: Publication,
+        client: ApimClient,
+        writer: ApimWriter,
+        step: PublishPlanStep,
+        owned: list[PublishedResource],
+    ) -> list[PublishedResource]:
+        """Delete a revoked grant's key, which only this publication may own, and forget it."""
+
+        current = publication.model_copy(update={"resources": owned})
+        if step.kind != PublishedResourceKind.SUBSCRIPTION or not self._owns(
+            current, PublishedResourceKind.SUBSCRIPTION, step.name
+        ):
+            raise ConflictError(
+                "MOSAIC deletes only the keys it created for this publication's grants.",
+                details={"subscriptionName": step.name},
+            )
+        live = await client.get_subscription(step.name)
+        if live is not None:
+            self._validate_subscription_scope(publication, writer.resource, step.name, live)
+            await writer.delete_subscription(step.name)
+        return [
+            item
+            for item in owned
+            if not (item.kind == PublishedResourceKind.SUBSCRIPTION and item.name == step.name)
+        ]
+
     async def _write_governed_step(
         self,
         writer: ApimWriter,
@@ -1994,7 +2103,11 @@ class PublishingService:
             else:
                 await writer.put_api_subscription(
                     step.name,
-                    display_name=grant.display_name if grant else publication.display_name,
+                    display_name=(
+                        grant_key_display_name(grant.display_name, grant.cost_center_code)
+                        if grant
+                        else publication.display_name
+                    ),
                     api_name=publication.api_name,
                     state=step.subscription_state or "suspended",
                 )
@@ -2208,7 +2321,9 @@ class PublishingService:
                         )
                         await writer.put_api_subscription(
                             grant.subscription_name,
-                            display_name=grant.display_name,
+                            display_name=grant_key_display_name(
+                                grant.display_name, grant.cost_center_code
+                            ),
                             api_name=publication.api_name,
                             state="active",
                         )
@@ -2536,8 +2651,15 @@ class PublishingService:
     ) -> None:
         await self._assert_lock(publication, run)
         applied_at = utc_now()
+        # A revoked grant's key this run deleted is no longer the publication's.
+        deleted = {
+            (result.kind, result.name)
+            for result in results
+            if result.status == PublishStepStatus.SUCCEEDED
+            and result.action == PublishAction.DELETE
+        }
         resources = _merge_resources(
-            publication.resources,
+            [item for item in publication.resources if (item.kind, item.name) not in deleted],
             [
                 PublishedResource(
                     kind=result.kind,
@@ -2548,6 +2670,7 @@ class PublishingService:
                 )
                 for result in results
                 if result.status == PublishStepStatus.SUCCEEDED
+                and result.action != PublishAction.DELETE
             ],
         )
         await self._record_state(

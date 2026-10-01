@@ -238,7 +238,13 @@ def test_grant_trace_is_after_authentication_before_limits_and_members_only_for_
 def test_every_mcp_refusal_records_a_fixed_reason_before_it_responds() -> None:
     fragment = _fragment(_snapshot(grants=[_grant(), _group_grant(2)]))
     reasons = _denial_reasons(fragment)
-    assert set(reasons) == {"no-credential", "token-malformed", "groups-overage", "no-grant"}
+    assert set(reasons) == {
+        "no-credential",
+        "token-malformed",
+        "cost-center",
+        "groups-overage",
+        "no-grant",
+    }
     assert reasons["no-credential"] == "mosaic-deny v=1 r=no-credential"
     assert reasons["no-grant"] == (
         '@("mosaic-deny v=1 r=no-grant o=" + (string)context.Variables["mosaic-caller"]'
@@ -335,7 +341,7 @@ def test_validate_entra_token_and_mcp_permission_lookup_are_rendered() -> None:
     assert validator.findtext("audiences/audience") == AUDIENCE
     assert validator.find("required-claims/claim").attrib == {"name": "ver", "match": "all"}  # type: ignore[union-attr]
     assert validator.findtext("required-claims/claim/value") == "2.0"
-    lookup = _variable_values(fragment, "mosaic-token-grant")[-1]
+    lookup = _variable_values(fragment, "mosaic-token-match")[-1]
     assert '"Mcp.Invoke"' in lookup
     assert '"Mcp.Invoke.Application"' in lookup
     assert '"Models.Invoke"' not in lookup
@@ -351,7 +357,7 @@ def test_disabled_grants_are_excluded_and_direct_grants_precede_group_grants() -
     snapshot = _snapshot(grants=[group, disabled, direct])
 
     fragment = ET.fromstring(_render(publication, snapshot).fragment_xml)
-    lookup = _variable_values(fragment, "mosaic-token-grant")[-1]
+    lookup = _variable_values(fragment, "mosaic-token-match")[-1]
 
     assert mcp_grant_counter_identity(publication, disabled) not in lookup
     assert lookup.index(mcp_grant_counter_identity(publication, direct)) < lookup.index(
@@ -371,7 +377,7 @@ def test_group_grants_use_precedence_and_overage_denial() -> None:
     fragment = ET.fromstring(
         _render(publication, _snapshot(grants=[limited, generous])).fragment_xml
     )
-    lookup = _variable_values(fragment, "mosaic-token-grant")[-1]
+    lookup = _variable_values(fragment, "mosaic-token-match")[-1]
 
     assert lookup.index(mcp_grant_counter_identity(publication, generous)) < lookup.index(
         mcp_grant_counter_identity(publication, limited)

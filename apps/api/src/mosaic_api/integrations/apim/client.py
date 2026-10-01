@@ -512,6 +512,14 @@ class ArmClient:
             raise UpstreamError("Azure returned an invalid credential response")
         return payload
 
+    async def post_action(self, url: str, *, params: dict[str, str]) -> None:
+        """Run an ARM action that answers with no content, such as regenerating a key.
+
+        Sent as sensitive, so nothing Azure answers reaches an error message or a log line.
+        """
+
+        await self._send("POST", url, params=params, sensitive=True)
+
     async def get(
         self,
         url: str,

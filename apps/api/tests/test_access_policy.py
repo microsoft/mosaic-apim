@@ -375,8 +375,10 @@ def test_every_refusal_records_a_fixed_reason_before_it_responds() -> None:
     reasons = _denial_reasons(fragment)
     assert set(reasons) == {
         "no-credential",
+        "cost-center",
         "key-malformed",
         "key-unknown",
+        "cost-center-mismatch",
         "token-malformed",
         "groups-overage",
         "no-grant",
@@ -477,7 +479,7 @@ def test_presence_includes_empty_query_or_header_and_any_authorization_header() 
 def test_keys_require_native_validation_and_exact_enabled_allowlist() -> None:
     group = _group_grant(3)
     fragment = _fragment(_snapshot(grants=[_grant(), _grant(2, enabled=False), group]))
-    lookup = _variable_values(fragment, "mosaic-key-grant")[-1]
+    lookup = _variable_values(fragment, "mosaic-key-match")[-1]
     assert 'if (context.Subscription == null) { return ""; }' in lookup
     assert "var subscription = context.Subscription.Id;" in lookup
     assert (
@@ -540,7 +542,7 @@ def test_claim_lookup_guards_nulls_and_cardinality_and_distinguishes_token_kinds
     user = _grant()
     app = _grant(2, subject=EntitlementSubject(kind=EntitlementSubjectKind.APPLICATION, id="app-2"))
     fragment = _fragment(_snapshot(grants=[user, app]))
-    lookup = _variable_values(fragment, "mosaic-token-grant")[-1]
+    lookup = _variable_values(fragment, "mosaic-token-match")[-1]
     assert 'context.Variables.ContainsKey("mosaic-validated-token")' in lookup
     assert 'jwt == null || jwt.Claims == null || !jwt.Claims.ContainsKey("oid")' in lookup
     assert (
@@ -565,7 +567,7 @@ def test_claim_lookup_guards_nulls_and_cardinality_and_distinguishes_token_kinds
 
 @pytest.mark.parametrize("scp_literal", ['""', '"/"'])
 def test_empty_and_slash_scp_take_application_role_path(scp_literal: str) -> None:
-    lookup = _variable_values(_fragment(), "mosaic-token-grant")[-1]
+    lookup = _variable_values(_fragment(), "mosaic-token-match")[-1]
     scp_index = lookup.index('if (jwt.Claims.ContainsKey("scp"))')
     roles_index = lookup.index('if (!hasRealScopes && jwt.Claims.ContainsKey("roles"))')
     assert scp_index < roles_index
@@ -576,7 +578,7 @@ def test_empty_and_slash_scp_take_application_role_path(scp_literal: str) -> Non
 
 
 def test_absent_scp_takes_application_path_and_real_scopes_stay_delegated() -> None:
-    lookup = _variable_values(_fragment(), "mosaic-token-grant")[-1]
+    lookup = _variable_values(_fragment(), "mosaic-token-match")[-1]
     assert 'if (!hasRealScopes && jwt.Claims.ContainsKey("roles"))' in lookup
     assert 'String.Equals(scope, "Models.Invoke", StringComparison.Ordinal)' in lookup
     assert "delegated = true;" in lookup
@@ -585,7 +587,7 @@ def test_absent_scp_takes_application_path_and_real_scopes_stay_delegated() -> N
 
 def test_parameterized_scope_and_role_names_are_emitted() -> None:
     fragment = _fragment()
-    default_lookup = _variable_values(fragment, "mosaic-token-grant")[-1]
+    default_lookup = _variable_values(fragment, "mosaic-token-match")[-1]
     custom = ET.fromstring(
         render_governed_policy(
             _publication(),
@@ -594,7 +596,7 @@ def test_parameterized_scope_and_role_names_are_emitted() -> None:
             application_role="Mcp.Invoke.Application",
         ).fragment_xml
     )
-    custom_lookup = _variable_values(custom, "mosaic-token-grant")[-1]
+    custom_lookup = _variable_values(custom, "mosaic-token-match")[-1]
     assert '"Models.Invoke"' in default_lookup
     assert '"Models.Invoke.Application"' in default_lookup
     assert '"Mcp.Invoke"' in custom_lookup
@@ -612,18 +614,18 @@ def test_group_token_branch_follows_direct_grants_in_precedence_order() -> None:
     )
     generous = _group_grant(3, entitlement_id="a-unlimited", enforcement=None)
     fragment = _fragment(_snapshot(grants=[limited, direct, generous]), publication)
-    lookup = _variable_values(fragment, "mosaic-token-grant")[-1]
+    lookup = _variable_values(fragment, "mosaic-token-match")[-1]
 
-    direct_return = f'return "{grant_counter_identity(publication, direct)}";'
-    generous_return = f'return "{grant_counter_identity(publication, generous)}";'
-    limited_return = f'return "{grant_counter_identity(publication, limited)}";'
+    direct_return = f'return "{grant_counter_identity(publication, direct)}|";'
+    generous_return = f'return "{grant_counter_identity(publication, generous)}|";'
+    limited_return = f'return "{grant_counter_identity(publication, limited)}|";'
     assert lookup.index(direct_return) < lookup.index('jwt.Claims.ContainsKey("groups")')
     assert lookup.index(generous_return) < lookup.index(limited_return)
 
 
 def test_group_matching_uses_lowercase_literals_case_insensitively() -> None:
     group = _group_grant(1, object_id="ABCDEF12-AAAA-BBBB-CCCC-ABCDEFABCDEF")
-    lookup = _variable_values(_fragment(_snapshot(grants=[group])), "mosaic-token-grant")[-1]
+    lookup = _variable_values(_fragment(_snapshot(grants=[group])), "mosaic-token-match")[-1]
     assert '"abcdef12-aaaa-bbbb-cccc-abcdefabcdef"' in lookup
     assert '"ABCDEF12-AAAA-BBBB-CCCC-ABCDEFABCDEF"' not in lookup
     assert "StringComparison.OrdinalIgnoreCase" in lookup
@@ -731,10 +733,10 @@ def test_group_overage_message_is_emitted_only_when_group_grants_exist() -> None
 
 def test_two_credentials_must_resolve_to_same_grant_with_no_fallback() -> None:
     fragment = _fragment()
-    key = _variable_values(fragment, "mosaic-key-grant")[-1]
-    token = _variable_values(fragment, "mosaic-token-grant")[-1]
-    assert re.findall(r'return "([a-f0-9]{64})";', key) == re.findall(
-        r'return "([a-f0-9]{64})";', token
+    key = _variable_values(fragment, "mosaic-key-match")[-1]
+    token = _variable_values(fragment, "mosaic-token-match")[-1]
+    assert re.findall(r'return "([a-f0-9]{64})\|[^"]*";', key) == re.findall(
+        r'return "([a-f0-9]{64})\|[^"]*";', token
     )
     mismatch = (
         '@((bool)context.Variables["mosaic-has-key"] && (bool)context.Variables["mosaic-has-token"]'
@@ -759,11 +761,11 @@ def test_empty_or_disabled_only_allowlist_never_resolves_a_grant(
 ) -> None:
     fragment = _fragment(_snapshot(grants=grants))
     for method in ("key", "token"):
-        lookup = _variable_values(fragment, f"mosaic-{method}-grant")[-1]
-        assert re.findall(r'return "([a-f0-9]{64})";', lookup) == []
+        lookup = _variable_values(fragment, f"mosaic-{method}-match")[-1]
+        assert re.findall(r'return "([a-f0-9]{64})\|[^"]*";', lookup) == []
         assert lookup.endswith('return "";\n}')
     assert not any(
-        "mosaic-grant-1" in value for value in _variable_values(fragment, "mosaic-key-grant")
+        "mosaic-grant-1" in value for value in _variable_values(fragment, "mosaic-key-match")
     )
 
 
@@ -864,7 +866,7 @@ def test_exported_counter_identity_matches_both_auth_methods_and_native_grant_co
     )
     fragment = _fragment(_snapshot(grants=[grant]), publication)
     for method in ("key", "token"):
-        assert f'return "{identity}";' in _variable_values(fragment, f"mosaic-{method}-grant")[-1]
+        assert f'return "{identity}|";' in _variable_values(fragment, f"mosaic-{method}-match")[-1]
     assert all(identity in counter for counter in _counters(fragment)[:-1])
 
 
@@ -891,10 +893,10 @@ def test_counters_are_stable_across_credentials_rotation_revision_and_changed_li
         }
     )
     assert _counters(_fragment(original)) == _counters(_fragment(changed))
-    old_lookup = _variable_values(_fragment(original), "mosaic-token-grant")[-1]
-    new_lookup = _variable_values(_fragment(changed), "mosaic-token-grant")[-1]
-    assert re.findall(r'return "([a-f0-9]{64})";', old_lookup) == re.findall(
-        r'return "([a-f0-9]{64})";', new_lookup
+    old_lookup = _variable_values(_fragment(original), "mosaic-token-match")[-1]
+    new_lookup = _variable_values(_fragment(changed), "mosaic-token-match")[-1]
+    assert re.findall(r'return "([a-f0-9]{64})\|[^"]*";', old_lookup) == re.findall(
+        r'return "([a-f0-9]{64})\|[^"]*";', new_lookup
     )
 
 
@@ -912,8 +914,8 @@ def test_counter_identity_is_isolated_by_tenant_publication_and_entitlement(chan
     changed = _fragment(_snapshot(grants=[grant]), publication)
     assert _counters(original)[:-1] != _counters(changed)[:-1]
     assert (
-        _variable_values(original, "mosaic-key-grant")[-1]
-        != _variable_values(changed, "mosaic-key-grant")[-1]
+        _variable_values(original, "mosaic-key-match")[-1]
+        != _variable_values(changed, "mosaic-key-match")[-1]
     )
 
 
@@ -1459,8 +1461,8 @@ def test_csharp_literals_round_trip_without_xml_or_named_value_injection(literal
         _publication(deployment_name=literal), _snapshot(grants=[grant])
     )
     fragment = ET.fromstring(result.fragment_xml)
-    assert encoded in _variable_values(fragment, "mosaic-key-grant")[-1]
-    assert encoded in _variable_values(fragment, "mosaic-token-grant")[-1]
+    assert encoded in _variable_values(fragment, "mosaic-key-match")[-1]
+    assert encoded in _variable_values(fragment, "mosaic-token-match")[-1]
     # A quote, brace or keyword inside a literal ends nothing, so the expressions still parse.
     _parsable_expressions(result)
     assert fragment.find(".//set-body").text == "Model access denied."  # type: ignore[union-attr]

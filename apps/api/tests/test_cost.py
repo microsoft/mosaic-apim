@@ -118,6 +118,7 @@ class Harness:
             tenant_id=TENANT,
             backfill_max_days=40,
             clock=lambda: self.now,
+            cost_center_repository=self.state.cost_center_repository,
         )
         self.pricing = PricingService(
             self.state.pricing_repository,
@@ -139,6 +140,7 @@ class Harness:
             pricing=self.pricing,
             configured=True,
             clock=lambda: self.now,
+            cost_center_repository=self.state.cost_center_repository,
         )
         self.state.usage_service = UsageService(
             self.state.portal_service,
@@ -148,6 +150,8 @@ class Harness:
             environment_repository=self.state.environment_repository,
             pricing=self.pricing,
             clock=lambda: self.now,
+            entitlement_repository=self.state.entitlement_repository,
+            cost_center_repository=self.state.cost_center_repository,
         )
 
     def sign_in(

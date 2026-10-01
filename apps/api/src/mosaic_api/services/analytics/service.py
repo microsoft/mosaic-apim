@@ -13,11 +13,12 @@ from datetime import date, datetime, timedelta
 from typing import Any
 
 from mosaic_api.domain import utc_now
-from mosaic_api.errors import ConflictError
+from mosaic_api.errors import ConflictError, NotFoundError
 from mosaic_api.integrations.graph import DirectoryLookup
 from mosaic_api.observed import ObservedModelDeployment
 from mosaic_api.pricing import month_first, month_last
 from mosaic_api.repositories import (
+    CostCenterRepository,
     DirectoryRepository,
     EntitlementRepository,
     EnvironmentRepository,
@@ -60,6 +61,7 @@ from mosaic_api.services.analytics.models import (
     AnalyticsUnattributed,
     ExportView,
 )
+from mosaic_api.services.analytics.rows import entries
 from mosaic_api.services.analytics.scope import (
     NameCache,
     Scope,
@@ -88,8 +90,10 @@ from mosaic_api.services.analytics.window import (
     resolve_window,
     split_months,
 )
+from mosaic_api.services.cost_centers import load_book
 from mosaic_api.services.directory import Actor
 from mosaic_api.services.environments import load_environment_catalog
+from mosaic_api.services.model_access import with_inherited_limits
 from mosaic_api.services.pricing import PricingService
 from mosaic_api.services.telemetry import governed_apis
 from mosaic_api.services.usage import (
@@ -104,8 +108,11 @@ from mosaic_api.usage_telemetry import (
     SummaryDimension,
     SummaryPeriod,
     UsageFact,
+    UsageMetrics,
     UsageRollupState,
     UsageSummary,
+    UsageSummaryEntry,
+    period_bucket,
 )
 
 # An export keeps this many rows of each list, where the console keeps ROW_LIMIT.
@@ -131,6 +138,16 @@ SUBJECT_NOTE = (
     "The subject filter narrows people, applications, groups and grants. Totals, models and APIs "
     "still count every caller."
 )
+COST_CENTER_NOTE = (
+    "The cost center filter counts only calls through grants charged to it, with each grant's "
+    "calls counted against the API it grants. Refusals, unattributed calls, client "
+    "applications, reserved capacity nobody called, and figures by the hour belong to no grant, "
+    "so they're left out."
+)
+# Figures a cost-center filter keeps as they're rolled up: they're kept per grant.
+_GRANT_LINKED: frozenset[SummaryDimension] = frozenset({"grant", "grantCaller"})
+# Figures kept per API, which a cost-center filter rebuilds from its grants' figures.
+_FROM_GRANTS: frozenset[SummaryDimension] = frozenset({"total", "api", "model", "deployment"})
 HOURS_NOTE = (
     "Breakdowns cover the whole UTC days the last 24 hours touch, because MOSAIC keeps only totals "
     "by the hour."
@@ -167,8 +184,10 @@ class AnalyticsService:
         interval_seconds: int = 900,
         retention_days: int = 400,
         clock: Callable[[], datetime] = utc_now,
+        cost_center_repository: CostCenterRepository | None = None,
     ) -> None:
         self._repository = repository
+        self._cost_centers = cost_center_repository
         self._gateways = gateway_repository
         self._entitlements = entitlement_repository
         self._directory = directory_repository
@@ -236,18 +255,26 @@ class AnalyticsService:
             groups={},
             subject_names={},
         )
-        if grants:
+        # A cost center's figures are its grants' figures, so the filter needs them.
+        if grants or filters.cost_center_id is not None:
             await self._add_grants(scope)
         return scope
 
     async def _add_grants(self, scope: Scope) -> None:
         tenant = scope.tenant_id
-        records, entitlements, principals, groups = await asyncio.gather(
+        records, entitlements, principals, groups, book = await asyncio.gather(
             self._repository.list_attribution_records(tenant),
             self._entitlements.list_entitlements(tenant),
             self._directory.list_principals(tenant),
             self._directory.list_groups(tenant),
+            load_book(self._cost_centers, tenant),
         )
+        scope.cost_centers = {key: value.ref() for key, value in book.by_id.items()}
+        wanted = scope.filters.cost_center_id
+        if wanted is not None and wanted not in scope.cost_centers and not any(
+            record.cost_center_id == wanted for record in records
+        ):
+            raise NotFoundError("No cost center has that ID", details={"costCenterId": wanted})
         scope.principals_by_id = {principal.id: principal for principal in principals}
         scope.principals_by_object = {
             principal.object_id.casefold(): principal for principal in principals
@@ -258,7 +285,11 @@ class AnalyticsService:
             if is_application(principal) and principal.detail
         }
         scope.groups = {group.id: group for group in groups}
-        scope.entitlements = {entitlement.id: entitlement for entitlement in entitlements}
+        # Limits a grant takes from its cost center count as its own, as the gateway applies them.
+        scope.entitlements = {
+            entitlement.id: with_inherited_limits(entitlement, book)
+            for entitlement in entitlements
+        }
         scope.grants = build_grants(records, entitlements, scope.principals_by_id, scope.groups)
         links: dict[str, set[str]] = defaultdict(set)
         names: dict[str, str] = {}
@@ -318,6 +349,8 @@ class AnalyticsService:
     ) -> list[UsageSummary]:
         if first > last or (scope.gateway_ids is not None and not scope.gateway_ids):
             return []
+        if scope.filters.cost_center_id is not None:
+            return await self._read_for_cost_center(scope, period, first, last, dimensions)
         return await self._repository.list_summaries(
             scope.tenant_id,
             period=period,
@@ -326,6 +359,92 @@ class AnalyticsService:
             dimensions=list(dimensions),
             gateway_ids=scope.gateway_ids,
         )
+
+    async def _read_for_cost_center(
+        self,
+        scope: Scope,
+        period: SummaryPeriod,
+        first: date,
+        last: date,
+        dimensions: Sequence[SummaryDimension],
+    ) -> list[UsageSummary]:
+        """One cost center's figures: only what the grants charged to it carried.
+
+        The rollups keep totals, APIs, models and deployments by API rather than by grant, so
+        those are rebuilt from the cost center's grant figures, each grant counted against the API
+        it grants. Refusals, unattributed calls and client applications belong to no grant, so a
+        cost center has none.
+        """
+
+        kept = [dimension for dimension in dimensions if dimension in _GRANT_LINKED]
+        rebuilt = [dimension for dimension in dimensions if dimension in _FROM_GRANTS]
+        read: list[SummaryDimension] = [*kept]
+        if rebuilt and "grant" not in read:
+            read.append("grant")
+        if not read:
+            return []
+        summaries = await self._repository.list_summaries(
+            scope.tenant_id,
+            period=period,
+            start=first.isoformat(),
+            end=last.isoformat(),
+            dimensions=read,
+            gateway_ids=scope.gateway_ids,
+        )
+        found = [summary for summary in summaries if summary.dimension in kept]
+        if rebuilt:
+            found.extend(
+                await self._from_grants(
+                    scope,
+                    [summary for summary in summaries if summary.dimension == "grant"],
+                    rebuilt,
+                )
+            )
+        return found
+
+    async def _from_grants(
+        self,
+        scope: Scope,
+        grants: Sequence[UsageSummary],
+        dimensions: Sequence[SummaryDimension],
+    ) -> list[UsageSummary]:
+        observed = await self._deployments(scope) if "model" in dimensions else {}
+        groups: dict[tuple[SummaryPeriod, str, str, SummaryDimension], dict[str, UsageMetrics]]
+        groups = defaultdict(lambda: defaultdict(UsageMetrics))
+        for summary, entry in entries(grants, scope, "grant"):
+            base = (summary.period, summary.period_start, summary.gateway_id)
+            if "total" in dimensions:
+                groups[(*base, "total")][""].add(entry.metrics)
+            api = scope.grant_api(summary.gateway_id, scope.grants.get(entry.key))
+            if api is None:
+                continue
+            if "api" in dimensions:
+                groups[(*base, "api")][api.api_name].add(entry.metrics)
+            deployment = api.deployment_key
+            if deployment and "deployment" in dimensions:
+                groups[(*base, "deployment")][deployment].add(entry.metrics)
+            if "model" in dimensions and api.kind == "model":
+                info = observed.get(deployment) if deployment else None
+                model = (info.model_name if info else None) or api.deployment_name or "unknown"
+                groups[(*base, "model")][f"{model.casefold()}|{api.api_name}"].add(
+                    entry.metrics
+                )
+        return [
+            UsageSummary(
+                id=f"costcenter-{dimension}-{gateway_id}-{period}-{period_start}",
+                tenant_id=scope.tenant_id,
+                period=period,
+                period_start=period_start,
+                bucket=period_bucket(period, period_start),
+                gateway_id=gateway_id,
+                dimension=dimension,
+                entries=[
+                    UsageSummaryEntry(key=key, metrics=metrics)
+                    for key, metrics in sorted(values.items())
+                ],
+            )
+            for (period, period_start, gateway_id, dimension), values in sorted(groups.items())
+        ]
 
     async def _breakdown(
         self,
@@ -431,6 +550,22 @@ class AnalyticsService:
         coverage = coverage_of(scope.live_states())
         through = min(self._clock(), coverage.through) if coverage is not None else None
         return spend_report(costs, scope, api, today, through)
+
+    async def cost_center_spend(
+        self, tenant_id: str, cost_center_id: str
+    ) -> AnalyticsSpend | None:
+        """This month's spend and its forecast for one cost center, for background checks.
+
+        The calls its grants carried, at list prices, exactly as the Cost tab's spend shows them
+        under the cost center filter. Reserved capacity nobody called is no cost center's. None
+        when this deployment has no price list.
+        """
+
+        actor = Actor(object_id="system:cost-centers", tenant_id=tenant_id)
+        filters = AnalyticsFilters(cost_center_id=cost_center_id)
+        window = resolve_window(filters, self._clock())
+        scope = await self._scope(actor, filters)
+        return await self._spend(scope, await self._costs(scope, window))
 
     async def _facts(self, scope: Scope, day: date, links: set[str]) -> list[UsageFact]:
         if not links or (scope.gateway_ids is not None and not scope.gateway_ids):
@@ -555,6 +690,8 @@ class AnalyticsService:
             )
         if scope.filters.subject_kind is not None:
             notes.append(SUBJECT_NOTE)
+        if scope.filters.cost_center_id is not None:
+            notes.append(COST_CENTER_NOTE)
         if window.granularity == "hour":
             notes.append(HOURS_NOTE)
         elif window.range == "custom" and window.granularity == "month":

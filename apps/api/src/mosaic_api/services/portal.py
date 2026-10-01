@@ -57,6 +57,7 @@ class PortalService:
         pending = [
             item for item in await self._requests(actor) if item.state == AccessRequestState.PENDING
         ]
+        book = await self._entitlements.cost_center_book(actor.tenant_id)
         return PortalProfile(
             object_id=actor.object_id,
             tenant_id=actor.tenant_id,
@@ -67,6 +68,7 @@ class PortalService:
             entitlement_count=len(entitlements),
             pending_request_count=len(pending),
             groups_overage=actor.groups_overage,
+            default_cost_center=book.ref(book.default_for(principal)),
         )
 
     async def _resolved(
@@ -106,6 +108,7 @@ class PortalService:
         records = self._entitlements.governed_records(actor.tenant_id)
         resources = [item.resource for item in requests]
         names = await self._entitlements.resource_display_names(actor, resources, records=records)
+        book = await self._entitlements.cost_center_book(actor.tenant_id)
         summaries = await self._entitlements.resource_summaries(
             actor.tenant_id,
             resources,
@@ -116,7 +119,12 @@ class PortalService:
         )
         return [
             PortalAccessRequest.model_validate(
-                {**dict(item), "resource_display_name": name, "resource_summary": summary}
+                {
+                    **dict(item),
+                    "resource_display_name": name,
+                    "resource_summary": summary,
+                    "cost_center": book.ref(item.cost_center_id),
+                }
             )
             for item, name, summary in zip(requests, names, summaries, strict=True)
         ]
@@ -191,17 +199,24 @@ class PortalService:
         """
 
         records = self._entitlements.governed_records(actor.tenant_id)
-        entitled = {
-            (str(item.entitlement.resource.kind), item.entitlement.resource.id)
-            for item in await self._resolved(actor, records=records)
-        }
+        entitled_under: dict[tuple[str, str], set[str]] = {}
+        for item in await self._resolved(actor, records=records):
+            key = (str(item.entitlement.resource.kind), item.entitlement.resource.id)
+            entitled_under.setdefault(key, set()).add(item.entitlement.cost_center_id)
+        entitled = set(entitled_under)
         # Only open requests describe the caller's current position. A denied or withdrawn request
         # from last month should not stop them asking again, so it is not surfaced as state here.
+        pending = [
+            item for item in await self._requests(actor) if item.state == AccessRequestState.PENDING
+        ]
         open_requests: dict[tuple[str, str], AccessRequestState] = {
-            (str(item.resource.kind), item.resource.id): item.state
-            for item in await self._requests(actor)
-            if item.state == AccessRequestState.PENDING
+            (str(item.resource.kind), item.resource.id): item.state for item in pending
         }
+        requested_under: dict[tuple[str, str], set[str]] = {}
+        for request in pending:
+            if request.cost_center_id:
+                key = (str(request.resource.kind), request.resource.id)
+                requested_under.setdefault(key, set()).add(request.cost_center_id)
         gateways = await records.gateways()
 
         entries: list[CatalogEntry] = []
@@ -222,6 +237,12 @@ class PortalService:
                     environment=gateway.environment,
                     entitled=("modelApi", model_api.id) in entitled,
                     request_state=open_requests.get(("modelApi", model_api.id)),
+                    entitled_cost_center_ids=sorted(
+                        entitled_under.get(("modelApi", model_api.id), set())
+                    ),
+                    requested_cost_center_ids=sorted(
+                        requested_under.get(("modelApi", model_api.id), set())
+                    ),
                 )
             )
         for mcp_server in (await records.mcp_servers()).values():
@@ -248,6 +269,12 @@ class PortalService:
                     environment=gateway.environment,
                     entitled=("mcpServer", mcp_server.id) in entitled,
                     request_state=open_requests.get(("mcpServer", mcp_server.id)),
+                    entitled_cost_center_ids=sorted(
+                        entitled_under.get(("mcpServer", mcp_server.id), set())
+                    ),
+                    requested_cost_center_ids=sorted(
+                        requested_under.get(("mcpServer", mcp_server.id), set())
+                    ),
                     enforced=enforced,
                 )
             )

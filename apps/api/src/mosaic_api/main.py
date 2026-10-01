@@ -14,6 +14,7 @@ from mosaic_api.analytics_api import analytics_router
 from mosaic_api.api import portal_router, router
 from mosaic_api.auth import EntraAuthenticator, LocalAuthenticator
 from mosaic_api.config import AuthMode, Environment, RepositoryBackend, Settings, get_settings
+from mosaic_api.cost_centers_api import cost_centers_router, portal_cost_centers_router
 from mosaic_api.directory_api import directory_router
 from mosaic_api.errors import DomainError, domain_error_handler
 from mosaic_api.integrations.aoai import CognitiveServicesClient
@@ -21,7 +22,7 @@ from mosaic_api.integrations.aoai.backend_key_access import KeyVaultLocator
 from mosaic_api.integrations.aoai.client import SubscriptionScanner
 from mosaic_api.integrations.aoai.key_check import EndpointKeyProbe
 from mosaic_api.integrations.apim import ApimClient, ApimWriter, ArmClient
-from mosaic_api.integrations.apim.credentials import ApimCredentialClient
+from mosaic_api.integrations.apim.credentials import ApimCredentialClient, ApimKeyManager
 from mosaic_api.integrations.graph import DirectoryLookup, GraphDirectoryLookup
 from mosaic_api.integrations.loganalytics import LogAnalyticsClient
 from mosaic_api.integrations.mcp import EntraTokenProvider, KeyVaultSecretReader
@@ -30,6 +31,7 @@ from mosaic_api.observability import configure_logging, configure_telemetry
 from mosaic_api.pricing import load_seed
 from mosaic_api.pricing_api import pricing_router
 from mosaic_api.repositories import (
+    CosmosCostCenterRepository,
     CosmosDirectoryRepository,
     CosmosEntitlementRepository,
     CosmosEnvironmentRepository,
@@ -38,10 +40,12 @@ from mosaic_api.repositories import (
     CosmosModelEndpointRepository,
     CosmosPricingRepository,
     CosmosUsageRollupRepository,
+    CostCenterRepository,
     DirectoryRepository,
     EntitlementRepository,
     EnvironmentRepository,
     GatewayRepository,
+    InMemoryCostCenterRepository,
     InMemoryDirectoryRepository,
     InMemoryEntitlementRepository,
     InMemoryEnvironmentRepository,
@@ -68,6 +72,7 @@ from mosaic_api.services import (
     UsageService,
 )
 from mosaic_api.services.analytics import AnalyticsService
+from mosaic_api.services.cost_centers import CostCenterService
 from mosaic_api.services.mcp_endpoints import build_mcp_client_factory
 from mosaic_api.services.mcp_publishing import McpPublishingService
 from mosaic_api.services.portal_access import PortalAccessService
@@ -102,6 +107,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         mcp_repository: McpEndpointRepository
         rollup_repository: UsageRollupRepository
         pricing_repository: PricingRepository
+        cost_center_repository: CostCenterRepository
         if app_settings.repository_backend is RepositoryBackend.MEMORY:
             repository = InMemoryDirectoryRepository()
             gateway_repository = InMemoryGatewayRepository()
@@ -113,6 +119,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
             rollup_repository = InMemoryUsageRollupRepository()
             pricing_repository = InMemoryPricingRepository()
+            cost_center_repository = InMemoryCostCenterRepository()
         else:
             cosmos_client = CosmosClient(
                 str(app_settings.cosmos_endpoint), credential=credential
@@ -178,6 +185,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 app_settings.cosmos_audit_events_container,
                 owns_client=False,
             )
+            cost_center_repository = CosmosCostCenterRepository(
+                cosmos_client,
+                app_settings.cosmos_database,
+                app_settings.cosmos_desired_state_container,
+                app_settings.cosmos_audit_events_container,
+                owns_client=False,
+            )
         authenticator = (
             LocalAuthenticator(app_settings.tenant_id, app_settings.local_roles)
             if app_settings.auth_mode is AuthMode.LOCAL
@@ -233,6 +247,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             model_runtime_client_id=app_settings.model_runtime_client_id,
             security_group_claims=app_settings.entra_group_claims,
             environment_repository=environment_repository,
+            cost_center_repository=cost_center_repository,
         )
         mcp_publishing_service = McpPublishingService(
             gateway_repository,
@@ -244,6 +259,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             runtime_client_id=app_settings.model_runtime_client_id,
             security_group_claims=app_settings.entra_group_claims,
             environment_repository=environment_repository,
+            cost_center_repository=cost_center_repository,
         )
         # A dedicated client for outbound MCP calls: redirects are refused per request, and the
         # connection pool for operator-supplied hosts is kept away from the ARM one.
@@ -269,12 +285,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.entitlement_repository = entitlement_repository
         app.state.environment_repository = environment_repository
         app.state.mcp_endpoint_repository = mcp_repository
+        app.state.cost_center_repository = cost_center_repository
         app.state.directory_service = DirectoryService(
             repository,
             gateway_repository=gateway_repository,
             entitlement_repository=entitlement_repository,
             directory_lookup=directory_lookup,
             group_claims_enabled=app_settings.entra_group_claims,
+            cost_center_repository=cost_center_repository,
         )
         app.state.gateway_service = gateway_service
         app.state.model_endpoint_service = model_endpoint_service
@@ -287,8 +305,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             gateway_repository=gateway_repository,
             endpoint_repository=endpoint_repository,
             directory_lookup=directory_lookup,
+            cost_center_repository=cost_center_repository,
         )
         app.state.entitlement_service = entitlement_service
+        app.state.cost_center_service = CostCenterService(
+            cost_center_repository,
+            directory_repository=repository,
+            entitlement_repository=entitlement_repository,
+            gateway_repository=gateway_repository,
+            entitlements=entitlement_service,
+        )
         environment_service = EnvironmentService(
             environment_repository,
             gateway_repository=gateway_repository,
@@ -312,6 +338,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             credential_factory=lambda resource: ApimCredentialClient(arm_client, resource),
             model_runtime_client_id=app_settings.model_runtime_client_id,
             model_client_id=app_settings.model_client_id,
+            key_manager_factory=lambda resource: ApimKeyManager(arm_client, resource),
         )
         app.state.portal_service = PortalService(
             entitlement_service,
@@ -348,6 +375,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 interval_seconds=app_settings.usage_rollup_interval_seconds,
                 retention_days=app_settings.usage_rollup_retention_days,
                 backfill_max_days=app_settings.usage_rollup_backfill_max_days,
+                cost_center_repository=cost_center_repository,
             )
             if log_client is not None and app_settings.usage_rollup_enabled
             else None
@@ -378,6 +406,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             endpoint_repository=endpoint_repository,
             environment_repository=environment_repository,
             pricing=pricing_service,
+            entitlement_repository=entitlement_repository,
+            cost_center_repository=cost_center_repository,
         )
         app.state.analytics_service = AnalyticsService(
             rollup_repository,
@@ -392,6 +422,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             configured=uses_rollups,
             interval_seconds=app_settings.usage_rollup_interval_seconds,
             retention_days=app_settings.usage_rollup_retention_days,
+            cost_center_repository=cost_center_repository,
         )
         app.state.authenticator = authenticator
         try:
@@ -461,6 +492,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             await mcp_repository.close()
             await rollup_repository.close()
             await pricing_repository.close()
+            await cost_center_repository.close()
             if cosmos_client:
                 await cosmos_client.close()
             await credential.close()
@@ -510,6 +542,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         environment_repository = getattr(request.app.state, "environment_repository", None)
         rollup_repository = getattr(request.app.state, "usage_rollup_repository", None)
         pricing_repository = getattr(request.app.state, "pricing_repository", None)
+        cost_center_repository = getattr(request.app.state, "cost_center_repository", None)
         is_ready = (
             repository is not None
             and await repository.ready()
@@ -527,6 +560,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             and await rollup_repository.ready()
             and pricing_repository is not None
             and await pricing_repository.ready()
+            and cost_center_repository is not None
+            and await cost_center_repository.ready()
         )
         return JSONResponse(
             status_code=status.HTTP_200_OK if is_ready else status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -538,5 +573,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(directory_router)
     app.include_router(analytics_router)
     app.include_router(pricing_router)
+    app.include_router(cost_centers_router)
+    app.include_router(portal_cost_centers_router)
     app.include_router(portal_router)
     return app

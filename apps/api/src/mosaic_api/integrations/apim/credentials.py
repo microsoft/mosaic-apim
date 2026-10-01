@@ -1,6 +1,6 @@
-"""Explicit, authorized credential reads; inventory and publishing never use this client."""
+"""Explicit, authorized credential reads and key changes; inventory never uses these clients."""
 
-from typing import Literal
+from typing import Any, Literal
 from urllib.parse import quote
 
 from pydantic import SecretStr
@@ -8,6 +8,7 @@ from pydantic import SecretStr
 from mosaic_api.domain import APIM_API_VERSION, ApimResourceId
 from mosaic_api.errors import ConflictError, UpstreamAuthorizationError, UpstreamError
 from mosaic_api.integrations.apim.client import ApimClient, ArmClient
+from mosaic_api.integrations.apim.writer import ApimWriter
 
 
 class ApimCredentialClient:
@@ -60,3 +61,29 @@ class ApimCredentialClient:
         if not isinstance(value, str) or not value or len(value) > 256:
             raise UpstreamError("API Management returned an invalid subscription key response")
         return SecretStr(value)
+
+
+class ApimKeyManager:
+    """Creates, rotates and deletes a grant's key on an explicit request. It never reads a key.
+
+    A grant's key is an API-scoped subscription whose name the grant fixes, so the gateway's
+    policy recognizes it the moment it exists.
+    """
+
+    def __init__(self, arm: ArmClient, resource: ApimResourceId) -> None:
+        self._metadata = ApimClient(arm, resource)
+        self._writer = ApimWriter(arm, resource)
+
+    async def get_subscription(self, name: str) -> dict[str, Any] | None:
+        return await self._metadata.get_subscription(quote(name, safe=""))
+
+    async def create(self, name: str, *, display_name: str, api_name: str) -> None:
+        await self._writer.put_api_subscription(
+            name, display_name=display_name, api_name=api_name, state="active"
+        )
+
+    async def regenerate(self, name: str, slot: Literal["primary", "secondary"]) -> None:
+        await self._writer.regenerate_subscription_key(name, slot)
+
+    async def delete(self, name: str) -> None:
+        await self._writer.delete_subscription(name)

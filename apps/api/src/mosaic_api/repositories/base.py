@@ -1,6 +1,7 @@
 from collections.abc import Callable, Sequence
 from typing import Protocol
 
+from mosaic_api.cost_centers import CostCenter, CostCenterSettings
 from mosaic_api.domain import (
     AccessRequest,
     AuditEvent,
@@ -612,4 +613,46 @@ class PricingRepository(Protocol):
         ``settings.etag`` is None for settings that don't exist yet. Raises ``ConflictError`` when
         someone else saved or created them since they were read.
         """
+        ...
+
+
+class CostCenterRepository(Protocol):
+    """Cost centers and the tenant's cost-center settings, kept in ``desired-state``. ADR 0021.
+
+    Each write commits with its audit event. A cost center and the settings are saved only over
+    the version that was read, so two administrators editing at once can't undo each other.
+    """
+
+    async def ready(self) -> bool: ...
+
+    async def close(self) -> None: ...
+
+    async def list_cost_centers(self, tenant_id: str) -> list[CostCenter]: ...
+
+    async def get_cost_center(
+        self, tenant_id: str, cost_center_id: str
+    ) -> CostCenter | None: ...
+
+    async def create_cost_center(
+        self, cost_center: CostCenter, audit_event: AuditEvent
+    ) -> CostCenter:
+        """Raises ``ConflictError`` when a cost center with this ID already exists."""
+        ...
+
+    async def save_cost_center(
+        self, cost_center: CostCenter, audit_event: AuditEvent
+    ) -> CostCenter:
+        """Replace the version that was read; raises ``ConflictError`` if it changed since."""
+        ...
+
+    async def delete_cost_center(
+        self, cost_center: CostCenter, audit_event: AuditEvent
+    ) -> None: ...
+
+    async def get_settings(self, tenant_id: str) -> CostCenterSettings | None: ...
+
+    async def save_settings(
+        self, settings: CostCenterSettings, audit_event: AuditEvent
+    ) -> CostCenterSettings:
+        """Create the settings, or replace the version that was read."""
         ...

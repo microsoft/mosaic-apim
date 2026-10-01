@@ -55,11 +55,13 @@ from mosaic_api.integrations.loganalytics import (
     peaks_query,
 )
 from mosaic_api.repositories import (
+    CostCenterRepository,
     DirectoryRepository,
     EntitlementRepository,
     GatewayRepository,
     UsageRollupRepository,
 )
+from mosaic_api.services.cost_centers import load_book
 from mosaic_api.services.directory import Actor
 from mosaic_api.services.telemetry import (
     ROLLUP_ACTOR,
@@ -640,7 +642,9 @@ class UsageRollupService:
         backfill_max_days: int = 90,
         clock: Callable[[], datetime] = utc_now,
         owner_id: str | None = None,
+        cost_center_repository: CostCenterRepository | None = None,
     ) -> None:
+        self._cost_centers = cost_center_repository
         self._repository = repository
         self._gateways = gateway_repository
         self._entitlements = entitlement_repository
@@ -1167,6 +1171,7 @@ class UsageRollupService:
 
         recorded_at = now or self._clock()
         entitlements = await self._entitlements.list_entitlements(tenant_id)
+        book = await load_book(self._cost_centers, tenant_id)
         principals = {
             principal.id: principal
             for principal in await self._directory.list_principals(tenant_id)
@@ -1203,6 +1208,7 @@ class UsageRollupService:
                         ),
                     )
                 )
+            cost_center = book.get(entitlement.cost_center_id)
             for kind, key in keys:
                 desired[(kind, key)] = AttributionRecord(
                     id=attribution_record_id(tenant_id, kind, key),
@@ -1219,6 +1225,9 @@ class UsageRollupService:
                     resource=entitlement.resource,
                     resource_name=resource_name,
                     per_member=binding.attribution_per_member,
+                    cost_center_id=entitlement.cost_center_id,
+                    cost_center_code=cost_center.code if cost_center else None,
+                    cost_center_name=cost_center.name if cost_center else None,
                     recorded_at=recorded_at,
                 )
         changes: list[AttributionRecord] = []

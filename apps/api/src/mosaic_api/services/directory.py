@@ -18,13 +18,19 @@ from mosaic_api.domain import (
     PrincipalKind,
     PrincipalUpdate,
     deterministic_id,
+    general_cost_center_id,
     new_id,
     subject_kind_for,
     utc_now,
 )
 from mosaic_api.errors import ConflictError, DirectoryDisabledError, NotFoundError, ValidationError
 from mosaic_api.integrations.graph import DirectoryLookup
-from mosaic_api.repositories import DirectoryRepository, EntitlementRepository, GatewayRepository
+from mosaic_api.repositories import (
+    CostCenterRepository,
+    DirectoryRepository,
+    EntitlementRepository,
+    GatewayRepository,
+)
 from mosaic_api.services.model_access import entitlement_publication, publication_lock
 
 
@@ -49,12 +55,46 @@ class DirectoryService:
         entitlement_repository: EntitlementRepository | None = None,
         directory_lookup: DirectoryLookup | None = None,
         group_claims_enabled: bool = True,
+        cost_center_repository: CostCenterRepository | None = None,
     ) -> None:
         self._repository = repository
         self._gateways = gateway_repository
         self._entitlements = entitlement_repository
         self._directory = directory_lookup
         self._group_claims_enabled = group_claims_enabled
+        self._cost_centers = cost_center_repository
+
+    async def _onboarding_default(
+        self, actor: Actor, kind: PrincipalKind, requested: str | None
+    ) -> str | None:
+        """The default cost center a principal is onboarded with: the one asked for, or the
+        tenant's. A security group is never the caller, so it has none."""
+
+        if kind == PrincipalKind.SECURITY_GROUP:
+            if requested is not None:
+                raise ValidationError(
+                    "A security group is never the caller, so it has no default cost center"
+                )
+            return None
+        if self._cost_centers is None:
+            return requested
+        if requested is not None:
+            await self._require_cost_center(actor, requested)
+            return requested
+        settings = await self._cost_centers.get_settings(actor.tenant_id)
+        return settings.default_cost_center_id if settings else general_cost_center_id(
+            actor.tenant_id
+        )
+
+    async def _require_cost_center(self, actor: Actor, cost_center_id: str) -> None:
+        if cost_center_id == general_cost_center_id(actor.tenant_id):
+            return
+        if self._cost_centers is None or await self._cost_centers.get_cost_center(
+            actor.tenant_id, cost_center_id
+        ) is None:
+            raise ValidationError(
+                "No cost center has that ID", details={"defaultCostCenterId": cost_center_id}
+            )
 
     @asynccontextmanager
     async def _principal_mutation(self, actor: Actor, principal_id: str) -> AsyncIterator[None]:
@@ -152,6 +192,9 @@ class DirectoryService:
         return principal
 
     async def create_principal(self, actor: Actor, request: PrincipalCreate) -> Principal:
+        default_cost_center_id = await self._onboarding_default(
+            actor, request.kind, request.default_cost_center_id
+        )
         object_id = _normalize_object_id(
             request.object_id,
             request.kind,
@@ -204,13 +247,16 @@ class DirectoryService:
         principal = Principal(
             id=deterministic_id("principal", actor.tenant_id, request.object_id),
             tenant_id=actor.tenant_id,
-            **request.model_dump(by_alias=False, exclude={"identity_parent_id"}),
+            **request.model_dump(
+                by_alias=False, exclude={"identity_parent_id", "default_cost_center_id"}
+            ),
             detail=verified.detail if verified else None,
             identity_parent_id=(
                 verified.identity_parent_id if verified else request.identity_parent_id
             ),
             blueprint_id=verified.blueprint_id if verified else None,
             directory_verified_at=utc_now() if verified else None,
+            default_cost_center_id=default_cost_center_id,
         )
         saved = await self._repository.create_principal(
             principal,
@@ -229,8 +275,18 @@ class DirectoryService:
     ) -> Principal:
         principal = await self.get_principal(actor, principal_id)
         changes = request.model_dump(by_alias=False, exclude_unset=True)
+        if "default_cost_center_id" in changes:
+            requested = changes["default_cost_center_id"]
+            if requested is not None:
+                if principal.kind == PrincipalKind.SECURITY_GROUP:
+                    raise ValidationError(
+                        "A security group is never the caller, so it has no default cost center"
+                    )
+                await self._require_cost_center(actor, requested)
         if changes.get("kind") not in {None, principal.kind}:
             new_kind = changes["kind"]
+            if new_kind == PrincipalKind.SECURITY_GROUP:
+                changes["default_cost_center_id"] = None
             if subject_kind_for(new_kind) != subject_kind_for(principal.kind):
                 await self._require_no_grants(actor, principal_id, active_only=True)
             verified = await self._verify_principal_request(new_kind, principal.object_id)

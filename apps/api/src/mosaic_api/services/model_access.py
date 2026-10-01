@@ -5,11 +5,16 @@ import hashlib
 import json
 from collections.abc import AsyncIterator, Iterable
 from contextlib import AsyncExitStack, asynccontextmanager
+from dataclasses import dataclass
+from typing import Any
 
+from mosaic_api.cost_centers import CostCenterBook, PooledQuota
 from mosaic_api.domain import (
     BindingSource,
     Entitlement,
+    EntitlementEnforcement,
     EntitlementRuntime,
+    EntitlementSubjectKind,
     ModelAccessGrant,
     ModelAccessSettings,
     ModelAccessSnapshot,
@@ -48,7 +53,92 @@ def endpoint_mutation_scope(endpoint_id: str) -> str:
     return f"endpoint:{endpoint_id}"
 
 
-def entitlement_intent_digest(entitlement: Entitlement, principal: Principal | None) -> str:
+@dataclass(frozen=True)
+class CostCenterIntent:
+    """What a grant's cost center compiles into its publication's policy. See ADR 0021.
+
+    Part of the grant's intent, so changing the cost center's code, whether it allows keys, its
+    limits on the resource, or the subject's default marks the grant pending until it's applied.
+    """
+
+    cost_center_id: str
+    code: str
+    keys_allowed: bool
+    # Whether this is a direct grant under its subject's default cost center.
+    default_for_subject: bool
+    # The cost center's per-person limits, when the grant sets none of its own.
+    inherited: EntitlementEnforcement | None
+    pool: PooledQuota | None
+
+    def payload(self) -> dict[str, Any]:
+        return {
+            "id": self.cost_center_id,
+            "code": self.code.casefold(),
+            "keysAllowed": self.keys_allowed,
+            "default": self.default_for_subject,
+            "inherited": self.inherited.model_dump(mode="json") if self.inherited else None,
+            "pool": self.pool.model_dump(mode="json") if self.pool else None,
+        }
+
+
+def cost_center_intent(
+    entitlement: Entitlement, principal: Principal | None, book: CostCenterBook | None
+) -> CostCenterIntent | None:
+    """The grant's cost center as its policy uses it; None when MOSAIC has no record of it."""
+
+    if book is None:
+        return None
+    cost_center = book.get(entitlement.cost_center_id)
+    if cost_center is None:
+        return None
+    limit = cost_center.limit_for(entitlement.resource)
+    direct = entitlement.subject.kind in {
+        EntitlementSubjectKind.USER,
+        EntitlementSubjectKind.APPLICATION,
+    }
+    return CostCenterIntent(
+        cost_center_id=cost_center.id,
+        code=cost_center.code,
+        keys_allowed=cost_center.keys_allowed,
+        default_for_subject=bool(
+            direct and principal is not None and book.default_for(principal) == cost_center.id
+        ),
+        inherited=(
+            limit.person.enforcement()
+            if entitlement.enforcement is None and limit is not None and limit.person is not None
+            else None
+        ),
+        pool=limit.pool if limit is not None else None,
+    )
+
+
+def with_inherited_limits(entitlement: Entitlement, book: CostCenterBook) -> Entitlement:
+    """The grant with the limits that apply to it: its own, or its cost center's per person."""
+
+    if entitlement.enforcement is not None:
+        return entitlement
+    cost_center = book.get(entitlement.cost_center_id)
+    limit = cost_center.limit_for(entitlement.resource) if cost_center else None
+    if limit is None or limit.person is None:
+        return entitlement
+    return entitlement.model_copy(update={"enforcement": limit.person.enforcement()})
+
+
+def effective_enforcement(
+    entitlement: Entitlement, intent: CostCenterIntent | None
+) -> EntitlementEnforcement | None:
+    """The grant's own limits, or its cost center's per-person limits when it sets none."""
+
+    if entitlement.enforcement is not None:
+        return entitlement.enforcement
+    return intent.inherited if intent is not None else None
+
+
+def entitlement_intent_digest(
+    entitlement: Entitlement,
+    principal: Principal | None,
+    cost_center: CostCenterIntent | None = None,
+) -> str:
     """Hash authorization inputs, not annotations, bindings, timestamps, or quota counters."""
 
     payload = {
@@ -57,6 +147,7 @@ def entitlement_intent_digest(entitlement: Entitlement, principal: Principal | N
         "subject": entitlement.subject.model_dump(mode="json"),
         "resource": entitlement.resource.model_dump(mode="json"),
         "enabled": entitlement.enabled,
+        "revoked": entitlement.revocation is not None,
         "enforcement": (
             entitlement.enforcement.model_dump(mode="json") if entitlement.enforcement else None
         ),
@@ -65,6 +156,7 @@ def entitlement_intent_digest(entitlement: Entitlement, principal: Principal | N
             if principal
             else None
         ),
+        "costCenter": cost_center.payload() if cost_center else None,
     }
     return hashlib.sha256(
         json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
@@ -206,6 +298,13 @@ def applied_grant(publication: Publication, entitlement_id: str) -> ModelAccessG
     )
 
 
+def grant_key_display_name(display_name: str, cost_center_code: str) -> str:
+    """A grant key's name in API Management: who holds it and the cost center it charges."""
+
+    name = f"{display_name} ({cost_center_code})" if cost_center_code else display_name
+    return name[:100]
+
+
 def owns_grant_subscription(publication: Publication, entitlement_id: str) -> bool:
     expected = model_access_subscription_name(publication.tenant_id, publication.id, entitlement_id)
     return any(
@@ -232,6 +331,7 @@ def decorate_entitlement(
     principal: Principal | None,
     *,
     locked: bool = False,
+    cost_center: CostCenterIntent | None = None,
 ) -> Entitlement:
     """Derive runtime state from trusted publication state; never trust a stored annotation."""
 
@@ -263,7 +363,7 @@ def decorate_entitlement(
     elif (
         grant is None
         or principal is None
-        or grant.intent_digest != entitlement_intent_digest(entitlement, principal)
+        or grant.intent_digest != entitlement_intent_digest(entitlement, principal, cost_center)
         or snapshot.settings != publication.governed_access
         or snapshot.publication_enforcement != publication.enforcement
     ):
@@ -279,6 +379,7 @@ def decorate_entitlement(
         status=status,
         applied_methods=methods,
         subscription_name=grant.subscription_name if grant else None,
+        key_exists=owns_grant_subscription(publication, entitlement.id),
         applied_at=publication.last_applied_at,
         error=publication.last_error,
     )
@@ -351,6 +452,8 @@ def safe_access_snapshot(
         audience=previous.audience,
         publication_enforcement=previous.publication_enforcement,
         grants=grants,
+        # A grant whose cost center's pool changed has a changed intent, so it's off above.
+        pools=previous.pools,
     )
 
 
