@@ -84,9 +84,7 @@ async def test_passthrough_service_url_is_stripped_of_its_query_string(
     servers = await gateway_service.list_observed_mcp_servers(ACTOR, gateway.id)
     weather = next(server for server in servers if server.name == "weather-mcp")
 
-    assert weather.service_url is not None
-    assert weather.service_url.startswith("https://mcp.contoso.com")
-    assert "PassthroughSecret" not in weather.service_url
+    assert weather.service_url == "https://mcp.contoso.com (parameters hidden)"
 
 
 async def test_mcp_servers_are_not_also_listed_as_ordinary_apis(

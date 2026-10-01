@@ -19,7 +19,7 @@ import {
   launchPersona,
   signInErrorCode,
 } from '../src/personas.ts'
-import { maskedSelectors, pageSecrets, redact, redactUrl, truncate } from '../src/redact.ts'
+import { maskedSelectors, pageSecrets, redact, redactUrl, rpcErrorText, truncate } from '../src/redact.ts'
 import {
   type SignInPrompt,
   type VerifyPersonas,
@@ -744,8 +744,7 @@ const server = createServer(async (request, response) => {
     const result = await handler(personaKey, args, abort.signal)
     send(response, 200, { ok: true, result })
   } catch (error) {
-    const message = error instanceof Error ? error.message.split('\n=========================== logs')[0] : String(error)
-    send(response, 200, { ok: false, error: truncate(redact(message), 4_000) })
+    send(response, 200, { ok: false, error: rpcErrorText(error) })
   }
 })
 

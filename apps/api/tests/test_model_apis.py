@@ -357,7 +357,7 @@ def test_anthropic_origin_refuses_hosts_without_a_resource_subdomain(endpoint: s
     with pytest.raises(ValidationError) as error:
         anthropic_origin(endpoint)
 
-    assert "services.ai.azure.com" in error.value.message
+    assert "<subdomain>.services.ai.azure.com" in error.value.message
 
 
 def test_other_shapes_forward_to_the_registered_origin() -> None:
