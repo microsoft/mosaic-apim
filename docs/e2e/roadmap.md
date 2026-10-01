@@ -182,8 +182,9 @@ On that combined tree:
 
 Each batch runs only after approval and is recorded in the change ledger.
 
-- Deploy Claude (small capacity) to the multi-provider Foundry resource, after checking
-  eligibility, region, quota and marketplace terms.
+- Make a Claude deployment available. The plan was to deploy one (small capacity) to the
+  multi-provider Foundry resource, after checking eligibility, region, quota and marketplace terms.
+  In the end it came from the owner's Foundry resource in another tenant, through G18.
 - Assign the MOSAIC User role to the `user` persona. `noRole` keeps no role until Phase 7.
 - Create the workload app registration and service principal, assign `Models.Invoke.Application`,
   and grant admin consent.
@@ -684,7 +685,7 @@ Progress:
     allows only chat completions on these publications, so their embeddings and model-info
     operations are denied by design.
 
-### Phase 8: Runtime verification (R1 to R14, A14, A17) 🔄 R3 and R4's additions pass, part of R8, and Claude's publication; the rest runs at the owner's sitting, after O37's fix
+### Phase 8: Runtime verification (R1 to R14, A14, A17, A18) 🔄 R3 and R4's additions pass, part of R8, and Claude's publication; the rest runs at the owner's sitting, after O37's fix
 
 `scripts/verify_model_access.py` now covers this phase, with unit tests against a fake gateway
 that applies the governed policy. It reads each grant's connection details from MOSAIC, calls the
@@ -736,7 +737,9 @@ The environment owner decided on 2026-09-30:
   `outsider` as the ungranted user; a short-lived client secret for the workload; reading the
   privileged keys for R4's addition; fresh grants for R5 and R6; and revoking, disabling and
   toggling access methods, only on those two grants and their models (A14, R7).
-- The owner deploys Claude in the Foundry portal at the start of the sitting (Phase 2).
+- Claude was to be deployed in the Foundry portal at the start of the sitting. That's superseded:
+  on 2026-10-01 the owner registered a Claude deployment in another tenant through G18 instead
+  (Phase 2), so the sitting has no Claude step.
 - The `user` persona's User role is removed once the runtime tests are done.
 - Phase 10 is deferred.
 
