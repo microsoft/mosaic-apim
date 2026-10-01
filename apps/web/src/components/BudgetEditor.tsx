@@ -176,8 +176,8 @@ export function BudgetForm({ budget, owners = [], organization = false, saving, 
   function submit(event: FormEvent) {
     event.preventDefault()
     const value = Number(amount)
-    if (!Number.isFinite(value) || value <= 0) {
-      setInvalid('Enter a monthly amount in US dollars, more than zero.')
+    if (!Number.isFinite(value) || value < 0.01) {
+      setInvalid('Enter a monthly amount in US dollars, at least $0.01.')
       return
     }
     const percentages = thresholdList(thresholds)

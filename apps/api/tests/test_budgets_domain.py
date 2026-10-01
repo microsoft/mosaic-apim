@@ -86,6 +86,8 @@ def test_a_budget_defaults_to_warning_at_80_and_100_and_letting_calls_continue()
     [
         {"amount": 0},
         {"amount": -5},
+        # Under half a cent, which would round to nothing.
+        {"amount": 0.004},
         {"amount": float("inf")},
         {"amount": 2_000_000_000},
         {"thresholds": []},
@@ -317,6 +319,34 @@ def test_raising_the_budget_too_little_keeps_the_block() -> None:
     assert raised.unblocked is None
     assert raised.state.blocked
     assert raised.due == []
+
+
+def test_a_raise_judged_without_figures_lifts_the_block_once_they_return() -> None:
+    blocked = _judge(_budget(action="block"), _state(), 1200)
+
+    unpriced = _judge(_budget(action="block", amount=5000), blocked.state, None)
+    priced = _judge(_budget(action="block", amount=5000), unpriced.state, 1200)
+
+    # Without figures nothing changes, and the new amount waits for a check that has them.
+    assert unpriced.state.blocked
+    assert unpriced.state.amount == 1000
+    assert priced.unblocked == "budgetRaised"
+    assert not priced.state.blocked
+    assert priced.state.crossed == []
+    assert priced.state.amount == 5000
+
+
+def test_a_threshold_taken_off_and_put_back_is_not_emailed_again_that_month() -> None:
+    first = _judge(_budget(thresholds=[80, 100]), _state(), 850)
+
+    without = _judge(_budget(thresholds=[90, 100]), first.state, 850)
+    back = _judge(_budget(thresholds=[80, 90, 100]), without.state, 850)
+
+    assert first.reached == [80]
+    assert without.reached == []
+    assert back.reached == []
+    assert back.due == []
+    assert [notice.threshold for notice in back.state.notifications] == [80]
 
 
 def test_spend_that_drops_with_a_corrected_price_changes_nothing() -> None:

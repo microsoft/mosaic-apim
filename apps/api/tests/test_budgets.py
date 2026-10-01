@@ -21,7 +21,13 @@ from mosaic_api.domain import ManagementMode
 from mosaic_api.errors import UpstreamError
 from mosaic_api.integrations.email import EmailMessage, EmailSendResult
 from mosaic_api.services.budget_gate import BlockedListGate
-from mosaic_api.services.budgets import EMAIL_OFF, NOBODY, BudgetService
+from mosaic_api.services.budgets import (
+    CHECKS_OFF,
+    EMAIL_OFF,
+    MONTH_CHANGE_RETRY_SECONDS,
+    NOBODY,
+    BudgetService,
+)
 from test_cost import (
     ALICE,
     ANALYSTS,
@@ -95,7 +101,7 @@ class NamedValues:
 
 
 class Budgets:
-    def __init__(self, harness: Harness) -> None:
+    def __init__(self, harness: Harness, *, enabled: bool = True) -> None:
         self.harness = harness
         self.email = FakeEmail()
         self.gateway = NamedValues()
@@ -105,6 +111,7 @@ class Budgets:
             self.repository,
             gateway_repository=state.gateway_repository,
             clock=lambda: harness.now,
+            enabled=enabled,
         )
         self.service = BudgetService(
             self.repository,
@@ -118,6 +125,7 @@ class Budgets:
             portal=state.portal_service,
             tenant_id=TENANT,
             clock=lambda: harness.now,
+            enabled=enabled,
         )
         state.budget_service = self.service
 
@@ -358,6 +366,43 @@ async def test_the_block_lifts_when_the_utc_month_ends(budgets: Budgets) -> None
     assert budgets.gateway.blocked == NONE_BLOCKED
     assert budgets.email.subjects()[-1].endswith("are allowed again")
     assert "A new month has started" in budgets.email.sent[-1][2].plain_text
+
+
+async def test_a_check_that_ran_across_the_months_end_judges_the_new_month_at_once(
+    budgets: Budgets,
+) -> None:
+    budgets.budget(4000, action="block")
+    await budgets.check()
+    started = budgets.harness.now
+
+    after_midnight = datetime(2026, 4, 1, 0, 0, 2, tzinfo=UTC)
+
+    assert started.month == 3
+    assert budgets.service._delay(after_midnight) == MONTH_CHANGE_RETRY_SECONDS
+    assert budgets.service._delay(started + timedelta(minutes=1)) > MONTH_CHANGE_RETRY_SECONDS
+
+
+async def test_with_budget_checks_off_a_budget_is_kept_but_never_judged(
+    harness: Harness,
+) -> None:
+    await _charge_research(harness)
+    budgets = Budgets(harness, enabled=False)
+    await budgets.manage_gateway()
+    budgets.email_on()
+
+    view = budgets.budget(4000, action="block")
+
+    assert view["amount"] == 4000
+    assert view["status"]["blocked"] is False
+    assert view["status"]["evaluatedAt"] is None
+    assert budgets.email.sent == []
+    assert budgets.gateway.writes == []
+    response = harness.client.post("/api/v1/budgets/check")
+    assert response.status_code == 409, response.text
+    overview = harness.get("/api/v1/budgets")
+    assert CHECKS_OFF in overview["notes"]
+    # A list written while checks are off, such as for a new publication, blocks no one.
+    assert await budgets.gate.value(TENANT) == (NONE_BLOCKED, [])
 
 
 async def test_a_check_that_cant_price_the_month_never_lifts_a_block(budgets: Budgets) -> None:

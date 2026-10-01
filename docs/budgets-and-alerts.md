@@ -21,7 +21,7 @@ used up. An organization budget covers everything and only warns.
 
 | Field | What it is |
 | --- | --- |
-| Amount | US dollars a month, at list price, across every gateway. More than zero. |
+| Amount | US dollars a month, at list price, across every gateway. At least $0.01. |
 | Warn at | One to five whole percentages from 1 to 1,000. 80 and 100 by default. |
 | Email the owners | Whether the cost center's owners get its emails. On by default. |
 | Also email | Up to 20 more email addresses. They needn't belong to anyone who uses MOSAIC. |
@@ -92,8 +92,10 @@ A background job in the API judges every budget:
 - at the start of each UTC month, which starts every budget afresh;
 - when an administrator saves a budget, or calls `POST /budgets/check`, at most once a minute.
 
-It runs only where usage comes from the gateways' logs (`MOSAIC_USAGE_SOURCE` `rollups`), one
-check at a time across the API's instances.
+It runs only where usage comes from the gateways' logs (`MOSAIC_USAGE_SOURCE` `rollups`) and
+`MOSAIC_BUDGETS_ENABLED` is on, one check at a time across the API's instances. A threshold the
+budget stops warning at and starts again isn't emailed twice in a month, and an amount changed
+while MOSAIC can't price the month waits for the next check that can.
 
 ## Emails
 
@@ -161,7 +163,7 @@ Publications applied before budgets existed don't check the list until they're a
 
 | Setting | Default | Purpose |
 | --- | --- | --- |
-| `MOSAIC_BUDGETS_ENABLED` | `true` | Runs the background check. Budgets can still be set when it's off, but nothing judges them. |
+| `MOSAIC_BUDGETS_ENABLED` | `true` | Runs the background check. Off, budgets are kept but never judged: saving one doesn't judge it, `POST /budgets/check` is refused, and no one is emailed or blocked. A block already on a gateway stays until checks are back on or its budget is removed. |
 | `MOSAIC_BUDGET_INTERVAL_SECONDS` | `900` | How often every budget is checked, from 60 to 86,400 seconds. |
 | `MOSAIC_BUDGET_FAST_INTERVAL_SECONDS` | `300` | How often a budget at 90% or more, with a threshold or block to come, is checked, from 60 to 3,600 seconds. |
 | `MOSAIC_EMAIL_SUGGESTED_ENDPOINT` | None | The endpoint of a Communication Services resource `azd` created. It only fills in **Settings > Email**. |

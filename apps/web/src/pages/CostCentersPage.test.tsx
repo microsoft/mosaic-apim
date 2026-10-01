@@ -137,7 +137,12 @@ describe('Cost centers pages', () => {
 
     await screen.findByText('No budget')
     await user.click(screen.getByRole('button', { name: 'Set budget' }))
-    expect(screen.getByText('Enter a monthly amount in US dollars, more than zero.')).toBeVisible()
+    expect(screen.getByText('Enter a monthly amount in US dollars, at least $0.01.')).toBeVisible()
+    // Under a cent rounds to nothing.
+    await user.type(screen.getByLabelText('Monthly amount (USD)'), '0.004')
+    await user.click(screen.getByRole('button', { name: 'Set budget' }))
+    expect(screen.getByText('Enter a monthly amount in US dollars, at least $0.01.')).toBeVisible()
+    await user.clear(screen.getByLabelText('Monthly amount (USD)'))
     await user.type(screen.getByLabelText('Monthly amount (USD)'), '100')
     await user.clear(screen.getByLabelText('Warn at (%)'))
     await user.type(screen.getByLabelText('Warn at (%)'), 'half')

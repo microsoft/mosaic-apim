@@ -7,11 +7,16 @@ unpublish never deletes it, because the other publications' policies still read 
 Management refuses to delete a named value a policy names.
 
 What the list holds is worked out from the budgets' saved state each time it's written, never kept
-apart from it, so whoever writes it writes the same thing.
+apart from it, so whoever writes it writes the same thing. Two checks, or a check and a removed
+budget, can still write at once, and the one that writes last may have worked out its list first.
+So each writer works the list out again after writing, and writes again if it has changed: the
+last writer always leaves what the budgets say. These writes are Azure Resource Manager calls, so
+they run outside the budget check's lease, which guards only MOSAIC's own records.
 """
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -55,6 +60,9 @@ KEEP_REASON = (
     "Keep the list of cost centers whose budgets block their calls, which the access policy "
     "reads. MOSAIC's budget check keeps it current."
 )
+# How many times one write works the list out again when the budgets change while it writes. The
+# next check settles anything still moving.
+WRITE_ROUNDS = 3
 
 
 def is_blocked_list(kind: PublishedResourceKind | str, name: str) -> bool:
@@ -106,10 +114,16 @@ class BlockedListGate:
         *,
         gateway_repository: GatewayRepository,
         clock: Callable[[], datetime] = utc_now,
+        enabled: bool = True,
     ) -> None:
         self._repository = repository
         self._gateways = gateway_repository
         self._clock = clock
+        # Off, nothing is blocked: a list written while budget checks are off holds no one.
+        self._enabled = enabled
+        # One write of the lists at a time in this process. Other processes are settled by the
+        # check each write makes after it.
+        self._lock = asyncio.Lock()
 
     async def blocked(self, tenant_id: str) -> list[str]:
         """The cost centers whose budgets block their calls now, oldest block first.
@@ -118,6 +132,8 @@ class BlockedListGate:
         turning blocking off or removing the budget lifts a block on the very next write.
         """
 
+        if not self._enabled:
+            return []
         month = month_of(self._clock())
         budgets = {item.id: item for item in await self._repository.list_budgets(tenant_id)}
         states = [
@@ -173,6 +189,14 @@ class BlockedListGate:
             return False
         value, _ = await self.value(tenant_id)
         await writer.put_plain_named_value(BLOCKED_COST_CENTERS_NAMED_VALUE, value)
+        # A check may have blocked or lifted a cost center while this wrote. Write what's blocked
+        # now, as a check's own write does.
+        for _ in range(WRITE_ROUNDS - 1):
+            latest, _ = await self.value(tenant_id)
+            if latest == value:
+                break
+            value = latest
+            await writer.put_plain_named_value(BLOCKED_COST_CENTERS_NAMED_VALUE, value)
         logger.info("blocked_list_created", gateway=writer.resource.service_name)
         return True
 
@@ -202,20 +226,37 @@ class BlockedListGate:
         """Write the list to every gateway whose copy differs from what's blocked now.
 
         A gateway that can't be read or written keeps what it had, which the state records, and
-        the next check tries again. The content is worked out once, from the saved budgets, just
-        before the writes, so it's never older than this call.
+        the next check tries again. The content is worked out from the saved budgets just before
+        the writes, and again after them: if it changed meanwhile, the writes run again, so a write
+        that worked its list out before another's never has the last word.
         """
 
-        value, left_out = await self.value(tenant_id)
-        result = GateSync(value=value, left_out=left_out)
-        for gateway in gateways if gateways is not None else await self.gateways(tenant_id):
-            result.states.append(
-                await self._sync_gateway(
-                    tenant_id, gateway, value, left_out, client_factory, writer_factory, audit
-                )
-            )
-        if left_out:
-            logger.error("blocked_list_full", tenant_id=tenant_id, left_out=len(left_out))
+        async with self._lock:
+            targets = list(gateways) if gateways is not None else await self.gateways(tenant_id)
+            value, left_out = await self.value(tenant_id)
+            result = GateSync(value=value, left_out=left_out)
+            for _ in range(WRITE_ROUNDS):
+                result = GateSync(value=value, left_out=left_out)
+                for gateway in targets:
+                    result.states.append(
+                        await self._sync_gateway(
+                            tenant_id,
+                            gateway,
+                            value,
+                            left_out,
+                            client_factory,
+                            writer_factory,
+                            audit,
+                        )
+                    )
+                latest, latest_left_out = await self.value(tenant_id)
+                if latest == value:
+                    break
+                value, left_out = latest, latest_left_out
+            else:
+                logger.warning("blocked_list_unsettled", tenant_id=tenant_id)
+        if result.left_out:
+            logger.error("blocked_list_full", tenant_id=tenant_id, left_out=len(result.left_out))
         return result
 
     async def _sync_gateway(

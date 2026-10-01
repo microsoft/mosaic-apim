@@ -244,7 +244,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         subscription_scanner = SubscriptionScanner(arm_client)
         # Every gateway MOSAIC manages holds the list of cost centers whose budgets block their
         # calls, which every governed policy reads. See ADR 0023.
-        blocked_list = BlockedListGate(budget_repository, gateway_repository=gateway_repository)
+        blocked_list = BlockedListGate(
+            budget_repository,
+            gateway_repository=gateway_repository,
+            enabled=app_settings.budgets_enabled,
+        )
         model_endpoint_service = ModelEndpointService(
             endpoint_repository,
             gateway_repository=gateway_repository,
@@ -474,6 +478,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             fast_interval_seconds=app_settings.budget_fast_interval_seconds,
             suggested_endpoint=app_settings.email_suggested_endpoint,
             suggested_sender=app_settings.email_suggested_sender,
+            enabled=app_settings.budgets_enabled,
         )
         app.state.budget_repository = budget_repository
         app.state.budget_service = budget_service

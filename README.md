@@ -587,7 +587,7 @@ Budgets and their email have these. See [Budgets and alerts](docs/budgets-and-al
 
 | Setting | Default | Purpose |
 | --- | --- | --- |
-| `MOSAIC_BUDGETS_ENABLED` | `true` | Runs the background check that judges budgets, emails at thresholds, and blocks cost centers. It runs only where usage comes from rollups. |
+| `MOSAIC_BUDGETS_ENABLED` | `true` | Runs the background check that judges budgets, emails at thresholds, and blocks cost centers. It runs only where usage comes from rollups. Off, budgets are kept but never judged. |
 | `MOSAIC_BUDGET_INTERVAL_SECONDS` | `900` | How often every budget is checked, from 60 to 86,400 seconds. |
 | `MOSAIC_BUDGET_FAST_INTERVAL_SECONDS` | `300` | How often a budget at 90% or more, with a threshold or a block to come, is checked, from 60 to 3,600 seconds. |
 | `MOSAIC_EMAIL_SUGGESTED_ENDPOINT`, `MOSAIC_EMAIL_SUGGESTED_SENDER` | None | The Communication Services endpoint and sender `azd` created. They only fill in **Settings > Email**; email stays off until an administrator saves it there. |

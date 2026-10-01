@@ -31,7 +31,7 @@ Several things shape how MOSAIC can do that:
 
 **A budget is administrator-authored desired state.**
 - A cost center has at most one budget, and the organization one. Each is a monthly amount in US
-  dollars, for the UTC calendar month, across every gateway, at list price.
+  dollars, at least one cent, for the UTC calendar month, across every gateway, at list price.
 - Thresholds are one to five whole percentages from 1 to 1,000, 80 and 100 by default.
 - It emails up to 20 addresses, which needn't belong to anyone with a MOSAIC account, and the cost
   center's owners when **Email the owners** is on, which it is by default. With at most 20 owners,
@@ -64,18 +64,27 @@ Several things shape how MOSAIC can do that:
   the start of each UTC month, and for one budget right after an administrator saves it. Budgets
   that have spent 90% or more, with a threshold or a block still to come, are checked every 5
   minutes (`MOSAIC_BUDGET_FAST_INTERVAL_SECONDS`).
-- One check runs at a time in a tenant, under the gateway repository's `budgets` scope lease.
+- One check judges budgets at a time in a tenant, under the gateway repository's `budgets` scope
+  lease. The lease covers only the judging, which reads and writes MOSAIC's own records, as the
+  lease's contract asks. The gateway writes and the emails follow it: each email was claimed while
+  judging, and each gateway write works the list out again once it has written, writing again if a
+  block started or lifted meanwhile, so whichever write lands last leaves what the budgets say.
 - Each budget's state is a `budgetState` item in `usage-rollups`: the month, the spend and
   forecast it was judged on, the thresholds reached, each email and how it went, and whether the
   cost center is blocked. It's written only through `update_budget_state(tenant, budget, change)`,
   which reads the item, applies `change`, and writes it back only if its etag still matches,
   reading again on a conflict, as ADR 0019's `update_rollup_state` does. `change` is the pure
   `evaluate()`, so a retried write judges again against what's stored.
-- A threshold is reached once a month. Thresholds reached by one check, such as by a budget set
-  below what's already spent, send one email, for the highest. A new month starts every budget
-  afresh and lifts every block.
+- A threshold is reached once a month, even if the budget stops warning at it and starts again.
+  Thresholds reached by one check, such as by a budget set below what's already spent, send one
+  email, for the highest. A new month starts every budget afresh and lifts every block, and a
+  check that runs across the month's end is followed at once by one for the new month.
 - Only a change of amount re-arms the thresholds the spend no longer reaches. Spend that falls,
-  such as after a price correction, re-arms nothing, so no threshold is emailed twice.
+  such as after a price correction, re-arms nothing, so no threshold is emailed twice. An amount
+  changed while MOSAIC can't price the month waits for the next check that can.
+- With `MOSAIC_BUDGETS_ENABLED` off, budgets are kept but nothing judges them. Saving one doesn't
+  judge it, an on-demand check is refused, and a list written meanwhile, such as by a new
+  publication, blocks no one.
 
 **Each email goes at most once.**
 - A check claims an email, as `sending`, in the same conditional write that reaches its threshold

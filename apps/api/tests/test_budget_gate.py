@@ -3,7 +3,9 @@ to delete, and holding exactly the cost centers whose budgets block now. See ADR
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from typing import Any, cast
 
 from conftest import reviewed_unpublish
@@ -17,6 +19,7 @@ from mosaic_api.budgets import (
     month_of,
 )
 from mosaic_api.domain import (
+    ApimResourceId,
     AuditEvent,
     PublishAction,
     PublishedResourceKind,
@@ -258,3 +261,92 @@ def test_the_list_state_starts_empty() -> None:
     state = BudgetState(id="s", tenant_id=TENANT, budget_id="b")
 
     assert (state.blocked, state.crossed, state.notifications) == (False, [], [])
+
+
+# -- two writers at once ---------------------------------------------------------------------
+
+GATEWAY_RESOURCE = (
+    "/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/rg-ai"
+    "/providers/Microsoft.ApiManagement/service/apim-ai"
+)
+
+
+class _RacingGateway:
+    """One gateway's named values, where another check blocks a cost center during a write.
+
+    ``during_write`` runs once, between this writer working its list out and its write landing,
+    as when another check's write lands first and this one's, worked out earlier, lands last.
+    """
+
+    def __init__(self, during_write: Callable[[], Awaitable[None]] | None = None) -> None:
+        self.value: str | None = None
+        self.writes: list[str] = []
+        self._during_write = during_write
+        self.resource = ApimResourceId.parse(GATEWAY_RESOURCE)
+
+    async def get_named_value(self, _name: str) -> dict[str, Any] | None:
+        return None if self.value is None else {"properties": {"value": self.value}}
+
+    async def put_plain_named_value(self, _name: str, value: str) -> dict[str, Any]:
+        if self._during_write is not None:
+            during, self._during_write = self._during_write, None
+            await during()
+        self.value = value
+        self.writes.append(value)
+        return {}
+
+
+def _gateway() -> Any:
+    return SimpleNamespace(id="gateway_ai", name="AI gateway", azure_resource_id=GATEWAY_RESOURCE)
+
+
+async def test_a_write_that_worked_its_list_out_before_another_block_writes_again() -> None:
+    now = datetime(2026, 3, 18, 12, tzinfo=UTC)
+    budgets = InMemoryBudgetRepository()
+    await _block(budgets, RESEARCH, now)
+    gateway = _RacingGateway(lambda: _block(budgets, "costCenter_support", now))
+    gate = BlockedListGate(
+        budgets, gateway_repository=cast(InMemoryGatewayRepository, _Gateways()), clock=lambda: now
+    )
+
+    synced = await gate.sync(
+        TENANT,
+        lambda _resource: cast(Any, gateway),
+        lambda _resource: cast(Any, gateway),
+        gateways=[_gateway()],
+    )
+
+    both = f"{budget_key(RESEARCH)},{budget_key('costCenter_support')}"
+    # The first write carried the list from before Support's block; the second has both.
+    assert gateway.writes == [budget_key(RESEARCH), both]
+    assert gateway.value == both
+    assert synced.value == both
+    [state] = synced.states
+    assert state.value == both
+
+
+async def test_a_new_list_written_while_a_block_starts_holds_the_block() -> None:
+    now = datetime(2026, 3, 18, 12, tzinfo=UTC)
+    budgets = InMemoryBudgetRepository()
+    gateway = _RacingGateway(lambda: _block(budgets, RESEARCH, now))
+    gate = BlockedListGate(
+        budgets, gateway_repository=cast(InMemoryGatewayRepository, _Gateways()), clock=lambda: now
+    )
+
+    assert await gate.ensure(cast(Any, gateway), cast(Any, gateway), TENANT)
+
+    assert gateway.writes == [NONE_BLOCKED, budget_key(RESEARCH)]
+
+
+async def test_with_budget_checks_off_the_list_blocks_no_one() -> None:
+    now = datetime(2026, 3, 18, 12, tzinfo=UTC)
+    budgets = InMemoryBudgetRepository()
+    await _block(budgets, RESEARCH, now)
+    gate = BlockedListGate(
+        budgets,
+        gateway_repository=cast(InMemoryGatewayRepository, _Gateways()),
+        clock=lambda: now,
+        enabled=False,
+    )
+
+    assert await gate.value(TENANT) == (NONE_BLOCKED, [])

@@ -54,6 +54,8 @@ MAX_THRESHOLD = 1000
 # at 50 recipients unless its quota is raised.
 MAX_RECIPIENTS = 20
 EMAIL_RECIPIENTS_PER_MESSAGE = 50
+# Amounts are kept in cents, so the smallest budget is one cent.
+MIN_AMOUNT = 0.01
 MAX_AMOUNT = 1_000_000_000.0
 # A cost center this close to a threshold it hasn't reached is checked every few minutes.
 HOT_PERCENT = 90.0
@@ -170,7 +172,10 @@ def _thresholds(values: Sequence[int]) -> list[int]:
 
 
 def _amount(value: float) -> float:
-    return round(value, 2)
+    rounded = round(value, 2)
+    if rounded < MIN_AMOUNT:
+        raise ValueError("A budget is at least $0.01 a month")
+    return rounded
 
 
 class Budget(Entity):
@@ -546,7 +551,8 @@ def evaluate(
         result.unblocked = "blockingOff"
         state.blocked = False
     changed = state.amount is not None and state.amount != budget.amount
-    state.crossed = [threshold for threshold in state.crossed if threshold in budget.thresholds]
+    # Thresholds stay reached for the month even if the budget stops warning at one, so adding it
+    # back doesn't email it a second time.
     if changed and spent is not None:
         # A new amount re-arms the thresholds the spend no longer reaches, and lifts a block the
         # spend no longer reaches either. Only a change of amount does: spend that drops with a
@@ -599,7 +605,10 @@ def evaluate(
         state.through = through
         state.unpriced_tokens = unpriced_tokens
     state.crossed = sorted(state.crossed)
-    state.amount = budget.amount
+    if spent is not None or not changed:
+        # A new amount judged without figures stays pending, so the next check that can price the
+        # month still lifts the block, or re-arms the thresholds, the new amount allows.
+        state.amount = budget.amount
     state.evaluated_at = now
     state.error = error
     for notice in state.notifications:

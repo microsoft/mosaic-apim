@@ -75,6 +75,13 @@ logger = structlog.get_logger()
 LEASE_SECONDS = 300
 CHECK_COOLDOWN = timedelta(minutes=1)
 TEST_EMAIL_COOLDOWN = timedelta(seconds=30)
+# How soon the loop tries again to judge a month that has just started, while another check may
+# still hold the lease.
+MONTH_CHANGE_RETRY_SECONDS = 5.0
+CHECKS_OFF = (
+    "Budget checks are off in this deployment (MOSAIC_BUDGETS_ENABLED), so MOSAIC doesn't judge "
+    "budgets, email anyone, or block calls."
+)
 NO_PRICES = "This deployment doesn't price usage, so MOSAIC can't judge budgets."
 NO_FIGURES = "MOSAIC couldn't price any of this month's usage yet."
 READ_FAILED = "MOSAIC couldn't read this month's spend. It tries again at the next check."
@@ -110,6 +117,16 @@ class BudgetCheck:
     unblocked: list[str] = field(default_factory=list)
     emails: int = 0
     gateways: list[GateState] = field(default_factory=list)
+
+
+@dataclass
+class _Judging:
+    """What a check decided under the lease, and what it needs to act on it afterwards."""
+
+    result: BudgetCheck
+    judged: list[_Judged]
+    email: EmailSettings | None
+    book: CostCenterBook
 
 
 def _spent(figures: AnalyticsSpend | None) -> float | None:
@@ -196,6 +213,7 @@ class BudgetService:
         owner_id: str | None = None,
         suggested_endpoint: str | None = None,
         suggested_sender: str | None = None,
+        enabled: bool = True,
     ) -> None:
         self._repository = repository
         self._cost_centers = cost_center_repository
@@ -208,6 +226,8 @@ class BudgetService:
         self._portal = portal
         self._tenant_id = tenant_id
         self._priced = priced
+        # Off, budgets are kept but nothing judges them: no emails, and no blocks.
+        self._enabled = enabled
         self._interval = timedelta(seconds=interval_seconds)
         self._fast_interval = timedelta(seconds=fast_interval_seconds)
         self._clock = clock
@@ -245,6 +265,9 @@ class BudgetService:
         self.wake()
 
     def _delay(self, now: datetime) -> float:
+        if self._last_check is not None and month_of(self._last_check) != month_of(now):
+            # The last check started in the month before, so judge the new month now.
+            return MONTH_CHANGE_RETRY_SECONDS
         waits = [next_month_start(now) - now + timedelta(seconds=1)]
         if self._next_full is not None:
             waits.append(self._next_full - now)
@@ -286,7 +309,13 @@ class BudgetService:
         self, *, full: bool = True, only: Collection[str] | None = None
     ) -> BudgetCheck | None:
         """Judge budgets now: every one when ``full``, otherwise ``only`` and those close to a
-        threshold. None when another check holds the lease."""
+        threshold. None when another check holds the lease.
+
+        The lease covers only the judging, which reads and writes MOSAIC's own records, as the
+        lease's contract asks. Each email is claimed while judging, so the sends that follow the
+        lease can't be repeated by another check, and the gateways' lists correct themselves when
+        two checks write them at once.
+        """
 
         tenant_id = self._tenant_id
         try:
@@ -297,16 +326,31 @@ class BudgetService:
             logger.info("budget_check_skipped", reason="leased")
             return None
         try:
-            return await self._check(tenant_id, full=full, only=only)
+            judging = await self._judge_all(tenant_id, full=full, only=only)
         finally:
             try:
                 await self._gateways.release_scope_lease(tenant_id, BUDGETS_SCOPE, self._owner)
             except Exception:
                 logger.warning("budget_lease_release_failed")
+        result = judging.result
+        # Gateways first, so a block notice goes once the gateways have been told to refuse.
+        if full or result.blocked or result.unblocked:
+            synced = await self._gate.sync(
+                tenant_id,
+                self._client_factory,
+                self._writer_factory,
+                audit=self._repository.record_audit,
+            )
+            result.gateways = synced.states
+        for item in judging.judged:
+            result.emails += await self._send_due(
+                item.budget, item.evaluation, judging.email, judging.book
+            )
+        return result
 
-    async def _check(
+    async def _judge_all(
         self, tenant_id: str, *, full: bool, only: Collection[str] | None
-    ) -> BudgetCheck:
+    ) -> _Judging:
         now = self._clock()
         month = month_of(now)
         self._last_check = now
@@ -350,19 +394,8 @@ class BudgetService:
                 result.blocked.append(budget.cost_center_id or "")
             if evaluation.unblocked is not None:
                 result.unblocked.append(budget.cost_center_id or "")
-        # Gateways first, so a block notice goes once the gateways have been told to refuse.
-        if full or result.blocked or result.unblocked:
-            synced = await self._gate.sync(
-                tenant_id,
-                self._client_factory,
-                self._writer_factory,
-                audit=self._repository.record_audit,
-            )
-            result.gateways = synced.states
-        for item in judged:
-            result.emails += await self._send_due(item.budget, item.evaluation, email, book)
         self._hot = any(is_hot(budget, states.get(budget.id), month) for budget in live)
-        return result
+        return _Judging(result=result, judged=judged, email=email, book=book)
 
     async def _spend(
         self, tenant_id: str, budgets: Sequence[Budget]
@@ -550,6 +583,8 @@ class BudgetService:
     async def _check_now(self, tenant_id: str, ids: Sequence[str]) -> None:
         """Judge budgets an administrator just changed, or leave them to the loop if it's busy."""
 
+        if not self._enabled:
+            return
         try:
             done = await self.run_check(full=False, only=ids)
         except Exception:
@@ -579,6 +614,8 @@ class BudgetService:
         ]
         covered = {view.cost_center.id for view in views if view.cost_center is not None}
         notes: list[str] = []
+        if not self._enabled:
+            notes.append(CHECKS_OFF)
         if not self._priced:
             notes.append(NO_PRICES)
         if email is None or not email.ready:
@@ -814,6 +851,8 @@ class BudgetService:
     async def check_now(self, actor: Actor) -> BudgetOverview:
         """Judge every budget now, at most once a minute."""
 
+        if not self._enabled:
+            raise ConflictError(CHECKS_OFF, details={"reason": "budgetChecksOff"})
         now = self._clock()
         if self._last_check and now - self._last_check < CHECK_COOLDOWN:
             raise TooManyRequestsError("Budgets were checked less than a minute ago")
