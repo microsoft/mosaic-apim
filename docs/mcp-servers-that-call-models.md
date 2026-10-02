@@ -129,6 +129,11 @@ The gateway's traces record the reference beside the grant that admitted each ca
 The person's identity never travels in the header. MOSAIC already knows who made the MCP call:
 it's the validated member, or the grant's subject, of the MCP call's trace.
 
+When MOSAIC rolls up the gateway's logs, it matches each model call's `r=` to its MCP call and
+records the model call for that MCP call's caller. It keeps the call the application's own in every
+other figure, and counts a reference it couldn't use by its reason. See
+[Usage analytics](usage-analytics.md#callers).
+
 ## Limits
 
 - **The same gateway.** MOSAIC reads each gateway's logs on their own, so a model call through
@@ -145,5 +150,7 @@ it's the validated member, or the grant's subject, of the MCP call's trace.
 | What the model call's trace shows | Cause and fix |
 | --- | --- |
 | `r=` is empty | The server didn't send the header, or called with a key or a person's token. Forward the header and use the application's Entra token. |
-| `r=!` | The server sent something other than the one value it received. Copy the header's value exactly. |
-| `r=<GUID>`, but the MCP call's trace has no `i=` | The MCP server has no model caller, or its publication hasn't been applied since one was named. Name it, then plan and apply. |
+| `r=!` | The server sent something other than the one value it received. Copy the header's value exactly. The rollup counts it as **malformed**. |
+| `r=<GUID>`, but the MCP call's trace has no `i=` | The MCP server has no model caller, or its publication hasn't been applied since one was named. Name it, then plan and apply. The rollup counts it as **missing**, as it does a model call through another gateway. |
+| `r=<GUID>`, counted as **caller** | The model call was made by an application other than the one the MCP server names. Call the model as that application, or name the one the server uses. |
+| `r=<GUID>`, counted as **late** | The model call was made after its MCP call ended. Make model calls while the tool call is still running. |

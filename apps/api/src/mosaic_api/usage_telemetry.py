@@ -68,7 +68,11 @@ SummaryPeriod = Literal["day", "month"]
 # - `deployment`: `{modelEndpointId}/{deploymentName}`, for published model APIs;
 # - `model`: `{model}|{api}`, the model name the LLM log reported, lowercased;
 # - `denial`: `{reason}|{caller}|{clientApp}|{api}` for refused calls;
-# - `unattributed`: `{api}|{subscription}` for admitted calls MOSAIC could not link.
+# - `unattributed`: `{api}|{subscription}` for admitted calls MOSAIC could not link;
+# - `onBehalf`: `{link}:{linkKey}|{caller}|{person}|{mcpApi}`, a grant's calls that an MCP
+#   server's application, its caller, made for the person who called that MCP server;
+# - `onBehalfUnresolved`: `{link}:{linkKey}|{reason}`, a grant's calls that named an MCP call
+#   MOSAIC couldn't attribute them through. See ADR 0025.
 SummaryDimension = Literal[
     "total",
     "caller",
@@ -80,6 +84,8 @@ SummaryDimension = Literal[
     "model",
     "denial",
     "unattributed",
+    "onBehalf",
+    "onBehalfUnresolved",
 ]
 SUMMARY_DIMENSIONS: tuple[SummaryDimension, ...] = (
     "total",
@@ -92,7 +98,17 @@ SUMMARY_DIMENSIONS: tuple[SummaryDimension, ...] = (
     "model",
     "denial",
     "unattributed",
+    "onBehalf",
+    "onBehalfUnresolved",
 )
+# Why a model call that named an MCP call wasn't attributed to that call's caller:
+#
+# - `malformed`: the application sent something other than one MCP call's reference;
+# - `missing`: no MCP call on the gateway has that reference, around that time;
+# - `late`: the MCP call it names had ended, beyond the allowance, when it was made;
+# - `caller`: the MCP server calls models as a different application, or none;
+# - `unknown`: MOSAIC doesn't yet know whose grant the MCP call matched.
+OnBehalfUnresolvedReason = Literal["malformed", "missing", "late", "caller", "unknown"]
 # A summary item holds at most this many entries; larger dimensions are split into shards so no
 # document nears Cosmos' 2 MB item limit.
 SUMMARY_SHARD_SIZE = 1000
@@ -244,6 +260,31 @@ class UsageBreakdown(MosaicModel):
     metrics: UsageMetrics = Field(default_factory=UsageMetrics)
 
 
+class UsageOnBehalf(MosaicModel):
+    """A fact's calls that an MCP server's application made for one person. See ADR 0025.
+
+    ``object_id`` is the person who called the MCP server: its call's validated member, or its
+    grant's subject. ``mcp_api`` is the MCP server's API on the same gateway, and ``mcp_key`` the
+    MCP grant key the person's call matched. The fact's own caller is still the application.
+    """
+
+    object_id: str
+    mcp_api: str
+    mcp_key: str
+    metrics: UsageMetrics = Field(default_factory=UsageMetrics)
+    hours: list[UsageHour] = Field(default_factory=list)
+
+
+def _none_made(value: object) -> bool:
+    """Whether an on-behalf field is empty, so it's left out of stored documents.
+
+    A release from before ADR 0025 forbids fields it doesn't know, and can still read every fact
+    no MCP server's call was attributed through.
+    """
+
+    return value == []
+
+
 def day_bucket(day: str) -> str:
     """The bucket every item rolled up from one gateway's day shares, so a day replaces whole."""
 
@@ -265,6 +306,9 @@ class UsageFact(Entity):
     ``caller_object_id`` is the Entra object ID that made the calls: the validated member for a
     security-group grant, and otherwise the grant's own subject, because a direct grant and every
     key belong to exactly one subject. It is None when MOSAIC can't tell.
+
+    ``on_behalf`` splits out the calls the caller, an MCP server's application, made for the
+    people who called that MCP server. They stay the caller's calls too. See ADR 0025.
     """
 
     entity_type: Literal["usageFact"] = "usageFact"
@@ -280,6 +324,7 @@ class UsageFact(Entity):
     metrics: UsageMetrics = Field(default_factory=UsageMetrics)
     hours: list[UsageHour] = Field(default_factory=list)
     breakdown: list[UsageBreakdown] = Field(default_factory=list)
+    on_behalf: list[UsageOnBehalf] = Field(default_factory=list, exclude_if=_none_made)
     content_hash: str = ""
     ttl: int = KEEP_FOREVER
 

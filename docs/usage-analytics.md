@@ -354,6 +354,22 @@ caller MOSAIC has no record of is named by a Microsoft Graph lookup, at most 200
 names are cached for an hour. A caller MOSAIC can't name shows as **Unknown caller** or
 **Unknown application**.
 
+**Model calls an MCP server makes for its callers.** An MCP server's application can name, in each
+model call, the MCP call it's serving ([MCP servers that call models](mcp-servers-that-call-models.md)).
+The rollup finds that MCP call in the same gateway's logs, up to an hour either side of the window
+it reads, and records the model call for the person who made the MCP call. It does so only when:
+- the application that made the model call is the one the MCP server names;
+- the model call ran while the MCP call did, give or take five minutes.
+
+The call stays the application's own everywhere else: its caller, grant, cost center and client
+are unchanged, so nothing is counted twice. A reference MOSAIC couldn't use is counted against the
+application's grant, with the reason:
+- **malformed**: the application sent something other than one MCP call's reference;
+- **missing**: no MCP call on the gateway has that reference, or its server names no application;
+- **late**: the model call ran after its MCP call had ended;
+- **caller**: another application made the model call;
+- **unknown**: MOSAIC doesn't yet know whose grant the MCP call matched.
+
 **Client applications** are the apps callers signed in with. MOSAIC names each from the applications
 it has a record of, and recognizes Azure CLI, Azure PowerShell, and Visual Studio Code. Any other
 shows as **Unknown application**, with its client ID. Calls made with only a key show as

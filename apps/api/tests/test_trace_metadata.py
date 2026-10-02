@@ -154,14 +154,14 @@ def _usage_query_keys(traces: str) -> dict[str, str]:
             r'(\w+) = (?:tolower\()?extract\(@"((?:[^"]|"")*)", 1, \w+\)', query
         )
     }
-    assert {"attribution", "v", "g", "m", "a"} <= set(patterns)
+    assert {"attribution", "v", "g", "m", "a", "r", "i"} <= set(patterns)
 
     def extract(name: str, text: str) -> str:
         match = patterns[name].search(text)
         return match.group(1) if match else ""
 
     attribution = extract("attribution", traces)
-    return {key: extract(key, attribution).lower() for key in ("v", "g", "m", "a")}
+    return {key: extract(key, attribution).lower() for key in ("v", "g", "m", "a", "r", "i")}
 
 
 def _trace_records(message: str, metadata: Mapping[str, str], placement: str) -> str:
@@ -313,6 +313,8 @@ def test_every_property_is_recorded_even_when_the_call_has_no_value_for_it(
                 "g": call["mosaic-grant"],
                 "m": call["mosaic-member"],
                 "a": call["mosaic-client"],
+                "r": call["mosaic-mcp-call"] if "r" in keys else "",
+                "i": MODEL_CALLER if "i" in keys else "",
             }
 
 
