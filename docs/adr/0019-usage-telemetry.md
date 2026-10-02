@@ -1,6 +1,9 @@
 # ADR 0019: Measured usage from API Management's resource logs
 
-**Status:** Accepted
+**Status:** Accepted. Amended by [ADR 0025](0025-mcp-model-calls-on-a-persons-behalf.md): the
+attribution trace gains `r=`, the MCP call a model call was made for, and `i=` on an MCP server
+that calls models as an application, and the rollup attributes such model calls to the MCP call's
+caller.
 
 ## Context
 

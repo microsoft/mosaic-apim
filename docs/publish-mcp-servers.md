@@ -69,7 +69,7 @@ One MCP publication owns seven APIM resources:
 | Order | Resource | Purpose |
 | --- | --- | --- |
 | 1 | Backend | Points to the registered MCP server URL |
-| 2 | Policy fragment | Validates Entra tokens, matches grants, tags each authorized call with its grant, applies call limits, strips caller credentials and attaches backend managed identity when configured |
+| 2 | Policy fragment | Validates Entra tokens, matches grants, tags each authorized call with its grant, applies call limits, strips caller credentials and attaches backend managed identity when configured. With a model caller, it also passes each call's reference to the server |
 | 3 | MCP API | Exposes the streamable MCP endpoint at `{gateway}/{api_path}/mcp` |
 | 4 | MCP API policy | Includes the enforcement fragment and adds the resource metadata challenge on validation failures |
 | 5 | Metadata API | Owns the well-known protected-resource-metadata path for this publication |
@@ -131,6 +131,16 @@ warns about this because diagnostics can be global gateway configuration and are
 publication resources it owns. The Azure Monitor diagnostic MOSAIC sets for
 [usage](usage-analytics.md) logs no body bytes, so it's safe for MCP APIs.
 
+## Servers that call models
+
+When the server's tools call governed models through MOSAIC, name the application they call models
+as with `PUT /api/v1/mcp-publications/{id}/model-caller`, then plan and apply the server again. The
+server then receives each call's reference in `x-mosaic-on-behalf-of`, which it passes on to its
+model calls, so MOSAIC can attribute each model call to the person whose tool call it served. The
+application's own model grant still decides access, limits and cost. Every published server's
+fragment removes an `x-mosaic-on-behalf-of` a caller sends. See
+[MCP servers that call models](mcp-servers-that-call-models.md).
+
 ## Usage tags
 
 Once a caller's grant matches, and before call limits, the enforcement fragment emits an API
@@ -145,6 +155,10 @@ because API Management fails a call when a trace property is empty. Each refusal
 reason instead, as `mosaic-deny v=1 r=<reason>`, with the caller's object ID and client once the
 token has validated. The traces read only policy variables, never a body, so streaming is
 unaffected.
+
+When the server has a model caller, the message also records `r=<request ID>`, the reference the
+server receives, and `i=<object ID>`, the application it calls models as. Application Insights gets
+them as `mosaic-mcp-call` and `mosaic-model-caller`.
 
 A successful apply records the same grant identity on each MCP entitlement's binding, and a
 successful unpublish clears it. The portal's usage report then shows these grants as linked from

@@ -239,6 +239,10 @@ class RollupHarness:
 
 @pytest.fixture
 def harness() -> RollupHarness:
+    return build_harness()
+
+
+def build_harness() -> RollupHarness:
     logs = FakeLogs(clock=lambda: NOW)
     rollups = InMemoryUsageRollupRepository()
     gateways = InMemoryGatewayRepository()

@@ -137,6 +137,14 @@ bodies to count model tokens or tool payloads. A cost center can also set a pool
 quota that every grant under it on the server shares. When your grant has a rate limit, responses
 carry `x-mosaic-remaining-calls`, the calls left in the current window.
 
+## When the server calls models
+
+Some MCP servers call governed models through MOSAIC as their own application, to serve your tool
+calls. You need no grant on those models. Their access, limits and cost come from the server's own
+grant, and MOSAIC records which of the server's model calls served your tool calls. The gateway
+removes any `x-mosaic-on-behalf-of` header you send. [MCP servers that call models](mcp-servers-that-call-models.md)
+explains how it works, for administrators and for the people who build those servers.
+
 ## Troubleshooting
 
 | What you see | Cause and fix |

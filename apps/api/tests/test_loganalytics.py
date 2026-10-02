@@ -138,6 +138,40 @@ def test_calls_query_contains_gateway_filters_trace_extraction_and_summaries() -
     assert "by hour = hourofday(TimeGenerated), v, g, m, a, api, subscription" in query
 
 
+def test_calls_query_finds_the_mcp_call_a_model_call_names() -> None:
+    query = calls_query(WINDOW, ["chat-api", "mcp-search"])
+
+    # MCP calls are read either side of the window, among MOSAIC's APIs only, and only those whose
+    # trace names both their own reference and the application their server calls models as.
+    leg = query[query.index("let mcpCalls") : query.index("gatewayRows\n| where isempty(reason)")]
+    assert "where TimeGenerated >= datetime(2026-09-29T09:00:00Z)" in leg
+    assert "TimeGenerated < datetime(2026-09-29T13:00:00Z)" in leg
+    assert "| where mcpApi in (mosaicApis)" in leg
+    assert 'mcpRef = tolower(extract(@"(?:^| )r=([^ ]*)", 1, mcpAttribution))' in leg
+    assert 'oi = tolower(extract(@"(?:^| )i=([^ ]*)", 1, mcpAttribution))' in leg
+    assert "| where isnotempty(mcpRef) and isnotempty(oi)" in leg
+    assert "| summarize arg_min(mcpTime, mcpTotalTime, mcpApi, og, om, oi) by mcpRef;" in leg
+    # A call's own reference names another call only when its trace names no model caller.
+    assert 'r = tolower(extract(@"(?:^| )r=([^ ]*)", 1, attribution))' in query
+    assert 'i = tolower(extract(@"(?:^| )i=([^ ]*)", 1, attribution))' in query
+    assert '| extend mcpCall = iff(isempty(i), r, "")' in query
+    assert "| join kind=leftouter mcpCalls on $left.mcpCall == $right.mcpRef" in query
+    assert (
+        "abs(datetime_diff('millisecond', TimeGenerated, mcpTime)) <= mcpTotalTime + 300000"
+        in query
+    )
+    states = query[query.index("| extend onBehalf = case(") :]
+    assert states.index('isempty(mcpCall), ""') < states.index('mcpCall == "!", "malformed"')
+    assert states.index('"malformed"') < states.index('isempty(mcpRef), "missing"')
+    assert states.index('"missing"') < states.index('during, "found"') < states.index('"late")')
+    for column in ("og", "om", "oi"):
+        assert f'{column} = iff(onBehalf == "found", {column}, "")' in query
+    assert 'oapi = iff(onBehalf == "found", mcpApi, "")' in query
+    assert (
+        "deployment = llmDeployment, model = llmModel, onBehalf, og, om, oi, oapi" in query
+    )
+
+
 def test_calls_query_orders_and_deduplicates_api_names_deterministically() -> None:
     first = calls_query(WINDOW, ["Orders", "chat-api", "orders"])
     second = calls_query(WINDOW, ["orders", "Orders", "chat-api"])

@@ -24,7 +24,10 @@ flowchart LR
 1. The policy MOSAIC applies to a model API or MCP server checks each call against the caller's
    grants. When it lets a call through, it adds a trace that names the grant it matched, the member
    for a security-group grant, and the calling client application:
-   `mosaic-attribution v=1 g=<grant> m=<object ID> a=<client ID>`. When it refuses a call, the
+   `mosaic-attribution v=1 g=<grant> m=<object ID> a=<client ID>`. A model call's trace adds
+   `r=`, the MCP call an MCP server's application made it for, and an MCP server that calls models
+   as an application adds `r=` and `i=`; see
+   [MCP servers that call models](mcp-servers-that-call-models.md). When it refuses a call, the
    trace names the reason: `mosaic-deny v=1 r=<reason>`.
 2. The API's `azuremonitor` diagnostic logs the call, traces included, at Information. For a model
    API, its LLM logs add the call's prompt, completion, and total tokens, and its model and
@@ -366,6 +369,22 @@ are service principals, managed identities, and agent identities; and Entra secu
 caller MOSAIC has no record of is named by a Microsoft Graph lookup, at most 200 a request, and the
 names are cached for an hour. A caller MOSAIC can't name shows as **Unknown caller** or
 **Unknown application**.
+
+**Model calls an MCP server makes for its callers.** An MCP server's application can name, in each
+model call, the MCP call it's serving ([MCP servers that call models](mcp-servers-that-call-models.md)).
+The rollup finds that MCP call in the same gateway's logs, up to an hour either side of the window
+it reads, and records the model call for the person who made the MCP call. It does so only when:
+- the application that made the model call is the one the MCP server names;
+- the model call ran while the MCP call did, give or take five minutes.
+
+The call stays the application's own everywhere else: its caller, grant, cost center and client
+are unchanged, so nothing is counted twice. A reference MOSAIC couldn't use is counted against the
+application's grant, with the reason:
+- **malformed**: the application sent something other than one MCP call's reference;
+- **missing**: no MCP call on the gateway has that reference, or its server names no application;
+- **late**: the model call ran after its MCP call had ended;
+- **caller**: another application made the model call;
+- **unknown**: MOSAIC doesn't yet know whose grant the MCP call matched.
 
 **Client applications** are the apps callers signed in with. MOSAIC names each from the applications
 it has a record of, and recognizes Azure CLI, Azure PowerShell, and Visual Studio Code. Any other
