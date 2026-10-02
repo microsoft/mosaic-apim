@@ -472,7 +472,24 @@ SHOTS: list[Shot] = [
         "dark",
         "Anthropic Claude",
         actions=(click_link("Anthropic Claude"), wait_for_text("Run history")),
-        height=1800,
+        # Tall enough for both models' deployments, ending above the pool's access card.
+        height=1482,
+    ),
+    Shot(
+        "console-pool-access",
+        "console",
+        "/pools",
+        "light",
+        "Anthropic Claude",
+        # The governed Claude pool's access card: how callers sign in, the grants the gateway
+        # enforces on each model, and the cost center's pooled quota.
+        actions=(
+            click_link("Anthropic Claude"),
+            wait_for_text("Grants in force"),
+            scroll_to_text("Who can call it", margin=110),
+        ),
+        # Tall enough to end just below the card, after the pooled quotas.
+        height=806,
     ),
     Shot(
         "console-mcps",
@@ -717,6 +734,25 @@ SHOTS: list[Shot] = [
             scroll_to_text("Cost center header", margin=96),
         ),
         height=1240,
+    ),
+    Shot(
+        "portal-pool-connection",
+        "portal",
+        "/access",
+        "dark",
+        "My access",
+        # Megan's Claude Sonnet 4.5 grant, served by the Anthropic Claude pool: the base URL and
+        # the model name she sends, and the key she also uses for Claude Opus 4.5. Nothing on it
+        # names the pool, its deployments, or their regions.
+        actions=(
+            click_card_button_matching(
+                ("Claude Sonnet 4.5", "Applied to APIM"), "Connection details"
+            ),
+            wait_for_text("This key also works for"),
+            scroll_to_card_matching(("Claude Sonnet 4.5", "Applied to APIM"), margin=58),
+        ),
+        # Tall enough to end on the note naming the other model the key works for.
+        height=1700,
     ),
     Shot(
         "portal-mcp-connection",

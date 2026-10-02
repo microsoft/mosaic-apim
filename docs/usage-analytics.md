@@ -38,8 +38,16 @@ flowchart LR
    so they load quickly and keep history after the workspace deletes its logs.
 
 MOSAIC counts only the APIs it governs: the model APIs and MCP servers it has a record of, whether
-it published them or adopted them. It ignores other APIs on the same gateway, and doesn't read the
-logs of a gateway where it governs nothing.
+it published them or adopted them, and its model pools once a pool's API is in API Management. It
+ignores other APIs on the same gateway, and doesn't read the logs of a gateway where it governs
+nothing.
+
+API Management, not the caller, picks which of a [model pool](../README.md#model-pools)'s
+deployments serves a call, so MOSAIC finds the deployment in the gateway's log. It tries the
+backend that served the call, then the host and deployment that backend called, and then the host
+or the deployment alone, when only one of the pool's deployments has it. It reports the call under
+the deployment it finds. A call it can't place counts toward the pool and its model, on no
+deployment, and has no price.
 
 ## Set up a gateway
 
@@ -340,9 +348,9 @@ MOSAIC links each admitted call to a grant in this order:
 2. Otherwise, the call used an APIM subscription that a grant's binding records.
 3. Otherwise, the call is unattributed. The **Unattributed** tab gives one of three reasons:
    **No subscription key**, when the call had neither a trace nor a key; **Unknown key**, when no
-   grant records the key's subscription; or **Publication's shared key**, when the call used the
-   model publication's own subscription, which belongs to no one caller. To see who uses a shared
-   key, grant access per caller instead.
+   grant records the key's subscription; or **Shared key**, when the call used a model
+   publication's or model pool's own subscription, which belongs to no one caller. To see who uses
+   a shared key, grant access per caller instead.
 
 The caller is the security-group member when the trace names one, and otherwise the grant's
 subject. **Consumers** sorts callers into people, who are users and agent users; applications, which
@@ -358,6 +366,9 @@ shows as **Unknown application**, with its client ID. Calls made with only a key
 
 The subject filter narrows people, applications, groups, and grants. Totals, models, and APIs still
 count every caller.
+
+The resource filter takes a model API, a model pool, or an MCP server. A model pool is listed once
+its API is in API Management.
 
 Environments are current, not historical. Analytics filters by each gateway's environment, and the
 portal groups by each resource's, so re-classifying one moves its history with it.

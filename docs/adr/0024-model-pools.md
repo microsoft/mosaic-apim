@@ -2,12 +2,16 @@
 
 **Status:** Proposed
 
-Phase 1 is implemented: administrators create, publish, unpublish, and recover breaker, linear,
-and preferential pools of Azure deployments reached with Microsoft Entra ID, and the console lists
-and shows them. Callers reach a phase 1 pool only through its own subscription. Phases 2 to 5,
-which add per-model access, keys per cost center, budgets and usage, members reached with a key,
-health, and a router, aren't built yet. The [README](../../README.md#model-pools) describes what
-is.
+Phases 1 and 2 are implemented. Administrators create, publish, unpublish, and recover breaker,
+linear, and preferential pools of Azure deployments reached with Microsoft Entra ID, and the
+console lists and shows them. A governed pool admits only callers granted one of its models under
+a cost center, each with their own key or a Microsoft Entra token. Its calls count toward the
+cost center's limits, pooled quotas, spend, and budget, and they're priced at the member that
+served each one. The portal lists a governed pool's models by display name, unless they're hidden,
+and never names the pool. Phases 3 to 5, which add members reached with a key, health, and a
+router, aren't built yet. Nor are the console's suggested pools, its list of the pools that use an
+endpoint, its warning about a model offered twice, and its dashboard tile. The
+[README](../../README.md#model-pools) describes what is built.
 
 For pools only, this record amends [ADR 0011](0011-governed-model-access.md), as
 [ADR 0022](0022-cost-centers.md) amended it: a person or application gets one key per pool and
@@ -596,11 +600,11 @@ A pool is unpublished the way ADR 0010's 2026-09-30 amendment unpublishes a publ
     - A user's usage report says only that MOSAIC can't price all of the model's calls. It never
       names the pool's deployments, endpoints, or regions.
   - A cost center's spend, and the budgets that compare it, include its grants' pool calls.
-- **Before phase 2**, a pool is reachable only through its bootstrap subscription, like a
+- **Without governed access**, a pool is reachable only through its bootstrap subscription, like a
   publication without governed access. As ADR 0010 says, the operator retrieves that key from
-  Azure. The pool isn't in the portal catalog, and its calls aren't rolled up. Phase 2 opts pools
-  into governed access the same way ADR 0011 opted publications in, which suspends the bootstrap
-  subscription.
+  Azure. The pool isn't in the portal catalog, and its calls are attributed to no grant. Phase 2
+  opts pools into governed access the same way ADR 0011 opted publications in, which suspends the
+  bootstrap subscription. Once set, governed access can't be cleared.
 
 ### Administrator console
 
@@ -641,7 +645,8 @@ A pool is unpublished the way ADR 0010's 2026-09-30 amendment unpublishes a publ
   which other models share the key.
 - **Cost centers** (from phase 2). Per-person defaults and pooled quotas can name a pool model.
 - **Analytics** (from phase 2). A pool's API appears as any API does, its grants as any grants
-  do, and its members as the deployments its calls were priced at.
+  do, and its members as the deployments its calls were priced at. The resource filter offers the
+  pool once its API is in API Management, and calls made with its shared key are unattributed.
 - **Dashboard.** A pools tile that lists degraded members, such as *cannot invoke* or a missing
   deployment.
 

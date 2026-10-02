@@ -122,23 +122,30 @@ portal at `http://localhost:5174` signs you in as the demo end user, Megan Bowen
   and deny access. It builds two model pools on the production gateway: **Anthropic Claude**, a
   published breaker pool that serves Claude Opus 4.5 from three regions and Claude Sonnet 4.5 from
   two, and **Claude evaluation**, a hidden linear draft. Both use the Sonnet deployments, so each
-  warns that it shares their capacity with the other. Grants' subscription keys exist only where
-  someone asked for one: the support copilot's, and the one Megan Bowen's notebook uses. One MCP
-  server keeps only a legacy label, so Settings has something to classify, and the development
-  gateway's routes to production produce environment findings. Grants and decided requests are
-  then dated back as far as 120 days. Last, it enables API diagnostics on the production gateway and
-  generates a quarter of gateway traffic from the estate's people and workloads, including
-  throttled and refused calls and calls to adopted APIs. MOSAIC's rollup job reads it all back,
-  so the Dashboard, Analytics, and the portal's **Usage & cost** page show measured figures. They
-  are priced from the price list MOSAIC ships, plus what the seed sets through the pricing
-  service: the partner's declared GPT-4.1 mini deployment's type, and a negotiated GPT-4o rate
-  from next month, which the **Pricing** page shows as scheduled. The Claude, Mistral Large,
-  Cohere, and realtime deployments and the adopted APIs stay unpriced, so the **Unpriced
-  deployments** tab has something to show. Every page therefore renders what the product would
-  show for that estate. Budget email is turned on against a Communication Services double that
-  accepts every message and delivers none, and the seed sets budgets from this month's spend so
-  far: Customer Insights near its limit, Customer Support past its own and blocked at the
-  gateways, Finance on track, and an organization budget that only warns. Sizing them from the
+  warns that it shares their capacity with the other. Anthropic Claude is then governed: Megan
+  Bowen holds both its models under Customer Insights, the Market Research Agent holds Opus, and
+  the Agent Builders group holds Sonnet. Customer Insights sets a per-person Sonnet limit and a
+  pooled quota that counts every region, and Isaiah Langer's request for Opus is pending. Grants'
+  subscription keys exist only where someone asked for one: the support copilot's, the one Megan
+  Bowen's notebook uses, and the one she calls both Claude models with. One MCP server keeps only
+  a legacy label, so Settings has something to classify, and the development gateway's routes to
+  production produce environment findings. Grants and decided requests are then dated back as far
+  as 120 days. Last, it enables API diagnostics on the production gateway and generates a quarter
+  of gateway traffic from the estate's people and workloads, including throttled and refused calls
+  and calls to adopted APIs. Each call to the Claude pool lands on one of its deployments, drawn by
+  weight, and Johanna Lorenz's calls to it are refused because she holds no grant. MOSAIC's rollup
+  job reads it all back, so the Dashboard, Analytics, and the portal's **Usage & cost** page show
+  measured figures. They are priced from the price list MOSAIC ships, plus what the seed sets
+  through the pricing service: the partner's declared GPT-4.1 mini deployment's type, a negotiated
+  GPT-4o rate from next month, which the **Pricing** page shows as scheduled, and what Contoso pays
+  for Claude Opus 4.5 and Claude Sonnet 4.5, which prices each pool call at the deployment that
+  served it. The partner's Claude, Mistral Large, Cohere, and realtime deployments and the adopted
+  APIs stay unpriced, so the **Unpriced deployments** tab has something to show. Every page
+  therefore renders what the product would show for that estate. Budget email is turned on
+  against a Communication Services double that accepts every message and delivers none, and the
+  seed sets budgets from this month's spend so far: Customer Insights near its limit, Customer
+  Support past its own and blocked at the gateways, Finance on track, and an organization budget
+  that only warns. Sizing them from the
   month's spend keeps those levels whatever the date, so in a capture's first UTC day the amounts
   are only a few hours' worth. The demo runs no rollup or budget loop afterwards, so every shot in
   a run shows the same figures. The traffic and timestamps follow the clock, though, so they shift a
@@ -228,6 +235,7 @@ shows both themes. Keep new shots in that pattern.
 | `console-key-endpoint` | Console | `/models`, Fabrikam partner Foundry selected, scrolled to its **Access** card with **Replace API key** | Dark | Endpoint reached with an API key |
 | `console-pools` | Console | `/pools`, listing the published Anthropic Claude pool and the Claude evaluation draft | Light | Model pools |
 | `console-pool-detail` | Console | `/pools`, Anthropic Claude opened, with its models, members, request example, and **Run history** | Dark | A model pool |
+| `console-pool-access` | Console | `/pools`, Anthropic Claude opened, scrolled to **Who can call it** | Light | Who can call a pool |
 | `console-mcps` | Console | `/mcps`, showing published and registered MCP servers | Light | MCP servers |
 | `console-identity` | Console | `/identity?tab=agents` | Dark | Identity |
 | `console-directory-picker` | Console | `/identity?tab=agents`, **Add agent** dialog with query `agent` | Light | Directory picker |
@@ -251,6 +259,7 @@ shows both themes. Keep new shots in that pattern.
 | `console-email-settings` | Console | `/settings`, scrolled to **Email** | Light | Budget email |
 | `portal-access` | Portal | `/access`, with a grant's **Connection details** open | Light | My access |
 | `portal-connection-cost-center` | Portal | `/access`, the GPT-4o grant under General with **Connection details** open, scrolled to **Cost center header** | Light | Choosing a cost center |
+| `portal-pool-connection` | Portal | `/access`, the Claude Sonnet 4.5 grant with **Connection details** open, scrolled to its card | Dark | Models that share a key |
 | `portal-mcp-connection` | Portal | `/access`, with an enforced MCP grant's **Connection details** open | Dark | MCP connection |
 | `portal-requests` | Portal | `/requests` | Dark | My requests |
 | `portal-usage` | Portal | `/usage` | Light | Usage & cost |

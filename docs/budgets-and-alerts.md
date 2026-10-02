@@ -74,7 +74,9 @@ and `budget.deleted`.
 
 - A cost center's spend is exactly what **Analytics > Cost** shows for it: the calls of its
   grants, priced by deployment and day at list price. Provisioned throughput is shared among its
-  callers by their share of its tokens. See [Pricing](pricing.md).
+  callers by their share of its tokens. See [Pricing](pricing.md). A grant on a
+  [model pool](../README.md#model-pools)'s model counts the same way, each call priced at the
+  deployment that served it, whichever region that was.
 - Reserved capacity nobody called, and calls MOSAIC couldn't link to a grant, belong to no cost
   center. They count only toward the organization's budget, which counts every priced call.
 - Tokens MOSAIC can't price don't count, and the budget says how many there were. A budget can't be
@@ -131,9 +133,9 @@ limits stay as they are.
   it, and writes it when a block starts or lifts. It's audited as
   `gateway.blockedCostCentersUpdated`. Don't edit or delete it: unpublishing leaves it, and API
   Management won't delete it while a policy refers to it.
-- The governed policy checks it after it has matched the caller's grant and cost center. A call
-  charged to a blocked cost center gets `403 Forbidden` with this body, which names the cost
-  center by its code, in lowercase:
+- The governed policy checks it after it has matched the caller's grant and cost center, a
+  governed model pool's included. A call charged to a blocked cost center gets `403 Forbidden`
+  with this body, which names the cost center by its code, in lowercase:
 
   ```text
   Access denied. Cost center ci-204 has used its monthly budget, so its calls are refused until an administrator raises the budget or the month ends.

@@ -1358,6 +1358,9 @@ class TrafficStream:
     denial: str = ""
     error_rate: float = 0.004
     backend_throttle_rate: float = 0.0
+    # A pool's members, as backend names and weights. Each call that reaches a backend lands on
+    # one of them, as the pool's load balancer spreads calls by weight.
+    members: tuple[tuple[str, int], ...] = ()
 
 
 def _call_times(rng: random.Random, day: date, count: int, stream: TrafficStream) -> list[datetime]:
@@ -1453,6 +1456,12 @@ def stream_calls(stream: TrafficStream, day: date, today: date) -> list[GatewayC
         total = max(40, round(stream.latency_ms * rng.lognormvariate(0, 0.45)))
         if backend == 0:
             total = quick
+        backend_id = ""
+        # Only a pool's calls draw a member, so every other stream's calls stay the same.
+        if stream.members and backend:
+            names = [name for name, _ in stream.members]
+            weights = [weight for _, weight in stream.members]
+            backend_id = rng.choices(names, weights=weights)[0]
         calls.append(
             GatewayCall(
                 time=time,
@@ -1471,6 +1480,7 @@ def stream_calls(stream: TrafficStream, day: date, today: date) -> list[GatewayC
                 completion_tokens=completion if metered and admitted else None,
                 deployment=stream.deployment if metered and admitted else None,
                 model=stream.model if metered and admitted else None,
+                backend_id=backend_id,
             )
         )
     return calls

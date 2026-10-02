@@ -121,17 +121,26 @@ one under **Settings > Appearance**.
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/console-pools.png" alt="The Model pools page listing two Anthropic pools with their gateway, models, routing type, active members, readiness, and status">
+      <img src="docs/images/screenshots/console-pools.png" alt="The Model pools page listing two Anthropic pools with their gateway, models, routing type, active members, access, readiness, and status">
       <p><b>Model pools.</b> Each pool serves one vendor's models from deployments on many
       endpoints and regions through a single API, with its routing type, how many deployments
-      are active, and whether it is a draft or published.</p>
+      are active, whether callers need a grant, and whether it is a draft or published.</p>
     </td>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/console-pool-detail.png" alt="A breaker pool serving Claude Opus 4.5 and Claude Sonnet 4.5 from five deployments in three regions, with weights, readiness, drain switches, and how callers connect">
+      <img src="docs/images/screenshots/console-pool-detail.png" alt="A breaker pool serving Claude Opus 4.5 and Claude Sonnet 4.5 from five deployments in three regions, with weights, readiness, and drain switches">
       <p><b>A model pool.</b> How the pool routes and recovers, what it owns in API Management,
       and each model with the deployments behind it, their region, capacity, and share of
       requests. Callers see one base URL and the pool's model names, never the deployments.</p>
     </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/images/screenshots/console-pool-access.png" alt="A governed pool's Who can call it card, with key and Entra sign-in switches, four grants listing each model, subject, cost center, and limits, and a cost center's pooled quota">
+      <p><b>Who can call a pool.</b> A governed pool admits only callers granted one of its models,
+      each charging a cost center and signing in with their own key or a Microsoft Entra token. The
+      card lists the grants in force, their limits, and each cost center's pooled quota.</p>
+    </td>
+    <td width="50%" valign="top"></td>
   </tr>
   <tr>
     <td width="50%" valign="top">
@@ -355,7 +364,12 @@ one under **Settings > Appearance**.
       at its monthly budget, My access and Usage &amp; cost say so, and what happens at 100%. It
       shows the cost center's total against its budget, never anyone's own share.</p>
     </td>
-    <td width="50%" valign="top"></td>
+    <td width="50%" valign="top">
+      <img src="docs/images/screenshots/portal-pool-connection.png" alt="A Claude Sonnet 4.5 grant's connection details: one base URL and the model name to send, the cost center header, accepted credentials, Entra values, and a key that also works for Claude Opus 4.5">
+      <p><b>Models that share a key.</b> A model served from several deployments shows one base URL
+      and the model name to send, never the deployments behind it. One key serves every such model
+      a person holds there under the same cost center, and the portal names the others it covers.</p>
+    </td>
   </tr>
 </table>
 
@@ -455,13 +469,14 @@ explicit local/test modes and application startup rejects them when `MOSAIC_ENVI
 - MCP publishing: expose a registered MCP server through a gateway by creating its backend, policy
   fragment, passthrough MCP API, API policy, protected-resource-metadata API, metadata operation
   and metadata policy — through the same reviewed plan and explicit apply model
-- Model pools, first phase: serve one vendor's models from deployments on many endpoints and
-  regions through one API, so callers see one base URL and the pool's model names and never the
-  deployments behind them. Breaker and preferential pools balance their deployments with API
-  Management backend pools and circuit breakers; linear pools try them in order. A pool is
-  published, unpublished, and recovered through the same reviewed plan and explicit apply as a
-  publication. Per-person access to pool models comes in a later phase. See
-  [Model pools](#model-pools)
+- Model pools: serve one vendor's models from deployments on many endpoints and regions through one
+  API, so callers see one base URL and the pool's model names and never the deployments behind
+  them. Breaker and preferential pools balance their deployments with API Management backend pools
+  and circuit breakers; linear pools try them in order. A pool is published, unpublished, and
+  recovered through the same reviewed plan and explicit apply as a publication. A governed pool
+  admits only callers granted one of its models under a cost center, with one key per person and
+  cost center for all of the pool's models they hold, and its calls count toward cost center
+  limits, budgets, Analytics, pricing, and the usage report. See [Model pools](#model-pools)
 - Async repository abstraction with explicit in-memory and Cosmos implementations
 - React/TypeScript/Vite administrator console using Fluent UI, React Router, TanStack Query, and
   MSAL, with responsive navigation and persisted light/dark/system themes. It confirms the caller
@@ -478,7 +493,9 @@ explicit local/test modes and application startup rejects them when `MOSAIC_ENVI
   and My requests head each grant and request with its resource's name, as the catalog shows it, and
   keep its kind visible, including for a resource since made private. They never show a raw
   resource ID. For an applied direct model grant, the portal also shows the endpoint, operations,
-  accepted credentials, limits, and placeholder code samples, and reveals a key on request
+  accepted credentials, limits, and placeholder code samples, and reveals a key on request. A model
+  served by a pool appears as a model like any other, with one base URL and the model name to
+  send, and the portal never names the pool, its deployments, or their regions
 - Environments: an administrator-defined catalog (Development, Test, QC, Staging, Production,
   Sandbox, and custom environments) that classifies gateways, model endpoints, and MCP servers.
   Compatibility rules are enforced when models and MCP servers are published, and Azure
@@ -510,10 +527,11 @@ explicit local/test modes and application startup rejects them when `MOSAIC_ENVI
   [ADR 0020](docs/adr/0020-price-list.md)
 - Cost centers: every grant, and so every call, is charged to a cost center that spans gateways,
   with owners, members (people, applications, agents, and Entra security groups), a keys allowed
-  switch, per-person default limits, and pooled monthly quotas per model. People choose one when
-  they ask for access and name one per call with the `x-mosaic-cost-center` header, and keys are
-  created on request. Analytics, the chargeback, and the portal report spend and quotas per cost
-  center. See [Cost centers](docs/cost-centers.md) and [ADR 0022](docs/adr/0022-cost-centers.md)
+  switch, per-person default limits, and pooled monthly quotas per model, including a pool's models
+  across every region the pool serves them from. People choose one when they ask for access and
+  name one per call with the `x-mosaic-cost-center` header, and keys are created on request.
+  Analytics, the chargeback, and the portal report spend and quotas per cost center. See
+  [Cost centers](docs/cost-centers.md) and [ADR 0022](docs/adr/0022-cost-centers.md)
 - Budgets: a monthly budget per cost center, in dollars across every gateway, emails its owners
   and any other address at 80% and 100%, and either lets calls continue or blocks them at the
   gateway until it's raised or the UTC month ends. An organization budget only warns. Email goes
@@ -1410,7 +1428,7 @@ it's throttled. A **model pool** serves one vendor's models from all of those de
 one API. Callers send a model name, such as `claude-opus-4-5`, to one base URL, and the gateway
 sends each request to a deployment that can take it. They never see the endpoints, regions, or
 deployments behind the pool. [ADR 0024](docs/adr/0024-model-pools.md) records the design. Its first
-phase is built, and this section describes it.
+two phases are built, and this section describes them.
 
 A pool runs on one gateway and takes that gateway's environment. It serves one vendor's models
 through one API shape ([ADR 0012](docs/adr/0012-format-aware-model-publishing.md)), such as
@@ -1456,14 +1474,15 @@ writes from it:
 - A Consumption-tier gateway has no backend pools, so it runs only linear pools.
 
 **What the gateway does with a request.** The pool's policy reads the model a request names, from
-the body's `model` or, for the Azure OpenAI shape, from the route, and answers `404` for a model the
-pool doesn't serve. It removes `x-ms-spillover-deployment`, so a caller can't steer Azure's
-spillover to a deployment outside the pool, and authenticates to every member with the gateway's
-managed identity. On the way out, it removes the headers that describe one member: its region,
-deployment, spillover, and rate limits. A request that is still throttled or failing after its last
-attempt gets a generic error that names no member, and keeps its `Retry-After`. The Responses API
-isn't offered, because a stored response lives in one account and a later call could reach
-another, and neither is the model information route, which describes one deployment.
+the body's `model` or, for the Azure OpenAI shape, from the route, and refuses a model the pool
+doesn't serve: an open pool answers `404`, and a governed one `403`. It removes
+`x-ms-spillover-deployment`, so a caller can't steer Azure's spillover to a deployment outside the
+pool, and authenticates to every member with the gateway's managed identity. On the way out, it
+removes the headers that describe one member: its region, deployment, spillover, and rate limits. A
+request that is still throttled or failing after its last attempt gets a generic error that names
+no member, and keeps its `Retry-After`. The Responses API isn't offered, because a stored response
+lives in one account and a later call could reach another, and neither is the model information
+route, which describes one deployment.
 
 Applying a pool creates, in dependency order:
 
@@ -1471,13 +1490,13 @@ Applying a pool creates, in dependency order:
 | --- | --- | --- |
 | 1 | Backends | One per active member, pointing at its deployment. In breaker and preferential pools, each has a circuit breaker |
 | 2 | Backend pools | In breaker and preferential pools, one per pool model, balancing its members by weight and priority |
-| 3 | `mosaic-*` policy fragment | Finds the requested model, removes what a caller mustn't send on, authenticates with the gateway's managed identity, and applies the safeguard |
+| 3 | `mosaic-*` policy fragment | Finds the requested model, removes what a caller mustn't send on, authenticates with the gateway's managed identity, and applies the safeguard. In a governed pool, it also finds the caller's grant and applies its limits |
 | 4 | API | The pool's API at its own path. It has no service URL, because the policy picks each request's backend |
-| 5 | Operations | The shape's curated operations, without Responses and model information |
+| 5 | Operations | The shape's curated operations, without Responses and model information. A governed pool keeps only those its limits can count: chat completions, or Anthropic's messages |
 | 6 | API policy | Includes the fragment, retries over each model's members, and removes member headers from responses |
 | 7 | Product | Carries the API |
 | 8 | Product/API link | |
-| 9 | Subscription | The pool's own subscription |
+| 9 | Subscription | The open pool's own subscription. A governed pool suspends any it has, and each caller uses their own key |
 
 Plans, applies, ownership, rollback, unpublishing, and recovery work as they do for a publication.
 A plan is deterministic and reviewed, and pins each active member's environment verdict. Apply runs
@@ -1492,21 +1511,84 @@ refuses with `409` and `planRequired` or `stalePlan` as a publication's does. Th
 - An environment change that would block an applied member is refused.
 - A pool's API isn't offered for import as a model API.
 
+**Who can call a pool.** A new pool is open: its own subscription admits every caller, and an
+administrator copies its key from the Azure portal. **Governed access** puts each of the pool's
+models behind grants, as [governed model access](#governed-model-access) does for a publication.
+An administrator turns it on from the pool's page and chooses whether callers sign in with a key, a
+Microsoft Entra token, or either. Once it's applied, the pool can't go back to open access.
+
+- Entitlements and access requests name a pool model, such as Claude Opus 4.5 in the Anthropic
+  Claude pool, and a [cost center](#cost-centers). People, applications, and agents hold direct
+  grants. Security group grants are Entra only, and grants to MOSAIC groups stay desired state,
+  which the plan says.
+- Each person or application gets one key per pool and cost center, created on request rather than
+  by an apply. It serves every model they hold directly in that pool under that cost center, and
+  goes in `Ocp-Apim-Subscription-Key` or the `subscription-key` query parameter. Generic, product,
+  all-API, and all-access keys don't work, and the pool's own subscription is suspended.
+- A key serves one cost center, so a call whose `x-mosaic-cost-center` names another is refused.
+  An Entra caller with grants under several cost centers names one in that header.
+- The policy finds the caller's grant for the model the call names. It then checks the cost center
+  and its budget, the grant's limits, the cost center's pooled quota, and the safeguard, in that
+  order, before it routes. It removes the caller's key, token, and cost center header, so no member
+  receives them.
+- A call with no credential, a malformed one, or one the pool doesn't accept gets `401`. A key the
+  pool didn't issue gets `403`, and so does a model the caller holds no grant to. A model the pool
+  doesn't serve is refused the same way, so a refusal never reveals what the pool serves.
+- A governed pool permits only chat completions, or Anthropic's messages, because those are the
+  calls its limits can count.
+- A cost center's per-person defaults and pooled monthly quotas apply to pool models, counted across
+  every region the pool serves the model from. Leaving a cost center revokes the pool grants that
+  relied on it, and the pool's next apply deletes their keys.
+
+**Applying access safely.** A governed apply first denies every call. It then writes the pool's
+backends, API, operations, product, and fragment, and reopens the pool on the reviewed policy. Keys
+are suspended while it runs and reactivated only for grants still in force. Unpublishing and
+recovery also deny calls before they touch a key. If an apply fails, MOSAIC restricts the pool to
+its last safe access snapshot, which admits only grants both the previous and the reviewed policy
+allowed. Keys are kept for a reviewed retry, and none is rotated.
+
+- A model with applied grants can't leave its pool until they're revoked and the revocation is
+  applied. A grant whose revocation isn't applied yet can't be deleted.
+- The plan lists each grant it leaves out, and why. A grant is left out when its model has no
+  active deployment, or its cost center is gone or has a recheck pending. So is a grant with token
+  limits, or under a pooled monthly token quota, on a gateway tier that can't count tokens.
+
+**Cost and usage.** The policy writes the same usage traces as a governed publication's. MOSAIC
+places each call on the member deployment that served it and prices it at that deployment's price,
+so a model served from several regions, or from both provisioned and pay-as-you-go capacity, is
+priced per region and capacity. A provisioned member's reserved capacity is shared by token share,
+as it is for a publication, and a member removed from the pool keeps its price for earlier calls.
+Calls MOSAIC can't place on a member are never counted as free. Pricing lists them as unpriced,
+and the chargeback bills them as an unknown model. Cost center spend, budgets, Analytics, and the
+usage report all include pool calls. Reports for users never name the pool, its members, or their
+regions.
+
+**In the portal.** The catalog lists each model a governed pool serves as a **Model**, under its
+display name and the gateway's environment, with a capacity badge unless the pool hides capacity.
+It has no summary, because a pool's description may name its regions. Users request it as they
+would any model. Once granted, **My access** shows the pool's base URL, the model name to send, and
+the safeguard as the model's shared limit. Revealing a key names the other models it works for.
+The portal never names the pool, its deployments, or their regions.
+
 In the console, **Pools** lists every pool with its gateway, what it serves, its routing, its active
-members, readiness, and status. **Create pool** chooses the gateway and routing, then each model's
-deployments from every endpoint the gateway can front. It can suggest weights from each
-deployment's capacity, and says why a deployment can't be used. A pool's page shows its routing,
-what it owns in API Management, each model's deployments with their region, capacity, weight and
-share, readiness, and a drain switch, how callers connect, what its policy does, and its run
-history. Saving a pool records intent. Nothing changes in API Management until a reviewed plan is
-applied.
+members, readiness, whether callers need a grant, and status. **Create pool** chooses the gateway
+and routing, then each model's deployments from every endpoint the gateway can front. It can
+suggest weights from each deployment's capacity, and says why a deployment can't be used. A pool's
+page shows its routing, what it owns in API Management, each model's deployments with their region,
+capacity, weight and share, readiness, and a drain switch, how callers connect, what its policy
+does, and its run history. Its **Who can call it** card turns on governed access, and lists the
+grants in force, their limits, and each cost center's pooled quota. The plan's **Pool access
+review** shows what changes for callers before anyone applies it. **Entitlements** grants a pool's
+models, **Approvals** says the pool's plan applies an approved grant, **Connections** shows the
+models one key serves, and **Analytics** labels a pool grant with its pool and model. Saving a pool
+records intent. Nothing changes in API Management until a reviewed plan is applied.
 
 | Method | Route under `/api/v1` | Result |
 | --- | --- | --- |
 | GET | `/gateways/{gatewayId}/pool-candidates` | The deployments a pool on that gateway could use, grouped by model, and why others can't be used |
 | GET | `/model-pools`, `/model-pool-summaries` | Pools, optionally on one `gateway`. A summary counts active members by capacity type and readiness |
 | POST | `/model-pools` | Creates a pool, `201` |
-| GET, PATCH, DELETE | `/model-pools/{id}` | Reads, changes, or removes a pool. Removal is refused while the pool owns API Management resources |
+| GET, PATCH, DELETE | `/model-pools/{id}` | Reads, changes, or removes a pool. `governedAccess` turns on governed access, and can't be cleared once set. Removal is refused while the pool owns API Management resources |
 | GET | `/model-pools/{id}/detail` | The pool with each member judged against today's inventory, environments, and gateway |
 | POST | `/model-pools/{id}/plan` | A plan to review |
 | POST | `/model-pools/{id}/apply?plan={planId}` | Runs that plan, `202` with the run |
@@ -1516,18 +1598,16 @@ applied.
 | POST | `/model-pools/{id}/recover` | Reconciles an interrupted run, as for a publication |
 | GET | `/model-pools/{id}/lock`, `/model-pool-plans/{planId}` | The pool's write lock, and a saved plan |
 
-**Not built yet.** In this first phase, callers reach a pool only through its own subscription,
-whose key an administrator copies from the Azure portal, and the portal doesn't list pool models.
-ADR 0024's later phases add:
+Entitlement, access request, and portal routes take a `poolModel` resource, whose `scopeId` is the
+pool. Pools add no routes of their own for access.
 
-- Per-model access. Entitlements and access requests name a pool model and a cost center, and each
-  person or application gets one key per pool and cost center, created on request. The pool's
-  policy checks budgets and writes usage traces, so cost center limits, budgets, Analytics, and the
-  usage report include pool calls, priced per member.
-- A portal catalog that lists the pool's models, rather than its deployments.
+**Not built yet.** ADR 0024's later phases add:
+
 - Members reached with a key: Azure endpoints registered with a key, then AWS Bedrock.
 - A pool health view, with the member behind each attempt, throttling, breaker trips, and overflow,
-  and drift shown on re-plan.
+  and drift shown on re-plan. A helper to start a pool from existing publications of one model.
+- In the console, suggested pools, which pools use an endpoint, a warning when two pools serve the
+  same model, and a pools tile on the dashboard.
 
 Pools are built and tested against the API Management test double. The behaviors ADR 0024 lists
 under *Verify on a real gateway* still need confirming on a real one.
@@ -1955,6 +2035,9 @@ records the design.
   `llm-token-limit`, or a `quota-by-key` for calls, counted per cost center and model. Responses
   report what's left in `x-mosaic-remaining-tokens`, `x-mosaic-remaining-quota-tokens`,
   `x-mosaic-remaining-calls`, and `x-mosaic-cost-center-remaining-quota-tokens`.
+- A [model pool](#model-pools)'s models take per-person defaults and pooled quotas as any model
+  does. They count every call to the model, whichever region or deployment served it, and pool
+  calls count toward the cost center's spend and budget.
 - Losing the right to charge a cost center revokes the grants that relied on it: removing a member,
   moving a principal's default or the tenant's default, or turning a grant back on. The next apply
   deletes their keys. A revocation that has to wait for a busy model leaves the cost center
@@ -1991,10 +2074,10 @@ blocks them at the gateway. An organization budget counts every priced call and 
   email once each. Budget state is saved with conditional writes, so API instances can't send an
   email twice.
 - A blocked cost center is listed in the `mosaic-blocked-cost-centers` named value MOSAIC keeps on
-  each managed gateway. The governed policy refuses its calls with 403 once it has matched the
-  grant, and the gateway's trace records `mosaic-deny v=1 r=budget`. The block lifts when the UTC
-  month ends or an administrator raises the budget, and it lands about 15 to 30 minutes after the
-  spend. It never revokes a grant.
+  each managed gateway. The governed policy, a governed model pool's included, refuses its calls
+  with 403 once it has matched the grant, and the gateway's trace records
+  `mosaic-deny v=1 r=budget`. The block lifts when the UTC month ends or an administrator raises
+  the budget, and it lands about 15 to 30 minutes after the spend. It never revokes a grant.
 - Email goes through Azure Communication Services as MOSAIC's managed identity. It's off until an
   administrator saves an endpoint and a sender in **Settings > Email**, which can send a test.
   `azd` deploys Communication Services when `MOSAIC_DEPLOY_EMAIL` is `true`.
@@ -2056,13 +2139,17 @@ the workspace. The bootstrap gateway's Application Insights diagnostic logs at I
 each governed call also adds one trace there, whatever the sampling rate. To stop them, set that
 diagnostic's verbosity to Error.
 
+A governed [model pool](#model-pools) traces its calls the same way. MOSAIC places each call on the
+member deployment that served it, from the backend the gateway logged, and prices it at that
+deployment. Calls it can't place stay with the pool, unpriced.
+
 ### Usage analytics in the console
 
 The **Dashboard** shows the last 7 days: requests, tokens, active callers, error rate, and p95
 latency, spend this month and its month-end forecast, the daily trend, how current each gateway's
 telemetry is, and the top five models, callers, and APIs. **Analytics** covers the last 24 hours, 7,
-30, or 90 days, 12 months, or chosen dates, and filters by gateway, environment, resource, kind of
-subject, and [cost center](#cost-centers):
+30, or 90 days, 12 months, or chosen dates, and filters by gateway, environment, resource (a model
+API, [model pool](#model-pools), or MCP server), kind of subject, and [cost center](#cost-centers):
 
 | Tab | What it shows |
 | --- | --- |
@@ -2073,7 +2160,7 @@ subject, and [cost center](#cost-centers):
 | Reliability | Successful, gateway-throttled, backend 429, and denied calls, an estimated latency histogram, denials by reason, and each API's reliability |
 | Limits | How close each grant is to each quota and rate limit, and the calls the gateway throttled or refused for quota |
 | Access hygiene | Grants nobody used in the last 30 days, keys nobody used because every call brought a token, and grants MOSAIC can't track |
-| Unattributed | Calls MOSAIC couldn't link to a grant, such as those made with a publication's shared key, and what they cost |
+| Unattributed | Calls MOSAIC couldn't link to a grant, such as those made with a publication's or model pool's shared key, and what they cost |
 
 Every tab exports CSV, and tables that show cost export it too. The Cost tab exports a chargeback by
 month, person, application, or group, cost center, and model. These routes need `Admin`:
@@ -2100,8 +2187,10 @@ from a date. Each is a new version, audited, and never changes the days before i
 A deployment's cloud comes from its endpoint's host, where `.azure.us` means Azure Government, and
 an administrator can override it. The most specific price wins, by deployment, model, version,
 region, deployment type, and publisher. Provisioned throughput costs its PTUs by the hour, or a
-monthly amount, shared among its callers by their share of its tokens. Usage MOSAIC can't price
-shows **No price**, never $0, and the **Unpriced deployments** tab says what would price it.
+monthly amount, shared among its callers by their share of its tokens. A
+[model pool](#model-pools)'s calls are priced at the member deployment that served each one. Usage
+MOSAIC can't price shows **No price**, never $0, and the **Unpriced deployments** tab says what
+would price it, including a pool's calls MOSAIC couldn't place on a member.
 [Pricing](docs/pricing.md) covers sources, matching, overrides, PTUs, chargeback, and refreshing the
 seed. [ADR 0020](docs/adr/0020-price-list.md) records the design. These routes need `Admin`:
 
@@ -2216,17 +2305,18 @@ records.
    [ADR 0023](docs/adr/0023-budgets-and-notifications.md).
 8. **Model pools:** serve one vendor's models from many deployments, across endpoints and regions,
    behind one API whose callers never see the deployments.
-   - Built: the first phase. Administrators create **breaker** (load-balanced, with circuit
+   - Built: the first two phases. Administrators create **breaker** (load-balanced, with circuit
      breakers), **linear** (ordered failover), and **preferential** (provisioned throughput first,
      with pay-as-you-go overflow) pools of Azure deployments, and publish, unpublish, and recover
      them through reviewed plans. The Models page shows each deployment's capacity type
-     (provisioned, pay-as-you-go, or batch), its processing scope, and any Azure spillover. See
-     [Model pools](#model-pools).
-   - Next: people request access per model, under a cost center. They get one key for every model
-     they hold in a pool under that cost center, and only when they ask for it. Pools reuse cost
+     (provisioned, pay-as-you-go, or batch), its processing scope, and any Azure spillover. A
+     governed pool admits only people, applications, and agents granted one of its models under a
+     cost center, each with one key per pool and cost center, created on request. Pools reuse cost
      center limits, budget blocking, and grant attribution, each call is priced at the member
      deployment that served it, and the portal lists a pool's models rather than its deployments.
-   - Later: members reached with a key, on Azure and then AWS Bedrock, and a pool health view.
+     See [Model pools](#model-pools).
+   - Next: members reached with a key, on Azure and then AWS Bedrock.
+   - Later: a pool health view, with the member behind each attempt, and drift shown on re-plan.
 
    See [ADR 0024](docs/adr/0024-model-pools.md).
 9. **Catalog ecosystem:** API Center experiences, MCP tool-level governance, broader self-service

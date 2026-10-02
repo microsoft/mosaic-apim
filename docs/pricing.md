@@ -103,10 +103,18 @@ A model API's calls are priced by the deployment its publication fronts. A grant
 by the model API it grants. An API MOSAIC adopted rather than published doesn't say which deployment
 it calls, so its calls have no price. MCP servers carry no tokens and have no cost.
 
+A [model pool](../README.md#model-pools)'s API fronts many deployments, so MOSAIC prices each of its
+calls at the member that served it. It places a call on a member by the backend the gateway logged,
+or by the host and deployment that backend calls. A provisioned member's cost is shared among the
+pool's callers like any other's, from the day MOSAIC first saw it behind the pool, and a member
+since removed keeps its price for the days it served. A call MOSAIC can't place on a member has no
+price, and the chargeback bills it to **Unknown model**.
+
 ## Why a deployment has no price
 
-The **Unpriced deployments** tab lists every deployment MOSAIC knows that has no price today, and
-every adopted model API with calls in the last 30 days, busiest first. Each row says why:
+The **Unpriced deployments** tab lists every deployment MOSAIC knows that has no price today, every
+adopted model API with calls in the last 30 days, and every model pool with calls in that time that
+MOSAIC couldn't place on a member, busiest first. Each row says why:
 
 | Reason | What to do |
 | --- | --- |
@@ -116,7 +124,7 @@ every adopted model API with calls in the last 30 days, busiest first. Each row 
 | No price listed | Add a price for the model in its cloud, from a source you trust |
 | Price not yet in effect | Wait for the price's date, or add one that takes effect sooner |
 | Not yet deployed | Nothing. A provisioned deployment costs nothing before it existed |
-| Deployment unknown | Publish the model through MOSAIC, so it knows the deployment, or accept that the adopted API's calls are unpriced |
+| Deployment unknown | Publish the model through MOSAIC, so it knows the deployment, or accept that the adopted API's calls are unpriced. For a model pool, check that the gateway's logs name the backend each call reached |
 
 ## Adding and correcting prices
 
