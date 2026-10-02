@@ -21,8 +21,13 @@ from mosaic_api.deployment_capacity import CapacityType, ProcessingScope
 from mosaic_api.domain import (
     MOSAIC_RESOURCE_PREFIX,
     ApiShape,
+    AppliedCostCenterPool,
+    EntitlementEnforcement,
+    EntitlementSubject,
+    EntitlementSubjectKind,
     Entity,
     EnvironmentVerdict,
+    ModelAccessSettings,
     MosaicModel,
     PolicyFacet,
     PublicationStatus,
@@ -163,6 +168,18 @@ def pool_model_id(pool_id: str, public_name: str) -> str:
     return deterministic_id("poolModel", pool_id, public_name)
 
 
+def pool_key_name(tenant_id: str, pool_id: str, subject_id: str, cost_center_id: str) -> str:
+    """The subscription that is one subject's key to a pool under one cost center.
+
+    One key serves every model the subject holds directly in the pool under that cost center, so
+    the name doesn't depend on any model or grant.
+    """
+
+    return deterministic_id(
+        "mosaic-pool-key", tenant_id, pool_id, subject_id, cost_center_id
+    ).replace("_", "-")
+
+
 def default_pool_api_name(display_name: str) -> str:
     return f"{POOL_API_PREFIX}{apim_slug(display_name) or 'models'}"
 
@@ -279,6 +296,92 @@ class PoolModel(MosaicModel):
         return [member for member in self.members if not member.drained]
 
 
+class PoolAccessGrant(MosaicModel):
+    """One grant compiled into a model pool's policy: a subject's access to one pool model.
+
+    Like :class:`~mosaic_api.domain.ModelAccessGrant`, except for its key. A direct grant's key is
+    shared: there's one per subject, pool, and cost center, and it serves every model the subject
+    holds directly in the pool under that cost center.
+    """
+
+    entitlement_id: str
+    pool_model_id: str
+    subject: EntitlementSubject
+    # The caller's object ID for a direct grant; the group's object ID for a security-group grant,
+    # which the gateway matches against the caller token's ``groups`` claim.
+    object_id: str
+    display_name: str
+    # The subscription that is the grant's key, from :func:`pool_key_name`. None exactly when the
+    # subject is a security group: a group grant authorizes Entra tokens only.
+    key_name: str | None = None
+    enabled: bool
+    enforcement: EntitlementEnforcement | None = None
+    intent_digest: str
+    cost_center_id: str = ""
+    cost_center_code: str = ""
+    # Whether this is a direct grant under its subject's default cost center. A call that names no
+    # cost center uses it before the subject's other grants for the model, which go oldest first.
+    default_cost_center: bool = False
+    granted_at: datetime | None = None
+    # False when the grant's cost center turned keys off. The gateway then refuses the key for
+    # this grant's model.
+    keys_allowed: bool = True
+    # True when the grant was revoked because its subject left the cost center.
+    revoked: bool = False
+
+    @model_validator(mode="after")
+    def enforceable_subject_only(self) -> Self:
+        if self.subject.kind == EntitlementSubjectKind.GROUP:
+            raise ValueError(
+                "MOSAIC groups are not enforced at runtime; grant an Entra security group instead"
+            )
+        if self.subject.kind == EntitlementSubjectKind.SECURITY_GROUP:
+            if self.key_name is not None:
+                raise ValueError("A security-group grant has no key")
+        elif not self.key_name:
+            raise ValueError("A direct grant needs its key's name")
+        return self
+
+    @property
+    def is_group_grant(self) -> bool:
+        return self.subject.kind == EntitlementSubjectKind.SECURITY_GROUP
+
+
+class PoolModelQuota(AppliedCostCenterPool):
+    """A cost center's pooled monthly quota on one pool model, exactly as an apply compiled it.
+
+    Every grant under the cost center on the model draws on it, counted per cost center and pool
+    model.
+    """
+
+    pool_model_id: str
+
+
+class PoolAccessSnapshot(MosaicModel):
+    """The grants a model pool's policy enforces, exactly as an apply compiled them."""
+
+    version: int = Field(ge=1)
+    settings: ModelAccessSettings
+    audience: str | None = None
+    # False when the pool's API shape can't be token-metered on its gateway's tier. Such a
+    # snapshot carries no token policies, so none of its grants carry token limits.
+    token_metering: bool = True
+    grants: list[PoolAccessGrant] = Field(default_factory=list)
+    quotas: list[PoolModelQuota] = Field(default_factory=list)
+
+    def grants_for(self, pool_model_id: str) -> list[PoolAccessGrant]:
+        return [grant for grant in self.grants if grant.pool_model_id == pool_model_id]
+
+    def key_grants(self) -> dict[str, list[PoolAccessGrant]]:
+        """The direct grants each key serves, by key name."""
+
+        keys: dict[str, list[PoolAccessGrant]] = {}
+        for grant in self.grants:
+            if grant.key_name is not None:
+                keys.setdefault(grant.key_name, []).append(grant)
+        return keys
+
+
 class ModelPool(Entity):
     """An administrator's intent to serve one vendor's models through one API on one gateway.
 
@@ -320,6 +423,14 @@ class ModelPool(Entity):
     applied_intent_digest: str | None = None
     unpublished_at: datetime | None = None
     last_error: str | None = None
+    # Governed access (phase 2). None until an administrator opts the pool in. Then its policy
+    # authorizes every call against grants on its models, and its bootstrap subscription is
+    # suspended. A pool can't go back.
+    governed_access: ModelAccessSettings | None = None
+    applied_access: PoolAccessSnapshot | None = None
+    access_state: Literal["pending", "applying", "applied", "failed", "unknown"] = "pending"
+    # The models the gateway serves, as of the last successful apply. An unpublish clears them.
+    applied_model_ids: list[str] = Field(default_factory=list)
 
     def created_resources(self) -> list[PublishedResource]:
         """The subset rollback and unpublish are allowed to delete."""
@@ -336,10 +447,49 @@ class ModelPool(Entity):
             for item in self.resources
         )
 
-    def may_own_gateway_state(self) -> bool:
-        """Whether API Management may hold something this pool is responsible for."""
+    def pool_model(self, pool_model_id: str) -> PoolModel | None:
+        return next((model for model in self.models if model.id == pool_model_id), None)
 
-        return bool(self.created_resources() or self.status == PublicationStatus.APPLYING)
+    def serves_model(self, pool_model_id: str) -> bool:
+        """Whether the gateway serves the pool model.
+
+        It does when the pool's last apply wrote the model, the API is still there, and the model
+        is still part of the pool.
+        """
+
+        return (
+            self.has_applied_api()
+            and pool_model_id in self.applied_model_ids
+            and self.pool_model(pool_model_id) is not None
+        )
+
+    def owns_key(self, key_name: str) -> bool:
+        """Whether the pool's record says it created this key."""
+
+        return any(
+            item.kind == PublishedResourceKind.SUBSCRIPTION
+            and item.name == key_name
+            and item.created_by_mosaic
+            for item in self.resources
+        )
+
+    def may_own_gateway_state(self) -> bool:
+        """Whether API Management may hold something this pool is responsible for.
+
+        True while MOSAIC-created resources are recorded, while a run is or may be in flight, while
+        an interrupted apply left the runtime state unknown, and while any applied grant is still
+        enabled. Only a pool for which this is False may be forgotten.
+        """
+
+        return bool(
+            self.created_resources()
+            or self.status == PublicationStatus.APPLYING
+            or self.access_state in {"applying", "unknown"}
+            or (
+                self.applied_access
+                and any(grant.enabled for grant in self.applied_access.grants)
+            )
+        )
 
     def owned_backends(self) -> set[str]:
         """The member backends and backend pools the pool's record says it created."""

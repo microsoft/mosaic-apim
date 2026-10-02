@@ -42,6 +42,13 @@ from mosaic_api.domain import (
 )
 from mosaic_api.errors import ConflictError, NotFoundError, ValidationError
 from mosaic_api.main import create_app
+from mosaic_api.model_pools import (
+    ModelPool,
+    PoolModel,
+    backend_pool_name,
+    model_pool_id,
+    pool_model_id,
+)
 from mosaic_api.repositories import InMemoryCostCenterRepository, InMemoryGatewayRepository
 from mosaic_api.services.cost_centers import CostCenterService
 from mosaic_api.services.directory import Actor, DirectoryService
@@ -185,11 +192,18 @@ def test_limits_need_something_to_limit_and_mcp_servers_count_calls() -> None:
             resource=EntitlementResource(kind="mcpServer", id="server"),
             pool=PooledQuota(monthly_tokens=10),
         )
-    with pytest.raises(ValueError, match="model APIs and MCP servers"):
+    with pytest.raises(ValueError, match="model APIs, MCP servers, and model pool models"):
         CostCenterLimit(
             resource=EntitlementResource(kind="product", id="product", scope_id="gateway"),
             pool=PooledQuota(monthly_calls=10),
         )
+    with pytest.raises(ValueError, match="scope"):
+        EntitlementResource(kind="poolModel", id="poolModel_1")
+    limit = CostCenterLimit(
+        resource=EntitlementResource(kind="poolModel", id="poolModel_1", scope_id="pool_1"),
+        pool=PooledQuota(monthly_tokens=10),
+    )
+    assert limit.resource.scope_id == "pool_1"
 
 
 def test_per_person_limits_become_grant_limits_on_the_grants_own_counter() -> None:
@@ -409,6 +423,71 @@ async def test_limits_name_models_mosaic_governs(client: TestClient) -> None:
     duplicate = {"limits": [limits["limits"][0], limits["limits"][0]]}
     assert client.put(
         f"/api/v1/cost-centers/{research['id']}/limits", json=duplicate
+    ).status_code == 422
+
+
+async def test_limits_name_pool_models_by_their_pool(client: TestClient) -> None:
+    research = _create(client, "Research", "RES")
+    api_name = "mosaic-pool-anthropic"
+    pool_id = model_pool_id(TENANT, "gateway_seed", api_name)
+    opus = pool_model_id(pool_id, "claude-opus-4-5")
+    limits = {
+        "limits": [
+            {
+                "resource": {"kind": "poolModel", "id": opus, "scopeId": pool_id},
+                "person": {"tokensPerMinute": 2000},
+                "pool": {"monthlyTokens": 1000000},
+            }
+        ]
+    }
+    refused = client.put(f"/api/v1/cost-centers/{research['id']}/limits", json=limits)
+    assert refused.status_code == 422
+    unscoped = {"limits": [{**limits["limits"][0], "resource": {"kind": "poolModel", "id": opus}}]}
+    assert client.put(
+        f"/api/v1/cost-centers/{research['id']}/limits", json=unscoped
+    ).status_code == 422
+
+    gateways: InMemoryGatewayRepository = client.app.state.gateway_repository
+    await gateways.save_model_pool(
+        ModelPool(
+            id=pool_id,
+            tenant_id=TENANT,
+            gateway_id="gateway_seed",
+            display_name="Anthropic",
+            vendor="Anthropic",
+            api_name=api_name,
+            api_path="mosaic/pool-anthropic",
+            fragment_name=api_name,
+            product_name=api_name,
+            subscription_name=api_name,
+            models=[
+                PoolModel(
+                    id=opus,
+                    public_name="claude-opus-4-5",
+                    display_name="Claude Opus 4.5",
+                    backend_pool_name=backend_pool_name(api_name, opus, "claude-opus-4-5"),
+                )
+            ],
+        ),
+        _audit(),
+    )
+    saved = _ok(client.put(f"/api/v1/cost-centers/{research['id']}/limits", json=limits))
+    assert saved["limits"][0]["resource"] == {"kind": "poolModel", "id": opus, "scopeId": pool_id}
+    # A model the pool doesn't serve is refused, even under the right pool.
+    other = {
+        "limits": [
+            {
+                **limits["limits"][0],
+                "resource": {
+                    "kind": "poolModel",
+                    "id": pool_model_id(pool_id, "claude-haiku-4-5"),
+                    "scopeId": pool_id,
+                },
+            }
+        ]
+    }
+    assert client.put(
+        f"/api/v1/cost-centers/{research['id']}/limits", json=other
     ).status_code == 422
 
 

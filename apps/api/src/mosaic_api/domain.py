@@ -1574,6 +1574,8 @@ class EntitlementResourceKind(StrEnum):
     MCP_SERVER = "mcpServer"
     MODEL_DEPLOYMENT = "modelDeployment"
     PRODUCT = "product"
+    # One model a model pool offers. Its scope is the pool (ADR 0024).
+    POOL_MODEL = "poolModel"
 
 
 class EntitlementSubject(MosaicModel):
@@ -1594,7 +1596,8 @@ class EntitlementResource(MosaicModel):
 
     ``modelApi`` and ``mcpServer`` name desired-state records that carry their own gateway.
     ``product`` and ``modelDeployment`` name observed records, which are scoped to the gateway or
-    model endpoint MOSAIC read them from, so those require ``scope_id``.
+    model endpoint MOSAIC read them from, so those require ``scope_id``. ``poolModel`` names one
+    model in a model pool, and its ``scope_id`` names the pool.
     """
 
     kind: EntitlementResourceKind
@@ -1608,6 +1611,8 @@ class EntitlementResource(MosaicModel):
                 f"A {self.kind} entitlement needs scopeId naming the gateway or model endpoint "
                 "it was observed on"
             )
+        if self.kind == "poolModel" and not self.scope_id:
+            raise ValueError("A poolModel entitlement needs scopeId naming its model pool")
         return self
 
 
@@ -1956,6 +1961,8 @@ class AdminAccessRequestListItem(AccessRequest):
 class CatalogEntryKind(StrEnum):
     MODEL_API = "modelApi"
     MCP_SERVER = "mcpServer"
+    # One model a model pool offers (ADR 0024). The pool's endpoints and members aren't shown.
+    POOL_MODEL = "poolModel"
 
 
 class CatalogEntry(MosaicModel):
@@ -1963,11 +1970,14 @@ class CatalogEntry(MosaicModel):
 
     Deliberately narrower than the administrator's view of the same record: a portal user has no
     business seeing gateway internals, policy state, or how the resource was detected. A model API
-    or MCP server MOSAIC publishes is an entry only while its API is in API Management.
+    or MCP server MOSAIC publishes is an entry only while its API is in API Management. A pool
+    model is an entry only while its pool serves it.
     """
 
     kind: CatalogEntryKind
     id: str
+    # The pool, for a pool model: a request for it names the pool as its resource's scope.
+    scope_id: str | None = None
     display_name: str
     summary: str | None = None
     gateway_id: str
@@ -1983,6 +1993,10 @@ class CatalogEntry(MosaicModel):
     # when MOSAIC publishes the server and has applied its access, False for an adopted server or
     # a published one whose latest apply didn't finish. None for other kinds.
     enforced: bool | None = None
+    # Pool models only: the API the model is called with, such as ``openai-v1``, and its
+    # capacity, ``provisioned``, ``standard`` or ``mixed``, when the pool shows capacity.
+    api_style: str | None = None
+    capacity: str | None = None
 
 
 class PortalResolvedEntitlement(ResolvedEntitlement):

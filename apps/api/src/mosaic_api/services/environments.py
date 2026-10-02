@@ -569,6 +569,11 @@ class EnvironmentService:
             if change_by_gateway
             else {}
         )
+        model_pools = (
+            {item.id: item for item in await self._gateways.list_model_pools(tenant_id)}
+            if change_by_gateway
+            else {}
+        )
         product_names: dict[tuple[str, str], str] = {}
         for gateway_id in change_by_gateway:
             for product in await self._gateways.list_observed(
@@ -607,6 +612,13 @@ class EnvironmentService:
                 deployment_name = deployment_names.get((scope_id, resource.id))
                 if moved is not None and deployment_name is not None:
                     resource_name = f"{deployment_name} on {moved.resource.name}"
+            elif resource.kind == EntitlementResourceKind.POOL_MODEL:
+                model_pool = model_pools.get(scope_id)
+                pool_model = model_pool.pool_model(resource.id) if model_pool else None
+                if model_pool is not None:
+                    moved = change_by_gateway.get(model_pool.gateway_id)
+                    if pool_model is not None:
+                        resource_name = f"{pool_model.display_name} in {model_pool.display_name}"
             if moved is None:
                 continue
             affected.append(

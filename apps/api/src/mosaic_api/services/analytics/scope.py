@@ -54,6 +54,7 @@ _RESOURCE_LABELS = {
     EntitlementResourceKind.MCP_SERVER: "MCP server",
     EntitlementResourceKind.MODEL_DEPLOYMENT: "Model deployment",
     EntitlementResourceKind.PRODUCT: "Product",
+    EntitlementResourceKind.POOL_MODEL: "Pool model",
 }
 REMOVED_GATEWAY = "Removed gateway"
 UNKNOWN_CALLER = "Unknown caller"

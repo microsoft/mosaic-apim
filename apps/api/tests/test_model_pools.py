@@ -14,11 +14,13 @@ from mosaic_api.domain import (
     ApiShape,
     AuditEvent,
     EndpointAuthMode,
+    EntitlementSubject,
     Gateway,
     GatewayCreate,
     GatewayRuntimeAccess,
     GatewayUpdate,
     ManagementMode,
+    ModelAccessSettings,
     ModelEndpoint,
     ModelEndpointCapabilities,
     ModelProvider,
@@ -34,6 +36,7 @@ from mosaic_api.domain import (
     RuntimeAccessEvaluation,
     RuntimeAccessReason,
     deterministic_id,
+    general_cost_center_id,
     new_id,
 )
 from mosaic_api.errors import ConflictError, NotFoundError, ValidationError
@@ -49,6 +52,8 @@ from mosaic_api.model_pools import (
     ModelPoolCreate,
     ModelPoolType,
     ModelPoolUpdate,
+    PoolAccessGrant,
+    PoolAccessSnapshot,
     PoolMember,
     PoolModel,
     PoolSafeguard,
@@ -56,6 +61,7 @@ from mosaic_api.model_pools import (
     circuit_breaker,
     member_backend_name,
     model_pool_id,
+    pool_key_name,
     pool_model_id,
 )
 from mosaic_api.observed import ObservedModelDeployment
@@ -979,6 +985,45 @@ async def test_an_edit_after_planning_needs_a_new_plan(estate: Estate) -> None:
     with pytest.raises(ConflictError) as refused:
         await estate.service.apply(ACTOR, pool.id, plan.id)
     assert refused.value.details["reason"] == "stalePlan"
+
+
+async def test_a_model_with_applied_grants_cant_leave_the_pool(estate: Estate) -> None:
+    mini = _model(_member("aoai-east", "gpt-4o-mini"))
+    pool = await estate.create("OpenAI", _gpt4o("aoai-east"), mini)
+    await estate.publish(pool.id)
+    pool = await estate.pool(pool.id)
+    mini_id = pool_model_id(pool.id, "gpt-4o-mini")
+    subject = EntitlementSubject(kind="user", id="principal-ana")
+
+    async def applied(*, enabled: bool) -> None:
+        grant = PoolAccessGrant(
+            entitlement_id="entitlement-ana",
+            pool_model_id=mini_id,
+            subject=subject,
+            object_id="11111111-1111-1111-1111-111111111111",
+            display_name="Ana",
+            key_name=pool_key_name(TENANT, pool.id, subject.id, general_cost_center_id(TENANT)),
+            enabled=enabled,
+            intent_digest="digest",
+        )
+        snapshot = PoolAccessSnapshot(version=1, settings=ModelAccessSettings(), grants=[grant])
+        await estate.gateway_repository.save_model_pool(
+            pool.model_copy(update={"applied_access": snapshot}), _audit()
+        )
+
+    await applied(enabled=True)
+    with pytest.raises(ConflictError, match="gpt-4o-mini still has applied grants") as refused:
+        await estate.update(pool.id, models=[_gpt4o("aoai-east")])
+    assert refused.value.details == {"poolModelIds": [mini_id]}
+    assert [model.public_name for model in (await estate.pool(pool.id)).models] == [
+        "gpt-4o",
+        "gpt-4o-mini",
+    ]
+
+    # An applied revocation leaves the grant in the snapshot, disabled, and the model can go.
+    await applied(enabled=False)
+    updated = await estate.update(pool.id, models=[_gpt4o("aoai-east")])
+    assert [model.public_name for model in updated.models] == ["gpt-4o"]
 
 
 async def test_the_console_learns_which_saved_changes_the_gateway_does_not_run(

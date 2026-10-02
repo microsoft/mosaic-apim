@@ -450,6 +450,36 @@ def _check_linear(pool: ModelPool) -> None:
             )
 
 
+def _check_granted_models(previous: ModelPool, pool: ModelPool) -> None:
+    """Refuse to drop a model whose grants the gateway still enforces.
+
+    ADR 0024 has its grants revoked, and the revocation applied, before the model can leave the
+    pool, so a live grant never names a model the pool no longer has.
+    """
+
+    if previous.applied_access is None:
+        return
+    kept = {model.id for model in pool.models}
+    held = sorted(
+        {
+            grant.pool_model_id
+            for grant in previous.applied_access.grants
+            if grant.enabled and grant.pool_model_id not in kept
+        }
+    )
+    if held:
+        names = [
+            model.public_name if (model := previous.pool_model(model_id)) else model_id
+            for model_id in held
+        ]
+        verb = "has" if len(names) == 1 else "have"
+        raise ConflictError(
+            f"{', '.join(names)} still {verb} applied grants. Revoke them and apply the pool "
+            "before removing the model.",
+            details={"poolModelIds": held},
+        )
+
+
 def _desired(
     pool: ModelPool, gateway: Gateway, assessment: _Assessment, shape: str
 ) -> list[_Resource]:
@@ -792,7 +822,9 @@ class ModelPoolService:
             if (problem := _pool_type_problem(gateway, pool.pool_type)) is not None:
                 raise ValidationError(problem, details={"poolType": str(pool.pool_type)})
             if request.models is not None:
+                previous = pool
                 pool = await self._with_models(actor, pool, gateway, request.models)
+                _check_granted_models(previous, pool)
             _check_linear(pool)
             pool = pool.model_copy(
                 update={

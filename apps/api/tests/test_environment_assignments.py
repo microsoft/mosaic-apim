@@ -24,6 +24,13 @@ from mosaic_api.domain import (
 )
 from mosaic_api.environments import BlockedPublication
 from mosaic_api.main import create_app
+from mosaic_api.model_pools import (
+    ModelPool,
+    PoolModel,
+    backend_pool_name,
+    model_pool_id,
+    pool_model_id,
+)
 from mosaic_api.observed import ObservedModelDeployment, ObservedProduct
 from mosaic_api.repositories import InMemoryEntitlementRepository, InMemoryGatewayRepository
 from mosaic_api.services.environments import (
@@ -533,6 +540,66 @@ async def test_grant_acknowledgment_names_products_and_deployments(
         "grant-deployment": "gpt-4o on Endpoint endpoint-named",
     }
     assert details["principalCount"] == 1
+
+
+async def test_grant_acknowledgment_names_pool_models_with_their_pool(
+    assignment_client: TestClient,
+) -> None:
+    gateway = await _seed_gateway(assignment_client, "gateway-pool", environment="development")
+    gateways: InMemoryGatewayRepository = assignment_client.app.state.gateway_repository
+    entitlements: InMemoryEntitlementRepository = assignment_client.app.state.entitlement_repository
+    api_name = "mosaic-pool-anthropic"
+    pool_id = model_pool_id(TENANT, gateway.id, api_name)
+    model_id = pool_model_id(pool_id, "claude-opus-4-5")
+    await gateways.save_model_pool(
+        ModelPool(
+            id=pool_id,
+            tenant_id=TENANT,
+            gateway_id=gateway.id,
+            display_name="Anthropic",
+            vendor="Anthropic",
+            api_name=api_name,
+            api_path="mosaic/pool-anthropic",
+            fragment_name=api_name,
+            product_name=api_name,
+            subscription_name=api_name,
+            models=[
+                PoolModel(
+                    id=model_id,
+                    public_name="claude-opus-4-5",
+                    display_name="Claude Opus 4.5",
+                    backend_pool_name=backend_pool_name(api_name, model_id, "claude-opus-4-5"),
+                )
+            ],
+        ),
+        _audit("modelPool"),
+    )
+    await entitlements.save_entitlement(
+        Entitlement(
+            id="grant-pool-model",
+            tenant_id=TENANT,
+            subject=EntitlementSubject(kind="user", id="principal-1"),
+            resource=EntitlementResource(kind="poolModel", id=model_id, scope_id=pool_id),
+            enabled=True,
+        ),
+        _audit("entitlement"),
+    )
+
+    refused = assignment_client.post(
+        "/api/v1/environment-assignments",
+        json={
+            "assignments": [
+                {"resourceKind": "gateway", "resourceId": gateway.id, "environment": "production"}
+            ]
+        },
+    )
+
+    assert refused.status_code == 409, refused.text
+    details = refused.json()["details"]
+    assert details["reason"] == "grantsAcknowledgmentRequired"
+    assert [(grant["entitlementId"], grant["resourceName"]) for grant in details["grants"]] == [
+        ("grant-pool-model", "Claude Opus 4.5 in Anthropic")
+    ]
 
 
 async def test_catalog_edit_judges_applied_publications_under_their_locks(
