@@ -22,11 +22,17 @@ from mosaic_api.services.analytics.models import (
 from mosaic_api.services.analytics.rows import entries, total, usage_values
 from mosaic_api.services.analytics.scope import GrantInfo, Name, Scope, grant_for
 from mosaic_api.services.analytics.views import Context, resolved_caller
-from mosaic_api.usage_telemetry import UsageMetrics, UsageSummary
+from mosaic_api.usage_telemetry import OnBehalfUnresolvedReason, UsageMetrics, UsageSummary
 
 NO_TOKEN = "Calls without a token"
 # Why MOSAIC couldn't use a model call's MCP call reference, in the order reports list them.
-ON_BEHALF_REASONS: tuple[str, ...] = ("malformed", "missing", "late", "caller", "unknown")
+ON_BEHALF_REASONS: tuple[OnBehalfUnresolvedReason, ...] = (
+    "malformed",
+    "missing",
+    "late",
+    "caller",
+    "unknown",
+)
 
 
 @dataclass
@@ -140,18 +146,18 @@ def _on_behalf_rows(
 def _on_behalf_unresolved(
     scope: Scope, summaries: Sequence[UsageSummary]
 ) -> list[AnalyticsOnBehalfUnresolved]:
-    by_reason: dict[str, UsageMetrics] = defaultdict(UsageMetrics)
+    by_reason: dict[OnBehalfUnresolvedReason, UsageMetrics] = defaultdict(UsageMetrics)
+    known: dict[str, OnBehalfUnresolvedReason] = {reason: reason for reason in ON_BEHALF_REASONS}
     for _, entry in entries(summaries, scope, "onBehalfUnresolved"):
-        by_reason[entry.key.rpartition("|")[2] or "unknown"].add(entry.metrics)
-    order = {reason: index for index, reason in enumerate(ON_BEHALF_REASONS)}
+        by_reason[known.get(entry.key.rpartition("|")[2], "unknown")].add(entry.metrics)
     return [
         AnalyticsOnBehalfUnresolved(
-            reason=reason, requests=metrics.requests, total_tokens=metrics.total_tokens
+            reason=reason,
+            requests=by_reason[reason].requests,
+            total_tokens=by_reason[reason].total_tokens,
         )
-        for reason, metrics in sorted(
-            by_reason.items(), key=lambda item: (order.get(item[0], len(order)), item[0])
-        )
-        if metrics.requests > 0
+        for reason in ON_BEHALF_REASONS
+        if by_reason[reason].requests > 0
     ]
 
 

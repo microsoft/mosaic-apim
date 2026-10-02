@@ -413,6 +413,13 @@ export function IdentityPage() {
       names.push(publication.displayName)
       map.set(publication.modelCallerId, names)
     }
+    // The same order on every refresh, whatever order the publications arrive in.
+    for (const [principalId, names] of map) {
+      map.set(
+        principalId,
+        [...new Set(names)].sort((left, right) => left.localeCompare(right, undefined, { sensitivity: 'base' })),
+      )
+    }
     return map
   }, [mcpPublications.data, mcpPublications.isSuccess])
   const filteredMemberships = useMemo(

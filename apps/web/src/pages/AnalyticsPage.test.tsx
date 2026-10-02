@@ -213,6 +213,17 @@ describe('AnalyticsPage', () => {
     expect(screen.getByText("MOSAIC couldn't attribute 4 model calls to a person: 1 with a malformed reference, 2 with no matching MCP call, 1 after the MCP call ended.")).toBeVisible()
   })
 
+  it('spans every column of the model use table when it has no rows', async () => {
+    api.getAnalyticsConsumers.mockResolvedValue({ ...consumersFixture, onBehalf: [], onBehalfUnresolved: [] })
+    renderPage('/analytics?tab=consumers')
+
+    const table = await screen.findByRole('table', { name: 'Model use through MCP servers' })
+    const columns = within(table).getAllByRole('columnheader').length
+    const empty = within(table).getByText('No model calls were made through MCP servers for these filters.').closest('td')
+    expect(empty).toHaveAttribute('colspan', String(columns))
+    expect(screen.queryByText(/couldn't attribute/)).not.toBeInTheDocument()
+  })
+
   it('exports model use through MCP servers from the Consumers tab', async () => {
     const user = userEvent.setup()
     renderPage('/analytics?tab=consumers')

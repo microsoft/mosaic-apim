@@ -19,6 +19,7 @@ from mosaic_api.domain import (
     QuotaPeriod,
 )
 from mosaic_api.services.usage import FreshnessStatus, Metric, UsageFreshness
+from mosaic_api.usage_telemetry import OnBehalfUnresolvedReason
 
 AnalyticsRange = Literal["24h", "7d", "30d", "90d", "12m", "custom"]
 Granularity = Literal["hour", "day", "month"]
@@ -356,11 +357,11 @@ class AnalyticsOnBehalfRow(AnalyticsUsage):
 class AnalyticsOnBehalfUnresolved(MosaicModel):
     """Model calls that named an MCP call MOSAIC couldn't attribute them through, by why.
 
-    ``reason`` is ``malformed``, ``missing``, ``late``, ``caller`` or ``unknown``. The calls stay
-    the application's own use, so they're counted here and nowhere else apart.
+    The calls stay the application's own use, so they're counted here and nowhere else apart. A
+    reason MOSAIC doesn't know is counted as ``unknown``.
     """
 
-    reason: str
+    reason: OnBehalfUnresolvedReason
     requests: int
     total_tokens: int
 

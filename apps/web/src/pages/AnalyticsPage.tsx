@@ -287,10 +287,10 @@ function reportEmpty(report: AnalyticsReport & { kpis?: AnalyticsKpis }) {
   return report.dataSource === 'notConfigured' || report.kpis?.requests === 0
 }
 
-function TableEmpty({ children }: { children: string }) {
+function TableEmpty({ children, colSpan = 8 }: { children: string; colSpan?: number }) {
   return (
     <tr>
-      <td colSpan={8}>
+      <td colSpan={colSpan}>
         <EmptyState title="No rows">{children}</EmptyState>
       </td>
     </tr>
@@ -556,7 +556,7 @@ function OnBehalfCard({ report, priced }: { report: AnalyticsConsumers; priced: 
         <table aria-label="Model use through MCP servers">
           <thead><tr><th>Person</th><th>MCP server</th><th>Application</th><th>Requests</th><th>Tokens</th><th>Share</th>{priced && <th>Cost</th>}</tr></thead>
           <tbody>
-            {rows.length === 0 ? <TableEmpty>No model calls were made through MCP servers for these filters.</TableEmpty> : rows.map((row) => (
+            {rows.length === 0 ? <TableEmpty colSpan={priced ? 7 : 6}>No model calls were made through MCP servers for these filters.</TableEmpty> : rows.map((row) => (
               <tr key={row.key}>
                 <td>{row.personLabel}<Text block size={200}>{row.personDetail ?? ''}</Text></td>
                 <td>{row.mcpLabel}<Text block size={200}>{row.gatewayName}</Text></td>

@@ -218,6 +218,27 @@ async def test_consumers_list_each_persons_model_use_through_mcp_servers(
     ]
 
 
+async def test_a_reason_mosaic_doesnt_know_counts_as_unknown(harness: Harness) -> None:
+    await rolled_up(harness)
+    summaries = harness.state.usage_rollup_repository._summaries
+    [unresolved] = [
+        summary
+        for summary in summaries.values()
+        if summary.dimension == "onBehalfUnresolved" and summary.period == "day"
+    ]
+    unresolved.entries.append(
+        unresolved.entries[0].model_copy(update={"key": "trace:k-assistant|from-the-future"})
+    )
+
+    report = harness.get("/api/v1/analytics/consumers", range="30d")
+
+    assert [(row["reason"], row["requests"]) for row in report["onBehalfUnresolved"]] == [
+        ("malformed", 1),
+        ("missing", 1),
+        ("unknown", 1),
+    ]
+
+
 async def test_model_use_through_mcp_servers_changes_no_other_figure(harness: Harness) -> None:
     await rolled_up(harness)
     reports = {

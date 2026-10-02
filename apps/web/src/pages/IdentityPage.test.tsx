@@ -173,15 +173,18 @@ describe('IdentityPage', () => {
   it('marks applications that MCP servers call models as', async () => {
     const user = userEvent.setup()
     mocks.mcpPublications = [
+      { id: 'mcp_pub_search', displayName: 'Contoso Search', modelCallerId: 'workload' },
       { id: 'mcp_pub_docs', displayName: 'Contoso Docs', modelCallerId: 'workload' },
     ]
 
     renderPage('/identity?tab=workloads')
 
     expect(await screen.findByRole('heading', { name: 'Applications and security groups' })).toBeVisible()
-    expect(screen.getAllByText('Calls models for Contoso Docs').length).toBeGreaterThan(0)
+    // Named in the same order whatever order the publications arrive in.
+    expect(screen.getAllByText('Calls models for Contoso Docs, Contoso Search').length).toBeGreaterThan(0)
     await user.click(principalRow(/Security Readers/))
-    expect(screen.queryByText('Calls models for Security Readers')).not.toBeInTheDocument()
+    // Only the application's own row keeps its badge; Security Readers' detail panel has none.
+    expect(screen.getAllByText('Calls models for Contoso Docs, Contoso Search')).toHaveLength(1)
   })
 
   it('opens Add person on directory search and switches to manual entry and back', async () => {
