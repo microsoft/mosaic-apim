@@ -4,6 +4,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
+import loganalytics_double
 import pytest
 from loganalytics_double import FakeLogs, GatewayCall
 from mosaic_api.domain import (
@@ -38,6 +39,9 @@ from mosaic_api.services.usage_rollup import (
 )
 from mosaic_api.usage_telemetry import (
     LATENCY_BUCKET_COUNT,
+    SummaryDimension,
+    SummaryPeriod,
+    UsageMetrics,
     UsageRollupState,
     iso_day,
     subscription_attribution_key,
@@ -217,6 +221,21 @@ class RollupHarness:
             if entry.key == key
         )
 
+    async def entries(
+        self, dimension: SummaryDimension, day: str, *, period: SummaryPeriod = "day"
+    ) -> dict[str, UsageMetrics]:
+        """Each entry's figures in one dimension's summaries for a day or month."""
+
+        summaries = await self.rollups.list_summaries(
+            TENANT,
+            period=period,
+            start=day,
+            end=day,
+            dimensions=[dimension],
+            gateway_ids=[GATEWAY],
+        )
+        return {entry.key: entry.metrics for summary in summaries for entry in summary.entries}
+
 
 @pytest.fixture
 def harness() -> RollupHarness:
@@ -268,6 +287,8 @@ def _call(
     prompt_tokens: int | None = 10,
     completion_tokens: int | None = 5,
     client_app: str = "",
+    model: str | None = "gpt-4o",
+    last_error_source: str = "",
 ) -> GatewayCall:
     day = NOW.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=age)
     return GatewayCall(
@@ -283,8 +304,28 @@ def _call(
         prompt_tokens=prompt_tokens,
         completion_tokens=completion_tokens,
         deployment="chat-prod",
-        model="gpt-4o",
+        model=model,
         client_app=client_app,
+        last_error_source=last_error_source,
+    )
+
+
+# Where the gateway log says a token limit refused a call before it reached the model.
+TOKEN_LIMIT = "token-limit-process-request-handler"
+
+
+def _refused(*, second: int, response_code: int = 429, age: int = 0) -> GatewayCall:
+    """A call the gateway's token limit refused. Its LLM log row holds the prompt's estimate."""
+
+    return _call(
+        age=age,
+        second=second,
+        response_code=response_code,
+        backend_code=0,
+        prompt_tokens=11,
+        completion_tokens=0,
+        model=None,
+        last_error_source=TOKEN_LIMIT,
     )
 
 
@@ -819,6 +860,150 @@ async def test_backend_429s_are_separate_from_gateway_throttling(
     assert entry.metrics.requests == 2
     assert entry.metrics.backend_throttled == 1
     assert entry.metrics.throttled == 1
+
+
+async def test_a_call_the_gateway_refused_counts_as_a_request_but_never_its_tokens(
+    harness: RollupHarness,
+) -> None:
+    await harness.seed()
+    # One call the model served, two the token limit refused with 429, and one it refused for
+    # quota with 403. The LLM log holds the gateway's 11-token prompt estimate for each refusal.
+    harness.logs.calls = [
+        _call(),
+        _refused(second=1),
+        _refused(second=2),
+        _refused(second=3, response_code=403),
+    ]
+
+    await harness.run_until_done()
+
+    day = iso_day(TODAY)
+    [total] = (await harness.entries("total", day)).values()
+    assert (total.requests, total.ok, total.throttled, total.quota) == (4, 1, 2, 1)
+    assert (total.prompt_tokens, total.completion_tokens, total.total_tokens) == (10, 5, 15)
+    assert total.metered_requests == 1
+    for dimension, key in (
+        ("api", "chat"),
+        ("deployment", "endpoint-chat/chat-prod"),
+        ("grant", "trace:k-alice"),
+        ("grantCaller", f"trace:k-alice|{ALICE}"),
+        ("caller", ALICE),
+    ):
+        metrics = (await harness.entries(dimension, day))[key]
+        assert (metrics.requests, metrics.throttled, metrics.quota) == (4, 2, 1), dimension
+        assert (metrics.prompt_tokens, metrics.total_tokens) == (10, 15), dimension
+    # Only the served call has tokens, and its log named the model.
+    models = await harness.entries("model", day)
+    assert {key: (item.requests, item.total_tokens) for key, item in models.items()} == {
+        "gpt-4o|chat": (1, 15)
+    }
+    # A busiest minute counts the served call's tokens, for the grant and for the deployment.
+    [fact] = await harness.rollups.list_facts(TENANT, start_day=day, end_day=day)
+    assert (fact.metrics.total_tokens, fact.metrics.peak_minute_tokens) == (15, 15)
+    assert fact.metrics.peak_minute_requests == 4
+    assert sum(item.metrics.total_tokens for item in fact.breakdown) == 15
+    deployment = (await harness.entries("deployment", day))["endpoint-chat/chat-prod"]
+    assert (deployment.peak_minute_tokens, deployment.peak_minute_requests) == (15, 1)
+    month = await harness.entries("total", iso_day(TODAY.replace(day=1)), period="month")
+    assert (month[""].requests, month[""].throttled, month[""].total_tokens) == (4, 2, 15)
+
+
+@pytest.mark.parametrize(
+    ("code", "status"), [(429, "throttled"), (400, "client_errors"), (503, "server_errors")]
+)
+async def test_a_call_the_model_deployment_refused_or_failed_counts_no_tokens(
+    harness: RollupHarness, code: int, status: str
+) -> None:
+    await harness.seed()
+    # The deployment answered with an error, which the gateway passed on. Azure bills none of it,
+    # whatever the LLM log estimated for the prompt.
+    harness.logs.calls = [
+        _call(),
+        _call(
+            second=1,
+            response_code=code,
+            backend_code=code,
+            prompt_tokens=11,
+            completion_tokens=0,
+            model=None,
+            last_error_source="forward-request",
+        ),
+    ]
+
+    await harness.run_until_done()
+
+    [total] = (await harness.entries("total", iso_day(TODAY))).values()
+    assert (total.requests, getattr(total, status), total.backend_throttled) == (
+        2,
+        1,
+        1 if code == 429 else 0,
+    )
+    assert (total.total_tokens, total.metered_requests) == (15, 1)
+
+
+async def test_tokens_whose_log_names_no_model_still_count_in_every_breakdown(
+    harness: RollupHarness,
+) -> None:
+    await harness.seed()
+    harness.logs.calls = [
+        _call(),
+        # The model served these two, but their LLM log named no model.
+        _call(hour=11, prompt_tokens=20, completion_tokens=10, model=None),
+        _call(
+            hour=11,
+            grant="k-analysts",
+            member=CAROL,
+            prompt_tokens=4,
+            completion_tokens=2,
+            model=None,
+        ),
+        _refused(second=1),
+    ]
+
+    await harness.run_until_done()
+
+    day = iso_day(TODAY)
+    models = await harness.entries("model", day)
+    assert {key: (item.requests, item.total_tokens) for key, item in models.items()} == {
+        "gpt-4o|chat": (1, 15),
+        "|chat": (2, 36),
+    }
+    for dimension in ("total", "api", "deployment", "model", "grant", "grantCaller", "caller"):
+        found = (await harness.entries(dimension, day)).values()
+        assert sum(item.prompt_tokens for item in found) == 34, dimension
+        assert sum(item.completion_tokens for item in found) == 17, dimension
+        assert sum(item.total_tokens for item in found) == 51, dimension
+    facts = await harness.rollups.list_facts(TENANT, start_day=day, end_day=day)
+    assert sum(item.metrics.total_tokens for fact in facts for item in fact.breakdown) == 51
+    month = await harness.entries("model", iso_day(TODAY.replace(day=1)), period="month")
+    assert sum(item.total_tokens for item in month.values()) == 51
+
+
+async def test_a_backfill_takes_refused_calls_tokens_out_of_days_already_rolled_up(
+    harness: RollupHarness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await harness.seed()
+    harness.logs.calls = [_call(age=3), _refused(age=3, second=1)]
+    # The day was rolled up while the queries still read every admitted call's LLM log row.
+    monkeypatch.setattr(loganalytics_double, "served_only", lambda _query: frozenset())
+    await harness.run_until_done()
+    day = iso_day(TODAY - timedelta(days=3))
+    month = iso_day(TODAY.replace(day=1))
+    assert (await harness.entries("total", day))[""].total_tokens == 26
+    monkeypatch.undo()
+
+    # A cycle reads only today and yesterday again, so the day keeps its figures until a backfill.
+    await harness.service.run_cycle()
+    assert (await harness.entries("total", day))[""].total_tokens == 26
+
+    await harness.service.request_backfill(Actor(object_id=ALICE, tenant_id=TENANT), GATEWAY, 7)
+    await harness.run_until_done()
+
+    # The calls are all still there, so the re-read replaces the day and its month.
+    [total] = (await harness.entries("total", day)).values()
+    assert (total.requests, total.throttled, total.total_tokens) == (2, 1, 15)
+    [whole] = (await harness.entries("total", month, period="month")).values()
+    assert (whole.requests, whole.throttled, whole.total_tokens) == (2, 1, 15)
 
 
 async def test_latency_buckets_are_folded_from_gateway_rows(

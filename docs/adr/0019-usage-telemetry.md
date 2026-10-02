@@ -245,3 +245,41 @@ that also has security-group grants, so those calls fail the same way, for model
   fails its direct-grant calls.
 - **Confirm it live.** Once a publication is applied again, a key call and a direct-grant call
   should succeed, and Application Insights should show `-` for the property the call lacks.
+
+## Amendment 2026-10-02: Tokens count only for calls the model served
+
+On a dev deployment, the gateway refused two calls over a grant's limit of 100 tokens a minute,
+with 429, before they reached the model. The LLM log still had a row for each, holding the
+gateway's estimate of its prompt and no model name. The rollups counted those tokens for the API,
+the grant, and the total, and Cost priced them, though Azure bills nothing for a call that never
+reached the model. The model breakdown left them out, because it kept only calls the LLM log named a
+model for, so cost by model added up to less than cost by API.
+
+- **A call's tokens count only when the model deployment served it**, which is when the gateway
+  log records a `BackendResponseCode` from 200 to 299. The queries read no tokens from the LLM log
+  for any other call: one the gateway refused with 429 or 403, one with no `BackendResponseCode`,
+  and one the deployment answered with its own 429 or another error. Azure doesn't bill a call that
+  never reached the model, or one the deployment throttled, and an error response carries no
+  usage, so the LLM log can hold at most the gateway's estimate for one. Whether Azure bills the
+  prompt of a call a content filter blocked with 400 is still to be confirmed. Counting only 2xx
+  keeps the rule simple, and MOSAIC never prices an estimate for a call that produced nothing.
+- **Requests and outcomes don't change.** Every admitted call still counts as a request with its
+  outcome: throttled, quota refused, a client or server error, and the deployment's own 429s, which
+  Reliability, Limits, and the portal read. A busiest minute counts only served calls' tokens, so a
+  refused call no longer lifts a grant's peak above the limit that refused it.
+- **Every call with tokens counts under a model.** The rollups keep a call whose LLM log named no
+  model under an empty name. Reports name it after the model MOSAIC observed the API's deployment
+  serving, else the deployment's name, else **Unknown model**, as a cost center's model breakdown,
+  rebuilt from its grants, already did. So cost by model and cost by API each add up to the total,
+  apart from reserved capacity nobody called, and cost by cost center does too, apart from
+  unattributed calls as well.
+- **Figures already rolled up are corrected when their day is read again.** Each cycle reads today
+  and yesterday again, so those days are corrected within one interval of the upgrade. A
+  **Backfill** of the affected days, from the gateway's **Telemetry** section or
+  `POST /gateways/{id}/telemetry/backfill`, corrects older days while the workspace still holds
+  their logs. A re-read finds the same calls, so it replaces the day and folds its month again. A
+  day whose logs the workspace has partly or wholly deleted keeps its figures, because a re-read
+  that finds fewer calls never lowers a day.
+- **Confirm it live.** What the LLM log holds for a call the deployment throttled or failed, and
+  for a prompt a content filter blocked with 400, is to be checked on a real gateway. Neither
+  counts tokens either way.

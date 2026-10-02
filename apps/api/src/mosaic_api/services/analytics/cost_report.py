@@ -23,7 +23,7 @@ from mosaic_api.services.analytics.models import (
     AnalyticsSpend,
 )
 from mosaic_api.services.analytics.rows import bucket_points, entries, fold
-from mosaic_api.services.analytics.scope import GrantInfo, Scope
+from mosaic_api.services.analytics.scope import UNKNOWN_MODEL, GrantInfo, Scope
 from mosaic_api.services.analytics.views import (
     Context,
     api_costs,
@@ -166,8 +166,8 @@ def cost_report(
 
     by_model: dict[str, tuple[str, str | None, str | None, UsageMetrics, float | None]] = {}
     for item, entry in entries(models, scope, "model"):
-        model, _, api_name = entry.key.rpartition("|")
-        label = model or "unknown"
+        api_name = entry.key.rpartition("|")[2]
+        label = scope.model_label(item.gateway_id, entry.key)
         current = by_model.get(label) or (label, None, None, UsageMetrics(), None)
         current[3].add(entry.metrics)
         by_model[label] = (
@@ -403,7 +403,7 @@ def chargeback_rows(
         cost_center: CostCenterRef | None = None,
     ) -> None:
         facts = costs.pricer.facts_for(key)
-        model = (facts.model if facts else None) or "Unknown model"
+        model = (facts.model if facts else None) or UNKNOWN_MODEL
         deployment = facts.deployment_name if facts else None
         endpoint = facts.endpoint_name if facts else None
         code = cost_center.code if cost_center else None

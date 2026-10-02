@@ -250,7 +250,10 @@ MOSAIC holds, because the workspace has since deleted some of its logs, MOSAIC k
 Otherwise the re-read replaces the day. Monthly totals are never lowered either. This makes a
 backfill safe to run at any time, and useful after a fix. For example, once a grant's subscription
 is recorded, a backfill links the calls its key made before, which the **Unattributed** tab listed
-under **Unknown key**. Calls linked by their trace don't need a backfill.
+under **Unknown key**. Calls linked by their trace don't need a backfill. Days rolled up before
+MOSAIC stopped counting tokens for calls the model never served keep those tokens until they're
+read again: today and yesterday at the next rollup, and older days with a backfill, while the
+workspace still holds their logs.
 
 If a query fails, MOSAIC stops that gateway's cycle, records the error, and tries again at the next
 interval.
@@ -321,6 +324,19 @@ to tell them apart.
 **Tokens** come from the LLM log: prompt, completion, and total tokens, counted once per call even
 when a streamed call spans several rows. MCP servers use no tokens. A call cut off mid-stream may
 have no token count, or a low one.
+
+Only a call the model deployment served, with a status from 200 to 299, has tokens. A call the
+gateway refused for a rate or token limit or a quota, or that the deployment throttled or failed
+itself, counts as a request with its outcome, but with no tokens and no cost, though the LLM log
+keeps the gateway's estimate of a refused call's prompt. So a grant's busiest minute counts only
+the tokens its limits let through. Azure doesn't bill a call that never reached the model, or one
+the deployment throttled. Whether it bills the prompt of a call a content filter blocked with 400
+is still to be confirmed, and MOSAIC counts no tokens for that call either way.
+
+**Models** are the ones the LLM log names. A call the model served whose LLM log names none still
+counts under a model: the one MOSAIC observed the API's deployment serving, or else the deployment's
+name. For an API MOSAIC only adopted, whose deployment it doesn't know, that's **Unknown model**.
+So the models add up to the same tokens as the APIs.
 
 **Latency** is the gateway's total time for a call, sorted into buckets: under 100, 250, and 500
 milliseconds, under 1, 2, 5, 10, 30, and 60 seconds, and longer. P50, P95, and P99 are estimated
@@ -438,8 +454,11 @@ governed call on a gateway whose list of blocked cost centers MOSAIC didn't writ
 Usage is priced from MOSAIC's price list, at list price, by the day, each time a report is read.
 The Cost tab shows the total, the trend, cost by model, deployment, caller, and API, spend this
 month, and a month-end forecast. Usage MOSAIC can't price shows **No price**, never $0, and each
-report counts what it left out. [Pricing](pricing.md) explains where prices come from, how each
-deployment finds its price, provisioned throughput, and the chargeback export.
+report counts what it left out. Only calls the model served have tokens, so only they cost
+anything. Cost by model and cost by API each add up to the total, apart from reserved capacity
+nobody called, and cost by cost center does too, apart from unattributed calls as well.
+[Pricing](pricing.md) explains where prices come from, how each deployment finds its price,
+provisioned throughput, and the chargeback export.
 
 ## Privacy and cost
 
@@ -497,12 +516,17 @@ ApiManagementGatewayLogs
     by ApiId
 ```
 
-This one totals each model deployment's tokens, one row per call, as MOSAIC does:
+This one totals each model deployment's tokens, one row per call it served, as MOSAIC does. Calls
+the gateway refused have LLM log rows too, so it keeps only calls with a 2xx `BackendResponseCode`:
 
 ```kusto
-ApiManagementGatewayLlmLog
-| where TimeGenerated > ago(1h)
-| summarize tokens = max(TotalTokens) by CorrelationId, ModelName, DeploymentName
+ApiManagementGatewayLogs
+| where TimeGenerated > ago(1h) and BackendResponseCode between (200 .. 299)
+| join kind=inner (
+    ApiManagementGatewayLlmLog
+    | where TimeGenerated > ago(1h)
+    | summarize tokens = max(TotalTokens) by CorrelationId, ModelName, DeploymentName
+  ) on CorrelationId
 | summarize calls = count(), tokens = sum(tokens) by ModelName, DeploymentName
 ```
 
