@@ -8,6 +8,7 @@ import pytest
 from apim_double import RESOURCE_ID
 from azure.core.credentials import AccessToken
 from azure.core.exceptions import ClientAuthenticationError
+from loganalytics_double import served_only
 from mosaic_api.errors import UpstreamNotFoundError, ValidationError
 from mosaic_api.integrations.loganalytics import (
     LogAnalyticsClient,
@@ -192,6 +193,61 @@ def test_deployment_peaks_query_sorts_mapping_and_keeps_keys_in_dynamic_literal(
     assert query == deployment_peaks_query(
         WINDOW, {"chat-api": "west", "Orders": "aoai:/east/gpt-4o"}
     )
+
+
+# What every query that sums tokens has to do with a call's LLM log row before it sums anything.
+SERVED = (
+    "| extend served = isnotnull(BackendResponseCode)\n"
+    "    and BackendResponseCode between (200 .. 299)\n"
+)
+GATED = (
+    "promptTokens = iff(served, promptTokens, long(null))",
+    "completionTokens = iff(served, completionTokens, long(null))",
+    "totalTokens = iff(served, totalTokens, long(null))",
+)
+TOKEN_QUERIES = {
+    "calls": (calls_query(WINDOW, ["chat-api"]), "| summarize requests = count()"),
+    "peaks": (peaks_query(WINDOW, ["chat-api"]), "| summarize tokens = sum(totalTokens)"),
+    "deploymentPeaks": (
+        deployment_peaks_query(WINDOW, {"chat-api": "west"}),
+        "| summarize tokens = sum(totalTokens)",
+    ),
+}
+
+
+@pytest.mark.parametrize("kind", sorted(TOKEN_QUERIES))
+def test_queries_read_tokens_only_for_calls_the_model_deployment_served(kind: str) -> None:
+    query, summary = TOKEN_QUERIES[kind]
+
+    joined = query.index("| join kind=leftouter llmRows on CorrelationId\n")
+    served = query.index(SERVED)
+    assert joined < served < query.index(summary)
+    for column in GATED:
+        assert served < query.index(column) < query.index(summary)
+    # The double that answers these queries in tests reads the same rule from them.
+    assert served_only(query) == {"promptTokens", "completionTokens", "totalTokens"}
+
+
+def test_calls_query_still_counts_every_admitted_call_and_its_status() -> None:
+    query = calls_query(WINDOW, ["chat-api"])
+    summary = query[query.index("| summarize requests = count()") :]
+
+    # Requests and statuses come from the gateway log alone, whatever the model did.
+    for count in (
+        'throttled = countif(status == "throttled")',
+        'quota = countif(status == "quota")',
+        "backendThrottled = countif(BackendResponseCode == 429)",
+        # A call counts as metered only when its tokens are read, so only when it was served.
+        "metered = countif(isnotnull(totalTokens))",
+    ):
+        assert count in summary
+    assert "served" not in summary
+
+
+def test_queries_that_sum_no_tokens_read_no_llm_log() -> None:
+    for query in (denials_query(WINDOW, ["chat-api"]), probe_query()):
+        assert served_only(query) == frozenset()
+        assert "llmRows" not in query
 
 
 @pytest.mark.parametrize(

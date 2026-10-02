@@ -179,6 +179,17 @@ def call_metrics(row: Row) -> UsageMetrics:
     )
 
 
+def _carries_tokens(metrics: UsageMetrics) -> bool:
+    return any(
+        (
+            metrics.metered_requests,
+            metrics.prompt_tokens,
+            metrics.completion_tokens,
+            metrics.total_tokens,
+        )
+    )
+
+
 def _add_hour(hours: dict[int, UsageHour], hour: int, metrics: UsageMetrics) -> None:
     if not 0 <= hour <= 23:
         return
@@ -324,8 +335,10 @@ class DayFold:
             deployment_key = known.deployment_key if known else None
             if deployment_key:
                 self._entry("deployment", deployment_key).metrics.add(metrics)
-            if model:
-                self._entry("model", f"{model.casefold()}|{api}").metrics.add(metrics)
+            if model or _carries_tokens(metrics):
+                # Calls whose LLM log named no model are kept under none, so the model breakdown
+                # still adds up to the total. Reports name the model MOSAIC knows for the API.
+                self._entry("model", f"{(model or '').casefold()}|{api}").metrics.add(metrics)
 
     def add_peaks(self, rows: Iterable[Row]) -> None:
         for row in rows:

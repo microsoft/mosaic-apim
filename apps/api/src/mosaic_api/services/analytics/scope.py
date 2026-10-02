@@ -58,6 +58,7 @@ _RESOURCE_LABELS = {
 REMOVED_GATEWAY = "Removed gateway"
 UNKNOWN_CALLER = "Unknown caller"
 UNKNOWN_APPLICATION = "Unknown application"
+UNKNOWN_MODEL = "Unknown model"
 UNCLASSIFIED = "Unclassified"
 
 
@@ -210,6 +211,9 @@ class Scope:
     directory: dict[str, DirectoryObject] = field(default_factory=dict)
     # Every cost center that exists now, by ID, for naming grants by their current name.
     cost_centers: dict[str, CostCenterRef] = field(default_factory=dict)
+    # The model MOSAIC knows each model API calls, by gateway ID and API name, for naming calls
+    # whose LLM log named none. Filled only for the APIs a report has such calls for.
+    models: dict[tuple[str, str], str] = field(default_factory=dict)
 
     # -- which gateways count ---------------------------------------------------------------
 
@@ -342,6 +346,16 @@ class Scope:
     def api_label(self, gateway_id: str, api_name: str) -> str:
         api = self.apis.get((gateway_id, api_name))
         return api.display_name if api else api_name
+
+    def model_label(self, gateway_id: str, key: str) -> str:
+        """The model a model summary entry counts.
+
+        That's the model the LLM log named, else the one MOSAIC knows the entry's API calls, so
+        calls whose log named none still count under a model.
+        """
+
+        model, _, api_name = key.rpartition("|")
+        return model or self.models.get((gateway_id, api_name)) or UNKNOWN_MODEL
 
     def caller(self, object_id: str | None) -> Name:
         if not object_id:

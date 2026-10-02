@@ -197,3 +197,17 @@ real deployment, confirm:
 - that a deployment's `systemData.createdAt` is the day its PTUs started billing;
 - whether `ApiManagementGatewayLlmLog` can report cached prompt tokens, so they could be priced at
   their own rate.
+
+## Amendment 2026-10-02: Only calls the model served cost anything
+
+Cost priced the gateway's estimate of the prompt for calls it refused before they reached the
+model, because the rollups counted it as tokens. Azure bills nothing for those calls.
+[ADR 0019's amendment of the same day](0019-usage-telemetry.md#amendment-2026-10-02-tokens-count-only-for-calls-the-model-served)
+counts tokens only for calls the model deployment answered with a 2xx status.
+
+- **Only those calls are priced.** A call the gateway refused, or the deployment throttled or
+  failed, has no tokens, so it has no cost, and it isn't counted as usage with no price either.
+- **Cost by model adds up.** A call whose LLM log named no model is priced like any other call to
+  its API, and counted under the model MOSAIC knows the API's deployment serves, or under
+  **Unknown model**. Cost by model and cost by API each add up to the total, apart from reserved
+  capacity nobody called.

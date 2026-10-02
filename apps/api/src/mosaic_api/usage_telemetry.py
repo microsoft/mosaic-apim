@@ -66,7 +66,8 @@ SummaryPeriod = Literal["day", "month"]
 # - `clientApp`: `{clientApp}|{api}`, the client application ID the attribution trace recorded;
 # - `api`: the API Management API name;
 # - `deployment`: `{modelEndpointId}/{deploymentName}`, for published model APIs;
-# - `model`: `{model}|{api}`, the model name the LLM log reported, lowercased;
+# - `model`: `{model}|{api}`, the model name the LLM log reported, lowercased. Calls with token
+#   counts whose LLM log named no model have an empty name, which reports resolve;
 # - `denial`: `{reason}|{caller}|{clientApp}|{api}` for refused calls;
 # - `unattributed`: `{api}|{subscription}` for admitted calls MOSAIC could not link.
 SummaryDimension = Literal[
@@ -111,11 +112,12 @@ class UsageMetrics(MosaicModel):
     """
 
     requests: int = 0
+    # Only calls the model deployment served, with a 2xx status, carry tokens.
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
-    # Calls whose LLM log carried token counts. MCP calls, and calls that failed before reaching
-    # a model, carry none.
+    # Calls the model deployment served whose LLM log carried token counts. MCP calls, and calls
+    # the gateway refused or the deployment throttled or failed, carry none.
     metered_requests: int = 0
     ok: int = 0
     throttled: int = 0

@@ -17,6 +17,9 @@ MOSAIC multiplies the usage it measures by a price list. Every cost is:
 - **Null when MOSAIC can't price it**, shown as **No price**, never as $0. Each report counts the
   tokens, requests, and items it left out, and the **Unpriced deployments** tab says why each one
   has no price.
+- **Only for calls the model served.** A call the gateway refused for a limit or a quota, or that
+  the deployment throttled or failed itself, has no tokens, so it costs nothing. Azure doesn't
+  bill it either. [Usage analytics](usage-analytics.md#calls) says what counts.
 
 The rollups don't separate cached prompt tokens from the rest, so every prompt token is priced at
 the full input price. Cost is shown for whole days only, so the **Last 24 hours** range shows none.
@@ -178,7 +181,9 @@ Utilization is blank for a model Learn has no figures for.
 - **Analytics > Cost** shows the total and trend for the chosen range, cost by model, deployment,
   caller, and API, and this month's spend and forecast. **Cost by consumer** ranks the people and
   applications that called, so a security group's calls count once, under its members. The other
-  tabs add a cost column where usage has one.
+  tabs add a cost column where usage has one. A call whose LLM log named no model counts under the
+  model MOSAIC knows its deployment serves, so cost by model adds up to the same total as cost by
+  API.
 - **Spend this month** is the calendar month so far, in UTC. The **Month-end forecast**, marked
   **Projected**, is pay-as-you-go spend so far, times the days in the month, divided by the days
   MOSAIC has figures for, to the hour, plus each provisioned deployment's whole month, from the

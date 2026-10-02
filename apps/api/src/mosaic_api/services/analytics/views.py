@@ -1,7 +1,7 @@
 """The overview, model, reliability and unattributed reports, built from loaded summaries."""
 
 from collections import defaultdict
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from typing import Any
@@ -53,6 +53,7 @@ from mosaic_api.services.analytics.scope import Scope
 from mosaic_api.services.analytics.window import Coverage, Window
 from mosaic_api.usage_telemetry import (
     LATENCY_BUCKETS_MS,
+    RolledUpApi,
     UsageMetrics,
     UsageSummary,
     latency_percentile,
@@ -92,6 +93,20 @@ class DeploymentInfo:
         ):
             return self.sku_capacity * 1000
         return None
+
+
+def deployment_model(api: RolledUpApi | None, observed: Mapping[str, DeploymentInfo]) -> str | None:
+    """The model MOSAIC knows a model API calls: its deployment's model, or the deployment.
+
+    Lowercased, as the model breakdown keeps the models the LLM log names.
+    """
+
+    if api is None or api.kind != "model":
+        return None
+    key = api.deployment_key
+    info = observed.get(key) if key else None
+    name = (info.model_name if info else None) or api.deployment_name
+    return name.casefold() if name else None
 
 
 @dataclass
@@ -250,8 +265,8 @@ def overview(
     model_costs: dict[str, float | None] = {}
     series: dict[str, dict[int, int]] = defaultdict(dict)
     for summary, entry in entries(models, scope, "model"):
-        model, _, api_name = entry.key.rpartition("|")
-        model = model or "unknown"
+        api_name = entry.key.rpartition("|")[2]
+        model = scope.model_label(summary.gateway_id, entry.key)
         by_model[model].add(entry.metrics)
         if priced is not None:
             model_costs[model] = add_cost(
@@ -429,9 +444,8 @@ def api_rows(
 
     served: dict[tuple[str, str], set[str]] = defaultdict(set)
     for summary, entry in entries(models or [], scope, "model"):
-        model, _, name = entry.key.rpartition("|")
-        if model:
-            served[(summary.gateway_id, name)].add(model)
+        name = entry.key.rpartition("|")[2]
+        served[(summary.gateway_id, name)].add(scope.model_label(summary.gateway_id, entry.key))
     wanted = dict(metrics_by_api)
     for gateway in scope.gateways.values():
         for api in scope.governed.get(gateway.id, []):
@@ -511,13 +525,13 @@ def models_report(
     model_costs: dict[str, float | None] = {}
     model_apis: dict[str, set[tuple[str, str]]] = defaultdict(set)
     for summary, entry in entries(models, scope, "model"):
-        model, _, name = entry.key.rpartition("|")
-        by_model[model or "unknown"].add(entry.metrics)
-        model_apis[model or "unknown"].add((summary.gateway_id, name))
+        name = entry.key.rpartition("|")[2]
+        model = scope.model_label(summary.gateway_id, entry.key)
+        by_model[model].add(entry.metrics)
+        model_apis[model].add((summary.gateway_id, name))
         if costs is not None:
-            model_costs[model or "unknown"] = add_cost(
-                model_costs.get(model or "unknown"),
-                costs.summary_cost(summary, name, entry.metrics),
+            model_costs[model] = add_cost(
+                model_costs.get(model), costs.summary_cost(summary, name, entry.metrics)
             )
     model_total = total(by_model.values())
     model_rows = [

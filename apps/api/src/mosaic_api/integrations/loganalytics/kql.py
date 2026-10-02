@@ -136,6 +136,18 @@ def _llm_rows(window: QueryWindow) -> str:
 """
 
 
+# A call uses tokens only when the model deployment answers it with a 2xx status. The LLM log also
+# has a row for a call the gateway refused, holding the gateway's estimate of its prompt, and one
+# for a call the deployment throttled or failed, whose usage Azure doesn't bill. So a call's token
+# counts are read only when the deployment served it. Every other call still counts as a request,
+# with its status. See ADR 0019.
+_SERVED_TOKENS = """| extend served = isnotnull(BackendResponseCode)
+    and BackendResponseCode between (200 .. 299)
+| extend promptTokens = iff(served, promptTokens, long(null)),
+    completionTokens = iff(served, completionTokens, long(null)),
+    totalTokens = iff(served, totalTokens, long(null))
+"""
+
 _ATTRIBUTION_KEYS = """| extend v = extract(@"(?:^| )v=([^ ]*)", 1, attribution),
     g = tolower(extract(@"(?:^| )g=([^ ]*)", 1, attribution)),
     m = tolower(extract(@"(?:^| )m=([^ ]*)", 1, attribution)),
@@ -147,7 +159,8 @@ def calls_query(window: QueryWindow, apis: Iterable[str]) -> str:
     """Admitted calls by hour, trace keys, subscription, API and model deployment.
 
     Refused calls are left to :func:`denials_query`. 429 is a rate limit, and a 403 raised by a
-    token-limit or quota policy is a spent quota.
+    token-limit or quota policy is a spent quota. Tokens count only for calls the model deployment
+    served.
     """
 
     return (
@@ -156,7 +169,7 @@ def calls_query(window: QueryWindow, apis: Iterable[str]) -> str:
         + f"""gatewayRows
 | where isempty(reason)
 | join kind=leftouter llmRows on CorrelationId
-{_ATTRIBUTION_KEYS}| extend status = case(
+{_SERVED_TOKENS}{_ATTRIBUTION_KEYS}| extend status = case(
     ResponseCode == 429, "throttled",
     ResponseCode == 403 and (LastErrorSource contains "token-limit"
         or LastErrorSource contains "quota"), "quota",
@@ -194,7 +207,7 @@ def peaks_query(window: QueryWindow, apis: Iterable[str]) -> str:
         + f"""gatewayRows
 | where isempty(reason)
 | join kind=leftouter llmRows on CorrelationId
-{_ATTRIBUTION_KEYS}| extend link = case(
+{_SERVED_TOKENS}{_ATTRIBUTION_KEYS}| extend link = case(
     v == "1" and isnotempty(g), strcat("t:", g, "|", m),
     isnotempty(subscription), strcat("s:", subscription),
     "")
@@ -211,7 +224,7 @@ def deployment_peaks_query(window: QueryWindow, deployments: Mapping[str, str]) 
     """Each hour's busiest minute per model deployment, across every caller.
 
     ``deployments`` maps API names to the deployment key they front. Requests count only calls
-    that reached the model; tokens exist only for those anyway.
+    that reached the model, and tokens only calls it served.
     """
 
     mapping: dict[str, str] = {}
@@ -226,7 +239,7 @@ def deployment_peaks_query(window: QueryWindow, deployments: Mapping[str, str]) 
 gatewayRows
 | where isempty(reason)
 | join kind=leftouter llmRows on CorrelationId
-| extend deploymentKey = tostring(deploymentOf[api])
+{_SERVED_TOKENS}| extend deploymentKey = tostring(deploymentOf[api])
 | where isnotempty(deploymentKey)
 | summarize tokens = sum(totalTokens), requests = countif(BackendResponseCode > 0)
     by deploymentKey, minute = bin(TimeGenerated, 1m)
