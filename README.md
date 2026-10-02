@@ -592,6 +592,12 @@ Budgets and their email have these. See [Budgets and alerts](docs/budgets-and-al
 | `MOSAIC_BUDGET_FAST_INTERVAL_SECONDS` | `300` | How often a budget at 90% or more, with a threshold or a block to come, is checked, from 60 to 3,600 seconds. |
 | `MOSAIC_EMAIL_SUGGESTED_ENDPOINT`, `MOSAIC_EMAIL_SUGGESTED_SENDER` | None | The Communication Services endpoint and sender `azd` created. They only fill in **Settings > Email**; email stays off until an administrator saves it there. |
 
+Logging has one setting.
+
+| Setting | Default | Purpose |
+| --- | --- | --- |
+| `MOSAIC_LOG_LEVEL` | `INFO` | The least severe level the API logs, to stdout and, when `MOSAIC_APPLICATIONINSIGHTS_CONNECTION_STRING` is set as `azd` sets it, to Application Insights. Libraries log at this level too, but the loggers for the Azure SDK's HTTP calls and the Azure Monitor exporter's uploads never go below `WARNING`. |
+
 In a second terminal:
 
 ```powershell
