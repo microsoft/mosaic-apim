@@ -2,6 +2,8 @@ from collections.abc import Iterator
 from typing import Any
 
 import pytest
+import structlog
+from azure.monitor.opentelemetry.exporter.export.trace import _exporter as trace_exporter
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from mosaic_api import observability
@@ -14,8 +16,15 @@ from opentelemetry.sdk.trace import ReadableSpan, TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from opentelemetry.trace import SpanKind
+from structlog.testing import capture_logs
 
 CONNECTION_STRING = "InstrumentationKey=test"
+SEARCH = "/api/v1/directory/search"
+# What an administrator might type into the directory search, encoded as a browser sends it. In
+# the URL the instrumentation records, the query is decoded, so its "&" and "=" look like another
+# parameter.
+TYPED = "someone%40example.com%26x%3Dy"
+TYPED_PARTS = ("someone", "example.com", "x=y")
 
 
 def settings(connection_string: str | None = CONNECTION_STRING, **overrides: Any) -> Settings:
@@ -80,6 +89,27 @@ def opentelemetry_middleware(app: FastAPI) -> list[OpenTelemetryMiddleware]:
         layers.append(layer)
         layer = getattr(layer, "app", None)
     return [layer for layer in layers if isinstance(layer, OpenTelemetryMiddleware)]
+
+
+def exported(span: ReadableSpan) -> dict[str, Any]:
+    """What the Azure Monitor exporter would send Application Insights for the span."""
+
+    # The exporter has no public way to convert a span without sending it. If a new version takes
+    # the request's URL from somewhere else, these tests say so.
+    envelope: dict[str, Any] = trace_exporter._convert_span_to_envelope(span).as_dict()
+    return envelope
+
+
+def recorded_url(span: ReadableSpan) -> str:
+    """The URL Application Insights would record for the request."""
+
+    data = exported(span)["data"]
+    assert data["baseType"] == "RequestData"
+    return str(data["baseData"]["url"])
+
+
+def recorded(span: ReadableSpan) -> str:
+    return repr(dict(span.attributes or {})) + repr(exported(span))
 
 
 @pytest.mark.parametrize(
@@ -147,6 +177,181 @@ def test_no_header_or_body_is_recorded(telemetry: Telemetry) -> None:
     recorded = repr(attributes)
     for value in (token, key, correlation, label):
         assert value not in recorded
+
+
+def test_what_someone_types_into_a_directory_search_is_recorded_nowhere(
+    telemetry: Telemetry,
+) -> None:
+    with TestClient(telemetry.start()) as client:
+        client.get(f"{SEARCH}?kind=user&q={TYPED}")
+
+    spans = telemetry.spans()
+    assert [span.kind for span in spans] == [SpanKind.SERVER]
+    for part in TYPED_PARTS:
+        assert part not in recorded(spans[0])
+
+
+def test_each_query_value_is_redacted_and_each_name_kept(telemetry: Telemetry) -> None:
+    with TestClient(telemetry.start()) as client:
+        client.get(f"{SEARCH}?kind=user&q={TYPED}&limit=5")
+
+    (span,) = telemetry.spans()
+    url = f"http://testserver{SEARCH}?kind=REDACTED&q=REDACTED&limit=REDACTED"
+    # The exporter takes the request's URL from http.url, as the instrumentation sets it by default.
+    assert (span.attributes or {})["http.url"] == url
+    assert recorded_url(span) == url
+
+
+def test_a_request_without_a_query_is_recorded_as_it_was(telemetry: Telemetry) -> None:
+    with TestClient(telemetry.start()) as client:
+        client.get("/api/v1/principals")
+
+    (span,) = telemetry.spans()
+    attributes = span.attributes or {}
+    assert attributes["http.url"] == "http://testserver/api/v1/principals"
+    assert attributes["http.target"] == "/api/v1/principals"
+    assert recorded_url(span) == "http://testserver/api/v1/principals"
+
+
+@pytest.mark.parametrize(
+    "query",
+    [TYPED, f"q={TYPED}&&kind=user", f"{TYPED}=1"],
+    ids=["a-value-alone", "an-empty-field", "an-encoded-name"],
+)
+def test_a_query_that_cant_be_read_safely_is_left_out(telemetry: Telemetry, query: str) -> None:
+    with TestClient(telemetry.start()) as client:
+        client.get(f"{SEARCH}?{query}")
+
+    (span,) = telemetry.spans()
+    assert (span.attributes or {})["http.url"] == f"http://testserver{SEARCH}"
+    assert recorded_url(span) == f"http://testserver{SEARCH}"
+
+
+def test_if_redaction_fails_no_url_is_recorded(
+    telemetry: Telemetry, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fail(_scope: dict[str, Any]) -> tuple[str, int, str]:
+        raise ValueError("a scope the instrumentation didn't expect")
+
+    monkeypatch.setattr(observability, "request_url", fail)
+    # create_app configures structlog afresh, and a logger keeps the configuration it first logged
+    # with, so the module's logger is swapped for one that hasn't logged yet.
+    monkeypatch.setattr(observability, "logger", structlog.get_logger())
+    with TestClient(telemetry.start()) as client, capture_logs() as structured:
+        client.get(f"{SEARCH}?kind=user&q={TYPED}")
+
+    (span,) = telemetry.spans()
+    assert (span.attributes or {})["http.url"] == ""
+    assert recorded_url(span) == ""
+    # The hook raised nothing for the instrumentation to record on the span.
+    assert not span.events
+    # The warning names the error's type alone, so neither its message nor the query is logged.
+    assert structured == [
+        {
+            "event": "request_query_redaction_failed",
+            "log_level": "warning",
+            "error_type": "ValueError",
+        }
+    ]
+    for part in TYPED_PARTS:
+        assert part not in recorded(span)
+
+
+def test_if_the_warning_cant_be_logged_the_hook_still_raises_nothing(
+    telemetry: Telemetry, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class BrokenLogger:
+        def warning(self, *_args: Any, **_kwargs: Any) -> None:
+            raise RuntimeError("the log pipeline failed")
+
+    def fail(_scope: dict[str, Any]) -> tuple[str, int, str]:
+        raise ValueError("a scope the instrumentation didn't expect")
+
+    monkeypatch.setattr(observability, "request_url", fail)
+    monkeypatch.setattr(observability, "logger", BrokenLogger())
+    with TestClient(telemetry.start()) as client:
+        client.get(f"{SEARCH}?kind=user&q={TYPED}")
+
+    (span,) = telemetry.spans()
+    assert (span.attributes or {})["http.url"] == ""
+    assert not span.events
+
+
+@pytest.mark.parametrize(
+    ("carried", "redacted", "url"),
+    [
+        # As the instrumentation records a request with OTEL_SEMCONV_STABILITY_OPT_IN=http. The
+        # exporter builds the URL from url.path and url.query.
+        (
+            {
+                "url.scheme": "http",
+                "server.address": "testserver",
+                "server.port": 80,
+                "url.path": SEARCH,
+                "url.query": f"kind=user&q={TYPED}",
+            },
+            {"url.query": "kind=REDACTED&q=REDACTED"},
+            f"http://testserver:80{SEARCH}?kind=REDACTED&q=REDACTED",
+        ),
+        # As other instrumentations record one, with the query in url.full and http.target.
+        (
+            {
+                "url.full": f"http://testserver{SEARCH}?kind=user&q=someone@example.com&x=y",
+                "http.target": f"{SEARCH}?kind=user&q={TYPED}",
+            },
+            {
+                "url.full": f"http://testserver{SEARCH}?kind=REDACTED&q=REDACTED",
+                "http.target": f"{SEARCH}?kind=REDACTED&q=REDACTED",
+            },
+            f"http://testserver{SEARCH}?kind=REDACTED&q=REDACTED",
+        ),
+    ],
+    ids=["stable-semantic-conventions", "url-full-and-a-full-target"],
+)
+def test_the_query_is_redacted_in_every_attribute_that_carries_it(
+    carried: dict[str, Any], redacted: dict[str, str], url: str
+) -> None:
+    spans = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(spans))
+    scope = {
+        "type": "http",
+        "scheme": "http",
+        "server": ("testserver", 80),
+        "headers": [(b"host", b"testserver")],
+        "path": SEARCH,
+        "query_string": f"kind=user&q={TYPED}".encode(),
+    }
+    with provider.get_tracer(__name__).start_as_current_span(
+        f"GET {SEARCH}",
+        kind=SpanKind.SERVER,
+        attributes={"http.request.method": "GET", **carried},
+    ) as span:
+        observability.redact_query_values(span, scope)
+
+    (ended,) = spans.get_finished_spans()
+    attributes = ended.attributes or {}
+    assert {name: attributes[name] for name in redacted} == redacted
+    assert recorded_url(ended) == url
+    for part in TYPED_PARTS:
+        assert part not in recorded(ended)
+
+
+@pytest.mark.parametrize(
+    ("query_string", "redacted"),
+    [
+        (b"kind=user&q=someone%40example.com%26x%3Dy", "kind=REDACTED&q=REDACTED"),
+        (b"q=one&q=two", "q=REDACTED&q=REDACTED"),
+        (b"q=", "q=REDACTED"),
+        (b"q=someone;x=y", "q=REDACTED"),
+        (b"someone", ""),
+        (b"q=someone&&kind=user", ""),
+        (b"q%3Dsomeone=1", ""),
+        (b"q=someone\xff", ""),
+    ],
+)
+def test_redacted_query(query_string: bytes, redacted: str) -> None:
+    assert observability.redacted_query(query_string) == redacted
 
 
 def test_a_request_the_cors_middleware_answers_is_recorded(telemetry: Telemetry) -> None:
