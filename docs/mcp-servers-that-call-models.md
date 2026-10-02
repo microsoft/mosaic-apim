@@ -112,6 +112,10 @@ async def summarize_ticket(ticket: str, ctx: Context) -> str:
     return str(response.json()["choices"][0]["message"]["content"])
 ```
 
+Create the credential once, so it can reuse its tokens across tool calls, and close it when the
+server stops with `await credential.close()`. An `azure.identity.aio` credential keeps its HTTP
+connections open until it's closed.
+
 The gateway removes the header before the call reaches the model.
 
 ## What MOSAIC records
