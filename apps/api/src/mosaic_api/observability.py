@@ -15,10 +15,23 @@ render_exceptions = structlog.processors.ExceptionRenderer(
     ExceptionDictTransformer(show_locals=False)
 )
 
+# The Azure SDK logs every HTTP call it makes at INFO, and the Azure Monitor exporter logs every
+# batch it uploads. Azure Monitor exports the root logger, so each upload was itself logged and
+# exported, and these records buried MOSAIC's own. These loggers log only warnings and errors, or
+# less when the log level is stricter. Cosmos DB has its own HTTP logger; the rest of the Azure
+# SDK, the exporter's uploads included, uses azure-core's.
+QUIET_LOGGERS = (
+    "azure.core.pipeline.policies.http_logging_policy",
+    "azure.cosmos._cosmos_http_logging_policy",
+    "azure.monitor.opentelemetry.exporter",
+)
+
 
 def configure_logging(settings: Settings) -> None:
     level = getattr(logging, settings.log_level.upper(), logging.INFO)
     logging.basicConfig(format="%(message)s", stream=sys.stdout, level=level)
+    for name in QUIET_LOGGERS:
+        logging.getLogger(name).setLevel(max(level, logging.WARNING))
     structlog.configure(
         processors=[
             structlog.contextvars.merge_contextvars,
