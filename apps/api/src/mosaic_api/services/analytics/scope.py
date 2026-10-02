@@ -60,6 +60,11 @@ UNKNOWN_CALLER = "Unknown caller"
 UNKNOWN_APPLICATION = "Unknown application"
 UNKNOWN_MODEL = "Unknown model"
 UNCLASSIFIED = "Unclassified"
+# Dimensions keyed first by a grant link, `{link}:{linkKey}|...`, which the grant filters narrow.
+# The on-behalf dimensions are keyed by the application's model grant, not the MCP server's.
+_GRANT_KEYED: frozenset[SummaryDimension] = frozenset(
+    {"grant", "grantCaller", "onBehalf", "onBehalfUnresolved"}
+)
 
 
 @dataclass(frozen=True)
@@ -238,7 +243,7 @@ class Scope:
         return self.allowed_apis is None or (gateway_id, api_name) in self.allowed_apis
 
     def entry_allowed(self, gateway_id: str, dimension: SummaryDimension, key: str) -> bool:
-        if dimension in {"grant", "grantCaller"}:
+        if dimension in _GRANT_KEYED:
             return self.grant_allowed(key.partition("|")[0])
         if self.allowed_apis is None:
             return True

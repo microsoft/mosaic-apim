@@ -40,8 +40,10 @@ import { PageHeader } from '../components/PageHeader'
 import { PublishMcpServerDialog } from '../components/PublishMcpServerDialog'
 import { RemovalDialog } from '../components/RemovalDialog'
 import { ModelAccessRecovery } from '../components/ModelAccessRecovery'
+import { PrincipalKindBadge } from '../components/PrincipalKindBadge'
 import { UnpublishDialog } from '../components/UnpublishDialog'
 import { environmentLabel, useEnvironmentCatalog } from '../environments'
+import { PRINCIPAL_KIND_LABELS } from '../labels'
 import {
   PUBLICATION_STATUS_LABELS,
   formatTimestamp,
@@ -59,6 +61,7 @@ import type {
   McpPublication,
   McpServer,
   McpToolAnnotations,
+  Principal,
   PublicationStatus,
   PublishPlan,
 } from '../types'
@@ -89,6 +92,16 @@ const authLabels: Record<McpAuthMode, string> = {
   none: 'None',
   apiKey: 'Key Vault secret',
   managedIdentity: 'Managed identity',
+}
+
+const mcpModelCallerKinds = new Set(['servicePrincipal', 'managedIdentity', 'agentIdentity'])
+
+function principalName(principal: Principal) {
+  return principal.label?.trim() || principal.detail?.trim() || principal.objectId
+}
+
+function canCallModelsAs(principal: Principal) {
+  return mcpModelCallerKinds.has(principal.kind)
 }
 
 function PublicationStatusBadge({ publication }: { publication: McpPublication }) {
@@ -657,6 +670,60 @@ function RegisteredMcpServers({
   )
 }
 
+function modelCallerLabel(
+  principalId: string,
+  principals: Principal[] | undefined,
+  publication: McpPublication,
+) {
+  const principal = principals?.find((item) => item.id === principalId)
+  if (principal) return principalName(principal)
+  const applied = publication.appliedAccess?.modelCaller
+  if (applied?.principalId === principalId) return applied.displayName
+  return principalId
+}
+
+// What an administrator does next when the server's model caller differs from what's live.
+function modelCallerNextStep(publication: McpPublication, principals: Principal[] | undefined) {
+  const configured = publication.modelCallerId ?? null
+  const live = publication.appliedAccess?.modelCaller?.principalId ?? null
+  if (live && !configured) {
+    return `Still live as ${modelCallerLabel(live, principals, publication)}. Plan and apply to stop attributing its model calls.`
+  }
+  if (live) {
+    return `Still live as ${modelCallerLabel(live, principals, publication)}. Plan and apply to switch.`
+  }
+  return 'Plan and apply to start attributing its model calls.'
+}
+
+function ModelCallerValue({
+  publication,
+  principals,
+}: {
+  publication: McpPublication
+  principals: Principal[] | undefined
+}) {
+  const configured = publication.modelCallerId ?? null
+  const live = publication.appliedAccess?.modelCaller?.principalId ?? null
+  if (!configured && !live) return <Text>None</Text>
+  const principal = configured ? principals?.find((item) => item.id === configured) : undefined
+  return (
+    <div className={styles.cellStack}>
+      <Text weight="semibold">
+        {configured ? modelCallerLabel(configured, principals, publication) : 'None'}
+      </Text>
+      {principal && <PrincipalKindBadge kind={principal.kind} />}
+      {configured === live ? (
+        <Badge appearance="tint" className={styles.connectedBadge}>Applied</Badge>
+      ) : (
+        <>
+          <Badge appearance="tint" className={styles.pendingBadge}>Not applied yet</Badge>
+          <span className={styles.secondaryCell}>{modelCallerNextStep(publication, principals)}</span>
+        </>
+      )}
+    </div>
+  )
+}
+
 function PublishedMcpServers({ onBanner }: { onBanner: (message: string) => void }) {
   const api = useMosaicApi()
   const queryClient = useQueryClient()
@@ -664,6 +731,8 @@ function PublishedMcpServers({ onBanner }: { onBanner: (message: string) => void
   const [removing, setRemoving] = useState<McpPublication | null>(null)
   const [unpublishing, setUnpublishing] = useState<McpPublication | null>(null)
   const [review, setReview] = useState<{ publication: McpPublication; plan: PublishPlan } | null>(null)
+  const [modelCallerTarget, setModelCallerTarget] = useState<McpPublication | null>(null)
+  const [modelCallerPrincipalId, setModelCallerPrincipalId] = useState('')
 
   const publications = useQuery({
     queryKey: ['mcp-publications'],
@@ -673,12 +742,22 @@ function PublishedMcpServers({ onBanner }: { onBanner: (message: string) => void
     queryKey: ['gateways'],
     queryFn: () => api.listGateways(),
   })
+  const principals = useQuery({
+    queryKey: ['principals'],
+    queryFn: () => api.listPrincipals(),
+  })
 
   const gatewaysById = useMemo(() => {
     const map = new Map<string, Gateway>()
     for (const gateway of gateways.data ?? []) map.set(gateway.id, gateway)
     return map
   }, [gateways.data])
+  const eligibleModelCallers = useMemo(
+    () => (principals.data ?? []).filter(canCallModelsAs).sort((left, right) =>
+      principalName(left).localeCompare(principalName(right), undefined, { sensitivity: 'base' }),
+    ),
+    [principals.data],
+  )
 
   async function refresh() {
     await Promise.all([
@@ -712,6 +791,34 @@ function PublishedMcpServers({ onBanner }: { onBanner: (message: string) => void
     },
   })
 
+  const setModelCaller = useMutation({
+    mutationFn: ({ publication, principalId }: { publication: McpPublication; principalId: string }) =>
+      api.setMcpModelCaller(publication.id, principalId),
+    onSuccess: async (updated, { publication, principalId }) => {
+      setModelCallerTarget(null)
+      await queryClient.invalidateQueries({ queryKey: ['mcp-publications'] })
+      onBanner(`${publication.displayName} now calls models as ${modelCallerLabel(principalId, principals.data, updated)}. Plan and apply it to start attributing its model calls.`)
+    },
+  })
+
+  const clearModelCaller = useMutation({
+    mutationFn: (publication: McpPublication) => api.clearMcpModelCaller(publication.id),
+    onSuccess: async (_updated, publication) => {
+      await queryClient.invalidateQueries({ queryKey: ['mcp-publications'] })
+      onBanner(`${publication.displayName} no longer calls models as an application. Plan and apply it to stop attributing model calls.`)
+    },
+  })
+
+  function openModelCallerDialog(publication: McpPublication) {
+    setModelCaller.reset()
+    setModelCallerTarget(publication)
+    setModelCallerPrincipalId(
+      publication.modelCallerId && eligibleModelCallers.some((principal) => principal.id === publication.modelCallerId)
+        ? publication.modelCallerId
+        : (eligibleModelCallers[0]?.id ?? ''),
+    )
+  }
+
   return (
     <>
       <Card className={styles.panel}>
@@ -725,6 +832,8 @@ function PublishedMcpServers({ onBanner }: { onBanner: (message: string) => void
           </div>
         </div>
         {reviewPlan.isError && <ErrorState error={reviewPlan.error} />}
+        {setModelCaller.isError && <ErrorState error={setModelCaller.error} />}
+        {clearModelCaller.isError && <ErrorState error={clearModelCaller.error} />}
         {publications.isPending && <Loading label="Loading published MCP servers" />}
         {publications.isError && <ErrorState error={publications.error} />}
         {publications.isSuccess &&
@@ -740,6 +849,7 @@ function PublishedMcpServers({ onBanner }: { onBanner: (message: string) => void
                   <TableHeaderCell>Publication</TableHeaderCell>
                   <TableHeaderCell>Status</TableHeaderCell>
                   <TableHeaderCell>Gateway</TableHeaderCell>
+                  <TableHeaderCell>Calls models as</TableHeaderCell>
                   <TableHeaderCell>Server URL</TableHeaderCell>
                   <TableHeaderCell>Last applied</TableHeaderCell>
                   <TableHeaderCell>Actions</TableHeaderCell>
@@ -775,6 +885,33 @@ function PublishedMcpServers({ onBanner }: { onBanner: (message: string) => void
                       <Link className={styles.gatewayLink} to={`/gateways/${publication.gatewayId}`}>
                         {gatewaysById.get(publication.gatewayId)?.name ?? publication.gatewayId}
                       </Link>
+                    </TableCell>
+                    <TableCell>
+                      <div className={styles.cellStack}>
+                        <ModelCallerValue publication={publication} principals={principals.data} />
+                        {!isUnpublished(publication) && (
+                          <div className={styles.actionRow}>
+                            <Button
+                              appearance="secondary"
+                              size="small"
+                              disabled={publication.status === 'applying' || publication.accessState === 'applying' || publication.accessState === 'unknown' || eligibleModelCallers.length === 0}
+                              onClick={() => openModelCallerDialog(publication)}
+                            >
+                              {publication.modelCallerId ? 'Change' : 'Choose'}
+                            </Button>
+                            {publication.modelCallerId && (
+                              <Button
+                                appearance="subtle"
+                                size="small"
+                                disabled={publication.status === 'applying' || publication.accessState === 'applying' || publication.accessState === 'unknown' || clearModelCaller.isPending}
+                                onClick={() => clearModelCaller.mutate(publication)}
+                              >
+                                Clear
+                              </Button>
+                            )}
+                          </div>
+                        )}
+                      </div>
                     </TableCell>
                     <TableCell>{mcpServerUrl(publication, gatewaysById.get(publication.gatewayId))}</TableCell>
                     <TableCell>{lastAppliedLabel(publication)}</TableCell>
@@ -824,6 +961,50 @@ function PublishedMcpServers({ onBanner }: { onBanner: (message: string) => void
         onClose={() => setUnpublishing(null)}
         onUnpublished={onBanner}
       />
+      <Dialog open={modelCallerTarget !== null} onOpenChange={(_, data) => !data.open && setModelCallerTarget(null)}>
+        <DialogSurface>
+          <DialogBody>
+            <DialogTitle>Calls models as</DialogTitle>
+            <DialogContent>
+              <div className={styles.dialogForm}>
+                <Text>
+                  Choose the application this MCP server&apos;s tools call governed models as. Its own
+                  model grants decide access and pay for the calls. MOSAIC records the person each MCP
+                  call served, for usage only.
+                </Text>
+                <Field label="Application principal">
+                  <Select
+                    value={modelCallerPrincipalId}
+                    onChange={(event) => setModelCallerPrincipalId(event.target.value)}
+                  >
+                    {eligibleModelCallers.map((principal) => (
+                      <option key={principal.id} value={principal.id}>
+                        {principalName(principal)} — {PRINCIPAL_KIND_LABELS[principal.kind]}
+                      </option>
+                    ))}
+                  </Select>
+                </Field>
+                {setModelCaller.isError && <ErrorState error={setModelCaller.error} />}
+              </div>
+            </DialogContent>
+            <DialogActions>
+              <Button appearance="secondary" onClick={() => setModelCallerTarget(null)}>
+                Cancel
+              </Button>
+              <Button
+                appearance="primary"
+                disabled={!modelCallerTarget || !modelCallerPrincipalId || setModelCaller.isPending}
+                onClick={() =>
+                  modelCallerTarget &&
+                  setModelCaller.mutate({ publication: modelCallerTarget, principalId: modelCallerPrincipalId })
+                }
+              >
+                Save
+              </Button>
+            </DialogActions>
+          </DialogBody>
+        </DialogSurface>
+      </Dialog>
       <RemovalDialog
         open={removing !== null}
         title={`Delete ${removing?.displayName ?? 'this MCP publication'}?`}

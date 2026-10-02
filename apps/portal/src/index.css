@@ -853,6 +853,10 @@ textarea { font: inherit; }
   color: var(--mosaic-text-muted);
 }
 
+.on-behalf-usage-table {
+  min-width: 820px;
+}
+
 .resource-name {
   display: flex;
   flex-wrap: wrap;

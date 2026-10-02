@@ -45,6 +45,8 @@ from mosaic_api.services.model_access import with_inherited_limits
 from mosaic_api.services.portal import PortalService
 from mosaic_api.services.pricing import PricingService
 from mosaic_api.usage_telemetry import (
+    AttributionRecord,
+    RolledUpApi,
     UsageFact,
     UsageHour,
     UsageMetrics,
@@ -235,6 +237,31 @@ class UsageFreshness(MosaicModel):
     interval_minutes: int
 
 
+class UsageOnBehalfRow(MosaicModel):
+    """The caller's own model calls that an MCP server made for them, as its application.
+
+    Only the calls MOSAIC attributed to the caller: never the application's own, nor anyone else's.
+    They were made on the application's own grant on the model, so that grant's cost center was
+    charged, not one of the caller's. A row covers one MCP server, model resource and cost center.
+    See ADR 0025.
+    """
+
+    key: str
+    mcp_server: ResourceSummary
+    # The model resource the application's grant covers.
+    resource: ResourceSummary
+    model: str | None
+    requests: int
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+    estimated_cost: float | None
+    cost_note: str | None
+    # The cost center of the application's grant, which the calls were charged to.
+    cost_center: CostCenterRef | None
+    last_used_at: datetime | None = None
+
+
 class MyUsageReport(MosaicModel):
     data_source: UsageDataSource
     period: UsagePeriod
@@ -252,6 +279,9 @@ class MyUsageReport(MosaicModel):
     recent_hours: list[UsageHourPoint] = Field(default_factory=list)
     # Measured usage only: each of the caller's cost centers' month so far, in total.
     cost_centers: list[CostCenterUsage] = Field(default_factory=list)
+    # Measured usage only: the caller's model use through MCP servers, which the MCP servers'
+    # applications' grants paid for. Not in the totals, which are the caller's own grants'.
+    on_behalf: list[UsageOnBehalfRow] = Field(default_factory=list)
 
 
 @dataclass
@@ -281,6 +311,24 @@ class DailyUsage:
 UsageSeries = Mapping[str, Mapping[date, DailyUsage] | None]
 
 
+@dataclass
+class OnBehalfUse:
+    """One day of the caller's model calls that an MCP server's application made for them.
+
+    ``metrics`` are only the caller's share of the application's fact, never the fact's own
+    figures. ``record`` is what the application's grant link stands for, and ``mcp`` and
+    ``model_api`` are the MCP server's and the model's APIs as the gateway's rollups know them.
+    """
+
+    day: date
+    gateway_id: str
+    mcp_api: str
+    metrics: UsageMetrics
+    record: AttributionRecord | None = None
+    mcp: RolledUpApi | None = None
+    model_api: RolledUpApi | None = None
+
+
 class UsageSource(Protocol):
     data_source: UsageDataSource
 
@@ -299,8 +347,14 @@ class UsageSource(Protocol):
         ...
 
     async def freshness(
-        self, actor: Actor, entitlements: Sequence[ResolvedEntitlement]
-    ) -> UsageFreshness | None: ...
+        self,
+        actor: Actor,
+        entitlements: Sequence[ResolvedEntitlement],
+        *,
+        gateway_ids: Iterable[str] = (),
+    ) -> UsageFreshness | None:
+        """How current the figures are on the grants' gateways, and on ``gateway_ids``."""
+        ...
 
     async def grant_totals(
         self, tenant_id: str, grants: Sequence[Entitlement], *, start: date, end: date
@@ -308,6 +362,16 @@ class UsageSource(Protocol):
         """Every call through these grants, whoever made it, totalled by grant and never by caller.
 
         None when the figures are simulated, which say nothing about anyone else's calls.
+        """
+        ...
+
+    async def on_behalf_usage(
+        self, actor: Actor, *, start: date, end: date
+    ) -> Sequence[OnBehalfUse]:
+        """The caller's own model calls that MCP servers' applications made for them, by day.
+
+        Only the caller's: the applications' own calls, and calls made for anyone else, are never
+        counted. Empty when the figures are simulated. See ADR 0025.
         """
         ...
 
@@ -337,7 +401,11 @@ class SimulatedUsageSource:
         }
 
     async def freshness(
-        self, actor: Actor, entitlements: Sequence[ResolvedEntitlement]
+        self,
+        actor: Actor,
+        entitlements: Sequence[ResolvedEntitlement],
+        *,
+        gateway_ids: Iterable[str] = (),
     ) -> UsageFreshness | None:
         return None
 
@@ -345,6 +413,11 @@ class SimulatedUsageSource:
         self, tenant_id: str, grants: Sequence[Entitlement], *, start: date, end: date
     ) -> Mapping[str, UsageMetrics] | None:
         return None
+
+    async def on_behalf_usage(
+        self, actor: Actor, *, start: date, end: date
+    ) -> Sequence[OnBehalfUse]:
+        return []
 
     def _series_for(
         self,
@@ -484,6 +557,7 @@ class _GrantLinks:
 MCP_COST_NOTE = "MCP servers are billed by their own service, not by tokens."
 PRODUCT_COST_NOTE = "Products bundle several APIs, so MOSAIC can't price them."
 UNKNOWN_DEPLOYMENT_NOTE = "MOSAIC doesn't know which deployment this API calls."
+UNKNOWN_MODEL_API = "Unknown model API"
 
 
 @dataclass
@@ -773,17 +847,71 @@ class RollupUsageSource:
         return totals
 
     async def freshness(
-        self, actor: Actor, entitlements: Sequence[ResolvedEntitlement]
+        self,
+        actor: Actor,
+        entitlements: Sequence[ResolvedEntitlement],
+        *,
+        gateway_ids: Iterable[str] = (),
     ) -> UsageFreshness:
         links = await self._links(actor.tenant_id, entitlements)
-        gateway_ids = {gateway_id for link in links.values() for gateway_id in link.gateway_ids}
+        gateways = {gateway_id for link in links.values() for gateway_id in link.gateway_ids}
+        gateways.update(gateway_ids)
         states = await self._states(actor.tenant_id)
         return usage_freshness(
-            [states[gateway_id] for gateway_id in sorted(gateway_ids) if gateway_id in states],
-            gateways=len(gateway_ids),
+            [states[gateway_id] for gateway_id in sorted(gateways) if gateway_id in states],
+            gateways=len(gateways),
             now=self._clock(),
             interval=self._interval,
         )
+
+    async def on_behalf_usage(
+        self, actor: Actor, *, start: date, end: date
+    ) -> list[OnBehalfUse]:
+        """Only the caller's own entries, from the facts that hold any. See ADR 0025.
+
+        A fact that holds them is still the application's: its own figures, and every other
+        person's entries, are the application's and those people's, and are never read here.
+        """
+
+        person = actor.object_id.casefold()
+        if not person:
+            return []
+        facts = await self._repository.list_facts(
+            actor.tenant_id,
+            start_day=iso_day(start),
+            end_day=iso_day(end),
+            on_behalf_object_id=person,
+        )
+        if not facts:
+            return []
+        records = {
+            (record.kind, record.key): record
+            for record in await self._repository.list_attribution_records(actor.tenant_id)
+        }
+        states = await self._states(actor.tenant_id)
+        uses: list[OnBehalfUse] = []
+        for fact in facts:
+            mine = [item for item in fact.on_behalf if item.object_id.casefold() == person]
+            if not mine:
+                continue
+            record = records.get(
+                ("grant" if fact.link == "trace" else "subscription", fact.link_key)
+            )
+            state = states.get(fact.gateway_id)
+            apis = {api.api_name: api for api in state.apis} if state is not None else {}
+            for item in mine:
+                uses.append(
+                    OnBehalfUse(
+                        day=date.fromisoformat(fact.day),
+                        gateway_id=fact.gateway_id,
+                        mcp_api=item.mcp_api,
+                        metrics=item.metrics,
+                        record=record,
+                        mcp=apis.get(item.mcp_api),
+                        model_api=_model_api(fact, record, apis),
+                    )
+                )
+        return uses
 
 
 def _coverage(
@@ -820,6 +948,74 @@ def _measured_zero(is_mcp: bool) -> DailyUsage:
         errors=0,
         peak_minute_tokens=None if is_mcp else 0,
         peak_minute_requests=0,
+    )
+
+
+def _model_api(
+    fact: UsageFact, record: AttributionRecord | None, apis: Mapping[str, RolledUpApi]
+) -> RolledUpApi | None:
+    """The model API a fact's calls reached: its grant's, else the one API all its calls named."""
+
+    if record is not None:
+        for api in apis.values():
+            if record.resource.id in {api.resource_id, api.publication_id}:
+                return api
+    names = {item.api_name for item in fact.breakdown}
+    return apis.get(next(iter(names))) if len(names) == 1 else None
+
+
+@dataclass
+class _OnBehalfGroup:
+    """The caller's model use through one MCP server, on one model resource and cost center."""
+
+    first: OnBehalfUse
+    resource: EntitlementResource
+    cost_center_id: str | None
+    days: dict[date, DailyUsage] = field(default_factory=dict)
+
+
+def _on_behalf_resource(use: OnBehalfUse) -> EntitlementResource:
+    """The model resource the application's grant covers, or the model API its calls reached."""
+
+    if use.record is not None:
+        return use.record.resource
+    api_id = use.model_api.resource_id if use.model_api else f"unknown:{use.gateway_id}"
+    return EntitlementResource(kind=EntitlementResourceKind.MODEL_API, id=api_id)
+
+
+def _resource_key(resource: EntitlementResource) -> tuple[str, str, str]:
+    return (str(resource.kind), resource.id, resource.scope_id or "")
+
+
+def _add_metrics(usage: DailyUsage, metrics: UsageMetrics) -> None:
+    usage.requests = (usage.requests or 0) + metrics.requests
+    usage.prompt_tokens = (usage.prompt_tokens or 0) + metrics.prompt_tokens
+    usage.completion_tokens = (usage.completion_tokens or 0) + metrics.completion_tokens
+    usage.tokens = (usage.tokens or 0) + metrics.total_tokens
+    if metrics.last_seen is not None and (
+        usage.last_seen is None or metrics.last_seen > usage.last_seen
+    ):
+        usage.last_seen = metrics.last_seen
+
+
+def _cost_center_ref(
+    book: CostCenterBook, record: AttributionRecord | None, cost_center_id: str | None
+) -> CostCenterRef | None:
+    """A cost center by its current name, or as the record last copied it once it's gone."""
+
+    if not cost_center_id:
+        return None
+    current = book.ref(cost_center_id)
+    if current is not None:
+        return current
+    copied = record is not None and record.cost_center_id == cost_center_id
+    return CostCenterRef(
+        id=cost_center_id,
+        name=(
+            (record.cost_center_name or record.cost_center_code) if copied and record else None
+        )
+        or "Removed cost center",
+        code=(record.cost_center_code or "") if copied and record else "",
     )
 
 
@@ -882,8 +1078,13 @@ class UsageService:
         *,
         start: date,
         end: date,
+        extra: Iterable[str] = (),
     ) -> _MeasuredPricing | None:
-        """The prices for the caller's grants, and each provisioned deployment's monthly tokens."""
+        """The prices for the caller's grants, and each provisioned deployment's monthly tokens.
+
+        ``extra`` names more deployments to price, keyed as rollups key them: those that served
+        the caller's model use through MCP servers.
+        """
 
         if self._pricing is None:
             return None
@@ -892,13 +1093,14 @@ class UsageService:
             deployments[resolved.entitlement.id] = await self._deployment_for(
                 actor.tenant_id, resolved.entitlement
             )
-        endpoint_ids = {key.partition("/")[0] for key, _ in deployments.values() if key}
+        keys = {key for key, _ in deployments.values() if key} | set(extra)
+        endpoint_ids = {key.partition("/")[0] for key in keys}
         pricer = await self._pricing.pricer(actor.tenant_id, endpoint_ids)
-        provisioned = [
+        provisioned = sorted(
             key
-            for key, _ in deployments.values()
-            if key and (facts := pricer.facts_for(key)) is not None and facts.provisioned
-        ]
+            for key in keys
+            if (facts := pricer.facts_for(key)) is not None and facts.provisioned
+        )
         tokens = (
             await self._pricing.provisioned_tokens(actor.tenant_id, provisioned, start, end)
             if provisioned
@@ -922,11 +1124,25 @@ class UsageService:
         recent_start = (now - timedelta(hours=23)).date()
         generation_start = min(start, quota_start, recent_start)
         usage = await self._source.daily_usage(actor, entitlements, start=generation_start, end=end)
-        freshness = await self._source.freshness(actor, entitlements)
         measured = self._source.data_source != "simulated"
+        # The caller's model use through MCP servers: only their own share of each application's
+        # calls. It's reported apart, because the applications' grants paid for it.
+        behalf = (
+            await self._source.on_behalf_usage(actor, start=start, end=end) if measured else []
+        )
+        behalf_deployments = await self._on_behalf_deployments(actor.tenant_id, behalf)
+        freshness = await self._source.freshness(
+            actor, entitlements, gateway_ids={use.gateway_id for use in behalf}
+        )
         catalog = await load_environment_catalog(self._environments, actor.tenant_id)
         pricing = (
-            await self._measured_pricing(actor, entitlements, start=start, end=end)
+            await self._measured_pricing(
+                actor,
+                entitlements,
+                start=start,
+                end=end,
+                extra=[key for key, _ in behalf_deployments.values() if key],
+            )
             if measured
             else None
         )
@@ -1096,6 +1312,9 @@ class UsageService:
             errors=sum(row.errors or 0 for row in rows) if measured else None,
             last_used_at=max(last_used) if last_used else None,
         )
+        behalf_rows = await self._on_behalf_rows(
+            actor.tenant_id, behalf, behalf_deployments, pricing, book, start=start, end=end
+        )
         return MyUsageReport(
             data_source=self._source.data_source,
             period=period,
@@ -1128,7 +1347,165 @@ class UsageService:
                 if measured
                 else []
             ),
+            on_behalf=behalf_rows,
         )
+
+    async def _on_behalf_deployments(
+        self, tenant_id: str, uses: Sequence[OnBehalfUse]
+    ) -> dict[tuple[str, str, str], tuple[str | None, str | None]]:
+        """The deployment each model resource of the caller's MCP model use reaches, and its model.
+
+        Keyed by the resource. A resource MOSAIC can't follow to a deployment falls back to the
+        deployment its model API fronted on the gateway, as the rollups last knew it.
+        """
+
+        found: dict[tuple[str, str, str], tuple[str | None, str | None]] = {}
+        for use in uses:
+            resource = _on_behalf_resource(use)
+            known = _resource_key(resource)
+            if known in found:
+                continue
+            key, model = await self._deployment_for_resource(tenant_id, resource)
+            api = use.model_api
+            if key is None and api is not None and api.deployment_key is not None:
+                key = api.deployment_key
+                model = await self._observed_model_name(
+                    tenant_id, api.model_endpoint_id or "", api.deployment_name or ""
+                )
+            found[known] = (key, model)
+        return found
+
+    async def _on_behalf_rows(
+        self,
+        tenant_id: str,
+        uses: Sequence[OnBehalfUse],
+        deployments: Mapping[tuple[str, str, str], tuple[str | None, str | None]],
+        pricing: _MeasuredPricing | None,
+        book: CostCenterBook,
+        *,
+        start: date,
+        end: date,
+    ) -> list[UsageOnBehalfRow]:
+        """The caller's model use through MCP servers, a row per server, model and cost center.
+
+        Each row is priced through its model's deployment, as the caller's own model rows are,
+        and names the cost center of the application's grant, which paid for it.
+        """
+
+        if not uses:
+            return []
+        gateways = {
+            gateway.id: gateway for gateway in await self._gateways.list_gateways(tenant_id)
+        }
+        charged = await self._charged_cost_centers(tenant_id, uses)
+        groups: dict[tuple[str, ...], _OnBehalfGroup] = {}
+        for use in uses:
+            resource = _on_behalf_resource(use)
+            cost_center_id = charged.get(use.record.entitlement_id if use.record else "")
+            group_key = (
+                use.gateway_id,
+                use.mcp_api,
+                *_resource_key(resource),
+                cost_center_id or "",
+            )
+            group = groups.get(group_key)
+            if group is None:
+                group = groups[group_key] = _OnBehalfGroup(
+                    first=use, resource=resource, cost_center_id=cost_center_id
+                )
+            day = group.days.setdefault(use.day, DailyUsage(0, 0, 0, tokens=0))
+            _add_metrics(day, use.metrics)
+        rows: list[UsageOnBehalfRow] = []
+        for group in groups.values():
+            use = group.first
+            key, model = deployments.get(_resource_key(group.resource), (None, None))
+            figures = [(day, group.days.get(day)) for day in _days(start, end)]
+            present = [usage for _, usage in figures if usage is not None]
+            cost: float | None = None
+            note: str | None
+            if pricing is None:
+                note = "No price list yet."
+            elif group.resource.kind == EntitlementResourceKind.PRODUCT:
+                note = PRODUCT_COST_NOTE
+            elif key is None:
+                note = UNKNOWN_DEPLOYMENT_NOTE
+            else:
+                cost, _, note = pricing.price_days(key, figures, end)
+            gateway = gateways.get(use.gateway_id)
+            seen = [usage.last_seen for usage in present if usage.last_seen is not None]
+            rows.append(
+                UsageOnBehalfRow(
+                    key="|".join(
+                        [
+                            f"{use.gateway_id}/{use.mcp_api}",
+                            f"{group.resource.kind}:{group.resource.id}",
+                            group.cost_center_id or "",
+                        ]
+                    ),
+                    mcp_server=ResourceSummary(
+                        kind=EntitlementResourceKind.MCP_SERVER,
+                        id=use.mcp.resource_id if use.mcp else use.mcp_api,
+                        display_name=use.mcp.display_name if use.mcp else use.mcp_api,
+                        gateway_id=use.gateway_id,
+                        gateway_name=gateway.name if gateway else None,
+                        environment=gateway.environment if gateway else None,
+                        available=use.mcp is not None and use.mcp.removed_at is None,
+                    ),
+                    resource=ResourceSummary(
+                        kind=group.resource.kind,
+                        id=group.resource.id,
+                        scope_id=group.resource.scope_id,
+                        display_name=(
+                            use.model_api.display_name
+                            if use.model_api
+                            else (use.record.resource_name if use.record else None)
+                        )
+                        or UNKNOWN_MODEL_API,
+                        gateway_id=use.gateway_id,
+                        gateway_name=gateway.name if gateway else None,
+                        environment=gateway.environment if gateway else None,
+                        available=use.model_api is not None and use.model_api.removed_at is None,
+                    ),
+                    model=model,
+                    requests=sum(usage.requests or 0 for usage in present),
+                    prompt_tokens=sum(usage.prompt_tokens or 0 for usage in present),
+                    completion_tokens=sum(usage.completion_tokens or 0 for usage in present),
+                    total_tokens=sum(usage.total_tokens or 0 for usage in present),
+                    estimated_cost=None if cost is None else round(cost, 4),
+                    cost_note=note,
+                    cost_center=_cost_center_ref(book, use.record, group.cost_center_id),
+                    last_used_at=max(seen) if seen else None,
+                )
+            )
+        return sorted(
+            rows,
+            key=lambda row: (
+                (row.mcp_server.display_name or "").casefold(),
+                (row.resource.display_name or "").casefold(),
+                row.cost_center.name.casefold() if row.cost_center else "",
+                row.key,
+            ),
+        )
+
+    async def _charged_cost_centers(
+        self, tenant_id: str, uses: Sequence[OnBehalfUse]
+    ) -> dict[str, str | None]:
+        """The cost center each application grant charges, by grant, as its record copied it.
+
+        A record copied before cost centers names none, so the grant itself is read for those.
+        """
+
+        charged: dict[str, str | None] = {}
+        for use in uses:
+            record = use.record
+            if record is None or record.entitlement_id in charged:
+                continue
+            cost_center_id = record.cost_center_id
+            if not cost_center_id and self._grants is not None:
+                grant = await self._grants.get_entitlement(tenant_id, record.entitlement_id)
+                cost_center_id = grant.cost_center_id if grant else None
+            charged[record.entitlement_id] = cost_center_id
+        return charged
 
     async def _cost_center_usage(
         self,
@@ -1249,7 +1626,13 @@ class UsageService:
     ) -> tuple[str | None, str | None]:
         """The deployment a grant's calls reach, keyed as rollups key it, and its model."""
 
-        resource = entitlement.resource
+        return await self._deployment_for_resource(tenant_id, entitlement.resource)
+
+    async def _deployment_for_resource(
+        self, tenant_id: str, resource: EntitlementResource
+    ) -> tuple[str | None, str | None]:
+        """The deployment calls to a resource reach, keyed as rollups key it, and its model."""
+
         if resource.kind == EntitlementResourceKind.MODEL_API:
             model_api = await self._gateways.get_model_api(tenant_id, resource.id)
             if model_api is None or model_api.publication_id is None:

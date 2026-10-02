@@ -229,6 +229,11 @@ function McpAccessReview({ plan }: { plan: PublishPlan }) {
       <Text size={200}>Audience: {snapshot.audience}</Text>
       <Text size={200}>Delegated scope: api://{snapshot.audience}/{snapshot.delegatedScope}</Text>
       <Text size={200}>Application role: {snapshot.applicationRole}</Text>
+      <Text size={200}>
+        {snapshot.modelCaller
+          ? `Calls models as: ${snapshot.modelCaller.displayName} · ${snapshot.modelCaller.objectId}. The server receives each call's reference to pass on to its model calls.`
+          : 'Calls models as: none.'}
+      </Text>
       {snapshot.grants.length === 0 ? (
         <Text>No grants are in this target. The gateway will deny callers.</Text>
       ) : (

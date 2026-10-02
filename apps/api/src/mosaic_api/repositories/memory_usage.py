@@ -91,9 +91,11 @@ class InMemoryUsageRollupRepository:
         end_day: str,
         link_keys: Sequence[str] | None = None,
         gateway_ids: Sequence[str] | None = None,
+        on_behalf_object_id: str | None = None,
     ) -> list[UsageFact]:
         keys = None if link_keys is None else set(link_keys)
         gateways = None if gateway_ids is None else set(gateway_ids)
+        person = None if on_behalf_object_id is None else on_behalf_object_id.casefold()
         return [
             _copy(fact)
             for (tenant, _), fact in sorted(self._facts.items())
@@ -101,6 +103,10 @@ class InMemoryUsageRollupRepository:
             and start_day <= fact.day <= end_day
             and (keys is None or fact.link_key in keys)
             and (gateways is None or fact.gateway_id in gateways)
+            and (
+                person is None
+                or (bool(person) and any(item.object_id == person for item in fact.on_behalf))
+            )
         ]
 
     async def list_summaries(

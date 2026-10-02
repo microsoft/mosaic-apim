@@ -146,8 +146,11 @@ COST_CENTER_NOTE = (
     "applications, reserved capacity nobody called, and figures by the hour belong to no grant, "
     "so they're left out."
 )
-# Figures a cost-center filter keeps as they're rolled up: they're kept per grant.
-_GRANT_LINKED: frozenset[SummaryDimension] = frozenset({"grant", "grantCaller"})
+# Figures a cost-center filter keeps as they're rolled up: they're kept per grant. The on-behalf
+# figures are kept per application's model grant, so they follow that grant's cost center.
+_GRANT_LINKED: frozenset[SummaryDimension] = frozenset(
+    {"grant", "grantCaller", "onBehalf", "onBehalfUnresolved"}
+)
 # Figures kept per API, which a cost-center filter rebuilds from its grants' figures.
 _FROM_GRANTS: frozenset[SummaryDimension] = frozenset({"total", "api", "model", "deployment"})
 HOURS_NOTE = (
@@ -308,21 +311,24 @@ class AnalyticsService:
 
         calls: dict[str, int] = defaultdict(int)
         for summary in summaries:
-            if summary.dimension not in {"grantCaller", "denial"}:
+            if summary.dimension not in {"grantCaller", "denial", "onBehalf"}:
                 continue
             for entry in summary.entries:
-                caller = (
-                    entry.key.rpartition("|")[2]
-                    if summary.dimension == "grantCaller"
-                    else [*entry.key.split("|", 3), "", ""][1]
-                )
-                folded = caller.casefold()
-                if (
-                    folded
-                    and folded not in scope.principals_by_object
-                    and folded not in scope.subject_names
-                ):
-                    calls[folded] += entry.metrics.requests
+                if summary.dimension == "grantCaller":
+                    callers = [entry.key.rpartition("|")[2]]
+                elif summary.dimension == "denial":
+                    callers = [[*entry.key.split("|", 3), "", ""][1]]
+                else:
+                    # The application that called the model, and the person it called for.
+                    callers = entry.key.rsplit("|", 3)[1:3]
+                for caller in callers:
+                    folded = caller.casefold()
+                    if (
+                        folded
+                        and folded not in scope.principals_by_object
+                        and folded not in scope.subject_names
+                    ):
+                        calls[folded] += entry.metrics.requests
         if calls:
             ordered = sorted(calls, key=lambda object_id: (-calls[object_id], object_id))
             scope.directory = await self._names.resolve(ordered, limit=NAME_LOOKUPS)
@@ -877,10 +883,15 @@ class AnalyticsService:
         context, _ = await self._prepare(actor, filters, limit=limit)
         costs = await self._costs(context.scope, context.window)
         summaries = await self._breakdown(
-            context.scope, context.window, ["grantCaller", "clientApp"], costs
+            context.scope,
+            context.window,
+            ["grantCaller", "clientApp", "onBehalf", "onBehalfUnresolved"],
+            costs,
         )
         await self._name(context.scope, summaries)
-        return consumers_report(context, callers=summaries, clients=summaries, costs=costs)
+        return consumers_report(
+            context, callers=summaries, clients=summaries, costs=costs, on_behalf=summaries
+        )
 
     async def models(
         self, actor: Actor, filters: AnalyticsFilters, *, limit: int = ROW_LIMIT
@@ -953,10 +964,11 @@ class AnalyticsService:
         if costs is None:
             return report, []
         summaries = await self._breakdown(
-            context.scope, context.window, ["grant", "unattributed"], costs
+            context.scope, context.window, ["grant", "unattributed", "onBehalf"], costs
         )
+        await self._name(context.scope, summaries)
         return report, chargeback_rows(
-            context, grants=summaries, unattributed=summaries, costs=costs
+            context, grants=summaries, unattributed=summaries, costs=costs, on_behalf=summaries
         )[:EXPORT_LIMIT]
 
     async def reliability(

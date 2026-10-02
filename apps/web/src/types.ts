@@ -1324,6 +1324,7 @@ export interface McpAccessSnapshot {
   audience: string
   delegatedScope: string
   applicationRole: string
+  modelCaller?: { principalId: string; objectId: string; displayName: string } | null
   grants: McpAccessGrant[]
 }
 
@@ -1393,6 +1394,7 @@ export interface McpPublication {
   /** When an unpublish last removed everything MOSAIC created; cleared by the next successful apply. */
   unpublishedAt?: string | null
   lastError: string | null
+  modelCallerId?: string | null
   appliedAccess?: McpAccessSnapshot | null
   accessState: 'pending' | 'applying' | 'applied' | 'failed' | 'unknown'
   createdAt: string
@@ -1838,6 +1840,7 @@ export type ExportView =
   | 'unusedKeys'
   | 'untrackedGrants'
   | 'unattributed'
+  | 'onBehalf'
   | 'costDeployments'
   | 'chargeback'
   | 'costCenters'
@@ -2002,6 +2005,34 @@ export interface AnalyticsConsumerRow extends AnalyticsUsage {
   members?: number | null
 }
 
+export interface AnalyticsOnBehalfRow extends AnalyticsUsage {
+  /** `${person}|${gatewayId}/${mcpApiName}|${application}` */
+  key: string
+  personObjectId: string
+  personLabel: string
+  personDetail?: string | null
+  personPrincipalId?: string | null
+  personPrincipalKind?: PrincipalKind | null
+  gatewayId: string
+  gatewayName: string
+  mcpApiName: string
+  mcpLabel: string
+  mcpServerId?: string | null
+  applicationObjectId: string
+  applicationLabel: string
+  applicationDetail?: string | null
+  applicationPrincipalId?: string | null
+  applicationPrincipalKind?: PrincipalKind | null
+}
+
+export type OnBehalfUnresolvedReason = 'malformed' | 'missing' | 'late' | 'caller' | 'unknown'
+
+export interface AnalyticsOnBehalfUnresolved {
+  reason: OnBehalfUnresolvedReason
+  requests: number
+  totalTokens: number
+}
+
 export interface AnalyticsGrantRow extends AnalyticsUsage {
   key: string
   entitlementId: string | null
@@ -2046,6 +2077,8 @@ export interface AnalyticsConsumers extends AnalyticsReport {
   } & AnalyticsUsage>
   grants: AnalyticsGrantRow[]
   clientApps: AnalyticsClientAppRow[]
+  onBehalf?: AnalyticsOnBehalfRow[]
+  onBehalfUnresolved?: AnalyticsOnBehalfUnresolved[]
   truncated: boolean
   cost?: AnalyticsCostSummary | null
 }

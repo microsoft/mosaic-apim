@@ -44,6 +44,7 @@ import type {
   AnalyticsLimits,
   AnalyticsLimitUse,
   AnalyticsModels,
+  AnalyticsOnBehalfUnresolved,
   AnalyticsOverview,
   AnalyticsRange,
   AnalyticsRankRow,
@@ -65,7 +66,7 @@ type TabKey = 'overview' | 'cost' | 'consumers' | 'models' | 'reliability' | 'li
 const tabs: Array<{ key: TabKey; label: string; exports: ExportView[] }> = [
   { key: 'overview', label: 'Overview', exports: ['trend'] },
   { key: 'cost', label: 'Cost', exports: ['chargeback', 'costDeployments', 'costCenters'] },
-  { key: 'consumers', label: 'Consumers', exports: ['people', 'applications', 'groups', 'costCenters', 'grants', 'clientApps'] },
+  { key: 'consumers', label: 'Consumers', exports: ['people', 'applications', 'groups', 'costCenters', 'grants', 'clientApps', 'onBehalf'] },
   { key: 'models', label: 'Models', exports: ['apis', 'models', 'deployments'] },
   { key: 'reliability', label: 'Reliability', exports: ['denials', 'apis'] },
   { key: 'limits', label: 'Limits', exports: ['limits'] },
@@ -89,6 +90,7 @@ const exportLabels: Record<ExportView, string> = {
   unusedKeys: 'Unused keys',
   untrackedGrants: 'Untracked grants',
   unattributed: 'Unattributed calls',
+  onBehalf: 'Model use through MCP servers',
   chargeback: 'Chargeback by month',
   costDeployments: 'Cost by deployment',
   costCenters: 'Cost centers',
@@ -430,6 +432,24 @@ function costBars(rows: AnalyticsCost['models']): BarListItem[] {
 
 const CONSUMER_KINDS: Record<string, string> = { person: 'Person', application: 'Application', group: 'Security group' }
 
+const onBehalfUnresolvedLabels: Record<AnalyticsOnBehalfUnresolved['reason'], string> = {
+  malformed: 'with a malformed reference',
+  missing: 'with no matching MCP call',
+  late: 'after the MCP call ended',
+  caller: 'made by another application',
+  unknown: 'before MOSAIC knew the MCP grant',
+}
+
+function unresolvedOnBehalfText(rows: AnalyticsOnBehalfUnresolved[] | undefined) {
+  const present = (rows ?? []).filter((row) => row.requests > 0)
+  if (present.length === 0) return null
+  const requests = present.reduce((total, row) => total + row.requests, 0)
+  const details = present
+    .map((row) => `${formatNumber(row.requests)} ${onBehalfUnresolvedLabels[row.reason]}`)
+    .join(', ')
+  return `MOSAIC couldn't attribute ${plural(requests, 'model call')} to a person: ${details}.`
+}
+
 function CostTab({ report }: { report: AnalyticsCost }) {
   if (!report.priced) {
     return <EmptyState title="No price list">This deployment has no price list, so MOSAIC can&apos;t put a cost on usage.</EmptyState>
@@ -520,6 +540,40 @@ function CostTab({ report }: { report: AnalyticsCost }) {
   )
 }
 
+function OnBehalfCard({ report, priced }: { report: AnalyticsConsumers; priced: boolean }) {
+  const rows = report.onBehalf ?? []
+  const unresolvedText = unresolvedOnBehalfText(report.onBehalfUnresolved)
+  return (
+    <Card className={styles.panelCard}>
+      <Title3 as="h2">Model use through MCP servers</Title3>
+      <Text size={200}>
+        Model calls an MCP server&apos;s application made for the people who called it. They&apos;re
+        already counted above as the application&apos;s own, under its grant and cost center, so this
+        table adds to no total.
+      </Text>
+      {unresolvedText && <Text size={200}>{unresolvedText}</Text>}
+      <div className="table-scroll">
+        <table aria-label="Model use through MCP servers">
+          <thead><tr><th>Person</th><th>MCP server</th><th>Application</th><th>Requests</th><th>Tokens</th><th>Share</th>{priced && <th>Cost</th>}</tr></thead>
+          <tbody>
+            {rows.length === 0 ? <TableEmpty>No model calls were made through MCP servers for these filters.</TableEmpty> : rows.map((row) => (
+              <tr key={row.key}>
+                <td>{row.personLabel}<Text block size={200}>{row.personDetail ?? ''}</Text></td>
+                <td>{row.mcpLabel}<Text block size={200}>{row.gatewayName}</Text></td>
+                <td>{row.applicationLabel}<Text block size={200}>{row.applicationDetail ?? ''}</Text></td>
+                <td>{formatNumber(row.requests)}</td>
+                <td>{formatNumber(row.totalTokens)}</td>
+                <td>{formatShare(row.requestShare)}</td>
+                {priced && <td>{costCell(row.cost, row.totalTokens)}</td>}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </Card>
+  )
+}
+
 function ConsumersTab({ report }: { report: AnalyticsConsumers }) {
   const priced = report.cost != null
   return (
@@ -544,6 +598,7 @@ function ConsumersTab({ report }: { report: AnalyticsConsumers }) {
           </table>
         </div>
       </Card>
+      <OnBehalfCard report={report} priced={priced} />
       <Card className={styles.panelCard}>
         <Title3 as="h2">Grants</Title3>
         <div className="table-scroll">

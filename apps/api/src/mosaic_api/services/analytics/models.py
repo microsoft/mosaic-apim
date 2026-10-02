@@ -42,6 +42,7 @@ ExportView = Literal[
     "costDeployments",
     "costCenters",
     "chargeback",
+    "onBehalf",
 ]
 ConsumerKind = Literal["person", "application", "group"]
 GrantState = Literal["active", "disabled", "removed"]
@@ -323,6 +324,47 @@ class AnalyticsClientAppRow(AnalyticsUsage):
     apis: int
 
 
+class AnalyticsOnBehalfRow(AnalyticsUsage):
+    """One person's model calls that an MCP server's application made for them. See ADR 0025.
+
+    The calls are still the application's: its grant decided them and its cost center pays, and
+    People, Applications, Grants and every other figure count them as the application's own. This
+    row only says whose MCP calls they served, so nothing here adds to any other total.
+    """
+
+    # `{person}|{gatewayId}/{mcpApiName}|{application}`, every part lowercased.
+    key: str
+    person_object_id: str
+    person_label: str
+    person_detail: str | None = None
+    person_principal_id: str | None = None
+    person_principal_kind: PrincipalKind | None = None
+    gateway_id: str
+    gateway_name: str
+    # The MCP server's API on that gateway, and its name as Analytics names APIs.
+    mcp_api_name: str
+    mcp_label: str
+    mcp_server_id: str | None = None
+    # The application that called the model, which is the grant's caller.
+    application_object_id: str
+    application_label: str
+    application_detail: str | None = None
+    application_principal_id: str | None = None
+    application_principal_kind: PrincipalKind | None = None
+
+
+class AnalyticsOnBehalfUnresolved(MosaicModel):
+    """Model calls that named an MCP call MOSAIC couldn't attribute them through, by why.
+
+    ``reason`` is ``malformed``, ``missing``, ``late``, ``caller`` or ``unknown``. The calls stay
+    the application's own use, so they're counted here and nowhere else apart.
+    """
+
+    reason: str
+    requests: int
+    total_tokens: int
+
+
 class AnalyticsConsumers(AnalyticsReport):
     # Admitted calls MOSAIC linked to a grant, which every share on this page is a share of.
     linked_requests: int
@@ -335,6 +377,11 @@ class AnalyticsConsumers(AnalyticsReport):
     grants: list[AnalyticsGrantRow]
     client_apps: list[AnalyticsClientAppRow]
     cost_centers: list[AnalyticsCostCenterRow] = Field(default_factory=list)
+    # Model use through MCP servers: the people an MCP server's application called models for.
+    # Already counted above as the application's own calls. See ADR 0025.
+    on_behalf: list[AnalyticsOnBehalfRow] = Field(default_factory=list)
+    # References MOSAIC couldn't use, by reason, in the reasons' fixed order.
+    on_behalf_unresolved: list[AnalyticsOnBehalfUnresolved] = Field(default_factory=list)
     truncated: bool
     # The linked calls' cost. None when this deployment has no price list.
     cost: AnalyticsCostSummary | None = None

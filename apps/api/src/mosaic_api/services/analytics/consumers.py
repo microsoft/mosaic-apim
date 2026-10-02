@@ -13,6 +13,8 @@ from mosaic_api.services.analytics.models import (
     AnalyticsConsumers,
     AnalyticsCostCenterRow,
     AnalyticsGrantRow,
+    AnalyticsOnBehalfRow,
+    AnalyticsOnBehalfUnresolved,
     AnalyticsUsage,
     ConsumerKind,
     GrantState,
@@ -23,6 +25,8 @@ from mosaic_api.services.analytics.views import Context, resolved_caller
 from mosaic_api.usage_telemetry import UsageMetrics, UsageSummary
 
 NO_TOKEN = "Calls without a token"
+# Why MOSAIC couldn't use a model call's MCP call reference, in the order reports list them.
+ON_BEHALF_REASONS: tuple[str, ...] = ("malformed", "missing", "late", "caller", "unknown")
 
 
 @dataclass
@@ -60,12 +64,104 @@ def _state(scope: Scope, entitlement_id: str | None) -> GrantState:
     return "active" if entitlement.enabled else "disabled"
 
 
+def on_behalf_key(key: str) -> tuple[str, str, str, str] | None:
+    """An ``onBehalf`` entry's grant link, application, person and MCP API, or None if malformed."""
+
+    parts = key.rsplit("|", 3)
+    if len(parts) != 4 or not parts[2] or not parts[3]:
+        return None
+    grant_key, caller, person, mcp_api = parts
+    return grant_key, caller, person, mcp_api
+
+
+def _on_behalf_rows(
+    context: Context,
+    summaries: Sequence[UsageSummary],
+    costs: CostBook | None,
+    requests: int,
+    tokens: int,
+) -> list[AnalyticsOnBehalfRow]:
+    """Each person's model use through each MCP server, by the application that made the calls.
+
+    Every call here is already one of the application's own linked calls, so the rows add to no
+    total and price nothing into the report's cost. Each is priced as its grant's calls are.
+    """
+
+    scope = context.scope
+    found: dict[tuple[str, str, str, str], _Tally] = defaultdict(_Tally)
+    for summary, entry in entries(summaries, scope, "onBehalf"):
+        parsed = on_behalf_key(entry.key)
+        if parsed is None:
+            continue
+        grant_key, caller, person, mcp_api = parsed
+        application = resolved_caller(scope, grant_key, caller) or ""
+        tally = found[(person.casefold(), summary.gateway_id, mcp_api.casefold(), application)]
+        tally.metrics.add(entry.metrics)
+        if costs is not None:
+            tally.cost = add_cost(
+                tally.cost,
+                costs.grant_cost(
+                    summary.gateway_id,
+                    grant_key,
+                    summary.period,
+                    date.fromisoformat(summary.period_start),
+                    entry.metrics,
+                ),
+            )
+    rows: list[AnalyticsOnBehalfRow] = []
+    for (person, gateway_id, mcp_api, application), tally in found.items():
+        who = scope.caller(person)
+        app = scope.caller(application or None)
+        known = scope.apis.get((gateway_id, mcp_api))
+        rows.append(
+            AnalyticsOnBehalfRow(
+                **usage_values(tally.metrics, requests, tokens, tally.cost),
+                key=f"{person}|{gateway_id}/{mcp_api}|{application}",
+                person_object_id=person,
+                person_label=who.label,
+                person_detail=who.detail,
+                person_principal_id=who.principal_id,
+                person_principal_kind=who.principal_kind,
+                gateway_id=gateway_id,
+                gateway_name=scope.gateway_name(gateway_id),
+                mcp_api_name=mcp_api,
+                mcp_label=scope.api_label(gateway_id, mcp_api),
+                mcp_server_id=known.resource_id if known else None,
+                application_object_id=application,
+                application_label=app.label,
+                application_detail=app.detail,
+                application_principal_id=app.principal_id,
+                application_principal_kind=app.principal_kind,
+            )
+        )
+    return rows
+
+
+def _on_behalf_unresolved(
+    scope: Scope, summaries: Sequence[UsageSummary]
+) -> list[AnalyticsOnBehalfUnresolved]:
+    by_reason: dict[str, UsageMetrics] = defaultdict(UsageMetrics)
+    for _, entry in entries(summaries, scope, "onBehalfUnresolved"):
+        by_reason[entry.key.rpartition("|")[2] or "unknown"].add(entry.metrics)
+    order = {reason: index for index, reason in enumerate(ON_BEHALF_REASONS)}
+    return [
+        AnalyticsOnBehalfUnresolved(
+            reason=reason, requests=metrics.requests, total_tokens=metrics.total_tokens
+        )
+        for reason, metrics in sorted(
+            by_reason.items(), key=lambda item: (order.get(item[0], len(order)), item[0])
+        )
+        if metrics.requests > 0
+    ]
+
+
 def consumers_report(
     context: Context,
     *,
     callers: Sequence[UsageSummary],
     clients: Sequence[UsageSummary],
     costs: CostBook | None = None,
+    on_behalf: Sequence[UsageSummary] = (),
 ) -> AnalyticsConsumers:
     scope = context.scope
     people: dict[str, _Tally] = defaultdict(_Tally)
@@ -258,11 +354,13 @@ def consumers_report(
     ]
 
     lists = [person_rows, app_rows, group_rows]
+    behalf_rows = _on_behalf_rows(context, on_behalf, costs, requests, tokens)
     limit = context.limit
     truncated = (
         any(len(rows) > limit for rows in lists)
         or len(grant_rows) > limit
         or len(client_rows) > limit
+        or len(behalf_rows) > limit
     )
     return AnalyticsConsumers(
         **context.report(),
@@ -275,6 +373,10 @@ def consumers_report(
         grants=_ordered(grant_rows, lambda row: row.subject_label)[:limit],
         client_apps=_ordered(client_rows, lambda row: row.label)[:limit],
         cost_centers=_ordered(cost_center_rows, lambda row: row.label)[:limit],
+        on_behalf=_ordered(
+            behalf_rows, lambda row: f"{row.person_label}|{row.mcp_label}|{row.key}"
+        )[:limit],
+        on_behalf_unresolved=_on_behalf_unresolved(scope, on_behalf),
         truncated=truncated,
         cost=tally.summary(costs.notes) if costs is not None else None,
     )

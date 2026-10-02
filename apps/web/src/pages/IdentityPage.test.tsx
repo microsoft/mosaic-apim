@@ -9,6 +9,7 @@ import { IdentityPage } from './IdentityPage'
 const mocks = vi.hoisted(() => ({
   lookupEnabled: true,
   principals: [] as Principal[],
+  mcpPublications: [] as Array<{ id: string; displayName: string; modelCallerId?: string | null }>,
   searchDirectory: vi.fn(),
   createPrincipal: vi.fn(),
   updatePrincipal: vi.fn(),
@@ -41,6 +42,7 @@ vi.mock('../api', () => ({
     ],
     getCostCenterSettings: async () => ({ id: 'settings', tenantId: 'tenant', defaultCostCenterId: 'cc-general' }),
     listMemberships: async () => [],
+    listMcpPublications: async () => [...mocks.mcpPublications],
     createPrincipal: mocks.createPrincipal,
     updatePrincipal: mocks.updatePrincipal,
     deletePrincipal: vi.fn(),
@@ -134,6 +136,7 @@ describe('IdentityPage', () => {
     vi.resetAllMocks()
     mocks.lookupEnabled = true
     mocks.principals = seedPrincipals()
+    mocks.mcpPublications = []
   })
 
   it('lists people, agents, and applications with security groups on their own tabs', async () => {
@@ -165,6 +168,20 @@ describe('IdentityPage', () => {
     expect(await screen.findByText('Member User')).toBeVisible()
     expect(screen.getByText('Recorded in MOSAIC')).toBeVisible()
     expect(screen.getByText(/member list is truncated/)).toBeVisible()
+  })
+
+  it('marks applications that MCP servers call models as', async () => {
+    const user = userEvent.setup()
+    mocks.mcpPublications = [
+      { id: 'mcp_pub_docs', displayName: 'Contoso Docs', modelCallerId: 'workload' },
+    ]
+
+    renderPage('/identity?tab=workloads')
+
+    expect(await screen.findByRole('heading', { name: 'Applications and security groups' })).toBeVisible()
+    expect(screen.getAllByText('Calls models for Contoso Docs').length).toBeGreaterThan(0)
+    await user.click(principalRow(/Security Readers/))
+    expect(screen.queryByText('Calls models for Security Readers')).not.toBeInTheDocument()
   })
 
   it('opens Add person on directory search and switches to manual entry and back', async () => {

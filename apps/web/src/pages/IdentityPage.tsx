@@ -188,6 +188,10 @@ export function IdentityPage() {
   const costCenters = useQuery({ queryKey: ['cost-centers'], queryFn: api.listCostCenters })
   const costCenterSettings = useQuery({ queryKey: ['cost-center-settings'], queryFn: api.getCostCenterSettings })
   const groups = useQuery({ queryKey: ['groups'], queryFn: api.listGroups })
+  const mcpPublications = useQuery({
+    queryKey: ['mcp-publications'],
+    queryFn: () => api.listMcpPublications(),
+  })
   const directoryStatus = useQuery({
     queryKey: ['directory', 'status'],
     queryFn: api.getDirectoryStatus,
@@ -400,6 +404,17 @@ export function IdentityPage() {
         ),
     [memberIds, principals.data],
   )
+  const mcpServersByModelCaller = useMemo(() => {
+    const map = new Map<string, string[]>()
+    if (!mcpPublications.isSuccess) return map
+    for (const publication of mcpPublications.data) {
+      if (!publication.modelCallerId) continue
+      const names = map.get(publication.modelCallerId) ?? []
+      names.push(publication.displayName)
+      map.set(publication.modelCallerId, names)
+    }
+    return map
+  }, [mcpPublications.data, mcpPublications.isSuccess])
   const filteredMemberships = useMemo(
     () =>
       (memberships.data ?? []).filter((membership) => {
@@ -882,6 +897,7 @@ export function IdentityPage() {
                   <tbody>
                     {visiblePrincipals.map((principal) => {
                       const isSelected = principal.id === selectedPrincipalId
+                      const mcpServerNames = mcpServersByModelCaller.get(principal.id) ?? []
                       return (
                         <tr
                           key={principal.id}
@@ -933,6 +949,11 @@ export function IdentityPage() {
                                   {formatTimestamp(principal.directoryVerifiedAt)}
                                 </span>
                               )}
+                              {mcpServerNames.length > 0 && (
+                                <Badge appearance="tint" className={styles.groupBadge}>
+                                  Calls models for {mcpServerNames.join(', ')}
+                                </Badge>
+                              )}
                             </div>
                           </td>
                         </tr>
@@ -962,6 +983,11 @@ export function IdentityPage() {
                     <div className={styles.badgeRow}>
                       <LiveBadge />
                       <PrincipalKindBadge kind={selectedPrincipal.kind} />
+                      {(mcpServersByModelCaller.get(selectedPrincipal.id) ?? []).length > 0 && (
+                        <Badge appearance="tint" className={styles.groupBadge}>
+                          Calls models for {(mcpServersByModelCaller.get(selectedPrincipal.id) ?? []).join(', ')}
+                        </Badge>
+                      )}
                     </div>
                   </div>
                   <Button

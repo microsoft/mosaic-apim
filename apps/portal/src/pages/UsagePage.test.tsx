@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { describe, expect, it, vi } from 'vitest'
 import type { PortalApi } from '../api'
-import type { MyUsageReport, PortalBudgetAlert, UsageResourceRow } from '../types'
+import type { MyUsageReport, PortalBudgetAlert, UsageOnBehalfRow, UsageResourceRow } from '../types'
 import { UsagePage } from './UsagePage'
 
 const mocks = vi.hoisted(() => ({
@@ -81,6 +81,42 @@ function resourceRow(overrides: Partial<UsageResourceRow>): UsageResourceRow {
         peakMinuteRequests: 3,
       },
     ],
+    ...overrides,
+  }
+}
+
+function onBehalfRow(overrides: Partial<UsageOnBehalfRow> = {}): UsageOnBehalfRow {
+  return {
+    key: 'on-behalf-support-bot-chat',
+    mcpServer: {
+      kind: 'mcpServer',
+      id: 'support-bot',
+      scopeId: null,
+      displayName: 'Support bot',
+      gatewayId: 'gateway-1',
+      gatewayName: 'Production gateway',
+      environment: 'production',
+      available: true,
+    },
+    resource: {
+      kind: 'modelApi',
+      id: 'chat',
+      scopeId: null,
+      displayName: 'Contoso chat',
+      gatewayId: 'gateway-1',
+      gatewayName: 'Production gateway',
+      environment: 'production',
+      available: true,
+    },
+    model: 'gpt-4o-mini',
+    requests: 12,
+    promptTokens: 1_200,
+    completionTokens: 800,
+    totalTokens: 2_000,
+    estimatedCost: 0.42,
+    costNote: null,
+    costCenter: { id: 'cc-support', name: 'Support', code: 'SUP' },
+    lastUsedAt: '2026-09-02T10:30:00Z',
     ...overrides,
   }
 }
@@ -470,6 +506,65 @@ describe('UsagePage', () => {
     expect(screen.getByText('5% of pooled quota used')).toBeVisible()
     expect(document.body).not.toHaveTextContent('Mallory')
     expect(document.body).not.toHaveTextContent('00000000-1111-2222-3333-444444444444')
+  })
+
+  it('shows model use through MCP servers with server, model, cost center, and charge text', async () => {
+    renderPage(usageReport({ dataSource: 'logAnalytics', notes: [], onBehalf: [onBehalfRow()] }))
+
+    const table = await screen.findByRole('table', { name: 'Model use through MCP servers' })
+    expect(screen.getByText('Model use through MCP servers')).toBeVisible()
+    expect(
+      screen.getByText(
+        "Model calls that MCP servers made for you, as their own applications. Each was charged to the cost center of the MCP server's application grant, not to yours, so they aren't in your totals above.",
+      ),
+    ).toBeVisible()
+    expect(within(table).getByText('Support bot')).toBeVisible()
+    expect(within(table).getByText('Contoso chat')).toBeVisible()
+    expect(within(table).getByText('gpt-4o-mini')).toBeVisible()
+    expect(within(table).getByText('Support ·')).toBeVisible()
+    expect(within(table).getByText('SUP')).toBeVisible()
+  })
+
+  it('hides model use through MCP servers when the report has an empty row list', async () => {
+    renderPage(usageReport({ onBehalf: [] }))
+
+    await screen.findByRole('table', { name: 'Usage by resource' })
+    expect(screen.queryByRole('table', { name: 'Model use through MCP servers' })).not.toBeInTheDocument()
+  })
+
+  it('hides model use through MCP servers when the report omits the row list', async () => {
+    renderPage()
+
+    await screen.findByRole('table', { name: 'Usage by resource' })
+    expect(screen.queryByRole('table', { name: 'Model use through MCP servers' })).not.toBeInTheDocument()
+  })
+
+  it('hides model use through MCP servers from other environments', async () => {
+    const user = userEvent.setup()
+    renderPage(usageReport({ dataSource: 'logAnalytics', notes: [], onBehalf: [onBehalfRow()] }))
+
+    expect(await screen.findByRole('table', { name: 'Model use through MCP servers' })).toBeVisible()
+    await user.selectOptions(screen.getByLabelText('Environment'), 'development')
+    expect(screen.queryByRole('table', { name: 'Model use through MCP servers' })).not.toBeInTheDocument()
+  })
+
+  it('shows the cost note for unpriced model use through MCP servers', async () => {
+    renderPage(
+      usageReport({
+        dataSource: 'logAnalytics',
+        notes: [],
+        onBehalf: [
+          onBehalfRow({
+            estimatedCost: null,
+            costNote: 'No price for Contoso chat in Azure Commercial.',
+          }),
+        ],
+      }),
+    )
+
+    const table = await screen.findByRole('table', { name: 'Model use through MCP servers' })
+    expect(within(table).getByText('No price')).toBeVisible()
+    expect(within(table).getByText('No price for Contoso chat in Azure Commercial.')).toBeVisible()
   })
 
   it('warns above usage when a cost center is past its budget', async () => {
