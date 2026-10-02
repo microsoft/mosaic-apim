@@ -411,7 +411,7 @@ export interface EnvironmentAssignmentResult {
 }
 
 export interface BlockedPublication {
-  kind?: 'model' | 'mcp'
+  kind?: 'model' | 'mcp' | 'pool'
   publicationId: string
   displayName?: string | null
   status: string
@@ -1221,6 +1221,7 @@ export type PublishedResourceKind =
   | 'namedValue'
   | 'policyFragment'
   | 'backend'
+  | 'backendPool'
   | 'api'
   | 'apiOperation'
   | 'apiPolicy'
@@ -1442,7 +1443,7 @@ export interface PublishPlan {
   facets: PolicyFacet[]
   policyContentSha256: string | null
   warnings: string[]
-  target?: 'model' | 'mcp'
+  target?: 'model' | 'mcp' | 'pool'
   /** Publish plans are applied; unpublish plans delete what MOSAIC created. Older plans omit it. */
   operation?: 'publish' | 'unpublish'
   accessSnapshot?: ModelAccessSnapshot | null
@@ -1479,11 +1480,236 @@ export interface PublishRun {
   rolledBack: boolean
   orphanedResources: PublishedResource[]
   errors: string[]
-  target?: 'model' | 'mcp'
+  target?: 'model' | 'mcp' | 'pool'
   accessSnapshot?: ModelAccessSnapshot | null
   mcpAccessSnapshot?: McpAccessSnapshot | null
   createdAt: string
   updatedAt: string
+}
+
+/**
+ * How a pool model spreads requests over its members (ADR 0024). A breaker pool balances by weight
+ * and skips a member that throttles; a preferential pool sends everything to provisioned members
+ * first; a linear pool tries members in order.
+ */
+export type ModelPoolType = 'breaker' | 'preferential' | 'linear'
+
+/** Which failures move a request on to another member and trip that member's breaker. */
+export type BreakerPreset = 'throttling' | 'throttlingAndErrors'
+
+export type ModelPoolVisibility = 'listed' | 'hidden'
+
+/** Whether a pool member can serve requests, as far as MOSAIC can tell before it publishes. */
+export type PoolReadiness = 'ready' | 'notConfirmed' | 'cannotInvoke'
+
+/** What a pool model's members' capacity adds up to, as users are told it. */
+export type PoolCapacityBadge = 'provisioned' | 'payAsYouGo' | 'provisionedWithOverflow' | 'unknown'
+
+/** A token limit every caller of one pool model shares, counted per pool model. */
+export interface PoolSafeguard {
+  tokensPerMinute?: number | null
+  tokenQuota?: number | null
+  tokenQuotaPeriod?: QuotaPeriod | null
+}
+
+export interface PoolMember {
+  modelEndpointId: string
+  deploymentName: string
+  weight: number
+  drained: boolean
+  backendName: string
+}
+
+export interface PoolModel {
+  id: string
+  publicName: string
+  displayName: string
+  modelName?: string | null
+  modelFormat?: string | null
+  expectedVersion?: string | null
+  allowMixedVersions: boolean
+  listed: boolean
+  backendPoolName: string
+  members: PoolMember[]
+}
+
+/** One vendor's deployments, on many endpoints, served through one API on one gateway. */
+export interface ModelPool {
+  id: string
+  tenantId: string
+  entityType: 'modelPool'
+  gatewayId: string
+  displayName: string
+  description?: string | null
+  visibility: ModelPoolVisibility
+  showCapacity: boolean
+  poolType: ModelPoolType
+  breakerPreset: BreakerPreset
+  maxRetries: number
+  apiShape?: ApiShape | null
+  vendor?: string | null
+  apiName: string
+  apiPath: string
+  fragmentName: string
+  productName: string
+  subscriptionName: string
+  safeguard?: PoolSafeguard | null
+  models: PoolModel[]
+  status: PublicationStatus
+  resources: PublishedResource[]
+  lastPlanId: string | null
+  lastPlanDigest: string | null
+  lastRunId: string | null
+  lastAppliedAt: string | null
+  unpublishedAt?: string | null
+  lastError: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+export interface PoolMemberSpec {
+  modelEndpointId: string
+  deploymentName: string
+  weight?: number
+  drained?: boolean
+}
+
+export interface PoolModelSpec {
+  /** Defaults to the members' shared deployment name. Required when they don't share one. */
+  publicName?: string | null
+  displayName?: string | null
+  listed?: boolean
+  allowMixedVersions?: boolean
+  members: PoolMemberSpec[]
+}
+
+export interface ModelPoolCreate {
+  gatewayId: string
+  displayName: string
+  description?: string | null
+  visibility?: ModelPoolVisibility
+  showCapacity?: boolean
+  poolType?: ModelPoolType
+  breakerPreset?: BreakerPreset
+  maxRetries?: number
+  apiName?: string
+  apiPath?: string
+  productName?: string
+  safeguard?: PoolSafeguard | null
+  models?: PoolModelSpec[]
+}
+
+/** A change to a pool's intent. `models` replaces the whole list when it's given. */
+export interface ModelPoolUpdate {
+  displayName?: string
+  description?: string | null
+  visibility?: ModelPoolVisibility
+  showCapacity?: boolean
+  poolType?: ModelPoolType
+  breakerPreset?: BreakerPreset
+  maxRetries?: number
+  safeguard?: PoolSafeguard | null
+  models?: PoolModelSpec[]
+}
+
+export interface PoolMemberView {
+  modelEndpointId: string
+  endpointName?: string | null
+  deploymentName: string
+  backendName: string
+  weight: number
+  drained: boolean
+  /** Linear pools: the member's position, from 1. */
+  order?: number | null
+  /** Breaker and preferential pools: the priority group, where 1 is tried first. */
+  priority?: number | null
+  region?: string | null
+  environment?: string | null
+  modelName?: string | null
+  modelVersion?: string | null
+  skuName?: string | null
+  skuCapacity?: number | null
+  capacityType: CapacityType
+  processingScope: ProcessingScope
+  spilloverDeploymentName?: string | null
+  provisioningState?: string | null
+  observed: boolean
+  readiness: PoolReadiness
+  readinessMessage?: string | null
+  environmentVerdict?: EnvironmentVerdict | null
+}
+
+export interface PoolModelView {
+  id: string
+  publicName: string
+  displayName: string
+  modelName?: string | null
+  modelFormat?: string | null
+  expectedVersion?: string | null
+  listed: boolean
+  backendPoolName?: string | null
+  capacity: PoolCapacityBadge
+  members: PoolMemberView[]
+}
+
+export interface ModelPoolDetail {
+  pool: ModelPool
+  gatewayName?: string | null
+  gatewayEnvironment?: string | null
+  baseUrl?: string | null
+  models: PoolModelView[]
+  /** What stops the pool being planned now, each a sentence an administrator can act on. */
+  problems: string[]
+  warnings: string[]
+  facets: PolicyFacet[]
+}
+
+export interface PoolCandidateDeployment {
+  modelEndpointId: string
+  endpointName: string
+  region?: string | null
+  environment?: string | null
+  deploymentName: string
+  modelVersion?: string | null
+  skuName?: string | null
+  skuCapacity?: number | null
+  capacityType: CapacityType
+  processingScope: ProcessingScope
+  spilloverDeploymentName?: string | null
+  readiness: PoolReadiness
+  environmentVerdict: EnvironmentVerdict
+  eligible: boolean
+  reason?: string | null
+  /** The pools on this gateway that already use the deployment. */
+  poolIds: string[]
+}
+
+export interface PoolCandidateModel {
+  modelName: string
+  modelFormat?: string | null
+  apiShape?: ApiShape | null
+  deployments: PoolCandidateDeployment[]
+}
+
+export interface PoolCandidates {
+  gatewayId: string
+  gatewayEnvironment?: string | null
+  /** Each pool type, and why the gateway can't run it, or null when it can. */
+  poolTypes: Partial<Record<ModelPoolType, string | null>>
+  models: PoolCandidateModel[]
+}
+
+/** A pool as the console's list shows it, with its active members counted. */
+export interface ModelPoolSummary {
+  pool: ModelPool
+  gatewayName?: string | null
+  gatewayEnvironment?: string | null
+  /** Active members by capacity type. */
+  capacity: Partial<Record<CapacityType, number>>
+  /** Active members by readiness. */
+  readiness: Partial<Record<PoolReadiness, number>>
+  problemCount: number
+  warningCount: number
 }
 
 export interface ModelConnection {

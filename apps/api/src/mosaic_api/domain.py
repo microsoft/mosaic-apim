@@ -2090,6 +2090,8 @@ class PublishedResourceKind(StrEnum):
 
     NAMED_VALUE = "namedValue"
     BACKEND = "backend"
+    # A load-balanced pool over several member backends. Only model pools write them (ADR 0024).
+    BACKEND_POOL = "backendPool"
     POLICY_FRAGMENT = "policyFragment"
     API = "api"
     API_OPERATION = "apiOperation"
@@ -3146,9 +3148,10 @@ class PublishPlan(Entity):
 
     entity_type: Literal["publishPlan"] = "publishPlan"
     publication_id: str
-    # Which kind of publication ``publication_id`` names. Plans saved before MCP publishing
-    # existed are model plans.
-    target: Literal["model", "mcp"] = "model"
+    # Which kind of publication ``publication_id`` names: a model publication, an MCP
+    # publication, or a model pool (ADR 0024). Plans saved before MCP publishing existed are model
+    # plans.
+    target: Literal["model", "mcp", "pool"] = "model"
     # What running the plan does. A publish plan writes the publication's resources and is run by
     # apply; an unpublish plan deletes the ones MOSAIC created and is run by unpublish, and neither
     # route runs the other's. Plans saved before unpublishing was planned are publish plans.
@@ -3183,7 +3186,7 @@ class PublishRun(Entity):
     publication_id: str
     # Which kind of publication ``publication_id`` names; runs saved before MCP publishing existed
     # are model runs. Each publishing service reaps and recovers only its own runs.
-    target: Literal["model", "mcp"] = "model"
+    target: Literal["model", "mcp", "pool"] = "model"
     gateway_id: str
     plan_id: str
     plan_digest: str

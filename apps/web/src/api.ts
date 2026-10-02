@@ -78,6 +78,11 @@ import type {
   ModelEndpoint,
   ModelEndpointSuggestionView,
   ModelEndpointSyncRun,
+  ModelPool,
+  ModelPoolCreate,
+  ModelPoolDetail,
+  ModelPoolSummary,
+  ModelPoolUpdate,
   ObservedApi,
   ObservedApimGroup,
   ObservedApimUser,
@@ -90,6 +95,7 @@ import type {
   ObservedOperation,
   ObservedProduct,
   ObservedSubscription,
+  PoolCandidates,
   Publication,
   PublicationLockInfo,
   PublishableModel,
@@ -323,6 +329,24 @@ export interface MosaicApi {
   recoverMcpPublication(publicationId: string, payload: { runId: string; confirmQuiesced: boolean }): Promise<PublishRun>
   getMcpPublicationLock(publicationId: string): Promise<PublicationLockInfo>
   getMcpPublishPlan(planId: string): Promise<PublishPlan>
+  /** The deployments a pool on the gateway could use, grouped by model, and the pool types it runs. */
+  getPoolCandidates(gatewayId: string): Promise<PoolCandidates>
+  listModelPools(gatewayId?: string): Promise<ModelPool[]>
+  listModelPoolSummaries(gatewayId?: string): Promise<ModelPoolSummary[]>
+  createModelPool(payload: ModelPoolCreate): Promise<ModelPool>
+  getModelPool(poolId: string): Promise<ModelPool>
+  getModelPoolDetail(poolId: string): Promise<ModelPoolDetail>
+  updateModelPool(poolId: string, payload: ModelPoolUpdate): Promise<ModelPool>
+  deleteModelPool(poolId: string): Promise<void>
+  planModelPool(poolId: string): Promise<PublishPlan>
+  applyModelPool(poolId: string, planId: string): Promise<PublishRun>
+  planUnpublishModelPool(poolId: string): Promise<PublishPlan>
+  unpublishModelPool(poolId: string, planId: string): Promise<PublishRun>
+  listModelPoolRuns(poolId: string): Promise<PublishRun[]>
+  getModelPoolRun(poolId: string, runId: string): Promise<PublishRun>
+  recoverModelPool(poolId: string, payload: { runId: string; confirmQuiesced: boolean }): Promise<PublishRun>
+  getModelPoolLock(poolId: string): Promise<PublicationLockInfo>
+  getModelPoolPlan(planId: string): Promise<PublishPlan>
   listGatewayApis(gatewayId: string): Promise<ObservedApi[]>
   listGatewayOperations(gatewayId: string, apiName?: string): Promise<ObservedOperation[]>
   listGatewayProducts(gatewayId: string): Promise<ObservedProduct[]>
@@ -842,6 +866,61 @@ export function useMosaicApi(): MosaicApi {
         request<PublicationLockInfo>(`/api/v1/mcp-publications/${encodeURIComponent(id)}/lock`),
       getMcpPublishPlan: (planId) =>
         request<PublishPlan>(`/api/v1/mcp-publish-plans/${encodeURIComponent(planId)}`),
+      getPoolCandidates: (gatewayId) =>
+        request<PoolCandidates>(`/api/v1/gateways/${encodeURIComponent(gatewayId)}/pool-candidates`),
+      listModelPools: (gatewayId) =>
+        request<ModelPool[]>(
+          `/api/v1/model-pools${gatewayId ? `?gateway=${encodeURIComponent(gatewayId)}` : ''}`,
+        ),
+      listModelPoolSummaries: (gatewayId) =>
+        request<ModelPoolSummary[]>(
+          `/api/v1/model-pool-summaries${gatewayId ? `?gateway=${encodeURIComponent(gatewayId)}` : ''}`,
+        ),
+      createModelPool: (payload) =>
+        request<ModelPool>('/api/v1/model-pools', { method: 'POST', body: payload }),
+      getModelPool: (id) => request<ModelPool>(`/api/v1/model-pools/${encodeURIComponent(id)}`),
+      getModelPoolDetail: (id) =>
+        request<ModelPoolDetail>(`/api/v1/model-pools/${encodeURIComponent(id)}/detail`),
+      updateModelPool: (id, payload) =>
+        request<ModelPool>(`/api/v1/model-pools/${encodeURIComponent(id)}`, {
+          method: 'PATCH',
+          body: payload,
+        }),
+      deleteModelPool: (id) =>
+        request<void>(`/api/v1/model-pools/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+      planModelPool: (id) =>
+        request<PublishPlan>(`/api/v1/model-pools/${encodeURIComponent(id)}/plan`, {
+          method: 'POST',
+        }),
+      applyModelPool: (id, planId) =>
+        request<PublishRun>(
+          `/api/v1/model-pools/${encodeURIComponent(id)}/apply?plan=${encodeURIComponent(planId)}`,
+          { method: 'POST' },
+        ),
+      planUnpublishModelPool: (id) =>
+        request<PublishPlan>(`/api/v1/model-pools/${encodeURIComponent(id)}/unpublish-plan`, {
+          method: 'POST',
+        }),
+      unpublishModelPool: (id, planId) =>
+        request<PublishRun>(
+          `/api/v1/model-pools/${encodeURIComponent(id)}/unpublish?plan=${encodeURIComponent(planId)}`,
+          { method: 'POST' },
+        ),
+      listModelPoolRuns: (id) =>
+        request<PublishRun[]>(`/api/v1/model-pools/${encodeURIComponent(id)}/runs`),
+      getModelPoolRun: (id, runId) =>
+        request<PublishRun>(
+          `/api/v1/model-pools/${encodeURIComponent(id)}/runs/${encodeURIComponent(runId)}`,
+        ),
+      recoverModelPool: (id, payload) =>
+        request<PublishRun>(`/api/v1/model-pools/${encodeURIComponent(id)}/recover`, {
+          method: 'POST',
+          body: payload,
+        }),
+      getModelPoolLock: (id) =>
+        request<PublicationLockInfo>(`/api/v1/model-pools/${encodeURIComponent(id)}/lock`),
+      getModelPoolPlan: (planId) =>
+        request<PublishPlan>(`/api/v1/model-pool-plans/${encodeURIComponent(planId)}`),
       listGatewayApis: (id) => request<ObservedApi[]>(`/api/v1/gateways/${id}/apis`),
       listGatewayOperations: (id, apiName) =>
         request<ObservedOperation[]>(

@@ -45,7 +45,9 @@ export function PublicationsBlockedRefusal({
                 {details.publications.map((publication) => {
                   const kind = publication.kind ?? 'model'
                   return (
-                    <TableRow key={publication.publicationId}>
+                    <TableRow
+                      key={`${publication.publicationId}:${publication.modelEndpointId ?? publication.mcpEndpointId ?? ''}`}
+                    >
                       <TableCell>
                         {publication.gatewayName}{' '}
                         <EnvironmentBadge
@@ -65,7 +67,9 @@ export function PublicationsBlockedRefusal({
                       <TableCell>
                         {kind === 'mcp'
                           ? publication.displayName ?? 'MCP server'
-                          : publication.deploymentName ?? '—'}
+                          : kind === 'pool'
+                            ? `Pool ${publication.displayName ?? ''}${publication.deploymentName ? ` (${publication.deploymentName})` : ''}`
+                            : publication.deploymentName ?? '—'}
                       </TableCell>
                       <TableCell>{publication.verdict.reason}</TableCell>
                     </TableRow>

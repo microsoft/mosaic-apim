@@ -20,6 +20,7 @@ from mosaic_api.repositories import (
     InMemoryCostCenterRepository,
     InMemoryDirectoryRepository,
     InMemoryEntitlementRepository,
+    InMemoryEnvironmentRepository,
     InMemoryGatewayRepository,
     InMemoryMcpEndpointRepository,
     InMemoryModelEndpointRepository,
@@ -34,6 +35,7 @@ from mosaic_api.services import (
 from mosaic_api.services.directory import Actor
 from mosaic_api.services.mcp_endpoints import build_mcp_client_factory
 from mosaic_api.services.mcp_publishing import McpPublishingService
+from mosaic_api.services.model_pools import ModelPoolService
 
 
 async def _no_sleep(_seconds: float) -> None:
@@ -220,6 +222,23 @@ def build_publishing_service(
         endpoint_repository=endpoint_repository,
         client_factory=lambda resource: ApimClient(arm, resource),
         writer_factory=lambda resource: ApimWriter(arm, resource),
+    )
+
+
+def build_model_pool_service(
+    fake: FakeApim,
+    gateway_repository: InMemoryGatewayRepository,
+    endpoint_repository: InMemoryModelEndpointRepository,
+    *,
+    environment_repository: InMemoryEnvironmentRepository | None = None,
+) -> ModelPoolService:
+    arm = build_arm_client(fake)
+    return ModelPoolService(
+        gateway_repository,
+        endpoint_repository=endpoint_repository,
+        client_factory=lambda resource: ApimClient(arm, resource),
+        writer_factory=lambda resource: ApimWriter(arm, resource),
+        environment_repository=environment_repository,
     )
 
 

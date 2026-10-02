@@ -92,6 +92,7 @@ from mosaic_api.integrations.key_vault import (
     stored_key_name,
 )
 from mosaic_api.integrations.rbac import permits
+from mosaic_api.model_pools import ModelPool
 from mosaic_api.observed import (
     AiBackendKind,
     ObservedApi,
@@ -889,9 +890,12 @@ class ModelEndpointService:
                 else:
                     forgettable.append(current)
             self._refuse_while_published(endpoint, blocking)
+            pools, pool_blocking = await self._lock_pools(stack, actor, endpoint)
+            self._refuse_while_pooled(endpoint, pool_blocking)
             if endpoint.key_stored_by_mosaic:
                 # Before anything else is removed, so a vault that refuses changes nothing.
                 await self._delete_stored_key(endpoint)
+            await self._forget_pool_members(actor, endpoint, pools, reason="modelEndpoint.removed")
             for publication in forgettable:
                 await self._gateways.delete_publication(
                     publication,
@@ -930,6 +934,100 @@ class ModelEndpointService:
                         "gatewayId": publication.gateway_id,
                     }
                     for publication in blocking
+                ],
+            },
+        )
+
+    async def _lock_pools(
+        self,
+        stack: AsyncExitStack,
+        actor: Actor,
+        endpoint: ModelEndpoint,
+        deployment_name: str | None = None,
+    ) -> tuple[list[ModelPool], list[ModelPool]]:
+        """Lock every pool with a member on the endpoint (or deployment), split as removal would.
+
+        Returns the pools that can forget the members, and those that block removal because the
+        gateway may still hold a backend one of the members wrote, or because another run holds
+        the pool.
+        """
+
+        forgettable: list[ModelPool] = []
+        blocking: list[ModelPool] = []
+        for pool in await self._gateways.list_model_pools(actor.tenant_id):
+            if not pool.uses(endpoint.id, deployment_name):
+                continue
+            try:
+                await stack.enter_async_context(
+                    publication_lock(self._gateways, actor.tenant_id, pool.id)
+                )
+            except ConflictError:
+                blocking.append(pool)
+                continue
+            current = await self._gateways.get_model_pool(actor.tenant_id, pool.id)
+            if current is None:
+                continue
+            if current.blocks_endpoint_removal(endpoint.id, deployment_name):
+                blocking.append(current)
+            else:
+                forgettable.append(current)
+        return forgettable, blocking
+
+    async def _forget_pool_members(
+        self,
+        actor: Actor,
+        endpoint: ModelEndpoint,
+        pools: list[ModelPool],
+        *,
+        reason: str,
+        deployment_name: str | None = None,
+    ) -> None:
+        """Remove the members no gateway holds, so no pool refers to what is being removed."""
+
+        for pool in pools:
+            details: dict[str, Any] = {"reason": reason, "modelEndpointId": endpoint.id}
+            if deployment_name is not None:
+                details["deploymentName"] = deployment_name
+            await self._gateways.save_model_pool(
+                pool.without_endpoint(endpoint.id, deployment_name).model_copy(
+                    update={"updated_at": utc_now()}
+                ),
+                AuditEvent(
+                    id=new_id("audit"),
+                    tenant_id=actor.tenant_id,
+                    action="modelPool.membersRemoved",
+                    resource_type="modelPool",
+                    resource_id=pool.id,
+                    actor_object_id=actor.object_id,
+                    details=details,
+                ),
+            )
+
+    @staticmethod
+    def _refuse_while_pooled(
+        endpoint: ModelEndpoint, blocking: list[ModelPool], deployment_name: str | None = None
+    ) -> None:
+        if not blocking:
+            return
+        one = len(blocking) == 1
+        subject = deployment_name or endpoint.name
+        raise ConflictError(
+            f"Remove {subject} from the model {'pool' if one else 'pools'} that "
+            f"{'uses' if one else 'use'} it, and publish {'it' if one else 'them'} again, before "
+            "removing it. API Management would keep routing traffic to it with nothing in MOSAIC "
+            "to change or remove the route.",
+            details={
+                "id": endpoint.id,
+                "name": endpoint.name,
+                **({"deploymentName": deployment_name} if deployment_name else {}),
+                "modelPools": [
+                    {
+                        "id": pool.id,
+                        "displayName": pool.display_name,
+                        "status": str(pool.status),
+                        "gatewayId": pool.gateway_id,
+                    }
+                    for pool in blocking
                 ],
             },
         )
@@ -1064,6 +1162,15 @@ class ModelEndpointService:
                         ],
                     },
                 )
+            pools, pool_blocking = await self._lock_pools(stack, actor, endpoint, deployment_name)
+            self._refuse_while_pooled(endpoint, pool_blocking, deployment_name)
+            await self._forget_pool_members(
+                actor,
+                endpoint,
+                pools,
+                reason="modelEndpoint.deploymentRemoved",
+                deployment_name=deployment_name,
+            )
             for publication in forgettable:
                 await self._gateways.delete_publication(
                     publication,

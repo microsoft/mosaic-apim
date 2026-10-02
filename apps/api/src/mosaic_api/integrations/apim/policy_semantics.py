@@ -576,6 +576,30 @@ def _return_response(element: ET.Element) -> PolicyFacet:
     )
 
 
+def _retry(element: ET.Element) -> PolicyFacet:
+    count = element.get("count")
+    details = [f"Retries up to {count} more times."] if count and count.isdigit() else []
+    if (element.get("first-fast-retry") or "").casefold() == "true":
+        details.append("The first retry is immediate.")
+    return PolicyFacet(
+        kind=PolicyFacetKind.ROUTING,
+        element=element.tag,
+        summary="Retries the rules inside it while a condition holds, such as a throttled call.",
+        details=details,
+        confidence=FacetConfidence.PARTIAL,
+        attributes=_attributes(element, "count", "interval", "first-fast-retry"),
+    )
+
+
+def _set_body(element: ET.Element) -> PolicyFacet:
+    return PolicyFacet(
+        kind=PolicyFacetKind.TRANSFORMATION,
+        element=element.tag,
+        summary="Rewrites the message body.",
+        confidence=FacetConfidence.PARTIAL,
+    )
+
+
 _RECOGNIZERS: dict[str, Callable[[ET.Element], PolicyFacet]] = {
     "rate-limit": lambda element: _rate_limit(element, keyed=False),
     "rate-limit-by-key": lambda element: _rate_limit(element, keyed=True),
@@ -608,9 +632,14 @@ _RECOGNIZERS: dict[str, Callable[[ET.Element], PolicyFacet]] = {
     "trace": _trace,
     "forward-request": _forward_request,
     "return-response": _return_response,
+    "retry": _retry,
+    "set-body": _set_body,
 }
 
 RECOGNIZED_ELEMENTS: frozenset[str] = frozenset(_RECOGNIZERS)
+
+# Recognised in their own right, and holding rules that run inside them on every attempt.
+REPEATING_ELEMENTS = frozenset({"retry"})
 
 
 def _unrecognized(element: ET.Element) -> PolicyFacet:
@@ -651,11 +680,15 @@ def _walk(
         else:
             facet = recognizer(child)
         facet.section = section
+        if tag == "set-header" and section == PolicySection.OUTBOUND:
+            facet.summary = facet.summary.replace(" request header", " response header")
         if conditional:
             facet.details = [*facet.details, "Applied only when a condition matches."]
         if facet.managed_by_mosaic:
             analysis.references_mosaic_fragment = True
         analysis.facets.append(facet)
+        if tag in REPEATING_ELEMENTS:
+            _walk(child, section, analysis, conditional=conditional)
 
 
 def analyze_policy(xml: str) -> PolicyAnalysis:

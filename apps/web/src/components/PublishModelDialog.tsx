@@ -80,6 +80,7 @@ const kindLabels: Record<PublishedResourceKind, string> = {
   namedValue: 'Named value',
   policyFragment: 'Policy fragment',
   backend: 'Backend',
+  backendPool: 'Backend pool',
   api: 'API',
   apiOperation: 'Operation',
   apiPolicy: 'API policy',

@@ -667,6 +667,12 @@ class FakeApim:
         scope = properties.get("scope")
         if isinstance(scope, str) and scope.casefold().startswith(RESOURCE_ID.casefold()):
             named.append(scope[len(RESOURCE_ID) :].strip("/"))
+        pool = properties.get("pool")
+        services = pool.get("services") if isinstance(pool, dict) else None
+        for service in services if isinstance(services, list) else []:
+            member = service.get("id") if isinstance(service, dict) else None
+            if isinstance(member, str) and member.casefold().startswith(RESOURCE_ID.casefold()):
+                named.append(member[len(RESOURCE_ID) :].strip("/"))
         self.dangling_references.extend(
             (suffix, reference) for reference in named if not self._exists(reference)
         )
