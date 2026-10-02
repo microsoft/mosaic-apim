@@ -1,12 +1,17 @@
 import logging
 import re
 import sys
+from collections.abc import Callable
 from typing import Any
 
 import structlog
 from azure.monitor.opentelemetry import configure_azure_monitor
 from fastapi import FastAPI
+from opentelemetry.instrumentation.asgi import get_host_port_url_tuple
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+from opentelemetry.sdk.trace import ReadableSpan
+from opentelemetry.trace import Span
+from opentelemetry.util.http import redact_url
 from structlog.tracebacks import ExceptionDictTransformer
 
 from mosaic_api.config import Environment, Settings
@@ -35,6 +40,23 @@ QUIET_LOGGERS = (
 # patterns, so a probe's path matches, with or without a trailing slash, and no other path does.
 HEALTH_PROBES = ("/healthz", "/readyz")
 UNRECORDED_URLS = ",".join(rf"^https?://[^/]+{re.escape(path)}/?$" for path in HEALTH_PROBES)
+
+# A recorded request keeps its query's parameter names, but each value is replaced with this. No
+# route takes a secret in its query, but the directory search's q is whatever an administrator
+# typed, often a person's name or email address, and a route added later may take anything.
+REDACTED = "REDACTED"
+PARAMETER_NAME = re.compile(r"[A-Za-z0-9_.-]+")
+
+# The attributes a server span can carry the query in. The instrumentation sets http.url by
+# default, url.query with OTEL_SEMCONV_STABILITY_OPT_IN=http, and both with http/dup. Its
+# http.target is the path alone, and it never sets url.full, but other instrumentations put the
+# query in both. The Azure Monitor exporter takes a request's URL from url.full or http.url, or
+# else builds it from url.path and url.query.
+QUERY_ATTRIBUTES = ("http.url", "url.full", "http.target", "url.query")
+
+# The instrumentation's helper that builds a request's URL, before it adds the query. It has no
+# annotations, so it's given them here.
+request_url: Callable[[dict[str, Any]], tuple[str, int, str]] = get_host_port_url_tuple
 
 
 def configure_logging(settings: Settings) -> None:
@@ -83,15 +105,72 @@ def instrument_requests(app: FastAPI, settings: Settings) -> None:
     No header is recorded, so neither a bearer token nor an API key reaches Application Insights:
     the instrumentation records a header only when this call or an
     OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_* environment variable names it, and none does. It
-    never records a body.
+    never records a body, and redact_query_values replaces every query value.
     """
 
     if not settings.applicationinsights_connection_string:
         return
     FastAPIInstrumentor.instrument_app(
         app,
+        server_request_hook=redact_query_values,
         excluded_urls=UNRECORDED_URLS,
         # Without this, every message the app received or sent would be a span of its own, which
         # Application Insights records as an in-process dependency, three or more for each request.
         exclude_spans=["receive", "send"],
     )
+
+
+def redacted_query(query_string: bytes) -> str:
+    """The query with each value replaced with REDACTED, or "" if it can't be read safely.
+
+    A field without "=" or with an unusual name may be a value, so the whole query is dropped.
+    """
+
+    try:
+        fields = query_string.decode("ascii").split("&")
+    except UnicodeDecodeError:
+        return ""
+    names = []
+    for field in fields:
+        name, equals, _value = field.partition("=")
+        if not equals or not PARAMETER_NAME.fullmatch(name):
+            return ""
+        names.append(name)
+    return "&".join(f"{name}={REDACTED}" for name in names)
+
+
+def redact_query_values(span: Span, scope: dict[str, Any]) -> None:
+    """Replaces each query value in a request's server span, as the instrumentation starts it.
+
+    The new values come from the request's raw query rather than the span's URL, where the
+    instrumentation has decoded the query, so an encoded "&" in a value would look like another
+    parameter. If anything goes wrong, the span records no URL at all rather than one that might
+    hold a value.
+    """
+
+    if not scope.get("query_string") or not span.is_recording():
+        return
+    try:
+        redacted = _redacted_attributes(span, scope) if isinstance(span, ReadableSpan) else None
+    except Exception:
+        redacted = None
+    if redacted is None:
+        redacted = dict.fromkeys(QUERY_ATTRIBUTES, "")
+    span.set_attributes(redacted)
+
+
+def _redacted_attributes(span: ReadableSpan, scope: dict[str, Any]) -> dict[str, str]:
+    carried = span.attributes or {}
+    query = redacted_query(scope["query_string"])
+    suffix = f"?{query}" if query else ""
+    _, _, url = request_url(scope)
+    path = scope.get("path", "")
+    redacted: dict[str, str] = {}
+    for name in ("http.url", "url.full"):
+        if name in carried:
+            redacted[name] = redact_url(url) + suffix
+    if carried.get("http.target", path) != path:
+        redacted["http.target"] = path + suffix
+    if "url.query" in carried:
+        redacted["url.query"] = query
+    return redacted
