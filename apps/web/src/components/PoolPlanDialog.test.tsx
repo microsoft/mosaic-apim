@@ -5,8 +5,8 @@ import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApiError } from '../api'
-import { anthropicPool, poolPlan, poolRun } from '../test/pool-fixtures'
-import type { PublishPlan, PublishRun } from '../types'
+import { anthropicPool, governedAnthropicPool, poolPlan, poolRun } from '../test/pool-fixtures'
+import type { PoolAccessSnapshot, PublishPlan, PublishRun } from '../types'
 import { PoolPlanDialog } from './PoolPlanDialog'
 
 const api = {
@@ -25,6 +25,8 @@ vi.mock('../api', async (importOriginal) => {
 })
 
 const running: PublishRun = { ...poolRun, status: 'running', completedAt: null, durationMs: null, steps: [] }
+
+const governedAccess = governedAnthropicPool.appliedAccess as PoolAccessSnapshot
 
 const unpublishPlan: PublishPlan = {
   ...poolPlan,
@@ -192,5 +194,46 @@ describe('PoolPlanDialog', () => {
     expect(await within(dialog).findByText('Apply interrupted. The gateway’s state is unknown.')).toBeVisible()
     expect(within(dialog).getByRole('button', { name: 'Check recovery status (diagnostic only)' })).toBeVisible()
     expect(within(dialog).getByText(/The pool's apply lock may still be retained/)).toBeVisible()
+  })
+
+  it('reviews every grant the first governed apply enforces, and says the shared subscription stops working', async () => {
+    api.planModelPool.mockResolvedValue({ ...poolPlan, poolAccessSnapshot: governedAccess, previousAccessVersion: null })
+    renderDialog()
+    const dialog = await screen.findByRole('dialog', { name: 'Publish Anthropic Claude' })
+
+    const access = await within(dialog).findByRole('region', { name: 'Pool access review' })
+    expect(within(access).getByRole('heading', { name: 'Who can call the pool' })).toBeVisible()
+    expect(within(access).getByText('The shared subscription stops working')).toBeVisible()
+    expect(within(access).getByText('Subscription key OR Entra token')).toBeVisible()
+    expect(within(access).getByText('none → 2')).toBeVisible()
+
+    const grants = within(access).getByRole('table', { name: 'Pool grants' })
+    const [, megan, research] = within(grants).getAllByRole('row')
+    expect(within(megan).getByText('Claude Opus 4.5')).toBeVisible()
+    expect(within(megan).getByText('Megan Bowen')).toBeVisible()
+    expect(within(megan).getByText('mosaic-pool-anthropic-claude-megan')).toBeVisible()
+    expect(within(megan).getByText('Limits usage to 20,000 tokens per minute.')).toBeVisible()
+    expect(within(megan).getByText('Allowed')).toBeVisible()
+    expect(within(research).getByText('Research engineers')).toBeVisible()
+    expect(within(research).getByText('None (Entra token)')).toBeVisible()
+    expect(
+      within(access).getByText(
+        'Claude Opus 4.5, FIN-001: 5,000,000 tokens a month, shared by everyone the cost center grants it to',
+      ),
+    ).toBeVisible()
+  })
+
+  it('doesn’t warn about the shared subscription once the pool already governs access', async () => {
+    api.planModelPool.mockResolvedValue({
+      ...poolPlan,
+      poolAccessSnapshot: { ...governedAccess, version: 3, grants: [] },
+      previousAccessVersion: 2,
+    })
+    renderDialog()
+
+    const access = await screen.findByRole('region', { name: 'Pool access review' })
+    expect(within(access).queryByText('The shared subscription stops working')).not.toBeInTheDocument()
+    expect(within(access).getByText('2 → 3')).toBeVisible()
+    expect(within(access).getByText('The target has no grants, so the gateway refuses every caller.')).toBeVisible()
   })
 })

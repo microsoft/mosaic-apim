@@ -57,6 +57,8 @@ describe('PoolEditorDialog', () => {
     api.getPoolCandidates.mockResolvedValue(poolCandidates)
   })
 
+  // Walks all four steps of the wizard, so it gets more than the default 5 seconds: a full parallel
+  // run can slow it to nearly that.
   it('walks through a new pool and saves exactly what was chosen', async () => {
     const user = userEvent.setup()
     const created = { ...anthropicPool, id: 'modelpool_new', status: 'draft' as const }
@@ -64,7 +66,9 @@ describe('PoolEditorDialog', () => {
     const { onSaved } = renderEditor()
     const dialog = await openOnGateway('Create a model pool', poolGateway.id)
 
-    await user.type(within(dialog).getByRole('textbox', { name: /^Name/ }), 'Anthropic Claude')
+    // Pasted rather than typed, since every keystroke renders the whole wizard again.
+    await user.click(within(dialog).getByRole('textbox', { name: /^Name/ }))
+    await user.paste('Anthropic Claude')
     expect(within(dialog).getByRole('textbox', { name: 'API name' })).toHaveValue('mosaic-pool-anthropic-claude')
     expect(within(dialog).getByRole('textbox', { name: 'API path' })).toHaveValue('mosaic/pool-anthropic-claude')
     expect(
@@ -88,7 +92,8 @@ describe('PoolEditorDialog', () => {
     await user.click(within(card).getByRole('checkbox', { name: 'Use claude-opus-4-5 on foundry-westus3' }))
     await user.click(within(dialog).getByRole('button', { name: 'Next' }))
 
-    await user.type(within(dialog).getByRole('spinbutton', { name: 'Tokens per minute' }), '100000')
+    await user.click(within(dialog).getByRole('spinbutton', { name: 'Tokens per minute' }))
+    await user.paste('100000')
     const summary = within(dialog).getByLabelText('Pool summary')
     expect(within(summary).getByText('Anthropic · Anthropic Messages')).toBeVisible()
     expect(within(summary).getByText('1 model, served by 2 deployments')).toBeVisible()
@@ -122,7 +127,7 @@ describe('PoolEditorDialog', () => {
       ],
       gatewayId: poolGateway.id,
     })
-  })
+  }, 15_000)
 
   it('lists what to fix, and saves nothing, until the pool has a name', async () => {
     const user = userEvent.setup()

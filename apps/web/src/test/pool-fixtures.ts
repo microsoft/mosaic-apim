@@ -371,6 +371,70 @@ export const anthropicPoolDetail: ModelPoolDetail = {
   unappliedChanges: false,
 }
 
+/** The pool after a plan applied governed access: a person's key and a security group's Entra tokens. */
+export const governedAnthropicPool: ModelPool = {
+  ...anthropicPool,
+  governedAccess: { keysEnabled: true, entraEnabled: true },
+  accessState: 'applied',
+  appliedModelIds: ['poolmodel_opus'],
+  appliedAccess: {
+    version: 2,
+    settings: { keysEnabled: true, entraEnabled: true },
+    audience: 'https://cognitiveservices.azure.com',
+    tokenMetering: true,
+    grants: [
+      {
+        entitlementId: 'entitlement_pool_megan',
+        poolModelId: 'poolmodel_opus',
+        subject: { kind: 'user', id: 'principal_megan' },
+        objectId: '11111111-1111-1111-1111-111111111111',
+        displayName: 'Megan Bowen',
+        keyName: 'mosaic-pool-anthropic-claude-megan',
+        enabled: true,
+        enforcement: {
+          tokens: {
+            counterKeyExpression: '@(context.Subscription.Id)',
+            estimatePromptTokens: true,
+            tokensPerMinute: 20000,
+          },
+        },
+        intentDigest: 'digest-megan',
+        costCenterId: 'costcenter_finance',
+        costCenterCode: 'FIN-001',
+        defaultCostCenter: true,
+        keysAllowed: true,
+      },
+      {
+        entitlementId: 'entitlement_pool_research',
+        poolModelId: 'poolmodel_opus',
+        subject: { kind: 'securityGroup', id: 'principal_research' },
+        objectId: '22222222-2222-2222-2222-222222222222',
+        displayName: 'Research engineers',
+        keyName: null,
+        enabled: true,
+        enforcement: null,
+        intentDigest: 'digest-research',
+        costCenterId: 'costcenter_research',
+        costCenterCode: 'RES-002',
+      },
+    ],
+    quotas: [
+      {
+        poolModelId: 'poolmodel_opus',
+        costCenterId: 'costcenter_finance',
+        costCenterCode: 'FIN-001',
+        monthlyTokens: 5000000,
+        monthlyCalls: null,
+      },
+    ],
+  },
+}
+
+export const governedAnthropicPoolDetail: ModelPoolDetail = {
+  ...anthropicPoolDetail,
+  pool: governedAnthropicPool,
+}
+
 export const poolSummaries: ModelPoolSummary[] = [
   {
     pool: anthropicPool,

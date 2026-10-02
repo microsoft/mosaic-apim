@@ -2,12 +2,13 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { FluentProvider, textClassNames, webLightTheme } from '@fluentui/react-components'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter, useLocation } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AccessRequest, Entitlement, EnvironmentCatalogView, McpPublication, McpServer, Principal } from '../types'
-import { callRateError, describeLimits, describePublicationLimits } from '../entitlement-limits'
+import { GOVERNED_COUNTER_KEY, callRateError, describeLimits, describePublicationLimits } from '../entitlement-limits'
 import { EntitlementsPage } from './EntitlementsPage'
 import { accessPlan, directGrant, modelPublication, publishedModelApi } from '../test/model-access'
+import { anthropicPool, draftPool, governedAnthropicPool } from '../test/pool-fixtures'
 
 const entitlement: Entitlement = {
   id: 'entitlement_1',
@@ -35,6 +36,7 @@ const api = {
   listPrincipals: vi.fn(),
   listGroups: vi.fn(),
   listModelApis: vi.fn(),
+  listModelPools: vi.fn(),
   listMcpServers: vi.fn(),
   listCostCenters: vi.fn(),
   getCostCenterSettings: vi.fn(),
@@ -191,6 +193,11 @@ vi.mock('../api', async (importOriginal) => {
   return { ...actual, useMosaicApi: () => api }
 })
 
+/** Shows where the page navigated, since the test renders it without the app's routes. */
+function LocationProbe() {
+  return <output aria-label="Current location">{useLocation().pathname}</output>
+}
+
 function renderPage(initial = '/entitlements') {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   render(
@@ -198,6 +205,7 @@ function renderPage(initial = '/entitlements') {
       <MemoryRouter initialEntries={[initial]}>
         <FluentProvider theme={webLightTheme}>
           <EntitlementsPage />
+          <LocationProbe />
         </FluentProvider>
       </MemoryRouter>
     </QueryClientProvider>,
@@ -224,6 +232,7 @@ describe('EntitlementsPage', () => {
       { id: 'endpoint_1', environment: 'development', name: 'Dev endpoint' },
     ])
     api.listModelApis.mockResolvedValue([{ ...publishedModelApi, publicationId: null, importedFromSnapshotId: 'snapshot_1' }])
+    api.listModelPools.mockResolvedValue([])
     api.listMcpServers.mockResolvedValue([])
     api.listCostCenters.mockResolvedValue([{ id: 'cc_general', tenantId: 'tenant', entityType: 'costCenter', name: 'General', code: 'general', description: null, owners: [], members: [], keysAllowed: true, limits: [], builtIn: true, createdAt: '', updatedAt: '', isTenantDefault: true, memberDetails: [], grantCount: 0, enabledGrantCount: 0, defaultFor: 0 }])
     api.getCostCenterSettings.mockResolvedValue({ id: 'settings', tenantId: 'tenant', defaultCostCenterId: 'cc_general' })
@@ -579,6 +588,168 @@ describe('EntitlementsPage', () => {
     expect(await screen.findByText(
       'Saved grant intent. API Management is unchanged; use Plan and apply on the MCPs page to activate it on a MOSAIC-published MCP server.',
     )).toBeVisible()
+  })
+
+  describe('pool models', () => {
+    const megan: Principal = {
+      id: 'principal_megan', tenantId: 'tenant', objectId: '11111111-1111-1111-1111-111111111111', kind: 'user',
+      label: 'Megan Bowen', createdAt: '', updatedAt: '',
+    }
+    const research: Principal = {
+      id: 'principal_research', tenantId: 'tenant', objectId: '22222222-2222-2222-2222-222222222222',
+      kind: 'securityGroup', label: 'Research engineers', createdAt: '', updatedAt: '',
+    }
+    const meganGrant: Entitlement = {
+      id: 'entitlement_pool_megan',
+      tenantId: 'tenant',
+      subject: { kind: 'user', id: megan.id },
+      resource: { kind: 'poolModel', id: 'poolmodel_opus', scopeId: governedAnthropicPool.id },
+      enabled: true,
+      enforcement: {
+        tokens: { counterKeyExpression: GOVERNED_COUNTER_KEY, estimatePromptTokens: true, tokensPerMinute: 20000 },
+      },
+      binding: null,
+      runtime: {
+        publicationId: governedAnthropicPool.id,
+        status: 'applied',
+        appliedMethods: { keysEnabled: true, entraEnabled: true },
+        subscriptionName: 'mosaic-pool-anthropic-claude-megan',
+        keyExists: true,
+      },
+      createdAt: '2026-09-02T09:00:00Z',
+      updatedAt: '2026-09-02T09:00:00Z',
+    }
+    const researchGrant: Entitlement = {
+      ...meganGrant,
+      id: 'entitlement_pool_research',
+      subject: { kind: 'securityGroup', id: research.id },
+      enforcement: null,
+      runtime: { ...meganGrant.runtime!, subscriptionName: null, keyExists: false },
+    }
+
+    async function openAddDialog(user: ReturnType<typeof userEvent.setup>, poolModelOption: string) {
+      const add = await screen.findByRole('button', { name: 'Add entitlement' })
+      await waitFor(() => expect(add).toBeEnabled())
+      await user.click(add)
+      const dialog = await screen.findByRole('dialog')
+      // The button enables as soon as any resource loads, so wait for the pools too.
+      await within(dialog).findByRole('option', { name: poolModelOption })
+      return dialog
+    }
+
+    it('offers each pool model under its pool, sends the pool with the grant, and links to the pool to apply it', async () => {
+      const user = userEvent.setup()
+      // Two pools serve a model with the same ID. Only the pool tells them apart.
+      api.listModelPools.mockResolvedValue([governedAnthropicPool, { ...draftPool, models: anthropicPool.models }])
+      api.createEntitlement.mockResolvedValue(meganGrant)
+      renderPage()
+
+      const dialog = await openAddDialog(user, 'Claude Opus 4.5 in Anthropic Claude (pool model)')
+      const resource = within(dialog).getByRole('combobox', { name: 'Resource' })
+      expect(within(resource).getByRole('option', { name: 'Claude Opus 4.5 in OpenAI chat (pool model)' })).toBeInTheDocument()
+      fireEvent.change(within(dialog).getByRole('combobox', { name: 'Subject' }), { target: { value: 'principal_1' } })
+      fireEvent.change(resource, { target: { value: `poolModel:${governedAnthropicPool.id}:poolmodel_opus` } })
+      expect(within(dialog).getByText(/The pool's shared token limit still applies/)).toBeVisible()
+      await user.type(within(dialog).getByRole('spinbutton', { name: 'Tokens per minute' }), '20000')
+      await user.click(within(dialog).getByRole('button', { name: 'Grant access' }))
+
+      await waitFor(() => expect(api.createEntitlement).toHaveBeenCalledWith({
+        subject: { kind: 'user', id: 'principal_1' },
+        resource: { kind: 'poolModel', id: 'poolmodel_opus', scopeId: governedAnthropicPool.id },
+        enforcement: {
+          tokens: { counterKeyExpression: GOVERNED_COUNTER_KEY, estimatePromptTokens: true, tokensPerMinute: 20000 },
+        },
+        notes: null,
+      }))
+      expect(api.createPublishPlan).not.toHaveBeenCalled()
+      expect(
+        await screen.findByText(
+          'Saved grant intent. API Management is unchanged until the Anthropic Claude plan is reviewed and applied.',
+        ),
+      ).toBeVisible()
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+      await user.click(await screen.findByRole('link', { name: 'Go to Anthropic Claude' }))
+      expect(screen.getByRole('status', { name: 'Current location' })).toHaveTextContent(
+        `/pools/${governedAnthropicPool.id}`,
+      )
+    })
+
+    it('says a grant waits while its pool still shares one subscription', async () => {
+      const user = userEvent.setup()
+      api.listModelPools.mockResolvedValue([anthropicPool])
+      api.createEntitlement.mockResolvedValue(meganGrant)
+      renderPage()
+
+      const dialog = await openAddDialog(user, 'Claude Opus 4.5 in Anthropic Claude (pool model)')
+      fireEvent.change(within(dialog).getByRole('combobox', { name: 'Subject' }), { target: { value: 'principal_1' } })
+      fireEvent.change(within(dialog).getByRole('combobox', { name: 'Resource' }), {
+        target: { value: `poolModel:${anthropicPool.id}:poolmodel_opus` },
+      })
+      expect(
+        within(dialog).getByText(/Anthropic Claude doesn't use governed access yet, so this grant waits until it does\./),
+      ).toBeVisible()
+      await user.click(within(dialog).getByRole('button', { name: 'Grant access' }))
+
+      expect(
+        await screen.findByText(
+          "Saved grant intent. Anthropic Claude doesn't use governed access yet, so its callers still share one subscription. Turn on governed access for the pool, then review and apply its plan.",
+        ),
+      ).toBeVisible()
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+      expect(await screen.findByRole('link', { name: 'Go to Anthropic Claude' })).toHaveAttribute(
+        'href',
+        `/pools/${anthropicPool.id}`,
+      )
+    })
+
+    it('shows a pool grant’s key, the pool’s shared limit, and what the pool last applied', async () => {
+      const user = userEvent.setup()
+      api.listModelPools.mockResolvedValue([governedAnthropicPool])
+      api.listGateways.mockResolvedValue([{ id: governedAnthropicPool.gatewayId, environment: 'production', name: 'Contoso AI' }])
+      api.listPrincipals.mockResolvedValue([megan, research])
+      api.listEntitlements.mockResolvedValue([meganGrant, researchGrant])
+      renderPage()
+
+      const table = await screen.findByRole('table', { name: 'Entitlements' })
+      await waitFor(() =>
+        expect(columnCells(table, 'Resource')[0]).toHaveTextContent('Claude Opus 4.5 in Anthropic Claude (pool model)'),
+      )
+      const [meganEnvironment] = columnCells(table, 'Environment')
+      expect(within(meganEnvironment).getByText('Production')).toBeVisible()
+
+      const [meganLimits, researchLimits] = columnCells(table, 'Limits')
+      expect(within(meganLimits).getAllByText('Limits usage to 20,000 tokens per minute.')).toHaveLength(2)
+      expect(within(meganLimits).getByText('Pool: Every caller shares 200,000 tokens per minute.')).toBeVisible()
+      expect(within(meganLimits).getByText(/Last applied limits/)).toBeVisible()
+      expect(within(researchLimits).getAllByText('No grant-specific limit is configured.')).toHaveLength(2)
+
+      const [meganKey, researchKey] = columnCells(table, 'Binding')
+      expect(within(meganKey).getByText('mosaic-pool-anthropic-claude-megan')).toBeVisible()
+      expect(within(meganKey).getByText('Pool key')).toBeVisible()
+      expect(within(researchKey).getByText('Entra token')).toBeVisible()
+      expect(within(researchKey).getByText('No key')).toBeVisible()
+      expect(within(table).queryByText('Not bound')).not.toBeInTheDocument()
+      // The pool's policy checks a pool grant on every call, so it never counts as unbound.
+      const unbound = screen.getByText('Without a binding').closest('div') as HTMLElement
+      expect(within(unbound).getByText('0')).toBeVisible()
+
+      const [meganActions] = columnCells(table, 'Actions')
+      await user.click(within(meganActions).getByRole('button', { name: 'Manage pool' }))
+      expect(screen.getByRole('status', { name: 'Current location' })).toHaveTextContent(
+        `/pools/${governedAnthropicPool.id}`,
+      )
+    })
+
+    it('says a pool grant waits for the pool to govern access when it has no runtime yet', async () => {
+      api.listModelPools.mockResolvedValue([anthropicPool])
+      api.listPrincipals.mockResolvedValue([megan])
+      api.listEntitlements.mockResolvedValue([{ ...meganGrant, runtime: null }])
+      renderPage()
+
+      const table = await screen.findByRole('table', { name: 'Entitlements' })
+      const [key] = columnCells(table, 'Binding')
+      expect(within(key).getByText('Waits for the pool to govern access')).toBeVisible()
+    })
   })
 
   it('shows overlap winners, shadowed grants, membership-unchecked notice, and the empty state', async () => {

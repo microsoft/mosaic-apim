@@ -43,6 +43,7 @@ interface CostCenterForm {
 }
 
 interface LimitDraft {
+  /** The chosen resource's `limitKey`. */
   resource: string
   tokensPerMinute: string
   tokenQuota: string
@@ -52,6 +53,22 @@ interface LimitDraft {
   callQuotaPeriod: QuotaPeriod
   monthlyTokens: string
   monthlyCalls: string
+}
+
+interface LimitResourceOption {
+  key: string
+  kind: CostCenterLimit['resource']['kind']
+  id: string
+  /** A pool model's pool. */
+  scopeId?: string
+  label: string
+}
+
+/** Pool model IDs are unique only within their pool, so a pool model's key names its pool too. */
+function limitKey(resource: CostCenterLimit['resource']): string {
+  return resource.kind === 'poolModel'
+    ? `poolModel:${resource.scopeId ?? ''}:${resource.id}`
+    : `${resource.kind}:${resource.id}`
 }
 
 const emptyForm: CostCenterForm = {
@@ -379,7 +396,7 @@ function limitText(limit: CostCenterLimit, label: string) {
   const pool = []
   if (limit.pool?.monthlyTokens) pool.push(`${n(limit.pool.monthlyTokens)} tokens per month`)
   if (limit.pool?.monthlyCalls) pool.push(`${n(limit.pool.monthlyCalls)} calls per month`)
-  if (pool.length) pieces.push(`Pool: ${pool.join(' · ')}`)
+  if (pool.length) pieces.push(`Pooled quota: ${pool.join(' · ')}`)
   return pieces.join(' · ')
 }
 
@@ -413,16 +430,24 @@ export function CostCenterDetailPage() {
   const principals = useQuery({ queryKey: ['principals'], queryFn: api.listPrincipals })
   const modelApis = useQuery({ queryKey: ['model-apis'], queryFn: () => api.listModelApis() })
   const mcpServers = useQuery({ queryKey: ['mcp-servers'], queryFn: () => api.listMcpServers() })
+  const modelPools = useQuery({ queryKey: ['model-pools', 'list'], queryFn: () => api.listModelPools() })
   const data = costCenter.data
 
-  const resources = useMemo(
+  const resources = useMemo<LimitResourceOption[]>(
     () => [
       ...(modelApis.data ?? []).map((item) => ({ key: `modelApi:${item.id}`, kind: 'modelApi' as const, id: item.id, label: `${item.displayName} (model API)` })),
+      ...(modelPools.data ?? []).flatMap((pool) => pool.models.map((model) => ({
+        key: limitKey({ kind: 'poolModel', id: model.id, scopeId: pool.id }),
+        kind: 'poolModel' as const,
+        id: model.id,
+        scopeId: pool.id,
+        label: `${model.displayName} in ${pool.displayName} (pool model)`,
+      }))),
       ...(mcpServers.data ?? []).map((item) => ({ key: `mcpServer:${item.id}`, kind: 'mcpServer' as const, id: item.id, label: `${item.displayName} (MCP server)` })),
     ],
-    [mcpServers.data, modelApis.data],
+    [mcpServers.data, modelApis.data, modelPools.data],
   )
-  const labels = useMemo(() => new Map(resources.map((item) => [`${item.kind}:${item.id}`, item.label])), [resources])
+  const labels = useMemo(() => new Map(resources.map((item) => [item.key, item.label])), [resources])
 
   useEffect(() => {
     if (!data) return
@@ -510,7 +535,7 @@ export function CostCenterDetailPage() {
       return
     }
     const next: CostCenterLimit = {
-      resource: { kind: resource.kind, id: resource.id },
+      resource: { kind: resource.kind, id: resource.id, ...(resource.scopeId ? { scopeId: resource.scopeId } : {}) },
       person: hasPerson ? {
         tokensPerMinute: values.tokensPerMinute.value,
         tokenQuota: values.tokenQuota.value,
@@ -524,7 +549,7 @@ export function CostCenterDetailPage() {
         monthlyCalls: values.monthlyCalls.value,
       } : null,
     }
-    setLimits((current) => [...current.filter((item) => `${item.resource.kind}:${item.resource.id}` !== limitDraft.resource), next])
+    setLimits((current) => [...current.filter((item) => limitKey(item.resource) !== limitDraft.resource), next])
     setLimitValidation(null)
     setLimitDraft(emptyLimitDraft)
   }
@@ -712,18 +737,18 @@ export function CostCenterDetailPage() {
         <div className={styles.card}>
           <Title3 as="h2">Limits</Title3>
           <Text className={styles.muted}>
-            Per-person limits apply to each grant under this cost center that sets none of its own. A pool is shared by every grant under the cost center on that model, per gateway. MCP servers use calls only.
+            Per-person limits apply to each grant under this cost center that sets none of its own. A pooled quota is shared by every grant under the cost center on that model, per gateway. MCP servers use calls only.
           </Text>
           {saveLimits.isError && (
             <MessageBar intent="error"><MessageBarBody>{errorMessage(saveLimits.error, 'Unable to save limits.')}</MessageBarBody></MessageBar>
           )}
           <div className={styles.limitList}>
             {limits.length === 0 ? <Text className={styles.muted}>No cost-center defaults are set.</Text> : limits.map((limit) => {
-              const key = `${limit.resource.kind}:${limit.resource.id}`
+              const key = limitKey(limit.resource)
               return (
                 <div key={key} className={styles.limitRow}>
                   <Text>{limitText(limit, labels.get(key) ?? limit.resource.id)}</Text>
-                  <Button appearance="subtle" onClick={() => setLimits((current) => current.filter((item) => `${item.resource.kind}:${item.resource.id}` !== key))}>Remove</Button>
+                  <Button appearance="subtle" onClick={() => setLimits((current) => current.filter((item) => limitKey(item.resource) !== key))}>Remove</Button>
                 </div>
               )
             })}
@@ -746,7 +771,7 @@ export function CostCenterDetailPage() {
                     : { ...limitDraft, resource: selectData.value })
                 }}
               >
-                <option value="">Select a model API or MCP server</option>
+                <option value="">Select a model API, pool model, or MCP server</option>
                 {resources.map((resource) => <option key={resource.key} value={resource.key}>{resource.label}</option>)}
               </Select>
             </Field>

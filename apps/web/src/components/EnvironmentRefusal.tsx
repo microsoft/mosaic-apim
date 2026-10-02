@@ -123,6 +123,7 @@ export function GrantsAcknowledgmentRefusal({
 const GRANT_RESOURCE_LABELS: Record<string, string> = {
   modelApi: 'Model API',
   mcpServer: 'MCP server',
+  poolModel: 'Pool model',
   product: 'Product',
   modelDeployment: 'Model deployment',
 }

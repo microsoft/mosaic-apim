@@ -21,7 +21,7 @@ import { PoolStatusBadge, ReadinessSummaryBadge, UnappliedChangesBadge } from '.
 import { PoolEditorDialog } from '../components/PoolEditorDialog'
 import { useEnvironmentCatalog } from '../environments'
 import { plural } from '../labels'
-import { POOL_TYPE_LABELS, capacitySummary, poolFamilyLabel } from '../pools'
+import { POOL_TYPE_LABELS, capacitySummary, poolAccessLabel, poolFamilyLabel, poolGrantCount } from '../pools'
 import type { PoolLocationState } from '../pools'
 import type { EnvironmentCatalogView, ModelPoolSummary } from '../types'
 import styles from './PoolsPage.module.css'
@@ -57,6 +57,14 @@ function PoolRow({ summary, catalog }: { summary: ModelPoolSummary; catalog?: En
       </td>
       <td>{POOL_TYPE_LABELS[pool.poolType]}</td>
       <td>{capacitySummary(summary.capacity)}</td>
+      <td>
+        <div className={styles.cellStack}>
+          <Text>{poolAccessLabel(pool)}</Text>
+          {pool.governedAccess && (
+            <Text size={200} className={styles.muted}>{plural(poolGrantCount(pool), 'grant')} in force</Text>
+          )}
+        </div>
+      </td>
       <td>
         <div className={styles.cellStack}>
           <ReadinessSummaryBadge readiness={summary.readiness} />
@@ -177,6 +185,7 @@ export function PoolsPage() {
                   <th>Serves</th>
                   <th>Routing</th>
                   <th>Active members</th>
+                  <th>Access</th>
                   <th>Readiness</th>
                   <th>Status</th>
                 </tr>

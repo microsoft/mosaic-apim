@@ -20,6 +20,7 @@ import { EnvironmentBadge } from '../components/EnvironmentBadge'
 import { ModelAccessRecovery } from '../components/ModelAccessRecovery'
 import { PageHeader } from '../components/PageHeader'
 import { PolicyFacetItem } from '../components/PolicyFacets'
+import { PoolAccessCard } from '../components/PoolAccessCard'
 import {
   PoolCapacityBadgeView,
   PoolReadinessBadge,
@@ -301,12 +302,31 @@ function ConnectionCard({ detail, published }: { detail: ModelPoolDetail; publis
           <Text size={200}>{example.note}</Text>
         </div>
       )}
-      <Text size={200}>
-        Callers use the pool’s subscription, <span className={styles.code}>{pool.subscriptionName}</span>, on the{' '}
-        <span className={styles.code}>{pool.productName}</span> product. Copy its key from the Azure portal and send it
-        in the Ocp-Apim-Subscription-Key header. MOSAIC doesn’t grant people their own access to pool models yet.
-      </Text>
+      {governedConnectionText(pool) ?? (
+        <Text size={200}>
+          Callers use the pool’s subscription, <span className={styles.code}>{pool.subscriptionName}</span>, on the{' '}
+          <span className={styles.code}>{pool.productName}</span> product. Copy its key from the Azure portal and send it
+          in the Ocp-Apim-Subscription-Key header. To give each caller their own access instead, turn on governed access.
+        </Text>
+      )}
     </Card>
+  )
+}
+
+/** How callers sign in once a plan has applied governed access, or null while they share the pool's key. */
+function governedConnectionText(pool: ModelPool) {
+  const settings = pool.appliedAccess?.settings
+  if (!settings) return null
+  const methods = [
+    settings.keysEnabled && 'the key from their grant in the Ocp-Apim-Subscription-Key header',
+    settings.entraEnabled && 'a Microsoft Entra token in the Authorization header',
+  ].filter(Boolean)
+  return (
+    <Text size={200}>
+      {methods.length
+        ? `Each caller uses their own grant: ${methods.join(', or ')}. People find their models, keys, and examples in the portal.`
+        : 'Both sign-in methods are off, so the gateway refuses every call.'}
+    </Text>
   )
 }
 
@@ -623,7 +643,14 @@ function PoolDetail({ poolId }: { poolId: string }) {
             <dt>Product</dt>
             <dd className={styles.code}>{pool.productName}</dd>
             <dt>Subscription</dt>
-            <dd className={styles.code}>{pool.subscriptionName}</dd>
+            <dd>
+              <span className={styles.code}>{pool.subscriptionName}</span>
+              {pool.appliedAccess
+                ? ', suspended by governed access'
+                : pool.governedAccess
+                  ? ', suspended when a plan applies governed access'
+                  : ''}
+            </dd>
             <dt>Portal</dt>
             <dd>
               {POOL_VISIBILITY_LABELS[pool.visibility]}.{' '}
@@ -661,6 +688,12 @@ function PoolDetail({ poolId }: { poolId: string }) {
           ))
         )}
       </section>
+
+      <PoolAccessCard
+        key={JSON.stringify(pool.governedAccess ?? null)}
+        pool={pool}
+        onSaved={setNotice}
+      />
 
       <ConnectionCard detail={detail.data} published={published} />
 

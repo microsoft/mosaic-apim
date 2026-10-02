@@ -10,6 +10,7 @@ import {
   organizationBudgetFixture,
   researchBudgetFixture,
 } from '../test/budget-fixtures'
+import { anthropicPool, draftPool } from '../test/pool-fixtures'
 import type { CostCenter, Principal } from '../types'
 import { CostCenterDetailPage, CostCentersPage } from './CostCentersPage'
 
@@ -59,6 +60,7 @@ const api = {
   listPrincipals: vi.fn(),
   listModelApis: vi.fn(),
   listMcpServers: vi.fn(),
+  listModelPools: vi.fn(),
   getBudgets: vi.fn(),
   getCostCenterBudget: vi.fn(),
   setCostCenterBudget: vi.fn(),
@@ -95,6 +97,7 @@ describe('Cost centers pages', () => {
     api.listPrincipals.mockResolvedValue([principal])
     api.listModelApis.mockResolvedValue([{ id: 'model-1', displayName: 'Chat' }])
     api.listMcpServers.mockResolvedValue([{ id: 'mcp-1', displayName: 'Ticket tools' }])
+    api.listModelPools.mockResolvedValue([])
     api.createCostCenter.mockResolvedValue(general)
     api.updateCostCenterSettings.mockResolvedValue({ id: 'settings', tenantId: 'tenant', defaultCostCenterId: general.id })
     api.addCostCenterMember.mockResolvedValue(general)
@@ -291,11 +294,11 @@ describe('Cost centers pages', () => {
     await user.click(screen.getByRole('button', { name: 'Add limit' }))
 
     expect(screen.getByText('Set per-person limits, a pooled quota, or both.')).toBeVisible()
-    expect(screen.queryByText(/Pool:/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/Pooled quota:/)).not.toBeInTheDocument()
 
     await user.type(screen.getByLabelText('Monthly pooled tokens'), '40000000')
     await user.click(screen.getByRole('button', { name: 'Add limit' }))
-    expect(screen.getByText('Chat (model API) · Pool: 40,000,000 tokens per month')).toBeVisible()
+    expect(screen.getByText('Chat (model API) · Pooled quota: 40,000,000 tokens per month')).toBeVisible()
     await user.click(screen.getByRole('button', { name: 'Save limits' }))
 
     await waitFor(() => expect(api.updateCostCenterLimits).toHaveBeenCalledWith('cc-general', [
@@ -303,6 +306,54 @@ describe('Cost centers pages', () => {
         resource: { kind: 'modelApi', id: 'model-1' },
         person: null,
         pool: { monthlyTokens: 40_000_000, monthlyCalls: null },
+      },
+    ]))
+  })
+
+  it('limits a pool model, naming its pool so a model ID another pool shares stays apart', async () => {
+    const user = userEvent.setup()
+    // Both pools serve a model with the same ID.
+    api.listModelPools.mockResolvedValue([anthropicPool, { ...draftPool, models: anthropicPool.models }])
+    api.getCostCenter.mockResolvedValue({
+      ...general,
+      limits: [{
+        resource: { kind: 'poolModel', id: 'poolmodel_opus', scopeId: draftPool.id },
+        person: { tokensPerMinute: 500, tokenQuota: null, tokenQuotaPeriod: null, callsPerMinute: null, callQuota: null, callQuotaPeriod: null },
+        pool: null,
+      }],
+    })
+    renderRoute('/cost-centers/cc-general')
+
+    expect(await screen.findByText('Claude Opus 4.5 in OpenAI chat (pool model) · 500 tokens per minute')).toBeVisible()
+    await user.selectOptions(screen.getByLabelText('Resource'), 'Claude Opus 4.5 in Anthropic Claude (pool model)')
+    await user.type(screen.getByLabelText('Tokens per minute'), '1000')
+    await user.type(screen.getByLabelText('Monthly pooled tokens'), '5000000')
+    await user.click(screen.getByRole('button', { name: 'Add limit' }))
+
+    // The second pool's limit is its own, so adding the first pool's leaves it in place.
+    expect(screen.getByText('Claude Opus 4.5 in OpenAI chat (pool model) · 500 tokens per minute')).toBeVisible()
+    expect(screen.getByText(
+      'Claude Opus 4.5 in Anthropic Claude (pool model) · 1,000 tokens per minute · Pooled quota: 5,000,000 tokens per month',
+    )).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Save limits' }))
+
+    await waitFor(() => expect(api.updateCostCenterLimits).toHaveBeenCalledWith('cc-general', [
+      {
+        resource: { kind: 'poolModel', id: 'poolmodel_opus', scopeId: draftPool.id },
+        person: { tokensPerMinute: 500, tokenQuota: null, tokenQuotaPeriod: null, callsPerMinute: null, callQuota: null, callQuotaPeriod: null },
+        pool: null,
+      },
+      {
+        resource: { kind: 'poolModel', id: 'poolmodel_opus', scopeId: anthropicPool.id },
+        person: {
+          tokensPerMinute: 1000,
+          tokenQuota: null,
+          tokenQuotaPeriod: null,
+          callsPerMinute: null,
+          callQuota: null,
+          callQuotaPeriod: null,
+        },
+        pool: { monthlyTokens: 5_000_000, monthlyCalls: null },
       },
     ]))
   })

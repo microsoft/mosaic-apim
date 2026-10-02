@@ -7,6 +7,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   anthropicPool,
   draftPool,
+  governedAnthropicPool,
   observedGateway,
   poolCandidates,
   poolGateway,
@@ -91,6 +92,7 @@ describe('PoolsPage', () => {
     expect(within(published).getByText('All ready')).toBeVisible()
     expect(within(published).getByText('1 warning')).toBeVisible()
     expect(within(published).getByText('Published')).toBeVisible()
+    expect(within(published).getByText('Shared key')).toBeVisible()
 
     expect(within(draft).getByRole('link', { name: 'OpenAI chat' })).toHaveAttribute('href', `/pools/${draftPool.id}`)
     expect(within(draft).getByText('No models yet')).toBeVisible()
@@ -107,6 +109,24 @@ describe('PoolsPage', () => {
 
     const table = await screen.findByRole('table', { name: 'Model pools' })
     expect(within(table).getByText('Changes not applied')).toBeVisible()
+  })
+
+  it('says which pools give each caller their own grant, and how many are in force', async () => {
+    api.listModelPoolSummaries.mockResolvedValue([
+      { ...poolSummaries[0], pool: governedAnthropicPool },
+      {
+        ...poolSummaries[1],
+        pool: { ...draftPool, governedAccess: { keysEnabled: true, entraEnabled: false }, accessState: 'pending' },
+      },
+    ])
+    renderPage()
+
+    const table = await screen.findByRole('table', { name: 'Model pools' })
+    const [, governed, pending] = within(table).getAllByRole('row')
+    expect(within(governed).getByText('Governed')).toBeVisible()
+    expect(within(governed).getByText('2 grants in force')).toBeVisible()
+    expect(within(pending).getByText('Governed, not applied yet')).toBeVisible()
+    expect(within(pending).getByText('0 grants in force')).toBeVisible()
   })
 
   it('explains pools when there are none yet', async () => {

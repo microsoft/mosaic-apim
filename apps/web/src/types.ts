@@ -77,7 +77,8 @@ export interface PooledQuota {
 }
 
 export interface CostCenterLimit {
-  resource: { kind: 'modelApi' | 'mcpServer'; id: string; scopeId?: string | null }
+  /** A pool model's `scopeId` names its pool. */
+  resource: { kind: 'modelApi' | 'mcpServer' | 'poolModel'; id: string; scopeId?: string | null }
   person: PersonLimits | null
   pool: PooledQuota | null
 }
@@ -259,6 +260,10 @@ export interface GrantKey {
   exists: boolean
   costCenter: CostCenterRef | null
   rotated: KeySlot | null
+  /** A pool model grant's pool. */
+  poolId?: string | null
+  /** The other pool models the same key serves, so a change to it changes their access too. */
+  keySharedWith?: KeySharedModel[]
 }
 
 export interface GrantRevocation {
@@ -290,6 +295,7 @@ export type EntitlementResourceKind =
   | 'mcpServer'
   | 'modelDeployment'
   | 'product'
+  | 'poolModel'
 
 export interface EntitlementSubject {
   kind: EntitlementSubjectKind
@@ -299,6 +305,7 @@ export interface EntitlementSubject {
 export interface EntitlementResource {
   kind: EntitlementResourceKind
   id: string
+  /** The gateway or model endpoint an observed resource was read from, or a pool model's pool. */
   scopeId?: string | null
 }
 
@@ -1448,6 +1455,7 @@ export interface PublishPlan {
   operation?: 'publish' | 'unpublish'
   accessSnapshot?: ModelAccessSnapshot | null
   mcpAccessSnapshot?: McpAccessSnapshot | null
+  poolAccessSnapshot?: PoolAccessSnapshot | null
   previousAccessVersion?: number | null
   createdAt: string
   updatedAt: string
@@ -1483,8 +1491,56 @@ export interface PublishRun {
   target?: 'model' | 'mcp' | 'pool'
   accessSnapshot?: ModelAccessSnapshot | null
   mcpAccessSnapshot?: McpAccessSnapshot | null
+  poolAccessSnapshot?: PoolAccessSnapshot | null
   createdAt: string
   updatedAt: string
+}
+
+/**
+ * One grant a model pool's policy enforces: a subject's access to one pool model. A direct grant's
+ * key is shared: there's one per subject, pool, and cost center, serving every model the subject
+ * holds directly in the pool under that cost center.
+ */
+export interface PoolAccessGrant {
+  entitlementId: string
+  poolModelId: string
+  subject: EntitlementSubject
+  objectId: string
+  displayName: string
+  /** The subscription that is the grant's key. Null exactly for a security group, which uses Entra tokens. */
+  keyName?: string | null
+  enabled: boolean
+  enforcement?: EntitlementEnforcement | null
+  intentDigest: string
+  costCenterId?: string
+  costCenterCode?: string
+  /** A direct grant under its subject's default cost center, used when a call names none. */
+  defaultCostCenter?: boolean
+  grantedAt?: string | null
+  /** False when the grant's cost center turned keys off, so the key is refused for this model. */
+  keysAllowed?: boolean
+  /** True when the grant was revoked because its subject left the cost center. */
+  revoked?: boolean
+}
+
+/** A cost center's pooled monthly quota on one pool model, as an apply compiled it. */
+export interface PoolModelQuota {
+  poolModelId: string
+  costCenterId: string
+  costCenterCode: string
+  monthlyTokens?: number | null
+  monthlyCalls?: number | null
+}
+
+/** The grants a model pool's policy enforces, exactly as an apply compiled them. */
+export interface PoolAccessSnapshot {
+  version: number
+  settings: ModelAccessSettings
+  audience?: string | null
+  /** False when the gateway's tier can't count the pool's tokens, so no grant carries token limits. */
+  tokenMetering?: boolean
+  grants: PoolAccessGrant[]
+  quotas?: PoolModelQuota[]
 }
 
 /**
@@ -1565,6 +1621,15 @@ export interface ModelPool {
   appliedIntentDigest?: string | null
   unpublishedAt?: string | null
   lastError: string | null
+  /**
+   * Governed access. Null until an administrator opts the pool in; then its policy authorizes every
+   * call against grants on its models and its bootstrap key is suspended. A pool can't go back.
+   */
+  governedAccess?: ModelAccessSettings | null
+  appliedAccess?: PoolAccessSnapshot | null
+  accessState?: 'pending' | 'applying' | 'applied' | 'failed' | 'unknown'
+  /** The models the gateway serves, as of the last successful apply. */
+  appliedModelIds?: string[]
   createdAt: string
   updatedAt: string
 }
@@ -1612,6 +1677,8 @@ export interface ModelPoolUpdate {
   maxRetries?: number
   safeguard?: PoolSafeguard | null
   models?: PoolModelSpec[]
+  /** Opting in is one-way: once set, the methods can change but governed access can't be cleared. */
+  governedAccess?: ModelAccessSettings
 }
 
 export interface PoolMemberView {
@@ -1717,12 +1784,29 @@ export interface ModelPoolSummary {
   unappliedChanges: boolean
 }
 
+/** Another pool model a direct grant's key also serves. */
+export interface KeySharedModel {
+  poolModelId: string
+  displayName: string
+  publicName: string
+}
+
 export interface ModelConnection {
   entitlementId: string
+  /** A pool model's pool ID. */
   publicationId: string
   gatewayId: string
   endpoint: string
+  /** A pool model's public name. */
   deploymentName: string
+  /** Set for a pool model. Users never see the pool's name; administrators do. */
+  poolId?: string | null
+  poolName?: string | null
+  poolModelId?: string | null
+  /** The subject's other pool models the same key serves, so rotating or deleting it affects them. */
+  keySharedWith?: KeySharedModel[]
+  /** False when the gateway's tier can't count this model's tokens. */
+  tokenMetering?: boolean
   tenantId: string
   costCenter?: CostCenterRef | null
   costCenterHeader?: 'x-mosaic-cost-center'

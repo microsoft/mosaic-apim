@@ -23,11 +23,13 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useId, useRef, useState } from 'react'
 import type { RefObject } from 'react'
 import { useMosaicApi } from '../api'
-import { plural } from '../labels'
+import { describeAccessMethods, describeLimits } from '../entitlement-limits'
+import { ENTITLEMENT_SUBJECT_KIND_LABELS, plural } from '../labels'
 import { POOL_RESOURCE_KIND_LABELS, planProblems } from '../pools'
 import { runtimeConfig } from '../runtime-config'
 import type {
   ModelPool,
+  PoolAccessSnapshot,
   PublishAction,
   PublishPlan,
   PublishRun,
@@ -74,7 +76,7 @@ function statusOf(error: unknown): number | undefined {
 }
 
 export interface PoolPlanDialogProps {
-  pool: Pick<ModelPool, 'id' | 'displayName'>
+  pool: Pick<ModelPool, 'id' | 'displayName' | 'models'>
   mode: PoolPlanMode
   onClose: () => void
   /** Called once, when the run the dialog started finishes, whatever its outcome. */
@@ -257,6 +259,7 @@ export function PoolPlanDialog({ pool, mode, onClose, onFinished }: PoolPlanDial
                 plan={plan}
                 mode={mode}
                 name={pool.displayName}
+                models={pool.models}
                 nothingToApply={nothingToApply}
                 reviewRef={reviewRef}
               />
@@ -344,12 +347,14 @@ function PlanReview({
   plan,
   mode,
   name,
+  models,
   nothingToApply,
   reviewRef,
 }: {
   plan: PublishPlan
   mode: PoolPlanMode
   name: string
+  models: ModelPool['models']
   nothingToApply: boolean
   reviewRef: RefObject<HTMLElement | null>
 }) {
@@ -410,6 +415,124 @@ function PlanReview({
           <ul className={styles.facetList}>
             {plan.facets.map((facet, index) => (
               <PolicyFacetItem key={`${facet.element}-${index}`} facet={facet} />
+            ))}
+          </ul>
+        </>
+      )}
+      {publishing && plan.poolAccessSnapshot && (
+        <PoolAccessReview
+          snapshot={plan.poolAccessSnapshot}
+          previousVersion={plan.previousAccessVersion ?? null}
+          models={models}
+        />
+      )}
+    </section>
+  )
+}
+
+/**
+ * The complete set of grants a governed pool's apply enforces. The first governed apply suspends
+ * the pool's shared subscription, so the review says so before anyone confirms it.
+ */
+function PoolAccessReview({
+  snapshot,
+  previousVersion,
+  models,
+}: {
+  snapshot: PoolAccessSnapshot
+  previousVersion: number | null
+  models: ModelPool['models']
+}) {
+  const modelName = (id: string) => models.find((model) => model.id === id)?.displayName ?? id
+  const quotas = snapshot.quotas ?? []
+  return (
+    <section aria-label="Pool access review" className={styles.section}>
+      <Title3 as="h3">Who can call the pool</Title3>
+      <Text>
+        The apply enforces every grant below, across all of the pool’s models, not only the ones that changed.
+      </Text>
+      {previousVersion == null && (
+        <MessageBar intent="warning">
+          <MessageBarBody>
+            <MessageBarTitle>The shared subscription stops working</MessageBarTitle>
+            This is the pool’s first governed apply. MOSAIC suspends the pool’s shared subscription, and only the
+            callers below can call the pool. You can’t turn governed access off afterward.
+          </MessageBarBody>
+        </MessageBar>
+      )}
+      <dl className={styles.summaryList}>
+        <dt>Sign-in</dt>
+        <dd>{describeAccessMethods(snapshot.settings)}</dd>
+        <dt>Access version</dt>
+        <dd>
+          {previousVersion ?? 'none'} → {snapshot.version}
+        </dd>
+      </dl>
+      {snapshot.tokenMetering === false && (
+        <Text size={200} className={styles.muted}>
+          This gateway’s tier can’t count the pool’s tokens, so MOSAIC leaves out every token limit and quota.
+        </Text>
+      )}
+      {snapshot.grants.length === 0 ? (
+        <Text>The target has no grants, so the gateway refuses every caller.</Text>
+      ) : (
+        <div className={`table-scroll ${styles.tableScroll}`}>
+          <Table size="small" aria-label="Pool grants">
+            <TableHeader>
+              <TableRow>
+                <TableHeaderCell>Model</TableHeaderCell>
+                <TableHeaderCell>Who</TableHeaderCell>
+                <TableHeaderCell>Key</TableHeaderCell>
+                <TableHeaderCell>Cost center</TableHeaderCell>
+                <TableHeaderCell>Limits</TableHeaderCell>
+                <TableHeaderCell>Access</TableHeaderCell>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {snapshot.grants.map((grant) => (
+                <TableRow key={grant.entitlementId}>
+                  <TableCell>{modelName(grant.poolModelId)}</TableCell>
+                  <TableCell>
+                    <div className={styles.cellStack}>
+                      <Text weight="semibold">{grant.displayName}</Text>
+                      <Text size={200}>{ENTITLEMENT_SUBJECT_KIND_LABELS[grant.subject.kind]}</Text>
+                    </div>
+                  </TableCell>
+                  <TableCell>
+                    {grant.keyName ? <span className={styles.code}>{grant.keyName}</span> : 'None (Entra token)'}
+                  </TableCell>
+                  <TableCell>{grant.costCenterCode ?? '—'}</TableCell>
+                  <TableCell>
+                    <div className={styles.cellStack}>
+                      {describeLimits(grant).map((limit) => (
+                        <Text key={limit} size={200}>
+                          {limit}
+                        </Text>
+                      ))}
+                    </div>
+                  </TableCell>
+                  <TableCell>{grant.enabled ? 'Allowed' : 'Refused'}</TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </div>
+      )}
+      {quotas.length > 0 && (
+        <>
+          <Text weight="semibold">Pooled monthly quotas</Text>
+          <ul className={styles.facetList}>
+            {quotas.map((quota) => (
+              <li key={`${quota.poolModelId}:${quota.costCenterId}`}>
+                {modelName(quota.poolModelId)}, {quota.costCenterCode}:{' '}
+                {[
+                  quota.monthlyTokens ? `${quota.monthlyTokens.toLocaleString()} tokens` : null,
+                  quota.monthlyCalls ? `${quota.monthlyCalls.toLocaleString()} calls` : null,
+                ]
+                  .filter(Boolean)
+                  .join(' and ')}{' '}
+                a month, shared by everyone the cost center grants it to
+              </li>
             ))}
           </ul>
         </>

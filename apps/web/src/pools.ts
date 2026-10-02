@@ -97,6 +97,26 @@ export const POOL_RUN_STATUS_LABELS: Record<PublishRunStatus, string> = {
   interrupted: 'Interrupted',
 }
 
+export type PoolAccessState = NonNullable<ModelPool['accessState']>
+
+export const POOL_ACCESS_STATE_LABELS: Record<PoolAccessState, string> = {
+  pending: 'Governed, not applied yet',
+  applying: 'Governed, applying',
+  applied: 'Governed',
+  failed: 'Governed, last apply failed',
+  unknown: 'Governed, gateway state unknown',
+}
+
+/** How callers reach a pool, as its badge says: the shared key, or governed access and its state. */
+export function poolAccessLabel(pool: Pick<ModelPool, 'governedAccess' | 'accessState'>): string {
+  return pool.governedAccess ? POOL_ACCESS_STATE_LABELS[pool.accessState ?? 'pending'] : 'Shared key'
+}
+
+/** The grants a pool's last apply put in force, on every model. */
+export function poolGrantCount(pool: Pick<ModelPool, 'appliedAccess'>): number {
+  return pool.appliedAccess?.grants.filter((grant) => grant.enabled).length ?? 0
+}
+
 /** API Management caps a backend pool at 30 members. */
 export const MAX_POOL_MEMBERS = 30
 /** No request makes more than 10 attempts, so a linear pool model has at most 10 active members. */

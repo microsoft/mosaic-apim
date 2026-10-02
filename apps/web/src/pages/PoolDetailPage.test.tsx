@@ -9,6 +9,8 @@ import {
   anthropicPool,
   anthropicPoolDetail,
   draftPool,
+  governedAnthropicPool,
+  governedAnthropicPoolDetail,
   observedGateway,
   poolGateway,
   poolPlan,
@@ -234,5 +236,81 @@ describe('PoolDetailPage', () => {
 
     expect(await screen.findByText('Unable to load the pool')).toBeVisible()
     expect(screen.getByRole('link', { name: '← Back to pools' })).toHaveAttribute('href', '/pools')
+  })
+
+  it('turns on governed access, warning that it can’t be turned off', async () => {
+    const user = userEvent.setup()
+    api.updateModelPool.mockResolvedValue({
+      ...anthropicPool,
+      governedAccess: { keysEnabled: false, entraEnabled: true },
+    })
+    renderPage()
+
+    const access = await screen.findByRole('group', { name: 'Who can call it' })
+    expect(within(access).getByText('Shared key')).toBeVisible()
+    expect(within(access).getByText('Governed access can’t be turned off')).toBeVisible()
+    expect(within(access).queryByRole('link', { name: 'Grant access on the Entitlements page' })).not.toBeInTheDocument()
+    expect(screen.getByText(/To give each caller their own access instead, turn on governed access\./)).toBeVisible()
+
+    await user.click(within(access).getByRole('switch', { name: 'Dedicated subscription keys' }))
+    await user.click(within(access).getByRole('button', { name: 'Turn on governed access' }))
+
+    await waitFor(() => {
+      expect(api.updateModelPool).toHaveBeenCalledWith(anthropicPool.id, {
+        governedAccess: { keysEnabled: false, entraEnabled: true },
+      })
+    })
+    expect(
+      await screen.findByText(
+        'Saved governed access for the pool. Callers keep using its shared subscription until you review and apply a plan.',
+      ),
+    ).toBeVisible()
+  })
+
+  it('lists the grants in force once a plan applied governed access', async () => {
+    api.getModelPoolDetail.mockResolvedValue(governedAnthropicPoolDetail)
+    renderPage()
+
+    const access = await screen.findByRole('group', { name: 'Who can call it' })
+    expect(within(access).getByText('Governed')).toBeVisible()
+    expect(within(access).queryByText('Governed access can’t be turned off')).not.toBeInTheDocument()
+    expect(within(access).getByRole('button', { name: 'Save access settings' })).toBeDisabled()
+    expect(within(access).getByRole('link', { name: 'Grant access on the Entitlements page' })).toHaveAttribute(
+      'href',
+      '/entitlements',
+    )
+    expect(within(access).getByText('Grants in force: 2 grants')).toBeVisible()
+
+    const grants = within(access).getByRole('table', { name: 'Grants in force' })
+    const [, megan, research] = within(grants).getAllByRole('row')
+    expect(within(megan).getByText('Megan Bowen')).toBeVisible()
+    expect(within(megan).getByText('mosaic-pool-anthropic-claude-megan')).toBeVisible()
+    expect(within(megan).getByText('FIN-001')).toBeVisible()
+    expect(within(megan).getByText('Limits usage to 20,000 tokens per minute.')).toBeVisible()
+    expect(within(research).getByText('Security group')).toBeVisible()
+    expect(within(research).getByText('Entra token')).toBeVisible()
+    expect(within(research).getByText('No grant-specific limit is configured.')).toBeVisible()
+    expect(within(access).getByText('Claude Opus 4.5: FIN-001 shares 5,000,000 tokens a month')).toBeVisible()
+
+    expect(screen.getByText(/suspended by governed access/)).toBeVisible()
+    expect(
+      screen.getByText(
+        'Each caller uses their own grant: the key from their grant in the Ocp-Apim-Subscription-Key header, or a Microsoft Entra token in the Authorization header. People find their models, keys, and examples in the portal.',
+      ),
+    ).toBeVisible()
+  })
+
+  it('locks access settings while MOSAIC doesn’t know what the gateway enforces', async () => {
+    api.getModelPoolDetail.mockResolvedValue({
+      ...governedAnthropicPoolDetail,
+      pool: { ...governedAnthropicPool, accessState: 'unknown' },
+    })
+    renderPage()
+
+    const access = await screen.findByRole('group', { name: 'Who can call it' })
+    expect(within(access).getByText('Governed, gateway state unknown')).toBeVisible()
+    expect(within(access).getByText(/doesn’t know which grants the gateway enforces/)).toBeVisible()
+    expect(within(access).getByRole('switch', { name: 'Dedicated subscription keys' })).toBeDisabled()
+    expect(within(access).getByRole('button', { name: 'Save access settings' })).toBeDisabled()
   })
 })
