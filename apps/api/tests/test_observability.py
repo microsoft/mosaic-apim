@@ -6,10 +6,13 @@ from typing import Any
 
 import pytest
 import structlog
+from azure.core import exceptions as core_exceptions
 from azure.core.pipeline import PipelineContext, PipelineRequest, PipelineResponse
 from azure.core.pipeline.policies import HttpLoggingPolicy
 from azure.core.rest import HttpRequest
 from azure.cosmos._cosmos_http_logging_policy import CosmosHttpLoggingPolicy
+from azure.identity.aio._internal import decorators as identity_decorators
+from azure.monitor.opentelemetry._utils import configurations as distro_configurations
 from azure.monitor.opentelemetry.exporter.export import _base as exporter
 from mosaic_api import observability
 from mosaic_api.config import AuthMode, Environment, RepositoryBackend, Settings
@@ -154,6 +157,30 @@ def test_their_warnings_and_errors_still_reach_application_insights(
         (logger.name, logging.WARNING),
         (logger.name, logging.ERROR),
     ]
+
+
+# Loggers beside the quiet ones, each with an INFO record of its own in the locked versions. The
+# first records each token MOSAIC's managed identity credential gets.
+@pytest.mark.parametrize(
+    ("logger", "message"),
+    [
+        (identity_decorators._LOGGER, "ManagedIdentityCredential.get_token_info succeeded"),
+        (core_exceptions._LOGGER, "Received error message was not valid OdataV4 format."),
+        (distro_configurations._logger, "Using sampling ratio: 0.5"),
+    ],
+    ids=["azure-identity", "azure-core", "azure-monitor-distro"],
+)
+def test_other_azure_sdk_info_records_still_reach_application_insights(
+    startup: Startup, logger: logging.Logger, message: str
+) -> None:
+    startup.run()
+
+    logger.info(message)
+
+    assert [(record.name, record.levelno) for record in startup.exported.records] == [
+        (logger.name, logging.INFO)
+    ]
+    assert startup.exported.messages() == [message]
 
 
 def test_a_stricter_log_level_holds_them_too(startup: Startup) -> None:
