@@ -83,7 +83,7 @@ header on the HTTP request a tool call arrives on.
 
 ```python
 import httpx
-from azure.identity import DefaultAzureCredential
+from azure.identity.aio import DefaultAzureCredential
 from mcp.server.fastmcp import Context, FastMCP
 
 ON_BEHALF = "x-mosaic-on-behalf-of"
@@ -97,7 +97,7 @@ mcp = FastMCP("Contoso Support Tools")
 @mcp.tool()
 async def summarize_ticket(ticket: str, ctx: Context) -> str:
     request = ctx.request_context.request  # the MCP request this tool call arrived on
-    token = credential.get_token("api://<model-runtime-client-id>/.default").token
+    token = (await credential.get_token("api://<model-runtime-client-id>/.default")).token
     headers = {"Authorization": f"Bearer {token}"}
     if request is not None and (reference := request.headers.get(ON_BEHALF)):
         headers[ON_BEHALF] = reference
@@ -111,6 +111,10 @@ async def summarize_ticket(ticket: str, ctx: Context) -> str:
     response.raise_for_status()
     return str(response.json()["choices"][0]["message"]["content"])
 ```
+
+Create the credential once, so it can reuse its tokens across tool calls, and close it when the
+server stops with `await credential.close()`. An `azure.identity.aio` credential keeps its HTTP
+connections open until it's closed.
 
 The gateway removes the header before the call reaches the model.
 
