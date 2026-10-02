@@ -6,6 +6,7 @@ import type {
   ModelPoolSummary,
   PoolCandidateDeployment,
   PoolCandidates,
+  PoolMemberView,
   PublishPlan,
   PublishRun,
 } from '../types'
@@ -103,6 +104,8 @@ function deployment(overrides: Partial<PoolCandidateDeployment>): PoolCandidateD
     eligible: true,
     reason: null,
     poolIds: [],
+    declared: false,
+    apiKey: false,
     ...overrides,
   }
 }
@@ -126,12 +129,26 @@ export const opusWestUs3 = deployment({
   skuCapacity: 500,
   readiness: 'notConfirmed',
 })
+/** A deployment an administrator declared on an endpoint the gateway reaches with an API key. */
 export const opusSwedenKeyed = deployment({
   modelEndpointId: 'endpoint_swedencentral',
   endpointName: 'foundry-swedencentral',
   region: 'swedencentral',
+  skuName: null,
+  skuCapacity: null,
+  capacityType: 'unknown',
+  processingScope: 'unknown',
+  readiness: 'notConfirmed',
+  declared: true,
+  apiKey: true,
+})
+export const opusEastUsCreating = deployment({
+  modelEndpointId: 'endpoint_eastus',
+  endpointName: 'foundry-eastus',
+  region: 'eastus',
+  readiness: 'notConfirmed',
   eligible: false,
-  reason: "Pools can't use endpoints MOSAIC reaches with an API key yet.",
+  reason: 'The deployment is Creating.',
 })
 
 export const poolCandidates: PoolCandidates = {
@@ -143,7 +160,7 @@ export const poolCandidates: PoolCandidates = {
       modelName: 'claude-opus-4-5',
       modelFormat: 'Anthropic',
       apiShape: 'anthropicMessages',
-      deployments: [opusEastUs2, opusNorthCentral, opusWestUs3, opusSwedenKeyed],
+      deployments: [opusEastUs2, opusNorthCentral, opusWestUs3, opusSwedenKeyed, opusEastUsCreating],
     },
     {
       modelName: 'claude-sonnet-4-5',
@@ -317,6 +334,8 @@ export const anthropicPoolDetail: ModelPoolDetail = {
           spilloverDeploymentName: 'claude-opus-4-5-overflow',
           provisioningState: 'Succeeded',
           observed: true,
+          declared: false,
+          apiKey: false,
           readiness: 'ready',
           environmentVerdict: allowed,
         },
@@ -338,6 +357,8 @@ export const anthropicPoolDetail: ModelPoolDetail = {
           processingScope: 'global',
           provisioningState: 'Succeeded',
           observed: true,
+          declared: false,
+          apiKey: false,
           readiness: 'ready',
           environmentVerdict: allowed,
         },
@@ -358,6 +379,8 @@ export const anthropicPoolDetail: ModelPoolDetail = {
           processingScope: 'global',
           provisioningState: 'Succeeded',
           observed: true,
+          declared: false,
+          apiKey: false,
           readiness: 'notConfirmed',
           readinessMessage: "MOSAIC hasn't confirmed it can call this deployment.",
           environmentVerdict: allowed,
@@ -369,6 +392,55 @@ export const anthropicPoolDetail: ModelPoolDetail = {
   warnings: ['foundry-westus3 hasn\'t been synced in 3 days.'],
   facets: [],
   unappliedChanges: false,
+}
+
+const [eastUs2Member, northCentralMember] = anthropicPoolDetail.models[0].members
+
+function keyedMember(region: string, order: number): PoolMemberView {
+  return {
+    modelEndpointId: `endpoint_${region}`,
+    endpointName: `foundry-${region}`,
+    deploymentName: 'claude-opus-4-5',
+    backendName: `mosaic-pool-anthropic-claude-opus-${region}`,
+    weight: 1,
+    drained: false,
+    order,
+    priority: null,
+    region,
+    environment: 'production',
+    modelName: 'claude-opus-4-5',
+    modelVersion: '1',
+    capacityType: 'unknown',
+    processingScope: 'unknown',
+    observed: false,
+    declared: true,
+    apiKey: true,
+    readiness: 'notConfirmed',
+    readinessMessage:
+      "MOSAIC couldn't confirm that the gateway's managed identity can read this endpoint's API key from Key Vault. Check the endpoint's gateway access.",
+    environmentVerdict: allowed,
+  }
+}
+
+/**
+ * A preferential pool that also reaches two deployments with an API key: provisioned capacity
+ * first, pay-as-you-go overflow next, then each keyed deployment once.
+ */
+export const keyedAnthropicPoolDetail: ModelPoolDetail = {
+  ...anthropicPoolDetail,
+  pool: { ...anthropicPool, poolType: 'preferential' },
+  models: [
+    {
+      ...anthropicPoolDetail.models[0],
+      members: [
+        { ...eastUs2Member, priority: 1 },
+        { ...northCentralMember, priority: 2 },
+        keyedMember('swedencentral', 1),
+        keyedMember('norwayeast', 2),
+      ],
+    },
+  ],
+  warnings: [],
 }
 
 /** The pool after a plan applied governed access: a person's key and a security group's Entra tokens. */

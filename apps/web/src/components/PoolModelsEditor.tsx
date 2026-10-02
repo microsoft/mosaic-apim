@@ -7,6 +7,7 @@ import {
   MIN_POOL_WEIGHT,
   candidateKey,
   draftFromCandidate,
+  keyedTurn,
   memberKey,
   poolFamilyLabel,
   preferentialPriority,
@@ -22,7 +23,7 @@ import type {
   PoolCandidateModel,
 } from '../types'
 import { EnvironmentBadge } from './EnvironmentBadge'
-import { PoolReadinessBadge } from './PoolBadges'
+import { PoolMemberAccessBadges, PoolReadinessBadge } from './PoolBadges'
 import styles from './PoolDialogs.module.css'
 
 function familyOf(drafts: DraftPoolModel[], locked?: PoolFamily | null): PoolFamily | null {
@@ -46,6 +47,18 @@ function familyLabel(model: Pick<PoolCandidateModel, 'modelFormat' | 'apiShape'>
 
 function memberLabel(member: Pick<DraftPoolMember, 'deploymentName'>, deployment?: PoolCandidateDeployment): string {
   return deployment ? `${member.deploymentName} on ${deployment.endpointName}` : member.deploymentName
+}
+
+/** How a breaker or preferential pool tries the active deployments it reaches with an API key. */
+function keyedNote(keyed: number, afterBackendPool: boolean): string {
+  if (!afterBackendPool) {
+    return keyed === 1
+      ? 'The only active deployment is reached with an API key, so each request tries it once.'
+      : 'Every active deployment is reached with an API key, so requests try each one once, in the order listed.'
+  }
+  return keyed === 1
+    ? 'A deployment reached with an API key can’t join the backend pool, so it’s tried once, after the others.'
+    : 'Deployments reached with an API key can’t join the backend pool, so each is tried once, in the order listed, after the others.'
 }
 
 interface MemberRow {
@@ -107,6 +120,19 @@ function PoolModelCard({
     members.splice(index + offset, 0, moved)
     setMembers(members)
   }
+  const swap = (left: number, right: number) =>
+    setMembers(
+      draft.members.map((member, index) =>
+        index === left ? draft.members[right] : index === right ? draft.members[left] : member,
+      ),
+    )
+  // A breaker or preferential pool can't put a deployment it reaches with an API key in its backend
+  // pool, so it tries each active one once, in the order they're listed, after the backend pool.
+  const keyedOf = (member: DraftPoolMember) =>
+    poolType !== 'linear' && deployments.get(memberKey(member.modelEndpointId, member.deploymentName))?.apiKey === true
+  const keyedActive = draft.members.flatMap((member, index) => (keyedOf(member) && !member.drained ? [index] : []))
+  const afterBackendPool = draft.members.some((member) => !member.drained && !keyedOf(member))
+  const weighted = draft.members.filter((member) => !keyedOf(member)).length
   const include = (deployment: PoolCandidateDeployment) =>
     setMembers([
       ...draft.members,
@@ -116,7 +142,11 @@ function PoolModelCard({
     const weights = suggestedWeights(
       draft.members.map((member) => {
         const deployment = deployments.get(memberKey(member.modelEndpointId, member.deploymentName))
-        return { capacityType: deployment?.capacityType ?? 'unknown', skuCapacity: deployment?.skuCapacity ?? null }
+        return {
+          capacityType: deployment?.capacityType ?? 'unknown',
+          skuCapacity: deployment?.skuCapacity ?? null,
+          apiKey: deployment?.apiKey,
+        }
       }),
       poolType,
     )
@@ -193,6 +223,8 @@ function PoolModelCard({
               {rows.map(({ key, member, memberIndex, deployment }) => {
                 const name = memberLabel(member ?? { deploymentName: deployment?.deploymentName ?? '' }, deployment)
                 const otherPools = (deployment?.poolIds ?? []).filter((id) => id !== poolId).length
+                const keyed = member != null && keyedOf(member)
+                const turn = keyed ? keyedActive.indexOf(memberIndex) : -1
                 return (
                   <tr key={key}>
                     <td>
@@ -219,8 +251,9 @@ function PoolModelCard({
                             .join(' · ')}
                         </Text>
                         {deployment && (
-                          <span>
+                          <span className={styles.accessBadges}>
                             <EnvironmentBadge environment={deployment.environment ?? null} catalog={catalog} size="small" />
+                            <PoolMemberAccessBadges apiKey={deployment.apiKey} declared={deployment.declared} />
                           </span>
                         )}
                         {deployment && !deployment.eligible && deployment.reason && (
@@ -284,7 +317,7 @@ function PoolModelCard({
                           />
                         </div>
                       )}
-                      {member && poolType !== 'linear' && (
+                      {member && poolType !== 'linear' && !keyed && (
                         <div className={styles.cellStack}>
                           <Input
                             className={styles.weightInput}
@@ -300,6 +333,33 @@ function PoolModelCard({
                             <Text size={200} className={styles.muted}>
                               {preferentialPriority(deployment?.capacityType ?? 'unknown') === 1 ? 'Tried first' : 'Overflow'}
                             </Text>
+                          )}
+                        </div>
+                      )}
+                      {member && keyed && (
+                        <div className={styles.cellStack}>
+                          <Text size={200}>
+                            {keyedTurn(turn >= 0 ? turn + 1 : null, keyedActive.length, afterBackendPool)}
+                          </Text>
+                          {turn >= 0 && keyedActive.length > 1 && (
+                            <div className={styles.orderCell}>
+                              <Button
+                                appearance="subtle"
+                                size="small"
+                                icon={<ArrowUpRegular />}
+                                aria-label={`Move ${name} up`}
+                                disabled={disabled || turn === 0}
+                                onClick={() => swap(memberIndex, keyedActive[turn - 1])}
+                              />
+                              <Button
+                                appearance="subtle"
+                                size="small"
+                                icon={<ArrowDownRegular />}
+                                aria-label={`Move ${name} down`}
+                                disabled={disabled || turn === keyedActive.length - 1}
+                                onClick={() => swap(memberIndex, keyedActive[turn + 1])}
+                              />
+                            </div>
                           )}
                         </div>
                       )}
@@ -328,8 +388,9 @@ function PoolModelCard({
             : poolType === 'preferential'
               ? 'Requests go to provisioned deployments first, by weight. Pay-as-you-go deployments take the overflow. A drained deployment gets no requests.'
               : 'Requests spread across the deployments by weight. A drained deployment stays in the pool but gets no requests.'}
+          {keyedActive.length > 0 && ` ${keyedNote(keyedActive.length, afterBackendPool)}`}
         </Text>
-        {poolType !== 'linear' && draft.members.length > 1 && (
+        {poolType !== 'linear' && weighted > 1 && (
           <Button size="small" onClick={suggestWeights} disabled={disabled}>
             Suggest weights from capacity
           </Button>

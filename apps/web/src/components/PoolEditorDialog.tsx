@@ -206,6 +206,7 @@ export function PoolEditorDialog({ pool, initialGatewayId, onClose, onSaved }: P
     drafts,
     poolType,
     candidates.data ? deploymentLookup(candidates.data.models) : undefined,
+    retriesValid ? retries : (pool?.maxRetries ?? DEFAULT_POOL_RETRIES),
   )
   const problems = [
     ...new Set([

@@ -87,8 +87,10 @@ describe('PoolEditorDialog', () => {
     await user.selectOptions(addModel, 'anthropic|claude-opus-4-5|anthropicmessages')
     await user.click(within(dialog).getByRole('button', { name: 'Add model' }))
     const card = within(dialog).getByRole('region', { name: 'claude-opus-4-5' })
-    expect(within(card).getByRole('checkbox', { name: 'Use claude-opus-4-5 on foundry-swedencentral' })).toBeDisabled()
-    expect(within(card).getByText('Pools can\'t use endpoints MOSAIC reaches with an API key yet.')).toBeVisible()
+    expect(within(card).getByRole('checkbox', { name: 'Use claude-opus-4-5 on foundry-swedencentral' })).toBeChecked()
+    expect(within(card).getByText('Tried once, after the backend pool')).toBeVisible()
+    expect(within(card).getByRole('checkbox', { name: 'Use claude-opus-4-5 on foundry-eastus' })).toBeDisabled()
+    expect(within(card).getByText('The deployment is Creating.')).toBeVisible()
     await user.click(within(card).getByRole('checkbox', { name: 'Use claude-opus-4-5 on foundry-westus3' }))
     await user.click(within(dialog).getByRole('button', { name: 'Next' }))
 
@@ -96,7 +98,7 @@ describe('PoolEditorDialog', () => {
     await user.paste('100000')
     const summary = within(dialog).getByLabelText('Pool summary')
     expect(within(summary).getByText('Anthropic · Anthropic Messages')).toBeVisible()
-    expect(within(summary).getByText('1 model, served by 2 deployments')).toBeVisible()
+    expect(within(summary).getByText('1 model, served by 3 deployments')).toBeVisible()
     expect(within(summary).getByText('Preferential, throttling, up to 2 retries')).toBeVisible()
     expect(within(summary).getByText('https://apim-contoso-ai.example.test/mosaic/pool-anthropic-claude')).toBeVisible()
     expect(within(summary).getByText('mosaic-pool-anthropic-claude')).toBeVisible()
@@ -122,6 +124,7 @@ describe('PoolEditorDialog', () => {
           members: [
             { modelEndpointId: 'endpoint_eastus2', deploymentName: 'claude-opus-4-5', weight: 1, drained: false },
             { modelEndpointId: 'endpoint_northcentralus', deploymentName: 'claude-opus-4-5', weight: 1, drained: false },
+            { modelEndpointId: 'endpoint_swedencentral', deploymentName: 'claude-opus-4-5', weight: 1, drained: false },
           ],
         },
       ],

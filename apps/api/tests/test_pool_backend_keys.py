@@ -526,6 +526,36 @@ async def test_a_key_member_cant_push_a_request_past_ten_attempts(keyed: Estate)
     ) in detail.problems
 
 
+async def test_a_model_of_only_key_members_tries_at_most_ten(keyed: Estate) -> None:
+    extras = [f"aoai-key-{index}" for index in range(3, 13)]
+    for name in extras:
+        await keyed.add_endpoint(
+            name,
+            provider=ModelProvider.AZURE_OPENAI,
+            location="northeurope",
+            auth_mode=EndpointAuthMode.API_KEY,
+            deployments=[],
+            declared=[
+                DeclaredDeployment(
+                    deployment_name="gpt-4o",
+                    model_name="gpt-4o",
+                    model_version="2024-08-06",
+                    api_shape=ApiShape.AZURE_OPENAI,
+                )
+            ],
+        )
+        await _key_secret(keyed, name, f"https://kv-contoso-ai.vault.azure.net/secrets/{name}")
+    pool = await keyed.create("OpenAI", _gpt4o("aoai-key", *extras))
+
+    detail = await keyed.service.detail(ACTOR, pool.id)
+
+    assert (
+        "A request makes at most 10 attempts, and gpt-4o would make 11, one on each of its "
+        "deployments reached with an API key. Drain some deployments."
+    ) in detail.problems
+    assert not any("0 on its backend pool" in problem for problem in detail.problems)
+
+
 # -- changing and removing a key member -----------------------------------------------------------
 
 

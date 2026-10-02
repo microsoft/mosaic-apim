@@ -23,6 +23,7 @@ import { PolicyFacetItem } from '../components/PolicyFacets'
 import { PoolAccessCard } from '../components/PoolAccessCard'
 import {
   PoolCapacityBadgeView,
+  PoolMemberAccessBadges,
   PoolReadinessBadge,
   PoolRunStatusBadge,
   PoolStatusBadge,
@@ -45,7 +46,9 @@ import {
   describeRetries,
   describeSafeguard,
   formatRunDuration,
-  memberPosition,
+  keyedRouting,
+  keyedTurn,
+  memberPositions,
   memberShares,
   newestRunsFirst,
   poolFamilyLabel,
@@ -110,14 +113,19 @@ function capacityDetail(member: PoolMemberView): string {
 function MemberRow({
   poolType,
   member,
+  position,
   share,
+  turn,
   catalog,
   drainDisabled,
   onDrain,
 }: {
   poolType: ModelPoolType
   member: PoolMemberView
+  position: string
   share: number | null
+  /** When a breaker or preferential pool tries a member it reaches with an API key, which has no weight. */
+  turn: string | null
   catalog?: EnvironmentCatalogView
   drainDisabled: boolean
   onDrain: (drained: boolean) => void
@@ -126,7 +134,7 @@ function MemberRow({
   const verdict = member.environmentVerdict
   return (
     <tr className={member.drained ? styles.drainedRow : undefined}>
-      {poolType !== 'breaker' && <td>{memberPosition(poolType, member)}</td>}
+      {poolType !== 'breaker' && <td>{position}</td>}
       <td>
         <div className={styles.cellStack}>
           <Text weight="semibold">{member.deploymentName}</Text>
@@ -134,6 +142,7 @@ function MemberRow({
             {member.endpointName ?? member.modelEndpointId}
             {member.modelVersion ? ` · version ${member.modelVersion}` : ''}
           </Text>
+          <PoolMemberAccessBadges apiKey={member.apiKey} declared={member.declared} />
         </div>
       </td>
       <td>
@@ -151,8 +160,8 @@ function MemberRow({
       {poolType !== 'linear' && (
         <td>
           <div className={styles.cellStack}>
-            <Text>{member.weight}</Text>
-            <Text size={200} className={styles.muted}>{shareLabel(poolType, member, share)}</Text>
+            <Text>{turn == null ? member.weight : '—'}</Text>
+            <Text size={200} className={styles.muted}>{turn ?? shareLabel(poolType, member, share)}</Text>
           </div>
         </td>
       )}
@@ -189,7 +198,16 @@ function PoolModelCard({
   onDrain: (member: PoolMemberView, drained: boolean) => void
 }) {
   const shares = memberShares(poolType, model.members)
+  const positions = memberPositions(poolType, model.members)
   const active = model.members.filter((member) => !member.drained).length
+  // A breaker or preferential pool tries each active member it reaches with an API key once, after
+  // its backend pool's attempts, or in order when every active member has a key.
+  const keyed = model.members.filter((member) => member.apiKey && !member.drained).length
+  const afterBackendPool = model.members.some((member) => !member.apiKey && !member.drained)
+  const turn = (member: PoolMemberView) =>
+    poolType !== 'linear' && member.apiKey
+      ? keyedTurn(member.drained ? null : member.order, keyed, afterBackendPool)
+      : null
   const headingId = `pool-model-${model.id}`
   return (
     <Card className={styles.card} aria-labelledby={headingId}>
@@ -230,7 +248,9 @@ function PoolModelCard({
                 key={`${member.modelEndpointId}::${member.deploymentName}`}
                 poolType={poolType}
                 member={member}
+                position={positions[index]}
                 share={shares[index]}
+                turn={turn(member)}
                 catalog={catalog}
                 drainDisabled={drainDisabled}
                 onDrain={(drained) => onDrain(member, drained)}
@@ -621,7 +641,7 @@ function PoolDetail({ poolId }: { poolId: string }) {
               {preset}. {presetDescription}
             </dd>
             <dt>Retries</dt>
-            <dd>{describeRetries(pool.poolType, pool.maxRetries)}</dd>
+            <dd>{describeRetries(pool.poolType, pool.maxRetries, keyedRouting(detail.data.models))}</dd>
             <dt>Safeguard</dt>
             <dd>{describeSafeguard(pool.safeguard)}</dd>
           </dl>

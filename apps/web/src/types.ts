@@ -1688,7 +1688,11 @@ export interface PoolMemberView {
   backendName: string
   weight: number
   drained: boolean
-  /** Linear pools: the member's position, from 1. */
+  /**
+   * Linear pools: the member's position, from 1. Breaker and preferential pools: for a member
+   * reached with an API key, which no backend pool can hold, its position among those the gateway
+   * tries after the backend pool.
+   */
   order?: number | null
   /** Breaker and preferential pools: the priority group, where 1 is tried first. */
   priority?: number | null
@@ -1702,7 +1706,12 @@ export interface PoolMemberView {
   processingScope: ProcessingScope
   spilloverDeploymentName?: string | null
   provisioningState?: string | null
+  /** Whether MOSAIC saw the deployment in Azure. */
   observed: boolean
+  /** Whether an administrator declared the deployment, on an endpoint an API key can't list. */
+  declared: boolean
+  /** Whether the gateway reaches the deployment with an API key rather than its managed identity. */
+  apiKey: boolean
   readiness: PoolReadiness
   readinessMessage?: string | null
   environmentVerdict?: EnvironmentVerdict | null
@@ -1753,6 +1762,10 @@ export interface PoolCandidateDeployment {
   reason?: string | null
   /** The pools on this gateway that already use the deployment. */
   poolIds: string[]
+  /** Whether an administrator declared the deployment, on an endpoint an API key can't list. */
+  declared: boolean
+  /** Whether the gateway would reach the deployment with an API key rather than its managed identity. */
+  apiKey: boolean
 }
 
 export interface PoolCandidateModel {

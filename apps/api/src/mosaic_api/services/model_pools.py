@@ -1758,17 +1758,24 @@ class ModelPoolService:
                     "reached with the gateway's identity."
                 )
             elif backend_pools and keys and balanced + len(keys) > MAX_ATTEMPTS:
-                keyed_attempts = (
-                    "one on the deployment"
-                    if len(keys) == 1
-                    else f"one on each of the {len(keys)} deployments"
-                )
-                problems.append(
-                    f"A request makes at most {MAX_ATTEMPTS} attempts, and {model.public_name} "
-                    f"would make {balanced + len(keys)}: {balanced} on its backend pool, then "
-                    f"{keyed_attempts} reached with an API key. Lower the pool's retries, or "
-                    "drain some deployments."
-                )
+                if not balanced:
+                    problems.append(
+                        f"A request makes at most {MAX_ATTEMPTS} attempts, and {model.public_name} "
+                        f"would make {len(keys)}, one on each of its deployments reached with an "
+                        "API key. Drain some deployments."
+                    )
+                else:
+                    keyed_attempts = (
+                        "one on the deployment"
+                        if len(keys) == 1
+                        else f"one on each of the {len(keys)} deployments"
+                    )
+                    problems.append(
+                        f"A request makes at most {MAX_ATTEMPTS} attempts, and "
+                        f"{model.public_name} would make {balanced + len(keys)}: {balanced} on "
+                        f"its backend pool, then {keyed_attempts} reached with an API key. Lower "
+                        "the pool's retries, or drain some deployments."
+                    )
             if backend_pools and keys:
                 warnings.append(_keyed_warning(model.public_name, len(keys), identity))
             order = 0

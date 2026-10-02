@@ -11,6 +11,7 @@ import {
   draftPool,
   governedAnthropicPool,
   governedAnthropicPoolDetail,
+  keyedAnthropicPoolDetail,
   observedGateway,
   poolGateway,
   poolPlan,
@@ -108,6 +109,31 @@ describe('PoolDetailPage', () => {
     expect(screen.getByRole('button', { name: 'Review plan' })).toBeEnabled()
     expect(screen.getByRole('button', { name: 'Unpublish' })).toBeEnabled()
     expect(screen.queryByRole('button', { name: 'Remove' })).not.toBeInTheDocument()
+  })
+
+  it('places deployments reached with an API key after the backend pool, without weights', async () => {
+    api.getModelPoolDetail.mockResolvedValue(keyedAnthropicPoolDetail)
+    renderPage()
+
+    const deployments = await screen.findByRole('table', { name: 'Deployments serving Claude Opus 4.5' })
+    const [, eastUs2, northCentral, sweden, norway] = within(deployments).getAllByRole('row')
+    const cells = (row: HTMLElement) => within(row).getAllByRole('cell')
+
+    expect(cells(eastUs2)[0]).toHaveTextContent(/^1$/)
+    expect(within(eastUs2).getByText('100% of requests')).toBeVisible()
+    expect(cells(northCentral)[0]).toHaveTextContent(/^2$/)
+    expect(within(northCentral).getByText('100% of overflow')).toBeVisible()
+    expect(within(northCentral).queryByText('API key')).not.toBeInTheDocument()
+
+    expect(cells(sweden)[0]).toHaveTextContent(/^3$/)
+    expect(within(sweden).getByText('API key')).toBeVisible()
+    expect(within(sweden).getByText('Declared')).toBeVisible()
+    expect(within(sweden).getByText('Tried first after the backend pool')).toBeVisible()
+    expect(cells(norway)[0]).toHaveTextContent(/^4$/)
+    expect(within(norway).getByText('Tried second after the backend pool')).toBeVisible()
+    expect(
+      screen.getByText('Up to 3 retries in the backend pool, then one attempt on each deployment reached with an API key'),
+    ).toBeVisible()
   })
 
   it('saves a drained deployment and says the gateway follows once a plan is applied', async () => {

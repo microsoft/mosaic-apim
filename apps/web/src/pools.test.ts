@@ -13,7 +13,10 @@ import {
   draftFromCandidate,
   draftsFromPool,
   formatRunDuration,
+  keyedRouting,
+  keyedTurn,
   memberPosition,
+  memberPositions,
   memberShares,
   newestRunsFirst,
   planProblems,
@@ -37,6 +40,7 @@ import {
   observedGateway,
   opusEastUs2,
   opusNorthCentral,
+  opusSwedenKeyed,
   opusWestUs3,
   poolCandidates,
   poolGateway,
@@ -105,6 +109,12 @@ describe('suggested weights', () => {
   it('leaves every weight at 1 in a linear pool, which goes by order', () => {
     expect(suggestedWeights([capacity('payAsYouGo', 100), capacity('payAsYouGo', 300)], 'linear')).toEqual([1, 1])
   })
+
+  it('leaves a deployment reached with an API key at 1, outside the groups it would otherwise level', () => {
+    const keyed = { ...capacity('unknown', null), apiKey: true }
+
+    expect(suggestedWeights([capacity('payAsYouGo', 100), keyed, capacity('payAsYouGo', 300)], 'breaker')).toEqual([1, 1, 3])
+  })
 })
 
 describe('pool model drafts', () => {
@@ -114,13 +124,15 @@ describe('pool model drafts', () => {
     const draft = draftFromCandidate(opus, 'breaker')
 
     expect(draft.publicName).toBe('claude-opus-4-5')
+    // The deployment still being created can't join yet.
     expect(draft.members.map((member) => member.modelEndpointId)).toEqual([
       opusEastUs2.modelEndpointId,
       opusNorthCentral.modelEndpointId,
       opusWestUs3.modelEndpointId,
+      opusSwedenKeyed.modelEndpointId,
     ])
     // Provisioned and pay-as-you-go capacity aren't comparable, so a breaker pool weights them equally.
-    expect(draft.members.map((member) => member.weight)).toEqual([1, 1, 1])
+    expect(draft.members.map((member) => member.weight)).toEqual([1, 1, 1, 1])
   })
 
   it('keeps a pool to one vendor and one API', () => {
@@ -211,6 +223,58 @@ describe('checking pool models', () => {
     expect(checkDrafts([opusDraft({ members })], 'breaker', lookup).problems).toEqual([
       'Claude Opus 4.5: give claude-opus-4-5 a whole-number weight from 1 to 100.',
     ])
+  })
+
+  describe('with deployments reached with an API key', () => {
+    const keyedDeployments = Array.from({ length: 11 }, (_, index) => ({
+      ...opusSwedenKeyed,
+      modelEndpointId: `endpoint_key_${index + 1}`,
+      endpointName: `foundry-key-${index + 1}`,
+    }))
+    const keyedLookup = deploymentLookup([
+      { ...poolCandidates.models[0], deployments: [opusEastUs2, opusNorthCentral, ...keyedDeployments] },
+    ])
+    const member = (modelEndpointId: string, deploymentName = 'claude-opus-4-5') => ({
+      modelEndpointId,
+      deploymentName,
+      weight: 1,
+      drained: false,
+    })
+    const pooled = [member('endpoint_eastus2'), member('endpoint_northcentralus')]
+    const keyed = (count: number) => keyedDeployments.slice(0, count).map((deployment) => member(deployment.modelEndpointId))
+
+    it('warns when they would take a request past ten attempts', () => {
+      // Two attempts on the backend pool, then one on each of eight deployments: ten in all.
+      expect(checkDrafts([opusDraft({ members: [...pooled, ...keyed(8)] })], 'breaker', keyedLookup, 3).cautions).toEqual([])
+      expect(checkDrafts([opusDraft({ members: [...pooled, ...keyed(9)] })], 'preferential', keyedLookup, 3).cautions).toEqual([
+        "Claude Opus 4.5: a request makes at most 10 attempts, and this model would make 11: 2 on its backend pool, then one on each of the 9 deployments reached with an API key. Lower the pool's retries, or drain some deployments.",
+      ])
+      expect(checkDrafts([opusDraft({ members: keyed(11) })], 'breaker', keyedLookup).cautions).toEqual([
+        'Claude Opus 4.5: a request makes at most 10 attempts, and this model would make 11, one on each of its deployments reached with an API key. Drain some deployments.',
+      ])
+    })
+
+    it('counts only the backend pool’s attempts that retries allow', () => {
+      const members = [...pooled, ...keyed(9)]
+
+      expect(checkDrafts([opusDraft({ members })], 'breaker', keyedLookup, 0).cautions).toEqual([])
+    })
+
+    it('leaves a linear pool to its own limit, since it tries every deployment as its own target', () => {
+      expect(checkDrafts([opusDraft({ members: [...pooled, ...keyed(8)] })], 'linear', keyedLookup).cautions).toEqual([])
+    })
+
+    it('needs only the backend pool’s deployments to share a name', () => {
+      const renamedLookup = deploymentLookup([
+        {
+          ...poolCandidates.models[0],
+          deployments: [opusEastUs2, opusNorthCentral, { ...opusSwedenKeyed, deploymentName: 'opus-keyed' }],
+        },
+      ])
+      const draft = opusDraft({ members: [...pooled, member(opusSwedenKeyed.modelEndpointId, 'opus-keyed')] })
+
+      expect(checkDrafts([draft], 'breaker', renamedLookup).cautions).toEqual([])
+    })
   })
 })
 
@@ -356,11 +420,66 @@ describe('pool members', () => {
     expect(memberPosition('breaker', {})).toBe('—')
   })
 
+  it('places a member reached with an API key after the backend pool’s last priority group', () => {
+    const keyed = (order: number | null, drained = false) => ({ order, priority: null, apiKey: true, drained })
+
+    expect(
+      memberPositions('preferential', [
+        { order: null, priority: 1 },
+        { order: null, priority: 2 },
+        keyed(1),
+        keyed(2),
+        keyed(null, true),
+      ]),
+    ).toEqual(['1', '2', '3', '4', '—'])
+    expect(memberPositions('breaker', [{ order: null, priority: 1 }, keyed(1)])).toEqual(['1', '2'])
+    expect(memberPositions('breaker', [keyed(1), keyed(2)])).toEqual(['1', '2'])
+    // A linear pool tries every member as its own target, in one order.
+    expect(memberPositions('linear', [{ order: 1, priority: null }, keyed(2)])).toEqual(['1', '2'])
+  })
+
+  it('gives a member reached with an API key no share of its group, since it has no weight', () => {
+    const shares = memberShares('breaker', [
+      { weight: 3, drained: false, priority: 1 },
+      { weight: 1, drained: false, priority: 1 },
+      { weight: 1, drained: false, priority: null, apiKey: true },
+    ])
+
+    expect(shares).toEqual([75, 25, null])
+  })
+
+  it('says when a request tries a member reached with an API key', () => {
+    expect(keyedTurn(1, 1, true)).toBe('Tried once, after the backend pool')
+    expect(keyedTurn(1, 1, false)).toBe('Tried once per request')
+    expect(keyedTurn(2, 3, true)).toBe('Tried second after the backend pool')
+    expect(keyedTurn(3, 3, false)).toBe('Tried third')
+    expect(keyedTurn(11, 12, false)).toBe('Tried 11th')
+    expect(keyedTurn(null, 2, true)).toBe('No requests')
+  })
+
+  it('tells whether a pool’s members reached with an API key follow a backend pool', () => {
+    const member = (apiKey: boolean, drained = false) => ({ apiKey, drained })
+
+    expect(keyedRouting([{ members: [member(false), member(true, true)] }])).toBe('none')
+    expect(keyedRouting([{ members: [member(false), member(true)] }])).toBe('afterBackendPool')
+    expect(keyedRouting([{ members: [member(true), member(false, true)] }])).toBe('only')
+    expect(keyedRouting([])).toBe('none')
+  })
+
   it('describes retries in words', () => {
     expect(describeRetries('breaker', 0)).toBe('None. Each request makes one attempt.')
     expect(describeRetries('breaker', 1)).toBe('Up to 1 retry, on another deployment')
     expect(describeRetries('preferential', 3)).toBe('Up to 3 retries, each on another deployment')
     expect(describeRetries('linear', 3)).toBe('Every active deployment, in order, until one answers')
+  })
+
+  it('describes the attempts on deployments reached with an API key', () => {
+    const then = 'then one attempt on each deployment reached with an API key'
+
+    expect(describeRetries('breaker', 0, 'afterBackendPool')).toBe(`One attempt in the backend pool, ${then}`)
+    expect(describeRetries('preferential', 1, 'afterBackendPool')).toBe(`Up to 1 retry in the backend pool, ${then}`)
+    expect(describeRetries('breaker', 3, 'afterBackendPool')).toBe(`Up to 3 retries in the backend pool, ${then}`)
+    expect(describeRetries('breaker', 3, 'only')).toBe('Every active deployment, in order, until one answers')
   })
 })
 

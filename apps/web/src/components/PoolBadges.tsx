@@ -1,4 +1,5 @@
 import { Badge } from '@fluentui/react-components'
+import type { BadgeProps } from '@fluentui/react-components'
 import { POOL_CAPACITY_LABELS, POOL_READINESS_LABELS, POOL_RUN_STATUS_LABELS, readinessSummary } from '../pools'
 import type { ReadinessTone } from '../pools'
 import { isUnpublished, publicationStatusLabel } from '../publication-state'
@@ -78,6 +79,38 @@ export function UnappliedChangesBadge() {
     <Badge appearance="tint" className={styles.cautionBadge}>
       Changes not applied
     </Badge>
+  )
+}
+
+/**
+ * How the gateway reaches one deployment, when that's not the usual way: with the endpoint's API
+ * key instead of its managed identity, or a deployment an administrator declared because MOSAIC
+ * can't list the endpoint's deployments. Renders nothing for an observed deployment reached with
+ * the gateway's identity.
+ */
+export function PoolMemberAccessBadges({
+  apiKey,
+  declared,
+  size = 'small',
+}: {
+  apiKey?: boolean
+  declared?: boolean
+  size?: BadgeProps['size']
+}) {
+  if (!apiKey && !declared) return null
+  return (
+    <span className={styles.accessBadges}>
+      {apiKey && (
+        <Badge appearance="outline" size={size}>
+          API key
+        </Badge>
+      )}
+      {declared && (
+        <Badge appearance="outline" size={size}>
+          Declared
+        </Badge>
+      )}
+    </span>
   )
 }
 

@@ -119,8 +119,10 @@ export function poolGrantCount(pool: Pick<ModelPool, 'appliedAccess'>): number {
 
 /** API Management caps a backend pool at 30 members. */
 export const MAX_POOL_MEMBERS = 30
-/** No request makes more than 10 attempts, so a linear pool model has at most 10 active members. */
-export const MAX_LINEAR_MEMBERS = 10
+/** No request makes more than 10 attempts, on any kind of pool. */
+export const MAX_POOL_ATTEMPTS = 10
+/** A linear pool tries each active member once per request, so a model has at most 10 active members. */
+export const MAX_LINEAR_MEMBERS = MAX_POOL_ATTEMPTS
 /** Each model adds a branch to the pool's policy, which API Management caps in size. */
 export const MAX_POOL_MODELS = 40
 export const MAX_POOL_RETRIES = 9
@@ -253,16 +255,20 @@ export function describeSafeguard(safeguard: PoolSafeguard | null | undefined): 
 /**
  * Weights proportional to each deployment's capacity. Members are only comparable within one
  * priority group and one capacity type: provisioned units and pay-as-you-go thousands of tokens per
- * minute measure different things. A group with unknown or mixed capacity gets equal weights.
+ * minute measure different things. A group with unknown or mixed capacity gets equal weights. A
+ * breaker or preferential pool tries a member reached with an API key once, outside its backend
+ * pool, so that member keeps weight 1 and doesn't count toward any group.
  */
 export function suggestedWeights(
-  deployments: Pick<PoolCandidateDeployment, 'capacityType' | 'skuCapacity'>[],
+  deployments: (Pick<PoolCandidateDeployment, 'capacityType' | 'skuCapacity'> &
+    Partial<Pick<PoolCandidateDeployment, 'apiKey'>>)[],
   poolType: ModelPoolType,
 ): number[] {
   const weights = deployments.map(() => 1)
   if (poolType === 'linear') return weights
   const groups = new Map<string, number[]>()
   deployments.forEach((deployment, index) => {
+    if (deployment.apiKey) return
     const group = poolType === 'preferential' && deployment.capacityType === 'provisioned' ? 'first' : 'rest'
     groups.set(group, [...(groups.get(group) ?? []), index])
   })
@@ -391,38 +397,104 @@ export function newestRunsFirst(runs: PublishRun[]): PublishRun[] {
   return [...runs].sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt))
 }
 
-/** A member's position in its model: the order a linear pool tries it in, or its priority group. */
-export function memberPosition(poolType: ModelPoolType, member: Pick<PoolMemberView, 'order' | 'priority'>): string {
-  const position = poolType === 'linear' ? member.order : member.priority
-  return position ? `${position}` : '—'
+type PositionedMember = Pick<PoolMemberView, 'order' | 'priority'> & Partial<Pick<PoolMemberView, 'drained' | 'apiKey'>>
+
+/**
+ * Each member's position in its model: the order a linear pool tries it in, or its priority group.
+ * A breaker or preferential pool tries a member reached with an API key after every group its
+ * backend pool holds, so that member's position follows the last of them.
+ */
+export function memberPositions(poolType: ModelPoolType, members: PositionedMember[]): string[] {
+  const groups = members
+    .filter((member) => !member.drained && !member.apiKey)
+    .map((member) => member.priority ?? 1)
+  const afterBackendPool = groups.length ? Math.max(...groups) : 0
+  return members.map((member) => {
+    const position =
+      poolType === 'linear'
+        ? member.order
+        : member.apiKey
+          ? member.order && afterBackendPool + member.order
+          : member.priority
+    return position ? `${position}` : '—'
+  })
+}
+
+/** One member's position in its model. See `memberPositions`, which places members reached with an API key. */
+export function memberPosition(poolType: ModelPoolType, member: PositionedMember): string {
+  return memberPositions(poolType, [member])[0]
 }
 
 /**
  * Each member's share of the requests its priority group gets, as a whole percentage, or null for a
- * member that gets none by weight: a drained one, or any member of a linear pool, which has no
+ * member that gets none by weight: a drained one, one reached with an API key, which a breaker or
+ * preferential pool tries once after its backend pool, or any member of a linear pool, which has no
  * weights.
  */
 export function memberShares(
   poolType: ModelPoolType,
-  members: Pick<PoolMemberView, 'weight' | 'drained' | 'priority'>[],
+  members: (Pick<PoolMemberView, 'weight' | 'drained' | 'priority'> & Partial<Pick<PoolMemberView, 'apiKey'>>)[],
 ): (number | null)[] {
   if (poolType === 'linear') return members.map(() => null)
+  const weighted = (member: (typeof members)[number]) => !member.drained && !member.apiKey
   const totals = new Map<number, number>()
   for (const member of members) {
-    if (member.drained) continue
+    if (!weighted(member)) continue
     const group = member.priority ?? 1
     totals.set(group, (totals.get(group) ?? 0) + member.weight)
   }
   return members.map((member) => {
-    if (member.drained) return null
+    if (!weighted(member)) return null
     const total = totals.get(member.priority ?? 1) ?? 0
     return total > 0 ? Math.round((member.weight / total) * 100) : null
   })
 }
 
-/** How many more deployments a request may try. A linear pool tries every active one, in order. */
-export function describeRetries(poolType: ModelPoolType, maxRetries: number): string {
-  if (poolType === 'linear') return 'Every active deployment, in order, until one answers'
+const ORDINALS = ['first', 'second', 'third', 'fourth', 'fifth', 'sixth', 'seventh', 'eighth', 'ninth', 'tenth']
+
+function ordinal(value: number): string {
+  if (value >= 1 && value <= ORDINALS.length) return ORDINALS[value - 1]
+  const lastTwo = value % 100
+  const suffix = lastTwo >= 11 && lastTwo <= 13 ? 'th' : ({ 1: 'st', 2: 'nd', 3: 'rd' }[value % 10] ?? 'th')
+  return `${value}${suffix}`
+}
+
+/**
+ * When a breaker or preferential pool tries a member it reaches with an API key: once per request,
+ * in the pool's order, after the backend pool's attempts. `order` is the member's position among
+ * the model's active members reached with an API key, and `keyed` is how many there are.
+ */
+export function keyedTurn(order: number | null | undefined, keyed: number, afterBackendPool: boolean): string {
+  if (!order) return 'No requests'
+  if (keyed <= 1) return afterBackendPool ? 'Tried once, after the backend pool' : 'Tried once per request'
+  return afterBackendPool ? `Tried ${ordinal(order)} after the backend pool` : `Tried ${ordinal(order)}`
+}
+
+/**
+ * How a pool's active members reached with an API key change what a request tries: there are none,
+ * they follow the backend pool's attempts, or there's no backend pool because every one has a key.
+ */
+export type KeyedRouting = 'none' | 'afterBackendPool' | 'only'
+
+export function keyedRouting(models: { members: Pick<PoolMemberView, 'drained' | 'apiKey'>[] }[]): KeyedRouting {
+  const active = models.flatMap((model) => model.members.filter((member) => !member.drained))
+  if (!active.some((member) => member.apiKey)) return 'none'
+  return active.every((member) => member.apiKey) ? 'only' : 'afterBackendPool'
+}
+
+/**
+ * How many more deployments a request may try. A linear pool tries every active one, in order, and
+ * so does any pool with no backend pool. Each deployment reached with an API key gets one attempt
+ * after the backend pool's.
+ */
+export function describeRetries(poolType: ModelPoolType, maxRetries: number, keyed: KeyedRouting = 'none'): string {
+  if (poolType === 'linear' || keyed === 'only') return 'Every active deployment, in order, until one answers'
+  if (keyed === 'afterBackendPool') {
+    const then = 'then one attempt on each deployment reached with an API key'
+    if (maxRetries <= 0) return `One attempt in the backend pool, ${then}`
+    if (maxRetries === 1) return `Up to 1 retry in the backend pool, ${then}`
+    return `Up to ${maxRetries} retries in the backend pool, ${then}`
+  }
   if (maxRetries <= 0) return 'None. Each request makes one attempt.'
   if (maxRetries === 1) return 'Up to 1 retry, on another deployment'
   return `Up to ${maxRetries} retries, each on another deployment`
@@ -561,11 +633,13 @@ export function deploymentLookup(models: PoolCandidateModel[] | undefined): Depl
 /**
  * Check pool models the way the API will, each finding a sentence an administrator can act on.
  * Problems match what the API refuses to save; cautions match what it refuses to publish.
+ * `maxRetries` is the pool's, which bounds the attempts a breaker or preferential pool makes.
  */
 export function checkDrafts(
   drafts: DraftPoolModel[],
   poolType: ModelPoolType,
   inventory?: DeploymentLookup,
+  maxRetries: number = DEFAULT_POOL_RETRIES,
 ): DraftCheck {
   const lookup: DeploymentLookup = inventory ?? (() => undefined)
   const problems: string[] = []
@@ -612,7 +686,20 @@ export function checkDrafts(
         `${label}: a linear pool tries at most ${MAX_LINEAR_MEMBERS} deployments per request, and ${active.length} are active. Drain or remove ${active.length - MAX_LINEAR_MEMBERS}, or use a breaker pool.`,
       )
     }
-    const names = new Set(active.map((member) => member.deploymentName.toLowerCase()))
+    // A breaker or preferential pool tries each member reached with an API key once, as its own
+    // target after the backend pool, so only the backend pool's members share a deployment name.
+    const keyed = poolType === 'linear' ? [] : active.filter((member) => lookup(member)?.apiKey)
+    const pooled = active.filter((member) => !keyed.includes(member))
+    const balanced = pooled.length ? Math.max(1, Math.min(maxRetries + 1, pooled.length)) : 0
+    if (keyed.length && balanced + keyed.length > MAX_POOL_ATTEMPTS) {
+      const each = keyed.length === 1 ? 'one on the deployment' : `one on each of the ${keyed.length} deployments`
+      cautions.push(
+        balanced
+          ? `${label}: a request makes at most ${MAX_POOL_ATTEMPTS} attempts, and this model would make ${balanced + keyed.length}: ${balanced} on its backend pool, then ${each} reached with an API key. Lower the pool's retries, or drain some deployments.`
+          : `${label}: a request makes at most ${MAX_POOL_ATTEMPTS} attempts, and this model would make ${keyed.length}, one on each of its deployments reached with an API key. Drain some deployments.`,
+      )
+    }
+    const names = new Set(pooled.map((member) => member.deploymentName.toLowerCase()))
     if (poolType !== 'linear' && names.size > 1 && draft.apiShape !== null && draft.apiShape !== 'azureOpenAi') {
       cautions.push(
         `${label}: callers name the model in the request body, so every active deployment in a ${POOL_TYPE_LABELS[poolType].toLowerCase()} pool must share one deployment name. Rename them, or use a linear pool.`,
