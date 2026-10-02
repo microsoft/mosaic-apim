@@ -164,6 +164,37 @@ def _usage_query_keys(traces: str) -> dict[str, str]:
     return {key: extract(key, attribution).lower() for key in ("v", "g", "m", "a", "r", "i")}
 
 
+# How a usage reader from before ADR 0025 read an attribution, pattern for pattern. ADR 0025 added
+# r= and i= without bumping v=1, so such a reader must still read every message the same way.
+_V1_READER = {
+    "attribution": r'mosaic-attribution ([^"\\]*)',
+    "v": r"(?:^| )v=([^ ]*)",
+    "g": r"(?:^| )g=([^ ]*)",
+    "m": r"(?:^| )m=([^ ]*)",
+    "a": r"(?:^| )a=([^ ]*)",
+}
+
+
+def _v1_reader_keys(traces: str) -> dict[str, str]:
+    def extract(name: str, text: str) -> str:
+        match = re.search(_V1_READER[name], text)
+        return match.group(1) if match else ""
+
+    attribution = extract("attribution", traces)
+    return {key: extract(key, attribution).lower() for key in ("v", "g", "m", "a")}
+
+
+def test_the_usage_query_reads_v1_keys_as_a_reader_from_before_adr_0025_did() -> None:
+    window = QueryWindow(datetime(2026, 1, 1, tzinfo=UTC), datetime(2026, 1, 1, 1, tzinfo=UTC))
+    query = calls_query(window, ["mosaic-model"])
+
+    for name, pattern in _V1_READER.items():
+        source = "Traces" if name == "attribution" else "attribution"
+        verbatim = re.escape(pattern.replace('"', '""'))
+        line = rf'(?:^| ){name} = (?:tolower\()?extract\(@"{verbatim}", 1, {source}\)'
+        assert re.search(line, query, re.MULTILINE), f"The query reads {name} differently."
+
+
 def _trace_records(message: str, metadata: Mapping[str, str], placement: str) -> str:
     """A gateway log row's TraceRecords, as JSON text.
 
@@ -308,13 +339,21 @@ def test_every_property_is_recorded_even_when_the_call_has_no_value_for_it(
         assert text == _expected_text(call, keys)
         for placement in ("before", "after", "none"):
             properties = {} if placement == "none" else recorded
-            assert _usage_query_keys(_trace_records(text, properties, placement)) == {
+            traces = _trace_records(text, properties, placement)
+            assert _usage_query_keys(traces) == {
                 "v": "1",
                 "g": call["mosaic-grant"],
                 "m": call["mosaic-member"],
                 "a": call["mosaic-client"],
                 "r": call["mosaic-mcp-call"] if "r" in keys else "",
                 "i": MODEL_CALLER if "i" in keys else "",
+            }
+            # A reader from before ADR 0025 added r= and i= reads the rest as it always did.
+            assert _v1_reader_keys(traces) == {
+                "v": "1",
+                "g": call["mosaic-grant"],
+                "m": call["mosaic-member"],
+                "a": call["mosaic-client"],
             }
 
 

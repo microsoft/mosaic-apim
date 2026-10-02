@@ -693,14 +693,41 @@ def test_literals_are_escaped_and_cannot_inject_xml_or_named_values() -> None:
     assert result.metadata_policy_xml.count("<return-response>") == 1
 
 
-def test_fragment_size_boundary_is_enforced(monkeypatch: pytest.MonkeyPatch) -> None:
-    size = len(_render().fragment_xml.encode("utf-8"))
+@pytest.mark.parametrize("linked", [False, True], ids=["no-model-caller", "model-caller"])
+def test_fragment_size_boundary_is_enforced(
+    monkeypatch: pytest.MonkeyPatch, linked: bool
+) -> None:
+    snapshot = _snapshot(model_caller=_model_caller() if linked else None)
+    fragment_xml = _render(snapshot=snapshot).fragment_xml
+    # A linked fragment is measured with ADR 0025's reference passing in it.
+    passes = ET.fromstring(fragment_xml).find(
+        f"set-header[@name='{ON_BEHALF}'][@exists-action='override']"
+    )
+    assert (passes is not None) is linked
+    size = len(fragment_xml.encode("utf-8"))
 
     monkeypatch.setattr(mcp_access_policy, "MAX_FRAGMENT_BYTES", size)
-    _render()
+    _render(snapshot=snapshot)
     monkeypatch.setattr(mcp_access_policy, "MAX_FRAGMENT_BYTES", size - 1)
     with pytest.raises(ValidationError, match="512 KB UTF-8"):
-        _render()
+        _render(snapshot=snapshot)
+
+
+def test_the_largest_fragment_pays_the_same_few_bytes_for_a_model_caller() -> None:
+    def added(grants: list[McpAccessGrant]) -> int:
+        without = _render(snapshot=_snapshot(grants=grants)).fragment_xml
+        linked = _render(snapshot=_snapshot(grants=grants, model_caller=_model_caller()))
+        return len(linked.fragment_xml.encode("utf-8")) - len(without.encode("utf-8"))
+
+    grants = [
+        *(_grant(number, enforcement=_enforcement()) for number in range(1, 201)),
+        *(_group_grant(number, enforcement=_enforcement()) for number in range(201, 221)),
+    ]
+    largest = _render(snapshot=_snapshot(grants=grants, model_caller=_model_caller()))
+
+    # A fixed cost, whatever the grants: it can't push a growing publication over the limit.
+    assert added(grants) == added([_grant()]) < 1024
+    assert len(largest.fragment_xml.encode("utf-8")) < mcp_access_policy.MAX_FRAGMENT_BYTES
 
 
 @pytest.mark.parametrize("period", ["Hourly", "Daily", "Weekly", "Monthly", "Yearly"])

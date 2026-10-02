@@ -48,6 +48,9 @@ These constraints shaped the design:
    `Models.Invoke.Application` in `roles`. The value must be exactly one GUID.
    - The attribution trace adds `r=<reference>`, lowercased. It's `!` for anything else an
      application sent, so a builder can see it's wrong, and empty otherwise.
+   - A call that brings only a grant's key records nothing, even when the key is the application's
+     own. Only a validated token proves which application is calling, so in v1 a server must call
+     models with its token to be attributed.
    - The header is then removed before the model, with the caller's credentials and the cost-center
      header.
    - The reference never decides anything. A bad one is ignored or marked, never refused, and an
@@ -161,6 +164,9 @@ following it.
   can't find, or that ran outside it, stays the application's own use, and its reason is counted.
 - **One hop only.** Every MCP server removes a caller's reference. A tool that calls another MCP
   server, which then calls a model, is attributed to the first server's application.
+- **Key calls aren't attributed.** In v1 a model call made with a grant's key records no
+  reference, so it stays the application's own use. A later version could trust a reference on a
+  key call whose grant belongs to the linked application, but v1 records none.
 - **Each publication records references only after its next apply.** Every governed model and MCP
   fragment changes, to read or remove the header and to add the trace keys. Until a model is
   re-applied, its fragment passes the header to the backend. The header carries only a request
