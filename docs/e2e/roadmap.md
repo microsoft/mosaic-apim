@@ -56,7 +56,7 @@ Services, a Developer-tier (classic) APIM with a system-assigned identity, and C
 
 ## Targets
 
-Six endpoints cover both providers, all three registration paths and every model family MOSAIC
+Seven endpoints cover both providers, all four registration paths and every model family MOSAIC
 publishes today. One more endpoint is a deliberate negative case.
 
 | Target | Kind | Registered by | Models to publish |
@@ -64,9 +64,10 @@ publishes today. One more endpoint is a deliberate negative case.
 | AOAI A | Azure OpenAI | Pasting the account resource ID (first, to observe the missing-permission state) | Two chat deployments |
 | AOAI B | Azure OpenAI | Discovery suggestion | A chat deployment and an o-series reasoning deployment |
 | AOAI C | Azure OpenAI | Discovery suggestion, in another region | A reasoning deployment and a chat deployment |
-| Foundry multi-provider | Foundry (AIServices) | Discovery suggestion | xAI Grok, Meta Llama and DeepSeek; Anthropic Claude after G5 |
+| Foundry multi-provider | Foundry (AIServices) | Discovery suggestion | xAI Grok, Meta Llama and DeepSeek. Azure refused Claude here (Phase 2) |
 | Foundry project | Foundry (AIServices) | Pasting a Foundry **project** resource ID | A small OpenAI model and Llama 4 |
 | Foundry hub-connected | Foundry (AIServices) | Discovery suggestion | A chat model |
+| Foundry in another tenant | Foundry (AIServices), in another Entra tenant | Its URL and an API key pasted in the console (G18) | Anthropic Claude (G5) |
 | Private AOAI (negative) | Azure OpenAI | Pasting the resource ID | None. Public network access is off, so the gateway can't reach it |
 
 Gemini and AWS Bedrock follow in Phase 10.
@@ -95,7 +96,7 @@ tests and README or ADR updates wherever a decision changes.
 | G14 | The console never tells someone without the Admin role that it isn't for them. For an account with only the User role, and for one with no MOSAIC role, it renders the whole admin shell with its actions, labels the account "Global Admin" (hard-coded for every Entra sign-in), calls it the administrator on Settings and the profile page, and shows "Unable to load data" in every live section. The API refuses correctly, so no admin data is shown. The portal already handles the same case with one clear denial and a sign-out button. Initials also keep punctuation, so a display name like "Name (Team)" shows "N(". Found live in A1 | A new `GET /api/v1/console/me` returns the caller's MOSAIC roles from the access token, and the console asks it before rendering. Without the Admin role it shows one card instead of the shell: no access for an account with no role, and a pointer to the end-user portal for a User, each with **Sign out**. The account label reads "MOSAIC Admin", and initials use letters and digits only. No infrastructure or app-setting change, so it ships in an image-only deploy, with the API before or together with the web app ([#31](https://github.com/microsoft/mosaic-apim/pull/31)) | ✅ deployed |
 | G16 | **Re-plan** says "Created a fresh publish plan. Review it before applying.", but nothing shows that plan: the console discards it, and the API can't return a saved plan. On a publication without governed access, the row's **Apply** then applies the saved plan with no review. The README says re-planning shows how API Management has diverged, and the page says changes are made only after a reviewed plan is applied. Found live in A8 | Remove the row's **Apply**. **Re-plan** makes a fresh plan and opens it in the publish dialog's review, and only **Apply plan** there applies it. When an apply is refused, the dialog says "MOSAIC didn't apply the plan you reviewed", gives the server's reason, and says it has already re-planned (O13). Web only ([#32](https://github.com/microsoft/mosaic-apim/pull/32)) | ✅ deployed |
 | G17 | **Governed access can't be applied.** The policy expressions MOSAIC generates for governed access use single-statement control flow, such as `if (…) return "";`. APIM rejects every such fragment: "Block statements must be enclosed in "{" and "}". You cannot use single-statement control-flow statements in CSHTML pages." The apply then falls back to its last safe snapshot, as designed, which for a publication that never had governed access denies every call. The test fake of APIM accepts any expression, so the unit tests passed. Found live in A11 | Brace every control-flow body in the generated expressions, and make the APIM fake reject unbraced control flow the way APIM does. API only, so it ships in an image-only deploy, Batch 3d | ✅ deployed ([#36](https://github.com/microsoft/mosaic-apim/pull/36)); verified live in A11 |
-| G18 | **An Azure AI resource in another Entra tenant can't be published.** MOSAIC registers Azure OpenAI and Foundry endpoints only by resource ID, reads them with its managed identity, and has the gateway call them with its own. Neither identity can reach another tenant's resource: the environment owner's Claude deployment answered "Token tenant … does not match resource tenant". MOSAIC also had no way for API Management to use a key that MOSAIC never holds | Register an Azure AI endpoint by its URL and a Key Vault secret URI, never the key, and declare its deployments, because a key can't list them. API Management reads the key from Key Vault through a secret named value, with its own identity. The policy removes every credential a caller sent, then sets the backend's key header: `api-key`, or `x-api-key` for Claude. Readiness checks that the endpoint accepts the key, with a request that runs no model, and that each gateway can read the vault. The gateway needs Key Vault Secrets User on the environment vault, and MOSAIC's API needs Reader there ([#69](https://github.com/microsoft/mosaic-apim/pull/69), ADR 0018) | ✅ merged; deploying it (Batch 3g) waits for the environment owner's approval |
+| G18 | **An Azure AI resource in another Entra tenant can't be published.** MOSAIC registers Azure OpenAI and Foundry endpoints only by resource ID, reads them with its managed identity, and has the gateway call them with its own. Neither identity can reach another tenant's resource: the environment owner's Claude deployment answered "Token tenant … does not match resource tenant". MOSAIC also had no way for API Management to use a key that MOSAIC never holds | Register an Azure AI endpoint by its URL and a Key Vault secret URI, never the key, and declare its deployments, because a key can't list them. API Management reads the key from Key Vault through a secret named value, with its own identity. The policy removes every credential a caller sent, then sets the backend's key header: `api-key`, or `x-api-key` for Claude. Readiness checks that the endpoint accepts the key, with a request that runs no model, and that each gateway can read the vault. The gateway needs Key Vault Secrets User on the environment vault, and MOSAIC's API needs Reader there ([#69](https://github.com/microsoft/mosaic-apim/pull/69), ADR 0018). [#77](https://github.com/microsoft/mosaic-apim/pull/77) (ADR 0021) lets the admin paste the key in the console instead: MOSAIC writes it to a new secret in the environment's vault and keeps only the secret's URI. **Replace API key** writes a new version, and removing the endpoint deletes the secret. For that, MOSAIC's API needs Key Vault Secrets Officer on the vault | ✅ deployed in Batches 3g and 3h. Verified live: the owner registered the Claude endpoint by pasting its key, and a call reached Claude through APIM (Phase 8) |
 
 There is no G15. What was first logged as G15 turned out to be APIM's own behavior, and is
 recorded as O12.
@@ -177,12 +178,13 @@ On that combined tree:
   checks that the admin and portal APIs reject anonymous and malformed-token requests.
 - **Exit:** unit tests, typecheck and lint pass, and the live driver can open every persona.
 
-### Phase 2: Tenant prerequisites 🔄 the User role and the workload are done; Claude waits for G18's deploy
+### Phase 2: Tenant prerequisites ✅ the User role, the workload, and Claude through G18
 
 Each batch runs only after approval and is recorded in the change ledger.
 
-- Deploy Claude (small capacity) to the multi-provider Foundry resource, after checking
-  eligibility, region, quota and marketplace terms.
+- Make a Claude deployment available. The plan was to deploy one (small capacity) to the
+  multi-provider Foundry resource, after checking eligibility, region, quota and marketplace terms.
+  In the end it came from the owner's Foundry resource in another tenant, through G18.
 - Assign the MOSAIC User role to the `user` persona. `noRole` keeps no role until Phase 7.
 - Create the workload app registration and service principal, assign `Models.Invoke.Application`,
   and grant admin consent.
@@ -197,16 +199,18 @@ Progress (Batch 1, approved and applied):
   `Models.Invoke.Application`, and for an application permission that assignment is the admin
   consent. Its short-lived client secret, which R3 needed, was created in Phase 8 with the
   environment owner's approval, and is deleted once the sitting's runs are done.
-- ⏳ Claude: Azure refused the deployment. An Anthropic deployment must carry the customer's
-  organization name, country and industry for Anthropic's terms (`properties.modelProviderData`),
-  and Azure CLI 2.83 has no option for them. The model is available in the region and its quota
-  is unused. The environment owner chose to deploy it in the Foundry portal, which asks for those
-  details, at the start of the Phase 8 sitting. R1's Claude call and G5's live check wait for it.
-- ⏳ Claude, 2026-09-30: the environment owner's Claude deployment is in another Entra tenant,
+- Superseded: Azure refused the Claude deployment on the multi-provider resource. An Anthropic
+  deployment must carry the customer's organization name, country and industry for Anthropic's
+  terms (`properties.modelProviderData`), and Azure CLI 2.83 has no option for them. The model is
+  available in the region and its quota is unused. The environment owner chose to deploy it in
+  the Foundry portal instead.
+- ✅ Claude, 2026-10-01: the environment owner's Claude deployment is in another Entra tenant,
   which MOSAIC's and the gateway's managed identities can't reach. G18 lets MOSAIC publish it with
-  an API key held in Key Vault. Once G18 is deployed, the owner stores the key in the environment's
-  Key Vault, and the admin registers the endpoint in the console with the secret's URI and declares
-  its Claude deployment. It is then published and granted like any other model.
+  an API key held in Key Vault. After Batches 3g and 3h deployed G18 and #77, the owner registered
+  the endpoint in the console by pasting its key, and declared three Claude deployments. MOSAIC
+  wrote the key to a new, tagged secret in the environment's vault. The endpoint's access card
+  showed that the endpoint accepts the key and that the gateway can read it. It is then published
+  and granted like any other model (Phase 8).
 
 ### Phase 3: Live, admin imports endpoints (A2 to A6) ✅ except seeing A2's partial-scan card
 
@@ -366,7 +370,8 @@ Progress on the new build (G7 and G8 deployed):
   APIs, products, backends, fragments and policies with `az` before and after the apply.
 - Make the published models visible in the portal catalog.
 
-Twelve deployments are publishable now. Claude (`claude-haiku-4-5`) waits for Batch 1.
+Twelve deployments were publishable then. Claude came later, from the endpoint in another tenant
+(Phase 8).
 
 | Endpoint | Deployments |
 | --- | --- |
@@ -680,7 +685,7 @@ Progress:
     allows only chat completions on these publications, so their embeddings and model-info
     operations are denied by design.
 
-### Phase 8: Runtime verification (R1 to R14, A14, A17) 🔄 R3 and R4's additions pass, and part of R8; the rest runs at the owner's sitting
+### Phase 8: Runtime verification (R1 to R14, A14, A17, A18) 🔄 R3 and R4's additions pass, part of R8, and Claude's publication; the rest runs at the owner's sitting, after O37's fix
 
 `scripts/verify_model_access.py` now covers this phase, with unit tests against a fake gateway
 that applies the governed policy. It reads each grant's connection details from MOSAIC, calls the
@@ -732,7 +737,9 @@ The environment owner decided on 2026-09-30:
   `outsider` as the ungranted user; a short-lived client secret for the workload; reading the
   privileged keys for R4's addition; fresh grants for R5 and R6; and revoking, disabling and
   toggling access methods, only on those two grants and their models (A14, R7).
-- The owner deploys Claude in the Foundry portal at the start of the sitting (Phase 2).
+- Claude was to be deployed in the Foundry portal at the start of the sitting. That's superseded:
+  on 2026-10-01 the owner registered a Claude deployment in another tenant through G18 instead
+  (Phase 2), so the sitting has no Claude step.
 - The `user` persona's User role is removed once the runtime tests are done.
 - Phase 10 is deferred.
 
@@ -784,17 +791,47 @@ Progress:
   `mosaic-attribution v=1`, that names its grant by a stable hash, both in Application Insights
   and in the resource logs. Refused calls and calls to publications without governed access
   write none. The 429s wait for R5's and R6's runs.
+- ✅ **Batch 3g**, 2026-10-01: the environment runs main as of
+  [#74](https://github.com/microsoft/mosaic-apim/pull/74), which brings G18
+  ([#69](https://github.com/microsoft/mosaic-apim/pull/69)), the usage analytics of
+  [#71](https://github.com/microsoft/mosaic-apim/pull/71) and the price list of
+  [#73](https://github.com/microsoft/mosaic-apim/pull/73). `azd provision` wasn't run, because its
+  preprovision hook would make #51's Entra changes, which aren't approved. A template with only the
+  new resources added three role assignments instead: Monitoring Reader on the gateway for MOSAIC's
+  API (#71), and on the environment's vault, Key Vault Secrets User for the gateway and Reader for
+  MOSAIC's API (G18). It also added the usage rollups container, and the API got four new app
+  settings. The gateway's **Telemetry** section reports it's ready. Turning on its API diagnostics,
+  a refresh and a backfill wait for R8.
+- ✅ **Batch 3h**, 2026-10-01: main as of [#77](https://github.com/microsoft/mosaic-apim/pull/77),
+  plus Key Vault Secrets Officer on the vault for MOSAIC's API, which #77 needs to write keys.
+  [#78](https://github.com/microsoft/mosaic-apim/pull/78) and
+  [#79](https://github.com/microsoft/mosaic-apim/pull/79), cost centers and budgets, were left out.
+  They give every grant a new ID, so every governed model and MCP publication must be re-applied
+  and each test grant made again. That's Batch 3i.
+- 🔄 **Claude**, 2026-10-01: from the endpoint the owner registered (Phase 2), `claude-opus-4-6`
+  was published in the console in 11 steps, among them a Key Vault named value for the key, and
+  all succeeded. A Messages call with the bootstrap key reached Claude. Its governed access, a
+  direct grant for the `user` persona with 60 calls per 60 seconds and no token limit (G5), applied
+  in 14 steps, all succeeded, and the bootstrap key is now refused with 401. In API Management,
+  only this publication's resources and the grant's new subscription changed. The portal's
+  **My access** lists the grant as applied, and its connection details explain the Messages route:
+  the base URL for an Anthropic SDK, and a key in `Ocp-Apim-Subscription-Key`, because the gateway
+  removes `x-api-key`, or a token. The grant's key got 500 (O37), so R1's Claude call waits until
+  its fix, [#81](https://github.com/microsoft/mosaic-apim/pull/81), is deployed.
 
-The sitting runs, in order: Claude's import, publication and grant; R1, R2 and R4's cross-subject
+Claude's import, publication and grant are done. The sitting waits for O37's fix to be deployed
+and Claude's publication re-applied: R1 calls Claude with its key, and A14's toggles and R7
+re-apply governed models, which would break their keys on the current build. It then runs, in
+order: R1, R2 and R4's cross-subject
 checks in one run, with an `outsider` as the ungranted user; R5's proof; R6's proof; A14's method
 toggles on R5's and R6's models; and a last run that checks the toggled methods and watches R6's
 revocation (R7). Each run needs one device-code sign-in for the `user` persona, and R1's run
 another for the `outsider`. R8 is checked in
-Application Insights and Log Analytics afterwards. R1 covers the persona's applied grants on five
-models on four endpoints, with the same limits: AOAI B `gpt-4o-mini`, Foundry multi-provider
-`grok-4.3` and `DeepSeek-V4-Pro`, Foundry project `Llama-4-Maverick-17B-128E-Instruct-FP8`, and
-Foundry hub-connected `gpt-5.1-chat`, plus Claude once it's published. Each Foundry model's first
-governed apply had 14 steps, and all succeeded.
+Application Insights and Log Analytics afterwards. R1 covers the persona's applied grants on six
+models on five endpoints, with the same limits except Claude's: AOAI B `gpt-4o-mini`, Foundry
+multi-provider `grok-4.3` and `DeepSeek-V4-Pro`, Foundry project
+`Llama-4-Maverick-17B-128E-Instruct-FP8`, Foundry hub-connected `gpt-5.1-chat`, and Claude
+`claude-opus-4-6`. Each Foundry model's first governed apply had 14 steps, and all succeeded.
 
 A call quota (O28) can't be set in the console, so these grants have none. A weekly one adds a
 policy expression that API Management hasn't compiled yet.
@@ -894,6 +931,7 @@ has passed, and ❌ means the latest run failed on the product gap named.
 | A15 | Unpublishing removes only what MOSAIC created | 9 | ✅ |
 | A16 | Settings lists the built-in environments; an Unclassified pairing warns but isn't blocked, and classifying both sides clears the warning (#40) | 6 | ✅ |
 | A17 | **Pricing** lists the seeded price of each target deployment with its source, detects each endpoint's cloud from its host, and says why any deployment has no price; an override from a date prices only the days from then (ADR 0020) | 8 | ⬜ |
+| A18 | An endpoint in another Entra tenant is registered by its URL and a pasted API key (G18, ADR 0021); its access card confirms the endpoint accepts the key and the gateway can read it; its Claude deployment is published and granted, the bootstrap key is refused once governed access applies, and the grant's key and token reach Claude | 8 | 🔄 |
 
 ### Portal
 
@@ -914,7 +952,7 @@ has passed, and ❌ means the latest run failed on the product gap named.
 
 | ID | Journey | Phase | Status |
 | --- | --- | --- | --- |
-| R1 | A granted user reaches every provider by key: Azure OpenAI, Foundry OpenAI, Grok, Llama, DeepSeek and Claude (after G5) | 8 | ⬜ |
+| R1 | A granted user reaches every provider by key: Azure OpenAI, Foundry OpenAI, Grok, Llama, DeepSeek and Claude (G5, G18) | 8 | ⬜ |
 | R2 | A granted user's Entra token works (G4); a token without a grant and a wrong-audience token are denied | 8 | ⬜ |
 | R3 | The workload's client-credentials token and its handed-off key both work | 8 | ✅ |
 | R4 | Anonymous, invalid-key and cross-subject calls are denied | 8 | 🔄 |
@@ -972,6 +1010,7 @@ be confirmed, or fixed, once the journeys that exercise them have run.
 | O34 | After unpublishing, the publication shows **Draft** with its old **Last applied** time. Its entry under **Imported model APIs** stays discoverable, and the portal's catalog still lists the model with **Request access**, though the gateway no longer serves it. Seen in A15 | Fixed in [#65](https://github.com/microsoft/mosaic-apim/pull/65), and deployed with Batch 3f. While a model or MCP server MOSAIC publishes has no API in API Management, the portal leaves it out of the catalog, refuses a new request for it with a `409`, marks grants and requests for it as no longer available, and gives no connection details for it. The console shows the publication as **Unpublished**, with when. Model APIs imported from a gateway are unaffected. Seen live in A15's rerun: the catalog dropped the model, and a request from a page loaded earlier got the reason |
 | O35 | With directory lookup turned off, **Overlapping grants** warns that principal membership overlaps weren't checked, and the warning ends in two periods: the console adds one after the API's reason, which already ends with one. Seen after Batch 3e | Add the period only when the reason lacks one. Cosmetic |
 | O36 | A key-authenticated endpoint (G18) may name any secret in any Key Vault that MOSAIC's identity and the gateway's can read. Today both can read only the environment's vault, and it holds no other secrets. But once the gateway holds Key Vault Secrets User there, a key endpoint could point at a secret stored for another purpose, and the gateway would send it to that endpoint. From #69's review | Accept only the environment's vault, or only secrets marked for MOSAIC, for example by a name prefix or content type. A follow-up, not blocking |
+| O37 | **A grant's key gets HTTP 500 from a governed model.** Since [#71](https://github.com/microsoft/mosaic-apim/pull/71), the attribution trace in every governed policy also records the caller's client ID as trace metadata. A caller with a key has no client ID, so the value is empty, and API Management refuses a trace metadata element with no value: "Expression value is invalid. The value field is required." The call fails before it reaches the model. Seen live on Claude's grant key after its first governed apply on Batch 3h's build, and the gateway's resource log names the trace as the source. Tokens carry a client ID, so they're not affected. The seven governed models applied in Batch 3f record only the grant, so their keys still work until they're re-applied. [#62](https://github.com/microsoft/mosaic-apim/pull/62)'s member metadata, added when a publication has a group grant, is empty in the same way for every caller of a direct grant on that publication, for models and MCP servers | Fixed in [#81](https://github.com/microsoft/mosaic-apim/pull/81), merged: every trace property records `-` for a value the call doesn't have, the message the usage queries read is unchanged, and a test fails if code adds trace metadata any other way. Deploying it, re-applying Claude's publication and rerunning its key call wait for the owner's approval. Until then, re-applying any governed model breaks its keys, so the sitting's A14 toggles and R7, and Batch 3i, wait for it |
 The Phase 3 check on whether the gateway role recommendation narrows once the account kind is
 known led to G8: it does narrow, and the check then rejects the broader role it recommended
 before.
