@@ -21,10 +21,6 @@ from mosaic_api.deployment_capacity import CapacityType, ProcessingScope
 from mosaic_api.domain import (
     MOSAIC_RESOURCE_PREFIX,
     ApiShape,
-    AppliedCostCenterPool,
-    EntitlementEnforcement,
-    EntitlementSubject,
-    EntitlementSubjectKind,
     Entity,
     EnvironmentVerdict,
     ModelAccessSettings,
@@ -37,6 +33,12 @@ from mosaic_api.domain import (
     apim_slug,
     deterministic_id,
 )
+
+# The access snapshot classes live in ``domain`` so a publish plan and run can carry one. They're
+# re-exported here, beside the rest of the pool model.
+from mosaic_api.domain import PoolAccessGrant as PoolAccessGrant
+from mosaic_api.domain import PoolAccessSnapshot as PoolAccessSnapshot
+from mosaic_api.domain import PoolModelQuota as PoolModelQuota
 
 MODEL_POOL_ENTITY = "modelPool"
 # API Management's limit on the members of one backend pool.
@@ -294,92 +296,6 @@ class PoolModel(MosaicModel):
 
     def active_members(self) -> list[PoolMember]:
         return [member for member in self.members if not member.drained]
-
-
-class PoolAccessGrant(MosaicModel):
-    """One grant compiled into a model pool's policy: a subject's access to one pool model.
-
-    Like :class:`~mosaic_api.domain.ModelAccessGrant`, except for its key. A direct grant's key is
-    shared: there's one per subject, pool, and cost center, and it serves every model the subject
-    holds directly in the pool under that cost center.
-    """
-
-    entitlement_id: str
-    pool_model_id: str
-    subject: EntitlementSubject
-    # The caller's object ID for a direct grant; the group's object ID for a security-group grant,
-    # which the gateway matches against the caller token's ``groups`` claim.
-    object_id: str
-    display_name: str
-    # The subscription that is the grant's key, from :func:`pool_key_name`. None exactly when the
-    # subject is a security group: a group grant authorizes Entra tokens only.
-    key_name: str | None = None
-    enabled: bool
-    enforcement: EntitlementEnforcement | None = None
-    intent_digest: str
-    cost_center_id: str = ""
-    cost_center_code: str = ""
-    # Whether this is a direct grant under its subject's default cost center. A call that names no
-    # cost center uses it before the subject's other grants for the model, which go oldest first.
-    default_cost_center: bool = False
-    granted_at: datetime | None = None
-    # False when the grant's cost center turned keys off. The gateway then refuses the key for
-    # this grant's model.
-    keys_allowed: bool = True
-    # True when the grant was revoked because its subject left the cost center.
-    revoked: bool = False
-
-    @model_validator(mode="after")
-    def enforceable_subject_only(self) -> Self:
-        if self.subject.kind == EntitlementSubjectKind.GROUP:
-            raise ValueError(
-                "MOSAIC groups are not enforced at runtime; grant an Entra security group instead"
-            )
-        if self.subject.kind == EntitlementSubjectKind.SECURITY_GROUP:
-            if self.key_name is not None:
-                raise ValueError("A security-group grant has no key")
-        elif not self.key_name:
-            raise ValueError("A direct grant needs its key's name")
-        return self
-
-    @property
-    def is_group_grant(self) -> bool:
-        return self.subject.kind == EntitlementSubjectKind.SECURITY_GROUP
-
-
-class PoolModelQuota(AppliedCostCenterPool):
-    """A cost center's pooled monthly quota on one pool model, exactly as an apply compiled it.
-
-    Every grant under the cost center on the model draws on it, counted per cost center and pool
-    model.
-    """
-
-    pool_model_id: str
-
-
-class PoolAccessSnapshot(MosaicModel):
-    """The grants a model pool's policy enforces, exactly as an apply compiled them."""
-
-    version: int = Field(ge=1)
-    settings: ModelAccessSettings
-    audience: str | None = None
-    # False when the pool's API shape can't be token-metered on its gateway's tier. Such a
-    # snapshot carries no token policies, so none of its grants carry token limits.
-    token_metering: bool = True
-    grants: list[PoolAccessGrant] = Field(default_factory=list)
-    quotas: list[PoolModelQuota] = Field(default_factory=list)
-
-    def grants_for(self, pool_model_id: str) -> list[PoolAccessGrant]:
-        return [grant for grant in self.grants if grant.pool_model_id == pool_model_id]
-
-    def key_grants(self) -> dict[str, list[PoolAccessGrant]]:
-        """The direct grants each key serves, by key name."""
-
-        keys: dict[str, list[PoolAccessGrant]] = {}
-        for grant in self.grants:
-            if grant.key_name is not None:
-                keys.setdefault(grant.key_name, []).append(grant)
-        return keys
 
 
 class ModelPool(Entity):

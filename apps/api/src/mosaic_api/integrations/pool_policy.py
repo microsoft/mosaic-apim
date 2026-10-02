@@ -53,6 +53,7 @@ from mosaic_api.integrations.access_policy import (
     _credential_prelude,
     _deny,
     _expression,
+    _grant_counter_key,
     _grant_limits,
     _grant_token_limits,
     _key_shape_check,
@@ -72,6 +73,7 @@ from mosaic_api.integrations.access_policy import (
     classify_traces,
     cost_center_details,
     describe_limit_facet,
+    grant_counter_identity,
 )
 from mosaic_api.integrations.access_policy import _literal as _safe_literal
 from mosaic_api.integrations.apim.model_apis import OperationSpec, shape_operations
@@ -1124,6 +1126,23 @@ def render_governed_pool_policy(
     )
 
 
+def pool_grant_counter_identity(pool: ModelPool, grant: PoolAccessGrant) -> str:
+    """The identity a governed pool's trace names a grant's calls by, as ``g=``."""
+
+    return grant_counter_identity(pool, grant)
+
+
+def pool_grant_counter_key_expression(pool: ModelPool, grant: PoolAccessGrant) -> str:
+    """The counter a governed pool grant's own token limit counts on."""
+
+    return _grant_counter_key(
+        "grant-tokens",
+        pool_grant_counter_identity(pool, grant),
+        per_member=grant.is_group_grant,
+        prefix=_COUNTER_PREFIX,
+    )
+
+
 __all__ = [
     "DEPLOYMENT_PARAMETER",
     "PoolRoute",
@@ -1131,6 +1150,8 @@ __all__ = [
     "body_routed",
     "governed_pool_operations",
     "member_backend_url",
+    "pool_grant_counter_identity",
+    "pool_grant_counter_key_expression",
     "pool_operations",
     "render_governed_pool_policy",
     "render_pool_policy",
