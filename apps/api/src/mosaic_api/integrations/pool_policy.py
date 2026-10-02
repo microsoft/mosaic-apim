@@ -9,13 +9,71 @@ member answered.
 
 Routing and retry live in the API policy rather than the fragment because API Management runs a
 fragment only where it's included, and the inbound section can't forward a request.
+
+A pool with governed access (phase 2) writes the same API policy, but its fragment first
+authorizes every call against grants on the pool's models, exactly as a governed publication's
+does, and then applies each grant's limits, its cost center's pooled quota on the model, and the
+pool's safeguard, in that order.
 """
 
 import hashlib
+import re
 import xml.etree.ElementTree as ET
+from collections import defaultdict
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
 
-from mosaic_api.domain import ApiShape
+from mosaic_api.domain import (
+    COST_CENTER_HEADER,
+    ApiShape,
+    EntitlementSubjectKind,
+    PolicyFacet,
+    PolicyFacetKind,
+    PolicySection,
+)
+from mosaic_api.errors import ValidationError
+from mosaic_api.integrations.access_policy import (
+    _COST_CENTER_HEADER,
+    _GROUPS_OVERAGE_DENIED,
+    _GUID,
+    _HAS_KEY,
+    _HAS_TOKEN,
+    _KEY_COST_CENTER,
+    _KEY_GRANT,
+    _KEYS_OFF,
+    _RESOURCE_NAME,
+    _SUBSCRIPTION_COUNTERS,
+    _TOKEN_GRANT,
+    COST_CENTER_DENIED,
+    COST_CENTER_KEYS_OFF_DENIED,
+    COST_CENTER_MISMATCH_DENIED,
+    MAX_FRAGMENT_BYTES,
+    _code,
+    _cost_center_ids,
+    _credential_prelude,
+    _deny,
+    _expression,
+    _grant_limits,
+    _grant_token_limits,
+    _key_shape_check,
+    _match,
+    _pool_limits,
+    _reject,
+    _select_grant,
+    _split_match,
+    _token_groups_overage,
+    _token_lookup,
+    _token_member_lookup,
+    _validate_cost_center,
+    _validate_token,
+    _variable,
+    append_budget_check,
+    append_grant_attribution_trace,
+    classify_traces,
+    cost_center_details,
+    describe_limit_facet,
+)
+from mosaic_api.integrations.access_policy import _literal as _safe_literal
 from mosaic_api.integrations.apim.model_apis import OperationSpec, shape_operations
 from mosaic_api.integrations.apim.policy_semantics import analyze_policy
 from mosaic_api.integrations.policy import (
@@ -24,7 +82,15 @@ from mosaic_api.integrations.policy import (
     add_shape_headers,
     managed_identity_resource,
 )
-from mosaic_api.model_pools import BreakerPreset, PoolSafeguard, cascade_statuses
+from mosaic_api.model_pools import (
+    BreakerPreset,
+    ModelPool,
+    PoolAccessGrant,
+    PoolAccessSnapshot,
+    PoolSafeguard,
+    cascade_statuses,
+    pool_key_name,
+)
 
 DEPLOYMENT_PARAMETER = "deployment-id"
 MODEL_VARIABLE = "mosaic-pool-model"
@@ -85,6 +151,19 @@ _POOL_EXHAUSTED = (
     '(context.Response.StatusReason.Contains("Backend pool") || '
     'context.Response.StatusReason.Contains("is temporarily unavailable"))'
 )
+# Governed counters are namespaced apart from publications', so a pool and a publication can
+# never share a count.
+_COUNTER_PREFIX = "mosaic:pool:"
+# What a pool key lookup answers for one of the pool's keys whose subject holds no grant for the
+# requested model.
+_NO_GRANT = "~"
+# The operations governed access meters and therefore permits, by shape.
+_GOVERNED_OPERATIONS: dict[str, frozenset[str]] = {
+    ApiShape.AZURE_OPENAI: frozenset({"chat-completions"}),
+    ApiShape.FOUNDRY_MODELS: frozenset({"chat-completions"}),
+    ApiShape.ANTHROPIC_MESSAGES: frozenset({"messages"}),
+}
+_LIMIT_ELEMENTS = frozenset({"llm-token-limit", "rate-limit-by-key", "quota-by-key"})
 
 
 @dataclass(frozen=True)
@@ -249,27 +328,38 @@ def _fragment(
     refusal = ET.SubElement(otherwise, "return-response")
     ET.SubElement(refusal, "set-status", {"code": "404", "reason": "Not Found"})
     _json_response(refusal, NOT_FOUND_BODY)
-    if not body_routed(shape):
-        # Each member's backend URL ends with its own deployment, so the request keeps only what
-        # follows the route's deployment segment, and its query string.
-        rewrites = ET.SubElement(fragment, "choose")
-        for operation in pool_operations(shape):
-            if not operation.url_template.startswith(_AZURE_OPENAI_PREFIX):
-                continue
-            when = ET.SubElement(
-                rewrites,
-                "when",
-                {"condition": f"@(context.Operation.Id == {_literal(operation.name)})"},
-            )
-            ET.SubElement(
-                when,
-                "rewrite-uri",
-                {
-                    "template": operation.url_template.removeprefix(_AZURE_OPENAI_PREFIX),
-                    "copy-unmatched-params": "true",
-                },
-            )
+    _append_rewrites(fragment, shape, pool_operations(shape))
     return fragment
+
+
+def _append_rewrites(
+    fragment: ET.Element, shape: str, operations: tuple[OperationSpec, ...]
+) -> None:
+    """Strip the route's deployment segment, which names the pool model, before forwarding.
+
+    Each member's backend URL ends with its own deployment, so the request keeps only what follows
+    the route's deployment segment, and its query string. A body-routed shape has no such segment.
+    """
+
+    if body_routed(shape):
+        return
+    rewrites = ET.SubElement(fragment, "choose")
+    for operation in operations:
+        if not operation.url_template.startswith(_AZURE_OPENAI_PREFIX):
+            continue
+        when = ET.SubElement(
+            rewrites,
+            "when",
+            {"condition": f"@(context.Operation.Id == {_literal(operation.name)})"},
+        )
+        ET.SubElement(
+            when,
+            "rewrite-uri",
+            {
+                "template": operation.url_template.removeprefix(_AZURE_OPENAI_PREFIX),
+                "copy-unmatched-params": "true",
+            },
+        )
 
 
 def _target(parent: ET.Element, target: PoolTarget, *, rewrite: bool) -> None:
@@ -401,13 +491,648 @@ def render_pool_policy(
     )
 
 
+def governed_pool_operations(shape: str) -> tuple[OperationSpec, ...]:
+    """The operations a governed pool permits: those whose usage its limits can count."""
+
+    supported = _GOVERNED_OPERATIONS.get(shape)
+    operations = (
+        tuple(
+            operation
+            for operation in pool_operations(shape)
+            if operation.name in supported and operation.method == "POST"
+        )
+        if supported
+        else ()
+    )
+    if not operations:
+        raise ValidationError("This API shape has no operations governed pool access supports.")
+    return operations
+
+
+@dataclass
+class _CounterScope:
+    """What a cost center's pooled quota on a pool is counted on: one pool model."""
+
+    tenant_id: str
+    id: str
+
+
+_AMBIGUOUS = "Governed pool grants must have nonempty, unambiguous identities."
+
+
+def _validate_pool(
+    pool: ModelPool,
+    snapshot: PoolAccessSnapshot,
+    routes: Sequence[PoolRoute],
+    safeguard: PoolSafeguard | None,
+) -> None:
+    names = [
+        pool.fragment_name,
+        *(route.model_id for route in routes),
+        *(target.backend_name for route in routes for target in route.targets),
+    ]
+    if not all(_RESOURCE_NAME.fullmatch(name) for name in names):
+        raise ValidationError(
+            "Governed pool policies require literal APIM backend, fragment, and model names."
+        )
+    if snapshot.settings.entra_enabled:
+        if not _GUID.fullmatch(pool.tenant_id):
+            raise ValidationError("Governed Entra access requires a specific tenant GUID.")
+        if not snapshot.audience or not _GUID.fullmatch(snapshot.audience):
+            raise ValidationError(
+                "Governed Entra access requires the runtime application's GUID audience."
+            )
+    metered = snapshot.token_metering
+    if safeguard is not None and not metered:
+        raise ValidationError(
+            "This pool can't be token-metered on its gateway's tier, so it can't have a safeguard."
+        )
+    routed = {route.model_id for route in routes}
+    reserved = {"master", pool.subscription_name.casefold()}
+    seen: dict[str, set[str]] = {"entitlement": set(), "object": set(), "subject": set()}
+    counters: list[str] = []
+    for grant in snapshot.grants:
+        if grant.subject.kind not in {
+            EntitlementSubjectKind.USER,
+            EntitlementSubjectKind.APPLICATION,
+            EntitlementSubjectKind.SECURITY_GROUP,
+        }:
+            raise ValidationError(
+                "Governed pools support only user, application and security-group grants."
+            )
+        if grant.is_group_grant:
+            if not snapshot.settings.entra_enabled:
+                raise ValidationError("Security-group grants require governed Entra access.")
+            if not _GUID.fullmatch(grant.object_id):
+                raise ValidationError("Security-group grants require a GUID object ID.")
+        if not all(
+            value.strip()
+            for value in (
+                grant.entitlement_id,
+                grant.object_id,
+                grant.subject.id,
+                grant.pool_model_id,
+            )
+        ):
+            raise ValidationError(_AMBIGUOUS)
+        # A subject holds at most one grant to each pool model under each cost center.
+        identities = {
+            "entitlement": grant.entitlement_id,
+            "object": f"{grant.object_id}|{grant.cost_center_id}|{grant.pool_model_id}",
+            "subject": f"{grant.subject.id}|{grant.cost_center_id}|{grant.pool_model_id}",
+        }
+        for kind, identity in identities.items():
+            if identity.casefold() in seen[kind]:
+                raise ValidationError(_AMBIGUOUS)
+            seen[kind].add(identity.casefold())
+        if grant.key_name is not None:
+            # A key belongs to one subject under one cost center, so it can never serve another
+            # subject's grant.
+            expected = pool_key_name(
+                pool.tenant_id, pool.id, grant.subject.id, grant.cost_center_id
+            )
+            if grant.key_name != expected:
+                raise ValidationError(
+                    "A governed pool grant's key must be its subject's key to the pool under the "
+                    "grant's cost center."
+                )
+            if grant.key_name.casefold() in reserved:
+                raise ValidationError(
+                    "A governed grant cannot use the all-access or pool bootstrap subscription."
+                )
+        if not grant.enabled:
+            # Only enabled grants are compiled, and a disabled one carried forward from an earlier
+            # apply must not stop the plan that removes it.
+            continue
+        if grant.pool_model_id not in routed:
+            raise ValidationError("A governed pool grant names a model the pool doesn't serve.")
+        _validate_cost_center(grant.cost_center_id, grant.cost_center_code, seen)
+        if grant.enforcement is None:
+            continue
+        if grant.enforcement.tokens:
+            if not metered:
+                raise ValidationError(
+                    "This pool can't be token-metered on its gateway's tier, so its grants can't "
+                    "carry token limits."
+                )
+            counters.append(grant.enforcement.tokens.counter_key_expression)
+        if requests := grant.enforcement.requests:
+            counters.append(requests.counter_key_expression)
+            if requests.renewal_period_seconds and requests.renewal_period_seconds > 300:
+                raise ValidationError("Governed request rate renewal must not exceed 300 seconds.")
+    if any(re.sub(r"\s+", "", counter) not in _SUBSCRIPTION_COUNTERS for counter in counters):
+        raise ValidationError(
+            "Governed access replaces the standard subscription counter with a stable grant "
+            "counter; custom counter expressions are not supported."
+        )
+    quoted: set[tuple[str, str]] = set()
+    for quota in snapshot.quotas:
+        pair = (quota.pool_model_id, quota.cost_center_id)
+        if not quota.cost_center_code or pair in quoted:
+            raise ValidationError("Each cost center has at most one pooled quota per pool model.")
+        quoted.add(pair)
+        codes = {
+            _code(grant)
+            for grant in snapshot.grants
+            if grant.enabled and grant.pool_model_id == quota.pool_model_id
+        }
+        if quota.cost_center_code.casefold() in codes:
+            _validate_cost_center(quota.cost_center_id, quota.cost_center_code, seen)
+        if quota.monthly_tokens is not None and not metered:
+            raise ValidationError(
+                "This pool can't be token-metered on its gateway's tier, so a cost center's quota "
+                "on it must count calls, not tokens."
+            )
+
+
+def _pool_key_lookup(pool: ModelPool, grants: Sequence[PoolAccessGrant]) -> str:
+    """A key's grant to the requested model, as ``identity|code``.
+
+    ``~`` for one of the pool's keys whose subject holds no grant to the model, ``-`` for a grant
+    whose cost center turned keys off, and empty for a key that isn't one of the pool's.
+    """
+
+    keys: dict[str, list[PoolAccessGrant]] = defaultdict(list)
+    for grant in grants:
+        if grant.key_name is not None:
+            keys[grant.key_name].append(grant)
+    lines = [
+        'if (context.Subscription == null) { return ""; }',
+        "var subscription = context.Subscription.Id;",
+        f"var model = {_string_variable(MODEL_ID_VARIABLE)};",
+    ]
+    for key_name in sorted(keys):
+        lines.append(
+            f"if (String.Equals(subscription, {_safe_literal(key_name)}, "
+            "StringComparison.OrdinalIgnoreCase)) {"
+        )
+        for grant in sorted(keys[key_name], key=lambda item: item.pool_model_id):
+            answer = _match(pool, grant) if grant.keys_allowed else _KEYS_OFF
+            lines.append(
+                f"    if (model == {_safe_literal(grant.pool_model_id)}) "
+                f"{{ return {_safe_literal(answer)}; }}"
+            )
+        lines.extend([f"    return {_safe_literal(_NO_GRANT)};", "}"])
+    return _expression([*lines, 'return "";'])
+
+
+def _resolve_pool_token_grant(
+    parent: ET.Element,
+    pool: ModelPool,
+    grants: Sequence[PoolAccessGrant],
+    *,
+    delegated_scope: str,
+    application_role: str,
+) -> None:
+    """Match the validated token to one of a pool model's grants under the selected cost center.
+
+    When none matches and the call names a cost center, also note whether the caller holds the
+    model under another, which is the only case refused for naming the wrong cost center. Any
+    other unmatched call is refused like one for a model the caller doesn't hold, so a refusal
+    says nothing about grants the caller lacks.
+    """
+
+    _variable(
+        parent,
+        "mosaic-token-match",
+        _token_lookup(
+            pool, grants, delegated_scope=delegated_scope, application_role=application_role
+        ),
+    )
+    _split_match(parent, "mosaic-token-match", "mosaic-token-grant", "mosaic-token-cost-center")
+    if any(grant.is_group_grant for grant in grants):
+        _variable(parent, "mosaic-member", _token_member_lookup(pool, grants))
+    elsewhere = ET.SubElement(
+        ET.SubElement(parent, "choose"),
+        "when",
+        {"condition": f'@(String.IsNullOrEmpty({_TOKEN_GRANT}) && {_COST_CENTER_HEADER} != "")'},
+    )
+    _variable(
+        elsewhere,
+        "mosaic-token-held",
+        _token_lookup(
+            pool,
+            grants,
+            delegated_scope=delegated_scope,
+            application_role=application_role,
+            filter_cost_center=False,
+        ),
+    )
+
+
+def _model_limits(
+    fragment: ET.Element,
+    pool: ModelPool,
+    snapshot: PoolAccessSnapshot,
+    *,
+    routes: Sequence[PoolRoute],
+    grants: Sequence[PoolAccessGrant],
+    safeguard: PoolSafeguard | None,
+) -> None:
+    """Each pool model's own limits, after the grant's: its cost centers' pooled quotas, then the
+    safeguard every caller of the model shares, which counts last."""
+
+    model_id = _string_variable(MODEL_ID_VARIABLE)
+    choose = ET.Element("choose")
+    for route in routes:
+        when = ET.Element(
+            "when", {"condition": f"@({model_id} == {_safe_literal(route.model_id)})"}
+        )
+        codes = {_code(grant) for grant in grants if grant.pool_model_id == route.model_id}
+        _pool_limits(
+            when,
+            _CounterScope(pool.tenant_id, f"{pool.id}/{route.model_id}"),
+            [
+                quota
+                for quota in snapshot.quotas
+                if quota.pool_model_id == route.model_id
+                and quota.cost_center_code.casefold() in codes
+            ],
+            estimate_prompt_tokens=False if snapshot.token_metering else None,
+            prefix=_COUNTER_PREFIX,
+        )
+        if safeguard is not None:
+            ET.SubElement(when, "llm-token-limit", _safeguard_attributes(route.model_id, safeguard))
+        if snapshot.token_metering:
+            metric = ET.SubElement(when, "llm-emit-token-metric", {"namespace": METRIC_NAMESPACE})
+            for name, value in (("Pool", pool.id), ("Model", route.public_name)):
+                ET.SubElement(
+                    metric, "dimension", {"name": name, "value": f"@({_safe_literal(value)})"}
+                )
+        if len(when):
+            choose.append(when)
+    if len(choose):
+        fragment.append(choose)
+
+
+def _governed_fragment(
+    pool: ModelPool,
+    snapshot: PoolAccessSnapshot,
+    *,
+    shape: str,
+    routes: Sequence[PoolRoute],
+    safeguard: PoolSafeguard | None,
+    operations: tuple[OperationSpec, ...],
+    grants: Sequence[PoolAccessGrant],
+    delegated_scope: str,
+    application_role: str,
+) -> ET.Element:
+    fragment = ET.Element("fragment")
+    settings = snapshot.settings
+    if not (settings.keys_enabled or settings.entra_enabled):
+        _deny(fragment, reason="access-off")
+        return fragment
+    _credential_prelude(fragment, settings)
+
+    # The pool model the call names. One the pool doesn't serve leaves the model ID empty, and is
+    # refused exactly like one the caller holds no grant to, so a refusal never says which
+    # models the pool serves.
+    model_id = _string_variable(MODEL_ID_VARIABLE)
+    _variable(fragment, MODEL_VARIABLE, _requested_model(shape))
+    models = ET.SubElement(fragment, "choose")
+    for route in routes:
+        when = ET.SubElement(
+            models,
+            "when",
+            {
+                "condition": (
+                    f"@({_string_variable(MODEL_VARIABLE)} == {_safe_literal(route.public_name)})"
+                )
+            },
+        )
+        _variable(when, MODEL_ID_VARIABLE, route.model_id)
+        _variable(when, ATTEMPTS_VARIABLE, f"@({route.attempts})")
+
+    if settings.keys_enabled:
+        key = ET.SubElement(
+            ET.SubElement(fragment, "choose"), "when", {"condition": f"@({_HAS_KEY})"}
+        )
+        _reject(key, _key_shape_check(), reason="key-malformed", code=401)
+        _variable(key, "mosaic-key-match", _pool_key_lookup(pool, grants))
+        _split_match(key, "mosaic-key-match", "mosaic-key-grant", "mosaic-key-cost-center")
+        _reject(key, f"@(String.IsNullOrEmpty({_KEY_GRANT}))", reason="key-unknown")
+        _reject(key, f"@(String.IsNullOrEmpty({model_id}))", reason="model")
+        _reject(key, f"@({_KEY_GRANT} == {_safe_literal(_NO_GRANT)})", reason="no-grant")
+        if any(not grant.keys_allowed for grant in grants if not grant.is_group_grant):
+            _reject(
+                key,
+                f"@({_KEY_GRANT} == {_safe_literal(_KEYS_OFF)})",
+                reason="keys-off",
+                code=401,
+                message=COST_CENTER_KEYS_OFF_DENIED,
+            )
+        # A key serves one cost center. A header naming another is refused rather than ignored.
+        _reject(
+            key,
+            f'@({_COST_CENTER_HEADER} != "" && {_COST_CENTER_HEADER} != {_KEY_COST_CENTER})',
+            reason="cost-center-mismatch",
+            message=COST_CENTER_MISMATCH_DENIED,
+        )
+        _variable(key, "mosaic-cc", f"@({_KEY_COST_CENTER})")
+
+    if settings.entra_enabled:
+        token = ET.SubElement(
+            ET.SubElement(fragment, "choose"), "when", {"condition": f"@({_HAS_TOKEN})"}
+        )
+        _validate_token(token, tenant_id=pool.tenant_id, audience=snapshot.audience)
+        _variable(token, "mosaic-token-held", "")
+        by_model: dict[str, list[PoolAccessGrant]] = defaultdict(list)
+        for grant in grants:
+            by_model[grant.pool_model_id].append(grant)
+        if by_model:
+            choose = ET.SubElement(token, "choose")
+            for pool_model_id in sorted(by_model):
+                when = ET.SubElement(
+                    choose,
+                    "when",
+                    {"condition": f"@({model_id} == {_safe_literal(pool_model_id)})"},
+                )
+                _resolve_pool_token_grant(
+                    when,
+                    pool,
+                    by_model[pool_model_id],
+                    delegated_scope=delegated_scope,
+                    application_role=application_role,
+                )
+        # The refusals below apply to every model alike, so none can tell a model the pool
+        # doesn't serve from one the caller doesn't hold, or which models have group grants.
+        if any(grant.is_group_grant for grant in grants):
+            _reject(
+                token,
+                _token_groups_overage(),
+                reason="groups-overage",
+                with_caller=True,
+                message=_GROUPS_OVERAGE_DENIED,
+            )
+        _reject(
+            token,
+            '@((string)context.Variables["mosaic-token-held"] != "")',
+            reason="cost-center",
+            with_caller=True,
+            message=COST_CENTER_DENIED,
+        )
+        _reject(token, f"@(String.IsNullOrEmpty({model_id}))", reason="model", with_caller=True)
+        _reject(
+            token,
+            f"@(String.IsNullOrEmpty({_TOKEN_GRANT}))",
+            reason="no-grant",
+            with_caller=True,
+        )
+
+    _select_grant(fragment)
+    _cost_center_ids(fragment, grants)
+    append_budget_check(fragment, grants)
+    allowed = " || ".join(
+        f"context.Operation.Id == {_safe_literal(operation.name)}" for operation in operations
+    )
+    _reject(
+        fragment,
+        f'@(context.Operation == null || context.Request.Method != "POST" || !({allowed}))',
+        reason="operation",
+        with_caller=True,
+        message="This operation is not available through governed access.",
+    )
+    append_grant_attribution_trace(fragment, grants)
+    _grant_limits(fragment, pool, grants, prefix=_COUNTER_PREFIX)
+    _grant_token_limits(fragment, pool, grants, prefix=_COUNTER_PREFIX)
+    _model_limits(fragment, pool, snapshot, routes=routes, grants=grants, safeguard=safeguard)
+
+    for name in (
+        "Ocp-Apim-Subscription-Key",
+        "api-key",
+        "Authorization",
+        COST_CENTER_HEADER,
+        # A caller must not steer Azure's own overflow to a deployment it was never told about.
+        "x-ms-spillover-deployment",
+    ):
+        ET.SubElement(fragment, "set-header", {"name": name, "exists-action": "delete"})
+    ET.SubElement(
+        fragment, "set-query-parameter", {"name": "subscription-key", "exists-action": "delete"}
+    )
+    add_shape_headers(fragment, shape)
+    ET.SubElement(
+        fragment, "authentication-managed-identity", {"resource": managed_identity_resource(shape)}
+    )
+    _append_rewrites(fragment, shape, operations)
+    return fragment
+
+
+def _describe_safeguard(facet: PolicyFacet) -> None:
+    facet.summary = re.sub(
+        r"counted .+\.$", "counted per pool model, shared by every caller.", facet.summary
+    )
+    facet.attributes["counter-scope"] = "pool-model"
+    facet.details.extend(
+        [
+            "The pool's safeguard protects its members' capacity from the pool's own callers. It "
+            "counts last, after the grant's limits and its cost center's pooled quota.",
+            "Native APIM limits are distributed/per gateway, not exact global or billing totals.",
+        ]
+    )
+
+
+def _governed_operations_facet(shape: str, operations: tuple[OperationSpec, ...]) -> PolicyFacet:
+    names = [operation.name for operation in operations]
+    refused = [
+        operation.name for operation in pool_operations(shape) if operation.name not in names
+    ]
+    details = [f"Allowed curated operation IDs: {', '.join(names)}."]
+    if refused:
+        details.append(f"The pool's other operations are denied: {', '.join(refused)}.")
+    details.append(
+        "The call's model must be one the caller holds a grant to; the pool then routes it to "
+        "one of that model's members."
+    )
+    return PolicyFacet(
+        kind=PolicyFacetKind.AUTHORIZATION,
+        element="choose",
+        section=PolicySection.INBOUND,
+        summary=(
+            "Governed access permits only the Anthropic Messages operation."
+            if shape == ApiShape.ANTHROPIC_MESSAGES
+            else "Governed access permits only chat completions."
+        ),
+        details=details,
+        attributes={"allowed-operations": ",".join(names)},
+        managed_by_mosaic=True,
+    )
+
+
+def _governed_facets(
+    snapshot: PoolAccessSnapshot,
+    *,
+    shape: str,
+    fragment: ET.Element,
+    fragment_xml: str,
+    api_policy_xml: str,
+    operations: tuple[OperationSpec, ...],
+    delegated_scope: str,
+    application_role: str,
+) -> tuple[list[PolicyFacet], list[str]]:
+    fragment_analysis = analyze_policy(fragment_xml)
+    api_analysis = analyze_policy(api_policy_xml)
+    settings = snapshot.settings
+    methods = []
+    if settings.keys_enabled:
+        methods.append("an allowlisted APIM subscription key")
+    if settings.entra_enabled:
+        methods.append("a validated Microsoft Entra bearer token")
+    enabled = [grant for grant in snapshot.grants if grant.enabled]
+    group_grants = sum(grant.is_group_grant for grant in enabled)
+    details = [
+        "Every presented credential must be enabled and valid; there is no fallback.",
+        "When a key and a token are both presented, they must resolve to the same enabled grant.",
+        "Keys in both header and query must be identical; ambiguous or empty credentials "
+        "are denied.",
+        f"User tokens require {delegated_scope} in scp; application tokens require "
+        f"{application_role} in roles with no scp claim. Claims are read only after signature, "
+        "tenant, audience and expiry validation.",
+        "Each grant is to one pool model, and the model a call names selects which of the "
+        "caller's grants applies.",
+        "One key serves every pool model its subject holds directly under one cost center.",
+        "Only the pool's own keys are allowlisted; all-access, bootstrap and unrelated "
+        "subscriptions are denied. No caller identity header or control-plane callback is used.",
+        "A model the pool doesn't serve is refused with 403 exactly like one the caller holds no "
+        "grant to, so a refusal never reveals which models the pool serves.",
+    ]
+    attributes = {
+        "keys-enabled": str(settings.keys_enabled).lower(),
+        "entra-enabled": str(settings.entra_enabled).lower(),
+        "enabled-grants": str(len(enabled)),
+    }
+    if group_grants:
+        details.extend(
+            [
+                f"{group_grants} enabled security-group grant"
+                f"{'' if group_grants == 1 else 's'} match the validated token's groups claim.",
+                "Security-group grants accept Microsoft Entra tokens only; they have no APIM "
+                "subscription key path.",
+                "Security-group grant limits apply separately to each validated member object ID.",
+                "A direct user or application grant to the caller wins before any group grant is "
+                "considered.",
+            ]
+        )
+        attributes["security-group-grants"] = str(group_grants)
+    details.extend(cost_center_details())
+    attributes["cost-centers"] = str(len({grant.cost_center_id for grant in enabled}))
+    summary = f"Requires {' or '.join(methods)}." if methods else "All model access is denied."
+    facets = [
+        PolicyFacet(
+            kind=PolicyFacetKind.AUTHORIZATION,
+            element="choose",
+            section=PolicySection.INBOUND,
+            summary=summary,
+            details=details,
+            attributes=attributes,
+            managed_by_mosaic=True,
+        ),
+        _governed_operations_facet(shape, operations),
+    ]
+    limits = iter(element for element in fragment.iter() if element.tag in _LIMIT_ELEMENTS)
+    fragment_facets = classify_traces(
+        fragment, fragment_analysis.facets, has_group_grants=group_grants > 0
+    )
+    for facet in [*fragment_facets, *api_analysis.facets]:
+        facet.managed_by_mosaic = True
+        if facet.section == PolicySection.UNKNOWN:
+            facet.section = PolicySection.INBOUND
+        if facet.element in _LIMIT_ELEMENTS:
+            # Every limit is in the fragment, in document order.
+            element = next(limits)
+            if _COUNTER_PREFIX in element.get("counter-key", ""):
+                describe_limit_facet(
+                    facet, element, _COUNTER_PREFIX, owner="pool", pooled_owner="pool model"
+                )
+            else:
+                _describe_safeguard(facet)
+        elif facet.element == "set-backend-service":
+            facet.summary = "Routes authorized requests to a member of the requested pool model."
+            facet.attributes = {"backend-id": "[redacted]"}
+        elif facet.element == "include-fragment":
+            facet.summary = "Applies the MOSAIC-managed governed pool access rule set."
+            facet.attributes = {"fragment-id": "[redacted]"}
+        elif facet.element == "set-query-parameter":
+            name = facet.attributes.get("name", "subscription-key")
+            facet.summary = f"Removes the {name} query parameter before forwarding."
+        facets.append(facet)
+    return facets, sorted(
+        set(fragment_analysis.unrecognized_elements) | set(api_analysis.unrecognized_elements)
+    )
+
+
+def render_governed_pool_policy(
+    *,
+    pool: ModelPool,
+    snapshot: PoolAccessSnapshot,
+    shape: str,
+    routes: list[PoolRoute],
+    preset: BreakerPreset,
+    safeguard: PoolSafeguard | None,
+    delegated_scope: str = "Models.Invoke",
+    application_role: str = "Models.Invoke.Application",
+) -> PublicationPolicy:
+    """Author a governed pool's fragment and API policy; reject unsafe intent with ValidationError.
+
+    ``snapshot``, rather than the pool's saved access settings or its grants' current state, is
+    the authority for what the fragment enforces. Only the pool's identity and resource names are
+    read from ``pool``.
+    """
+
+    if not routes:
+        raise ValueError("A pool policy needs at least one model")
+    _validate_pool(pool, snapshot, routes, safeguard)
+    operations = governed_pool_operations(shape)
+    grants = sorted(
+        (grant for grant in snapshot.grants if grant.enabled),
+        key=lambda grant: grant.entitlement_id,
+    )
+    fragment = _governed_fragment(
+        pool,
+        snapshot,
+        shape=shape,
+        routes=routes,
+        safeguard=safeguard,
+        operations=operations,
+        grants=grants,
+        delegated_scope=delegated_scope,
+        application_role=application_role,
+    )
+    fragment_xml = _serialize(fragment)
+    if len(fragment_xml.encode("utf-8")) > MAX_FRAGMENT_BYTES:
+        raise ValidationError(
+            "The governed pool policy fragment exceeds APIM's 512 KB UTF-8 size limit."
+        )
+    api_policy_xml = _serialize(
+        _api_policy(fragment_name=pool.fragment_name, shape=shape, routes=routes, preset=preset)
+    )
+    facets, unrecognized = _governed_facets(
+        snapshot,
+        shape=shape,
+        fragment=fragment,
+        fragment_xml=fragment_xml,
+        api_policy_xml=api_policy_xml,
+        operations=operations,
+        delegated_scope=delegated_scope,
+        application_role=application_role,
+    )
+    return PublicationPolicy(
+        fragment_xml=fragment_xml,
+        api_policy_xml=api_policy_xml,
+        content_sha256=hashlib.sha256(f"{fragment_xml}\n{api_policy_xml}".encode()).hexdigest(),
+        facets=facets,
+        unrecognized_elements=unrecognized,
+    )
+
+
 __all__ = [
     "DEPLOYMENT_PARAMETER",
     "PoolRoute",
     "PoolTarget",
     "body_routed",
+    "governed_pool_operations",
     "member_backend_url",
     "pool_operations",
+    "render_governed_pool_policy",
     "render_pool_policy",
     "template_parameters",
 ]
