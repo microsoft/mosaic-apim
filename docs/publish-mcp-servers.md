@@ -140,9 +140,11 @@ security-group grant, `m` carries the caller's validated object ID, so each memb
 counted separately; otherwise it's empty. `a` is the client application ID the validated token
 names. Application Insights also gets the grant as the property `mosaic-grant`, the client as
 `mosaic-client`, and when the server has security-group grants, the object ID as `mosaic-member`.
-Each refusal records its reason instead, as `mosaic-deny v=1 r=<reason>`, with the caller's object
-ID and client once the token has validated. The traces read only policy variables, never a body,
-so streaming is unaffected.
+A property the call has no value for, such as `mosaic-member` for a direct grant, reads `-`,
+because API Management fails a call when a trace property is empty. Each refusal records its
+reason instead, as `mosaic-deny v=1 r=<reason>`, with the caller's object ID and client once the
+token has validated. The traces read only policy variables, never a body, so streaming is
+unaffected.
 
 A successful apply records the same grant identity on each MCP entitlement's binding, and a
 successful unpublish clears it. The portal's usage report then shows these grants as linked from
