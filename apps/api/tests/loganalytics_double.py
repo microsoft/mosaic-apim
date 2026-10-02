@@ -28,21 +28,39 @@ _DEPLOYMENTS = re.compile(r"let deploymentOf = dynamic\((\{.*?\})\);")
 # How a query marks the calls the model deployment served, spelled out here rather than taken
 # from the code under test, and the token columns it can keep for those calls only.
 _SERVED = re.compile(
-    r"\| extend served = isnotnull\(BackendResponseCode\)\s+"
-    r"and BackendResponseCode between \(200 \.\. 299\)\n"
+    r"\|\s*extend\s+served\s*=\s*isnotnull\(\s*BackendResponseCode\s*\)\s+"
+    r"and\s+BackendResponseCode\s+between\s*\(\s*200\s*\.\.\s*299\s*\)"
 )
 _TOKEN_COLUMNS = ("promptTokens", "completionTokens", "totalTokens")
+_TOKEN_GATES = {
+    column: re.compile(
+        rf"\b{column}\s*=\s*iff\(\s*served\s*,\s*{column}\s*,\s*long\(\s*null\s*\)\s*\)"
+    )
+    for column in _TOKEN_COLUMNS
+}
+
+
+def served_gate_span(query: str) -> tuple[int, int] | None:
+    """The location of the gate that marks calls the model deployment served."""
+
+    match = _SERVED.search(query)
+    return match.span() if match else None
+
+
+def token_gate_span(query: str, column: str) -> tuple[int, int] | None:
+    """The location of ``column`` being kept only for served calls."""
+
+    match = _TOKEN_GATES[column].search(query)
+    return match.span() if match else None
 
 
 def served_only(query: str) -> frozenset[str]:
     """The token columns ``query`` reads only for calls the model deployment served."""
 
-    if not _SERVED.search(query):
+    if served_gate_span(query) is None:
         return frozenset()
     return frozenset(
-        column
-        for column in _TOKEN_COLUMNS
-        if f"{column} = iff(served, {column}, long(null))" in query
+        column for column in _TOKEN_COLUMNS if token_gate_span(query, column) is not None
     )
 
 

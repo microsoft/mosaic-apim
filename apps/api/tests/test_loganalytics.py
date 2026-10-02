@@ -8,7 +8,7 @@ import pytest
 from apim_double import RESOURCE_ID
 from azure.core.credentials import AccessToken
 from azure.core.exceptions import ClientAuthenticationError
-from loganalytics_double import served_only
+from loganalytics_double import served_gate_span, served_only, token_gate_span
 from mosaic_api.errors import UpstreamNotFoundError, ValidationError
 from mosaic_api.integrations.loganalytics import (
     LogAnalyticsClient,
@@ -196,15 +196,7 @@ def test_deployment_peaks_query_sorts_mapping_and_keeps_keys_in_dynamic_literal(
 
 
 # What every query that sums tokens has to do with a call's LLM log row before it sums anything.
-SERVED = (
-    "| extend served = isnotnull(BackendResponseCode)\n"
-    "    and BackendResponseCode between (200 .. 299)\n"
-)
-GATED = (
-    "promptTokens = iff(served, promptTokens, long(null))",
-    "completionTokens = iff(served, completionTokens, long(null))",
-    "totalTokens = iff(served, totalTokens, long(null))",
-)
+GATED = ("promptTokens", "completionTokens", "totalTokens")
 TOKEN_QUERIES = {
     "calls": (calls_query(WINDOW, ["chat-api"]), "| summarize requests = count()"),
     "peaks": (peaks_query(WINDOW, ["chat-api"]), "| summarize tokens = sum(totalTokens)"),
@@ -220,12 +212,74 @@ def test_queries_read_tokens_only_for_calls_the_model_deployment_served(kind: st
     query, summary = TOKEN_QUERIES[kind]
 
     joined = query.index("| join kind=leftouter llmRows on CorrelationId\n")
-    served = query.index(SERVED)
-    assert joined < served < query.index(summary)
+    served = served_gate_span(query)
+    assert served is not None
+    summary_start = query.index(summary)
+    assert joined < served[0] < served[1] < summary_start
     for column in GATED:
-        assert served < query.index(column) < query.index(summary)
+        gated = token_gate_span(query, column)
+        assert gated is not None
+        assert served[0] < gated[0] < gated[1] < summary_start
     # The double that answers these queries in tests reads the same rule from them.
     assert served_only(query) == {"promptTokens", "completionTokens", "totalTokens"}
+
+
+def test_served_only_is_tolerant_of_equivalent_whitespace() -> None:
+    query = """
+ApiManagementGatewayLogs
+| join kind=leftouter llmRows on CorrelationId
+| extend served  =  isnotnull( BackendResponseCode )
+    and   BackendResponseCode   between ( 200..299 )
+| extend promptTokens=iff( served,promptTokens,long( null ) ),
+    completionTokens = iff(
+        served,
+        completionTokens,
+        long(null)
+    ),
+    totalTokens = iff(served, totalTokens, long(null))
+| summarize tokens = sum(totalTokens)
+"""
+
+    assert served_only(query) == {"promptTokens", "completionTokens", "totalTokens"}
+
+
+@pytest.mark.parametrize(
+    ("query", "gated"),
+    [
+        (
+            """
+| extend promptTokens = iff(served, promptTokens, long(null)),
+    completionTokens = iff(served, completionTokens, long(null)),
+    totalTokens = iff(served, totalTokens, long(null))
+""",
+            frozenset(),
+        ),
+        (
+            """
+| extend served = isnotnull(BackendResponseCode)
+    and BackendResponseCode between (200 .. 499)
+| extend promptTokens = iff(served, promptTokens, long(null)),
+    completionTokens = iff(served, completionTokens, long(null)),
+    totalTokens = iff(served, totalTokens, long(null))
+""",
+            frozenset(),
+        ),
+        (
+            """
+| extend served = isnotnull(BackendResponseCode)
+    and BackendResponseCode between (200 .. 299)
+| extend promptTokens = iff(served, promptTokens, long(null)),
+    completionTokens = completionTokens,
+    totalTokens = iff(served, totalTokens, long(null))
+""",
+            frozenset({"promptTokens", "totalTokens"}),
+        ),
+    ],
+)
+def test_served_only_rejects_missing_or_changed_token_gates(
+    query: str, gated: frozenset[str]
+) -> None:
+    assert served_only(query) == gated
 
 
 def test_calls_query_still_counts_every_admitted_call_and_its_status() -> None:

@@ -255,10 +255,11 @@ model for, so cost by model added up to less than cost by API.
 - **A call's tokens count only when the model deployment served it**, which is when the gateway
   log records a `BackendResponseCode` from 200 to 299. The queries read no tokens from the LLM log
   for any other call: one the gateway refused with 429 or 403, one with no `BackendResponseCode`,
-  and one the deployment answered with its own 429 or another error. Azure doesn't bill a call it
-  throttled or failed, and an error response carries no usage, so the LLM log can hold at most the
-  gateway's estimate for one. Counting only 2xx keeps the rule simple, and MOSAIC never prices an
-  estimate for a call that produced nothing.
+  and one the deployment answered with its own 429 or another error. Azure doesn't bill a call that
+  never reached the model, or one the deployment throttled, and an error response carries no
+  usage, so the LLM log can hold at most the gateway's estimate for one. Whether Azure bills the
+  prompt of a call a content filter blocked with 400 is still to be confirmed. Counting only 2xx
+  keeps the rule simple, and MOSAIC never prices an estimate for a call that produced nothing.
 - **Requests and outcomes don't change.** Every admitted call still counts as a request with its
   outcome: throttled, quota refused, a client or server error, and the deployment's own 429s, which
   Reliability, Limits, and the portal read. A busiest minute counts only served calls' tokens, so a

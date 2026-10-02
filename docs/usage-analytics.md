@@ -324,9 +324,11 @@ have no token count, or a low one.
 
 Only a call the model deployment served, with a status from 200 to 299, has tokens. A call the
 gateway refused for a rate or token limit or a quota, or that the deployment throttled or failed
-itself, counts as a request with its outcome, but with no tokens and no cost. Azure bills none of
-those calls, though the LLM log keeps the gateway's estimate of a refused call's prompt. So a
-grant's busiest minute counts only the tokens its limits let through.
+itself, counts as a request with its outcome, but with no tokens and no cost, though the LLM log
+keeps the gateway's estimate of a refused call's prompt. So a grant's busiest minute counts only
+the tokens its limits let through. Azure doesn't bill a call that never reached the model, or one
+the deployment throttled. Whether it bills the prompt of a call a content filter blocked with 400
+is still to be confirmed, and MOSAIC counts no tokens for that call either way.
 
 **Models** are the ones the LLM log names. A call the model served whose LLM log names none still
 counts under a model: the one MOSAIC observed the API's deployment serving, or else the deployment's

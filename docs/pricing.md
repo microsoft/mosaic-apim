@@ -19,7 +19,9 @@ MOSAIC multiplies the usage it measures by a price list. Every cost is:
   has no price.
 - **Only for calls the model served.** A call the gateway refused for a limit or a quota, or that
   the deployment throttled or failed itself, has no tokens, so it costs nothing. Azure doesn't
-  bill it either. [Usage analytics](usage-analytics.md#calls) says what counts.
+  bill a call that never reached the model, or one the deployment throttled. Whether it bills the
+  prompt of a call a content filter blocked with 400 is still to be confirmed.
+  [Usage analytics](usage-analytics.md#calls) says what counts.
 
 The rollups don't separate cached prompt tokens from the rest, so every prompt token is priced at
 the full input price. Cost is shown for whole days only, so the **Last 24 hours** range shows none.
