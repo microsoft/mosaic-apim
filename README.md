@@ -598,6 +598,15 @@ Logging has one setting.
 | --- | --- | --- |
 | `MOSAIC_LOG_LEVEL` | `INFO` | The least severe level the API logs, to stdout and, when `MOSAIC_APPLICATIONINSIGHTS_CONNECTION_STRING` is set as `azd` sets it, to Application Insights. Libraries log at this level too, but the loggers for the Azure SDK's HTTP calls and the Azure Monitor exporter's uploads never go below `WARNING`. |
 
+With `MOSAIC_APPLICATIONINSIGHTS_CONNECTION_STRING` set, the API also records each request it
+serves in Application Insights, as a row in `AppRequests` named for its method and route, such as
+`GET /api/v1/principals/{principal_id}`, with its status code and duration. The health probes
+`/healthz` and `/readyz` aren't recorded, because App Service's health check and the deployment's
+smoke checks call them often enough to bury the rest. No header or body of a request or response
+is recorded, so no bearer token or API key reaches Application Insights; don't set OpenTelemetry's
+`OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_*` variables, which would record the headers they name.
+Without the connection string, nothing is instrumented.
+
 In a second terminal:
 
 ```powershell
