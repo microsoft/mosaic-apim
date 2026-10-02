@@ -134,7 +134,6 @@ from mosaic_api.services.model_access import (
     effective_enforcement,
     entitlement_intent_digest,
     environment_guard,
-    grant_key_display_name,
     local_mutation_active,
     publication_lock,
 )
@@ -142,6 +141,7 @@ from mosaic_api.services.pool_access import (
     denied_pool_access_snapshot,
     entitlement_key_name,
     is_pool_model_entitlement,
+    pool_key_display_name,
     safe_pool_access_snapshot,
 )
 from mosaic_api.services.publishing import _KIND_NOUNS as _KIND_NOUNS
@@ -562,18 +562,6 @@ def _grant_identities(grant: PoolAccessGrant) -> set[str]:
 def _grant_label(grants: list[PoolAccessGrant]) -> str:
     ids = sorted(grant.entitlement_id for grant in grants)
     return f"grant {ids[0]}" if len(ids) == 1 else f"grants {', '.join(ids)}"
-
-
-def _key_display_name(pool: ModelPool, grants: list[PoolAccessGrant]) -> str:
-    """What API Management calls a key: whose it is and the cost center it charges.
-
-    Every grant sharing a key has the same subject and cost center, so any of them says it.
-    """
-
-    if not grants:
-        return pool.display_name[:100]
-    first = min(grants, key=lambda grant: grant.entitlement_id)
-    return grant_key_display_name(first.display_name, first.cost_center_code)
 
 
 def _live_display_name(live: dict[str, Any]) -> str | None:
@@ -2940,7 +2928,9 @@ class ModelPoolService:
                 return
             await writer.put_api_subscription(
                 step.name,
-                display_name=_key_display_name(pool, snapshot.key_grants().get(step.name, [])),
+                display_name=pool_key_display_name(
+                    pool, snapshot.key_grants().get(step.name, [])
+                ),
                 api_name=pool.api_name,
                 state=state,
             )
@@ -3037,7 +3027,7 @@ class ModelPoolService:
                     await writer.put_api_subscription(
                         item.name,
                         display_name=_live_display_name(live)
-                        or _key_display_name(pool, applied.get(item.name, [])),
+                        or pool_key_display_name(pool, applied.get(item.name, [])),
                         api_name=pool.api_name,
                         state="suspended",
                     )
@@ -3173,7 +3163,7 @@ class ModelPoolService:
                             await writer.put_api_subscription(
                                 name,
                                 display_name=_live_display_name(live)
-                                or _key_display_name(pool, grants),
+                                or pool_key_display_name(pool, grants),
                                 api_name=pool.api_name,
                                 state="active",
                             )

@@ -10,6 +10,7 @@ from mosaic_api.domain import (
     EntitlementResourceKind,
     EntitlementRuntime,
     EntitlementSubjectKind,
+    KeySharedModel,
     ModelAccessSettings,
     Principal,
     PublicationStatus,
@@ -22,7 +23,11 @@ from mosaic_api.model_pools import (
     pool_key_name,
 )
 from mosaic_api.repositories import GatewayRepository
-from mosaic_api.services.model_access import CostCenterIntent, entitlement_intent_digest
+from mosaic_api.services.model_access import (
+    CostCenterIntent,
+    entitlement_intent_digest,
+    grant_key_display_name,
+)
 
 
 def is_pool_model_entitlement(entitlement: Entitlement) -> bool:
@@ -91,6 +96,48 @@ def entitlement_key_name(pool: ModelPool, entitlement: Entitlement) -> str | Non
     return pool_key_name(
         pool.tenant_id, pool.id, entitlement.subject.id, entitlement.cost_center_id
     )
+
+
+def pool_key_display_name(pool: ModelPool, grants: list[PoolAccessGrant]) -> str:
+    """What API Management calls a key: whose it is and the cost center it charges.
+
+    Every grant sharing a key has the same subject and cost center, so any of them says it.
+    """
+
+    if not grants:
+        return pool.display_name[:100]
+    first = min(grants, key=lambda grant: grant.entitlement_id)
+    return grant_key_display_name(first.display_name, first.cost_center_code)
+
+
+def key_shared_models(
+    pool: ModelPool, key_name: str | None, entitlement_id: str
+) -> list[KeySharedModel]:
+    """The pool's other models a grant's key unlocks, as the pool's last apply enforces them.
+
+    Rotating or deleting the key affects each of them, so the portal names them first.
+    """
+
+    if key_name is None or pool.applied_access is None:
+        return []
+    current = applied_pool_grant(pool, entitlement_id)
+    shared: dict[str, KeySharedModel] = {}
+    for grant in pool.applied_access.key_grants().get(key_name, []):
+        if (
+            grant.entitlement_id == entitlement_id
+            or not grant.enabled
+            or grant.revoked
+            or (current is not None and grant.pool_model_id == current.pool_model_id)
+        ):
+            continue
+        model = pool.pool_model(grant.pool_model_id)
+        if model is not None:
+            shared[model.id] = KeySharedModel(
+                pool_model_id=model.id,
+                display_name=model.display_name,
+                public_name=model.public_name,
+            )
+    return sorted(shared.values(), key=lambda item: (item.public_name, item.pool_model_id))
 
 
 def pool_grant_needs_retention(pool: ModelPool, entitlement_id: str) -> bool:
@@ -238,7 +285,9 @@ __all__ = [
     "entitlement_key_name",
     "entitlement_model_pool",
     "is_pool_model_entitlement",
+    "key_shared_models",
     "pool_grant_needs_retention",
+    "pool_key_display_name",
     "pool_model_listed",
     "pool_model_offered",
     "safe_pool_access_snapshot",

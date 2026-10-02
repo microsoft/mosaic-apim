@@ -3384,6 +3384,18 @@ class ConnectionOperation(MosaicModel):
     path: str
 
 
+class KeySharedModel(MosaicModel):
+    """Another model in a pool that a grant's key also unlocks (ADR 0024).
+
+    A pool key serves every model its subject holds directly in the pool under one cost center,
+    so rotating or deleting it affects each of them.
+    """
+
+    pool_model_id: str
+    display_name: str
+    public_name: str
+
+
 class ModelConnection(MosaicModel):
     entitlement_id: str
     publication_id: str
@@ -3425,6 +3437,14 @@ class ModelConnection(MosaicModel):
     # False when the cost center turned keys off. Keys work only when the publication accepts keys
     # and the cost center allows them.
     keys_allowed_by_cost_center: bool = True
+    # Set for a grant on a pool model (ADR 0024). ``publication_id`` is then the pool's ID,
+    # ``deployment_name`` is the model name callers send, and ``publication_limits`` is the
+    # pool's safeguard on the model, which every caller of the model shares.
+    pool_id: str | None = None
+    pool_name: str | None = None
+    pool_model_id: str | None = None
+    # The pool's other models this grant's key unlocks, as the pool's last apply enforces them.
+    key_shared_with: list[KeySharedModel] = Field(default_factory=list)
 
 
 class McpConnection(MosaicModel):
@@ -3496,6 +3516,10 @@ class GrantKey(MosaicModel):
     cost_center: CostCenterRef | None = None
     # The slot a rotation regenerated.
     rotated: Literal["primary", "secondary"] | None = None
+    # Set for a pool model grant, whose key is shared: the pool, and its other models the key
+    # unlocks (ADR 0024).
+    pool_id: str | None = None
+    key_shared_with: list[KeySharedModel] = Field(default_factory=list)
 
 
 class PublishRecoveryRequest(MosaicModel):
