@@ -13,6 +13,7 @@ from __future__ import annotations
 import csv
 import io
 from collections import defaultdict
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any, cast
@@ -399,6 +400,38 @@ async def test_the_cost_center_filter_keeps_the_split(harness: Harness) -> None:
 
     assert {row["Charged to"] for row in rows} == {"Ticket assistant"}
     assert {row["On behalf of"] for row in rows} == {"", "Alice", "Bob", "Dana"}
+
+
+async def test_a_refused_call_counts_for_the_person_with_no_tokens(harness: Harness) -> None:
+    await seed_on_behalf(harness)
+    # The application's token limit refused one of the model calls it made for Alice.
+    harness.logs.calls.append(
+        replace(
+            _model(_at(18, 10, 40), 5_000, 500, ALICE_18),
+            response_code=429,
+            backend_code=0,
+        )
+    )
+    await _roll_up(harness)
+
+    consumers = harness.get("/api/v1/analytics/consumers", range="30d")
+    [alice] = [row for row in consumers["onBehalf"] if row["personLabel"] == "Alice"]
+    assert (alice["requests"], alice["throttled"]) == (3, 1)
+    assert alice["totalTokens"] == 19_134 + 23_334
+    assert alice["cost"] == pytest.approx(round(ALICE_COST, 4))
+    [mine] = harness.get("/api/v1/me/usage", period="30d")["onBehalf"]
+    assert (mine["requests"], mine["totalTokens"]) == (3, 19_134 + 23_334)
+    split = _csv(harness, view="chargeback", range="30d")
+    _forget_on_behalf_summaries(harness)
+    [whole] = [
+        row
+        for row in _csv(harness, view="chargeback", range="30d")
+        if row["Charged to"] == "Ticket assistant"
+    ]
+    parts = [row for row in split if row["Charged to"] == "Ticket assistant"]
+    for column in ("Requests", "Total tokens", "Cost (USD)"):
+        assert sum(Decimal(row[column] or "0") for row in parts) == Decimal(whole[column])
+    assert whole["Requests"] == "8"
 
 
 @pytest.mark.parametrize(

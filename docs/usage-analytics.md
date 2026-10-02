@@ -389,11 +389,13 @@ application's grant, with the reason:
 **Consumers** lists these calls under **Model use through MCP servers**, below the people,
 applications and groups that already count them. Each row is one person's model use through one
 MCP server, made by one application, with its requests, tokens, share of the linked calls and
-cost. The cost is priced as the application's grant's calls are. A line above the table counts the
-references MOSAIC couldn't use, by reason. The table adds to no total, and People, Applications,
-Grants and every other figure stay as they were. The filters treat these calls as the
-application's grant's: a cost center, a resource or a kind of subject keeps them when it keeps that
-grant. So the model API's resource filter keeps them, and the MCP server's doesn't.
+cost. The cost is priced as the application's grant's calls are. As everywhere, only calls the
+model served carry tokens and cost, so a call the application's limits refused counts as a request
+with neither. A line above the table counts the references MOSAIC couldn't use, by reason. The
+table adds to no total, and People, Applications, Grants and every other figure stay as they were.
+The filters treat these calls as the application's grant's: a cost center, a resource or a kind of
+subject keeps them when it keeps that grant. So the model API's resource filter keeps them, and the
+MCP server's doesn't.
 
 **Client applications** are the apps callers signed in with. MOSAIC names each from the applications
 it has a record of, and recognizes Azure CLI, Azure PowerShell, and Visual Studio Code. Any other
