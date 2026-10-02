@@ -685,7 +685,7 @@ Progress:
     allows only chat completions on these publications, so their embeddings and model-info
     operations are denied by design.
 
-### Phase 8: Runtime verification (R1 to R14, A14, A17, A18) 🔄 R3 and R4's additions pass, part of R8, and Claude's publication; the rest runs at the owner's sitting, after O37's fix
+### Phase 8: Runtime verification (R1 to R14, A14, A17, A18) 🔄 R3 and R4's additions pass, part of R8, and Claude's key call; the rest runs at the owner's sitting
 
 `scripts/verify_model_access.py` now covers this phase, with unit tests against a fake gateway
 that applies the governed policy. It reads each grant's connection details from MOSAIC, calls the
@@ -790,7 +790,9 @@ Progress:
   publication. Since Batch 3f, each authorized call to a governed model also writes one trace,
   `mosaic-attribution v=1`, that names its grant by a stable hash, both in Application Insights
   and in the resource logs. Refused calls and calls to publications without governed access
-  write none. The 429s wait for R5's and R6's runs.
+  write none. The 429s wait for R5's and R6's runs. After Batch 3i, the resource logs also keep
+  the trace's properties. A key call's trace records `mosaic-client` as `-`, as #81 intends, both
+  there and in Application Insights.
 - ✅ **Batch 3g**, 2026-10-01: the environment runs main as of
   [#74](https://github.com/microsoft/mosaic-apim/pull/74), which brings G18
   ([#69](https://github.com/microsoft/mosaic-apim/pull/69)), the usage analytics of
@@ -805,10 +807,23 @@ Progress:
 - ✅ **Batch 3h**, 2026-10-01: main as of [#77](https://github.com/microsoft/mosaic-apim/pull/77),
   plus Key Vault Secrets Officer on the vault for MOSAIC's API, which #77 needs to write keys.
   [#78](https://github.com/microsoft/mosaic-apim/pull/78) and
-  [#79](https://github.com/microsoft/mosaic-apim/pull/79), cost centers and budgets, were left out.
-  They give every grant a new ID, so every governed model and MCP publication must be re-applied
-  and each test grant made again. That's Batch 3i.
-- 🔄 **Claude**, 2026-10-01: from the endpoint the owner registered (Phase 2), `claude-opus-4-6`
+  [#79](https://github.com/microsoft/mosaic-apim/pull/79), cost centers and budgets, were left out
+  for Batch 3i, because every governed model must be re-applied after them.
+- ✅ **Batch 3i**, 2026-10-02: main as of [#82](https://github.com/microsoft/mosaic-apim/pull/82),
+  which adds cost centers (#78), budgets (#79) and O37's fix
+  ([#81](https://github.com/microsoft/mosaic-apim/pull/81)). No infrastructure or settings changed:
+  email stays off, and budgets need no new setting. Existing grants kept their IDs and keys. A
+  grant made before cost centers is charged to the built-in **General**, the tenant default, which
+  everyone may charge and which allows keys. #78's advice to re-seed applies to grants made again,
+  because a new grant's ID includes its cost center. At startup, MOSAIC's budget check created
+  the gateway's list of blocked cost centers, a plain named value holding `-`. Each of the eight
+  governed models was then re-planned and applied in the console. In each plan the list's step
+  said "No change", and every other step updated the model's own resources: 15 to 23 steps per
+  model, and all succeeded. In API Management, only the eight policy fragments, the grants'
+  subscriptions, whose display names now name the cost center, and the new named value changed.
+  Every grant's key reached its model, Claude's included, and the portal's **My access** shows
+  each grant under General. The new API took about seven minutes to replace the old one (O38).
+- ✅ **Claude**, 2026-10-01: from the endpoint the owner registered (Phase 2), `claude-opus-4-6`
   was published in the console in 11 steps, among them a Key Vault named value for the key, and
   all succeeded. A Messages call with the bootstrap key reached Claude. Its governed access, a
   direct grant for the `user` persona with 60 calls per 60 seconds and no token limit (G5), applied
@@ -816,12 +831,12 @@ Progress:
   only this publication's resources and the grant's new subscription changed. The portal's
   **My access** lists the grant as applied, and its connection details explain the Messages route:
   the base URL for an Anthropic SDK, and a key in `Ocp-Apim-Subscription-Key`, because the gateway
-  removes `x-api-key`, or a token. The grant's key got 500 (O37), so R1's Claude call waits until
-  its fix, [#81](https://github.com/microsoft/mosaic-apim/pull/81), is deployed.
+  removes `x-api-key`, or a token. The grant's key got 500 (O37) until Batch 3i deployed its fix,
+  [#81](https://github.com/microsoft/mosaic-apim/pull/81). Since then the key reaches Claude.
 
-Claude's import, publication and grant are done. The sitting waits for O37's fix to be deployed
-and Claude's publication re-applied: R1 calls Claude with its key, and A14's toggles and R7
-re-apply governed models, which would break their keys on the current build. It then runs, in
+Claude's import, publication and grant are done, and Batch 3i fixed O37. The workload's client
+secret expires on 2 October 2026 at 12:00 UTC. So a sitting after that can recheck R3 on Batch 3i's
+build only with a new secret, which needs the owner's approval. The sitting runs, in
 order: R1, R2 and R4's cross-subject
 checks in one run, with an `outsider` as the ungranted user; R5's proof; R6's proof; A14's method
 toggles on R5's and R6's models; and a last run that checks the toggled methods and watches R6's
@@ -832,6 +847,8 @@ models on five endpoints, with the same limits except Claude's: AOAI B `gpt-4o-m
 multi-provider `grok-4.3` and `DeepSeek-V4-Pro`, Foundry project
 `Llama-4-Maverick-17B-128E-Instruct-FP8`, Foundry hub-connected `gpt-5.1-chat`, and Claude
 `claude-opus-4-6`. Each Foundry model's first governed apply had 14 steps, and all succeeded.
+Now that cost centers are deployed, R10 and R11 can run too. They need new grants under a second
+cost center, which need the owner's approval.
 
 A call quota (O28) can't be set in the console, so these grants have none. A weekly one adds a
 policy expression that API Management hasn't compiled yet.
@@ -1010,7 +1027,9 @@ be confirmed, or fixed, once the journeys that exercise them have run.
 | O34 | After unpublishing, the publication shows **Draft** with its old **Last applied** time. Its entry under **Imported model APIs** stays discoverable, and the portal's catalog still lists the model with **Request access**, though the gateway no longer serves it. Seen in A15 | Fixed in [#65](https://github.com/microsoft/mosaic-apim/pull/65), and deployed with Batch 3f. While a model or MCP server MOSAIC publishes has no API in API Management, the portal leaves it out of the catalog, refuses a new request for it with a `409`, marks grants and requests for it as no longer available, and gives no connection details for it. The console shows the publication as **Unpublished**, with when. Model APIs imported from a gateway are unaffected. Seen live in A15's rerun: the catalog dropped the model, and a request from a page loaded earlier got the reason |
 | O35 | With directory lookup turned off, **Overlapping grants** warns that principal membership overlaps weren't checked, and the warning ends in two periods: the console adds one after the API's reason, which already ends with one. Seen after Batch 3e | Add the period only when the reason lacks one. Cosmetic |
 | O36 | A key-authenticated endpoint (G18) may name any secret in any Key Vault that MOSAIC's identity and the gateway's can read. Today both can read only the environment's vault, and it holds no other secrets. But once the gateway holds Key Vault Secrets User there, a key endpoint could point at a secret stored for another purpose, and the gateway would send it to that endpoint. From #69's review | Accept only the environment's vault, or only secrets marked for MOSAIC, for example by a name prefix or content type. A follow-up, not blocking |
-| O37 | **A grant's key gets HTTP 500 from a governed model.** Since [#71](https://github.com/microsoft/mosaic-apim/pull/71), the attribution trace in every governed policy also records the caller's client ID as trace metadata. A caller with a key has no client ID, so the value is empty, and API Management refuses a trace metadata element with no value: "Expression value is invalid. The value field is required." The call fails before it reaches the model. Seen live on Claude's grant key after its first governed apply on Batch 3h's build, and the gateway's resource log names the trace as the source. Tokens carry a client ID, so they're not affected. The seven governed models applied in Batch 3f record only the grant, so their keys still work until they're re-applied. [#62](https://github.com/microsoft/mosaic-apim/pull/62)'s member metadata, added when a publication has a group grant, is empty in the same way for every caller of a direct grant on that publication, for models and MCP servers | Fixed in [#81](https://github.com/microsoft/mosaic-apim/pull/81), merged: every trace property records `-` for a value the call doesn't have, the message the usage queries read is unchanged, and a test fails if code adds trace metadata any other way. Deploying it, re-applying Claude's publication and rerunning its key call wait for the owner's approval. Until then, re-applying any governed model breaks its keys, so the sitting's A14 toggles and R7, and Batch 3i, wait for it |
+| O37 | **A grant's key gets HTTP 500 from a governed model.** Since [#71](https://github.com/microsoft/mosaic-apim/pull/71), the attribution trace in every governed policy also records the caller's client ID as trace metadata. A caller with a key has no client ID, so the value is empty, and API Management refuses a trace metadata element with no value: "Expression value is invalid. The value field is required." The call fails before it reaches the model. Seen live on Claude's grant key after its first governed apply on Batch 3h's build, and the gateway's resource log names the trace as the source. Tokens carry a client ID, so they're not affected. The seven governed models applied in Batch 3f record only the grant, so their keys still work until they're re-applied. [#62](https://github.com/microsoft/mosaic-apim/pull/62)'s member metadata, added when a publication has a group grant, is empty in the same way for every caller of a direct grant on that publication, for models and MCP servers | Fixed in [#81](https://github.com/microsoft/mosaic-apim/pull/81): every trace property records `-` for a value the call doesn't have, the message the usage queries read is unchanged, and a test fails if code adds trace metadata any other way. Deployed in Batch 3i and verified live: after the re-applies, every governed model's grant key reaches its model, Claude's included, and a key call's trace records `-` as its client, both in the resource logs and in Application Insights. The case of a direct grant beside a group grant wasn't seen live, because no publication here has a group grant |
+| O38 | After `azd deploy api` finished, the old API container kept answering for about seven minutes, until the new one passed its warm-up probe, which took 204 seconds. The console, deployed meanwhile, already called the new API routes, so **Cost centers** said "Unable to load data: Not Found" until the new API took over. Nothing the API returns says which build it runs, so only the missing routes showed it hadn't switched. Seen in Batch 3i | Report the build, such as the commit or image tag, on `/healthz` or a version route, and have deployments wait for it before they deploy the console and the portal. Find out why the warm-up takes over three minutes. A follow-up, not blocking |
+| O39 | MOSAIC's API sends the Azure SDK's log of every HTTP request it makes, and the Azure Monitor exporter's log of each of its own uploads, to Application Insights. A quiet dev deployment logged about 330,000 such entries in a day, against about 4,500 others. Each upload logs more entries to upload. No secret is in them: credential headers don't appear, and bodies are only noted as present. But they cost ingestion and bury MOSAIC's own logs. The cause is the root logger's INFO level, from which the exporter collects. Found while checking R8 after Batch 3i | Raise those loggers to WARNING, or export only MOSAIC's own loggers. A fix is in progress |
 The Phase 3 check on whether the gateway role recommendation narrows once the account kind is
 known led to G8: it does narrow, and the check then rejects the broader role it recommended
 before.
