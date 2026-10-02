@@ -124,9 +124,11 @@ portal at `http://localhost:5174` signs you in as the demo end user, Megan Bowen
   routes to production produce environment findings. Grants and decided requests are then dated
   back as far as 120 days. Last, it enables API diagnostics on the production gateway and
   generates a quarter of gateway traffic from the estate's people and workloads, including
-  throttled and refused calls and calls to adopted APIs. MOSAIC's rollup job reads it all back,
-  so the Dashboard, Analytics, and the portal's **Usage & cost** page show measured figures. They
-  are priced from the price list MOSAIC ships, plus what the seed sets through the pricing
+  throttled and refused calls and calls to adopted APIs. The published Docs Search MCP server calls
+  GPT-4o mini as its own managed identity, so many of its tool calls make model calls that pass on
+  the gateway's reference, and a few pass on one MOSAIC can't use. MOSAIC's rollup job reads it all
+  back, so the Dashboard, Analytics, and the portal's **Usage & cost** page show measured figures.
+  They are priced from the price list MOSAIC ships, plus what the seed sets through the pricing
   service: the partner's declared GPT-4.1 mini deployment's type, and a negotiated GPT-4o rate
   from next month, which the **Pricing** page shows as scheduled. The Claude, Mistral Large,
   Cohere, and realtime deployments and the adopted APIs stay unpriced, so the **Unpriced
@@ -222,7 +224,7 @@ shows both themes. Keep new shots in that pattern.
 | `console-models` | Console | `/models` | Dark | Models |
 | `console-register-key-endpoint` | Console | `/models?register=1`, **Azure AI with an API key** tab with a pasted, masked key, filled in and never submitted | Light | Register with an API key |
 | `console-key-endpoint` | Console | `/models`, Fabrikam partner Foundry selected, scrolled to its **Access** card with **Replace API key** | Dark | Endpoint reached with an API key |
-| `console-mcps` | Console | `/mcps`, showing published and registered MCP servers | Light | MCP servers |
+| `console-mcps` | Console | `/mcps`, showing published and registered MCP servers, and the application the published one calls models as | Light | MCP servers |
 | `console-identity` | Console | `/identity?tab=agents` | Dark | Identity |
 | `console-directory-picker` | Console | `/identity?tab=agents`, **Add agent** dialog with query `agent` | Light | Directory picker |
 | `console-security-group-members` | Console | `/identity?tab=workloads`, filtered to **AI Model Users** | Dark | Security group members |
@@ -237,6 +239,7 @@ shows both themes. Keep new shots in that pattern.
 | `console-analytics-cost` | Console | `/analytics?tab=cost` | Light | Cost |
 | `console-pricing` | Console | `/pricing`, **Prices** tab filtered to `2024-11-20` | Dark | Pricing |
 | `console-analytics-consumers` | Console | `/analytics?tab=consumers` | Light | Consumers |
+| `console-analytics-mcp-model-use` | Console | `/analytics?tab=consumers`, scrolled to **Model use through MCP servers** | Dark | Model use through MCP servers |
 | `console-analytics-limits` | Console | `/analytics?tab=limits` | Dark | Grant limits |
 | `console-gateway-telemetry` | Console | Contoso AI Gateway, **Overview** tab, scrolled to **Telemetry** | Light | Gateway telemetry |
 | `console-analytics-reliability` | Console | `/analytics?tab=reliability` | Dark | Reliability |
@@ -248,5 +251,5 @@ shows both themes. Keep new shots in that pattern.
 | `portal-mcp-connection` | Portal | `/access`, with an enforced MCP grant's **Connection details** open | Dark | MCP connection |
 | `portal-requests` | Portal | `/requests` | Dark | My requests |
 | `portal-usage` | Portal | `/usage` | Light | Usage & cost |
-| `portal-usage-resources` | Portal | `/usage`, scrolled to **Cost centers** | Dark | Cost centers and usage by resource |
+| `portal-usage-resources` | Portal | `/usage`, scrolled to **Cost centers**, then **Model use through MCP servers** | Dark | Cost centers and usage by resource |
 | `portal-budget-banner` | Portal | `/access`, with the budget banner for Customer Insights | Light | Budget banner |

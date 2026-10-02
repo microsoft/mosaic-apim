@@ -313,6 +313,21 @@ export interface UsageResourceRow {
   recentHours?: UsageHourPoint[]
 }
 
+export interface UsageOnBehalfRow {
+  key: string
+  mcpServer: ResourceSummary
+  resource: ResourceSummary
+  model: string | null
+  requests: number
+  promptTokens: number
+  completionTokens: number
+  totalTokens: number
+  estimatedCost: number | null
+  costNote: string | null
+  costCenter: CostCenterRef | null
+  lastUsedAt: string | null
+}
+
 export type UsageFreshnessStatus = 'current' | 'delayed' | 'failing' | 'pending' | 'notLinked'
 
 export interface UsageFreshness {
@@ -335,6 +350,7 @@ export interface MyUsageReport {
   byEnvironment: UsageEnvironmentBreakdown[]
   byResource: UsageResourceRow[]
   costCenters?: CostCenterUsage[]
+  onBehalf?: UsageOnBehalfRow[]
   notes: string[]
   freshness?: UsageFreshness | null
   recentHours?: UsageHourPoint[]

@@ -352,6 +352,49 @@ describe('PublishMcpServerDialog', () => {
     expect(screen.getByText('Application · missing-object')).toBeVisible()
   })
 
+  it('names the application the plan calls models as, or none', async () => {
+    const reviewPlan: PublishPlan = {
+      ...plan,
+      mcpAccessSnapshot: {
+        ...plan.mcpAccessSnapshot!,
+        modelCaller: {
+          principalId: 'principal_docs',
+          objectId: 'aaaabbbb-cccc-dddd-eeee-ffff00001111',
+          displayName: 'Docs Search service',
+        },
+      },
+    }
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const view = render(
+      <QueryClientProvider client={client}>
+        <PublishMcpServerDialog
+          open
+          onClose={vi.fn()}
+          onPublished={vi.fn()}
+          initialReview={{ publication, plan: reviewPlan }}
+        />
+      </QueryClientProvider>,
+    )
+
+    expect(
+      await screen.findByText(
+        "Calls models as: Docs Search service · aaaabbbb-cccc-dddd-eeee-ffff00001111. The server receives each call's reference to pass on to its model calls.",
+      ),
+    ).toBeVisible()
+
+    view.rerender(
+      <QueryClientProvider client={client}>
+        <PublishMcpServerDialog
+          open
+          onClose={vi.fn()}
+          onPublished={vi.fn()}
+          initialReview={{ publication, plan }}
+        />
+      </QueryClientProvider>,
+    )
+    expect(await screen.findByText('Calls models as: none.')).toBeVisible()
+  })
+
   it('reuses its draft when a failed plan is retried, rather than creating a duplicate', async () => {
     const user = userEvent.setup()
     api.planMcpPublication.mockRejectedValueOnce(new Error('The gateway did not respond.'))

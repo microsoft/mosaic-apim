@@ -26,6 +26,7 @@ import type {
   UsageEnvironmentBreakdown,
   UsageFreshness,
   UsageHourPoint,
+  UsageOnBehalfRow,
   UsagePeriod,
   UsageQuota,
   UsageRateLimit,
@@ -49,6 +50,7 @@ import {
   rateLimitPeakLabel,
   relativeTime,
   rowLabel,
+  matchesEnvironmentFilter,
   usageTrackingLabel,
 } from '../usage-format'
 
@@ -57,6 +59,9 @@ function environmentOptions(
   environments: PortalEnvironment[] | undefined,
 ) {
   const present = new Set((report?.byEnvironment ?? []).map((row) => row.environment))
+  for (const row of report?.onBehalf ?? []) {
+    present.add(row.resource.environment)
+  }
   const known = (environments ?? []).filter((environment) => present.has(environment.key))
   const knownKeys = new Set(known.map((environment) => environment.key))
   const unknown = Array.from(present)
@@ -318,6 +323,23 @@ function CostCell({ row, currency }: { row: UsageResourceRow; currency: string }
   )
 }
 
+function OnBehalfCostCell({ row, currency }: { row: UsageOnBehalfRow; currency: string }) {
+  if (row.estimatedCost !== null) {
+    return (
+      <>
+        {formatCurrency(row.estimatedCost, currency)}
+        {row.costNote && <small>{row.costNote}</small>}
+      </>
+    )
+  }
+  return (
+    <>
+      <span className="no-price">No price</span>
+      {row.costNote && <small>{row.costNote}</small>}
+    </>
+  )
+}
+
 function ErrorDetails({ row }: { row: UsageResourceRow }) {
   const parts = [
     row.throttled ? `${formatCount(row.throttled, 'throttled call')}` : null,
@@ -397,6 +419,81 @@ function CostCenterUsageSection({ costCenters }: { costCenters?: CostCenterUsage
             </div>
           </div>
         ))}
+      </div>
+    </section>
+  )
+}
+
+function OnBehalfUsageSection({
+  rows,
+  currency,
+  showCost,
+}: {
+  rows: UsageOnBehalfRow[]
+  currency: string
+  showCost: boolean
+}) {
+  if (rows.length === 0) return null
+  return (
+    <section className="usage-section" aria-labelledby="on-behalf-usage-heading">
+      <div className="section-header">
+        <div>
+          <h2 id="on-behalf-usage-heading">Model use through MCP servers</h2>
+          <p>
+            Model calls that MCP servers made for you, as their own applications. Each was charged
+            to the cost center of the MCP server&apos;s application grant, not to yours, so they
+            aren&apos;t in your totals above.
+          </p>
+        </div>
+      </div>
+      <div className="table-scroll">
+        <table className="usage-table on-behalf-usage-table" aria-label="Model use through MCP servers">
+          <thead>
+            <tr>
+              <th scope="col">MCP server</th>
+              <th scope="col">Model</th>
+              <th scope="col">Requests</th>
+              <th scope="col">Tokens</th>
+              {showCost && <th scope="col">Estimated cost</th>}
+              <th scope="col">Cost center</th>
+              <th scope="col">Last used</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row) => (
+              <tr key={row.key}>
+                <th scope="row">{row.mcpServer.displayName ?? 'MCP server'}</th>
+                <td>
+                  <span className="resource-name">{row.resource.displayName ?? 'Model'}</span>
+                  {row.model && <small>{row.model}</small>}
+                </td>
+                <td>{formatNumber(row.requests)}</td>
+                <td>
+                  {formatNumber(row.totalTokens)}
+                  <small>
+                    Prompt {formatNumber(row.promptTokens)} · Completion{' '}
+                    {formatNumber(row.completionTokens)}
+                  </small>
+                </td>
+                {showCost && (
+                  <td>
+                    <OnBehalfCostCell row={row} currency={currency} />
+                  </td>
+                )}
+                <td>
+                  {row.costCenter ? (
+                    <>
+                      {row.costCenter.name} · <span className="nowrap">{row.costCenter.code}</span>
+                    </>
+                  ) : (
+                    inaccessible('No cost center')
+                  )}
+                </td>
+                <td>{row.lastUsedAt ? formatGeneratedAt(row.lastUsedAt) : inaccessible('No usage')}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
     </section>
   )
@@ -557,6 +654,12 @@ export function UsagePage() {
     () => environmentOptions(usage.data, environments.data),
     [usage.data, environments.data],
   )
+  const onBehalfRows = useMemo(() => {
+    if (!usage.data) return []
+    return (usage.data.onBehalf ?? []).filter((row) =>
+      matchesEnvironmentFilter(row.resource.environment, environmentFilter),
+    )
+  }, [usage.data, environmentFilter])
   const clearFilters = () => {
     setEnvironmentFilter('all')
     setResourceFilter('all')
@@ -708,6 +811,11 @@ export function UsagePage() {
                 showCost={showCost}
               />
               <CostCenterUsageSection costCenters={usage.data.costCenters} />
+              <OnBehalfUsageSection
+                rows={onBehalfRows}
+                currency={usage.data.currency}
+                showCost={showCost}
+              />
               <ResourceTable
                 rows={filtered.byResource}
                 currency={usage.data.currency}

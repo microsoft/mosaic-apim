@@ -220,6 +220,18 @@ COLUMNS: dict[ExportView, list[tuple[str, str]]] = {
         ("Grants", "grants"),
         ("Callers", "callers"),
     ],
+    # Model use through MCP servers. Every call is also the application's own in other views.
+    "onBehalf": [
+        ("Person", "person_label"),
+        ("Person detail", "person_detail"),
+        ("Person object ID", "person_object_id"),
+        ("MCP server", "mcp_label"),
+        ("MCP API name", "mcp_api_name"),
+        ("Gateway", "gateway_name"),
+        ("Application", "application_label"),
+        ("Application object ID", "application_object_id"),
+        *_USAGE,
+    ],
     # Built by the chargeback export itself; see cost_report.CHARGEBACK_COLUMNS.
     "chargeback": [],
 }
@@ -243,6 +255,7 @@ REPORT_FOR: dict[ExportView, str] = {
     "costDeployments": "cost",
     "costCenters": "consumers",
     "chargeback": "chargeback",
+    "onBehalf": "consumers",
 }
 
 
@@ -289,6 +302,7 @@ def table(view: ExportView, report: BaseModel) -> list[dict[str, Any]]:
             "grants": report.grants,
             "clientApps": report.client_apps,
             "costCenters": report.cost_centers,
+            "onBehalf": report.on_behalf,
         }
         return _dump(chosen.get(view, []))
     if isinstance(report, AnalyticsModels):

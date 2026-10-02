@@ -127,7 +127,7 @@ describe('AnalyticsPage', () => {
   })
 
   it.each([
-    ['Consumers', 'Grants', 'Support bot'],
+    ['Consumers', 'Grants', 'Scheduling Assistant'],
     ['Models', 'Deployments', 'chat-prod'],
     ['Reliability', 'Denials by reason', 'No grant for this caller'],
     ['Limits', 'Grant limits', '15,000 / 20,000'],
@@ -194,12 +194,46 @@ describe('AnalyticsPage', () => {
       'Cost centers',
       'Grants',
       'Client applications',
+      'Model use through MCP servers',
     ])
     await user.selectOptions(picker, 'Security groups')
     await user.click(screen.getByRole('button', { name: 'Export CSV' }))
 
     await waitFor(() => expect(api.exportAnalytics).toHaveBeenCalledWith('groups', expect.anything()))
     expect(await screen.findByText('Security groups CSV downloaded.')).toBeVisible()
+  })
+
+  it('renders model use through MCP servers and unresolved counts', async () => {
+    renderPage('/analytics?tab=consumers')
+
+    const table = await screen.findByRole('table', { name: 'Model use through MCP servers' })
+    expect(within(table).getByText('Adele Vance')).toBeVisible()
+    expect(within(table).getByText('Ticket tools')).toBeVisible()
+    expect(within(table).getByText('Support bot')).toBeVisible()
+    expect(screen.getByText("MOSAIC couldn't attribute 4 model calls to a person: 1 with a malformed reference, 2 with no matching MCP call, 1 after the MCP call ended.")).toBeVisible()
+  })
+
+  it('spans every column of the model use table when it has no rows', async () => {
+    api.getAnalyticsConsumers.mockResolvedValue({ ...consumersFixture, onBehalf: [], onBehalfUnresolved: [] })
+    renderPage('/analytics?tab=consumers')
+
+    const table = await screen.findByRole('table', { name: 'Model use through MCP servers' })
+    const columns = within(table).getAllByRole('columnheader').length
+    const empty = within(table).getByText('No model calls were made through MCP servers for these filters.').closest('td')
+    expect(empty).toHaveAttribute('colspan', String(columns))
+    expect(screen.queryByText(/couldn't attribute/)).not.toBeInTheDocument()
+  })
+
+  it('exports model use through MCP servers from the Consumers tab', async () => {
+    const user = userEvent.setup()
+    renderPage('/analytics?tab=consumers')
+
+    await screen.findByRole('table', { name: 'Model use through MCP servers' })
+    const picker = screen.getByLabelText('Export')
+    await user.selectOptions(picker, 'Model use through MCP servers')
+    await user.click(screen.getByRole('button', { name: 'Export CSV' }))
+
+    await waitFor(() => expect(api.exportAnalytics).toHaveBeenCalledWith('onBehalf', expect.anything()))
   })
 
   it('names latency buckets and API kinds on the Reliability tab', async () => {

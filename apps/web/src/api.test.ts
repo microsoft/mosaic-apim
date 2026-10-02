@@ -189,6 +189,8 @@ describe('useMosaicApi', () => {
     await result.current.createMcpPublication({ gatewayId: 'gateway_1', mcpEndpointId: 'endpoint_1' })
     await result.current.getMcpPublication('mcp pub')
     await result.current.updateMcpPublication('mcp pub', { displayName: 'Tools' })
+    await result.current.setMcpModelCaller('mcp pub', 'principal 1')
+    await result.current.clearMcpModelCaller('mcp pub')
     await result.current.deleteMcpPublication('mcp pub')
     await result.current.planMcpPublication('mcp pub')
     await result.current.applyMcpPublication('mcp pub', 'plan 1')
@@ -206,6 +208,8 @@ describe('useMosaicApi', () => {
       '/api/v1/mcp-publications',
       '/api/v1/mcp-publications/mcp%20pub',
       '/api/v1/mcp-publications/mcp%20pub',
+      '/api/v1/mcp-publications/mcp%20pub/model-caller',
+      '/api/v1/mcp-publications/mcp%20pub/model-caller',
       '/api/v1/mcp-publications/mcp%20pub',
       '/api/v1/mcp-publications/mcp%20pub/plan',
       '/api/v1/mcp-publications/mcp%20pub/apply?plan=plan%201',
@@ -223,9 +227,12 @@ describe('useMosaicApi', () => {
       mcpEndpointId: 'endpoint_1',
     })
     expect(fetchMock.mock.calls[4][1]).toMatchObject({ method: 'PATCH' })
-    expect(fetchMock.mock.calls[8][1]).toMatchObject({ method: 'POST' })
-    expect(fetchMock.mock.calls[9][1]).toMatchObject({ method: 'POST' })
-    expect(JSON.parse(fetchMock.mock.calls[12][1].body)).toEqual({
+    expect(fetchMock.mock.calls[5][1]).toMatchObject({ method: 'PUT' })
+    expect(JSON.parse(fetchMock.mock.calls[5][1].body)).toEqual({ principalId: 'principal 1' })
+    expect(fetchMock.mock.calls[6][1]).toMatchObject({ method: 'DELETE' })
+    expect(fetchMock.mock.calls[10][1]).toMatchObject({ method: 'POST' })
+    expect(fetchMock.mock.calls[11][1]).toMatchObject({ method: 'POST' })
+    expect(JSON.parse(fetchMock.mock.calls[14][1].body)).toEqual({
       runId: 'run 1',
       confirmQuiesced: false,
     })

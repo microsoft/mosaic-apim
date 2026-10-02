@@ -313,6 +313,8 @@ export interface MosaicApi {
   createMcpPublication(payload: McpPublicationCreate): Promise<McpPublication>
   getMcpPublication(publicationId: string): Promise<McpPublication>
   updateMcpPublication(publicationId: string, payload: McpPublicationUpdate): Promise<McpPublication>
+  setMcpModelCaller(publicationId: string, principalId: string): Promise<McpPublication>
+  clearMcpModelCaller(publicationId: string): Promise<McpPublication>
   deleteMcpPublication(publicationId: string): Promise<void>
   planMcpPublication(publicationId: string): Promise<PublishPlan>
   applyMcpPublication(publicationId: string, planId: string): Promise<PublishRun>
@@ -804,6 +806,15 @@ export function useMosaicApi(): MosaicApi {
         request<McpPublication>(`/api/v1/mcp-publications/${encodeURIComponent(id)}`, {
           method: 'PATCH',
           body: payload,
+        }),
+      setMcpModelCaller: (id, principalId) =>
+        request<McpPublication>(`/api/v1/mcp-publications/${encodeURIComponent(id)}/model-caller`, {
+          method: 'PUT',
+          body: { principalId },
+        }),
+      clearMcpModelCaller: (id) =>
+        request<McpPublication>(`/api/v1/mcp-publications/${encodeURIComponent(id)}/model-caller`, {
+          method: 'DELETE',
         }),
       deleteMcpPublication: (id) =>
         request<void>(`/api/v1/mcp-publications/${encodeURIComponent(id)}`, {

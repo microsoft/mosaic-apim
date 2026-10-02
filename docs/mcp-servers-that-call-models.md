@@ -36,7 +36,15 @@ for that MCP call's caller. It does this only when:
 
 ## Name the application the server calls models as
 
-An administrator names the application once, on the published MCP server:
+An administrator names the application once, on the published MCP server. On the console's
+**MCP servers** page, the **Calls models as** column of **Published MCP servers** names it:
+- **Choose** offers the service principals, managed identities and agent identities MOSAIC records,
+  and **Change** and **Clear** follow once one is named.
+- **Applied** means the server's live policy names the same application. **Not applied yet** means
+  it doesn't, and says what's still live. Plan and apply the server to bring it in line.
+- The Identity page marks each application an MCP server calls models as, naming the servers.
+
+Through the API:
 
 ```http
 PUT /api/v1/mcp-publications/{id}/model-caller
@@ -137,6 +145,20 @@ When MOSAIC rolls up the gateway's logs, it matches each model call's `r=` to it
 records the model call for that MCP call's caller. It keeps the call the application's own in every
 other figure, and counts a reference it couldn't use by its reason. See
 [Usage analytics](usage-analytics.md#callers).
+
+## Where the use shows
+
+- **Analytics, Consumers tab.** **Model use through MCP servers** lists each person's model calls
+  through each MCP server, with the application that made them, their requests, tokens and cost.
+  A line above it counts the references MOSAIC couldn't use, by reason. The same calls still count
+  as the application's own in every other table, so the list adds to no total. Its CSV export is
+  **Model use through MCP servers**.
+- **The chargeback export.** The application's grant rows are split by person, with
+  **On behalf of** and **On behalf of object ID**. Every row stays charged to the application's
+  grant and its cost center. See [Pricing](pricing.md#chargeback).
+- **The portal.** Each person's **Usage & cost** page lists their own model use through MCP
+  servers, by MCP server and model, with its estimated cost and the cost center of the
+  application's grant, which paid for it. It's not in their totals, and nobody sees anyone else's.
 
 ## Limits
 

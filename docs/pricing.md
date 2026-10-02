@@ -195,7 +195,10 @@ Utilization is blank for a model Learn has no figures for.
   report says so.
 - **The portal** shows each person the cost of their own calls, per grant and in total, and how many
   of their resources have no price. A grant only some of whose calls have a price shows the priced
-  part, says why the rest has none, and counts among the resources the total leaves out.
+  part, says why the rest has none, and counts among the resources the total leaves out. Model
+  calls an MCP server's application made for them are listed apart, priced the same way and named
+  with the cost center of the application's grant, which paid for them. Their totals leave them
+  out.
 
 ## Chargeback
 
@@ -212,6 +215,20 @@ row for each of its cost centers. Calls MOSAIC couldn't attribute are charged to
 belongs to a grant, so their cost center is empty, and no cost center's spend includes them. Rows
 are split by calendar month, and the first and last month are cut to the chosen range. Filtering
 the Cost tab by cost center exports only that cost center's rows.
+
+**On behalf of** and **On behalf of object ID**, after **Cost center name**, split out the model
+calls an MCP server's application made for the people who called that MCP server
+([MCP servers that call models](mcp-servers-that-call-models.md)):
+- Each person gets a row of their own, with their calls, tokens and cost. The row is still charged
+  to the application, under its grant's cost center, because the application's grant paid for the
+  calls. The person is a reporting dimension only.
+- The rest of the application's calls, its own use and any MOSAIC couldn't attribute to anyone,
+  stay one row with both columns empty. A row that isn't an application's grant's leaves them
+  empty too.
+- The split rows add up exactly to the row they replace: the same requests and tokens, and the
+  same cost to the ten-thousandth of a dollar. The row's rounded cost is shared in proportion to
+  what each part's calls cost, and what rounding leaves over goes to the largest remainders, so a
+  person's row can differ from their figure in Analytics by a ten-thousandth of a dollar.
 
 ## Refreshing the seed
 
