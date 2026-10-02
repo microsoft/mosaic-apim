@@ -886,8 +886,28 @@ Progress:
 The `user` persona keeps its User role for now, because Phase 11 needs it. The environment owner
 had decided to remove it after Phase 8.
 
-R9 to R14 and A17 check pricing, cost centers and budgets, which Batches 3g and 3i deployed. They
-need new grants, and R13 and R14 need email set up, so each waits for the owner's approval.
+R9 to R14 and A17 check pricing, cost centers and budgets, which Batches 3g and 3i deployed.
+
+- 🔄 **A17**, 2 October, read-only. **Pricing** lists its prices with their source: seeded from
+  the Azure Retail Prices API on 30 September, 25 of 48 deployments priced. Each price row has
+  **Override** and its history. **Unpriced deployments** lists the other 23, each with its reason,
+  such as "No price for grok-4.3 1 (GlobalStandard) in eastus2 in Azure Commercial", and a fix.
+  **Clouds and endpoints** reads each endpoint's cloud from its host. Each Azure endpoint showed
+  Azure Commercial and its region; the Claude endpoint, registered by URL, has no region. The
+  override part is still to do. All of the day's priced usage fell on 2 October, and an override
+  takes effect from a date, so showing that earlier days keep their price needs usage on two
+  days. The override dialog says that saving again with the same date corrects a price, which
+  makes the test easy to undo.
+- 🔄 **R9**, 2 October. **Analytics > Cost** priced the day's calls to priced deployments, and left
+  out, by name, the 848 tokens with no price. The `user` persona's **Usage & cost** shows only
+  their own cost. **Unpriced deployments** lists the three declared Claude deployments as
+  "Deployment type unknown", with **Set facts**. Two problems came up: cost by model and cost by
+  API disagree (O43), and the price list has no price for most models this environment runs
+  (O42). Comparing a month's estimate with Cost Management waits until Cost Management has the
+  days' charges.
+
+R10 to R14 need new grants, and R13 and R14 need email set up, so each waits for the owner's
+approval.
 
 A call quota (O28) can't be set in the console, so these grants have none. A weekly one adds a
 policy expression that API Management hasn't compiled yet.
@@ -1041,7 +1061,7 @@ has passed, and ❌ means the latest run failed on the product gap named.
 | A14 | Disable, revoke and method toggles go through review and apply | 8 | ✅ |
 | A15 | Unpublishing removes only what MOSAIC created | 9 | ✅ |
 | A16 | Settings lists the built-in environments; an Unclassified pairing warns but isn't blocked, and classifying both sides clears the warning (#40) | 6 | ✅ |
-| A17 | **Pricing** lists the seeded price of each target deployment with its source, detects each endpoint's cloud from its host, and says why any deployment has no price; an override from a date prices only the days from then (ADR 0020) | 8 | ⬜ |
+| A17 | **Pricing** lists the seeded price of each target deployment with its source, detects each endpoint's cloud from its host, and says why any deployment has no price; an override from a date prices only the days from then (ADR 0020) | 8 | 🔄 |
 | A18 | An endpoint in another Entra tenant is registered by its URL and a pasted API key (G18, ADR 0021); its access card confirms the endpoint accepts the key and the gateway can read it; its Claude deployment is published and granted, the bootstrap key is refused once governed access applies, and the grant's key and token reach Claude | 8 | ✅ |
 
 ### Portal
@@ -1071,7 +1091,7 @@ has passed, and ❌ means the latest run failed on the product gap named.
 | R6 | The tokens-per-minute limit returns 429 with `Retry-After` | 8 | ✅ |
 | R7 | After revocation propagates, calls fail | 8 | ✅ |
 | R8 | Calls show up in Application Insights and Log Analytics, and with ADR 0019, in MOSAIC's usage and analytics (optional) | 8 | ✅ |
-| R9 | With ADR 0020, the run's calls are priced at list price in Analytics, the Dashboard, and the user's own portal page (optional) | 8 | ⬜ |
+| R9 | With ADR 0020, the run's calls are priced at list price in Analytics, the Dashboard, and the user's own portal page (optional) | 8 | 🔄 |
 | R10 | With ADR 0022, `x-mosaic-cost-center` selects the grant, a missing header falls back to the default cost center, and an unknown code or a key with another cost center's code is refused with 403; the backend never sees the header | 8 | ⬜ |
 | R11 | With ADR 0022, a cost center's pooled `llm-token-limit` is shared by its grants, reports `x-mosaic-cost-center-remaining-quota-tokens`, and returns 429 once spent, alongside each grant's own limits | 8 | ⬜ |
 | R12 | With ADR 0023, how long a changed `mosaic-blocked-cost-centers` named value takes to reach the gateway, blocking and unblocking | 8 | ⬜ |
@@ -1140,6 +1160,8 @@ be confirmed, or fixed, once the journeys that exercise them have run.
 | O38 | After `azd deploy api` finished, the old API container kept answering for about seven minutes, until the new one passed its warm-up probe, which took 204 seconds. The console, deployed meanwhile, already called the new API routes, so **Cost centers** said "Unable to load data: Not Found" until the new API took over. Nothing the API returns says which build it runs, so only the missing routes showed it hadn't switched. Seen in Batch 3i. In Batch 3j, the warm-up took 69 seconds and the new API took over about three and a half minutes after `azd deploy api` finished | Report the build, such as the commit or image tag, on `/healthz` or a version route, and have deployments wait for it before they deploy the console and the portal. Find out why the warm-up varies from about one minute to over three. A follow-up, not blocking |
 | O39 | MOSAIC's API sends the Azure SDK's log of every HTTP request it makes, and the Azure Monitor exporter's log of each of its own uploads, to Application Insights. A quiet dev deployment logged about 330,000 such entries in a day, against about 4,500 others. Each upload logs more entries to upload. No secret is in them: credential headers don't appear, and bodies are only noted as present. But they cost ingestion and bury MOSAIC's own logs. The cause is the root logger's INFO level, from which the exporter collects. Found while checking R8 after Batch 3i | Fixed in [#84](https://github.com/microsoft/mosaic-apim/pull/84), merged: it raises three loggers to at least `WARNING`, azure-core's HTTP logging policy, Cosmos DB's own HTTP logging policy and the exporter's. MOSAIC's logs, other libraries' records, and every warning and error still reach Application Insights. [#85](https://github.com/microsoft/mosaic-apim/pull/85), merged, adds a test that other Azure SDK loggers still export at INFO, so the fix can't widen unnoticed. Deployed in Batch 3j and verified live: from about 2,430 such records in ten minutes to none, while MOSAIC's own logs, other libraries' records and Cosmos DB dependencies still arrive |
 | O41 | MOSAIC's API has never recorded its incoming requests in Application Insights: there were none in 48 hours, while its traces and Cosmos DB dependencies arrive. Reproduced locally. The Azure Monitor distro instruments FastAPI by replacing `fastapi.FastAPI` with an instrumented subclass, but `main.py` imports the class before that, so the app it builds isn't instrumented. Operators can't see the API's request rates, failures or latency there. MOSAIC's outbound calls through httpx, to Azure Resource Manager, Log Analytics and API Management, aren't recorded as dependencies either, because nothing instruments httpx. Found while verifying Batch 3j | Fixed in [#86](https://github.com/microsoft/mosaic-apim/pull/86), merged: the API instruments its app explicitly once it's created, leaves out the health probes, and never records headers or bodies. Its review found that the recorded URL keeps query values, and the directory search's `q` holds names and email addresses, so a follow-up redacts them. Neither is deployed yet. Tracing httpx calls would add a dependency, so it's a separate decision |
+| O42 | MOSAIC's price list has no price for most models this environment runs, though the Azure Retail Prices API lists some of them. Its seed is a curated list of models, each mapped to its meters, which covers GPT-4o, GPT-4.1, GPT-5 and the o-series, Llama 3.3, DeepSeek-R1, Phi-4 and embeddings. In eastus2 the API has global prices for `Llama-4-Maverick-17B-128E-Instruct-FP8`, as "Llama 4 Maverick 17B" ($0.25 in, $1.00 out per million tokens), and for GPT-5.1 chat. The seed has neither. Azure reports the `gpt-5.1-chat` deployment's model by its alias, `gpt-chat-latest`, so no curated name would match it anyway. DeepSeek-V4-Pro has only Data Zone prices, under Fireworks, and Grok 4.3 has none yet, so those are correctly unpriced. Seen in R9 | Add the models with retail meters to the seed: Llama 4, GPT-5.1 and its chat model, GPT-5.4 and GPT-5.4-nano. Decide how an alias such as `gpt-chat-latest` maps to a price, for example by its version date. **Add price** covers the rest. A follow-up, not blocking |
+| O43 | Usage and cost count tokens for calls the gateway refused before they reached the model. When a grant's token limit refused two calls with 429 (`TokenLimitExceededAfterPrompt`), the gateway's LLM log still recorded its prompt estimate for them, 22 tokens with no model name. MOSAIC counted and priced those tokens, though Azure doesn't bill a call that never reached it. Because the rows have no model name, **Cost by model** left them out: its shares summed to 96.2%, and it gave the model 473 tokens where **Cost by API** gave its two APIs 495. Seen in R9 after the sitting's R6 run | Count and price tokens only for calls that reached the model, and attribute a counted row with no model name to its deployment's model, so every breakdown adds up to the total. A fix is in progress |
 | O40 | For `grok-4.3`, **Usage & cost** and **Analytics** show 196 tokens for one call, broken down as "Prompt 8 · Completion 2". The gateway's LLM log recorded a total of 196, but only 8 prompt and 2 completion tokens. The other 186 are probably the model's reasoning tokens, which the breakdown doesn't name. The grant's tokens-per-minute limit counts all 196, so a person whose calls are refused sees parts that don't add up to what was counted. Seen in R8 after Batch 3i. The sitting's token metrics confirm they're reasoning tokens: its two grok calls' metrics read 16 prompt, 4 completion and 456 reasoning tokens, 476 in all | Show reasoning tokens as their own part wherever a total is broken down, as the gateway's metrics already do, and check whether the LLM log names them. A follow-up, not blocking |
 The Phase 3 check on whether the gateway role recommendation narrows once the account kind is
 known led to G8: it does narrow, and the check then rejects the broader role it recommended
