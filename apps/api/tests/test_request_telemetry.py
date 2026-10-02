@@ -2,6 +2,7 @@ from collections.abc import Iterator
 from typing import Any
 
 import pytest
+import structlog
 from azure.monitor.opentelemetry.exporter.export.trace import _exporter as trace_exporter
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -15,6 +16,7 @@ from opentelemetry.sdk.trace import ReadableSpan, TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from opentelemetry.trace import SpanKind
+from structlog.testing import capture_logs
 
 CONNECTION_STRING = "InstrumentationKey=test"
 SEARCH = "/api/v1/directory/search"
@@ -232,7 +234,10 @@ def test_if_redaction_fails_no_url_is_recorded(
         raise ValueError("a scope the instrumentation didn't expect")
 
     monkeypatch.setattr(observability, "request_url", fail)
-    with TestClient(telemetry.start()) as client:
+    # create_app configures structlog afresh, and a logger keeps the configuration it first logged
+    # with, so the module's logger is swapped for one that hasn't logged yet.
+    monkeypatch.setattr(observability, "logger", structlog.get_logger())
+    with TestClient(telemetry.start()) as client, capture_logs() as structured:
         client.get(f"{SEARCH}?kind=user&q={TYPED}")
 
     (span,) = telemetry.spans()
@@ -240,8 +245,36 @@ def test_if_redaction_fails_no_url_is_recorded(
     assert recorded_url(span) == ""
     # The hook raised nothing for the instrumentation to record on the span.
     assert not span.events
+    # The warning names the error's type alone, so neither its message nor the query is logged.
+    assert structured == [
+        {
+            "event": "request_query_redaction_failed",
+            "log_level": "warning",
+            "error_type": "ValueError",
+        }
+    ]
     for part in TYPED_PARTS:
         assert part not in recorded(span)
+
+
+def test_if_the_warning_cant_be_logged_the_hook_still_raises_nothing(
+    telemetry: Telemetry, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class BrokenLogger:
+        def warning(self, *_args: Any, **_kwargs: Any) -> None:
+            raise RuntimeError("the log pipeline failed")
+
+    def fail(_scope: dict[str, Any]) -> tuple[str, int, str]:
+        raise ValueError("a scope the instrumentation didn't expect")
+
+    monkeypatch.setattr(observability, "request_url", fail)
+    monkeypatch.setattr(observability, "logger", BrokenLogger())
+    with TestClient(telemetry.start()) as client:
+        client.get(f"{SEARCH}?kind=user&q={TYPED}")
+
+    (span,) = telemetry.spans()
+    assert (span.attributes or {})["http.url"] == ""
+    assert not span.events
 
 
 @pytest.mark.parametrize(

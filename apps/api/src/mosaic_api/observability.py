@@ -1,3 +1,4 @@
+import contextlib
 import logging
 import re
 import sys
@@ -15,6 +16,8 @@ from opentelemetry.util.http import redact_url
 from structlog.tracebacks import ExceptionDictTransformer
 
 from mosaic_api.config import Environment, Settings
+
+logger = structlog.get_logger()
 
 # A logged exception is rendered without each frame's local variables. A frame on the way to an
 # error can hold an API key read from Key Vault or given by an administrator, or a token, and none
@@ -145,18 +148,25 @@ def redact_query_values(span: Span, scope: dict[str, Any]) -> None:
     The new values come from the request's raw query rather than the span's URL, where the
     instrumentation has decoded the query, so an encoded "&" in a value would look like another
     parameter. If anything goes wrong, the span records no URL at all rather than one that might
-    hold a value.
+    hold a value, and a warning names only the exception's type.
     """
 
     if not scope.get("query_string") or not span.is_recording():
         return
+    error_type: str | None = None
     try:
         redacted = _redacted_attributes(span, scope) if isinstance(span, ReadableSpan) else None
-    except Exception:
+    except Exception as error:
         redacted = None
+        error_type = type(error).__name__
     if redacted is None:
         redacted = dict.fromkeys(QUERY_ATTRIBUTES, "")
     span.set_attributes(redacted)
+    if error_type:
+        # Only the error's type: its message could hold part of the query, and logs reach
+        # Application Insights too. The URL is already gone, and the hook mustn't raise.
+        with contextlib.suppress(Exception):
+            logger.warning("request_query_redaction_failed", error_type=error_type)
 
 
 def _redacted_attributes(span: ReadableSpan, scope: dict[str, Any]) -> dict[str, str]:

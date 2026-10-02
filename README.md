@@ -602,12 +602,13 @@ With `MOSAIC_APPLICATIONINSIGHTS_CONNECTION_STRING` set, the API also records ea
 serves in Application Insights, as a row in `AppRequests` named for its method and route, such as
 `GET /api/v1/principals/{principal_id}`, with its status code and duration. Its URL keeps the
 query's parameter names, but each value is recorded as `REDACTED`, so the text someone types into
-the directory search isn't kept, and a query that can't be read that way is left out. The health
-probes `/healthz` and `/readyz` aren't recorded, because App Service's health check and the
-deployment's smoke checks call them often enough to bury the rest. No header or body of a request
-or response is recorded, so no bearer token or API key reaches Application Insights; don't set
-OpenTelemetry's `OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_*` variables, which would record the
-headers they name. Without the connection string, nothing is instrumented.
+the directory search isn't kept, and a query that can't be read that way is left out. If redaction
+fails, the request is recorded without its URL and the API logs a `request_query_redaction_failed`
+warning. The health probes `/healthz` and `/readyz` aren't recorded, because App Service's health
+check and the deployment's smoke checks call them often enough to bury the rest. No header or body
+of a request or response is recorded, so no bearer token or API key reaches Application Insights;
+don't set OpenTelemetry's `OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_*` variables, which would
+record the headers they name. Without the connection string, nothing is instrumented.
 
 In a second terminal:
 
