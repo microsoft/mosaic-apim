@@ -1337,17 +1337,21 @@ class McpPublishingService:
     async def _has_model_grant_here(
         self, publication: McpPublication, principal: Principal
     ) -> bool:
-        for entitlement in await self._entitlements.list_entitlements(
-            publication.tenant_id, subject_id=principal.id
-        ):
-            if not entitlement.enabled or entitlement.resource.kind != "modelApi":
-                continue
-            model = await self._repository.get_model_api(
-                publication.tenant_id, entitlement.resource.id
+        granted = {
+            entitlement.resource.id
+            for entitlement in await self._entitlements.list_entitlements(
+                publication.tenant_id, subject_id=principal.id
             )
-            if model is not None and model.gateway_id == publication.gateway_id:
-                return True
-        return False
+            if entitlement.enabled and entitlement.resource.kind == "modelApi"
+        }
+        if not granted:
+            return False
+        return any(
+            model.id in granted
+            for model in await self._repository.list_model_apis(
+                publication.tenant_id, gateway_id=publication.gateway_id
+            )
+        )
 
     @staticmethod
     def _warnings(

@@ -1323,7 +1323,9 @@ async def _search_app(
     )
 
 
-async def _model_grant(harness: Harness, principal: Principal, gateway_id: str) -> None:
+async def _model_grant(
+    harness: Harness, principal: Principal, gateway_id: str, *, enabled: bool = True
+) -> None:
     model = ModelApi(
         id=f"model-api-{gateway_id}",
         tenant_id=TENANT_ID,
@@ -1349,6 +1351,7 @@ async def _model_grant(harness: Harness, principal: Principal, gateway_id: str) 
         tenant_id=TENANT_ID,
         subject=EntitlementSubject(kind=EntitlementSubjectKind.APPLICATION, id=principal.id),
         resource=EntitlementResource(kind=EntitlementResourceKind.MODEL_API, id=model.id),
+        enabled=enabled,
     )
     await harness.entitlement_repository.save_entitlement(
         entitlement,
@@ -1479,12 +1482,16 @@ async def test_a_model_caller_that_isnt_an_application_by_object_id_is_refused(
     assert _caller_changes(harness) == []
 
 
+@pytest.mark.parametrize("grant", ["elsewhere", "disabled here", "none"])
 async def test_the_plan_warns_when_the_model_caller_has_no_grant_through_this_gateway(
-    harness: Harness,
+    harness: Harness, grant: str
 ) -> None:
     publication_id = await harness.create()
     app = await _search_app(harness)
-    await _model_grant(harness, app, "gateway-elsewhere")
+    if grant == "elsewhere":
+        await _model_grant(harness, app, "gateway-elsewhere")
+    elif grant == "disabled here":
+        await _model_grant(harness, app, harness.gateway_id, enabled=False)
     await harness.service.set_model_caller(
         ACTOR, publication_id, McpModelCallerUpdate(principal_id=app.id)
     )
@@ -1494,8 +1501,9 @@ async def test_the_plan_warns_when_the_model_caller_has_no_grant_through_this_ga
     assert plan.mcp_access_snapshot is not None
     assert plan.mcp_access_snapshot.model_caller is not None
     assert any(
-        warning.startswith("Contoso Search App has no enabled direct grant on a model this "
-        "gateway publishes")
+        warning.startswith(
+            "Contoso Search App has no enabled direct grant on a model this gateway publishes"
+        )
         for warning in plan.warnings
     )
 
