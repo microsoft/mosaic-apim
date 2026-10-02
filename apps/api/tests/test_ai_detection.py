@@ -6,7 +6,7 @@ the providers MOSAIC claims to recognise, and the ordinary APIs it must leave al
 """
 
 import pytest
-from mosaic_api.integrations.apim.ai_detection import classify_api, classify_url
+from mosaic_api.integrations.apim.ai_detection import classify_api, classify_url, strongest_kind
 from mosaic_api.observed import AiBackendKind
 
 
@@ -104,3 +104,25 @@ def test_generic_message_paths_do_not_pre_check_an_api() -> None:
     )
 
     assert kind == AiBackendKind.NONE
+
+
+def test_the_most_specific_routed_backend_names_the_provider() -> None:
+    """An API with no service URL, routed by policy alone, is known by the backends it uses."""
+
+    kind, signals = classify_api(
+        service_url=None,
+        operation_templates=["/v1/messages"],
+        backend_kinds=[AiBackendKind.NONE, AiBackendKind.OTHER_LLM, AiBackendKind.AZURE_AI_FOUNDRY],
+    )
+
+    assert kind == AiBackendKind.AZURE_AI_FOUNDRY
+    assert signals == ["Routes to a backend that points at Azure AI Foundry."]
+
+
+def test_strongest_kind_prefers_a_recognised_provider() -> None:
+    assert (
+        strongest_kind([AiBackendKind.OTHER_LLM, AiBackendKind.AZURE_OPENAI])
+        == AiBackendKind.AZURE_OPENAI
+    )
+    assert strongest_kind([AiBackendKind.NONE]) == AiBackendKind.NONE
+    assert strongest_kind([]) == AiBackendKind.NONE

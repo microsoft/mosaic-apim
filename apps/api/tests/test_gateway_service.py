@@ -231,6 +231,92 @@ async def test_ai_surface_is_detected_from_backend_and_operations(
     assert apis["chat-api"].product_names == ["gold"]
 
 
+POOL_ROUTED_POLICY = """<policies>
+  <inbound><base /></inbound>
+  <backend>
+    <retry condition="@(context.Response.StatusCode == 429)" count="1" interval="0">
+      <choose>
+        <when condition="@(context.Variables.GetValueOrDefault&lt;int&gt;(&quot;a&quot;) == 1)">
+          <set-backend-service backend-id="claude-pool" />
+        </when>
+      </choose>
+      <forward-request buffer-request-body="true" />
+    </retry>
+  </backend>
+  <outbound><base /></outbound>
+  <on-error><base /></on-error>
+</policies>"""
+
+
+def _foundry_backend(name: str, host: str) -> dict[str, object]:
+    return {"name": name, "properties": {"url": f"https://{host}/anthropic", "protocol": "http"}}
+
+
+async def test_an_api_routed_by_policy_to_a_backend_pool_is_detected(
+    fake_apim: FakeApim, gateway_service: GatewayService
+) -> None:
+    """A pool's API has no service URL. Its policy routes to a pool, whose members are models."""
+
+    fake_apim.extra_backends = [
+        _foundry_backend("claude-east", "east.services.ai.azure.com"),
+        _foundry_backend("claude-west", "west.services.ai.azure.com"),
+        {
+            "name": "claude-pool",
+            "properties": {
+                "type": "Pool",
+                "pool": {
+                    "services": [
+                        {"id": f"{RESOURCE_ID}/backends/claude-east", "priority": 1},
+                        {"id": f"{RESOURCE_ID}/backends/claude-west", "priority": 2},
+                    ]
+                },
+            },
+        },
+    ]
+    fake_apim.extra_apis = [
+        (
+            {
+                "name": "claude",
+                "properties": {"displayName": "Claude", "path": "claude", "isCurrent": True},
+            },
+            [{"name": "messages", "properties": {"urlTemplate": "/v1/messages"}}],
+            POOL_ROUTED_POLICY,
+        )
+    ]
+    gateway = await _register(gateway_service)
+
+    run = await gateway_service.sync_now(ACTOR, gateway.id)
+
+    assert run.counts.ai_apis == 2
+    backends = {item.name: item for item in await gateway_service.list_backends(ACTOR, gateway.id)}
+    assert backends["claude-pool"].ai_kind == AiBackendKind.AZURE_AI_FOUNDRY
+    assert backends["claude-pool"].url is None
+    apis = {api.name: api for api in await gateway_service.list_apis(ACTOR, gateway.id)}
+    assert apis["claude"].ai_kind == AiBackendKind.AZURE_AI_FOUNDRY
+    assert apis["claude"].ai_signals == ["Routes to a backend that points at Azure AI Foundry."]
+
+
+async def test_a_pool_of_unrecognised_backends_is_not_a_model_backend(
+    fake_apim: FakeApim, gateway_service: GatewayService
+) -> None:
+    fake_apim.extra_backends = [
+        {"name": "orders-east", "properties": {"url": "https://orders-east.contoso.com"}},
+        {
+            "name": "orders-pool",
+            "properties": {
+                "type": "Pool",
+                "pool": {"services": [{"id": f"{RESOURCE_ID}/backends/orders-east"}]},
+            },
+        },
+    ]
+    gateway = await _register(gateway_service)
+    await gateway_service.sync_now(ACTOR, gateway.id)
+
+    backends = {item.name: item for item in await gateway_service.list_backends(ACTOR, gateway.id)}
+
+    assert backends["orders-pool"].ai_kind == AiBackendKind.NONE
+
+
 async def test_policy_view_is_plain_language_and_free_of_markup(
     gateway_service: GatewayService,
 ) -> None:

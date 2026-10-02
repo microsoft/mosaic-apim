@@ -109,7 +109,9 @@ def classify_url(url: str | None) -> AiBackendKind:
     return AiBackendKind.NONE
 
 
-def _strongest(kinds: list[AiBackendKind]) -> AiBackendKind:
+def strongest_kind(kinds: list[AiBackendKind]) -> AiBackendKind:
+    """Return the most specific kind among ``kinds``, such as a pool's over its members."""
+
     for kind in _KIND_PRIORITY:
         if kind in kinds:
             return kind
@@ -134,11 +136,10 @@ def classify_api(
         candidates.append(url_kind)
         signals.append(f"Backend URL points at {_PROVIDER_LABELS[url_kind]}.")
 
-    for kind in backend_kinds or []:
-        if kind != AiBackendKind.NONE:
-            candidates.append(kind)
-            signals.append(f"Routed to a {_PROVIDER_LABELS[kind]} backend resource.")
-            break
+    backend_kind = strongest_kind(backend_kinds or [])
+    if backend_kind != AiBackendKind.NONE:
+        candidates.append(backend_kind)
+        signals.append(f"Routes to a backend that points at {_PROVIDER_LABELS[backend_kind]}.")
 
     templates = [template.casefold() for template in operation_templates or []]
     if path:
@@ -151,4 +152,4 @@ def classify_api(
         candidates.append(AiBackendKind.OTHER_LLM)
         signals.append("Governed by AI gateway policies.")
 
-    return _strongest(candidates), signals
+    return strongest_kind(candidates), signals
