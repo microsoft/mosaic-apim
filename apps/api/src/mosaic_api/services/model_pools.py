@@ -31,11 +31,13 @@ from mosaic_api.domain import (
     AuditEvent,
     BindingSource,
     CapabilitySupport,
+    DeclaredDeployment,
     EntitlementBinding,
     EntitlementSubjectKind,
     EnvironmentVerdict,
     Gateway,
     GatewayTier,
+    KeyVaultSecretId,
     ManagementMode,
     McpPublication,
     ModelEndpoint,
@@ -66,11 +68,14 @@ from mosaic_api.integrations.apim import ApimClient
 from mosaic_api.integrations.apim.model_apis import (
     DeploymentFit,
     OperationSpec,
+    assess_declared_deployment,
     assess_deployment,
     backend_origin,
+    is_anthropic_model,
     token_limits_note,
 )
 from mosaic_api.integrations.apim.writer import DEFAULT_SUBSCRIPTION_KEY_NAMES, ApimWriter
+from mosaic_api.integrations.backend_keys import backend_key_name
 from mosaic_api.integrations.policy import PublicationPolicy
 from mosaic_api.integrations.pool_policy import (
     PoolRoute,
@@ -117,6 +122,7 @@ from mosaic_api.model_pools import (
     uses_backend_pools,
 )
 from mosaic_api.observed import ObservedApi, ObservedModelDeployment
+from mosaic_api.pricing import EndpointPricing, deployment_facts
 from mosaic_api.repositories import (
     CostCenterRepository,
     DirectoryRepository,
@@ -124,6 +130,7 @@ from mosaic_api.repositories import (
     EnvironmentRepository,
     GatewayRepository,
     ModelEndpointRepository,
+    PricingRepository,
 )
 from mosaic_api.services.budget_gate import BlockedListGate, ensure_blocked_list, is_blocked_list
 from mosaic_api.services.cost_centers import load_book
@@ -179,6 +186,7 @@ _ORDER: dict[PublishedResourceKind, int] = {
 # covered by their parent.
 _CLAIMED_KINDS = frozenset(
     {
+        PublishedResourceKind.NAMED_VALUE,
         PublishedResourceKind.BACKEND,
         PublishedResourceKind.BACKEND_POOL,
         PublishedResourceKind.POLICY_FRAGMENT,
@@ -187,7 +195,14 @@ _CLAIMED_KINDS = frozenset(
         PublishedResourceKind.SUBSCRIPTION,
     }
 )
-_MEMBER_KINDS = frozenset({PublishedResourceKind.BACKEND, PublishedResourceKind.BACKEND_POOL})
+# What a policy routes to, so a failed apply that replaced the policy keeps the ones it created.
+_MEMBER_KINDS = frozenset(
+    {
+        PublishedResourceKind.NAMED_VALUE,
+        PublishedResourceKind.BACKEND,
+        PublishedResourceKind.BACKEND_POOL,
+    }
+)
 _DENIED_REASONS: dict[RuntimeAccessReason, str] = {
     RuntimeAccessReason.MISSING_ROLE: (
         "The gateway's managed identity has no role that lets it call this endpoint. Grant the "
@@ -205,6 +220,58 @@ _DENIED_REASONS: dict[RuntimeAccessReason, str] = {
 _NOT_CONFIRMED = (
     "MOSAIC couldn't confirm that the gateway's managed identity can call this endpoint. Check "
     "the endpoint's gateway access."
+)
+# The gateway reaches an endpoint registered with an API key with that key, which its managed
+# identity reads from Key Vault, so what it needs is the vault, not the endpoint (ADR 0018).
+_KEY_DENIED_REASONS: dict[RuntimeAccessReason, str] = {
+    RuntimeAccessReason.MISSING_ROLE: (
+        "The gateway's managed identity can't read this endpoint's API key from Key Vault. Grant "
+        "the role shown on the endpoint."
+    ),
+    RuntimeAccessReason.NARROWER_SCOPE: (
+        "The gateway's managed identity can't read this endpoint's API key from Key Vault. Grant "
+        "the role shown on the endpoint."
+    ),
+    RuntimeAccessReason.NO_GATEWAY_IDENTITY: (
+        "The gateway has no managed identity to read this endpoint's API key from Key Vault with."
+    ),
+    RuntimeAccessReason.NETWORK_UNREACHABLE: (
+        "The gateway has no network path to the Key Vault that holds this endpoint's API key."
+    ),
+}
+_KEY_NOT_CONFIRMED = (
+    "MOSAIC couldn't confirm that the gateway's managed identity can read this endpoint's API key "
+    "from Key Vault. Check the endpoint's gateway access."
+)
+_KEY_DENY_ASSIGNMENT = (
+    "A deny assignment stops the gateway's managed identity reading this endpoint's API key from "
+    "Key Vault."
+)
+_NO_KEY_SECRET = (
+    "MOSAIC can't find the Key Vault secret this endpoint's API key is in. Set the endpoint's Key "
+    "Vault secret URI, then plan again."
+)
+_BAD_KEY_SECRET = (
+    "The endpoint's Key Vault secret URI isn't a Key Vault secret identifier. Set it again, then "
+    "plan again."
+)
+# Names Azure gives OpenAI's models, which an Azure OpenAI or Foundry resource serves. A declared
+# deployment has no format to read its vendor from, so this is the only way to know it.
+_OPENAI_MODEL_PREFIXES = (
+    "gpt-",
+    "o1",
+    "o3",
+    "o4",
+    "text-embedding",
+    "dall-e",
+    "whisper",
+    "tts",
+    "codex",
+    "davinci",
+    "babbage",
+    "sora",
+    "computer-use",
+    "chatgpt",
 )
 _DENY_ASSIGNMENT = "A deny assignment stops the gateway's managed identity calling this endpoint."
 _STALE_PLAN = "This plan is out of date. Re-plan the pool and review the changes again."
@@ -230,6 +297,11 @@ class _Inventory:
     endpoint: ModelEndpoint
     # Keyed on the casefolded deployment name.
     deployments: dict[str, ObservedModelDeployment]
+    # An endpoint reached with an API key has declared deployments rather than observed ones, each
+    # with the API shape an administrator chose for it, keyed the same way.
+    declared: dict[str, DeclaredDeployment] = field(default_factory=dict)
+    # Where the endpoint is, from Azure, or for an endpoint MOSAIC can't read, from its pricing.
+    region: str | None = None
 
 
 @dataclass
@@ -245,6 +317,13 @@ class _Member:
     fingerprint: str | None
     problems: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    # The versionless identifier of the Key Vault secret a key member's API key is read from.
+    key_secret: str | None = None
+
+    def keyed(self) -> bool:
+        """Whether the gateway reaches this member with an API key rather than its identity."""
+
+        return self.endpoint is not None and self.endpoint.uses_backend_key()
 
 
 @dataclass
@@ -277,37 +356,141 @@ class _Assessment:
             if item.fingerprint is not None and not item.member.drained
         )
 
+    def keyed(self) -> frozenset[str]:
+        """The backends of the active members the gateway reaches with an API key."""
+
+        return frozenset(
+            item.member.backend_name
+            for item in self.members
+            if item.keyed() and not item.member.drained
+        )
+
 
 def _readiness(endpoint: ModelEndpoint, gateway_id: str) -> tuple[Readiness, str | None]:
-    """Whether the gateway's managed identity can call the endpoint, as far as MOSAIC knows.
+    """Whether the gateway can authenticate to the endpoint, as far as MOSAIC knows.
 
-    Something MOSAIC couldn't read is never presented as a denial.
+    That's its managed identity calling the endpoint, or for an endpoint registered with an API
+    key, its managed identity reading the key from Key Vault. Something MOSAIC couldn't read is
+    never presented as a denial.
     """
 
+    keyed = endpoint.uses_backend_key()
+    denied = _KEY_DENIED_REASONS if keyed else _DENIED_REASONS
+    unconfirmed = _KEY_NOT_CONFIRMED if keyed else _NOT_CONFIRMED
     entry = next((item for item in endpoint.runtime_access if item.gateway_id == gateway_id), None)
     if entry is None:
-        return "notConfirmed", _NOT_CONFIRMED
+        return "notConfirmed", unconfirmed
     unevaluated = entry.evaluation == RuntimeAccessEvaluation.NOT_EVALUATED
     if entry.reason is None:
         if unevaluated:
-            return "notConfirmed", _NOT_CONFIRMED
+            return "notConfirmed", unconfirmed
         if entry.can_invoke:
             return "ready", None
-        return "cannotInvoke", _DENIED_REASONS[RuntimeAccessReason.MISSING_ROLE]
+        return "cannotInvoke", denied[RuntimeAccessReason.MISSING_ROLE]
     if entry.reason == RuntimeAccessReason.GRANTED:
-        return ("ready", None) if entry.can_invoke else ("notConfirmed", _NOT_CONFIRMED)
-    if entry.reason in _DENIED_REASONS:
-        return "cannotInvoke", _DENIED_REASONS[entry.reason]
+        return ("ready", None) if entry.can_invoke else ("notConfirmed", unconfirmed)
+    if entry.reason in denied:
+        return "cannotInvoke", denied[entry.reason]
     if entry.reason == RuntimeAccessReason.DENY_ASSIGNMENT:
         return (
-            ("notConfirmed", _NOT_CONFIRMED)
+            ("notConfirmed", unconfirmed)
             if unevaluated
             else (
                 "cannotInvoke",
-                _DENY_ASSIGNMENT,
+                _KEY_DENY_ASSIGNMENT if keyed else _DENY_ASSIGNMENT,
             )
         )
-    return "notConfirmed", _NOT_CONFIRMED
+    return "notConfirmed", unconfirmed
+
+
+def _declared_vendor(declared: DeclaredDeployment) -> str | None:
+    """The vendor of a declared deployment's model, when its API or its name says.
+
+    Observed deployments carry the format Azure reports. A declared one has only what the
+    administrator wrote, so an unrecognised model has no vendor rather than a guessed one.
+    """
+
+    if declared.api_shape == ApiShape.ANTHROPIC_MESSAGES or is_anthropic_model(
+        None, declared.model_name
+    ):
+        return "Anthropic"
+    if declared.model_name.strip().casefold().startswith(_OPENAI_MODEL_PREFIXES):
+        return "OpenAI"
+    return None
+
+
+def _declared_deployment(
+    endpoint: ModelEndpoint, declared: DeclaredDeployment, pricing: EndpointPricing | None
+) -> ObservedModelDeployment:
+    """A declared deployment as inventory, so a pool judges it the way it judges an observed one.
+
+    Its deployment type and capacity are what an administrator gave its pricing, since an API key
+    can't read them. Without them it's of unknown capacity, which never joins a provisioned group.
+    """
+
+    facts = deployment_facts(endpoint, declared=declared, settings=pricing)
+    return ObservedModelDeployment(
+        id=f"declared:{endpoint.id}:{declared.deployment_name}",
+        tenant_id=endpoint.tenant_id,
+        endpoint_id=endpoint.id,
+        snapshot_id="declared",
+        deployment_name=declared.deployment_name,
+        model_name=declared.model_name,
+        model_version=declared.model_version,
+        model_format=_declared_vendor(declared),
+        sku_name=facts.deployment_type,
+        sku_capacity=facts.capacity,
+    )
+
+
+def _fit(entry: _Inventory, deployment: ObservedModelDeployment, gateway: Gateway) -> DeploymentFit:
+    """The API a member's deployment is served with, judged the way publishing judges it."""
+
+    endpoint = entry.endpoint
+    declared = entry.declared.get(deployment.deployment_name.casefold())
+    if declared is not None:
+        return assess_declared_deployment(
+            endpoint.provider,
+            declared.api_shape,
+            endpoint=str(endpoint.endpoint),
+            gateway_sku=gateway.capabilities.sku_name,
+        )
+    return assess_deployment(
+        endpoint.provider,
+        model_name=deployment.model_name,
+        model_format=deployment.model_format,
+        capabilities=deployment.capabilities,
+        endpoint=str(endpoint.endpoint),
+        gateway_sku=gateway.capabilities.sku_name,
+    )
+
+
+def _reached_with_key(inventory: dict[str, _Inventory], member: PoolMember) -> bool:
+    """Whether the gateway reaches a member with an API key, as far as inventory says."""
+
+    entry = inventory.get(member.model_endpoint_id)
+    return entry is not None and entry.endpoint.uses_backend_key()
+
+
+def _keyed_warning(public_name: str, keys: int, identity: int) -> str:
+    """Why a backend pool's model tries some deployments outside its backend pool."""
+
+    total = keys + identity
+    if keys == total:
+        lead = (
+            f"{public_name}'s only active deployment is"
+            if keys == 1
+            else f"All {keys} of {public_name}'s active deployments are"
+        )
+    else:
+        verb = "is" if keys == 1 else "are"
+        lead = f"{keys} of {public_name}'s {total} active deployments {verb}"
+    tries = "The gateway tries it once" if keys == 1 else "The gateway tries each once, in order"
+    after = ", after the backend pool's attempts" if identity else ""
+    return (
+        f"{lead} reached with an API key, which an API Management backend pool can't hold. "
+        f"{tries}{after}, with no circuit breaker."
+    )
 
 
 def _pool_type_problem(gateway: Gateway, pool_type: ModelPoolType | str) -> str | None:
@@ -448,8 +631,14 @@ def has_unapplied_changes(pool: ModelPool) -> bool:
     )
 
 
-def _routes(pool: ModelPool) -> list[PoolRoute]:
-    """How the gateway serves each model with an active member."""
+def _routes(pool: ModelPool, keyed: frozenset[str] = frozenset()) -> list[PoolRoute]:
+    """How the gateway serves each model with an active member.
+
+    ``keyed`` names the backends of the members the gateway reaches with an API key. A backend
+    pool can't hold one, because API Management sets no credential per member (ADR 0024), so a
+    breaker or preferential pool tries each of them once, in order, after its backend pool's
+    attempts. A linear pool tries every member once, in order, whatever reaches it.
+    """
 
     routes: list[PoolRoute] = []
     for model in pool.models:
@@ -457,49 +646,96 @@ def _routes(pool: ModelPool) -> list[PoolRoute]:
         if not active:
             continue
         if uses_backend_pools(pool.pool_type):
-            targets: tuple[PoolTarget, ...] = (
-                PoolTarget(model.backend_pool_name, active[0].deployment_name),
+            identity = [member for member in active if member.backend_name not in keyed]
+            keys = [member for member in active if member.backend_name in keyed]
+            targets: list[PoolTarget] = []
+            attempts = 0
+            if identity:
+                balanced = max(1, min(pool.max_retries + 1, len(identity)))
+                if keys:
+                    targets.append(
+                        PoolTarget(
+                            model.backend_pool_name,
+                            identity[0].deployment_name,
+                            attempts=balanced,
+                            balanced=True,
+                        )
+                    )
+                else:
+                    # A route with only its backend pool keeps the form it always had.
+                    targets.append(PoolTarget(model.backend_pool_name, identity[0].deployment_name))
+                    attempts = balanced
+            targets.extend(
+                PoolTarget(
+                    member.backend_name,
+                    member.deployment_name,
+                    key_named_value=backend_key_name(member.backend_name),
+                )
+                for member in keys
             )
-            attempts = max(1, min(pool.max_retries + 1, len(active)))
+            if keys:
+                attempts = sum(target.attempts for target in targets)
         else:
-            targets = tuple(
-                PoolTarget(member.backend_name, member.deployment_name) for member in active
-            )
+            targets = [
+                PoolTarget(
+                    member.backend_name,
+                    member.deployment_name,
+                    key_named_value=(
+                        backend_key_name(member.backend_name)
+                        if member.backend_name in keyed
+                        else None
+                    ),
+                )
+                for member in active
+            ]
             attempts = len(active)
         routes.append(
             PoolRoute(
                 model_id=model.id,
                 public_name=model.public_name,
-                targets=targets,
+                targets=tuple(targets),
                 attempts=attempts,
             )
         )
     return routes
 
 
-def _render(pool: ModelPool, shape: str) -> PublicationPolicy:
+def _render(pool: ModelPool, shape: str, keyed: frozenset[str]) -> PublicationPolicy:
     return render_pool_policy(
         pool_id=pool.id,
         fragment_name=pool.fragment_name,
         shape=shape,
-        routes=_routes(pool),
+        routes=_routes(pool, keyed),
         preset=pool.breaker_preset,
         safeguard=pool.safeguard,
     )
 
 
-def _policy(pool: ModelPool, shape: str, snapshot: PoolAccessSnapshot | None) -> PublicationPolicy:
+def _policy(
+    pool: ModelPool, shape: str, snapshot: PoolAccessSnapshot | None, keyed: frozenset[str]
+) -> PublicationPolicy:
     """The pool's policy: governed by a reviewed access snapshot, or open to its subscription."""
 
     if snapshot is None:
-        return _render(pool, shape)
+        return _render(pool, shape, keyed)
     return render_governed_pool_policy(
         pool=pool,
         snapshot=snapshot,
         shape=shape,
-        routes=_routes(pool),
+        routes=_routes(pool, keyed),
         preset=pool.breaker_preset,
         safeguard=pool.safeguard,
+    )
+
+
+def _keyed_backends(desired: list[_Resource]) -> frozenset[str]:
+    """The backends a pool's resources reach with an API key: those whose key they write."""
+
+    keys = {item.name for item in desired if item.kind == PublishedResourceKind.NAMED_VALUE}
+    return frozenset(
+        item.name
+        for item in desired
+        if item.kind == PublishedResourceKind.BACKEND and backend_key_name(item.name) in keys
     )
 
 
@@ -626,6 +862,17 @@ def _desired(
             item = assessment.find(model.id, member.backend_name)
             if item is None or item.endpoint is None or item.deployment is None:
                 continue
+            keyed = item.keyed()
+            if keyed and item.key_secret is not None:
+                name = backend_key_name(member.backend_name)
+                resources.append(
+                    _Resource(
+                        PublishedResourceKind.NAMED_VALUE,
+                        name,
+                        f"{base}/namedValues/{name}",
+                        payload={"secretIdentifier": item.key_secret},
+                    )
+                )
             origin = backend_origin(shape, str(item.endpoint.endpoint))
             resources.append(
                 _Resource(
@@ -637,12 +884,18 @@ def _desired(
                         "title": (
                             f"{pool.display_name}: {model.public_name} on {item.endpoint.name}"
                         )[:300],
+                        # A member reached with a key is tried once, after the backend pool, so
+                        # a tripped breaker would only end the attempts left to the others.
                         "circuitBreaker": (
-                            circuit_breaker(pool.breaker_preset) if breakers else None
+                            circuit_breaker(pool.breaker_preset)
+                            if breakers and not keyed
+                            else None
                         ),
                     },
                 )
             )
+            if keyed:
+                continue
             services.append(
                 {
                     "backend": member.backend_name,
@@ -767,6 +1020,7 @@ class ModelPoolService:
         model_runtime_client_id: str | None = None,
         security_group_claims: bool = True,
         blocked_list: BlockedListGate | None = None,
+        pricing_repository: PricingRepository | None = None,
     ) -> None:
         self._repository = repository
         self._endpoints = endpoint_repository
@@ -784,6 +1038,9 @@ class ModelPoolService:
         # What a new blocked list holds. Without it, a list MOSAIC creates blocks nothing until the
         # budget check writes it.
         self._blocked_list = blocked_list
+        # Where a declared deployment's type, capacity, and region come from, since an API key
+        # can't read them. Without it, a declared deployment's capacity is unknown.
+        self._pricing = pricing_repository
         self._active: set[str] = set()
         self._tasks: set[asyncio.Task[None]] = set()
         self._task_failures: list[BaseException] = []
@@ -1260,15 +1517,42 @@ class ModelPoolService:
         inventory: dict[str, _Inventory] = {}
         for endpoint_id in sorted(set(endpoint_ids)):
             endpoint = await self._endpoints.get_endpoint(actor.tenant_id, endpoint_id)
-            if endpoint is None:
-                continue
-            observed = await self._endpoints.list_observed_for_endpoint(
-                ObservedModelDeployment, actor.tenant_id, endpoint_id, "observedModelDeployment"
-            )
-            inventory[endpoint_id] = _Inventory(
-                endpoint, {item.deployment_name.casefold(): item for item in observed}
-            )
+            if endpoint is not None:
+                inventory[endpoint_id] = await self._entry(actor, endpoint)
         return inventory
+
+    async def _entry(self, actor: Actor, endpoint: ModelEndpoint) -> _Inventory:
+        """What MOSAIC knows about an endpoint's deployments."""
+
+        if endpoint.uses_backend_key():
+            # An API key can't list deployments, so the endpoint has the ones an administrator
+            # declared, with what its pricing says about them.
+            pricing = (
+                await self._pricing.get_endpoint_pricing(actor.tenant_id, endpoint.id)
+                if self._pricing is not None
+                else None
+            )
+            declared = {
+                item.deployment_name.casefold(): item for item in endpoint.declared_deployments
+            }
+            return _Inventory(
+                endpoint,
+                {
+                    name: _declared_deployment(endpoint, item, pricing)
+                    for name, item in declared.items()
+                },
+                declared=declared,
+                region=endpoint.capabilities.location
+                or (pricing.region if pricing is not None else None),
+            )
+        observed = await self._endpoints.list_observed_for_endpoint(
+            ObservedModelDeployment, actor.tenant_id, endpoint.id, "observedModelDeployment"
+        )
+        return _Inventory(
+            endpoint,
+            {item.deployment_name.casefold(): item for item in observed},
+            region=endpoint.capabilities.location,
+        )
 
     async def _with_models(
         self, actor: Actor, pool: ModelPool, gateway: Gateway, specs: list[PoolModelSpec]
@@ -1305,21 +1589,21 @@ class ModelPoolService:
                 endpoint = entry.endpoint
                 label = f"{member_spec.deployment_name} on {endpoint.name}"
                 details = {"endpointId": endpoint.id, "deployment": member_spec.deployment_name}
-                if (
-                    endpoint.provider == ModelProvider.OPENAI_COMPATIBLE
-                    or endpoint.uses_backend_key()
-                ):
+                if endpoint.provider == ModelProvider.OPENAI_COMPATIBLE:
                     raise ValidationError(
-                        f"{label}: pools can't use endpoints MOSAIC reaches with an API key yet.",
+                        f"{label}: pools can't use OpenAI-compatible endpoints yet.",
                         details=details,
                     )
                 deployment = entry.deployments.get(member_spec.deployment_name.casefold())
                 if deployment is None:
-                    raise ValidationError(
-                        f"MOSAIC hasn't observed {label}. Sync the endpoint if it was just "
-                        "deployed.",
-                        details=details,
+                    missing = (
+                        f"{label} isn't declared on its endpoint. Declare the deployment on "
+                        "the endpoint first."
+                        if endpoint.uses_backend_key()
+                        else f"MOSAIC hasn't observed {label}. Sync the endpoint if it was just "
+                        "deployed."
                     )
+                    raise ValidationError(missing, details=details)
                 if not deployment.model_name:
                     raise ValidationError(
                         f"MOSAIC can't tell which model {label} serves.", details=details
@@ -1330,21 +1614,17 @@ class ModelPoolService:
                         "arrive.",
                         details=details,
                     )
-                fit = assess_deployment(
-                    endpoint.provider,
-                    model_name=deployment.model_name,
-                    model_format=deployment.model_format,
-                    capabilities=deployment.capabilities,
-                    endpoint=str(endpoint.endpoint),
-                    gateway_sku=gateway.capabilities.sku_name,
-                )
+                fit = _fit(entry, deployment, gateway)
                 if fit.api_shape is None or not fit.publishable:
                     reason = fit.unpublishable_reason or "MOSAIC has no API it can serve it with."
                     raise ValidationError(f"{label} can't be pooled: {reason}", details=details)
                 shapes.add(fit.api_shape)
                 names.setdefault(deployment.model_name.casefold(), deployment.model_name)
                 model_format = deployment.model_format or ""
-                formats.setdefault(model_format.casefold(), model_format)
+                # A declared deployment of a model MOSAIC doesn't recognise has no vendor, which
+                # isn't a different one.
+                if model_format or deployment.deployment_name.casefold() not in entry.declared:
+                    formats.setdefault(model_format.casefold(), model_format)
                 if deployment.model_version:
                     versions.add(deployment.model_version)
                 members.append(
@@ -1374,7 +1654,7 @@ class ModelPoolService:
                     "allow mixed versions for this model.",
                     details={"versions": sorted(versions)},
                 )
-            vendor = next(iter(formats.values()))
+            vendor = next(iter(formats.values()), "")
             if vendor:
                 vendors.setdefault(vendor.casefold(), vendor)
             earlier = previous.get(model_id)
@@ -1454,8 +1734,13 @@ class ModelPoolService:
         members: list[_Member] = []
         shapes: set[ApiShape] = set()
         vendors: dict[str, str] = {}
+        keyed_gateway = False
         for model in pool.models:
             active = model.active_members()
+            keys = [member for member in active if _reached_with_key(inventory, member)]
+            identity = len(active) - len(keys)
+            balanced = max(1, min(pool.max_retries + 1, identity)) if identity else 0
+            backend_pools = uses_backend_pools(pool.pool_type)
             if not active:
                 problems.append(
                     f"{model.public_name} has no active deployments. Undrain one, or remove the "
@@ -1466,16 +1751,39 @@ class ModelPoolService:
                     f"A linear pool tries at most {MAX_ATTEMPTS} deployments of one model, and "
                     f"{model.public_name} has {len(active)} active."
                 )
-            elif uses_backend_pools(pool.pool_type) and len(active) > MAX_BACKEND_POOL_MEMBERS:
+            elif backend_pools and identity > MAX_BACKEND_POOL_MEMBERS:
                 problems.append(
                     f"An API Management backend pool holds at most {MAX_BACKEND_POOL_MEMBERS} "
-                    f"backends, and {model.public_name} has {len(active)} active deployments."
+                    f"backends, and {model.public_name} has {identity} active deployments "
+                    "reached with the gateway's identity."
                 )
+            elif backend_pools and keys and balanced + len(keys) > MAX_ATTEMPTS:
+                keyed_attempts = (
+                    "one on the deployment"
+                    if len(keys) == 1
+                    else f"one on each of the {len(keys)} deployments"
+                )
+                problems.append(
+                    f"A request makes at most {MAX_ATTEMPTS} attempts, and {model.public_name} "
+                    f"would make {balanced + len(keys)}: {balanced} on its backend pool, then "
+                    f"{keyed_attempts} reached with an API key. Lower the pool's retries, or "
+                    "drain some deployments."
+                )
+            if backend_pools and keys:
+                warnings.append(_keyed_warning(model.public_name, len(keys), identity))
             order = 0
+            key_order = 0
             current: list[_Member] = []
             for member in model.members:
+                position: int | None = None
                 if not member.drained:
                     order += 1
+                    if pool.pool_type == ModelPoolType.LINEAR:
+                        position = order
+                    elif _reached_with_key(inventory, member):
+                        # Tried once each after the backend pool, in the pool's order.
+                        key_order += 1
+                        position = key_order
                 item = self._member(
                     pool,
                     gateway,
@@ -1484,15 +1792,25 @@ class ModelPoolService:
                     others,
                     model,
                     member,
-                    order=(
-                        order
-                        if pool.pool_type == ModelPoolType.LINEAR and not member.drained
-                        else None
-                    ),
+                    order=position,
                 )
                 current.append(item)
                 if member.drained:
                     continue
+                if item.keyed():
+                    keyed_gateway = True
+                    await self._resolve_key(item)
+                    if (
+                        pool.pool_type == ModelPoolType.PREFERENTIAL
+                        and identity
+                        and item.deployment is not None
+                        and item.deployment.capacity_type == CapacityType.PROVISIONED
+                    ):
+                        item.warnings.append(
+                            f"{item.view.deployment_name} on {item.view.endpoint_name} is "
+                            "provisioned, but it's reached with an API key, so the gateway tries "
+                            "it only after the backend pool's deployments."
+                        )
                 problems.extend(item.problems)
                 warnings.extend(item.warnings)
                 if item.fit is not None and item.fit.api_shape is not None:
@@ -1503,6 +1821,16 @@ class ModelPoolService:
                     )
             members.extend(current)
             self._check_model(pool, model, current, problems, warnings)
+        if (
+            keyed_gateway
+            and gateway.capabilities.identity_observed
+            and not gateway.capabilities.principal_id
+        ):
+            problems.append(
+                "API Management reads the API keys of this pool's endpoints from Key Vault with "
+                f"its managed identity, and {gateway.name} has none. Turn on its system-assigned "
+                "managed identity and re-run its access check first."
+            )
         if len(shapes) > 1:
             problems.append(
                 "The pool's deployments need different APIs. A pool serves its models through "
@@ -1592,8 +1920,12 @@ class ModelPoolService:
             for item in members
             if item.fit is not None and item.fit.api_shape is not None and not item.member.drained
         }
+        # A member reached with an API key is its own target, which names its own deployment, so
+        # only the backend pool's members must share one.
         names = {
-            item.member.deployment_name.casefold() for item in members if not item.member.drained
+            item.member.deployment_name.casefold()
+            for item in members
+            if not item.member.drained and not item.keyed()
         }
         if (
             uses_backend_pools(pool.pool_type)
@@ -1602,8 +1934,8 @@ class ModelPoolService:
         ):
             problems.append(
                 f"The request body names the deployment, so every active deployment of "
-                f"{model.public_name} in a breaker or preferential pool must have the same "
-                "deployment name. Rename them, or use a linear pool."
+                f"{model.public_name} in a breaker or preferential pool's backend pool must have "
+                "the same deployment name. Rename them, or use a linear pool."
             )
 
     def _member(
@@ -1623,6 +1955,8 @@ class ModelPoolService:
         deployment = (
             entry.deployments.get(member.deployment_name.casefold()) if entry is not None else None
         )
+        declared = entry is not None and member.deployment_name.casefold() in entry.declared
+        keyed = endpoint is not None and endpoint.uses_backend_key()
         label = (
             f"{member.deployment_name} on {endpoint.name}"
             if endpoint is not None
@@ -1635,7 +1969,7 @@ class ModelPoolService:
         message: str | None = None
         verdict: EnvironmentVerdict | None = None
         fingerprint: str | None = None
-        if endpoint is None:
+        if endpoint is None or entry is None:
             problems.append(
                 f"{model.public_name}: the endpoint behind {label} is no longer registered. "
                 "Remove the deployment from the pool."
@@ -1647,14 +1981,15 @@ class ModelPoolService:
                 f"{compatibility_fingerprint(catalog, gateway.environment, endpoint.environment)}"
             )
             readiness, message = _readiness(endpoint, gateway.id)
-            if endpoint.provider == ModelProvider.OPENAI_COMPATIBLE or endpoint.uses_backend_key():
-                problems.append(
-                    f"{label}: pools can't use endpoints MOSAIC reaches with an API key yet."
-                )
+            if endpoint.provider == ModelProvider.OPENAI_COMPATIBLE:
+                problems.append(f"{label}: pools can't use OpenAI-compatible endpoints yet.")
             if deployment is None:
                 problems.append(
-                    f"MOSAIC no longer sees {label}. Sync the endpoint, or remove the deployment "
-                    "from the pool."
+                    f"{label} is no longer declared on its endpoint. Declare it again, or remove "
+                    "the deployment from the pool."
+                    if keyed
+                    else f"MOSAIC no longer sees {label}. Sync the endpoint, or remove the "
+                    "deployment from the pool."
                 )
             else:
                 state = deployment.provisioning_state
@@ -1664,24 +1999,22 @@ class ModelPoolService:
                     problems.append(
                         f"{label} is a batch deployment, which can't serve requests as they arrive."
                     )
+                # A declared deployment of a model MOSAIC doesn't recognise has no vendor to
+                # compare.
+                compare_format = not declared or deployment.model_format is not None
                 if (model.model_name or "").casefold() != (
                     deployment.model_name or ""
-                ).casefold() or (model.model_format or "").casefold() != (
-                    deployment.model_format or ""
-                ).casefold():
+                ).casefold() or (
+                    compare_format
+                    and (model.model_format or "").casefold()
+                    != (deployment.model_format or "").casefold()
+                ):
                     problems.append(
                         f"{label} now serves {deployment.model_name or 'an unknown model'}, not "
                         f"{model.model_name or model.public_name}."
                     )
                 if deployment.model_name:
-                    fit = assess_deployment(
-                        endpoint.provider,
-                        model_name=deployment.model_name,
-                        model_format=deployment.model_format,
-                        capabilities=deployment.capabilities,
-                        endpoint=str(endpoint.endpoint),
-                        gateway_sku=gateway.capabilities.sku_name,
-                    )
+                    fit = _fit(entry, deployment, gateway)
                     if fit.api_shape is None or not fit.publishable:
                         reason = fit.unpublishable_reason or "MOSAIC has no API to serve it with."
                         problems.append(f"{label} can't be pooled: {reason}")
@@ -1720,9 +2053,11 @@ class ModelPoolService:
                 if deployment is not None
                 and uses_backend_pools(pool.pool_type)
                 and not member.drained
+                # A member reached with a key isn't in the backend pool, so it has no priority.
+                and not keyed
                 else None
             ),
-            region=endpoint.capabilities.location if endpoint is not None else None,
+            region=entry.region if entry is not None else None,
             environment=endpoint.environment if endpoint is not None else None,
             model_name=deployment.model_name if deployment is not None else None,
             model_version=deployment.model_version if deployment is not None else None,
@@ -1738,7 +2073,9 @@ class ModelPoolService:
                 deployment.spillover_deployment_name if deployment is not None else None
             ),
             provisioning_state=deployment.provisioning_state if deployment is not None else None,
-            observed=deployment is not None,
+            observed=deployment is not None and not declared,
+            declared=deployment is not None and declared,
+            api_key=keyed,
             readiness=readiness,
             readiness_message=message,
             environment_verdict=verdict,
@@ -1754,6 +2091,34 @@ class ModelPoolService:
             problems=problems,
             warnings=warnings,
         )
+
+    async def _resolve_key(self, item: _Member) -> None:
+        """Find the Key Vault secret a key member's API key is in, the way publishing does.
+
+        It's read from the endpoint's credential reference each time, so pointing the endpoint at
+        another secret is picked up by the next plan, which the digest makes a review of its own.
+        """
+
+        endpoint = item.endpoint
+        if endpoint is None:
+            return
+        label = f"{item.member.deployment_name} on {endpoint.name}"
+        credential = (
+            await self._endpoints.get_credential(
+                endpoint.tenant_id, endpoint.credential_reference_id
+            )
+            if endpoint.credential_reference_id
+            else None
+        )
+        if credential is None:
+            item.problems.append(f"{label}: {_NO_KEY_SECRET}")
+            return
+        try:
+            secret = KeyVaultSecretId.parse(str(credential.secret_uri))
+        except ValueError:
+            item.problems.append(f"{label}: {_BAD_KEY_SECRET}")
+            return
+        item.key_secret = secret.versionless
 
     async def detail(self, actor: Actor, pool_id: str) -> ModelPoolDetail:
         pool = await self.get_pool(actor, pool_id)
@@ -1787,7 +2152,7 @@ class ModelPoolService:
         facets = []
         if assessment.shape is not None:
             try:
-                facets = _render(pool, assessment.shape).facets
+                facets = _render(pool, assessment.shape, assessment.keyed()).facets
             except ValueError:
                 facets = []
         return ModelPoolDetail(
@@ -1812,26 +2177,48 @@ class ModelPoolService:
         # gpt-4o on an Azure OpenAI resource and on a Foundry resource, can't share a pool.
         groups: dict[tuple[str, str, str], tuple[str, str | None, ApiShape | None]] = {}
         deployments: dict[tuple[str, str, str], list[PoolCandidateDeployment]] = {}
+        # Declared deployments of models MOSAIC doesn't recognise, which have no vendor to group
+        # them by until the others are grouped.
+        unknown: list[tuple[str, ApiShape | None, PoolCandidateDeployment]] = []
         for endpoint in await self._endpoints.list_endpoints(actor.tenant_id):
             if endpoint.provider == ModelProvider.OPENAI_COMPATIBLE:
                 continue
-            observed = await self._endpoints.list_observed_for_endpoint(
-                ObservedModelDeployment, actor.tenant_id, endpoint.id, "observedModelDeployment"
-            )
+            entry = await self._entry(actor, endpoint)
             verdict = permits(catalog, gateway.environment, endpoint.environment)
             readiness, message = _readiness(endpoint, gateway.id)
-            for deployment in observed:
+            for deployment in entry.deployments.values():
                 if not deployment.model_name:
                     continue
-                fit = assess_deployment(
-                    endpoint.provider,
-                    model_name=deployment.model_name,
-                    model_format=deployment.model_format,
-                    capabilities=deployment.capabilities,
-                    endpoint=str(endpoint.endpoint),
-                    gateway_sku=gateway.capabilities.sku_name,
+                fit = _fit(entry, deployment, gateway)
+                declared = deployment.deployment_name.casefold() in entry.declared
+                reason = self._ineligible(deployment, fit, verdict, readiness, message)
+                candidate = PoolCandidateDeployment(
+                    model_endpoint_id=endpoint.id,
+                    endpoint_name=endpoint.name,
+                    region=entry.region,
+                    environment=endpoint.environment,
+                    deployment_name=deployment.deployment_name,
+                    model_version=deployment.model_version,
+                    sku_name=deployment.sku_name,
+                    sku_capacity=deployment.sku_capacity,
+                    capacity_type=deployment.capacity_type,
+                    processing_scope=deployment.processing_scope,
+                    spillover_deployment_name=deployment.spillover_deployment_name,
+                    readiness=readiness,
+                    environment_verdict=verdict,
+                    eligible=reason is None,
+                    reason=reason,
+                    pool_ids=sorted(
+                        pool.id
+                        for pool in pools
+                        if pool.uses(endpoint.id, deployment.deployment_name)
+                    ),
+                    declared=declared,
+                    api_key=endpoint.uses_backend_key(),
                 )
-                reason = self._ineligible(endpoint, deployment, fit, verdict, readiness, message)
+                if declared and deployment.model_format is None:
+                    unknown.append((deployment.model_name, fit.api_shape, candidate))
+                    continue
                 key = (
                     (deployment.model_format or "").casefold(),
                     deployment.model_name.casefold(),
@@ -1840,30 +2227,17 @@ class ModelPoolService:
                 groups.setdefault(
                     key, (deployment.model_name, deployment.model_format, fit.api_shape)
                 )
-                deployments.setdefault(key, []).append(
-                    PoolCandidateDeployment(
-                        model_endpoint_id=endpoint.id,
-                        endpoint_name=endpoint.name,
-                        region=endpoint.capabilities.location,
-                        environment=endpoint.environment,
-                        deployment_name=deployment.deployment_name,
-                        model_version=deployment.model_version,
-                        sku_name=deployment.sku_name,
-                        sku_capacity=deployment.sku_capacity,
-                        capacity_type=deployment.capacity_type,
-                        processing_scope=deployment.processing_scope,
-                        spillover_deployment_name=deployment.spillover_deployment_name,
-                        readiness=readiness,
-                        environment_verdict=verdict,
-                        eligible=reason is None,
-                        reason=reason,
-                        pool_ids=sorted(
-                            pool.id
-                            for pool in pools
-                            if pool.uses(endpoint.id, deployment.deployment_name)
-                        ),
-                    )
-                )
+                deployments.setdefault(key, []).append(candidate)
+        for model_name, shape, candidate in unknown:
+            # Joins the one group of the same model and API, as a pool would let it.
+            matches = [
+                key
+                for key in groups
+                if key[1] == model_name.casefold() and key[2] == str(shape or "")
+            ]
+            key = matches[0] if len(matches) == 1 else ("", model_name.casefold(), str(shape or ""))
+            groups.setdefault(key, (model_name, None, shape))
+            deployments.setdefault(key, []).append(candidate)
         models = [
             PoolCandidateModel(
                 model_name=name,
@@ -1885,15 +2259,12 @@ class ModelPoolService:
 
     @staticmethod
     def _ineligible(
-        endpoint: ModelEndpoint,
         deployment: ObservedModelDeployment,
         fit: DeploymentFit,
         verdict: EnvironmentVerdict,
         readiness: Readiness,
         message: str | None,
     ) -> str | None:
-        if endpoint.uses_backend_key():
-            return "MOSAIC reaches this endpoint with an API key, which pools can't use yet."
         if deployment.capacity_type == CapacityType.BATCH:
             return "Batch deployments can't serve requests as they arrive."
         state = deployment.provisioning_state
@@ -2307,7 +2678,7 @@ class ModelPoolService:
             client = self._client_factory(resource)
             await self._reject_collisions(actor, pool, gateway, client)
             snapshot, access_warnings = await self._access_snapshot(pool, gateway, shape)
-            policy = _policy(pool, shape, snapshot)
+            policy = _policy(pool, shape, snapshot, assessment.keyed())
             desired = _desired(pool, gateway, assessment, shape)
             if snapshot is None:
                 steps = await self._steps(client, pool, desired)
@@ -2402,7 +2773,7 @@ class ModelPoolService:
         assessment = await self._assess(actor, pool, gateway)
         shape = self._require_shape(pool, assessment)
         snapshot, _ = await self._access_snapshot(pool, gateway, shape)
-        policy = _policy(pool, shape, snapshot)
+        policy = _policy(pool, shape, snapshot, assessment.keyed())
         desired = _desired(pool, gateway, assessment, shape)
         if (
             pool_digest(pool, shape, policy, desired, assessment.fingerprints(), snapshot)
@@ -2864,7 +3235,16 @@ class ModelPoolService:
                 await self._release_run(pool, run)
             else:
                 await self._governed_failure(
-                    pool, client, writer, run, results, owned, started, failure, shape
+                    pool,
+                    client,
+                    writer,
+                    run,
+                    results,
+                    owned,
+                    started,
+                    failure,
+                    shape,
+                    _keyed_backends(desired),
                 )
         except asyncio.CancelledError:
             await self._interrupted(pool, run, STALE_RUN_MESSAGE)
@@ -3094,6 +3474,7 @@ class ModelPoolService:
         started: datetime,
         failure: str,
         shape: str,
+        keyed: frozenset[str],
     ) -> None:
         """Fail closed, then put back no more access than the last applied snapshot allowed.
 
@@ -3129,7 +3510,7 @@ class ModelPoolService:
                 actual, PublishedResourceKind.POLICY_FRAGMENT, pool.fragment_name
             ):
                 try:
-                    restored = _policy(pool, shape, candidate)
+                    restored = _policy(pool, shape, candidate, keyed)
                     await ensure_blocked_list(self._blocked_list, client, writer, pool.tenant_id)
                     await writer.put_policy_fragment(
                         pool.fragment_name,
@@ -3949,8 +4330,8 @@ class ModelPoolService:
                     product_name=payload["product"],
                 )
             case PublishedResourceKind.NAMED_VALUE:
-                raise ConflictError(
-                    "Pools don't write named values yet.", details={"name": item.name}
+                await writer.put_named_value(
+                    item.name, secret_identifier=payload["secretIdentifier"]
                 )
 
     async def _remove(

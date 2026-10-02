@@ -14,6 +14,7 @@ from mosaic_api.config import AuthMode, Environment, RepositoryBackend, Settings
 from mosaic_api.domain import (
     ApiShape,
     AuditEvent,
+    DeclaredDeployment,
     EndpointAuthMode,
     EntitlementSubject,
     Gateway,
@@ -185,7 +186,16 @@ ESTATE: dict[str, dict[str, Any]] = {
         "provider": ModelProvider.AZURE_OPENAI,
         "location": "westeurope",
         "auth_mode": EndpointAuthMode.API_KEY,
-        "deployments": [_deployment("gpt-4o", "gpt-4o")],
+        # An API key can't list deployments, so MOSAIC knows only what's declared.
+        "deployments": [],
+        "declared": [
+            DeclaredDeployment(
+                deployment_name="gpt-4o",
+                model_name="gpt-4o",
+                model_version="2024-08-06",
+                api_shape=ApiShape.AZURE_OPENAI,
+            )
+        ],
     },
 }
 
@@ -275,6 +285,7 @@ class Estate:
         deployments: list[dict[str, Any]],
         auth_mode: EndpointAuthMode = EndpointAuthMode.MANAGED_IDENTITY,
         environment: str | None = "development",
+        declared: list[DeclaredDeployment] | None = None,
     ) -> str:
         host = (
             f"https://{name}.openai.azure.com/"
@@ -294,6 +305,7 @@ class Estate:
                 location=location,
                 kind="OpenAI" if provider == ModelProvider.AZURE_OPENAI else "AIServices",
             ),
+            declared_deployments=list(declared or []),
         )
         await self.endpoint_repository.save_endpoint(endpoint, _audit())
         await self.observe(name, deployments)
@@ -475,8 +487,8 @@ async def test_create_takes_an_explicit_api_name_path_and_product(estate: Estate
             "is a batch deployment, which can't serve requests as they arrive.",
         ),
         (
-            [_gpt4o("aoai-key")],
-            "pools can't use endpoints MOSAIC reaches with an API key yet.",
+            [_model(_member("aoai-key", "gpt-4o-mini"))],
+            "gpt-4o-mini on aoai-key isn't declared on its endpoint.",
         ),
         (
             [_model(_member("aoai-east", "gpt-5"))],
@@ -507,7 +519,7 @@ async def test_create_takes_an_explicit_api_name_path_and_product(estate: Estate
         "shapes",
         "models",
         "batch",
-        "api-key",
+        "undeclared",
         "unobserved",
         "versions",
         "public-name",
@@ -657,8 +669,10 @@ async def test_candidates_group_deployments_by_model_and_say_why_some_cant_be_po
     assert batch.eligible is False
     assert batch.reason == "Batch deployments can't serve requests as they arrive."
     keyed = _candidate(gpt, "aoai-key", "gpt-4o")
-    assert keyed.eligible is False
-    assert "API key" in (keyed.reason or "")
+    assert keyed.eligible is True
+    assert (keyed.declared, keyed.api_key) == (True, True)
+    assert keyed.region == "westeurope"
+    assert _candidate(gpt, "aoai-east", "gpt-4o").declared is False
     creating = _candidate(gpt, "aoai-sweden", "gpt-4o-new")
     assert creating.eligible is False
     assert "The deployment is" in (creating.reason or "")
@@ -1895,7 +1909,7 @@ async def test_an_administrator_publishes_and_unpublishes_a_pool_over_http(
     } == {
         ("aoai-east", "gpt-4o", True),
         ("aoai-east", "gpt-4o-batch", False),
-        ("aoai-key", "gpt-4o", False),
+        ("aoai-key", "gpt-4o", True),
     }
 
     body = {

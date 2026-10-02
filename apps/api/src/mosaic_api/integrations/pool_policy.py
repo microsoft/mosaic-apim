@@ -14,6 +14,12 @@ A pool with governed access (phase 2) writes the same API policy, but its fragme
 authorizes every call against grants on the pool's models, exactly as a governed publication's
 does, and then applies each grant's limits, its cost center's pooled quota on the model, and the
 pool's safeguard, in that order.
+
+A pool with a member reached with an API key (phase 3) removes every credential a caller sent,
+acquires the gateway's managed identity token into a variable, and has each attempt send its own
+member's credential: that token, or the member's key from a Key Vault-backed named value. A key
+member is a target on its own. In a backend pool route it's tried after the backend pool, which
+hands its remaining attempts on as soon as it has no member left.
 """
 
 import hashlib
@@ -78,11 +84,19 @@ from mosaic_api.integrations.access_policy import (
 from mosaic_api.integrations.access_policy import _literal as _safe_literal
 from mosaic_api.integrations.apim.model_apis import OperationSpec, shape_operations
 from mosaic_api.integrations.apim.policy_semantics import analyze_policy
+from mosaic_api.integrations.backend_keys import (
+    backend_key_header,
+    describe_backend_key,
+    is_backend_key_facet,
+    set_backend_key,
+    strip_caller_credentials,
+)
 from mosaic_api.integrations.policy import (
     METRIC_NAMESPACE,
     PublicationPolicy,
     add_shape_headers,
     managed_identity_resource,
+    shape_removed_headers,
 )
 from mosaic_api.model_pools import (
     BreakerPreset,
@@ -99,6 +113,10 @@ MODEL_VARIABLE = "mosaic-pool-model"
 MODEL_ID_VARIABLE = "mosaic-pool-model-id"
 ATTEMPTS_VARIABLE = "mosaic-pool-attempts"
 ATTEMPT_VARIABLE = "mosaic-pool-attempt"
+# How many of a route's attempts its backend pool takes before the targets after it.
+BALANCED_VARIABLE = "mosaic-pool-balanced-attempts"
+# The gateway's managed identity token, in a pool whose attempts set their own credentials.
+TOKEN_VARIABLE = "mosaic-pool-identity-token"
 _AZURE_OPENAI_PREFIX = f"/openai/deployments/{{{DEPLOYMENT_PARAMETER}}}"
 # Response headers that would tell a caller which member answered, or describe one member's
 # capacity as if it were the pool's.
@@ -170,10 +188,25 @@ _LIMIT_ELEMENTS = frozenset({"llm-token-limit", "rate-limit-by-key", "quota-by-k
 
 @dataclass(frozen=True)
 class PoolTarget:
-    """Where one attempt goes: a backend, and the deployment name that backend expects."""
+    """Where attempts go: a backend, and the deployment name that backend expects.
+
+    A ``balanced`` target is a backend pool, and can take several attempts, each on whichever
+    member API Management chooses. Any other target takes one. A target reached with an API key
+    names the Key Vault-backed named value its key is read from; any other is reached with the
+    gateway's managed identity.
+    """
 
     backend_name: str
     deployment_name: str
+    attempts: int = 1
+    balanced: bool = False
+    key_named_value: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.attempts < 1 or (self.attempts > 1 and not self.balanced):
+            raise ValueError("Only a backend pool target takes more than one attempt")
+        if self.balanced and self.key_named_value:
+            raise ValueError("A backend pool's members are reached with the gateway's identity")
 
 
 @dataclass(frozen=True)
@@ -181,13 +214,22 @@ class PoolRoute:
     """How the gateway serves one pool model.
 
     A backend pool route has one target, the backend pool, and makes up to ``attempts`` calls to
-    it. A linear route has one target per member in order, and tries each once.
+    it. A linear route has one target per member in order, and tries each once. A backend pool
+    route can also have targets after its backend pool, each tried once.
     """
 
     model_id: str
     public_name: str
     targets: tuple[PoolTarget, ...]
     attempts: int
+
+    def __post_init__(self) -> None:
+        if any(target.balanced for target in self.targets[1:]):
+            raise ValueError("Only a route's first target can be a backend pool")
+        if len(self.targets) > 1 and self.attempts != sum(
+            target.attempts for target in self.targets
+        ):
+            raise ValueError("A route with several targets makes exactly their attempts")
 
 
 def body_routed(shape: str) -> bool:
@@ -288,6 +330,38 @@ def _safeguard_attributes(model_id: str, safeguard: PoolSafeguard) -> dict[str, 
     return attributes
 
 
+def _keyed(routes: Sequence[PoolRoute]) -> bool:
+    """Whether any member is reached with an API key, so each attempt sets its own credential."""
+
+    return any(target.key_named_value for route in routes for target in route.targets)
+
+
+def _uses_identity(routes: Sequence[PoolRoute]) -> bool:
+    return any(target.key_named_value is None for route in routes for target in route.targets)
+
+
+def _balanced_attempts(route: PoolRoute) -> int:
+    """How many attempts a route's backend pool takes before the targets after it, or 0."""
+
+    first = route.targets[0]
+    return first.attempts if first.balanced and len(route.targets) > 1 else 0
+
+
+def _authenticate(fragment: ET.Element, shape: str, routes: Sequence[PoolRoute]) -> None:
+    """Acquire the gateway's managed identity token for the members that are reached with it.
+
+    In a pool with a member reached with a key, the token goes into a variable instead, and each
+    attempt sets its own member's credential. A pool reached only with keys acquires no token.
+    """
+
+    attributes = {"resource": managed_identity_resource(shape)}
+    if _keyed(routes):
+        if not _uses_identity(routes):
+            return
+        attributes["output-token-variable-name"] = TOKEN_VARIABLE
+    ET.SubElement(fragment, "authentication-managed-identity", attributes)
+
+
 def _fragment(
     *,
     pool_id: str,
@@ -296,16 +370,15 @@ def _fragment(
     safeguard: PoolSafeguard | None,
 ) -> ET.Element:
     fragment = ET.Element("fragment")
+    if _keyed(routes):
+        # Only the gateway's own credentials may reach a member, as ADR 0018 requires.
+        strip_caller_credentials(fragment, removed_headers=shape_removed_headers(shape))
     add_shape_headers(fragment, shape)
     # A caller must not steer Azure's own overflow to a deployment it was never told about.
     ET.SubElement(
         fragment, "set-header", {"name": "x-ms-spillover-deployment", "exists-action": "delete"}
     )
-    ET.SubElement(
-        fragment,
-        "authentication-managed-identity",
-        {"resource": managed_identity_resource(shape)},
-    )
+    _authenticate(fragment, shape, routes)
     ET.SubElement(
         fragment, "set-variable", {"name": MODEL_VARIABLE, "value": _requested_model(shape)}
     )
@@ -321,6 +394,10 @@ def _fragment(
         ET.SubElement(
             when, "set-variable", {"name": ATTEMPTS_VARIABLE, "value": f"@({route.attempts})"}
         )
+        if balanced := _balanced_attempts(route):
+            ET.SubElement(
+                when, "set-variable", {"name": BALANCED_VARIABLE, "value": f"@({balanced})"}
+            )
         if safeguard is not None:
             ET.SubElement(when, "llm-token-limit", _safeguard_attributes(route.model_id, safeguard))
             metric = ET.SubElement(when, "llm-emit-token-metric", {"namespace": METRIC_NAMESPACE})
@@ -370,6 +447,68 @@ def _target(parent: ET.Element, target: PoolTarget, *, rewrite: bool) -> None:
         ET.SubElement(parent, "set-body").text = _rewrite_model(target.deployment_name)
 
 
+def _credential(
+    parent: ET.Element, target: PoolTarget, shape: str, *, drop_token: bool, drop_key: bool
+) -> None:
+    """Set the credential one attempt sends its member, and remove the other kind.
+
+    An earlier attempt of the same request may have set the other kind. ``drop_token`` is for a
+    pool that acquires a token, in case API Management sets it as well as storing it;
+    ``drop_key`` is for a route with members reached with a key.
+    """
+
+    if target.key_named_value is None:
+        header = ET.SubElement(
+            parent, "set-header", {"name": "Authorization", "exists-action": "override"}
+        )
+        ET.SubElement(header, "value").text = (
+            f'@("Bearer " + {_string_variable(TOKEN_VARIABLE)})'
+        )
+        if drop_key:
+            ET.SubElement(
+                parent,
+                "set-header",
+                {"name": backend_key_header(shape), "exists-action": "delete"},
+            )
+        return
+    if drop_token:
+        ET.SubElement(parent, "set-header", {"name": "Authorization", "exists-action": "delete"})
+    set_backend_key(parent, shape=shape, named_value=target.key_named_value)
+
+
+IDENTITY_TOKEN_SUMMARY = (
+    "Sends the gateway's managed identity token to a member reached with the gateway's identity."
+)
+
+
+def _is_identity_token_facet(facet: PolicyFacet) -> bool:
+    return (
+        facet.element == "set-header"
+        and facet.attributes.get("exists-action") == "override"
+        and facet.attributes.get("name", "").casefold() == "authorization"
+    )
+
+
+def _describe_credentials(facets: Sequence[PolicyFacet], shape: str) -> None:
+    """Word each attempt's credential as backend authentication rather than a header write.
+
+    Only a pool with a member reached with a key sets credentials itself, so other pools' facets
+    are untouched.
+    """
+
+    for facet in facets:
+        if is_backend_key_facet(facet, shape):
+            describe_backend_key(facet)
+        elif _is_identity_token_facet(facet):
+            facet.kind = PolicyFacetKind.AUTHENTICATION
+            facet.summary = IDENTITY_TOKEN_SUMMARY
+            facet.details = [
+                "The token is the one the gateway acquired with its managed identity. Every "
+                "credential a caller sent is removed first, so nothing a caller sends can "
+                "replace it.",
+            ]
+
+
 def _rewrites_model(shape: str, route: PoolRoute) -> bool:
     """Whether the request body's model must name each target's deployment.
 
@@ -399,6 +538,13 @@ def _api_policy(
     backend = ET.SubElement(policies, "backend")
     container = backend
     most = max(route.attempts for route in routes)
+    attempt_number = _int_variable(ATTEMPT_VARIABLE, 0)
+    balanced = _int_variable(BALANCED_VARIABLE, 0)
+    # Whether a route's backend pool hands its remaining attempts on to the targets after it.
+    spills = any(_balanced_attempts(route) for route in routes)
+    exhausted = f"!({_POOL_EXHAUSTED})"
+    if spills:
+        exhausted = f"(!({_POOL_EXHAUSTED}) || {attempt_number} <= {balanced})"
     if most > 1:
         container = ET.SubElement(
             backend,
@@ -406,8 +552,8 @@ def _api_policy(
             {
                 "condition": (
                     f"@(context.Response != null && ({_status_condition(statuses)}) && "
-                    f"!({_POOL_EXHAUSTED}) && "
-                    f"{_int_variable(ATTEMPT_VARIABLE, 0)} < {_int_variable(ATTEMPTS_VARIABLE, 1)})"
+                    f"{exhausted} && "
+                    f"{attempt_number} < {_int_variable(ATTEMPTS_VARIABLE, 1)})"
                 ),
                 "count": str(most - 1),
                 "interval": "0",
@@ -417,8 +563,26 @@ def _api_policy(
     ET.SubElement(
         container,
         "set-variable",
-        {"name": ATTEMPT_VARIABLE, "value": f"@({_int_variable(ATTEMPT_VARIABLE, 0)} + 1)"},
+        {"name": ATTEMPT_VARIABLE, "value": f"@({attempt_number} + 1)"},
     )
+    if spills:
+        # A backend pool with no member left to try can't take its remaining attempts, so the
+        # next attempt goes to the first target after it.
+        jump = ET.SubElement(
+            ET.SubElement(container, "choose"),
+            "when",
+            {
+                "condition": (
+                    f"@(context.Response != null && {_POOL_EXHAUSTED} && "
+                    f"{attempt_number} <= {balanced})"
+                )
+            },
+        )
+        ET.SubElement(
+            jump, "set-variable", {"name": ATTEMPT_VARIABLE, "value": f"@({balanced} + 1)"}
+        )
+    keyed = _keyed(routes)
+    identity = _uses_identity(routes)
     choose = ET.SubElement(container, "choose")
     for route in routes:
         chosen = _string_variable(MODEL_ID_VARIABLE)
@@ -428,17 +592,26 @@ def _api_policy(
             {"condition": f"@({chosen} == {_literal(route.model_id)})"},
         )
         rewrite = _rewrites_model(shape, route)
+        route_keyed = _keyed([route])
+        placements: list[tuple[ET.Element, PoolTarget]] = []
         if len(route.targets) == 1:
-            _target(when, route.targets[0], rewrite=rewrite)
-            continue
-        attempts = ET.SubElement(when, "choose")
-        for index, target in enumerate(route.targets, start=1):
-            attempt = ET.SubElement(
-                attempts,
-                "when",
-                {"condition": f"@({_int_variable(ATTEMPT_VARIABLE, 1)} == {index})"},
-            )
-            _target(attempt, target, rewrite=rewrite)
+            placements.append((when, route.targets[0]))
+        else:
+            attempts = ET.SubElement(when, "choose")
+            start = 1
+            for target in route.targets:
+                end = start + target.attempts - 1
+                # Each target takes the attempts after the ones before it.
+                number = _int_variable(ATTEMPT_VARIABLE, 1)
+                condition = f"{number} == {start}" if start == end else f"{number} <= {end}"
+                placements.append(
+                    (ET.SubElement(attempts, "when", {"condition": f"@({condition})"}), target)
+                )
+                start = end + 1
+        for parent, target in placements:
+            _target(parent, target, rewrite=rewrite)
+            if keyed:
+                _credential(parent, target, shape, drop_token=identity, drop_key=route_keyed)
     ET.SubElement(
         container,
         "forward-request",
@@ -482,11 +655,13 @@ def render_pool_policy(
     combined = hashlib.sha256(f"{fragment_xml}\n{api_policy_xml}".encode()).hexdigest()
     fragment_analysis = analyze_policy(fragment_xml)
     api_analysis = analyze_policy(api_policy_xml)
+    facets = [*fragment_analysis.facets, *api_analysis.facets]
+    _describe_credentials(facets, shape)
     return PublicationPolicy(
         fragment_xml=fragment_xml,
         api_policy_xml=api_policy_xml,
         content_sha256=combined,
-        facets=[*fragment_analysis.facets, *api_analysis.facets],
+        facets=facets,
         unrecognized_elements=sorted(
             set(fragment_analysis.unrecognized_elements) | set(api_analysis.unrecognized_elements)
         ),
@@ -532,6 +707,12 @@ def _validate_pool(
         pool.fragment_name,
         *(route.model_id for route in routes),
         *(target.backend_name for route in routes for target in route.targets),
+        *(
+            target.key_named_value
+            for route in routes
+            for target in route.targets
+            if target.key_named_value
+        ),
     ]
     if not all(_RESOURCE_NAME.fullmatch(name) for name in names):
         raise ValidationError(
@@ -804,6 +985,8 @@ def _governed_fragment(
         )
         _variable(when, MODEL_ID_VARIABLE, route.model_id)
         _variable(when, ATTEMPTS_VARIABLE, f"@({route.attempts})")
+        if balanced := _balanced_attempts(route):
+            _variable(when, BALANCED_VARIABLE, f"@({balanced})")
 
     if settings.keys_enabled:
         key = ET.SubElement(
@@ -899,22 +1082,28 @@ def _governed_fragment(
     _grant_token_limits(fragment, pool, grants, prefix=_COUNTER_PREFIX)
     _model_limits(fragment, pool, snapshot, routes=routes, grants=grants, safeguard=safeguard)
 
-    for name in (
+    removed = (
         "Ocp-Apim-Subscription-Key",
         "api-key",
         "Authorization",
         COST_CENTER_HEADER,
         # A caller must not steer Azure's own overflow to a deployment it was never told about.
         "x-ms-spillover-deployment",
-    ):
+    )
+    for name in removed:
         ET.SubElement(fragment, "set-header", {"name": name, "exists-action": "delete"})
     ET.SubElement(
         fragment, "set-query-parameter", {"name": "subscription-key", "exists-action": "delete"}
     )
+    if _keyed(routes):
+        # Only the gateway's own credentials may reach a member, as ADR 0018 requires.
+        strip_caller_credentials(
+            fragment,
+            removed_headers=(*removed, *shape_removed_headers(shape)),
+            removed_query_parameters=("subscription-key",),
+        )
     add_shape_headers(fragment, shape)
-    ET.SubElement(
-        fragment, "authentication-managed-identity", {"resource": managed_identity_resource(shape)}
-    )
+    _authenticate(fragment, shape, routes)
     _append_rewrites(fragment, shape, operations)
     return fragment
 
@@ -1034,6 +1223,7 @@ def _governed_facets(
     fragment_facets = classify_traces(
         fragment, fragment_analysis.facets, has_group_grants=group_grants > 0
     )
+    _describe_credentials([*fragment_facets, *api_analysis.facets], shape)
     for facet in [*fragment_facets, *api_analysis.facets]:
         facet.managed_by_mosaic = True
         if facet.section == PolicySection.UNKNOWN:
@@ -1145,6 +1335,7 @@ def pool_grant_counter_key_expression(pool: ModelPool, grant: PoolAccessGrant) -
 
 __all__ = [
     "DEPLOYMENT_PARAMETER",
+    "IDENTITY_TOKEN_SUMMARY",
     "PoolRoute",
     "PoolTarget",
     "body_routed",

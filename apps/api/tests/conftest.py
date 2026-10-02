@@ -24,6 +24,7 @@ from mosaic_api.repositories import (
     InMemoryGatewayRepository,
     InMemoryMcpEndpointRepository,
     InMemoryModelEndpointRepository,
+    InMemoryPricingRepository,
 )
 from mosaic_api.services import (
     DirectoryService,
@@ -236,6 +237,7 @@ def build_model_pool_service(
     cost_center_repository: InMemoryCostCenterRepository | None = None,
     runtime_client_id: str | None = "22222222-2222-2222-2222-222222222222",
     security_group_claims: bool = True,
+    pricing_repository: InMemoryPricingRepository | None = None,
 ) -> ModelPoolService:
     arm = build_arm_client(fake)
     return ModelPoolService(
@@ -249,6 +251,7 @@ def build_model_pool_service(
         cost_center_repository=cost_center_repository,
         model_runtime_client_id=runtime_client_id,
         security_group_claims=security_group_claims,
+        pricing_repository=pricing_repository,
     )
 
 

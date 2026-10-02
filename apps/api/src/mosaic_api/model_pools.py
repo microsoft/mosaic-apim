@@ -626,7 +626,9 @@ class PoolMemberView(MosaicModel):
     backend_name: str
     weight: int = 1
     drained: bool = False
-    # Linear pools: the member's position, from 1. Backend pools: its priority group.
+    # Linear pools: the member's position, from 1. Backend pools: its priority group, or for a
+    # member reached with an API key, which no backend pool can hold, its position among those
+    # tried after the backend pool.
     order: int | None = None
     priority: int | None = None
     region: str | None = None
@@ -639,7 +641,12 @@ class PoolMemberView(MosaicModel):
     processing_scope: ProcessingScope = ProcessingScope.UNKNOWN
     spillover_deployment_name: str | None = None
     provisioning_state: str | None = None
+    # Whether MOSAIC saw the deployment in Azure, or an administrator declared it on an endpoint
+    # an API key can't list.
     observed: bool = False
+    declared: bool = False
+    # Whether the gateway reaches the member with an API key rather than its managed identity.
+    api_key: bool = False
     readiness: Literal["ready", "notConfirmed", "cannotInvoke"] = "notConfirmed"
     readiness_message: str | None = None
     environment_verdict: EnvironmentVerdict | None = None
@@ -665,6 +672,8 @@ class PoolCandidateDeployment(MosaicModel):
     reason: str | None = None
     # The pools on this gateway that already use the deployment.
     pool_ids: list[str] = Field(default_factory=list)
+    declared: bool = False
+    api_key: bool = False
 
 
 class PoolCandidateModel(MosaicModel):
