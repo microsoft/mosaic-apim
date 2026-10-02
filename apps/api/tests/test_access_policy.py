@@ -1689,7 +1689,13 @@ def test_direct_only_facets_remain_without_group_language() -> None:
 
 def test_fragment_size_boundary_is_inclusive(monkeypatch: pytest.MonkeyPatch) -> None:
     publication, snapshot = _publication(), _snapshot()
-    size = len(render_governed_policy(publication, snapshot).fragment_xml.encode("utf-8"))
+    fragment_xml = render_governed_policy(publication, snapshot).fragment_xml
+    # The size measured is the final fragment's, with ADR 0025's reference capture and strip.
+    fragment = ET.fromstring(fragment_xml)
+    [capture] = _variable_values(fragment, "mosaic-mcp-call")
+    assert ON_BEHALF in capture
+    assert fragment.find(f"set-header[@name='{ON_BEHALF}'][@exists-action='delete']") is not None
+    size = len(fragment_xml.encode("utf-8"))
     monkeypatch.setattr(access_policy, "MAX_FRAGMENT_BYTES", size)
     render_governed_policy(publication, snapshot)
     monkeypatch.setattr(access_policy, "MAX_FRAGMENT_BYTES", size - 1)
@@ -1715,3 +1721,34 @@ def test_actual_documented_512_kib_fragment_limit_is_enforced() -> None:
         render_governed_policy(
             _publication(), _snapshot(grants=[_grant(subscription_name="x" * (512 * 1024))])
         )
+
+
+def _on_behalf_bytes(fragment_xml: str) -> int:
+    """What ADR 0025 adds to a model fragment: capture, trace key and property, and the strip."""
+
+    fragment = ET.fromstring(fragment_xml)
+    added = [
+        element
+        for element in fragment.iter()
+        if (element.tag == "set-variable" and element.attrib.get("name") == "mosaic-mcp-call")
+        or (element.tag == "set-header" and element.attrib.get("name") == ON_BEHALF)
+        or (element.tag == "metadata" and element.attrib.get("name") == "mosaic-mcp-call")
+    ]
+    key = ' + " r=" + (string)context.Variables["mosaic-mcp-call"]'
+    assert key in fragment_xml
+    return len(key.encode()) + sum(
+        len(ET.tostring(element, encoding="unicode").strip().encode()) for element in added
+    )
+
+
+def test_the_largest_fragment_pays_the_same_few_bytes_for_on_behalf_references() -> None:
+    small = render_governed_policy(_publication(), _snapshot())
+    grants = [
+        *(_grant(number, enforcement=_full_enforcement()) for number in range(1, 201)),
+        *(_group_grant(number, enforcement=_full_enforcement()) for number in range(201, 221)),
+    ]
+    large = render_governed_policy(_publication(), _snapshot(grants=grants))
+
+    # A fixed cost, whatever the grants: it can't push a growing publication over the limit.
+    assert _on_behalf_bytes(large.fragment_xml) == _on_behalf_bytes(small.fragment_xml) < 2048
+    assert len(large.fragment_xml.encode("utf-8")) < access_policy.MAX_FRAGMENT_BYTES
