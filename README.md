@@ -121,6 +121,20 @@ one under **Settings > Appearance**.
   </tr>
   <tr>
     <td width="50%" valign="top">
+      <img src="docs/images/screenshots/console-pools.png" alt="The Model pools page listing two Anthropic pools with their gateway, models, routing type, active members, readiness, and status">
+      <p><b>Model pools.</b> Each pool serves one vendor's models from deployments on many
+      endpoints and regions through a single API, with its routing type, how many deployments
+      are active, and whether it is a draft or published.</p>
+    </td>
+    <td width="50%" valign="top">
+      <img src="docs/images/screenshots/console-pool-detail.png" alt="A breaker pool serving Claude Opus 4.5 and Claude Sonnet 4.5 from five deployments in three regions, with weights, readiness, drain switches, and how callers connect">
+      <p><b>A model pool.</b> How the pool routes and recovers, what it owns in API Management,
+      and each model with the deployments behind it, their region, capacity, and share of
+      requests. Callers see one base URL and the pool's model names, never the deployments.</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
       <img src="docs/images/screenshots/console-mcps.png" alt="Registered and published MCP servers with environment, status, authentication, and tools">
       <p><b>MCP servers.</b> Servers registered directly or imported from a gateway, with their
       environment, connection status, authentication method, and tools, and the servers MOSAIC
@@ -430,7 +444,8 @@ explicit local/test modes and application startup rejects them when `MOSAIC_ENVI
   semantic facets, so administrators never see markup and MOSAIC never stores it
 - AI surface detection that identifies which APIs and backends front large language models, across
   Azure OpenAI, Azure AI Foundry, Azure AI inference, OpenAI, Anthropic, Google Vertex AI, and
-  AWS Bedrock
+  AWS Bedrock, including an API whose policy routes to a backend, or to a load-balanced pool of
+  them, rather than naming a service URL
 - MCP server discovery, and import of selected model APIs and MCP servers from a synchronised
   gateway into MOSAIC's own desired state
 - Model publishing: expose an observed deployment through a gateway by creating its backend, policy
@@ -440,6 +455,13 @@ explicit local/test modes and application startup rejects them when `MOSAIC_ENVI
 - MCP publishing: expose a registered MCP server through a gateway by creating its backend, policy
   fragment, passthrough MCP API, API policy, protected-resource-metadata API, metadata operation
   and metadata policy — through the same reviewed plan and explicit apply model
+- Model pools, first phase: serve one vendor's models from deployments on many endpoints and
+  regions through one API, so callers see one base URL and the pool's model names and never the
+  deployments behind them. Breaker and preferential pools balance their deployments with API
+  Management backend pools and circuit breakers; linear pools try them in order. A pool is
+  published, unpublished, and recovered through the same reviewed plan and explicit apply as a
+  publication. Per-person access to pool models comes in a later phase. See
+  [Model pools](#model-pools)
 - Async repository abstraction with explicit in-memory and Cosmos implementations
 - React/TypeScript/Vite administrator console using Fluent UI, React Router, TanStack Query, and
   MSAL, with responsive navigation and persisted light/dark/system themes. It confirms the caller
@@ -1379,6 +1401,137 @@ unpublished, the portal leaves it out of the catalog, refuses a new access reque
 gives no connection details for it. A model API imported from a gateway MOSAIC didn't publish is
 unaffected.
 
+## Model pools
+
+A publication exposes one deployment. When the same model is deployed on several endpoints, in
+several regions, or with both provisioned and pay-as-you-go capacity, publishing each deployment
+gives callers several APIs for one model, and leaves them to pick one and to retry elsewhere when
+it's throttled. A **model pool** serves one vendor's models from all of those deployments through
+one API. Callers send a model name, such as `claude-opus-4-5`, to one base URL, and the gateway
+sends each request to a deployment that can take it. They never see the endpoints, regions, or
+deployments behind the pool. [ADR 0024](docs/adr/0024-model-pools.md) records the design. Its first
+phase is built, and this section describes it.
+
+A pool runs on one gateway and takes that gateway's environment. It serves one vendor's models
+through one API shape ([ADR 0012](docs/adr/0012-format-aware-model-publishing.md)), such as
+Anthropic Messages for Claude. Each **pool model** has the public name callers send, and its
+**members**: deployments of that model on any endpoint the gateway may front.
+
+- A model's members must serve the same model in the same format. Members on different versions
+  are refused unless the administrator allows mixed versions for that model.
+- Each member is judged as a publication's deployment is. It must be in the endpoint's latest
+  inventory and provisioned. ADR 0013's *cannot invoke* blocks a plan, and *not confirmed* is a
+  warning. ADR 0014 judges the gateway against every member's endpoint, so a *blocked* member is
+  refused, and a warning is listed in the plan.
+- Batch deployments can't be members, because they don't answer requests as they arrive. Endpoints
+  MOSAIC reaches with an API key can't be members yet.
+- Members that process data in different scopes, such as regional and global, are a plan warning.
+  So is a member with Azure's own spillover turned on, and a deployment that also serves another
+  pool, because the pools then share its capacity.
+- Where callers name the model in the request body, as Anthropic Messages and Foundry Models do,
+  the policy replaces it with each member's deployment name. In a breaker or preferential pool, API
+  Management picks the member, so a model's active deployments there must share one deployment
+  name. A linear pool has no such limit.
+
+**Routing.** Administrators choose one of three types for a pool, and MOSAIC derives what it
+writes from it:
+
+| Type | How requests are spread | When a deployment throttles |
+| --- | --- | --- |
+| **Breaker** | One API Management backend pool over every member, by weight | Its circuit breaker opens for its `Retry-After`, and the request is retried on another member |
+| **Preferential** | One backend pool with provisioned members at priority 1 and every other member at priority 2 | Provisioned capacity takes every request while any of it is available. A throttled member is skipped until its `Retry-After` passes, and overflow spreads over the priority 2 members |
+| **Linear** | Each member in the administrator's order, with no breakers | Each request starts at the first member and moves down the list. Nothing is taken out of rotation |
+
+- **Failure handling.** **Throttling**, the default, moves a request on after a 429 or a 503, and
+  trips a breaker on one 429. **Throttling and errors** also moves it on after a 500, 502, or 504,
+  and trips a breaker on three such failures in a minute.
+- **Retries** are immediate, because waiting out `Retry-After` is the breaker's job. A breaker or
+  preferential pool retries up to three times by default, and never makes more attempts than the
+  model has active members. A linear pool tries each member once, and no request makes more than
+  10 attempts. Streamed responses aren't held back.
+- **The safeguard**, optional, is a token limit every caller of a pool model shares, counted per
+  model, so the pool's own callers can't exhaust its deployments.
+- **Draining** a member keeps it in the pool's definition and takes it out of routing at the next
+  apply.
+- A Consumption-tier gateway has no backend pools, so it runs only linear pools.
+
+**What the gateway does with a request.** The pool's policy reads the model a request names, from
+the body's `model` or, for the Azure OpenAI shape, from the route, and answers `404` for a model the
+pool doesn't serve. It removes `x-ms-spillover-deployment`, so a caller can't steer Azure's
+spillover to a deployment outside the pool, and authenticates to every member with the gateway's
+managed identity. On the way out, it removes the headers that describe one member: its region,
+deployment, spillover, and rate limits. A request that is still throttled or failing after its last
+attempt gets a generic error that names no member, and keeps its `Retry-After`. The Responses API
+isn't offered, because a stored response lives in one account and a later call could reach
+another, and neither is the model information route, which describes one deployment.
+
+Applying a pool creates, in dependency order:
+
+| Order | Resource | Purpose |
+| --- | --- | --- |
+| 1 | Backends | One per active member, pointing at its deployment. In breaker and preferential pools, each has a circuit breaker |
+| 2 | Backend pools | In breaker and preferential pools, one per pool model, balancing its members by weight and priority |
+| 3 | `mosaic-*` policy fragment | Finds the requested model, removes what a caller mustn't send on, authenticates with the gateway's managed identity, and applies the safeguard |
+| 4 | API | The pool's API at its own path. It has no service URL, because the policy picks each request's backend |
+| 5 | Operations | The shape's curated operations, without Responses and model information |
+| 6 | API policy | Includes the fragment, retries over each model's members, and removes member headers from responses |
+| 7 | Product | Carries the API |
+| 8 | Product/API link | |
+| 9 | Subscription | The pool's own subscription |
+
+Plans, applies, ownership, rollback, unpublishing, and recovery work as they do for a publication.
+A plan is deterministic and reviewed, and pins each active member's environment verdict. Apply runs
+only that plan, and a failed step reverses what its run created. Unpublishing runs a reviewed plan
+over the pool's resources in reverse, so a backend pool goes before the backends it balances, and
+refuses with `409` and `planRequired` or `stalePlan` as a publication's does. The same guards hold:
+
+- A pool that still owns API Management resources can't be removed, and neither can a gateway with
+  published pools.
+- An endpoint, or one of its deployments, can't be removed while a pool may own a backend for it.
+  Members no gateway holds are forgotten instead.
+- An environment change that would block an applied member is refused.
+- A pool's API isn't offered for import as a model API.
+
+In the console, **Pools** lists every pool with its gateway, what it serves, its routing, its active
+members, readiness, and status. **Create pool** chooses the gateway and routing, then each model's
+deployments from every endpoint the gateway can front. It can suggest weights from each
+deployment's capacity, and says why a deployment can't be used. A pool's page shows its routing,
+what it owns in API Management, each model's deployments with their region, capacity, weight and
+share, readiness, and a drain switch, how callers connect, what its policy does, and its run
+history. Saving a pool records intent. Nothing changes in API Management until a reviewed plan is
+applied.
+
+| Method | Route under `/api/v1` | Result |
+| --- | --- | --- |
+| GET | `/gateways/{gatewayId}/pool-candidates` | The deployments a pool on that gateway could use, grouped by model, and why others can't be used |
+| GET | `/model-pools`, `/model-pool-summaries` | Pools, optionally on one `gateway`. A summary counts active members by capacity type and readiness |
+| POST | `/model-pools` | Creates a pool, `201` |
+| GET, PATCH, DELETE | `/model-pools/{id}` | Reads, changes, or removes a pool. Removal is refused while the pool owns API Management resources |
+| GET | `/model-pools/{id}/detail` | The pool with each member judged against today's inventory, environments, and gateway |
+| POST | `/model-pools/{id}/plan` | A plan to review |
+| POST | `/model-pools/{id}/apply?plan={planId}` | Runs that plan, `202` with the run |
+| POST | `/model-pools/{id}/unpublish-plan` | The unpublish plan to review. Removes nothing |
+| POST | `/model-pools/{id}/unpublish?plan={planId}` | Runs that plan, `202` with the run |
+| GET | `/model-pools/{id}/runs`, `/model-pools/{id}/runs/{runId}` | The pool's runs |
+| POST | `/model-pools/{id}/recover` | Reconciles an interrupted run, as for a publication |
+| GET | `/model-pools/{id}/lock`, `/model-pool-plans/{planId}` | The pool's write lock, and a saved plan |
+
+**Not built yet.** In this first phase, callers reach a pool only through its own subscription,
+whose key an administrator copies from the Azure portal, and the portal doesn't list pool models.
+ADR 0024's later phases add:
+
+- Per-model access. Entitlements and access requests name a pool model and a cost center, and each
+  person or application gets one key per pool and cost center, created on request. The pool's
+  policy checks budgets and writes usage traces, so cost center limits, budgets, Analytics, and the
+  usage report include pool calls, priced per member.
+- A portal catalog that lists the pool's models, rather than its deployments.
+- Members reached with a key: Azure endpoints registered with a key, then AWS Bedrock.
+- A pool health view, with the member behind each attempt, throttling, breaker trips, and overflow,
+  and drift shown on re-plan.
+
+Pools are built and tested against the API Management test double. The behaviors ADR 0024 lists
+under *Verify on a real gateway* still need confirming on a real one.
+
 ## Governed model access
 
 Use **Entitlements** to link a previously published model if necessary, opt it into governed
@@ -2061,19 +2214,19 @@ records.
    [ADR 0022](docs/adr/0022-cost-centers.md). Monthly budgets warn by email at 80% and 100%, and
    can block a cost center's calls at the gateway; see
    [ADR 0023](docs/adr/0023-budgets-and-notifications.md).
-8. **Model pools (proposed):** serve one model from many deployments, across endpoints and
-   regions, behind one governed endpoint.
-   - Pool types:
-     - **Breaker:** load-balanced, with circuit breakers.
-     - **Linear:** ordered failover.
-     - **Preferential:** provisioned throughput first, with pay-as-you-go overflow.
-   - People request access per model, under a cost center. They get one key for every model they
-     hold in a pool under that cost center, and only when they ask for it.
-   - Pools reuse cost center limits, budget blocking, and grant attribution. Each call is priced
-     at the member deployment that served it.
-   - Members reached with a key, on Azure and then AWS Bedrock, follow in a later phase.
-   - Already built: the Models page shows each deployment's capacity type (provisioned,
-     pay-as-you-go, or batch), its processing scope, and any Azure spillover.
+8. **Model pools:** serve one vendor's models from many deployments, across endpoints and regions,
+   behind one API whose callers never see the deployments.
+   - Built: the first phase. Administrators create **breaker** (load-balanced, with circuit
+     breakers), **linear** (ordered failover), and **preferential** (provisioned throughput first,
+     with pay-as-you-go overflow) pools of Azure deployments, and publish, unpublish, and recover
+     them through reviewed plans. The Models page shows each deployment's capacity type
+     (provisioned, pay-as-you-go, or batch), its processing scope, and any Azure spillover. See
+     [Model pools](#model-pools).
+   - Next: people request access per model, under a cost center. They get one key for every model
+     they hold in a pool under that cost center, and only when they ask for it. Pools reuse cost
+     center limits, budget blocking, and grant attribution, each call is priced at the member
+     deployment that served it, and the portal lists a pool's models rather than its deployments.
+   - Later: members reached with a key, on Azure and then AWS Bedrock, and a pool health view.
 
    See [ADR 0024](docs/adr/0024-model-pools.md).
 9. **Catalog ecosystem:** API Center experiences, MCP tool-level governance, broader self-service

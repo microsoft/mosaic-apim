@@ -2,9 +2,12 @@
 
 **Status:** Proposed
 
-Only one piece of phase 1 is implemented. Inventory reads each deployment's capacity type,
-processing scope, and Azure spillover, and the Models page shows them. Nothing else in this record
-is built yet.
+Phase 1 is implemented: administrators create, publish, unpublish, and recover breaker, linear,
+and preferential pools of Azure deployments reached with Microsoft Entra ID, and the console lists
+and shows them. Callers reach a phase 1 pool only through its own subscription. Phases 2 to 5,
+which add per-model access, keys per cost center, budgets and usage, members reached with a key,
+health, and a router, aren't built yet. The [README](../../README.md#model-pools) describes what
+is.
 
 For pools only, this record amends [ADR 0011](0011-governed-model-access.md), as
 [ADR 0022](0022-cost-centers.md) amended it: a person or application gets one key per pool and
