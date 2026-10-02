@@ -144,6 +144,15 @@ MEMBER_RESPONSE_HEADERS: tuple[str, ...] = (
     "anthropic-ratelimit-output-tokens-limit",
     "anthropic-ratelimit-output-tokens-remaining",
     "anthropic-ratelimit-output-tokens-reset",
+    # What AWS Bedrock adds, which would tell a caller AWS answered.
+    "x-amzn-requestid",
+    "x-amzn-errortype",
+    "x-amzn-bedrock-invocation-latency",
+    "x-amzn-bedrock-performanceconfig-latency",
+    "x-amzn-bedrock-input-token-count",
+    "x-amzn-bedrock-output-token-count",
+    "x-amzn-bedrock-cache-read-input-token-count",
+    "x-amzn-bedrock-cache-write-input-token-count",
 )
 NOT_FOUND_BODY = '{"error":{"code":"ModelNotFound","message":"This API has no such model."}}'
 UNAVAILABLE_BODY = (

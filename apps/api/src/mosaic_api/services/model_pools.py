@@ -24,7 +24,7 @@ from typing import Any, Literal
 import structlog
 
 from mosaic_api.budgets import BLOCKED_COST_CENTERS_NAMED_VALUE
-from mosaic_api.deployment_capacity import CapacityType, ProcessingScope
+from mosaic_api.deployment_capacity import CapacityType, ProcessingScope, classify_bedrock_model
 from mosaic_api.domain import (
     ApimResourceId,
     ApiShape,
@@ -247,6 +247,13 @@ _KEY_DENY_ASSIGNMENT = (
     "A deny assignment stops the gateway's managed identity reading this endpoint's API key from "
     "Key Vault."
 )
+# The gateway can read a Bedrock key, but MOSAIC never sends a key to AWS, so only a request
+# through the pool shows whether AWS accepts it.
+_BEDROCK_NOT_CONFIRMED = (
+    "The gateway can read this endpoint's API key from Key Vault, but MOSAIC doesn't send keys to "
+    "AWS, so it can't confirm that AWS accepts it. The first request through the pool shows "
+    "whether it does."
+)
 _NO_KEY_SECRET = (
     "MOSAIC can't find the Key Vault secret this endpoint's API key is in. Set the endpoint's Key "
     "Vault secret URI, then plan again."
@@ -371,8 +378,18 @@ def _readiness(endpoint: ModelEndpoint, gateway_id: str) -> tuple[Readiness, str
 
     That's its managed identity calling the endpoint, or for an endpoint registered with an API
     key, its managed identity reading the key from Key Vault. Something MOSAIC couldn't read is
-    never presented as a denial.
+    never presented as a denial, and AWS Bedrock, which MOSAIC never sends a key to, is never
+    presented as ready.
     """
+
+    readiness, message = _gateway_readiness(endpoint, gateway_id)
+    if readiness == "ready" and endpoint.is_bedrock():
+        return "notConfirmed", _BEDROCK_NOT_CONFIRMED
+    return readiness, message
+
+
+def _gateway_readiness(endpoint: ModelEndpoint, gateway_id: str) -> tuple[Readiness, str | None]:
+    """Whether the gateway can authenticate to the endpoint, from its recorded runtime access."""
 
     keyed = endpoint.uses_backend_key()
     denied = _KEY_DENIED_REASONS if keyed else _DENIED_REASONS
@@ -426,10 +443,12 @@ def _declared_deployment(
 
     Its deployment type and capacity are what an administrator gave its pricing, since an API key
     can't read them. Without them it's of unknown capacity, which never joins a provisioned group.
+    An AWS Bedrock model's ID says how it's served, so that's what its capacity type and scope are
+    read from.
     """
 
     facts = deployment_facts(endpoint, declared=declared, settings=pricing)
-    return ObservedModelDeployment(
+    deployment = ObservedModelDeployment(
         id=f"declared:{endpoint.id}:{declared.deployment_name}",
         tenant_id=endpoint.tenant_id,
         endpoint_id=endpoint.id,
@@ -441,6 +460,11 @@ def _declared_deployment(
         sku_name=facts.deployment_type,
         sku_capacity=facts.capacity,
     )
+    if not endpoint.is_bedrock():
+        return deployment
+    capacity, scope = classify_bedrock_model(declared.deployment_name)
+    # Set after validation, which would otherwise read them from the SKU again.
+    return deployment.model_copy(update={"capacity_type": capacity, "processing_scope": scope})
 
 
 def _fit(entry: _Inventory, deployment: ObservedModelDeployment, gateway: Gateway) -> DeploymentFit:
@@ -470,6 +494,34 @@ def _reached_with_key(inventory: dict[str, _Inventory], member: PoolMember) -> b
 
     entry = inventory.get(member.model_endpoint_id)
     return entry is not None and entry.endpoint.uses_backend_key()
+
+
+def _bedrock_disclosure(
+    endpoint: ModelEndpoint, label: str, region: str | None, model_id: str
+) -> str:
+    """Where AWS processes the requests a Bedrock member serves, prompts included.
+
+    AWS documents the Anthropic API's token counting only on bedrock-mantle hosts, and a pool
+    doesn't retry the error a bedrock-runtime host would answer, so that's said too.
+    """
+
+    where = f"AWS Bedrock in {region}" if region else "AWS Bedrock"
+    warning = (
+        f"{label} is on {where}, outside Azure, so AWS processes the requests it serves, prompts "
+        "included."
+    )
+    _, scope = classify_bedrock_model(model_id)
+    if scope in {ProcessingScope.GLOBAL, ProcessingScope.DATA_ZONE}:
+        warning += (
+            " Its model ID is a cross-region inference profile, so AWS may process them in other "
+            "regions too."
+        )
+    if "://bedrock-mantle." not in str(endpoint.endpoint).casefold():
+        warning += (
+            " AWS documents counting tokens with the Anthropic API only on bedrock-mantle hosts, "
+            "so a token count the gateway sends it may fail."
+        )
+    return warning
 
 
 def _keyed_warning(public_name: str, keys: int, identity: int) -> str:
@@ -1990,6 +2042,10 @@ class ModelPoolService:
             readiness, message = _readiness(endpoint, gateway.id)
             if endpoint.provider == ModelProvider.OPENAI_COMPATIBLE:
                 problems.append(f"{label}: pools can't use OpenAI-compatible endpoints yet.")
+            if endpoint.is_bedrock():
+                warnings.append(
+                    _bedrock_disclosure(endpoint, label, entry.region, member.deployment_name)
+                )
             if deployment is None:
                 problems.append(
                     f"{label} is no longer declared on its endpoint. Declare it again, or remove "
@@ -2083,6 +2139,7 @@ class ModelPoolService:
             observed=deployment is not None and not declared,
             declared=deployment is not None and declared,
             api_key=keyed,
+            provider=endpoint.provider if endpoint is not None else None,
             readiness=readiness,
             readiness_message=message,
             environment_verdict=verdict,
@@ -2222,6 +2279,7 @@ class ModelPoolService:
                     ),
                     declared=declared,
                     api_key=endpoint.uses_backend_key(),
+                    provider=endpoint.provider,
                 )
                 if declared and deployment.model_format is None:
                     unknown.append((deployment.model_name, fit.api_shape, candidate))

@@ -25,6 +25,7 @@ from mosaic_api.domain import (
     Entity,
     EnvironmentVerdict,
     ModelAccessSettings,
+    ModelProvider,
     MosaicModel,
     PolicyFacet,
     PublicationStatus,
@@ -647,6 +648,8 @@ class PoolMemberView(MosaicModel):
     declared: bool = False
     # Whether the gateway reaches the member with an API key rather than its managed identity.
     api_key: bool = False
+    # Who serves the member, such as AWS Bedrock outside Azure. None once its endpoint is gone.
+    provider: ModelProvider | None = None
     readiness: Literal["ready", "notConfirmed", "cannotInvoke"] = "notConfirmed"
     readiness_message: str | None = None
     environment_verdict: EnvironmentVerdict | None = None
@@ -674,6 +677,7 @@ class PoolCandidateDeployment(MosaicModel):
     pool_ids: list[str] = Field(default_factory=list)
     declared: bool = False
     api_key: bool = False
+    provider: ModelProvider | None = None
 
 
 class PoolCandidateModel(MosaicModel):

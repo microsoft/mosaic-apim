@@ -29,6 +29,7 @@ from mosaic_api.domain import (
     AccessRemediation,
     AuditEvent,
     AzureAiEndpointUrl,
+    BedrockEndpointUrl,
     CognitiveServicesResourceId,
     CredentialReference,
     DeclaredDeployment,
@@ -238,6 +239,34 @@ KEYED_ENDPOINT_NOTES: tuple[str, ...] = (
     "An API key can't list a resource's deployments, so the ones to publish are declared.",
 )
 
+BEDROCK_ENDPOINT_NOTES: tuple[str, ...] = (
+    "MOSAIC reaches AWS Bedrock with a Bedrock API key from Key Vault. It stores only the "
+    "secret's identifier, and reads the key only to confirm it's there. API Management reads the "
+    "key from Key Vault itself.",
+    "MOSAIC doesn't send the key to AWS to check it, so the first request through a pool is what "
+    "tells whether AWS accepts it.",
+    "A Bedrock API key can't list models, so the model IDs to pool are declared. MOSAIC serves "
+    "them only as members of a model pool.",
+)
+
+
+@dataclass(frozen=True)
+class _KeyedTarget:
+    """Where an endpoint registered with an API key points, whichever provider serves it."""
+
+    host: str
+    origin: str
+    default_name: str
+    # The stem of the secret name MOSAIC keeps a pasted key under.
+    key_name: str
+    account_name: str | None = None
+    project_name: str | None = None
+    location: str | None = None
+    notes: tuple[str, ...] = KEYED_ENDPOINT_NOTES
+    # Seeds the credential reference's ID beside the origin. A Bedrock host can also be registered
+    # as an OpenAI-compatible endpoint, whose credential is seeded by its URL alone.
+    credential_seed: tuple[str, ...] = ()
+
 
 def _overlap_message(
     requested: CognitiveServicesResourceId, existing: CognitiveServicesResourceId, name: str
@@ -357,6 +386,8 @@ class ModelEndpointService:
     async def register(self, actor: Actor, request: ModelEndpointCreate) -> ModelEndpoint:
         if request.azure_resource_id:
             return await self._register_azure(actor, request)
+        if request.provider == ModelProvider.AWS_BEDROCK:
+            return await self._register_bedrock(actor, request)
         if request.provider != ModelProvider.OPENAI_COMPATIBLE:
             return await self._register_keyed(actor, request)
         return await self._register_compatible(actor, request)
@@ -499,6 +530,62 @@ class ModelEndpointService:
         assert request.provider is not None
         url = AzureAiEndpointUrl.parse(str(request.endpoint))
         await self._refuse_registered_account(actor.tenant_id, url.subdomain)
+        target = _KeyedTarget(
+            host=url.host,
+            origin=url.origin,
+            default_name=url.project_name or url.subdomain,
+            key_name=url.subdomain,
+            account_name=url.subdomain,
+            project_name=url.project_name,
+        )
+        endpoint_id = deterministic_id("endpoint", actor.tenant_id, "apikey", url.subdomain)
+        return await self._register_with_key(actor, request, target, endpoint_id)
+
+    async def _register_bedrock(
+        self, actor: Actor, request: ModelEndpointCreate
+    ) -> ModelEndpoint:
+        """Register an AWS Bedrock host, reached with a Bedrock API key held in Key Vault.
+
+        Every AWS account in a region shares the region's hosts, so a host is registered once.
+        MOSAIC never sends the key to AWS: it confirms the key is in Key Vault, and the first
+        request through a pool is what tells whether AWS accepts it (ADR 0024).
+        """
+
+        assert request.endpoint is not None
+        url = BedrockEndpointUrl.parse(str(request.endpoint))
+        for existing in await self._repository.list_endpoints(actor.tenant_id):
+            if existing.is_bedrock() and urlparse(str(existing.endpoint)).hostname == url.host:
+                raise ConflictError(
+                    f"{url.host} is already registered, as {existing.name}. To use another "
+                    "Bedrock API key, replace that endpoint's key.",
+                    details={"id": existing.id, "name": existing.name},
+                )
+        same_url = await self._repository.find_endpoint_by_url(actor.tenant_id, url.origin)
+        if same_url:
+            raise ConflictError(
+                "This endpoint URL is already registered with MOSAIC",
+                details={"id": same_url.id, "name": same_url.name},
+            )
+        target = _KeyedTarget(
+            host=url.host,
+            origin=url.origin,
+            default_name=url.host,
+            key_name=url.slug,
+            location=url.region,
+            notes=BEDROCK_ENDPOINT_NOTES,
+            credential_seed=("bedrock",),
+        )
+        endpoint_id = deterministic_id("endpoint", actor.tenant_id, "bedrock", url.host)
+        return await self._register_with_key(actor, request, target, endpoint_id)
+
+    async def _register_with_key(
+        self,
+        actor: Actor,
+        request: ModelEndpointCreate,
+        target: _KeyedTarget,
+        endpoint_id: str,
+    ) -> ModelEndpoint:
+        assert request.provider is not None
         try:
             declarations = validate_declarations(list(request.deployments or []), request.provider)
         except ValueError as error:
@@ -509,21 +596,20 @@ class ModelEndpointService:
             _validate_environment_key(
                 {environment.key for environment in catalog.environments}, request.environment
             )
-        endpoint_id = deterministic_id("endpoint", actor.tenant_id, "apikey", url.subdomain)
         if request.api_key is None:
             assert request.credential_secret_uri is not None
             secret = KeyVaultSecretId.parse(str(request.credential_secret_uri))
             return await self._create_keyed(
-                actor, request, url, endpoint_id, secret, declarations, stored=False
+                actor, request, target, endpoint_id, secret, declarations, stored=False
             )
-        secret = self._new_stored_secret(url.subdomain)
+        secret = self._new_stored_secret(target.key_name)
         assert self._key_store is not None
         try:
             await self._key_store.put(
                 secret, request.api_key, tags=self._stored_key_tags(endpoint_id)
             )
             return await self._create_keyed(
-                actor, request, url, endpoint_id, secret, declarations, stored=True
+                actor, request, target, endpoint_id, secret, declarations, stored=True
             )
         except BaseException:
             # The write may have reached Key Vault even if the call failed, timed out or was
@@ -536,7 +622,7 @@ class ModelEndpointService:
         self,
         actor: Actor,
         request: ModelEndpointCreate,
-        url: AzureAiEndpointUrl,
+        target: _KeyedTarget,
         endpoint_id: str,
         secret: KeyVaultSecretId,
         declarations: list[DeclaredDeploymentCreate],
@@ -545,19 +631,21 @@ class ModelEndpointService:
     ) -> ModelEndpoint:
         assert request.provider is not None
         credential = CredentialReference(
-            id=deterministic_id("credential", actor.tenant_id, url.origin),
+            id=deterministic_id(
+                "credential", actor.tenant_id, *target.credential_seed, target.origin
+            ),
             tenant_id=actor.tenant_id,
-            name=f"{url.host} API key",
+            name=f"{target.host} API key",
             secret_uri=AnyHttpUrl(secret.versionless),
         )
         endpoint = ModelEndpoint(
             id=endpoint_id,
             tenant_id=actor.tenant_id,
-            name=(request.name or url.project_name or url.subdomain).strip(),
+            name=(request.name or target.default_name).strip(),
             provider=request.provider,
-            endpoint=url.origin,
-            account_name=url.subdomain,
-            project_name=url.project_name,
+            endpoint=target.origin,
+            account_name=target.account_name,
+            project_name=target.project_name,
             environment_label=request.environment_label,
             auth_mode=EndpointAuthMode.API_KEY,
             credential_reference_id=credential.id,
@@ -569,7 +657,9 @@ class ModelEndpointService:
                 for declaration in declarations
             ],
             status=ModelEndpointStatus.PENDING,
-            capabilities=ModelEndpointCapabilities(notes=list(KEYED_ENDPOINT_NOTES)),
+            capabilities=ModelEndpointCapabilities(
+                location=target.location, notes=list(target.notes)
+            ),
         )
         endpoint = await self._apply_key_preflight(endpoint, secret)
         if request.environment is not None:
@@ -810,7 +900,8 @@ class ModelEndpointService:
 
         if not endpoint.uses_backend_key():
             raise ValidationError(
-                "Only an Azure OpenAI or Foundry endpoint reached with an API key takes a new key.",
+                "Only an endpoint MOSAIC reaches with an API key from Key Vault takes a new key: "
+                "an Azure OpenAI or Foundry resource, or AWS Bedrock.",
                 details={"id": endpoint.id, "authMode": str(endpoint.auth_mode)},
             )
         if not endpoint.key_stored_by_mosaic:
@@ -1276,7 +1367,8 @@ class ModelEndpointService:
         unbilled read, whether it accepts it; then it reports whether each gateway's identity can
         read the key too. The key lives in a local for the length of that one call. Every failure
         is recorded rather than raised, so a registration survives a vault that was briefly
-        unreachable.
+        unreachable. AWS has no unbilled read a Bedrock API key can make, so a Bedrock key is read
+        but never sent (ADR 0024).
         """
 
         secret = await self._key_secret(endpoint, secret)
@@ -1289,14 +1381,13 @@ class ModelEndpointService:
         )
         access, status = await self._key_access(endpoint, secret, principal_id, vault_id)
         runtime = await self._key_runtime_access(endpoint.tenant_id, secret, vault_id)
+        notes = BEDROCK_ENDPOINT_NOTES if endpoint.is_bedrock() else KEYED_ENDPOINT_NOTES
         return endpoint.model_copy(
             update={
                 "access": access.model_copy(update={"checked_at": checked_at}),
                 "status": status,
                 "runtime_access": runtime,
-                "capabilities": endpoint.capabilities.model_copy(
-                    update={"notes": list(KEYED_ENDPOINT_NOTES)}
-                ),
+                "capabilities": endpoint.capabilities.model_copy(update={"notes": list(notes)}),
                 "updated_at": utc_now(),
             }
         )
@@ -1325,7 +1416,8 @@ class ModelEndpointService:
         remediation = secret_reader_remediation(
             secret.vault_name, vault_id, principal_id=principal_id, mosaic=True
         )
-        if self._secret_resolver is None or self._key_probe is None:
+        bedrock = endpoint.is_bedrock()
+        if self._secret_resolver is None or (self._key_probe is None and not bedrock):
             return (
                 EndpointAccess(
                     can_read=False,
@@ -1380,20 +1472,34 @@ class ModelEndpointService:
             )
         try:
             if key != key.strip():
-                # A key stored from a file often keeps the file's final line break. No Azure key
-                # has one, and the gateway would send it as it is, so it's caught here.
+                # A key stored from a file often keeps the file's final line break. No API key has
+                # one, and the gateway would send it as it is, so it's caught here.
                 return (
                     EndpointAccess(
                         can_read=False,
                         evaluation=AccessEvaluation.PROBE,
                         message=(
                             f"The API key in Key Vault {secret.vault_name} starts or ends with a "
-                            "space or a line break, which no Azure key has. Store the key alone, "
+                            "space or a line break, which no API key has. Store the key alone, "
                             "and if you store it from a file, without a line break at its end."
                         ),
                     ),
                     ModelEndpointStatus.DEGRADED,
                 )
+            if bedrock:
+                return (
+                    EndpointAccess(
+                        can_read=False,
+                        evaluation=AccessEvaluation.NOT_EVALUATED,
+                        message=(
+                            "MOSAIC read the Bedrock API key from Key Vault. It doesn't send keys "
+                            "to AWS to check them, so the first request through a pool is what "
+                            "tells whether AWS accepts it."
+                        ),
+                    ),
+                    ModelEndpointStatus.PENDING,
+                )
+            assert self._key_probe is not None
             result = await self._key_probe(str(endpoint.endpoint).rstrip("/"), key)
         finally:
             del key
@@ -1525,6 +1631,12 @@ class ModelEndpointService:
 
     async def start_sync(self, actor: Actor, endpoint_id: str) -> ModelEndpointSyncRun:
         endpoint = await self.get_endpoint(actor, endpoint_id)
+        if endpoint.is_bedrock():
+            raise ConflictError(
+                "MOSAIC can't list AWS Bedrock's models with a Bedrock API key. Declare the model "
+                "IDs to pool instead, and check access again to re-read the key.",
+                details={"authMode": str(endpoint.auth_mode)},
+            )
         if endpoint.uses_backend_key():
             raise ConflictError(
                 "MOSAIC can't list a resource's deployments with an API key: Foundry lists them "

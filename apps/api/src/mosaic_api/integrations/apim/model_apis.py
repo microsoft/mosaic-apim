@@ -27,6 +27,7 @@ from mosaic_api.domain import (
     ModelProvider,
     Publication,
     apim_slug,
+    bedrock_region,
     default_api_shape,
     gateway_tier,
     publication_slug,
@@ -266,15 +267,18 @@ _FOUNDRY_HOST_SUFFIXES: tuple[str, ...] = (
 
 
 def anthropic_origin(endpoint: str) -> str:
-    """The origin that serves the Anthropic Messages API for a Foundry resource.
+    """The origin that serves the Anthropic Messages API for a Foundry resource or AWS Bedrock.
 
     Foundry serves Anthropic models only on the resource's ``services.ai.azure.com`` host, while
     ARM reports the ``cognitiveservices.azure.com`` host as the account's endpoint. Both carry the
     account's custom subdomain, so the one is derived from the other. A host that carries no
-    subdomain this way, such as a regional endpoint, is refused rather than guessed at.
+    subdomain this way, such as a regional endpoint, is refused rather than guessed at. An AWS
+    Bedrock host serves the Anthropic Messages API itself.
     """
 
     host = (urlsplit(endpoint).hostname or "").casefold()
+    if bedrock_region(host) is not None:
+        return f"https://{host}"
     for suffix in _FOUNDRY_HOST_SUFFIXES:
         subdomain = host.removesuffix(suffix)
         if subdomain != host and subdomain and "." not in subdomain:
@@ -492,7 +496,7 @@ def classify_deployment(
 
 
 def _anthropic_fit(endpoint: str, gateway_sku: str | None) -> DeploymentFit:
-    """Whether and how a Claude deployment on a Foundry resource publishes through a gateway."""
+    """Whether and how a Claude deployment on Foundry or AWS Bedrock is served through a gateway."""
 
     chat = DeploymentCapability.CHAT
     try:
@@ -565,12 +569,17 @@ def assess_declared_deployment(
     """
 
     if not shape_fits_provider(shape, provider):
-        return DeploymentFit(
-            DeploymentCapability.CHAT,
-            None,
-            "An Azure OpenAI resource serves only the Azure OpenAI API, so MOSAIC can't publish "
-            "this deployment with the API it was declared with.",
-        )
+        if provider == ModelProvider.AWS_BEDROCK:
+            reason = (
+                "MOSAIC reaches AWS Bedrock only through its Anthropic Messages API, so it can't "
+                "serve this model with the API it was declared with."
+            )
+        else:
+            reason = (
+                "An Azure OpenAI resource serves only the Azure OpenAI API, so MOSAIC can't "
+                "publish this deployment with the API it was declared with."
+            )
+        return DeploymentFit(DeploymentCapability.CHAT, None, reason)
     if shape == ApiShape.ANTHROPIC_MESSAGES:
         return _anthropic_fit(endpoint, gateway_sku)
     return DeploymentFit(DeploymentCapability.CHAT, ApiShape(shape))

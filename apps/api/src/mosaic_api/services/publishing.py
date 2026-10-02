@@ -568,6 +568,12 @@ class PublishingService:
                 "publish from them yet.",
                 details={"modelEndpointId": endpoint.id, "provider": str(endpoint.provider)},
             )
+        if endpoint.is_bedrock():
+            raise ValidationError(
+                "MOSAIC serves AWS Bedrock models only through a model pool. Add this model to a "
+                "pool on the gateway instead.",
+                details={"modelEndpointId": endpoint.id, "provider": str(endpoint.provider)},
+            )
         deployment = await self._require_known_deployment(
             actor, endpoint, request.deployment_name
         )
@@ -875,7 +881,8 @@ class PublishingService:
         catalog = await load_environment_catalog(self._environments, actor.tenant_id)
         candidates: list[PublishableModel] = []
         for endpoint in endpoints:
-            if endpoint.provider == ModelProvider.OPENAI_COMPATIBLE:
+            # A Bedrock model is served only through a pool, which is where it's offered.
+            if endpoint.provider == ModelProvider.OPENAI_COMPATIBLE or endpoint.is_bedrock():
                 continue
             deployments: list[ObservedModelDeployment | DeclaredDeployment]
             if endpoint.uses_backend_key():
