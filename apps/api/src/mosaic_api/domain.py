@@ -143,6 +143,9 @@ def deterministic_id(prefix: str, *parts: str) -> str:
 # A caller names the cost center a call is charged to with this header. See ADR 0022.
 COST_CENTER_HEADER = "x-mosaic-cost-center"
 COST_CENTER_CODE_PATTERN = re.compile(r"[A-Za-z0-9._-]{1,64}")
+# The reference to the MCP call a published MCP server's model call is made for. The MCP policy
+# sets it to the call's request ID; the server copies it onto its model calls. See ADR 0025.
+ON_BEHALF_HEADER = "x-mosaic-on-behalf-of"
 GENERAL_COST_CENTER_CODE = "general"
 GENERAL_COST_CENTER_NAME = "General"
 
@@ -2246,6 +2249,18 @@ class McpAccessGrant(MosaicModel):
         return self.subject.kind == EntitlementSubjectKind.SECURITY_GROUP
 
 
+class McpModelCaller(MosaicModel):
+    """The application an MCP server calls governed models as, exactly as an apply compiled it.
+
+    Its model calls carry the MCP call's reference, and MOSAIC attributes them to the MCP call's
+    caller only when the model was called by this application. See ADR 0025.
+    """
+
+    principal_id: str
+    object_id: str
+    display_name: str
+
+
 class McpAccessSnapshot(MosaicModel):
     """The grants an MCP publication's fragment enforces, exactly as they were applied."""
 
@@ -2257,6 +2272,7 @@ class McpAccessSnapshot(MosaicModel):
     grants: list[McpAccessGrant] = Field(default_factory=list)
     # MCP servers carry no tokens, so their pools count calls only.
     pools: list[AppliedCostCenterPool] = Field(default_factory=list)
+    model_caller: McpModelCaller | None = Field(default=None, exclude_if=_unset)
 
 
 class Publication(Entity):
@@ -2379,6 +2395,10 @@ class McpPublication(Entity):
     last_error: str | None = None
     applied_access: McpAccessSnapshot | None = None
     access_state: Literal["pending", "applying", "applied", "failed", "unknown"] = "pending"
+    # The application principal the server's tools call governed models as, when an administrator
+    # names one. Its model calls are then attributed to the person each MCP call served, never
+    # authorized by them. The applied snapshot's ``model_caller`` says what's live. See ADR 0025.
+    model_caller_id: str | None = Field(default=None, exclude_if=_unset)
 
     def created_resources(self) -> list[PublishedResource]:
         """The subset rollback and unpublish are allowed to delete."""
@@ -3270,6 +3290,12 @@ class McpPublicationCreate(MosaicModel):
 
 class McpPublicationUpdate(MosaicModel):
     display_name: str | None = Field(default=None, min_length=1, max_length=200)
+
+
+class McpModelCallerUpdate(MosaicModel):
+    """The application principal an MCP server's tools call governed models as. See ADR 0025."""
+
+    principal_id: str = Field(min_length=1, max_length=128)
 
 
 class ConnectionOperation(MosaicModel):

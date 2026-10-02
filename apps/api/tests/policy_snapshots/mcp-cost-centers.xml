@@ -144,5 +144,6 @@ return "Bearer error=\"insufficient_scope\", scope=\"api://22222222-2222-2222-22
   <set-header name="Ocp-Apim-Subscription-Key" exists-action="delete" />
   <set-header name="api-key" exists-action="delete" />
   <set-header name="x-mosaic-cost-center" exists-action="delete" />
+  <set-header name="x-mosaic-on-behalf-of" exists-action="delete" />
   <set-query-parameter name="subscription-key" exists-action="delete" />
 </fragment>

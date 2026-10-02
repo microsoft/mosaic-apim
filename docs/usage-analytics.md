@@ -24,7 +24,10 @@ flowchart LR
 1. The policy MOSAIC applies to a model API or MCP server checks each call against the caller's
    grants. When it lets a call through, it adds a trace that names the grant it matched, the member
    for a security-group grant, and the calling client application:
-   `mosaic-attribution v=1 g=<grant> m=<object ID> a=<client ID>`. When it refuses a call, the
+   `mosaic-attribution v=1 g=<grant> m=<object ID> a=<client ID>`. A model call's trace adds
+   `r=`, the MCP call an MCP server's application made it for, and an MCP server that calls models
+   as an application adds `r=` and `i=`; see
+   [MCP servers that call models](mcp-servers-that-call-models.md). When it refuses a call, the
    trace names the reason: `mosaic-deny v=1 r=<reason>`.
 2. The API's `azuremonitor` diagnostic logs the call, traces included, at Information. For a model
    API, its LLM logs add the call's prompt, completion, and total tokens, and its model and

@@ -43,17 +43,21 @@ from test_access_policy import (
     _unmetered,
 )
 from test_cost_center_policy import _representative_mcp_snapshot, _representative_model_snapshot
+from test_mcp_access_policy import _ATTRIBUTION_MESSAGE as _MCP_ATTRIBUTION_MESSAGE
+from test_mcp_access_policy import _LINKED_ATTRIBUTION_MESSAGE, MODEL_CALLER
 from test_mcp_access_policy import _app_grant as _mcp_app_grant
 from test_mcp_access_policy import _enforcement as _mcp_enforcement
 from test_mcp_access_policy import _grant as _mcp_grant
 from test_mcp_access_policy import _group_grant as _mcp_group_grant
+from test_mcp_access_policy import _model_caller as _mcp_model_caller
 from test_mcp_access_policy import _render as _mcp_render
 from test_mcp_access_policy import _snapshot as _mcp_snapshot
 
-# The variable, or "-" when it's empty or blank. The backreference holds both reads to one value.
+# The value, or "-" when it's empty or blank. The backreference holds both reads to one value.
 _GUARDED = re.compile(r'@\(String\.IsNullOrWhiteSpace\((?P<value>.+)\) \? "-" : (?P=value)\)')
 _BARE = re.compile(r"@\((?P<value>.+)\)")
 _VARIABLE = re.compile(r'\(string\)context\.Variables\["(?P<name>[a-z-]+)"\]')
+_LITERAL = re.compile(r'"(?:[^"\\]|\\.)*"')
 _TERM = re.compile(r'"(?:[^"\\]|\\.)*"|\(string\)context\.Variables\["[a-z-]+"\]')
 # Elements whose children run for every call that reaches them, unlike a choose's.
 _UNCONDITIONAL = frozenset({"fragment", "policies", "inbound", "backend", "outbound", "on-error"})
@@ -61,15 +65,41 @@ _UNCONDITIONAL = frozenset({"fragment", "policies", "inbound", "backend", "outbo
 GRANT = grant_counter_identity(_publication(), _grant())
 MEMBER = "00000001-3333-3333-3333-333333333333"
 CLIENT = "44444444-4444-4444-4444-444444444444"
+# The MCP call an MCP server's model call names.
+REFERENCE = "55555555-5555-5555-5555-555555555555"
 # What the trace's variables hold when it runs, for each way a call is authorized. A token without
-# exactly one azp claim records no client, as a key call doesn't.
-KEY_CALL = {"mosaic-grant": GRANT, "mosaic-member": "", "mosaic-client": ""}
-TOKEN_CALL = {"mosaic-grant": GRANT, "mosaic-member": "", "mosaic-client": CLIENT}
-TOKEN_WITHOUT_CLIENT = {"mosaic-grant": GRANT, "mosaic-member": "", "mosaic-client": ""}
-GROUP_MEMBER_CALL = {"mosaic-grant": GRANT, "mosaic-member": MEMBER, "mosaic-client": CLIENT}
+# exactly one azp claim records no client, as a key call doesn't. Only an application's model call
+# can name an MCP call, and a malformed reference records "!".
+KEY_CALL = {"mosaic-grant": GRANT, "mosaic-member": "", "mosaic-client": "", "mosaic-mcp-call": ""}
+TOKEN_CALL = {
+    "mosaic-grant": GRANT,
+    "mosaic-member": "",
+    "mosaic-client": CLIENT,
+    "mosaic-mcp-call": "",
+}
+TOKEN_WITHOUT_CLIENT = {
+    "mosaic-grant": GRANT,
+    "mosaic-member": "",
+    "mosaic-client": "",
+    "mosaic-mcp-call": "",
+}
+GROUP_MEMBER_CALL = {
+    "mosaic-grant": GRANT,
+    "mosaic-member": MEMBER,
+    "mosaic-client": CLIENT,
+    "mosaic-mcp-call": "",
+}
+REFERENCE_CALL = {**TOKEN_CALL, "mosaic-mcp-call": REFERENCE}
+MALFORMED_REFERENCE_CALL = {**TOKEN_CALL, "mosaic-mcp-call": "!"}
 CALLS = (KEY_CALL, TOKEN_CALL, TOKEN_WITHOUT_CLIENT, GROUP_MEMBER_CALL)
-DIRECT = ("mosaic-grant", "mosaic-client")
-WITH_GROUPS = ("mosaic-grant", "mosaic-member", "mosaic-client")
+MODEL_DIRECT = ("mosaic-grant", "mosaic-client", "mosaic-mcp-call")
+MODEL_WITH_GROUPS = ("mosaic-grant", "mosaic-member", "mosaic-client", "mosaic-mcp-call")
+MCP_WITH_GROUPS = ("mosaic-grant", "mosaic-member", "mosaic-client")
+MCP_LINKED = (*MCP_WITH_GROUPS, "mosaic-mcp-call", "mosaic-model-caller")
+# The message keys each kind of trace carries, in order.
+MODEL_KEYS = ("g", "m", "a", "r")
+MCP_KEYS = ("g", "m", "a")
+LINKED_KEYS = ("g", "m", "a", "r", "i")
 
 
 def _read(expression: str) -> str:
@@ -78,14 +108,24 @@ def _read(expression: str) -> str:
     return variable["name"]
 
 
+def _value(expression: str, variables: Mapping[str, str]) -> str:
+    """A variable read, or a literal the policy compiled in, as API Management evaluates it."""
+
+    if _LITERAL.fullmatch(expression):
+        literal = json.loads(expression)
+        assert isinstance(literal, str)
+        return literal
+    return variables[_read(expression)]
+
+
 def _recorded(value: str, variables: Mapping[str, str]) -> str:
     """What API Management records for a metadata value MOSAIC writes, given the variables."""
 
     if guarded := _GUARDED.fullmatch(value):
-        recorded = variables[_read(guarded["value"])]
+        recorded = _value(guarded["value"], variables)
         return "-" if not recorded.strip() else recorded
     if bare := _BARE.fullmatch(value):
-        return variables[_read(bare["value"])]
+        return _value(bare["value"], variables)
     assert not value.startswith("@"), f"No model for the expression {value!r}"
     return value
 
@@ -97,9 +137,7 @@ def _message(expression: str, variables: Mapping[str, str]) -> str:
     assert body is not None
     terms = [term.group() for term in _TERM.finditer(body["value"])]
     assert " + ".join(terms) == body["value"]
-    return "".join(
-        json.loads(term) if term.startswith('"') else variables[_read(term)] for term in terms
-    )
+    return "".join(_value(term, variables) for term in terms)
 
 
 def _usage_query_keys(traces: str) -> dict[str, str]:
@@ -175,32 +213,78 @@ def _mcp_with_group_and_direct_grants() -> str:
     return documents.fragment_xml
 
 
+def _mcp_with_a_model_caller() -> str:
+    snapshot = _mcp_snapshot(
+        grants=[_mcp_grant(), _mcp_group_grant(2)], model_caller=_mcp_model_caller()
+    )
+    return _mcp_render(snapshot=snapshot).fragment_xml
+
+
+def _expected_text(call: Mapping[str, str], keys: tuple[str, ...]) -> str:
+    values = {
+        "g": call["mosaic-grant"],
+        "m": call["mosaic-member"],
+        "a": call["mosaic-client"],
+        "r": call["mosaic-mcp-call"],
+        "i": MODEL_CALLER,
+    }
+    return "mosaic-attribution v=1 " + " ".join(f"{key}={values[key]}" for key in keys)
+
+
 @pytest.mark.parametrize(
-    ("fragment", "names", "calls"),
+    ("fragment", "names", "expression", "keys", "calls"),
     [
-        pytest.param(_key_only_direct_grant, DIRECT, [KEY_CALL], id="model-key-only-direct"),
+        pytest.param(
+            _key_only_direct_grant,
+            MODEL_DIRECT,
+            _ATTRIBUTION_MESSAGE,
+            MODEL_KEYS,
+            [KEY_CALL],
+            id="model-key-only-direct",
+        ),
         pytest.param(
             _token_only_direct_grant,
-            DIRECT,
-            [TOKEN_CALL, TOKEN_WITHOUT_CLIENT],
+            MODEL_DIRECT,
+            _ATTRIBUTION_MESSAGE,
+            MODEL_KEYS,
+            [TOKEN_CALL, TOKEN_WITHOUT_CLIENT, REFERENCE_CALL, MALFORMED_REFERENCE_CALL],
             id="model-token-only-direct",
         ),
         pytest.param(
             _model_with_group_and_direct_grants,
-            WITH_GROUPS,
-            list(CALLS),
+            MODEL_WITH_GROUPS,
+            _ATTRIBUTION_MESSAGE,
+            MODEL_KEYS,
+            [*CALLS, REFERENCE_CALL],
             id="model-group-and-direct",
         ),
         pytest.param(
             _mcp_with_group_and_direct_grants,
-            WITH_GROUPS,
+            MCP_WITH_GROUPS,
+            _MCP_ATTRIBUTION_MESSAGE,
+            MCP_KEYS,
             [TOKEN_CALL, TOKEN_WITHOUT_CLIENT, GROUP_MEMBER_CALL],
             id="mcp-group-and-direct",
+        ),
+        pytest.param(
+            _mcp_with_a_model_caller,
+            MCP_LINKED,
+            _LINKED_ATTRIBUTION_MESSAGE,
+            LINKED_KEYS,
+            [
+                {**TOKEN_CALL, "mosaic-mcp-call": REFERENCE},
+                {**GROUP_MEMBER_CALL, "mosaic-mcp-call": REFERENCE},
+            ],
+            id="mcp-with-a-model-caller",
         ),
     ],
 )
 def test_every_property_is_recorded_even_when_the_call_has_no_value_for_it(
-    fragment: Callable[[], str], names: tuple[str, ...], calls: list[dict[str, str]]
+    fragment: Callable[[], str],
+    names: tuple[str, ...],
+    expression: str,
+    keys: tuple[str, ...],
+    calls: list[dict[str, str]],
 ) -> None:
     trace = _attribution_trace(fragment())
     metadata = {item.attrib["name"]: item.attrib["value"] for item in trace.findall("metadata")}
@@ -209,18 +293,19 @@ def test_every_property_is_recorded_even_when_the_call_has_no_value_for_it(
     for name, value in metadata.items():
         guarded = _GUARDED.fullmatch(value)
         assert guarded is not None, f"{name} can evaluate to an empty value: {value}"
-        assert _read(guarded["value"]) == name
-    # Exactly as it was, because the usage queries parse it.
+        if name == "mosaic-model-caller":
+            assert json.loads(guarded["value"]) == MODEL_CALLER
+        else:
+            assert _read(guarded["value"]) == name
+    # The usage queries parse it, and readers that predate a key ignore it.
     message = trace.findtext("message") or ""
-    assert message == _ATTRIBUTION_MESSAGE
+    assert message == expression
     for call in calls:
         recorded = {name: _recorded(value, call) for name, value in metadata.items()}
-        assert recorded == {name: call[name] or TRACE_METADATA_ABSENT for name in names}
+        expected = {**call, "mosaic-model-caller": MODEL_CALLER}
+        assert recorded == {name: expected[name] or TRACE_METADATA_ABSENT for name in names}
         text = _message(message, call)
-        assert text == (
-            f"mosaic-attribution v=1 g={call['mosaic-grant']} m={call['mosaic-member']} "
-            f"a={call['mosaic-client']}"
-        )
+        assert text == _expected_text(call, keys)
         for placement in ("before", "after", "none"):
             properties = {} if placement == "none" else recorded
             assert _usage_query_keys(_trace_records(text, properties, placement)) == {
@@ -262,15 +347,16 @@ def _documents() -> Iterator[tuple[str, str]]:
     backends = ((McpAuthMode.NONE, None), (McpAuthMode.MANAGED_IDENTITY, "api://backend"))
     for mcp_grants in mcp_grant_sets:
         for auth, audience in backends:
-            mcp = _mcp_render(
-                snapshot=_mcp_snapshot(grants=mcp_grants),
-                backend_auth=auth,
-                backend_audience=audience,
-            )
-            label = f"mcp {auth} grants={len(mcp_grants)}"
-            yield label, mcp.fragment_xml
-            yield f"{label} API policy", mcp.api_policy_xml
-            yield f"{label} metadata policy", mcp.metadata_policy_xml
+            for caller in (None, _mcp_model_caller()):
+                mcp = _mcp_render(
+                    snapshot=_mcp_snapshot(grants=mcp_grants, model_caller=caller),
+                    backend_auth=auth,
+                    backend_audience=audience,
+                )
+                label = f"mcp {auth} grants={len(mcp_grants)} model caller={caller is not None}"
+                yield label, mcp.fragment_xml
+                yield f"{label} API policy", mcp.api_policy_xml
+                yield f"{label} metadata policy", mcp.metadata_policy_xml
     yield "representative mcp", _mcp_render(snapshot=_representative_mcp_snapshot()).fragment_xml
 
 
@@ -310,6 +396,9 @@ def test_no_trace_in_any_governed_document_can_record_an_empty_value() -> None:
                 assert name.strip(), f"{label}: a trace property has no name"
                 guarded = _GUARDED.fullmatch(value)
                 assert guarded is not None, f"{label}: {name} can evaluate to an empty value"
+                if _LITERAL.fullmatch(guarded["value"]):
+                    assert json.loads(guarded["value"]).strip(), f"{label}: {name} is empty"
+                    continue
                 # Reading a variable that hasn't been set fails the call just the same.
                 variable = _read(guarded["value"])
                 assert variable in initialized, f"{label}: {name} reads {variable} before it's set"

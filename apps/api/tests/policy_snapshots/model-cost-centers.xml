@@ -207,11 +207,13 @@
       </return-response>
     </when>
   </choose>
+  <set-variable name="mosaic-mcp-call" value="@{&#10;try {&#10;if (!context.Request.Headers.ContainsKey(&quot;x-mosaic-on-behalf-of&quot;)) { return &quot;&quot;; }&#10;var jwt = context.Variables.ContainsKey(&quot;mosaic-validated-token&quot;) ? context.Variables[&quot;mosaic-validated-token&quot;] as Jwt : null;&#10;if (jwt == null || jwt.Claims == null) { return &quot;&quot;; }&#10;bool application = false;&#10;bool hasRealScopes = false;&#10;if (jwt.Claims.ContainsKey(&quot;scp&quot;)) {&#10;    var scopes = jwt.Claims[&quot;scp&quot;];&#10;    if (scopes != null &amp;&amp; scopes.Length == 1 &amp;&amp; scopes[0] != null) {&#10;        foreach (var scope in scopes[0].Split(' ')) {&#10;            if (String.IsNullOrWhiteSpace(scope) || scope == &quot;/&quot;) { continue; }&#10;            hasRealScopes = true;&#10;        }&#10;    }&#10;}&#10;if (!hasRealScopes &amp;&amp; jwt.Claims.ContainsKey(&quot;roles&quot;)) {&#10;    var roles = jwt.Claims[&quot;roles&quot;];&#10;    application = roles != null &amp;&amp; roles.Contains(&quot;Models.Invoke.Application&quot;);&#10;}&#10;if (!application) { return &quot;&quot;; }&#10;var values = context.Request.Headers[&quot;x-mosaic-on-behalf-of&quot;];&#10;if (values == null || values.Length != 1 || values[0] == null) { return &quot;!&quot;; }&#10;var reference = values[0].Trim();&#10;if (!System.Text.RegularExpressions.Regex.IsMatch(reference, &quot;^[0-9a-fA-F]\u007b8\u007d-[0-9a-fA-F]\u007b4\u007d-[0-9a-fA-F]\u007b4\u007d-[0-9a-fA-F]\u007b4\u007d-[0-9a-fA-F]\u007b12\u007d$&quot;)) { return &quot;!&quot;; }&#10;return reference.ToLowerInvariant();&#10;} catch { return &quot;&quot;; }&#10;}" />
   <trace source="mosaic" severity="information">
-    <message>@("mosaic-attribution v=1 g=" + (string)context.Variables["mosaic-grant"] + " m=" + (string)context.Variables["mosaic-member"] + " a=" + (string)context.Variables["mosaic-client"])</message>
+    <message>@("mosaic-attribution v=1 g=" + (string)context.Variables["mosaic-grant"] + " m=" + (string)context.Variables["mosaic-member"] + " a=" + (string)context.Variables["mosaic-client"] + " r=" + (string)context.Variables["mosaic-mcp-call"])</message>
     <metadata name="mosaic-grant" value="@(String.IsNullOrWhiteSpace((string)context.Variables[&quot;mosaic-grant&quot;]) ? &quot;-&quot; : (string)context.Variables[&quot;mosaic-grant&quot;])" />
     <metadata name="mosaic-member" value="@(String.IsNullOrWhiteSpace((string)context.Variables[&quot;mosaic-member&quot;]) ? &quot;-&quot; : (string)context.Variables[&quot;mosaic-member&quot;])" />
     <metadata name="mosaic-client" value="@(String.IsNullOrWhiteSpace((string)context.Variables[&quot;mosaic-client&quot;]) ? &quot;-&quot; : (string)context.Variables[&quot;mosaic-client&quot;])" />
+    <metadata name="mosaic-mcp-call" value="@(String.IsNullOrWhiteSpace((string)context.Variables[&quot;mosaic-mcp-call&quot;]) ? &quot;-&quot; : (string)context.Variables[&quot;mosaic-mcp-call&quot;])" />
   </trace>
   <choose>
     <when condition="@((string)context.Variables[&quot;mosaic-grant&quot;] == &quot;1e48c4bfb436743094bbb70de287bcd0bbdac045434f569c1472eaa769a05638&quot;)">
@@ -230,6 +232,7 @@
   <set-header name="api-key" exists-action="delete" />
   <set-header name="Authorization" exists-action="delete" />
   <set-header name="x-mosaic-cost-center" exists-action="delete" />
+  <set-header name="x-mosaic-on-behalf-of" exists-action="delete" />
   <set-query-parameter name="subscription-key" exists-action="delete" />
   <authentication-managed-identity resource="https://cognitiveservices.azure.com" />
   <set-backend-service backend-id="mosaic-model" />

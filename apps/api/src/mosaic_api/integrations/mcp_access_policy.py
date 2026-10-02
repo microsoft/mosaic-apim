@@ -9,10 +9,12 @@ from mosaic_api.domain import (
     COST_CENTER_HEADER,
     MCP_MESSAGE_PATH,
     MCP_RESOURCE_METADATA_PREFIX,
+    ON_BEHALF_HEADER,
     EntitlementSubjectKind,
     McpAccessGrant,
     McpAccessSnapshot,
     McpAuthMode,
+    McpModelCaller,
     McpPublication,
     PolicyFacet,
     PolicyFacetKind,
@@ -26,6 +28,7 @@ from mosaic_api.integrations.access_policy import (
     _COST_CENTER_HEADER,
     _TOKEN_GRANT,
     COST_CENTER_DENIED,
+    MCP_CALL,
     _cost_center_ids,
     _expression,
     _grant_counter_key,
@@ -45,6 +48,7 @@ from mosaic_api.integrations.access_policy import (
     append_grant_attribution_trace,
     classify_traces,
     cost_center_details,
+    describe_on_behalf_removal,
     grant_counter_identity,
 )
 from mosaic_api.integrations.apim.policy_semantics import analyze_policy
@@ -175,6 +179,13 @@ def _validate(
         tokens_allowed=False,
         codes={grant.cost_center_code.casefold() for grant in snapshot.grants if grant.enabled},
     )
+    caller = snapshot.model_caller
+    if caller is not None and (
+        not caller.principal_id.strip() or not _GUID.fullmatch(caller.object_id)
+    ):
+        raise ValidationError(
+            "An MCP server's model caller must be an application with a GUID object ID."
+        )
 
 
 def _runtime_origin_lines() -> list[str]:
@@ -363,13 +374,41 @@ def _mcp_authentication(
 
 
 def _strip_credentials(fragment: ET.Element) -> None:
-    for name in ("Authorization", "Ocp-Apim-Subscription-Key", "api-key", COST_CENTER_HEADER):
+    # A caller's own on-behalf header goes too: the server receives only one the gateway set.
+    for name in (
+        "Authorization",
+        "Ocp-Apim-Subscription-Key",
+        "api-key",
+        COST_CENTER_HEADER,
+        ON_BEHALF_HEADER,
+    ):
         ET.SubElement(fragment, "set-header", {"name": name, "exists-action": "delete"})
     ET.SubElement(
         fragment,
         "set-query-parameter",
         {"name": "subscription-key", "exists-action": "delete"},
     )
+
+
+def _pass_reference(fragment: ET.Element) -> None:
+    """Give the server this call's reference to copy onto its model calls. See ADR 0025."""
+
+    header = ET.SubElement(
+        fragment, "set-header", {"name": ON_BEHALF_HEADER, "exists-action": "override"}
+    )
+    ET.SubElement(header, "value").text = f"@({MCP_CALL})"
+
+
+def describe_reference_passing(facet: PolicyFacet, caller: McpModelCaller) -> None:
+    facet.summary = f"Passes this call's reference to the MCP server in {ON_BEHALF_HEADER}."
+    facet.details = [
+        f"The server copies it onto the model calls it makes for this call as "
+        f"{caller.display_name}. MOSAIC attributes their usage to this call's caller, and only "
+        "when that application made them.",
+        "Access, limits and the cost center charged still come from the application's own "
+        "model grant. The reference grants nothing.",
+    ]
+    facet.attributes = {"name": ON_BEHALF_HEADER, "exists-action": "override"}
 
 
 def _api_policy(publication: McpPublication) -> ET.Element:
@@ -474,7 +513,7 @@ def _facets(
             summary="Removes caller credentials before forwarding to the MCP backend.",
             details=[
                 "Authorization, Ocp-Apim-Subscription-Key, api-key and subscription-key are "
-                f"stripped, and so is {COST_CENTER_HEADER}."
+                f"stripped, and so are {COST_CENTER_HEADER} and {ON_BEHALF_HEADER}."
             ],
             managed_by_mosaic=True,
         ),
@@ -598,6 +637,14 @@ def _facets(
             element, analysis.facets, has_group_grants=enabled_group_grants > 0
         ):
             facet.managed_by_mosaic = True
+            if (
+                facet.element == "set-header"
+                and facet.attributes.get("name", "").casefold() == ON_BEHALF_HEADER
+            ):
+                if facet.attributes.get("exists-action") == "delete":
+                    describe_on_behalf_removal(facet, "MCP")
+                elif snapshot.model_caller is not None:
+                    describe_reference_passing(facet, snapshot.model_caller)
             analyzed.append(facet)
     unrecognized = sorted(
         {item for analysis in analyses for item in analysis.unrecognized_elements}
@@ -629,9 +676,21 @@ def render_mcp_policy(
         key=lambda grant: grant_precedence_key(grant.enforcement, grant.entitlement_id),
     )
     grants_for_lookup = [*(grant for grant in grants if not grant.is_group_grant), *group_grants]
+    caller = snapshot.model_caller
     fragment = ET.Element("fragment")
     _mcp_authentication(fragment, publication, snapshot, grants_for_lookup)
-    append_grant_attribution_trace(fragment, grants)
+    if caller is not None:
+        _variable(fragment, "mosaic-mcp-call", "@(context.RequestId.ToString())")
+        append_grant_attribution_trace(
+            fragment,
+            grants,
+            keys=[
+                ("r", MCP_CALL, "mosaic-mcp-call"),
+                ("i", _literal(caller.object_id.lower()), "mosaic-model-caller"),
+            ],
+        )
+    else:
+        append_grant_attribution_trace(fragment, grants)
     _grant_limits(fragment, publication, grants, prefix=_COUNTER_PREFIX)
     codes = {grant.cost_center_code.casefold() for grant in grants}
     _pool_limits(
@@ -642,6 +701,8 @@ def render_mcp_policy(
         prefix=_COUNTER_PREFIX,
     )
     _strip_credentials(fragment)
+    if caller is not None:
+        _pass_reference(fragment)
     if backend_auth == McpAuthMode.MANAGED_IDENTITY:
         assert backend_audience is not None
         ET.SubElement(fragment, "authentication-managed-identity", {"resource": backend_audience})

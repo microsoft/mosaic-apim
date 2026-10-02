@@ -27,6 +27,8 @@ from mosaic_api.domain import (
     McpAuthMode,
     McpEndpoint,
     McpEndpointStatus,
+    McpModelCaller,
+    McpModelCallerUpdate,
     McpPublication,
     McpPublicationCreate,
     McpPublicationUpdate,
@@ -35,6 +37,7 @@ from mosaic_api.domain import (
     McpServerKind,
     McpServerRoute,
     McpTransportType,
+    Principal,
     PublicationStatus,
     PublishAction,
     PublishedResource,
@@ -478,6 +481,67 @@ class McpPublishingService:
             )
             await self._materialize_mcp_server(actor, saved)
             return saved
+
+    async def set_model_caller(
+        self, actor: Actor, publication_id: str, request: McpModelCallerUpdate
+    ) -> McpPublication:
+        """Name the application this server's tools call governed models as. See ADR 0025.
+
+        It's recorded for usage, never for access: the application's own model grants still decide
+        what its calls may do. Like any change to the publication, it applies with the next plan.
+        """
+
+        async with publication_lock(self._repository, actor.tenant_id, publication_id):
+            publication = await self._editable(actor, publication_id)
+            principal = await self._directory.get_principal(actor.tenant_id, request.principal_id)
+            if principal is None:
+                raise NotFoundError(
+                    "No principal has that ID", details={"principalId": request.principal_id}
+                )
+            if not _can_call_models(principal):
+                raise ValidationError(
+                    "An MCP server calls models as an application. Choose a service principal, "
+                    "a managed identity or an agent identity with a GUID object ID.",
+                    details={"principalId": principal.id},
+                )
+            return await self._save_model_caller(actor, publication, principal.id)
+
+    async def clear_model_caller(self, actor: Actor, publication_id: str) -> McpPublication:
+        """Stop attributing the server's model calls to its callers, from its next apply."""
+
+        async with publication_lock(self._repository, actor.tenant_id, publication_id):
+            publication = await self._editable(actor, publication_id)
+            return await self._save_model_caller(actor, publication, None)
+
+    async def _editable(self, actor: Actor, publication_id: str) -> McpPublication:
+        publication = await self.get_publication(actor, publication_id)
+        if publication.access_state == "unknown":
+            raise ConflictError("Recover this publication's interrupted apply before editing it")
+        return publication
+
+    async def _save_model_caller(
+        self, actor: Actor, publication: McpPublication, principal_id: str | None
+    ) -> McpPublication:
+        if publication.model_caller_id == principal_id:
+            return publication
+        updated = publication.model_copy(
+            update={
+                "model_caller_id": principal_id,
+                "last_plan_id": None,
+                "last_plan_digest": None,
+                "status": (
+                    PublicationStatus.DRAFT
+                    if publication.status == PublicationStatus.PLANNED
+                    else publication.status
+                ),
+                "updated_at": utc_now(),
+            }
+        )
+        event = self._audit(actor, "mcpPublication.modelCallerChanged", publication.id)
+        details = {"previous": publication.model_caller_id, "modelCaller": principal_id}
+        return await self._repository.save_mcp_publication(
+            updated, event.model_copy(update={"details": details})
+        )
 
     async def delete(self, actor: Actor, publication_id: str) -> None:
         async with publication_lock(self._repository, actor.tenant_id, publication_id):
@@ -1224,15 +1288,66 @@ class McpPublishingService:
                 if grant.entitlement_id not in included
             )
         grants.sort(key=lambda grant: grant.entitlement_id)
+        model_caller = await self._model_caller(publication, warnings)
         return (
             McpAccessSnapshot(
                 version=publication.applied_access.version + 1 if publication.applied_access else 1,
                 audience=self._runtime_client_id,
                 grants=grants,
                 pools=sorted(pools.values(), key=lambda pool: pool.cost_center_id),
+                model_caller=model_caller,
             ),
             warnings,
         )
+
+    async def _model_caller(
+        self, publication: McpPublication, warnings: list[str]
+    ) -> McpModelCaller | None:
+        """The application the server calls models as, as the policy compiles it. See ADR 0025.
+
+        One MOSAIC can no longer name as an application compiles to nothing, with a warning:
+        attribution is never a reason to hold back the server's own access.
+        """
+
+        if publication.model_caller_id is None:
+            return None
+        principal = await self._directory.get_principal(
+            publication.tenant_id, publication.model_caller_id
+        )
+        if principal is None or not _can_call_models(principal):
+            warnings.append(
+                "The application this MCP server calls models as is no longer one MOSAIC can "
+                "name, so its model calls won't be attributed to the people it serves. Choose it "
+                "again, or clear it."
+            )
+            return None
+        caller = McpModelCaller(
+            principal_id=principal.id,
+            object_id=principal.object_id.lower(),
+            display_name=principal.label or principal.object_id,
+        )
+        if not await self._has_model_grant_here(publication, principal):
+            warnings.append(
+                f"{caller.display_name} has no enabled direct grant on a model this gateway "
+                "publishes. Unless a security group gives it access, its model calls will be "
+                "refused. MOSAIC attributes only calls made through this gateway."
+            )
+        return caller
+
+    async def _has_model_grant_here(
+        self, publication: McpPublication, principal: Principal
+    ) -> bool:
+        for entitlement in await self._entitlements.list_entitlements(
+            publication.tenant_id, subject_id=principal.id
+        ):
+            if not entitlement.enabled or entitlement.resource.kind != "modelApi":
+                continue
+            model = await self._repository.get_model_api(
+                publication.tenant_id, entitlement.resource.id
+            )
+            if model is not None and model.gateway_id == publication.gateway_id:
+                return True
+        return False
 
     @staticmethod
     def _warnings(
@@ -2116,4 +2231,12 @@ def _is_guid(value: str) -> bool:
     return len(parts) == 5 and all(
         len(part) == length and all(char in "0123456789abcdefABCDEF" for char in part)
         for part, length in zip(parts, lengths, strict=True)
+    )
+
+
+def _can_call_models(principal: Principal) -> bool:
+    """Whether an MCP server can call models as this principal: an application, by object ID."""
+
+    return subject_kind_for(principal.kind) == EntitlementSubjectKind.APPLICATION and _is_guid(
+        principal.object_id
     )

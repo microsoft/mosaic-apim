@@ -1517,6 +1517,13 @@ URL:
 See [Connect to MCP servers published through MOSAIC](docs/connect-to-mcp-servers.md) for people,
 agent identities, agent users, security groups and troubleshooting.
 
+An MCP server whose tools call governed models through MOSAIC does so as its own application, on
+that application's own model grant. Name that application on the published server, and the server
+receives each call's reference to pass on, so its model calls can be attributed to the people it
+serves without giving them a grant on the model. See
+[MCP servers that call models](docs/mcp-servers-that-call-models.md) and
+[ADR 0025](docs/adr/0025-mcp-model-calls-on-a-persons-behalf.md).
+
 **Unpublish** on the MCP servers page opens the same review as for models, and its routes are
 `POST /mcp-publications/{id}/unpublish-plan` and `POST /mcp-publications/{id}/unpublish?plan={planId}`.
 The review lists the grants whose Entra tokens the gateway stops accepting. The portal lists a

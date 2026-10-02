@@ -1,6 +1,9 @@
 # ADR 0017: Enforce grants on MCP servers published through API Management
 
-**Status:** Accepted
+**Status:** Accepted. Amended by [ADR 0025](0025-mcp-model-calls-on-a-persons-behalf.md): an MCP
+server that names the application it calls models as receives each call's reference, so those model
+calls can be attributed to the call's caller, and every MCP server removes a reference a caller
+sent.
 
 ## Context
 
