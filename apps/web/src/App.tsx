@@ -31,6 +31,7 @@ import {
   SettingsRegular,
   ShieldKeyholeRegular,
   SignOutRegular,
+  StackRegular,
 } from '@fluentui/react-icons'
 import { useMsal } from '@azure/msal-react'
 import { type FormEvent, type ReactNode, useMemo, useState } from 'react'
@@ -56,6 +57,8 @@ import { IdentityPage } from './pages/IdentityPage'
 import { McpsPage } from './pages/McpsPage'
 import { ModelsPage } from './pages/ModelsPage'
 import { PoliciesPage } from './pages/PoliciesPage'
+import { PoolDetailPage } from './pages/PoolDetailPage'
+import { PoolsPage } from './pages/PoolsPage'
 import { PricingPage } from './pages/PricingPage'
 import { SettingsPage } from './pages/SettingsPage'
 import { SupportPage } from './pages/SupportPage'
@@ -73,6 +76,7 @@ const primaryNavigation: NavigationItem[] = [
   { to: '/dashboard', label: 'Dashboard', icon: <HomeRegular /> },
   { to: '/gateways', label: 'Gateways', icon: <PlugConnectedRegular /> },
   { to: '/models', label: 'Models', icon: <CloudDatabaseRegular /> },
+  { to: '/pools', label: 'Pools', icon: <StackRegular /> },
   { to: '/mcps', label: 'MCPs', icon: <PuzzlePieceRegular /> },
   { to: '/identity', label: 'Identity', icon: <PersonAccountsRegular /> },
   { to: '/entitlements', label: 'Entitlements', icon: <ShieldKeyholeRegular /> },
@@ -284,6 +288,8 @@ export default function App() {
               <Route path="/gateways" element={<GatewaysPage />} />
               <Route path="/gateways/:gatewayId" element={<GatewayDetailPage />} />
               <Route path="/models" element={<ModelsPage />} />
+              <Route path="/pools" element={<PoolsPage />} />
+              <Route path="/pools/:poolId" element={<PoolDetailPage />} />
               <Route path="/mcps" element={<McpsPage />} />
               <Route path="/identity" element={<IdentityPage />} />
               <Route path="/principals" element={<Navigate to="/identity?tab=users" replace />} />

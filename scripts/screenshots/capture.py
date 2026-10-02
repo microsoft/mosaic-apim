@@ -53,6 +53,9 @@ RESOURCE_NAMES = [
     "rg-contoso-partners",
     "rg-contoso-ai",
     "contoso-aoai",
+    # Longer names first, so a suffix of a regional account's name is never left showing.
+    "contoso-foundry-ncus",
+    "contoso-foundry-west",
     "contoso-foundry",
     "contoso-safety",
     "kv-contoso-ai",
@@ -460,6 +463,16 @@ SHOTS: list[Shot] = [
         # Tall enough for the key check, each gateway's verdict, and the declared deployments, and
         # short enough to scroll the endpoints MOSAIC found out of view.
         height=1100,
+    ),
+    Shot("console-pools", "console", "/pools", "light", "Claude evaluation"),
+    Shot(
+        "console-pool-detail",
+        "console",
+        "/pools",
+        "dark",
+        "Anthropic Claude",
+        actions=(click_link("Anthropic Claude"), wait_for_text("Run history")),
+        height=1800,
     ),
     Shot(
         "console-mcps",

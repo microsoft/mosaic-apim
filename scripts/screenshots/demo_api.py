@@ -86,6 +86,13 @@ from mosaic_api.integrations.apim.credentials import ApimCredentialClient, ApimK
 from mosaic_api.integrations.email import EmailMessage, EmailSendResult
 from mosaic_api.integrations.graph.fake import FakeDirectoryLookup
 from mosaic_api.main import create_app
+from mosaic_api.model_pools import (
+    ModelPoolCreate,
+    ModelPoolType,
+    ModelPoolVisibility,
+    PoolMemberSpec,
+    PoolModelSpec,
+)
 from mosaic_api.pricing import DeploymentPricingUpdate, EndpointPricingUpdate, PriceCreate
 from mosaic_api.repositories import GatewayRepository, InMemoryEntitlementRepository
 from mosaic_api.services import (
@@ -106,6 +113,7 @@ from mosaic_api.services.cost_centers import CostCenterService
 from mosaic_api.services.directory import Actor
 from mosaic_api.services.mcp_endpoints import build_mcp_client_factory
 from mosaic_api.services.mcp_publishing import McpPublishingService
+from mosaic_api.services.model_pools import ModelPoolService
 from mosaic_api.services.portal_access import PortalAccessService
 from mosaic_api.services.pricing import PricingService
 from mosaic_api.services.telemetry import TelemetryService
@@ -115,7 +123,9 @@ from mosaic_api.services.usage_rollup import UsageRollupService
 from scripts.screenshots.demo_fakes import (
     AI_RESOURCE_ID,
     DEV_GATEWAY_RESOURCE_ID,
+    FOUNDRY_NORTH_CENTRAL_RESOURCE_ID,
     FOUNDRY_RESOURCE_ID,
+    FOUNDRY_WEST_RESOURCE_ID,
     GATEWAY_RESOURCE_ID,
     KEY_VAULT_ID,
     PARTNER_GATEWAY_RESOURCE_ID,
@@ -517,6 +527,7 @@ class DemoServices:
     portal_access: PortalAccessService
     analytics: AnalyticsService
     budgets: BudgetService
+    pools: ModelPoolService
     clients: list[httpx.AsyncClient] = field(default_factory=list)
 
     async def aclose(self) -> None:
@@ -527,6 +538,7 @@ class DemoServices:
         await self.publishing.aclose()
         await self.mcp_publishing.aclose()
         await self.mcp_endpoints.aclose()
+        await self.pools.aclose()
         for client in self.clients:
             await client.aclose()
 
@@ -631,6 +643,14 @@ def install_demo_services(app: FastAPI, portal_origins: Iterable[str]) -> DemoSe
     state.publishing_service = publishing
     state.mcp_publishing_service = mcp_publishing
     state.mcp_endpoint_service = mcp_endpoints
+    pools = ModelPoolService(
+        state.gateway_repository,
+        endpoint_repository=state.model_endpoint_repository,
+        client_factory=lambda resource: ApimClient(gateway_arm, resource),
+        writer_factory=lambda resource: ApimWriter(gateway_arm, resource),
+        environment_repository=state.environment_repository,
+    )
+    state.model_pool_service = pools
     portal_access = PortalAccessService(
         state.entitlement_service,
         repository=state.entitlement_repository,
@@ -737,6 +757,7 @@ def install_demo_services(app: FastAPI, portal_origins: Iterable[str]) -> DemoSe
         portal_access=portal_access,
         analytics=state.analytics_service,
         budgets=budgets,
+        pools=pools,
         clients=[gateway_http, ai_http, vault_http, mcp_http],
     )
 
@@ -784,8 +805,12 @@ class Estate:
     partner_gateway_id: str = ""
     aoai_endpoint_id: str = ""
     foundry_endpoint_id: str = ""
+    foundry_north_central_endpoint_id: str = ""
+    foundry_west_endpoint_id: str = ""
     partner_foundry_endpoint_id: str = ""
     publications: dict[str, str] = field(default_factory=dict)
+    # Model pool IDs by display name.
+    pools: dict[str, str] = field(default_factory=dict)
     model_apis: dict[str, str] = field(default_factory=dict)
     dev_model_apis: dict[str, str] = field(default_factory=dict)
     mcp_endpoints: dict[str, str] = field(default_factory=dict)
@@ -823,6 +848,15 @@ async def _publish_mcp(
     finished = await services.mcp_publishing.get_run(actor, publication_id, run.id)
     if finished.status != PublishRunStatus.SUCCEEDED:
         raise SeedError(f"Publishing MCP {label} ended {finished.status}: {finished.model_dump()}")
+
+
+async def _publish_pool(services: DemoServices, actor: Actor, pool_id: str, label: str) -> None:
+    plan = await services.pools.plan(actor, pool_id)
+    run = await services.pools.apply(actor, pool_id, plan.id)
+    await services.pools.wait_for_idle()
+    finished = await services.pools.get_run(actor, pool_id, run.id)
+    if finished.status != PublishRunStatus.SUCCEEDED:
+        raise SeedError(f"Publishing pool {label} ended {finished.status}: {finished.model_dump()}")
 
 
 # How long ago the estate's grants were made, other than those that came from a request.
@@ -1076,7 +1110,26 @@ async def seed_estate(services: DemoServices, tenant_id: str) -> Estate:
         ),
     )
     estate.foundry_endpoint_id = foundry.id
-    for endpoint in (aoai, foundry):
+    # Contoso runs Claude in two more regions, so a pool can spread it across all three.
+    foundry_north_central = await services.endpoints.register(
+        admin,
+        ModelEndpointCreate(
+            azure_resource_id=FOUNDRY_NORTH_CENTRAL_RESOURCE_ID,
+            name="Contoso AI Foundry North Central",
+            environment="production",
+        ),
+    )
+    estate.foundry_north_central_endpoint_id = foundry_north_central.id
+    foundry_west = await services.endpoints.register(
+        admin,
+        ModelEndpointCreate(
+            azure_resource_id=FOUNDRY_WEST_RESOURCE_ID,
+            name="Contoso AI Foundry West",
+            environment="production",
+        ),
+    )
+    estate.foundry_west_endpoint_id = foundry_west.id
+    for endpoint in (aoai, foundry, foundry_north_central, foundry_west):
         _require_synced(await services.endpoints.sync_now(admin, endpoint.id), endpoint.name)
 
     # A partner's Foundry resource in its own Microsoft Entra tenant, which MOSAIC's managed
@@ -1234,6 +1287,65 @@ async def seed_estate(services: DemoServices, tenant_id: str) -> Estate:
         await services.gateways.update_model_api_catalog(
             admin, published.model_api_id, CatalogEntryUpdate(summary=summary)
         )
+
+    # Claude runs in three regions, and callers see one API with one name per model (ADR 0024).
+    def claude_member(endpoint_id: str, deployment: str, weight: int = 1) -> PoolMemberSpec:
+        return PoolMemberSpec(
+            model_endpoint_id=endpoint_id, deployment_name=deployment, weight=weight
+        )
+
+    claude_pool = await services.pools.create(
+        admin,
+        ModelPoolCreate(
+            gateway_id=gateway.id,
+            display_name="Anthropic Claude",
+            description=(
+                "Claude for every team, across East US 2, North Central US, and West US 3. "
+                "A region that throttles is skipped until it recovers."
+            ),
+            models=[
+                PoolModelSpec(
+                    display_name="Claude Opus 4.5",
+                    members=[
+                        claude_member(foundry.id, "claude-opus-4-5", weight=2),
+                        claude_member(foundry_north_central.id, "claude-opus-4-5"),
+                        claude_member(foundry_west.id, "claude-opus-4-5"),
+                    ],
+                ),
+                PoolModelSpec(
+                    display_name="Claude Sonnet 4.5",
+                    members=[
+                        claude_member(foundry.id, "claude-sonnet-4-5", weight=2),
+                        claude_member(foundry_north_central.id, "claude-sonnet-4-5"),
+                    ],
+                ),
+            ],
+        ),
+    )
+    await _publish_pool(services, admin, claude_pool.id, claude_pool.display_name)
+    estate.pools[claude_pool.display_name] = claude_pool.id
+    # A second pool, saved but not yet published. Evaluation runs start in North Central US and
+    # move to East US 2 only when it fails.
+    evaluation_pool = await services.pools.create(
+        admin,
+        ModelPoolCreate(
+            gateway_id=gateway.id,
+            display_name="Claude evaluation",
+            description="Offline evaluation runs, kept off the catalog.",
+            visibility=ModelPoolVisibility.HIDDEN,
+            pool_type=ModelPoolType.LINEAR,
+            models=[
+                PoolModelSpec(
+                    display_name="Claude Sonnet 4.5",
+                    members=[
+                        claude_member(foundry_north_central.id, "claude-sonnet-4-5"),
+                        claude_member(foundry.id, "claude-sonnet-4-5"),
+                    ],
+                )
+            ],
+        ),
+    )
+    estate.pools[evaluation_pool.display_name] = evaluation_pool.id
 
     async def grant(
         subject: Person | str,
@@ -2075,6 +2187,7 @@ def build_demo_app(console_port: int, portal_port: int) -> FastAPI:
                     "MOSAIC demo estate ready: "
                     f"{len(estate.principals)} principals, {len(estate.groups)} groups, "
                     f"{len(estate.publications)} publications, "
+                    f"{len(estate.pools)} model pools, "
                     f"{len(estate.model_apis)} model APIs, {len(estate.mcp_servers)} MCP servers, "
                     f"{len(services.logs.streams)} traffic streams",
                     flush=True,

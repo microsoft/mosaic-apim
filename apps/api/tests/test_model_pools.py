@@ -981,6 +981,47 @@ async def test_an_edit_after_planning_needs_a_new_plan(estate: Estate) -> None:
     assert refused.value.details["reason"] == "stalePlan"
 
 
+async def test_the_console_learns_which_saved_changes_the_gateway_does_not_run(
+    estate: Estate,
+) -> None:
+    pool = await estate.create("OpenAI", _gpt4o("aoai-east", "aoai-sweden"))
+
+    async def waiting() -> bool:
+        detail = await estate.service.detail(ACTOR, pool.id)
+        [summary] = await estate.service.summaries(ACTOR)
+        assert summary.unapplied_changes == detail.unapplied_changes
+        return detail.unapplied_changes
+
+    # Nothing of a draft is on the gateway, so no change is waiting to reach it.
+    assert not await waiting()
+
+    await estate.publish(pool.id)
+    assert (await estate.pool(pool.id)).applied_intent_digest is not None
+    assert not await waiting()
+
+    # Reviewing a plan changes nothing, and the portal-only settings never reach the gateway.
+    await estate.service.plan(ACTOR, pool.id)
+    await estate.update(pool.id, visibility="hidden", show_capacity=False)
+    assert not await waiting()
+
+    drained = _model(_member("aoai-east", "gpt-4o"), _member("aoai-sweden", "gpt-4o", drained=True))
+    await estate.update(pool.id, models=[drained])
+    assert await waiting()
+
+    # Undoing the change before it's applied leaves nothing waiting.
+    await estate.update(pool.id, models=[_gpt4o("aoai-east", "aoai-sweden")])
+    assert not await waiting()
+
+    await estate.update(pool.id, models=[drained])
+    await estate.publish(pool.id)
+    assert not await waiting()
+
+    run = await estate.unpublish(pool.id)
+    assert run.status == PublishRunStatus.SUCCEEDED, run.errors
+    assert (await estate.pool(pool.id)).applied_intent_digest is None
+    assert not await waiting()
+
+
 async def test_a_member_whose_capacity_changes_makes_the_plan_stale(estate: Estate) -> None:
     pool = await estate.create(
         "OpenAI", _gpt4o("aoai-east", "aoai-sweden"), pool_type="preferential"

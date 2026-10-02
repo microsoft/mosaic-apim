@@ -57,7 +57,9 @@ from mcp_double import FakeMcpServer  # noqa: E402
 __all__ = [
     "AI_RESOURCE_ID",
     "DEV_GATEWAY_RESOURCE_ID",
+    "FOUNDRY_NORTH_CENTRAL_RESOURCE_ID",
     "FOUNDRY_RESOURCE_ID",
+    "FOUNDRY_WEST_RESOURCE_ID",
     "GATEWAY_RESOURCE_ID",
     "KEY_VAULT_ID",
     "LOG_WORKSPACE_ID",
@@ -95,6 +97,16 @@ PARTNER_GATEWAY_RESOURCE_ID = (
 FOUNDRY_RESOURCE_ID = (
     f"/subscriptions/{AI_SUBSCRIPTION_ID}/resourceGroups/rg-contoso-ai"
     "/providers/Microsoft.CognitiveServices/accounts/contoso-foundry"
+)
+# Two more Foundry resources, in other regions, that also serve Claude. The same model deployed on
+# several endpoints is what a pool puts behind one API (ADR 0024).
+FOUNDRY_NORTH_CENTRAL_RESOURCE_ID = (
+    f"/subscriptions/{AI_SUBSCRIPTION_ID}/resourceGroups/rg-contoso-ai"
+    "/providers/Microsoft.CognitiveServices/accounts/contoso-foundry-ncus"
+)
+FOUNDRY_WEST_RESOURCE_ID = (
+    f"/subscriptions/{AI_SUBSCRIPTION_ID}/resourceGroups/rg-contoso-ai"
+    "/providers/Microsoft.CognitiveServices/accounts/contoso-foundry-west"
 )
 
 _POLICY_TAIL = """
@@ -809,6 +821,21 @@ def _available(
 CHAT = {"chatCompletion": "true"}
 EMBEDDINGS = {"embeddings": "true"}
 
+
+def _claude(name: str, version: str, *, capacity: int) -> dict[str, Any]:
+    """A Claude deployment on a Foundry resource, named after its model as Foundry suggests."""
+
+    return _deployment(
+        name,
+        name,
+        version,
+        CHAT,
+        model_format="Anthropic",
+        publisher="Anthropic",
+        capacity=capacity,
+    )
+
+
 AOAI_DEPLOYMENTS = [
     _deployment("gpt-4o", "gpt-4o", "2024-11-20", CHAT, capacity=450),
     _deployment("gpt-4o-mini", "gpt-4o-mini", "2024-07-18", CHAT, capacity=900),
@@ -872,7 +899,16 @@ FOUNDRY_DEPLOYMENTS = [
         publisher="Cohere",
         capacity=1,
     ),
+    _claude("claude-opus-4-5", "20251101", capacity=250),
+    _claude("claude-sonnet-4-5", "20250929", capacity=500),
 ]
+
+# Contoso's other Foundry resources serve Claude only. Opus is on all three, Sonnet on two.
+FOUNDRY_NORTH_CENTRAL_DEPLOYMENTS = [
+    _claude("claude-opus-4-5", "20251101", capacity=150),
+    _claude("claude-sonnet-4-5", "20250929", capacity=300),
+]
+FOUNDRY_WEST_DEPLOYMENTS = [_claude("claude-opus-4-5", "20251101", capacity=150)]
 
 FOUNDRY_MODELS = [
     _available("Phi-4", "7", CHAT, model_format="Microsoft", kind="AIServices"),
@@ -881,6 +917,32 @@ FOUNDRY_MODELS = [
     _available("Llama-3.3-70B-Instruct", "5", CHAT, model_format="Meta", kind="AIServices"),
     _available(
         "Cohere-embed-v3-multilingual", "1", EMBEDDINGS, model_format="Cohere", kind="AIServices"
+    ),
+    _available("claude-opus-4-5", "20251101", CHAT, model_format="Anthropic", kind="AIServices"),
+    _available("claude-sonnet-4-5", "20250929", CHAT, model_format="Anthropic", kind="AIServices"),
+    _available("claude-haiku-4-5", "20251001", CHAT, model_format="Anthropic", kind="AIServices"),
+]
+
+# Every Azure AI account in Contoso's AI subscription, as a subscription scan lists them.
+SUBSCRIPTION_ACCOUNTS: list[tuple[str, str, str, str]] = [
+    (AI_RESOURCE_ID, "OpenAI", "eastus2", "https://contoso-aoai.openai.azure.com/"),
+    (
+        FOUNDRY_RESOURCE_ID,
+        "AIServices",
+        "eastus2",
+        "https://contoso-foundry.cognitiveservices.azure.com/",
+    ),
+    (
+        FOUNDRY_NORTH_CENTRAL_RESOURCE_ID,
+        "AIServices",
+        "northcentralus",
+        "https://contoso-foundry-ncus.cognitiveservices.azure.com/",
+    ),
+    (
+        FOUNDRY_WEST_RESOURCE_ID,
+        "AIServices",
+        "westus3",
+        "https://contoso-foundry-west.cognitiveservices.azure.com/",
     ),
 ]
 
@@ -897,11 +959,13 @@ class DemoCognitiveAccount(FakeCognitiveServices):
         deployments: list[dict[str, Any]],
         models: list[dict[str, Any]],
         runtime_role_id: str,
+        location: str = "eastus2",
     ) -> None:
         super().__init__(kind=kind)
         self.resource_id = resource_id
         self.account_name = resource_id.rsplit("/", 1)[-1]
         self.endpoint = endpoint
+        self.location = location
         self.deployments = deployments
         self.models = models
         # The gateway's managed identity can call the account, so runtime access reads "ready".
@@ -909,27 +973,28 @@ class DemoCognitiveAccount(FakeCognitiveServices):
         self.accounts_by_subscription = {
             AI_SUBSCRIPTION_ID: [
                 {
-                    "id": AI_RESOURCE_ID,
-                    "name": "contoso-aoai",
-                    "kind": "OpenAI",
-                    "location": "eastus2",
-                    "properties": {"endpoint": "https://contoso-aoai.openai.azure.com/"},
-                },
-                {
-                    "id": FOUNDRY_RESOURCE_ID,
-                    "name": "contoso-foundry",
-                    "kind": "AIServices",
-                    "location": "eastus2",
-                    "properties": {
-                        "endpoint": "https://contoso-foundry.cognitiveservices.azure.com/"
-                    },
-                },
+                    "id": account_id,
+                    "name": account_id.rsplit("/", 1)[-1],
+                    "kind": account_kind,
+                    "location": account_location,
+                    "properties": {"endpoint": account_endpoint},
+                }
+                for account_id, account_kind, account_location, account_endpoint in (
+                    SUBSCRIPTION_ACCOUNTS
+                )
             ]
         }
 
+    def owns(self, path: str) -> bool:
+        """Whether a request path is this account or beneath it, and not a longer-named sibling."""
+
+        path = path.casefold()
+        resource_id = self.resource_id.casefold()
+        return path == resource_id or path.startswith(f"{resource_id}/")
+
     def handler(self, request: httpx.Request) -> httpx.Response:
         path = request.url.path
-        if path.casefold().startswith(self.resource_id.casefold()):
+        if self.owns(path):
             # The base fake serves one fixed resource ID; present every account under it.
             request = httpx.Request(
                 request.method,
@@ -943,6 +1008,7 @@ class DemoCognitiveAccount(FakeCognitiveServices):
         account = super()._account()
         account["id"] = self.resource_id
         account["name"] = self.account_name
+        account["location"] = self.location
         account["properties"]["endpoint"] = self.endpoint
         return account
 
@@ -958,6 +1024,25 @@ def build_cognitive_accounts() -> list[DemoCognitiveAccount]:
             runtime_role_id=COGNITIVE_SERVICES_USER_ROLE_ID,
         ),
         DemoCognitiveAccount(
+            resource_id=FOUNDRY_NORTH_CENTRAL_RESOURCE_ID,
+            kind="AIServices",
+            endpoint="https://contoso-foundry-ncus.cognitiveservices.azure.com/",
+            deployments=FOUNDRY_NORTH_CENTRAL_DEPLOYMENTS,
+            models=FOUNDRY_MODELS,
+            runtime_role_id=COGNITIVE_SERVICES_USER_ROLE_ID,
+            location="northcentralus",
+        ),
+        DemoCognitiveAccount(
+            resource_id=FOUNDRY_WEST_RESOURCE_ID,
+            kind="AIServices",
+            endpoint="https://contoso-foundry-west.cognitiveservices.azure.com/",
+            deployments=FOUNDRY_WEST_DEPLOYMENTS,
+            models=FOUNDRY_MODELS,
+            runtime_role_id=COGNITIVE_SERVICES_USER_ROLE_ID,
+            location="westus3",
+        ),
+        # Last: requests no account owns, such as a subscription scan, fall back to it.
+        DemoCognitiveAccount(
             resource_id=AI_RESOURCE_ID,
             kind="OpenAI",
             endpoint="https://contoso-aoai.openai.azure.com/",
@@ -972,9 +1057,8 @@ def cognitive_handler(accounts: list[DemoCognitiveAccount]) -> Any:
     fallback = accounts[-1]
 
     def handle(request: httpx.Request) -> httpx.Response:
-        path = request.url.path.casefold()
         for account in accounts:
-            if path.startswith(account.resource_id.casefold()):
+            if account.owns(request.url.path):
                 return account.handler(request)
         return fallback.handler(request)
 

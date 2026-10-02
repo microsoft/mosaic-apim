@@ -315,6 +315,9 @@ class ModelPool(Entity):
     last_plan_digest: str | None = None
     last_run_id: str | None = None
     last_applied_at: datetime | None = None
+    # What the gateway was asked to run when an apply last succeeded. The console compares it with
+    # the saved intent to tell an administrator their changes aren't on the gateway yet.
+    applied_intent_digest: str | None = None
     unpublished_at: datetime | None = None
     last_error: str | None = None
 
@@ -639,6 +642,8 @@ class ModelPoolDetail(MosaicModel):
     problems: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     facets: list[PolicyFacet] = Field(default_factory=list)
+    # Whether saved changes differ from what the pool's last successful apply wrote.
+    unapplied_changes: bool = False
 
 
 class ModelPoolSummary(MosaicModel):
@@ -653,6 +658,7 @@ class ModelPoolSummary(MosaicModel):
     readiness: dict[str, int] = Field(default_factory=dict)
     problem_count: int = 0
     warning_count: int = 0
+    unapplied_changes: bool = False
 
 
 def capacity_badge(

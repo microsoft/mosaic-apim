@@ -337,6 +337,55 @@ def unpublish_digest(pool: ModelPool) -> str:
     )
 
 
+def intent_digest(pool: ModelPool) -> str:
+    """What the administrator asked the gateway to run.
+
+    Settings only the portal reads, such as visibility and model display names, are left out, so
+    changing them isn't a change waiting to be applied.
+    """
+
+    return _digest(
+        {
+            "gatewayId": pool.gateway_id,
+            "names": _names(pool),
+            "displayName": pool.display_name,
+            "description": pool.description,
+            "poolType": str(pool.pool_type),
+            "breakerPreset": str(pool.breaker_preset),
+            "maxRetries": pool.max_retries,
+            "safeguard": pool.safeguard.model_dump(mode="json") if pool.safeguard else None,
+            "models": [
+                [
+                    model.public_name,
+                    model.backend_pool_name,
+                    [
+                        [
+                            member.model_endpoint_id,
+                            member.deployment_name,
+                            member.weight,
+                            member.drained,
+                            member.backend_name,
+                        ]
+                        for member in model.members
+                    ],
+                ]
+                for model in pool.models
+            ],
+        }
+    )
+
+
+def has_unapplied_changes(pool: ModelPool) -> bool:
+    """Whether the pool's saved intent differs from what its last successful apply wrote."""
+
+    return (
+        pool.status != PublicationStatus.APPLYING
+        and pool.has_applied_api()
+        and pool.applied_intent_digest is not None
+        and pool.applied_intent_digest != intent_digest(pool)
+    )
+
+
 def _routes(pool: ModelPool) -> list[PoolRoute]:
     """How the gateway serves each model with an active member."""
 
@@ -589,7 +638,11 @@ class ModelPoolService:
                 )
             gateway = gateways[pool.gateway_id]
             if gateway is None:
-                summaries.append(ModelPoolSummary(pool=pool, problem_count=1))
+                summaries.append(
+                    ModelPoolSummary(
+                        pool=pool, problem_count=1, unapplied_changes=has_unapplied_changes(pool)
+                    )
+                )
                 continue
             assessment = await self._assess(actor, pool, gateway)
             capacity: dict[str, int] = {}
@@ -609,6 +662,7 @@ class ModelPoolService:
                     readiness=readiness,
                     problem_count=len(assessment.problems),
                     warning_count=len(assessment.warnings),
+                    unapplied_changes=has_unapplied_changes(pool),
                 )
             )
         return summaries
@@ -1273,7 +1327,9 @@ class ModelPoolService:
         gateway = await self._repository.get_gateway(actor.tenant_id, pool.gateway_id)
         if gateway is None:
             return ModelPoolDetail(
-                pool=pool, problems=["The pool's gateway is no longer registered with MOSAIC."]
+                pool=pool,
+                problems=["The pool's gateway is no longer registered with MOSAIC."],
+                unapplied_changes=has_unapplied_changes(pool),
             )
         assessment = await self._assess(actor, pool, gateway)
         models: list[PoolModelView] = []
@@ -1310,6 +1366,7 @@ class ModelPoolService:
             problems=assessment.problems,
             warnings=assessment.warnings,
             facets=facets,
+            unapplied_changes=has_unapplied_changes(pool),
         )
 
     async def candidates(self, actor: Actor, gateway_id: str) -> PoolCandidates:
@@ -1734,9 +1791,22 @@ class ModelPoolService:
             "updated_at": now,
         }
         if applied:
-            update.update({"last_applied_at": now, "unpublished_at": None})
+            update.update(
+                {
+                    "last_applied_at": now,
+                    "unpublished_at": None,
+                    "applied_intent_digest": intent_digest(current),
+                }
+            )
         if unpublished:
-            update.update({"unpublished_at": now, "last_plan_id": None, "last_plan_digest": None})
+            update.update(
+                {
+                    "unpublished_at": now,
+                    "last_plan_id": None,
+                    "last_plan_digest": None,
+                    "applied_intent_digest": None,
+                }
+            )
         await self._repository.record_model_pool_state(current.model_copy(update=update))
 
     async def _mark_applying(self, pool: ModelPool, run_id: str) -> None:

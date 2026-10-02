@@ -1,0 +1,188 @@
+.page {
+  display: grid;
+  gap: 20px;
+}
+
+.backLink {
+  color: var(--mosaic-primary);
+  font-size: 13px;
+  text-decoration: none;
+  width: fit-content;
+}
+
+.backLink:hover,
+.backLink:focus-visible {
+  text-decoration: underline;
+}
+
+.headerActions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.messages {
+  display: grid;
+  gap: 10px;
+}
+
+/* Two cards side by side when there's room for both, stacked when there isn't. */
+.overview {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr));
+  gap: 16px;
+  align-items: start;
+}
+
+.card {
+  min-width: 0;
+  padding: 18px;
+  display: grid;
+  gap: 12px;
+  border: 1px solid var(--mosaic-border-soft);
+  background: var(--mosaic-surface);
+  box-shadow: var(--mosaic-shadow);
+}
+
+.cardHeading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px 16px;
+}
+
+.section {
+  display: grid;
+  gap: 12px;
+}
+
+.sectionHeading {
+  display: grid;
+  gap: 4px;
+}
+
+.routingType {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.diagram {
+  flex: none;
+  width: 120px;
+  height: 38px;
+  color: var(--mosaic-primary);
+}
+
+.summaryList {
+  margin: 0;
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 8px 16px;
+}
+
+.summaryList dt {
+  color: var(--mosaic-text-muted);
+}
+
+.summaryList dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.modelHeader {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px 16px;
+}
+
+.modelHeading {
+  display: grid;
+  gap: 4px;
+}
+
+.modelHeading h3 {
+  margin: 0;
+}
+
+.modelBadges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.cellStack {
+  display: grid;
+  gap: 2px;
+  justify-items: start;
+}
+
+.code {
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
+}
+
+.muted {
+  color: var(--mosaic-text-muted);
+}
+
+.drainedRow td {
+  color: var(--mosaic-text-muted);
+}
+
+.urlRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+
+.request {
+  margin: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--mosaic-border-soft);
+  border-radius: 8px;
+  background: var(--mosaic-surface-subtle);
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 12.5px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.example {
+  display: grid;
+  gap: 6px;
+}
+
+.findings {
+  margin: 4px 0 0;
+  padding-left: 1.25rem;
+}
+
+.facetList {
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 10px;
+  list-style: none;
+}
+
+.footnote {
+  color: var(--mosaic-text-muted);
+}
+
+@media (max-width: 640px) {
+  .summaryList {
+    grid-template-columns: 1fr;
+    gap: 2px;
+  }
+
+  .summaryList dd {
+    margin-bottom: 8px;
+  }
+}

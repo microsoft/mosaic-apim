@@ -1561,6 +1561,8 @@ export interface ModelPool {
   lastPlanDigest: string | null
   lastRunId: string | null
   lastAppliedAt: string | null
+  /** What the gateway was asked to run when an apply last succeeded. */
+  appliedIntentDigest?: string | null
   unpublishedAt?: string | null
   lastError: string | null
   createdAt: string
@@ -1662,6 +1664,8 @@ export interface ModelPoolDetail {
   problems: string[]
   warnings: string[]
   facets: PolicyFacet[]
+  /** Whether saved changes differ from what the pool's last successful apply wrote. */
+  unappliedChanges: boolean
 }
 
 export interface PoolCandidateDeployment {
@@ -1710,6 +1714,7 @@ export interface ModelPoolSummary {
   readiness: Partial<Record<PoolReadiness, number>>
   problemCount: number
   warningCount: number
+  unappliedChanges: boolean
 }
 
 export interface ModelConnection {
