@@ -571,7 +571,8 @@ function EndpointSection({ connection }: { connection: ModelConnection }) {
           <dd><code>{connection.endpoint}</code></dd>
         </div>
         <div>
-          <dt>Deployment</dt>
+          {/* A pool model has no one deployment: callers send the model's name. */}
+          <dt>{connection.poolModelId ? 'Model' : 'Deployment'}</dt>
           <dd><code>{connection.deploymentName}</code></dd>
         </div>
         {connection.keysAvailable !== false && (
@@ -724,7 +725,8 @@ function SamplesSection({ connection }: { connection: ModelConnection }) {
               '.'
             ) : (
               <>
-                {' '}and <code>MOSAIC_API_VERSION</code> to an API version your deployment supports.
+                {' '}and <code>MOSAIC_API_VERSION</code> to an API version{' '}
+                {connection.poolModelId ? 'the model' : 'your deployment'} supports.
               </>
             )}
             {' '}Samples use placeholders and never include your key.
@@ -783,21 +785,28 @@ function LimitsSection({ connection }: { connection: ModelConnection }) {
   const headingId = useId()
   const publicationLimits = describeTokenLimits(connection.publicationLimits)
   const keySubject = connection.keysAvailable === false ? 'Entra tokens share' : 'Your primary key, secondary key, and Entra tokens share'
+  // A pool model's limit is one every caller of the model shares, not a publication's.
+  const shared = connection.poolModelId ? 'Model' : 'Publication'
+  // A publication without limits is one whose tier can't count its tokens. A pool model without
+  // one may just have no limit set, so its connection says which.
+  const unmetered = connection.poolModelId
+    ? connection.tokenMetering === false
+    : !connection.publicationLimits
   return (
     <section className="connection-section" aria-labelledby={headingId}>
       <h3 id={headingId}>Limits</h3>
       <dl className="fact-list">
         <div>
-          <dt>Publication limits</dt>
+          <dt>{shared} limits</dt>
           <dd>
             {publicationLimits.length > 0 ? (
               <ul className="plain-list">
                 {publicationLimits.map((limit) => <li key={limit}>{limit}</li>)}
               </ul>
-            ) : connection.publicationLimits ? (
-              'No publication token limit configured'
-            ) : (
+            ) : unmetered ? (
               "Token limits are unavailable for this model on this gateway's tier"
+            ) : (
+              `No ${shared.toLowerCase()} token limit configured`
             )}
           </dd>
         </div>
@@ -814,7 +823,10 @@ function LimitsSection({ connection }: { connection: ModelConnection }) {
       </dl>
       <Text as="p" size={200} className="connection-note">
         {keySubject} this grant&apos;s limits.
-        {connection.publicationLimits && ' Publication limits apply as well and are counted separately.'}
+        {connection.publicationLimits &&
+          (connection.poolModelId
+            ? ' Model limits are shared by everyone who calls this model, and are counted separately.'
+            : ' Publication limits apply as well and are counted separately.')}
         {connection.keysAvailable === false && ' Each person or app that uses this group grant is counted separately.'}
       </Text>
     </section>

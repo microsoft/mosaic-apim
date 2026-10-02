@@ -669,6 +669,7 @@ class PortalAccessService:
             pool_name=pool.display_name if administrator else None,
             pool_model_id=model.id,
             key_shared_with=key_shared_models(pool, key_name, context.entitlement.id),
+            token_metering=snapshot.token_metering if snapshot else True,
         )
 
     @staticmethod

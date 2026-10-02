@@ -11,6 +11,7 @@ calls a cost center's shared quota a pooled quota, and the two have nothing to d
 
 import hashlib
 import re
+from collections.abc import Iterable
 from datetime import datetime
 from enum import StrEnum
 from typing import Literal, Self
@@ -729,18 +730,29 @@ class ModelPoolSummary(MosaicModel):
     unapplied_changes: bool = False
 
 
+def capacity_label(
+    kinds: Iterable[CapacityType],
+) -> Literal["provisioned", "payAsYouGo", "provisionedWithOverflow", "unknown"]:
+    """What users are told about a pool model's capacity, from its active members' types.
+
+    Unknown when there's no active member, or when MOSAIC can't tell what one of them is.
+    """
+
+    found = set(kinds)
+    if not found or CapacityType.UNKNOWN in found:
+        return "unknown"
+    if found == {CapacityType.PROVISIONED}:
+        return "provisioned"
+    if found == {CapacityType.PAY_AS_YOU_GO}:
+        return "payAsYouGo"
+    if found == {CapacityType.PROVISIONED, CapacityType.PAY_AS_YOU_GO}:
+        return "provisionedWithOverflow"
+    return "unknown"
+
+
 def capacity_badge(
     members: list[PoolMemberView],
 ) -> Literal["provisioned", "payAsYouGo", "provisionedWithOverflow", "unknown"]:
     """What users are told about a pool model's capacity, when the pool shows it."""
 
-    kinds = {member.capacity_type for member in members if not member.drained}
-    if not kinds or CapacityType.UNKNOWN in kinds:
-        return "unknown"
-    if kinds == {CapacityType.PROVISIONED}:
-        return "provisioned"
-    if kinds == {CapacityType.PAY_AS_YOU_GO}:
-        return "payAsYouGo"
-    if kinds == {CapacityType.PROVISIONED, CapacityType.PAY_AS_YOU_GO}:
-        return "provisionedWithOverflow"
-    return "unknown"
+    return capacity_label(member.capacity_type for member in members if not member.drained)

@@ -216,6 +216,23 @@ async def test_without_a_safeguard_the_model_has_no_shared_limit(portal: Portal)
     connection = await portal.access.connection(_holder(ada), grant.id)
 
     assert connection.publication_limits is None
+    # The gateway can count the model's tokens; the pool just sets no limit on them.
+    assert connection.token_metering is True
+
+
+async def test_a_tier_that_cant_count_tokens_says_so(portal: Portal) -> None:
+    pool, ada, grant = await _published(portal)
+    assert pool.applied_access is not None
+    unmetered = pool.applied_access.model_copy(update={"token_metering": False})
+    await portal.gateway_repository.save_model_pool(
+        pool.model_copy(update={"applied_access": unmetered}), _audit()
+    )
+
+    connection = await portal.access.connection(_holder(ada), grant.id)
+
+    assert connection.publication_limits is None
+    assert connection.token_metering is False
+    assert connection.model_dump(by_alias=True, mode="json")["tokenMetering"] is False
 
 
 async def test_a_model_the_gateway_doesnt_serve_has_nothing_to_connect_to(

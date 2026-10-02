@@ -1993,10 +1993,11 @@ class CatalogEntry(MosaicModel):
     # when MOSAIC publishes the server and has applied its access, False for an adopted server or
     # a published one whose latest apply didn't finish. None for other kinds.
     enforced: bool | None = None
-    # Pool models only: the API the model is called with, such as ``openai-v1``, and its
-    # capacity, ``provisioned``, ``standard`` or ``mixed``, when the pool shows capacity.
-    api_style: str | None = None
-    capacity: str | None = None
+    # Pool models only: the API the model is called with, such as ``anthropicMessages``, and its
+    # capacity, when the pool shows it and MOSAIC knows what every active deployment behind the
+    # model is. ``provisionedWithOverflow`` means some are provisioned and the rest pay-as-you-go.
+    api_style: ApiShape | None = None
+    capacity: Literal["provisioned", "payAsYouGo", "provisionedWithOverflow"] | None = None
 
 
 class PortalResolvedEntitlement(ResolvedEntitlement):
@@ -3445,6 +3446,10 @@ class ModelConnection(MosaicModel):
     pool_model_id: str | None = None
     # The pool's other models this grant's key unlocks, as the pool's last apply enforces them.
     key_shared_with: list[KeySharedModel] = Field(default_factory=list)
+    # False when the gateway's tier can't count this model's tokens, so no token limit applies.
+    # A pool model's ``publication_limits`` is also None when its pool has no safeguard, so this
+    # tells the two apart.
+    token_metering: bool = True
 
 
 class McpConnection(MosaicModel):

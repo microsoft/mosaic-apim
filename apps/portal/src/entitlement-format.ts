@@ -1,21 +1,50 @@
 import type {
   AccessRequest,
+  ApiShape,
   CatalogEntry,
   Entitlement,
   EntitlementEnforcement,
   EntitlementResource,
   EntitlementRuntime,
+  ModelCapacity,
   QuotaPeriod,
   ResourceSummary,
   ResolvedEntitlement,
   TokenEnforcement,
 } from './types'
 
+// A pool model is a model to the people who use it: nothing here says it's pooled.
 const kindLabels: Record<EntitlementResource['kind'], string> = {
   modelApi: 'Model API',
   mcpServer: 'MCP server',
+  poolModel: 'Model',
   modelDeployment: 'Model deployment',
   product: 'Product',
+}
+
+const capacityLabels: Record<ModelCapacity, string> = {
+  provisioned: 'Provisioned',
+  payAsYouGo: 'Pay-as-you-go',
+  provisionedWithOverflow: 'Provisioned, with pay-as-you-go overflow',
+}
+
+const apiStyleLabels: Record<ApiShape, string> = {
+  azureOpenAi: 'Azure OpenAI API',
+  foundryModels: 'Foundry Models API',
+  anthropicMessages: 'Anthropic Messages API',
+}
+
+export function capacityLabel(capacity: ModelCapacity) {
+  return capacityLabels[capacity]
+}
+
+export function apiStyleLabel(apiStyle: ApiShape) {
+  return apiStyleLabels[apiStyle]
+}
+
+/** Whether a resource is called as a model, so its grants have connection details and keys. */
+export function isModelResource(kind: EntitlementResource['kind']) {
+  return kind === 'modelApi' || kind === 'poolModel'
 }
 
 const periodLabels: Record<QuotaPeriod, string> = {
@@ -200,8 +229,12 @@ export function sameResource(a: EntitlementResource, b: EntitlementResource) {
 }
 
 export function resourceFromCatalog(entry: CatalogEntry): EntitlementResource {
-  // scopeId is only meaningful for observed resources (product, modelDeployment). A catalog entry
-  // is always a desired-state record that carries its own gateway, and sending a scopeId here
-  // would change the deterministic ID of any entitlement later created from the request.
-  return { kind: entry.kind, id: entry.id, scopeId: null }
+  // A model API or MCP server is a desired-state record that carries its own gateway, so it takes
+  // no scopeId: sending one would change the deterministic ID of any entitlement later created
+  // from the request. A pool model is scoped to its pool, which the API requires.
+  return {
+    kind: entry.kind,
+    id: entry.id,
+    scopeId: entry.kind === 'poolModel' ? (entry.scopeId ?? null) : null,
+  }
 }

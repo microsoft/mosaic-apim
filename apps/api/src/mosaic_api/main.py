@@ -397,6 +397,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             entitlement_service,
             directory_repository=repository,
             gateway_repository=gateway_repository,
+            endpoint_repository=endpoint_repository,
         )
         uses_rollups = app_settings.uses_usage_rollups
         log_client = (

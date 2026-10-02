@@ -20,6 +20,7 @@ import {
   describeLimits,
   describeRuntime,
   gatewayLabel,
+  isModelResource,
   isSecurityGroupGrant,
   resourceTitle,
   withResourceKind,
@@ -115,8 +116,8 @@ export function MyAccessPage() {
                     ))}
                   </ul>
                   <Text size={200}>
-                    Publication and gateway limits may also apply. Pending changes are not yet
-                    enforced by the gateway.
+                    {resolved.entitlement.resource.kind === 'poolModel' ? 'Model' : 'Publication'} and
+                    gateway limits may also apply. Pending changes are not yet enforced by the gateway.
                     {isSecurityGroupGrant(resolved) && ' Group access limits apply to each person individually.'}
                   </Text>
                 </section>
@@ -131,7 +132,7 @@ export function MyAccessPage() {
                   </dl>
                 </section>
               </div>
-              {(resolved.entitlement.resource.kind === 'modelApi' ||
+              {(isModelResource(resolved.entitlement.resource.kind) ||
                 resolved.entitlement.resource.kind === 'mcpServer') && (
                 <ConnectionDetails resolved={resolved} />
               )}
