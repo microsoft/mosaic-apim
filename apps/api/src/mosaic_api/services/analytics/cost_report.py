@@ -430,16 +430,15 @@ def chargeback_rows(
         api = scope.apis.get((summary.gateway_id, api_name)) if api_name else None
         if grant is not None and str(grant.resource_kind) == "mcpServer":
             continue
-        key = api.deployment_key if api else None
-        priced = costs.price(key, summary.period, start, entry.metrics)
-        charge(
-            month_first(start),
-            _party(scope, grant),
-            key,
-            entry.metrics,
-            priced,
-            scope.cost_center(grant),
-        )
+        for key, metrics, priced in costs.priced_parts(api, summary.period, start, entry.metrics):
+            charge(
+                month_first(start),
+                _party(scope, grant),
+                key,
+                metrics,
+                priced,
+                scope.cost_center(grant),
+            )
 
     for summary, entry in entries(unattributed, scope, "unattributed"):
         start = date.fromisoformat(summary.period_start)
@@ -447,15 +446,14 @@ def chargeback_rows(
         api = scope.apis.get((summary.gateway_id, api_name))
         if api is not None and api.kind == "mcp":
             continue
-        key = api.deployment_key if api else None
-        priced = costs.price(key, summary.period, start, entry.metrics)
-        charge(
-            month_first(start),
-            (UNATTRIBUTED_PARTY, "unattributed", None),
-            key,
-            entry.metrics,
-            priced,
-        )
+        for key, metrics, priced in costs.priced_parts(api, summary.period, start, entry.metrics):
+            charge(
+                month_first(start),
+                (UNATTRIBUTED_PARTY, "unattributed", None),
+                key,
+                metrics,
+                priced,
+            )
 
     for key in costs.idle_keys():
         month = month_first(window.first_day)

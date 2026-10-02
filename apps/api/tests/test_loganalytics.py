@@ -1,4 +1,5 @@
 import json
+import re
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
@@ -23,6 +24,7 @@ from mosaic_api.integrations.loganalytics import (
     probe_query,
     query_scope,
 )
+from mosaic_api.usage_telemetry import PoolMembers, RolledUpApi, RolledUpMember
 
 START = datetime(2026, 9, 29, 10, tzinfo=UTC)
 END = datetime(2026, 9, 29, 12, tzinfo=UTC)
@@ -211,6 +213,117 @@ def test_deployment_peaks_query_sorts_mapping_and_keeps_keys_in_dynamic_literal(
 def test_deployment_keys_are_validated_before_reaching_kql(key: str) -> None:
     with pytest.raises(ValidationError, match="deployment key"):
         deployment_peaks_query(WINDOW, {"chat-api": key})
+
+
+def _fleet() -> PoolMembers:
+    def member(endpoint_id: str, deployment: str, backend: str, host: str) -> RolledUpMember:
+        return RolledUpMember(
+            model_endpoint_id=endpoint_id,
+            deployment_name=deployment,
+            backend_name=backend,
+            host=host,
+        )
+
+    return PoolMembers.of(
+        RolledUpApi(
+            api_name="fleet",
+            resource_id="modelPool_fleet",
+            kind="pool",
+            display_name="Fleet",
+            members=[
+                member("east", "chat", "Fleet-Chat-East", "east.example.com"),
+                member("west", "chat", "fleet-chat-west", "west.example.com"),
+                member("shared", "chat-a", "fleet-chat-a", "shared.example.com"),
+                member("shared", "chat-b", "fleet-chat-b", "shared.example.com"),
+                # Not a name KQL can safely hold, so it's left out of every lookup.
+                member("odd", 'chat"odd', "fleet-odd", "odd.example.com"),
+            ],
+            first_seen_at=START,
+        )
+    )
+
+
+def _lookup(query: str, name: str) -> dict[str, str]:
+    match = re.search(rf"^let {name} = dynamic\((.*)\);$", query, re.MULTILINE)
+    assert match is not None, f"{name} is missing"
+    lookup: dict[str, str] = json.loads(match.group(1))
+    assert list(lookup) == sorted(lookup)
+    return lookup
+
+
+def test_deployment_peaks_query_places_pool_calls_on_members_like_member_for() -> None:
+    query = deployment_peaks_query(WINDOW, {"chat-api": "west"}, {"Fleet": _fleet()})
+
+    assert 'let mosaicApis = dynamic(["chat-api","fleet"]);' in query
+    assert 'let deploymentOf = dynamic({"chat-api":"west"});' in query
+    assert _lookup(query, "memberByBackend") == {
+        "fleet|fleet-chat-a": "shared/chat-a",
+        "fleet|fleet-chat-b": "shared/chat-b",
+        "fleet|fleet-chat-east": "east/chat",
+        "fleet|fleet-chat-west": "west/chat",
+    }
+    assert _lookup(query, "memberByRoute") == {
+        "fleet|east.example.com|chat": "east/chat",
+        "fleet|shared.example.com|chat-a": "shared/chat-a",
+        "fleet|shared.example.com|chat-b": "shared/chat-b",
+        "fleet|west.example.com|chat": "west/chat",
+    }
+    # A host with several members, or none KQL can name, is never placed by deployment alone.
+    assert _lookup(query, "memberByHost") == {
+        "fleet|east.example.com": "east/chat",
+        "fleet|odd.example.com": "",
+        "fleet|shared.example.com": "",
+        "fleet|west.example.com": "west/chat",
+    }
+    # Two members serve "chat", so the deployment alone doesn't place a call on either.
+    assert _lookup(query, "memberByDeployment") == {
+        "fleet|chat-a": "shared/chat-a",
+        "fleet|chat-b": "shared/chat-b",
+    }
+    assert 'chat"odd' not in query
+    assert "| extend hostKey = strcat(api, \"|\", backendHost)" in query
+    assert "backendDeployment = tolower(coalesce(" in query
+    assert "tostring(memberByBackend[strcat(api, \"|\", backendId)])" in query
+    assert query == deployment_peaks_query(WINDOW, {"chat-api": "west"}, {"fleet": _fleet()})
+
+
+def test_deployment_peaks_query_reads_no_backend_without_pools() -> None:
+    for query in (
+        deployment_peaks_query(WINDOW, {"chat-api": "west"}),
+        deployment_peaks_query(WINDOW, {"chat-api": "west"}, {}),
+    ):
+        assert "memberBy" not in query
+        assert "backendId" not in query
+        assert "hostKey" not in query
+        assert "deploymentKey = tostring(deploymentOf[api])" in query
+
+
+def test_calls_query_groups_pool_calls_by_the_backend_that_served_them() -> None:
+    query = calls_query(WINDOW, ["chat-api", "Fleet"], pool_apis=["Fleet"])
+
+    assert 'let mosaicApis = dynamic(["chat-api","fleet"]);' in query
+    assert 'let poolApis = dynamic(["fleet"]);' in query
+    assert "| extend pooled = api in (poolApis)" in query
+    # Other APIs answer "" for every backend column, so their rows don't split.
+    assert 'backendId = iff(pooled, tolower(BackendId), "")' in query
+    assert 'backendUrl = iff(pooled, tolower(BackendUrl), "")' in query
+    assert "model = llmModel,\n        backendId, backendHost, backendDeployment\n" in query
+
+
+def test_calls_query_reads_no_backend_without_pools() -> None:
+    query = calls_query(WINDOW, ["chat-api"])
+
+    assert "poolApis" not in query
+    assert "backendId" not in query
+    assert query.endswith("deployment = llmDeployment, model = llmModel\n")
+
+
+@pytest.mark.parametrize("name", ["", "bad name", 'bad"name', "bad|where true"])
+def test_pool_api_names_are_validated_before_reaching_kql(name: str) -> None:
+    with pytest.raises(ValidationError, match="API name"):
+        calls_query(WINDOW, ["chat-api"], pool_apis=[name])
+    with pytest.raises(ValidationError, match="API name"):
+        deployment_peaks_query(WINDOW, {}, {name: _fleet()})
 
 
 def test_probe_query_is_read_only_and_checks_recent_gateway_and_llm_logs() -> None:

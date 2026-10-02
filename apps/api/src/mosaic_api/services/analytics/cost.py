@@ -6,8 +6,10 @@ changes only the days from its date.
 
 - A model API's calls are priced by the deployment its publication fronts. An adopted API, whose
   deployment MOSAIC doesn't know, has no cost.
-- A grant's calls are priced by the model API it grants. Products and model deployments can't be
-  tied to one API, and MCP servers carry no tokens.
+- A model pool's calls are priced by the member deployment that served each one. Calls MOSAIC
+  couldn't place on a member stay unpriced rather than priced at a guess.
+- A grant's calls are priced by the model API or pool it grants. Products and model deployments
+  can't be tied to one API, and MCP servers carry no tokens.
 - A provisioned deployment costs its reserved capacity whatever its calls. Each month's cost is
   shared among its calls by their share of its tokens that month, counted across every gateway,
   so filtering by gateway never inflates anyone's share. A month with no calls leaves the cost
@@ -32,7 +34,13 @@ from mosaic_api.pricing import (
 )
 from mosaic_api.services.analytics.models import AnalyticsCostSummary, AnalyticsUnpricedUse
 from mosaic_api.services.analytics.scope import Scope
-from mosaic_api.usage_telemetry import SummaryPeriod, UsageMetrics, UsageSummary
+from mosaic_api.usage_telemetry import (
+    MemberUsage,
+    RolledUpApi,
+    SummaryPeriod,
+    UsageMetrics,
+    UsageSummary,
+)
 
 LIST_PRICE_NOTE = (
     "Costs are at list prices from MOSAIC's price list, before any discount, and are estimates, "
@@ -52,6 +60,11 @@ AVERAGED_NOTE = (
 )
 HOURS_NOTE = "MOSAIC prices whole days, so it shows no cost by the hour. Choose 7 days or more."
 UNPRICED_ROWS = 100
+POOL_UNPLACED = Unpriced(
+    "unknownDeployment",
+    "MOSAIC couldn't tell which of the pool's deployments served these calls, so it can't price "
+    "them.",
+)
 
 
 def add_cost(current: float | None, value: float | None) -> float | None:
@@ -295,7 +308,7 @@ class CostBook:
         return total
 
     def idle_keys(self) -> list[str]:
-        """Provisioned deployments that a current governed API in scope fronts.
+        """Provisioned deployments that a current governed API or pool in scope fronts.
 
         None under a cost-center filter: reserved capacity nobody called belongs to no grant, so
         to no cost center.
@@ -308,11 +321,12 @@ class CostBook:
             if not self.scope.in_scope(gateway_id) or gateway_id not in self.scope.gateways:
                 continue
             for api in apis:
-                if not self.scope.api_allowed(gateway_id, api.api_name) or not api.deployment_key:
+                if not self.scope.api_allowed(gateway_id, api.api_name):
                     continue
-                facts = self.pricer.facts_for(api.deployment_key)
-                if facts is not None and facts.provisioned:
-                    keys.add(api.deployment_key)
+                for key in api.deployment_keys():
+                    facts = self.pricer.facts_for(key)
+                    if facts is not None and facts.provisioned:
+                        keys.add(key)
         return sorted(keys)
 
     # -- what reports price -----------------------------------------------------------------
@@ -322,6 +336,42 @@ class CostBook:
         if facts is not None:
             return facts.deployment_name, facts.endpoint_name
         return self.scope.api_label(gateway_id, api_name), self.scope.gateway_name(gateway_id)
+
+    def priced_parts(
+        self, api: RolledUpApi | None, period: SummaryPeriod, start: date, metrics: UsageMetrics
+    ) -> list[tuple[str | None, UsageMetrics, Priced]]:
+        """An entry's calls split by the deployment that served them, each part priced.
+
+        A model API's calls all reached the deployment it fronts, so they make one part. A pool's
+        were shared among its members, so each member's calls are priced at that member's own
+        deployment, and the calls MOSAIC couldn't place on a member make a part it can't price.
+        """
+
+        if api is None or api.kind != "pool":
+            key = api.deployment_key if api else None
+            return [(key, metrics, self.price(key, period, start, metrics))]
+        parts: list[tuple[str | None, UsageMetrics, Priced]] = []
+        placed = MemberUsage()
+        for key, usage in sorted((metrics.members or {}).items()):
+            part = UsageMetrics(
+                requests=usage.requests,
+                prompt_tokens=usage.prompt_tokens,
+                completion_tokens=usage.completion_tokens,
+                total_tokens=usage.total_tokens,
+            )
+            parts.append((key, part, self.price(key, period, start, part)))
+            placed = placed.plus(usage)
+        rest = UsageMetrics(
+            requests=max(metrics.requests - placed.requests, 0),
+            prompt_tokens=max(metrics.prompt_tokens - placed.prompt_tokens, 0),
+            completion_tokens=max(metrics.completion_tokens - placed.completion_tokens, 0),
+            total_tokens=max(metrics.total_tokens - placed.total_tokens, 0),
+        )
+        if rest.total_tokens or rest.prompt_tokens or rest.completion_tokens:
+            parts.append((None, rest, Priced(None, unpriced=POOL_UNPLACED, unpriced_share=1.0)))
+        elif not parts:
+            parts.append((None, rest, Priced(0.0)))
+        return parts
 
     def api_cost(
         self,
@@ -335,25 +385,29 @@ class CostBook:
         api = self.scope.apis.get((gateway_id, api_name))
         if api is not None and api.kind == "mcp":
             return None
-        key = api.deployment_key if api else None
-        priced = self.price(key, period, start, metrics)
-        if tally is not None:
-            label, detail = self.describe(key, gateway_id, api_name)
-            tally.record(
-                priced,
-                metrics,
-                key=key.casefold() if key else f"api:{gateway_id}/{api_name}",
-                kind="deployment" if key else "api",
-                label=label,
-                detail=detail,
-            )
-        return priced.amount
+        amount: float | None = None
+        for key, part, priced in self.priced_parts(api, period, start, metrics):
+            amount = add_cost(amount, priced.amount)
+            if tally is not None:
+                label, detail = self.describe(key, gateway_id, api_name)
+                tally.record(
+                    priced,
+                    part,
+                    key=key.casefold() if key else f"api:{gateway_id}/{api_name}",
+                    kind="deployment" if key else "api",
+                    label=label,
+                    detail=detail,
+                )
+        return amount
 
     def grant_api(self, gateway_id: str, grant_key: str) -> str | None:
         grant = self.scope.grants.get(grant_key)
-        if grant is None or grant.resource_kind != EntitlementResourceKind.MODEL_API:
+        if grant is None or grant.resource_kind not in {
+            EntitlementResourceKind.MODEL_API,
+            EntitlementResourceKind.POOL_MODEL,
+        }:
             return None
-        return self._resource_apis.get((gateway_id, grant.resource_id or ""))
+        return self._resource_apis.get((gateway_id, grant.api_resource_id or ""))
 
     def grant_cost(
         self,

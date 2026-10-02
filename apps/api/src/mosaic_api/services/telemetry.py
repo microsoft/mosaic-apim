@@ -11,10 +11,11 @@ someone else.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Literal
+from urllib.parse import urlsplit
 
 import structlog
 
@@ -23,6 +24,7 @@ from mosaic_api.domain import (
     AuditEvent,
     Gateway,
     ManagementMode,
+    ModelEndpoint,
     MosaicModel,
     new_id,
     utc_now,
@@ -33,6 +35,7 @@ from mosaic_api.errors import (
     NotFoundError,
     UpstreamAuthorizationError,
     UpstreamError,
+    ValidationError,
 )
 from mosaic_api.integrations.apim import ApimClient, ApimWriter
 from mosaic_api.integrations.apim.diagnostics import (
@@ -46,6 +49,7 @@ from mosaic_api.integrations.apim.diagnostics import (
     evaluate_diagnostic_settings,
     monitoring_reader_command,
 )
+from mosaic_api.integrations.apim.model_apis import backend_origin
 from mosaic_api.integrations.loganalytics import (
     API_NAME,
     PROBE_HOURS,
@@ -53,14 +57,17 @@ from mosaic_api.integrations.loganalytics import (
     LogsQuery,
     probe_query,
 )
+from mosaic_api.model_pools import ModelPool
 from mosaic_api.repositories import (
     EntitlementRepository,
     GatewayRepository,
+    ModelEndpointRepository,
     UsageRollupRepository,
 )
 from mosaic_api.services.directory import Actor
 from mosaic_api.usage_telemetry import (
     RolledUpApi,
+    RolledUpMember,
     UsageRollupState,
     rollup_stale_after,
 )
@@ -90,7 +97,7 @@ class TelemetryCheck(MosaicModel):
 class ApiTelemetry(MosaicModel):
     api_name: str
     display_name: str
-    kind: Literal["model", "mcp"]
+    kind: Literal["model", "mcp", "pool"]
     published: bool
     # The API has no diagnostic of its own, so it logs as the service's All APIs setting says.
     all_apis: bool = False
@@ -145,22 +152,76 @@ class DiagnosticsOutcome:
     llm_unsupported: list[str]
 
 
+def _member_host(shape: str | None, endpoint: ModelEndpoint | None) -> str:
+    """The host a pool member's backend calls, lowercased, or "" when MOSAIC can't tell."""
+
+    if endpoint is None:
+        return ""
+    try:
+        origin = backend_origin(shape, str(endpoint.endpoint))
+    except (ValidationError, ValueError):
+        return ""
+    return (urlsplit(origin).hostname or "").casefold()
+
+
+def _pool_api(
+    pool: ModelPool, endpoints: Mapping[str, ModelEndpoint], seen_at: datetime
+) -> RolledUpApi:
+    members: dict[str, RolledUpMember] = {}
+    for model in pool.models:
+        for member in model.members:
+            members.setdefault(
+                member.backend_name.casefold(),
+                RolledUpMember(
+                    model_endpoint_id=member.model_endpoint_id,
+                    deployment_name=member.deployment_name,
+                    backend_name=member.backend_name.casefold(),
+                    host=_member_host(pool.api_shape, endpoints.get(member.model_endpoint_id)),
+                    first_seen_at=seen_at,
+                ),
+            )
+    return RolledUpApi(
+        api_name=pool.api_name.casefold(),
+        resource_id=pool.id,
+        publication_id=pool.id,
+        kind="pool",
+        display_name=pool.display_name,
+        subscription_name=pool.subscription_name,
+        members=list(members.values()),
+        first_seen_at=seen_at,
+    )
+
+
 async def governed_apis(
-    gateway_repository: GatewayRepository, tenant_id: str, *, now: datetime | None = None
+    gateway_repository: GatewayRepository,
+    tenant_id: str,
+    *,
+    now: datetime | None = None,
+    endpoint_repository: ModelEndpointRepository | None = None,
 ) -> dict[str, list[RolledUpApi]]:
-    """Every model API and MCP server MOSAIC governs, by gateway ID, named as the logs name them.
+    """Every model API, model pool and MCP server MOSAIC governs, by gateway ID, named as the logs
+    name them.
 
     Published and adopted APIs alike: a call to an adopted API can still be linked by its
-    subscription, and is otherwise reported as unattributed so administrators see it.
+    subscription, and is otherwise reported as unattributed so administrators see it. A pool counts
+    once its API is in API Management. Its members are named by the backend MOSAIC wrote for each
+    and, given the endpoints, by the host that backend calls, which is how the rollup places a call
+    on the member that served it.
     """
 
     seen_at = now or utc_now()
     model_apis = await gateway_repository.list_model_apis(tenant_id)
     mcp_servers = await gateway_repository.list_mcp_servers(tenant_id)
+    pools = await gateway_repository.list_model_pools(tenant_id)
     publications = {
         publication.id: publication
         for publication in await gateway_repository.list_publications(tenant_id)
     }
+    endpoints = (
+        {endpoint.id: endpoint for endpoint in await endpoint_repository.list_endpoints(tenant_id)}
+        if endpoint_repository is not None and pools
+        else {}
+    )
     apis: dict[str, dict[str, RolledUpApi]] = {}
     for model_api in model_apis:
         name = model_api.api_name.casefold()
@@ -197,6 +258,14 @@ async def governed_apis(
                 first_seen_at=seen_at,
             ),
         )
+    for pool in pools:
+        if not pool.has_applied_api():
+            continue
+        name = pool.api_name.casefold()
+        if not API_NAME.fullmatch(name):
+            logger.warning("usage_api_name_skipped", gateway_id=pool.gateway_id)
+            continue
+        apis.setdefault(pool.gateway_id, {}).setdefault(name, _pool_api(pool, endpoints, seen_at))
     return {
         gateway_id: sorted(by_name.values(), key=lambda api: api.api_name)
         for gateway_id, by_name in apis.items()
@@ -507,7 +576,7 @@ class TelemetryService:
                     published=api.publication_id is not None,
                     all_apis=inherits,
                     gaps=api_diagnostic_gaps(
-                        shared if inherits else diagnostic, llm=api.kind == "model"
+                        shared if inherits else diagnostic, llm=api.is_llm
                     ),
                 )
             )
@@ -678,7 +747,7 @@ class TelemetryService:
         for api in apis:
             if api.publication_id is None or api.removed_at is not None:
                 continue
-            llm = api.kind == "model"
+            llm = api.is_llm
             try:
                 if only_missing:
                     current = await client.get_api_diagnostic(api.api_name, AZURE_MONITOR)

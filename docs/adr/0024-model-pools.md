@@ -571,13 +571,30 @@ A pool is unpublished the way ADR 0010's 2026-09-30 amendment unpublishes a publ
     two rows.
 - **Calls are priced per member.** ADR 0020 prices an API's calls at the one deployment it
   fronts. A pool's API fronts many, so the rollup prices each call at the member that served it.
-  - It identifies the member from the backend's host in `ApiManagementGatewayLogs` and the
-    deployment name in `ApiManagementGatewayLlmLog`. It maps them to a deployment through the
-    pool's members, which it remembers as it remembers APIs.
+  - The pool's rolled-up API remembers its members: each one's deployment, the backend MOSAIC
+    wrote for it, and the host that backend calls. Members since removed stay, so their calls are
+    still priced while their day is re-aggregated.
+  - For a pool's calls, the rollup also groups `ApiManagementGatewayLogs` by `BackendId` and by
+    `BackendUrl`'s host and deployment path. It places a call on a member by the first of these
+    that names exactly one:
+    1. the backend, which MOSAIC wrote for one member;
+    2. the backend URL's host and deployment;
+    3. the host alone;
+    4. for a host no member's backend calls, the deployment alone. The deployment comes from the
+       URL, or from `ApiManagementGatewayLlmLog`'s `DeploymentName` for routes whose URL names
+       none.
+
+    A host that several members share is never placed by deployment alone.
+  - Each deployment's busiest minute, which Analytics compares with its capacity, counts the pool
+    calls placed on it. The peaks query repeats the same placement in KQL.
   - Provisioned members' reservations are shared by token share, as ADR 0020 shares a
-    publication's.
-  - A call MOSAIC can't map to a member stays unpriced. Reports count it with the calls they leave
-    out, never as $0.
+    publication's. A member's share starts when MOSAIC first saw it behind the pool.
+  - A call MOSAIC can't place on a member stays unpriced. Reports count it with the calls they
+    leave out, never as $0:
+    - Pricing's list of unpriced usage names the pool, as it names an API with no deployment.
+    - The chargeback export bills it to "Unknown model", unpriced.
+    - A user's usage report says only that MOSAIC can't price all of the model's calls. It never
+      names the pool's deployments, endpoints, or regions.
   - A cost center's spend, and the budgets that compare it, include its grants' pool calls.
 - **Before phase 2**, a pool is reachable only through its bootstrap subscription, like a
   publication without governed access. As ADR 0010 says, the operator retrieves that key from
@@ -744,8 +761,9 @@ Phase 1:
 Phase 2:
 
 - Policy size with many subjects, models, and cost centers, against API Management's limit.
-- Whether `ApiManagementGatewayLogs.BackendUrl` names the member that served the final attempt
-  when the backend is a pool. If it doesn't, the outbound policy traces the member's host itself.
+- Whether `ApiManagementGatewayLogs.BackendId` and `BackendUrl` name the member that served the
+  final attempt when the backend is a pool. If they don't, the outbound policy traces the member's
+  host itself.
 - What `ApiManagementGatewayLlmLog`'s `ModelName` and `DeploymentName` carry when the policy
   rewrites the model for a member.
 - That a call through two `llm-token-limit` policies, the grant's and the cost center's pooled

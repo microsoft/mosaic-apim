@@ -15,7 +15,8 @@ Four kinds of document live there, all partitioned by tenant:
 
 import hashlib
 import json
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Literal
 
@@ -65,7 +66,8 @@ SummaryPeriod = Literal["day", "month"]
 # - `grantCaller`: `{link}:{linkKey}|{caller}`, one grant link and caller;
 # - `clientApp`: `{clientApp}|{api}`, the client application ID the attribution trace recorded;
 # - `api`: the API Management API name;
-# - `deployment`: `{modelEndpointId}/{deploymentName}`, for published model APIs;
+# - `deployment`: `{modelEndpointId}/{deploymentName}`, for published model APIs and for each
+#   model pool member that served calls;
 # - `model`: `{model}|{api}`, the model name the LLM log reported, lowercased;
 # - `denial`: `{reason}|{caller}|{clientApp}|{api}` for refused calls;
 # - `unattributed`: `{api}|{subscription}` for admitted calls MOSAIC could not link.
@@ -94,12 +96,39 @@ SUMMARY_DIMENSIONS: tuple[SummaryDimension, ...] = (
     "unattributed",
 )
 # A summary item holds at most this many entries; larger dimensions are split into shards so no
-# document nears Cosmos' 2 MB item limit.
+# document nears Cosmos' 2 MB item limit. An entry that splits a pool's calls by member counts as
+# more than one; see `summary_entry_weight`.
 SUMMARY_SHARD_SIZE = 1000
+# How many member splits weigh as much as one entry's own figures.
+MEMBERS_PER_ENTRY = 4
 
 
 def _zero_latency() -> list[int]:
     return [0] * LATENCY_BUCKET_COUNT
+
+
+class MemberUsage(MosaicModel):
+    """The calls one model pool member served, out of a pool API's figures.
+
+    Never changed in place once made, so figures that share one stay correct.
+    """
+
+    requests: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+
+    def plus(self, other: "MemberUsage") -> "MemberUsage":
+        return MemberUsage(
+            requests=self.requests + other.requests,
+            prompt_tokens=self.prompt_tokens + other.prompt_tokens,
+            completion_tokens=self.completion_tokens + other.completion_tokens,
+            total_tokens=self.total_tokens + other.total_tokens,
+        )
+
+
+def _no_members(value: object) -> bool:
+    return not value
 
 
 class UsageMetrics(MosaicModel):
@@ -133,10 +162,20 @@ class UsageMetrics(MosaicModel):
     peak_minute_tokens: int = 0
     peak_minute_requests: int = 0
     last_seen: datetime | None = None
+    # Model pool calls only: the calls each member deployment served, keyed
+    # `{modelEndpointId}/{deploymentName}` like the deployment dimension, so they can be priced at
+    # the member's own price. Calls MOSAIC couldn't place on a member count in the figures above
+    # and in no member. Left out of stored documents when empty, so other figures hash as before.
+    members: dict[str, MemberUsage] | None = Field(default=None, exclude_if=_no_members)
 
     @property
     def errors(self) -> int:
         return self.client_errors + self.server_errors
+
+    def without_members(self) -> "UsageMetrics":
+        """A copy without the member split, for figures that don't price calls."""
+
+        return self.model_copy(update={"members": None})
 
     def add(self, other: "UsageMetrics") -> None:
         self.requests += other.requests
@@ -164,6 +203,12 @@ class UsageMetrics(MosaicModel):
             self.last_seen is None or other.last_seen > self.last_seen
         ):
             self.last_seen = other.last_seen
+        if other.members:
+            members = dict(self.members or {})
+            for key, usage in other.members.items():
+                current = members.get(key)
+                members[key] = usage if current is None else current.plus(usage)
+            self.members = members
 
     def count_status(self, status: StatusClass, count: int) -> None:
         if status == "ok":
@@ -311,6 +356,13 @@ class UsageSummaryEntry(MosaicModel):
     application_object_id: str | None = None
 
 
+def summary_entry_weight(entry: UsageSummaryEntry) -> int:
+    """How many entries' worth of room one entry takes in a summary shard."""
+
+    members = len(entry.metrics.members or ())
+    return 1 + -(-members // MEMBERS_PER_ENTRY)
+
+
 class UsageSummary(Entity):
     entity_type: Literal["usageSummary"] = "usageSummary"
     period: SummaryPeriod
@@ -351,7 +403,7 @@ class AttributionRecord(Entity):
     gateway_id: str
     entitlement_id: str
     publication_id: str | None = None
-    publication_kind: Literal["model", "mcp"] | None = None
+    publication_kind: Literal["model", "mcp", "pool"] | None = None
     subject: EntitlementSubject
     subject_object_id: str | None = None
     subject_name: str | None = None
@@ -381,25 +433,47 @@ def subscription_attribution_key(gateway_id: str, subscription: str) -> str:
     return f"{gateway_id}/{name.casefold()}"
 
 
+class RolledUpMember(MosaicModel):
+    """One deployment a model pool's API sends calls to, as gateway logs can name it."""
+
+    model_endpoint_id: str
+    deployment_name: str
+    # The API Management backend MOSAIC wrote for the member.
+    backend_name: str
+    # The host the member's backend calls, lowercased, or "" when MOSAIC can't tell.
+    host: str = ""
+    # When MOSAIC first saw the member behind the pool, which is when its share of a provisioned
+    # deployment starts.
+    first_seen_at: datetime | None = None
+
+    @property
+    def deployment_key(self) -> str:
+        return f"{self.model_endpoint_id}/{self.deployment_name}"
+
+
 class RolledUpApi(MosaicModel):
     """A governed API on a gateway, remembered after MOSAIC stops governing it.
 
-    MOSAIC reads the telemetry of every model API and MCP server it governs, whether it published
-    them or adopted them. Calls to one since removed are still counted while their day is
-    re-aggregated, and still named in the views that show them.
+    MOSAIC reads the telemetry of every model API, model pool and MCP server it governs, whether
+    it published them or adopted them. Calls to one since removed are still counted while their
+    day is re-aggregated, and still named in the views that show them.
     """
 
     api_name: str
-    # The governed model API or MCP server record, which is what grants name.
+    # The governed model API, model pool or MCP server record. Grants name a model API or MCP
+    # server by this ID, and a pool's models by it as their scope.
     resource_id: str
     publication_id: str | None = None
-    kind: Literal["model", "mcp"]
+    kind: Literal["model", "mcp", "pool"]
     display_name: str
     model_endpoint_id: str | None = None
     deployment_name: str | None = None
     # A model publication's own subscription. Everyone given its key calls as the publication, so
     # its calls can't be told apart by caller.
     subscription_name: str | None = None
+    # A model pool's member deployments, every model's, including members since removed, so calls
+    # can still be priced at the deployment that served them.
+    members: list[RolledUpMember] = Field(default_factory=list, exclude_if=_no_members)
     first_seen_at: datetime
     removed_at: datetime | None = None
 
@@ -408,6 +482,87 @@ class RolledUpApi(MosaicModel):
         if self.model_endpoint_id is None or self.deployment_name is None:
             return None
         return f"{self.model_endpoint_id}/{self.deployment_name}"
+
+    @property
+    def is_llm(self) -> bool:
+        """Whether the API's calls reach a language model, so carry token counts."""
+
+        return self.kind != "mcp"
+
+    def deployment_keys(self) -> list[str]:
+        """The deployments the API's calls reach, keyed as rollups key them."""
+
+        if self.kind == "pool":
+            return list(dict.fromkeys(member.deployment_key for member in self.members))
+        key = self.deployment_key
+        return [key] if key else []
+
+    def endpoint_ids(self) -> set[str]:
+        """The model endpoints the API's calls reach."""
+
+        if self.kind == "pool":
+            return {member.model_endpoint_id for member in self.members}
+        return {self.model_endpoint_id} if self.model_endpoint_id else set()
+
+
+@dataclass(frozen=True)
+class PoolMembers:
+    """Which member deployment served a call to a model pool's API.
+
+    API Management picks the member, so the attribution trace can't name it. The gateway log
+    can, in up to three ways, tried most precise first: the backend that served the call, which is
+    one MOSAIC wrote for a single member; the host and deployment its backend URL called; and the
+    host alone or the deployment alone, when only one member has it. A call none of these places
+    stays off every member, so it's never priced at the wrong deployment's price.
+    """
+
+    by_backend: Mapping[str, str]
+    by_route: Mapping[tuple[str, str], str]
+    by_host: Mapping[str, frozenset[str]]
+    by_deployment: Mapping[str, frozenset[str]]
+
+    @classmethod
+    def of(cls, api: RolledUpApi) -> "PoolMembers":
+        by_backend: dict[str, str] = {}
+        by_route: dict[tuple[str, str], str] = {}
+        by_host: dict[str, set[str]] = {}
+        by_deployment: dict[str, set[str]] = {}
+        for member in api.members:
+            key = member.deployment_key
+            deployment = member.deployment_name.casefold()
+            by_backend[member.backend_name.casefold()] = key
+            by_deployment.setdefault(deployment, set()).add(key)
+            host = member.host.casefold()
+            if host:
+                by_route.setdefault((host, deployment), key)
+                by_host.setdefault(host, set()).add(key)
+        return cls(
+            by_backend=by_backend,
+            by_route=by_route,
+            by_host={host: frozenset(keys) for host, keys in by_host.items()},
+            by_deployment={name: frozenset(keys) for name, keys in by_deployment.items()},
+        )
+
+    def member_for(self, backend_id: str, host: str, deployment: str) -> str | None:
+        """The deployment key of the member that served a call, or None when it's unclear."""
+
+        key = self.by_backend.get(backend_id.casefold()) if backend_id else None
+        if key is not None:
+            return key
+        host = host.casefold()
+        deployment = deployment.casefold()
+        if host in self.by_host:
+            routed = self.by_route.get((host, deployment)) if deployment else None
+            if routed is not None:
+                return routed
+            return only_member(self.by_host[host])
+        return only_member(self.by_deployment.get(deployment, frozenset())) if deployment else None
+
+
+def only_member(keys: frozenset[str]) -> str | None:
+    """The one deployment key in ``keys``, or None when there are none or several."""
+
+    return next(iter(keys)) if len(keys) == 1 else None
 
 
 class UsageRollupState(Entity):

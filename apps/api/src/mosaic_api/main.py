@@ -430,6 +430,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 retention_days=app_settings.usage_rollup_retention_days,
                 backfill_max_days=app_settings.usage_rollup_backfill_max_days,
                 cost_center_repository=cost_center_repository,
+                endpoint_repository=endpoint_repository,
             )
             if log_client is not None and app_settings.usage_rollup_enabled
             else None

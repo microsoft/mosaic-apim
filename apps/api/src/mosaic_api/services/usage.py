@@ -23,6 +23,7 @@ from mosaic_api.domain import (
     ResourceSummary,
 )
 from mosaic_api.environments import EnvironmentCatalog, is_production
+from mosaic_api.model_pools import PoolModel
 from mosaic_api.observed import ObservedModelDeployment
 from mosaic_api.pricing import (
     Pricer,
@@ -45,6 +46,7 @@ from mosaic_api.services.model_access import with_inherited_limits
 from mosaic_api.services.portal import PortalService
 from mosaic_api.services.pricing import PricingService
 from mosaic_api.usage_telemetry import (
+    MemberUsage,
     UsageFact,
     UsageHour,
     UsageMetrics,
@@ -268,6 +270,8 @@ class DailyUsage:
     peak_minute_requests: int | None = None
     hours: dict[int, UsageHour] = field(default_factory=dict)
     last_seen: datetime | None = None
+    # A pool model's calls by the deployment that served them, for pricing only. Never shown.
+    members: dict[str, MemberUsage] = field(default_factory=dict)
 
     @property
     def total_tokens(self) -> int | None:
@@ -484,6 +488,18 @@ class _GrantLinks:
 MCP_COST_NOTE = "MCP servers are billed by their own service, not by tokens."
 PRODUCT_COST_NOTE = "Products bundle several APIs, so MOSAIC can't price them."
 UNKNOWN_DEPLOYMENT_NOTE = "MOSAIC doesn't know which deployment this API calls."
+# A pool model's notes never say where its calls ran: the pool's deployments are the admins'.
+POOL_UNPRICED_NOTE = "MOSAIC can't price this model's calls."
+POOL_PART_UNPRICED_NOTE = "MOSAIC can't price all of this model's calls."
+
+
+def _member_usage(served: MemberUsage) -> DailyUsage:
+    return DailyUsage(
+        requests=served.requests,
+        prompt_tokens=served.prompt_tokens,
+        completion_tokens=served.completion_tokens,
+        tokens=served.total_tokens,
+    )
 
 
 @dataclass
@@ -497,6 +513,8 @@ class _MeasuredPricing:
     tokens: dict[tuple[str, date], int]
     today: date
     reserved: bool = False
+    # Each pool model grant's deployments, current and past, keyed as rollups key them.
+    members: dict[str, list[str]] = field(default_factory=dict)
 
     def _provisioned(self, key: str) -> bool:
         facts = self.pricer.facts_for(key)
@@ -543,11 +561,63 @@ class _MeasuredPricing:
             return MCP_COST_NOTE
         if kind == EntitlementResourceKind.PRODUCT:
             return PRODUCT_COST_NOTE
-        if key is None:
+        if key is None and kind != EntitlementResourceKind.POOL_MODEL:
             return UNKNOWN_DEPLOYMENT_NOTE
         if series is None:
             return "MOSAIC can't measure this grant's usage yet, so it can't price it."
         return None
+
+    def _priced_on(self, key: str, day: date) -> bool:
+        if self._provisioned(key):
+            return self.pricer.reserved_cost(key, month_first(day), self.today) is not None
+        return self.pricer.rate(key, day).kind == "tokens"
+
+    def price_pool_days(
+        self, keys: Sequence[str], figures: Sequence[tuple[date, DailyUsage | None]], end: date
+    ) -> tuple[float | None, dict[date, float | None], str | None]:
+        """A pool model grant's cost over the period, each day's cost, and why any has no price.
+
+        Each day's calls are priced at the deployment that served them. Calls MOSAIC couldn't
+        place on one, or that one has no price for, are never counted as free, and the note never
+        says where any of them ran.
+        """
+
+        costs: dict[date, float | None] = {}
+        total: float | None = None
+        missing = False
+        used = False
+        for day, usage in figures:
+            if usage is None:
+                continue
+            value: float | None = None
+            placed = 0
+            for key, served in sorted(usage.members.items()):
+                placed += served.total_tokens
+                cost = self.cost(key, day, _member_usage(served))
+                if cost is None:
+                    missing = missing or served.total_tokens > 0
+                else:
+                    value = (value or 0.0) + cost
+            tokens = usage.total_tokens or 0
+            if tokens > placed:
+                missing = True
+            if tokens <= 0:
+                if value is None and any(self._priced_on(key, day) for key in keys):
+                    value = 0.0
+                costs[day] = value
+                continue
+            costs[day] = value
+            used = True
+            if value is not None:
+                total = (total or 0.0) + value
+        if not used:
+            priced = [self._priced_on(key, end) for key in keys]
+            if not any(priced):
+                return None, costs, POOL_UNPRICED_NOTE
+            return 0.0, costs, None if all(priced) else POOL_PART_UNPRICED_NOTE
+        if total is None:
+            return None, costs, POOL_UNPRICED_NOTE
+        return total, costs, POOL_PART_UNPRICED_NOTE if missing else None
 
     def price_days(
         self, key: str, figures: Sequence[tuple[date, DailyUsage | None]], end: date
@@ -831,6 +901,8 @@ def _add_fact(usage: DailyUsage, fact: UsageFact, *, is_mcp: bool) -> None:
         usage.completion_tokens = (usage.completion_tokens or 0) + metrics.completion_tokens
         usage.tokens = (usage.tokens or 0) + metrics.total_tokens
         usage.peak_minute_tokens = max(usage.peak_minute_tokens or 0, metrics.peak_minute_tokens)
+        for key, served in (metrics.members or {}).items():
+            usage.members[key] = usage.members.get(key, MemberUsage()).plus(served)
     usage.throttled = (usage.throttled or 0) + metrics.throttled
     usage.quota_refused = (usage.quota_refused or 0) + metrics.quota
     usage.errors = (usage.errors or 0) + metrics.errors
@@ -879,32 +951,62 @@ class UsageService:
         self,
         actor: Actor,
         entitlements: Sequence[ResolvedEntitlement],
+        usage: UsageSeries,
         *,
         start: date,
         end: date,
     ) -> _MeasuredPricing | None:
-        """The prices for the caller's grants, and each provisioned deployment's monthly tokens."""
+        """The prices for the caller's grants, and each provisioned deployment's monthly tokens.
+
+        A pool model grant is priced by the deployments that served its calls, so their prices
+        are loaded too: the model's members today, and any that served it earlier in the period.
+        """
 
         if self._pricing is None:
             return None
         deployments: dict[str, tuple[str | None, str | None]] = {}
+        members: dict[str, list[str]] = {}
+        keys: set[str] = set()
         for resolved in entitlements:
-            deployments[resolved.entitlement.id] = await self._deployment_for(
-                actor.tenant_id, resolved.entitlement
+            entitlement = resolved.entitlement
+            if entitlement.resource.kind != EntitlementResourceKind.POOL_MODEL:
+                found = await self._deployment_for(actor.tenant_id, entitlement)
+                deployments[entitlement.id] = found
+                if found[0]:
+                    keys.add(found[0])
+                continue
+            pool_model = await self._pool_model_for(actor.tenant_id, entitlement)
+            deployments[entitlement.id] = (None, _pool_model_name(pool_model))
+            members[entitlement.id] = (
+                [
+                    deployment_key(member.model_endpoint_id, member.deployment_name)
+                    for member in pool_model.active_members()
+                ]
+                if pool_model is not None
+                else []
             )
-        endpoint_ids = {key.partition("/")[0] for key, _ in deployments.values() if key}
+            if pool_model is not None:
+                keys.update(
+                    deployment_key(member.model_endpoint_id, member.deployment_name)
+                    for member in pool_model.members
+                )
+            for day in (usage.get(entitlement.id) or {}).values():
+                keys.update(day.members)
+        endpoint_ids = {key.partition("/")[0] for key in keys}
         pricer = await self._pricing.pricer(actor.tenant_id, endpoint_ids)
-        provisioned = [
+        provisioned = sorted(
             key
-            for key, _ in deployments.values()
-            if key and (facts := pricer.facts_for(key)) is not None and facts.provisioned
-        ]
+            for key in keys
+            if (facts := pricer.facts_for(key)) is not None and facts.provisioned
+        )
         tokens = (
             await self._pricing.provisioned_tokens(actor.tenant_id, provisioned, start, end)
             if provisioned
             else {}
         )
-        return _MeasuredPricing(pricer=pricer, deployments=deployments, tokens=tokens, today=end)
+        return _MeasuredPricing(
+            pricer=pricer, deployments=deployments, tokens=tokens, today=end, members=members
+        )
 
     async def my_usage(self, actor: Actor, period: UsagePeriod = "30d") -> MyUsageReport:
         now = self._clock().astimezone(UTC)
@@ -926,7 +1028,7 @@ class UsageService:
         measured = self._source.data_source != "simulated"
         catalog = await load_environment_catalog(self._environments, actor.tenant_id)
         pricing = (
-            await self._measured_pricing(actor, entitlements, start=start, end=end)
+            await self._measured_pricing(actor, entitlements, usage, start=start, end=end)
             if measured
             else None
         )
@@ -962,7 +1064,12 @@ class UsageService:
             present = [item for _, item in report_figures if item is not None]
             resource_cost: float | None = None
             point_costs: dict[date, float | None] = {}
-            if cost_note is None and pricing is not None and key is not None:
+            pool_members = None if pricing is None else pricing.members.get(entitlement.id)
+            if cost_note is None and pricing is not None and pool_members is not None:
+                resource_cost, point_costs, cost_note = pricing.price_pool_days(
+                    pool_members, report_figures, end
+                )
+            elif cost_note is None and pricing is not None and key is not None:
                 resource_cost, point_costs, cost_note = pricing.price_days(
                     key, report_figures, end
                 )
@@ -1267,7 +1374,17 @@ class UsageService:
         if resource.kind == EntitlementResourceKind.MODEL_DEPLOYMENT and resource.scope_id:
             model = await self._observed_model_name(tenant_id, resource.scope_id, resource.id)
             return deployment_key(resource.scope_id, resource.id), model
+        if resource.kind == EntitlementResourceKind.POOL_MODEL:
+            # Many deployments serve a pool model, so it has no one deployment to name.
+            return None, _pool_model_name(await self._pool_model_for(tenant_id, entitlement))
         return None, None
+
+    async def _pool_model_for(self, tenant_id: str, entitlement: Entitlement) -> PoolModel | None:
+        resource = entitlement.resource
+        if resource.kind != EntitlementResourceKind.POOL_MODEL or not resource.scope_id:
+            return None
+        pool = await self._gateways.get_model_pool(tenant_id, resource.scope_id)
+        return None if pool is None else pool.pool_model(resource.id)
 
     async def _model_for(self, tenant_id: str, entitlement: Entitlement) -> str | None:
         return (await self._deployment_for(tenant_id, entitlement))[1]
@@ -1630,6 +1747,14 @@ def quota_definitions(entitlement: Entitlement) -> list[tuple[Metric, int, Quota
 
 def _normalize_model(model: str) -> str:
     return re.sub(r"[^a-z0-9.-]+", "", model.casefold())
+
+
+def _pool_model_name(pool_model: PoolModel | None) -> str | None:
+    """The model a pool model's deployments all serve, which is what a user knows it as."""
+
+    if pool_model is None:
+        return None
+    return pool_model.model_name or pool_model.public_name
 
 
 def _rate_for(model: str | None) -> tuple[float, float] | None:

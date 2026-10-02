@@ -97,6 +97,7 @@ const exportLabels: Record<ExportView, string> = {
 const apiKindLabels: Record<NonNullable<AnalyticsApiRow['kind']>, string> = {
   model: 'Model API',
   mcp: 'MCP server',
+  pool: 'Model pool',
 }
 
 const subjectLabels: Record<EntitlementSubjectKind, string> = {

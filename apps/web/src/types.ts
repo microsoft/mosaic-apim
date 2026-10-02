@@ -2297,7 +2297,7 @@ export interface AnalyticsApiRow extends AnalyticsUsage {
   gatewayName: string
   apiName: string
   label: string
-  kind: 'model' | 'mcp' | null
+  kind: 'model' | 'mcp' | 'pool' | null
   resourceId: string | null
   removed: boolean
   meteredRequests: number
@@ -2528,7 +2528,7 @@ export type ApiDiagnosticGap = 'missing' | 'logger' | 'verbosity' | 'sampling' |
 export interface ApiTelemetry {
   apiName: string
   displayName: string
-  kind: 'model' | 'mcp'
+  kind: 'model' | 'mcp' | 'pool'
   published: boolean
   // The API has no diagnostic of its own and logs as the gateway's All APIs setting says.
   allApis: boolean

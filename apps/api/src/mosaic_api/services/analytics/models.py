@@ -346,7 +346,7 @@ class AnalyticsApiRow(AnalyticsUsage):
     gateway_name: str
     api_name: str
     label: str
-    kind: Literal["model", "mcp"] | None
+    kind: Literal["model", "mcp", "pool"] | None
     resource_id: str | None
     removed: bool
     metered_requests: int

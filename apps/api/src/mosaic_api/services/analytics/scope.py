@@ -13,6 +13,7 @@ from mosaic_api.domain import (
     DirectoryObject,
     Entitlement,
     EntitlementBinding,
+    EntitlementResource,
     EntitlementResourceKind,
     EntitlementSubjectKind,
     Gateway,
@@ -82,6 +83,35 @@ class GrantInfo:
     cost_center_id: str | None = None
     cost_center_code: str | None = None
     cost_center_name: str | None = None
+
+    @property
+    def api_resource_id(self) -> str | None:
+        """The ID the governed API its calls reach knows it by.
+
+        A pool model's grant reaches its pool's API, which the pool names.
+        """
+
+        if self.resource_kind == EntitlementResourceKind.POOL_MODEL:
+            return self.publication_id
+        return self.resource_id
+
+
+def api_resource_id(resource: EntitlementResource) -> str:
+    """The ID the governed API a granted resource's calls reach knows it by."""
+
+    if resource.kind == EntitlementResourceKind.POOL_MODEL:
+        return resource.scope_id or ""
+    return resource.id
+
+
+def _publication_id(resource: EntitlementResource, publication_id: str | None) -> str | None:
+    """A grant's publication. A pool model's pool stands in when no publication is recorded."""
+
+    if publication_id:
+        return publication_id
+    if resource.kind == EntitlementResourceKind.POOL_MODEL:
+        return resource.scope_id or None
+    return None
 
 
 @dataclass(frozen=True)
@@ -250,7 +280,7 @@ class Scope:
             return self.api_allowed(gateway_id, key.partition("|")[0])
         if dimension == "deployment":
             return any(
-                api.deployment_key == key
+                key in api.deployment_keys()
                 for (api_gateway, _), api in self.apis.items()
                 if api_gateway == gateway_id and self.api_allowed(api_gateway, api.api_name)
             )
@@ -280,15 +310,19 @@ class Scope:
     def entitlement_gateway(self, entitlement: Entitlement) -> str | None:
         if entitlement.binding is not None:
             return entitlement.binding.gateway_id
+        resource_id = api_resource_id(entitlement.resource)
         for (gateway_id, _), api in self.apis.items():
-            if api.resource_id == entitlement.resource.id:
+            if api.resource_id == resource_id:
                 return gateway_id
         return None
 
     def entitlement_allowed(self, entitlement: Entitlement) -> bool:
         if not self.in_scope(self.entitlement_gateway(entitlement)):
             return False
-        if self.resource_ids is not None and entitlement.resource.id not in self.resource_ids:
+        if (
+            self.resource_ids is not None
+            and api_resource_id(entitlement.resource) not in self.resource_ids
+        ):
             return False
         if (
             self.filters.cost_center_id is not None
@@ -303,14 +337,15 @@ class Scope:
     def grant_api(self, gateway_id: str, grant: GrantInfo | None) -> RolledUpApi | None:
         """The governed API a grant's calls reached on a gateway, when it grants one."""
 
-        if grant is None or grant.resource_id is None:
+        resource_id = grant.api_resource_id if grant is not None else None
+        if resource_id is None:
             return None
         return next(
             (
                 api
                 for (api_gateway, _), api in self.apis.items()
                 if api_gateway == gateway_id
-                and grant.resource_id in {api.resource_id, api.publication_id}
+                and resource_id in {api.resource_id, api.publication_id}
             ),
             None,
         )
@@ -449,7 +484,10 @@ def grant_for(entitlement: Entitlement, scope: Scope) -> GrantInfo:
         resource_id=entitlement.resource.id,
         resource_name=None,
         gateway_id=scope.entitlement_gateway(entitlement),
-        publication_id=entitlement.runtime.publication_id if entitlement.runtime else None,
+        publication_id=_publication_id(
+            entitlement.resource,
+            entitlement.runtime.publication_id if entitlement.runtime else None,
+        ),
         per_member=entitlement.subject.kind == EntitlementSubjectKind.SECURITY_GROUP,
         cost_center_id=entitlement.cost_center_id,
         cost_center_code=(current.code if (current := scope.cost_centers.get(
@@ -492,7 +530,7 @@ def build_grants(
             resource_id=record.resource.id,
             resource_name=record.resource_name,
             gateway_id=record.gateway_id,
-            publication_id=record.publication_id,
+            publication_id=_publication_id(record.resource, record.publication_id),
             per_member=record.per_member,
             cost_center_id=record.cost_center_id,
             cost_center_code=record.cost_center_code,
@@ -517,8 +555,9 @@ def build_grants(
                     resource_id=entitlement.resource.id,
                     resource_name=None,
                     gateway_id=binding.gateway_id,
-                    publication_id=(
-                        entitlement.runtime.publication_id if entitlement.runtime else None
+                    publication_id=_publication_id(
+                        entitlement.resource,
+                        entitlement.runtime.publication_id if entitlement.runtime else None,
                     ),
                     per_member=binding.attribution_per_member,
                     cost_center_id=entitlement.cost_center_id,
@@ -572,7 +611,8 @@ def resolve_resource(
     }
     if not matches:
         raise NotFoundError(
-            "No governed model API or MCP server has that ID", details={"resourceId": resource_id}
+            "No governed model API, model pool, or MCP server has that ID",
+            details={"resourceId": resource_id},
         )
     ids = {resource_id}
     for key in matches:

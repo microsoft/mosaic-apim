@@ -21,7 +21,11 @@ from mosaic_api.usage_telemetry import LATENCY_BUCKETS_MS
 _START = re.compile(r"let startTime = datetime\(([^)]+)\);")
 _END = re.compile(r"let endTime = datetime\(([^)]+)\);")
 _APIS = re.compile(r"let mosaicApis = dynamic\((\[.*?\])\);")
+_POOLS = re.compile(r"let poolApis = dynamic\((\[.*?\])\);")
 _DEPLOYMENTS = re.compile(r"let deploymentOf = dynamic\((\{.*?\})\);")
+_MEMBER_LOOKUP = re.compile(r"let (memberBy[A-Za-z]+) = dynamic\((\{.*?\})\);")
+_BACKEND_HOST = re.compile(r"^[a-z][a-z0-9+.-]*://([^/:?#]+)")
+_BACKEND_DEPLOYMENT = re.compile(r"/openai/deployments/([^/?#]+)")
 
 
 @dataclass
@@ -49,6 +53,9 @@ class GatewayCall:
     completion_tokens: int | None = None
     deployment: str | None = None
     model: str | None = None
+    # The API Management backend that served the call, and the URL it forwarded to.
+    backend_id: str = ""
+    backend_url: str = ""
 
     @property
     def total_tokens(self) -> int | None:
@@ -100,6 +107,21 @@ def _sum(values: Iterable[int | None]) -> int:
     return sum(value or 0 for value in values)
 
 
+def _backend(call: GatewayCall, pools: set[str]) -> tuple[str, str, str]:
+    """A pool API call's backend ID, and the host and deployment of the URL it was sent to."""
+
+    if call.api.casefold() not in pools:
+        return "", "", ""
+    url = call.backend_url.lower()
+    host = _BACKEND_HOST.search(url)
+    deployment = _BACKEND_DEPLOYMENT.search(url)
+    return (
+        call.backend_id.lower(),
+        host.group(1) if host else "",
+        deployment.group(1) if deployment else "",
+    )
+
+
 @dataclass
 class FakeLogs:
     """Answers :class:`~mosaic_api.integrations.loganalytics.LogsQuery` from ``calls``."""
@@ -144,10 +166,12 @@ class FakeLogs:
         admitted = [call for call in rows if not call.reason]
         if kind == "deploymentPeaks":
             mapping = json.loads(_DEPLOYMENTS.search(query).group(1))  # type: ignore[union-attr]
-            return self._deployment_peaks(admitted, mapping)
+            lookups = {name: json.loads(value) for name, value in _MEMBER_LOOKUP.findall(query)}
+            return self._deployment_peaks(admitted, mapping, lookups)
         if kind == "peaks":
             return self._peaks(admitted)
-        return self._calls(admitted)
+        pools = _POOLS.search(query)
+        return self._calls(admitted, set(json.loads(pools.group(1))) if pools else None)
 
     @staticmethod
     def _kind(query: str) -> str:
@@ -197,7 +221,7 @@ class FakeLogs:
             call.client_app.casefold(),
         )
 
-    def _calls(self, calls: list[GatewayCall]) -> list[Row]:
+    def _calls(self, calls: list[GatewayCall], pools: set[str] | None = None) -> list[Row]:
         groups: dict[tuple[Any, ...], list[GatewayCall]] = defaultdict(list)
         for call in calls:
             version, grant, member, client_app = self._trace(call)
@@ -211,12 +235,29 @@ class FakeLogs:
                 call.subscription.casefold(),
                 call.deployment if call.total_tokens is not None else None,
                 call.model if call.total_tokens is not None else None,
+                _backend(call, pools) if pools is not None else None,
             )
             groups[key].append(call)
         rows: list[Row] = []
         for key, members in groups.items():
-            hour, version, grant, member, client_app, api, subscription, deployment, model = key
+            (
+                hour,
+                version,
+                grant,
+                member,
+                client_app,
+                api,
+                subscription,
+                deployment,
+                model,
+                backend,
+            ) = key
             statuses = [call.status for call in members]
+            served_by = (
+                dict(zip(("backendId", "backendHost", "backendDeployment"), backend, strict=True))
+                if backend is not None
+                else {}
+            )
             rows.append(
                 {
                     "hour": hour,
@@ -228,6 +269,7 @@ class FakeLogs:
                     "subscription": subscription,
                     "deployment": deployment or "",
                     "model": model or "",
+                    **served_by,
                     "requests": len(members),
                     "ok": statuses.count("ok"),
                     "throttled": statuses.count("throttled"),
@@ -279,10 +321,15 @@ class FakeLogs:
             groups[(link, minute)].append(call)
         return self._busiest_minutes(groups, len, "link")
 
-    def _deployment_peaks(self, calls: list[GatewayCall], mapping: dict[str, str]) -> list[Row]:
+    def _deployment_peaks(
+        self,
+        calls: list[GatewayCall],
+        mapping: dict[str, str],
+        lookups: dict[str, dict[str, str]] | None = None,
+    ) -> list[Row]:
         groups: dict[tuple[str, datetime], list[GatewayCall]] = defaultdict(list)
         for call in calls:
-            key = mapping.get(call.api.casefold())
+            key = mapping.get(call.api.casefold()) or self._pool_member(call, lookups or {})
             if key:
                 groups[(key, call.time.replace(second=0, microsecond=0))].append(call)
         return self._busiest_minutes(
@@ -290,6 +337,30 @@ class FakeLogs:
             lambda members: sum(1 for call in members if call.backend_code > 0),
             "deploymentKey",
         )
+
+    @staticmethod
+    def _pool_member(call: GatewayCall, lookups: dict[str, dict[str, str]]) -> str:
+        """The member a pool call is placed on, read from the query's member lookups."""
+
+        if not lookups:
+            return ""
+        api = call.api.casefold()
+        url = call.backend_url.lower()
+        host_match = _BACKEND_HOST.search(url)
+        deployment_match = _BACKEND_DEPLOYMENT.search(url)
+        host = host_match.group(1) if host_match else ""
+        deployment = (
+            deployment_match.group(1) if deployment_match else (call.deployment or "")
+        ).lower()
+        by_backend = lookups.get("memberByBackend", {}).get(f"{api}|{call.backend_id.lower()}")
+        if by_backend:
+            return by_backend
+        by_host = lookups.get("memberByHost", {})
+        host_key = f"{api}|{host}"
+        if host_key in by_host:
+            routed = lookups.get("memberByRoute", {}).get(f"{host_key}|{deployment}")
+            return routed or by_host[host_key]
+        return lookups.get("memberByDeployment", {}).get(f"{api}|{deployment}", "")
 
     @staticmethod
     def _denials(calls: list[GatewayCall]) -> list[Row]:
