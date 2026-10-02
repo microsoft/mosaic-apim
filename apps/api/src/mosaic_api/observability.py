@@ -32,9 +32,9 @@ QUIET_LOGGERS = (
 # App Service's health check, the container's HEALTHCHECK and the deployment's smoke checks call
 # the health probes often enough to bury the requests people make, so they aren't recorded. The
 # instrumentation searches each request's URL, which it builds without the query string, for these
-# patterns, so a probe's exact path matches and no other path does.
+# patterns, so a probe's path matches, with or without a trailing slash, and no other path does.
 HEALTH_PROBES = ("/healthz", "/readyz")
-UNRECORDED_URLS = ",".join(rf"^\w+://[^/]+{re.escape(path)}$" for path in HEALTH_PROBES)
+UNRECORDED_URLS = ",".join(rf"^https?://[^/]+{re.escape(path)}/?$" for path in HEALTH_PROBES)
 
 
 def configure_logging(settings: Settings) -> None:

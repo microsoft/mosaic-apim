@@ -572,6 +572,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         description="Desired-state control plane for Azure API Management AI gateway governance.",
         lifespan=lifespan,
     )
+    # The instrumentation wraps the middleware stack when it is built, so it is the outermost
+    # layer, around the middleware added below, and records the requests they answer themselves.
     instrument_requests(app, app_settings)
     app.state.settings = app_settings
     app.add_exception_handler(DomainError, domain_error_handler)

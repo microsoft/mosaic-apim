@@ -18,13 +18,14 @@ from opentelemetry.trace import SpanKind
 CONNECTION_STRING = "InstrumentationKey=test"
 
 
-def settings(connection_string: str | None = CONNECTION_STRING) -> Settings:
+def settings(connection_string: str | None = CONNECTION_STRING, **overrides: Any) -> Settings:
     return Settings(
         environment=Environment.TEST,
         auth_mode=AuthMode.LOCAL,
         repository_backend=RepositoryBackend.MEMORY,
         tenant_id="tenant-test",
         applicationinsights_connection_string=connection_string,
+        **overrides,
     )
 
 
@@ -37,9 +38,9 @@ class Telemetry:
         self.exported = InMemorySpanExporter()
         provider = TracerProvider()
         provider.add_span_processor(SimpleSpanProcessor(self.exported))
-        # OpenTelemetry lets a process set its global tracer provider only once, so it is swapped
-        # in for the test, as OpenTelemetry's own test utilities do.
-        monkeypatch.setattr(trace, "_TRACER_PROVIDER", provider)
+        # OpenTelemetry lets a process set its global tracer provider only once, so the function
+        # that returns it returns this one for the test instead.
+        monkeypatch.setattr(trace, "get_tracer_provider", lambda: provider)
         monkeypatch.setattr(observability, "configure_azure_monitor", self.configure_azure_monitor)
         self.options: list[dict[str, Any]] = []
         self._apps: list[FastAPI] = []
@@ -47,8 +48,8 @@ class Telemetry:
     def configure_azure_monitor(self, **options: Any) -> None:
         self.options.append(options)
 
-    def start(self, connection_string: str | None = CONNECTION_STRING) -> FastAPI:
-        app = create_app(settings(connection_string))
+    def start(self, connection_string: str | None = CONNECTION_STRING, **overrides: Any) -> FastAPI:
+        app = create_app(settings(connection_string, **overrides))
         self._apps.append(app)
         return app
 
@@ -104,7 +105,9 @@ def test_a_request_is_one_server_span_with_its_route_and_status_code(
     assert attributes["http.status_code"] == status_code
 
 
-@pytest.mark.parametrize("probe", ["/healthz", "/readyz", "/readyz?probe=1"])
+# A probe configured with a trailing slash is redirected to the path without one. Neither is
+# recorded.
+@pytest.mark.parametrize("probe", ["/healthz", "/readyz", "/readyz?probe=1", "/healthz/"])
 def test_the_health_probes_are_not_recorded(telemetry: Telemetry, probe: str) -> None:
     with TestClient(telemetry.start()) as client:
         assert client.get(probe).status_code == 200
@@ -144,6 +147,22 @@ def test_no_header_or_body_is_recorded(telemetry: Telemetry) -> None:
     recorded = repr(attributes)
     for value in (token, key, correlation, label):
         assert value not in recorded
+
+
+def test_a_request_the_cors_middleware_answers_is_recorded(telemetry: Telemetry) -> None:
+    origin = "http://localhost:5173"
+    # create_app adds the CORS middleware after it instruments the app.
+    with TestClient(telemetry.start(cors_origins=[origin])) as client:
+        preflight = client.options(
+            "/api/v1/principals",
+            headers={"Origin": origin, "Access-Control-Request-Method": "POST"},
+        )
+    assert preflight.status_code == 200
+    assert preflight.headers["Access-Control-Allow-Origin"] == origin
+
+    assert [(span.kind, span.name) for span in telemetry.spans()] == [
+        (SpanKind.SERVER, "OPTIONS /api/v1/principals")
+    ]
 
 
 def test_without_a_connection_string_the_app_is_not_instrumented(telemetry: Telemetry) -> None:
