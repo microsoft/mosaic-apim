@@ -386,6 +386,15 @@ application's grant, with the reason:
 - **caller**: another application made the model call;
 - **unknown**: MOSAIC doesn't yet know whose grant the MCP call matched.
 
+**Consumers** lists these calls under **Model use through MCP servers**, below the people,
+applications and groups that already count them. Each row is one person's model use through one
+MCP server, made by one application, with its requests, tokens, share of the linked calls and
+cost. The cost is priced as the application's grant's calls are. A line above the table counts the
+references MOSAIC couldn't use, by reason. The table adds to no total, and People, Applications,
+Grants and every other figure stay as they were. The filters treat these calls as the
+application's grant's: a cost center, a resource or a kind of subject keeps them when it keeps that
+grant. So the model API's resource filter keeps them, and the MCP server's doesn't.
+
 **Client applications** are the apps callers signed in with. MOSAIC names each from the applications
 it has a record of, and recognizes Azure CLI, Azure PowerShell, and Visual Studio Code. Any other
 shows as **Unknown application**, with its client ID. Calls made with only a key show as
@@ -431,7 +440,10 @@ its characters correctly. A cell that starts with `=`, `+`, `-`, or `@` gets a l
 so a spreadsheet doesn't run it as a formula. The file is named for the table and its first and
 last day, such as `mosaic-people-20260901-20260930.csv`. Tables that show cost export a
 **Cost (USD)** column, empty where MOSAIC has no price, and the Cost tab also exports a chargeback
-by month.
+by month. **Model use through MCP servers** exports as `mosaic-onBehalf-<first>-<last>.csv`, with
+each person's and application's name and object ID beside the MCP server. The chargeback splits an
+application's grant into a row for each person its model calls were made for, still charged to the
+application's cost center. [Pricing](pricing.md#chargeback) explains its columns.
 
 ### Cost centers
 
@@ -468,8 +480,16 @@ belongs to. These are personal data. Daily totals expire with retention, but mon
 per-caller figures until deleted. MOSAIC has no tool yet to erase one person's figures. Apply your
 retention and access rules to both the `usage-rollups` container and the workspace.
 
+A model call an MCP server's application made for someone adds that person's object ID to the
+application's figures: the person is recorded for usage, never for access. The traces themselves
+carry only a request ID between the MCP server and the model, never the person. Analytics, its
+**Model use through MCP servers** export, and the chargeback name the person to administrators.
+
 Only administrators see the whole estate. The portal shows each person only their own usage. For a
-security-group grant, it counts only the person's own calls.
+security-group grant, it counts only the person's own calls. Its **Model use through MCP servers**
+section reads only the person's own share of each application's calls, never the application's own
+calls or anyone else's, and leaves it out of their totals, because the application's grant paid
+for it.
 
 The workspace bills ingestion by the gigabyte. Each governed call adds one row to the gateway log,
 and a model call adds at least one row to the LLM log. Logging no headers or bodies keeps the rows
