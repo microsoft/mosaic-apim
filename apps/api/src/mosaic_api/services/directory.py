@@ -382,6 +382,7 @@ class DirectoryService:
                 changes["default_cost_center_id"] = None
             if subject_kind_for(new_kind) != subject_kind_for(principal.kind):
                 await self._require_no_grants(actor, principal_id, active_only=True)
+                await self._require_not_model_caller(actor, principal_id)
             verified = await self._verify_principal_request(new_kind, principal.object_id)
             if verified:
                 changes.update(
@@ -438,9 +439,31 @@ class DirectoryService:
                         details={"publicationId": publication.id},
                     )
 
+    async def _require_not_model_caller(self, actor: Actor, principal_id: str) -> None:
+        """Refuse while an MCP server names this principal as the application it calls models as.
+
+        Its policy records the principal's object ID for usage attribution (ADR 0025), so the
+        setting is cleared on the server first, where the change is planned and applied.
+        """
+
+        if not self._gateways:
+            return
+        naming = sorted(
+            publication.id
+            for publication in await self._gateways.list_mcp_publications(actor.tenant_id)
+            if publication.model_caller_id == principal_id
+        )
+        if naming:
+            raise ConflictError(
+                "An MCP server calls models as this principal. Clear Calls models as on the MCP "
+                "server first.",
+                details={"reason": "mcpModelCaller", "mcpPublicationIds": naming},
+            )
+
     async def _delete_principal(self, actor: Actor, principal_id: str) -> None:
         principal = await self.get_principal(actor, principal_id)
         await self._require_no_grants(actor, principal_id)
+        await self._require_not_model_caller(actor, principal_id)
         memberships = await self._repository.list_memberships(
             actor.tenant_id, principal_id=principal_id
         )

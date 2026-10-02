@@ -8,7 +8,13 @@ from conftest import build_gateway_service, build_mcp_publishing_service
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from mosaic_api.config import AuthMode, Environment, RepositoryBackend, Settings
-from mosaic_api.domain import McpEndpoint, McpEndpointStatus, McpInventorySummary
+from mosaic_api.domain import (
+    McpEndpoint,
+    McpEndpointStatus,
+    McpInventorySummary,
+    Principal,
+    PrincipalKind,
+)
 from mosaic_api.main import create_app
 from mosaic_api.repositories import InMemoryGatewayRepository, InMemoryMcpEndpointRepository
 
@@ -155,6 +161,47 @@ def test_mcp_publication_http_round_trip(mcp_publishing_client: TestClient) -> N
 
     deleted = mcp_publishing_client.delete(f"/api/v1/mcp-publications/{publication_id}")
     assert deleted.status_code == 204
+
+
+def test_mcp_model_caller_http_round_trip(mcp_publishing_client: TestClient) -> None:
+    gateway_id = _onboard_gateway(mcp_publishing_client)
+    endpoint_id = _seed_endpoint(mcp_publishing_client)
+    created = mcp_publishing_client.post(
+        "/api/v1/mcp-publications",
+        json={"gatewayId": gateway_id, "mcpEndpointId": endpoint_id},
+    )
+    publication_id = created.json()["id"]
+    app = Principal(
+        id="principal-search-app",
+        tenant_id=TENANT_ID,
+        object_id="aaaabbbb-cccc-dddd-eeee-ffff00001111",
+        kind=PrincipalKind.SERVICE_PRINCIPAL,
+        label="Contoso Search App",
+    )
+    directory = mcp_publishing_client.app.state.repository  # type: ignore[attr-defined]
+    directory.principals[app.id] = app
+    route = f"/api/v1/mcp-publications/{publication_id}/model-caller"
+
+    named = mcp_publishing_client.put(route, json={"principalId": app.id})
+    assert named.status_code == 200, named.text
+    assert named.json()["modelCallerId"] == app.id
+    plan = mcp_publishing_client.post(f"/api/v1/mcp-publications/{publication_id}/plan")
+    assert plan.json()["mcpAccessSnapshot"]["modelCaller"] == {
+        "principalId": app.id,
+        "objectId": app.object_id,
+        "displayName": "Contoso Search App",
+    }
+
+    assert mcp_publishing_client.put(route, json={}).status_code == 422
+    assert mcp_publishing_client.put(route, json={"principalId": "missing"}).status_code == 404
+    cleared = mcp_publishing_client.delete(route)
+    assert cleared.status_code == 200
+    assert "modelCallerId" not in cleared.json()
+    replanned = mcp_publishing_client.post(f"/api/v1/mcp-publications/{publication_id}/plan")
+    assert "modelCaller" not in replanned.json()["mcpAccessSnapshot"]
+    unknown = "/api/v1/mcp-publications/unknown/model-caller"
+    assert mcp_publishing_client.put(unknown, json={"principalId": app.id}).status_code == 404
+    assert mcp_publishing_client.delete(unknown).status_code == 404
 
 
 def test_mcp_publishing_routes_are_admin_only() -> None:

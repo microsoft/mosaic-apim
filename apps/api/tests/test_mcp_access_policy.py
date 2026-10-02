@@ -11,6 +11,7 @@ from mosaic_api.domain import (
     McpAccessGrant,
     McpAccessSnapshot,
     McpAuthMode,
+    McpModelCaller,
     McpPublication,
     PublicationStatus,
     QuotaPeriod,
@@ -34,6 +35,27 @@ _ATTRIBUTION_MESSAGE = (
     ' + " m=" + (string)context.Variables["mosaic-member"]'
     ' + " a=" + (string)context.Variables["mosaic-client"])'
 )
+# The application a server with a model caller calls models as, and what its trace records.
+MODEL_CALLER = "66666666-6666-6666-6666-666666666666"
+_LINKED_ATTRIBUTION_MESSAGE = (
+    '@("mosaic-attribution v=1 g=" + (string)context.Variables["mosaic-grant"]'
+    ' + " m=" + (string)context.Variables["mosaic-member"]'
+    ' + " a=" + (string)context.Variables["mosaic-client"]'
+    ' + " r=" + (string)context.Variables["mosaic-mcp-call"]'
+    f' + " i=" + "{MODEL_CALLER}")'
+)
+ON_BEHALF = "x-mosaic-on-behalf-of"
+
+
+def _model_caller(**overrides: object) -> McpModelCaller:
+    return McpModelCaller.model_validate(
+        {
+            "principal_id": "principal-search-app",
+            "object_id": MODEL_CALLER,
+            "display_name": "Contoso Search App",
+            **overrides,
+        }
+    )
 
 
 def _attribution_trace(fragment: ET.Element) -> ET.Element:
@@ -432,6 +454,131 @@ def test_credentials_are_stripped_before_managed_identity_is_attached() -> None:
     assert query.attrib == {"name": "subscription-key", "exists-action": "delete"}
     assert flat.index(query) < flat.index(identity)
     assert _render().fragment_xml.find("authentication-managed-identity") == -1
+
+
+def _on_behalf_headers(fragment: ET.Element) -> list[ET.Element]:
+    return [
+        element
+        for element in fragment.iter("set-header")
+        if element.attrib["name"].casefold() == ON_BEHALF
+    ]
+
+
+@pytest.mark.parametrize(
+    ("auth", "audience"),
+    [(McpAuthMode.NONE, None), (McpAuthMode.MANAGED_IDENTITY, "api://backend")],
+    ids=["no-backend-auth", "managed-identity"],
+)
+def test_a_server_without_a_model_caller_receives_no_on_behalf_header(
+    auth: McpAuthMode, audience: str | None
+) -> None:
+    result = _render(backend_auth=auth, backend_audience=audience)
+    fragment = ET.fromstring(result.fragment_xml)
+
+    # A caller's own copy is removed with the credentials, and nothing replaces it.
+    [header] = _on_behalf_headers(fragment)
+    assert header.attrib == {"name": ON_BEHALF, "exists-action": "delete"}
+    assert header in list(fragment)
+    assert _variable_values(fragment, "mosaic-mcp-call") == []
+    assert _attribution_trace(fragment).findtext("message") == _ATTRIBUTION_MESSAGE
+    removal = next(
+        facet
+        for facet in result.facets
+        if facet.element == "set-header" and facet.attributes.get("name") == ON_BEHALF
+    )
+    assert removal.summary == f"Removes any {ON_BEHALF} the caller sent."
+    assert not any(" i=" in facet.summary + " ".join(facet.details) for facet in result.facets)
+
+
+@pytest.mark.parametrize(
+    ("auth", "audience"),
+    [(McpAuthMode.NONE, None), (McpAuthMode.MANAGED_IDENTITY, "api://backend")],
+    ids=["no-backend-auth", "managed-identity"],
+)
+def test_a_server_with_a_model_caller_receives_this_calls_reference_and_no_callers(
+    auth: McpAuthMode, audience: str | None
+) -> None:
+    snapshot = _snapshot(grants=[_grant(), _group_grant(2)], model_caller=_model_caller())
+    result = _render(snapshot=snapshot, backend_auth=auth, backend_audience=audience)
+    fragment = ET.fromstring(result.fragment_xml)
+    children = list(fragment)
+
+    removal, passing = _on_behalf_headers(fragment)
+    assert removal.attrib == {"name": ON_BEHALF, "exists-action": "delete"}
+    assert passing.attrib == {"name": ON_BEHALF, "exists-action": "override"}
+    assert [value.text for value in passing] == ['@((string)context.Variables["mosaic-mcp-call"])']
+    # Both run for every admitted call, the gateway's value last, before the backend is reached.
+    assert removal in children and passing in children
+    assert children.index(removal) < children.index(passing)
+    identity = fragment.find("authentication-managed-identity")
+    if identity is not None:
+        assert children.index(passing) < children.index(identity)
+    # The reference is the call's own request ID, set once the token and grant are settled.
+    [reference] = [
+        element
+        for element in children
+        if element.tag == "set-variable" and element.attrib["name"] == "mosaic-mcp-call"
+    ]
+    assert reference.attrib["value"] == "@(context.RequestId.ToString())"
+    validation = fragment.find("validate-azure-ad-token")
+    assert validation is not None
+    assert children.index(validation) < children.index(reference)
+    trace = _attribution_trace(fragment)
+    assert children.index(reference) < children.index(trace) < children.index(removal)
+    assert trace.findtext("message") == _LINKED_ATTRIBUTION_MESSAGE
+    metadata = {item.attrib["name"]: item.attrib["value"] for item in trace.findall("metadata")}
+    assert metadata["mosaic-mcp-call"] == _guarded_metadata("mosaic-mcp-call")
+    assert metadata["mosaic-model-caller"] == (
+        f'@(String.IsNullOrWhiteSpace("{MODEL_CALLER}") ? "-" : "{MODEL_CALLER}")'
+    )
+    passing_facet = next(
+        facet
+        for facet in result.facets
+        if facet.element == "set-header" and facet.attributes.get("exists-action") == "override"
+    )
+    assert passing_facet.summary == (
+        f"Passes this call's reference to the MCP server in {ON_BEHALF}."
+    )
+    assert "Contoso Search App" in " ".join(passing_facet.details)
+    attribution = next(
+        facet
+        for facet in result.facets
+        if facet.element == "trace" and "MOSAIC grant" in facet.summary
+    )
+    assert any("calls models as" in detail for detail in attribution.details)
+    assert all(
+        expression_error(value) is None
+        for element in fragment.iter()
+        for value in (*element.attrib.values(), element.text or "")
+        if value.startswith("@{")
+    )
+    assert policy_expression_error(result.fragment_xml) is None
+
+
+def test_the_model_caller_is_part_of_the_documents_and_their_digest() -> None:
+    without = _render(snapshot=_snapshot())
+    linked = _render(snapshot=_snapshot(model_caller=_model_caller()))
+    other = _render(
+        snapshot=_snapshot(
+            model_caller=_model_caller(object_id="77777777-7777-7777-7777-777777777777")
+        )
+    )
+
+    assert len({without.content_sha256, linked.content_sha256, other.content_sha256}) == 3
+    # Only the object ID reaches the gateway, lowercased; the name is display metadata.
+    renamed = _render(snapshot=_snapshot(model_caller=_model_caller(display_name="Renamed")))
+    assert renamed.fragment_xml == linked.fragment_xml
+    upper = _render(snapshot=_snapshot(model_caller=_model_caller(object_id=MODEL_CALLER.upper())))
+    assert upper.fragment_xml == linked.fragment_xml
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [{"object_id": "not-a-guid"}, {"object_id": f"{MODEL_CALLER}x"}, {"principal_id": " "}],
+)
+def test_a_model_caller_must_be_named_by_a_guid_object_id(overrides: dict[str, str]) -> None:
+    with pytest.raises(ValidationError, match="model caller"):
+        _render(snapshot=_snapshot(model_caller=_model_caller(**overrides)))
 
 
 def test_api_policy_includes_fragment_and_on_error_www_authenticate() -> None:

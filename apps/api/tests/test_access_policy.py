@@ -38,8 +38,10 @@ SUBSCRIPTION_COUNTER = "@(context.Subscription.Id)"
 _ATTRIBUTION_MESSAGE = (
     '@("mosaic-attribution v=1 g=" + (string)context.Variables["mosaic-grant"]'
     ' + " m=" + (string)context.Variables["mosaic-member"]'
-    ' + " a=" + (string)context.Variables["mosaic-client"])'
+    ' + " a=" + (string)context.Variables["mosaic-client"]'
+    ' + " r=" + (string)context.Variables["mosaic-mcp-call"])'
 )
+ON_BEHALF = "x-mosaic-on-behalf-of"
 
 
 def _guarded_metadata(variable: str) -> str:
@@ -344,7 +346,7 @@ def test_grant_trace_is_after_operation_guard_before_limits_and_members_only_for
     metadata = {item.attrib["name"]: item.attrib["value"] for item in trace.findall("metadata")}
     assert metadata == {
         name: _guarded_metadata(name)
-        for name in ("mosaic-grant", "mosaic-member", "mosaic-client")
+        for name in ("mosaic-grant", "mosaic-member", "mosaic-client", "mosaic-mcp-call")
     }
     assert any(
         facet.element == "trace"
@@ -363,6 +365,7 @@ def test_grant_trace_is_after_operation_guard_before_limits_and_members_only_for
     assert [item.attrib["name"] for item in direct_trace.findall("metadata")] == [
         "mosaic-grant",
         "mosaic-client",
+        "mosaic-mcp-call",
     ]
 
 
@@ -610,6 +613,146 @@ def test_parameterized_scope_and_role_names_are_emitted() -> None:
     assert '"Mcp.Invoke"' in custom_lookup
     assert '"Mcp.Invoke.Application"' in custom_lookup
     assert '"Models.Invoke"' not in custom_lookup
+
+
+def _mcp_call_reference(fragment: ET.Element) -> ET.Element:
+    [variable] = [
+        element
+        for element in fragment
+        if element.tag == "set-variable" and element.attrib["name"] == "mosaic-mcp-call"
+    ]
+    return variable
+
+
+def _attribution_index(children: list[ET.Element]) -> int:
+    return next(
+        index
+        for index, element in enumerate(children)
+        if element.tag == "trace" and "mosaic-attribution" in (element.findtext("message") or "")
+    )
+
+
+def test_only_an_application_tokens_single_guid_reference_is_recorded() -> None:
+    fragment = _fragment(_snapshot(grants=[_grant(), _group_grant(2)]))
+    children = list(fragment)
+    variable = _mcp_call_reference(fragment)
+    expression = variable.attrib["value"]
+
+    # Read once the token has validated and matched a grant, and before the trace records it.
+    token = next(
+        index
+        for index, element in enumerate(children)
+        if element.find("when/validate-azure-ad-token") is not None
+    )
+    assert token < children.index(variable) < _attribution_index(children)
+    checks = [
+        "try {",
+        f'if (!context.Request.Headers.ContainsKey("{ON_BEHALF}")) {{ return ""; }}',
+        'context.Variables["mosaic-validated-token"] as Jwt',
+        'if (jwt == null || jwt.Claims == null) { return ""; }',
+        "hasRealScopes = true;",
+        'if (!hasRealScopes && jwt.Claims.ContainsKey("roles")) {',
+        'application = roles != null && roles.Contains("Models.Invoke.Application");',
+        'if (!application) { return ""; }',
+        f'var values = context.Request.Headers["{ON_BEHALF}"];',
+        'if (values == null || values.Length != 1 || values[0] == null) { return "!"; }',
+        "var reference = values[0].Trim();",
+        "if (!System.Text.RegularExpressions.Regex.IsMatch(reference, "
+        f'{access_policy._literal(access_policy._MCP_CALL_PATTERN)})) {{ return "!"; }}',
+        "return reference.ToLowerInvariant();",
+        '} catch { return ""; }',
+    ]
+    assert access_policy._MCP_CALL_PATTERN == (
+        "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    )
+    positions = [expression.index(check) for check in checks]
+    assert positions == sorted(positions)
+    # A person's token, which has a real scope, is never an application's.
+    assert "delegated" not in expression
+    assert expression_error(expression) is None
+    # A reference is recorded, never acted on: no condition reads it.
+    assert not any("mosaic-mcp-call" in condition for condition in _conditions(fragment))
+
+
+@pytest.mark.parametrize(
+    "reference",
+    [
+        "aaaabbbb-cccc-dddd-eeee-ffff00001111",
+        "AAAABBBB-CCCC-DDDD-EEEE-FFFF00001111",
+    ],
+)
+def test_the_reference_pattern_admits_only_one_guid(reference: str) -> None:
+    pattern = access_policy._MCP_CALL_PATTERN
+    assert re.fullmatch(pattern, reference)
+    for malformed in (
+        "",
+        reference[:-1],
+        f"{reference}0",
+        f"{{{reference}}}",
+        reference.replace("-", ""),
+        f"{reference},{reference}",
+        f"{reference[:8]}_{reference[9:]}",
+        "g" + reference[1:],
+    ):
+        assert not re.search(pattern, malformed)
+
+
+def test_keys_only_access_records_no_mcp_call() -> None:
+    fragment = _fragment(
+        _snapshot(
+            settings=ModelAccessSettings(keys_enabled=True, entra_enabled=False), audience=None
+        )
+    )
+    assert _mcp_call_reference(fragment).attrib["value"] == ""
+
+
+@pytest.mark.parametrize("backend", ["azure-openai", "anthropic", "key-backend"])
+def test_the_on_behalf_header_never_reaches_the_model(backend: str) -> None:
+    publication = {
+        "azure-openai": _publication(),
+        "anthropic": _anthropic(),
+        "key-backend": _anthropic(backend_key_name="mosaic-model-key"),
+    }[backend]
+    result = render_governed_policy(publication, _snapshot())
+    fragment = ET.fromstring(result.fragment_xml)
+    children = list(fragment)
+
+    [header] = [
+        element
+        for element in fragment.iter("set-header")
+        if element.attrib["name"].casefold() == ON_BEHALF
+    ]
+    assert header.attrib == {"name": ON_BEHALF, "exists-action": "delete"}
+    # Removed for every admitted call, after the trace reads it and before the backend's
+    # credential and route.
+    assert header in children
+    backend = fragment.find("set-backend-service")
+    assert backend is not None
+    credential = fragment.find("authentication-managed-identity")
+    if credential is None:
+        credential = next(
+            element
+            for element in children
+            if element.tag == "set-header" and element.attrib["exists-action"] == "override"
+        )
+    assert (
+        _attribution_index(children)
+        < children.index(header)
+        < children.index(credential)
+        < children.index(backend)
+    )
+    removal = next(
+        facet
+        for facet in result.facets
+        if facet.element == "set-header" and facet.attributes.get("name") == ON_BEHALF
+    )
+    assert removal.summary == f"Removes {ON_BEHALF} before the call reaches the model."
+    attribution = next(
+        facet
+        for facet in result.facets
+        if facet.element == "trace" and "MOSAIC grant" in facet.summary
+    )
+    assert any(ON_BEHALF in detail for detail in attribution.details)
 
 
 def test_group_token_branch_follows_direct_grants_in_precedence_order() -> None:

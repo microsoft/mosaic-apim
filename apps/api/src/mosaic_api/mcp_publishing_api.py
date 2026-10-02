@@ -4,6 +4,7 @@ from fastapi import APIRouter, Query, Request, Response, status
 
 from mosaic_api.api import Admin, _actor
 from mosaic_api.domain import (
+    McpModelCallerUpdate,
     McpPublication,
     McpPublicationCreate,
     McpPublicationUpdate,
@@ -61,6 +62,32 @@ async def update_mcp_publication(
     request: Request, auth: Admin, publication_id: str, payload: McpPublicationUpdate
 ) -> McpPublication:
     return await _mcp_publishing(request).update(_actor(auth), publication_id, payload)
+
+
+@mcp_publishing_router.put(
+    "/mcp-publications/{publication_id}/model-caller", response_model=McpPublication
+)
+async def set_mcp_model_caller(
+    request: Request, auth: Admin, publication_id: str, payload: McpModelCallerUpdate
+) -> McpPublication:
+    """Name the application this server's tools call models as. See ADR 0025.
+
+    MOSAIC then attributes those model calls to the person each MCP call served. The application's
+    own grants still decide access. It takes effect with the publication's next apply.
+    """
+
+    return await _mcp_publishing(request).set_model_caller(_actor(auth), publication_id, payload)
+
+
+@mcp_publishing_router.delete(
+    "/mcp-publications/{publication_id}/model-caller", response_model=McpPublication
+)
+async def clear_mcp_model_caller(
+    request: Request, auth: Admin, publication_id: str
+) -> McpPublication:
+    """Stop attributing this server's model calls to the people it serves, from its next apply."""
+
+    return await _mcp_publishing(request).clear_model_caller(_actor(auth), publication_id)
 
 
 @mcp_publishing_router.delete(
