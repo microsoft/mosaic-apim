@@ -305,6 +305,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             client_factory=lambda resource: ApimClient(arm_client, resource),
             writer_factory=lambda resource: ApimWriter(arm_client, resource),
             environment_repository=environment_repository,
+            directory_repository=repository,
+            entitlement_repository=entitlement_repository,
+            cost_center_repository=cost_center_repository,
+            model_runtime_client_id=app_settings.model_runtime_client_id,
+            security_group_claims=app_settings.entra_group_claims,
+            blocked_list=blocked_list,
         )
         # A dedicated client for outbound MCP calls: redirects are refused per request, and the
         # connection pool for operator-supplied hosts is kept away from the ARM one.

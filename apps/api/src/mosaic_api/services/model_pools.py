@@ -5,6 +5,12 @@ breaker or preferential pool, the policy fragment, the API and its operations, t
 product, the product's link to the API, and the pool's subscription. Everything it writes is
 recorded as the pool's, so rollback and unpublish remove exactly that and nothing else, and a plan
 refuses to take over anything MOSAIC didn't create.
+
+A governed pool (phase 2) has no open subscription. Its plan compiles the grants on its models into
+an access snapshot, and its apply runs in stages that keep the pool fail-closed: every call is
+denied and every key suspended, the reviewed policy goes in, and only then are the keys of enabled
+grants activated. A governed apply that fails isn't rolled back. The pool stays denied, and gets
+back only the access both the last applied and the reviewed snapshot allow.
 """
 
 import asyncio
@@ -17,11 +23,16 @@ from typing import Any, Literal
 
 import structlog
 
+from mosaic_api.budgets import BLOCKED_COST_CENTERS_NAMED_VALUE
 from mosaic_api.deployment_capacity import CapacityType, ProcessingScope
 from mosaic_api.domain import (
     ApimResourceId,
     ApiShape,
     AuditEvent,
+    BindingSource,
+    CapabilitySupport,
+    EntitlementBinding,
+    EntitlementSubjectKind,
     EnvironmentVerdict,
     Gateway,
     GatewayTier,
@@ -44,7 +55,9 @@ from mosaic_api.domain import (
     RuntimeAccessReason,
     VerdictLevel,
     gateway_tier,
+    grant_precedence_key,
     new_id,
+    subject_kind_for,
     utc_now,
 )
 from mosaic_api.environments import EnvironmentCatalog, compatibility_fingerprint, permits
@@ -57,14 +70,18 @@ from mosaic_api.integrations.apim.model_apis import (
     backend_origin,
     token_limits_note,
 )
-from mosaic_api.integrations.apim.writer import ApimWriter
+from mosaic_api.integrations.apim.writer import DEFAULT_SUBSCRIPTION_KEY_NAMES, ApimWriter
 from mosaic_api.integrations.policy import PublicationPolicy
 from mosaic_api.integrations.pool_policy import (
     PoolRoute,
     PoolTarget,
     body_routed,
+    governed_pool_operations,
     member_backend_url,
+    pool_grant_counter_identity,
+    pool_grant_counter_key_expression,
     pool_operations,
+    render_governed_pool_policy,
     render_pool_policy,
     template_parameters,
 )
@@ -77,12 +94,15 @@ from mosaic_api.model_pools import (
     ModelPoolSummary,
     ModelPoolType,
     ModelPoolUpdate,
+    PoolAccessGrant,
+    PoolAccessSnapshot,
     PoolCandidateDeployment,
     PoolCandidateModel,
     PoolCandidates,
     PoolMember,
     PoolMemberView,
     PoolModel,
+    PoolModelQuota,
     PoolModelSpec,
     PoolModelView,
     backend_pool_name,
@@ -98,19 +118,39 @@ from mosaic_api.model_pools import (
 )
 from mosaic_api.observed import ObservedApi, ObservedModelDeployment
 from mosaic_api.repositories import (
+    CostCenterRepository,
+    DirectoryRepository,
+    EntitlementRepository,
     EnvironmentRepository,
     GatewayRepository,
     ModelEndpointRepository,
 )
+from mosaic_api.services.budget_gate import BlockedListGate, ensure_blocked_list, is_blocked_list
+from mosaic_api.services.cost_centers import load_book
 from mosaic_api.services.directory import Actor
 from mosaic_api.services.environments import load_environment_catalog
 from mosaic_api.services.model_access import (
+    cost_center_intent,
+    effective_enforcement,
+    entitlement_intent_digest,
     environment_guard,
+    grant_key_display_name,
     local_mutation_active,
     publication_lock,
 )
+from mosaic_api.services.pool_access import (
+    denied_pool_access_snapshot,
+    entitlement_key_name,
+    is_pool_model_entitlement,
+    safe_pool_access_snapshot,
+)
 from mosaic_api.services.publishing import _KIND_NOUNS as _KIND_NOUNS
-from mosaic_api.services.publishing import STALE_RUN_MESSAGE
+from mosaic_api.services.publishing import (
+    DENY_ALL_FRAGMENT,
+    DENY_ALL_POLICY,
+    STALE_RUN_MESSAGE,
+    RecoveryJournal,
+)
 from mosaic_api.services.publishing import _merge_resources as _merge_resources
 
 logger = structlog.get_logger()
@@ -169,6 +209,9 @@ _NOT_CONFIRMED = (
 _DENY_ASSIGNMENT = "A deny assignment stops the gateway's managed identity calling this endpoint."
 _STALE_PLAN = "This plan is out of date. Re-plan the pool and review the changes again."
 _APPLYING = "This pool is being applied. Wait for the run to finish first."
+_UNKNOWN_ACCESS = (
+    "An interrupted apply left this pool's access unknown. Recover the run before changing it."
+)
 
 
 @dataclass(frozen=True)
@@ -307,34 +350,51 @@ def pool_digest(
     policy: PublicationPolicy,
     desired: list[_Resource],
     fingerprints: list[str],
+    snapshot: PoolAccessSnapshot | None = None,
 ) -> str:
     """What a publish plan reviewed. Apply refuses a plan whose digest no longer matches."""
 
-    return _digest(
-        {
-            "id": pool.id,
-            "gatewayId": pool.gateway_id,
-            "names": _names(pool),
-            "displayName": pool.display_name,
-            "description": pool.description,
-            "shape": shape,
-            "policy": policy.content_sha256,
-            "desired": [[str(item.kind), item.name, item.payload] for item in desired],
-            "resources": _recorded(pool),
-            "fingerprints": fingerprints,
-        }
-    )
+    payload: dict[str, Any] = {
+        "id": pool.id,
+        "gatewayId": pool.gateway_id,
+        "names": _names(pool),
+        "displayName": pool.display_name,
+        "description": pool.description,
+        "shape": shape,
+        "policy": policy.content_sha256,
+        "desired": [[str(item.kind), item.name, item.payload] for item in desired],
+        "resources": _recorded(pool),
+        "fingerprints": fingerprints,
+    }
+    if snapshot is not None:
+        # Only a governed pool's digest has these, so an ungoverned plan's digest is unchanged.
+        payload["accessSnapshot"] = snapshot.model_dump(mode="json")
+        payload["previousAccessVersion"] = (
+            pool.applied_access.version if pool.applied_access else None
+        )
+    return _digest(payload)
+
+
+def _is_governed(pool: ModelPool) -> bool:
+    """Whether the pool's access is governed, or was by an apply that went through."""
+
+    return pool.governed_access is not None or pool.applied_access is not None
 
 
 def unpublish_digest(pool: ModelPool) -> str:
-    return _digest(
-        {
-            "id": pool.id,
-            "gatewayId": pool.gateway_id,
-            "names": _names(pool),
-            "resources": _recorded(pool),
-        }
-    )
+    payload: dict[str, Any] = {
+        "id": pool.id,
+        "gatewayId": pool.gateway_id,
+        "names": _names(pool),
+        "resources": _recorded(pool),
+    }
+    if _is_governed(pool):
+        # Only a governed pool's digest has these, so an ungoverned plan's digest is unchanged.
+        payload["appliedAccess"] = (
+            pool.applied_access.model_dump(mode="json") if pool.applied_access else None
+        )
+        payload["accessState"] = pool.access_state
+    return _digest(payload)
 
 
 def intent_digest(pool: ModelPool) -> str:
@@ -344,35 +404,37 @@ def intent_digest(pool: ModelPool) -> str:
     changing them isn't a change waiting to be applied.
     """
 
-    return _digest(
-        {
-            "gatewayId": pool.gateway_id,
-            "names": _names(pool),
-            "displayName": pool.display_name,
-            "description": pool.description,
-            "poolType": str(pool.pool_type),
-            "breakerPreset": str(pool.breaker_preset),
-            "maxRetries": pool.max_retries,
-            "safeguard": pool.safeguard.model_dump(mode="json") if pool.safeguard else None,
-            "models": [
+    payload: dict[str, Any] = {
+        "gatewayId": pool.gateway_id,
+        "names": _names(pool),
+        "displayName": pool.display_name,
+        "description": pool.description,
+        "poolType": str(pool.pool_type),
+        "breakerPreset": str(pool.breaker_preset),
+        "maxRetries": pool.max_retries,
+        "safeguard": pool.safeguard.model_dump(mode="json") if pool.safeguard else None,
+        "models": [
+            [
+                model.public_name,
+                model.backend_pool_name,
                 [
-                    model.public_name,
-                    model.backend_pool_name,
                     [
-                        [
-                            member.model_endpoint_id,
-                            member.deployment_name,
-                            member.weight,
-                            member.drained,
-                            member.backend_name,
-                        ]
-                        for member in model.members
-                    ],
-                ]
-                for model in pool.models
-            ],
-        }
-    )
+                        member.model_endpoint_id,
+                        member.deployment_name,
+                        member.weight,
+                        member.drained,
+                        member.backend_name,
+                    ]
+                    for member in model.members
+                ],
+            ]
+            for model in pool.models
+        ],
+    }
+    if pool.governed_access is not None:
+        # Only a governed pool's digest has it, so an ungoverned pool's digest is unchanged.
+        payload["governedAccess"] = pool.governed_access.model_dump(mode="json")
+    return _digest(payload)
 
 
 def has_unapplied_changes(pool: ModelPool) -> bool:
@@ -426,6 +488,21 @@ def _render(pool: ModelPool, shape: str) -> PublicationPolicy:
     )
 
 
+def _policy(pool: ModelPool, shape: str, snapshot: PoolAccessSnapshot | None) -> PublicationPolicy:
+    """The pool's policy: governed by a reviewed access snapshot, or open to its subscription."""
+
+    if snapshot is None:
+        return _render(pool, shape)
+    return render_governed_pool_policy(
+        pool=pool,
+        snapshot=snapshot,
+        shape=shape,
+        routes=_routes(pool),
+        preset=pool.breaker_preset,
+        safeguard=pool.safeguard,
+    )
+
+
 def _base_url(gateway: Gateway, pool: ModelPool) -> str | None:
     url = gateway.capabilities.gateway_url
     if url is None:
@@ -435,6 +512,73 @@ def _base_url(gateway: Gateway, pool: ModelPool) -> str | None:
 
 def _noun(kind: PublishedResourceKind) -> str:
     return _KIND_NOUNS.get(kind, str(kind))
+
+
+def _customized_key_names(live: dict[str, Any] | None) -> bool:
+    """Whether a live API reads keys from other parameters than the ones governed access uses."""
+
+    key_names = ((live or {}).get("properties") or {}).get("subscriptionKeyParameterNames")
+    return bool(key_names) and (
+        not isinstance(key_names, dict)
+        or any(
+            key_names.get(kind, default) != default
+            for kind, default in DEFAULT_SUBSCRIPTION_KEY_NAMES.items()
+        )
+    )
+
+
+def _segment(pool: ModelPool, kind: PublishedResourceKind, name: str) -> str:
+    """Where a pool's resource lives, relative to its API Management service."""
+
+    match kind:
+        case PublishedResourceKind.NAMED_VALUE:
+            return f"namedValues/{name}"
+        case PublishedResourceKind.BACKEND | PublishedResourceKind.BACKEND_POOL:
+            return f"backends/{name}"
+        case PublishedResourceKind.POLICY_FRAGMENT:
+            return f"policyFragments/{name}"
+        case PublishedResourceKind.API:
+            return f"apis/{name}"
+        case PublishedResourceKind.API_OPERATION:
+            return f"apis/{pool.api_name}/operations/{name}"
+        case PublishedResourceKind.API_POLICY:
+            return f"apis/{pool.api_name}/policies/policy"
+        case PublishedResourceKind.PRODUCT:
+            return f"products/{name}"
+        case PublishedResourceKind.PRODUCT_API:
+            return f"products/{pool.product_name}/apis/{pool.api_name}"
+        case PublishedResourceKind.SUBSCRIPTION:
+            return f"subscriptions/{name}"
+    raise ValueError(f"A pool has no {kind} resources")
+
+
+def _grant_identities(grant: PoolAccessGrant) -> set[str]:
+    """What a pool's policy needs unique across its grants, besides their entitlements."""
+
+    scope = f"{grant.cost_center_id}|{grant.pool_model_id}"
+    return {f"o|{grant.object_id}|{scope}".casefold(), f"s|{grant.subject.id}|{scope}".casefold()}
+
+
+def _grant_label(grants: list[PoolAccessGrant]) -> str:
+    ids = sorted(grant.entitlement_id for grant in grants)
+    return f"grant {ids[0]}" if len(ids) == 1 else f"grants {', '.join(ids)}"
+
+
+def _key_display_name(pool: ModelPool, grants: list[PoolAccessGrant]) -> str:
+    """What API Management calls a key: whose it is and the cost center it charges.
+
+    Every grant sharing a key has the same subject and cost center, so any of them says it.
+    """
+
+    if not grants:
+        return pool.display_name[:100]
+    first = min(grants, key=lambda grant: grant.entitlement_id)
+    return grant_key_display_name(first.display_name, first.cost_center_code)
+
+
+def _live_display_name(live: dict[str, Any]) -> str | None:
+    name = (live.get("properties") or {}).get("displayName")
+    return name if isinstance(name, str) and name else None
 
 
 def _check_linear(pool: ModelPool) -> None:
@@ -556,7 +700,14 @@ def _desired(
             },
         )
     )
-    for operation in pool_operations(shape):
+    operations = (
+        pool_operations(shape)
+        if pool.governed_access is None
+        # A governed pool serves only the operations its access policy meters; the others an
+        # earlier, open apply wrote are deleted as stale.
+        else governed_pool_operations(shape)
+    )
+    for operation in operations:
         resources.append(
             _Resource(
                 PublishedResourceKind.API_OPERATION,
@@ -593,6 +744,12 @@ def _desired(
                 pool.api_name,
                 f"{base}/products/{pool.product_name}/apis/{pool.api_name}",
             ),
+        ]
+    )
+    if pool.governed_access is None:
+        # A governed pool's callers use their own keys. One left by an earlier, open apply stays
+        # the pool's, suspended, until it's unpublished.
+        resources.append(
             _Resource(
                 PublishedResourceKind.SUBSCRIPTION,
                 pool.subscription_name,
@@ -601,9 +758,8 @@ def _desired(
                     "displayName": f"{pool.display_name[:90]} (pool)",
                     "product": pool.product_name,
                 },
-            ),
-        ]
-    )
+            )
+        )
     resources.sort(key=lambda item: _ORDER[item.kind])
     return resources
 
@@ -617,6 +773,12 @@ class ModelPoolService:
         client_factory: ClientFactory,
         writer_factory: WriterFactory,
         environment_repository: EnvironmentRepository | None = None,
+        directory_repository: DirectoryRepository | None = None,
+        entitlement_repository: EntitlementRepository | None = None,
+        cost_center_repository: CostCenterRepository | None = None,
+        model_runtime_client_id: str | None = None,
+        security_group_claims: bool = True,
+        blocked_list: BlockedListGate | None = None,
     ) -> None:
         self._repository = repository
         self._endpoints = endpoint_repository
@@ -624,6 +786,16 @@ class ModelPoolService:
         self._writer_factory = writer_factory
         # None only in tests that don't exercise environments; the built-in seeds apply then.
         self._environments = environment_repository
+        # Governed access (phase 2) needs the directory and entitlements; without them a governed
+        # pool can't be planned.
+        self._directory = directory_repository
+        self._entitlements = entitlement_repository
+        self._cost_centers = cost_center_repository
+        self._runtime_audience = model_runtime_client_id
+        self._security_group_claims = security_group_claims
+        # What a new blocked list holds. Without it, a list MOSAIC creates blocks nothing until the
+        # budget check writes it.
+        self._blocked_list = blocked_list
         self._active: set[str] = set()
         self._tasks: set[asyncio.Task[None]] = set()
         self._task_failures: list[BaseException] = []
@@ -639,13 +811,18 @@ class ModelPoolService:
 
     @staticmethod
     def _audit(
-        actor: Actor, action: str, resource_id: str, details: dict[str, Any] | None = None
+        actor: Actor,
+        action: str,
+        resource_id: str,
+        details: dict[str, Any] | None = None,
+        *,
+        resource_type: str = "modelPool",
     ) -> AuditEvent:
         return AuditEvent(
             id=new_id("audit"),
             tenant_id=actor.tenant_id,
             action=action,
-            resource_type="modelPool",
+            resource_type=resource_type,
             resource_id=resource_id,
             actor_object_id=actor.object_id,
             details=details or {},
@@ -739,6 +916,230 @@ class ModelPoolService:
             for item in pool.resources
         )
 
+    async def _access_snapshot(
+        self, pool: ModelPool, gateway: Gateway, shape: str
+    ) -> tuple[PoolAccessSnapshot | None, list[str]]:
+        """Compile the grants on the pool's models into the snapshot its policy enforces.
+
+        A grant the gateway can't enforce exactly as given stays out, with a warning that says
+        why: leaving it out denies access, where bending it would widen access.
+        """
+
+        settings = pool.governed_access
+        if settings is None:
+            if pool.applied_access is not None:
+                raise ValidationError("An applied governed pool can't return to open access.")
+            return None, []
+        if self._directory is None or self._entitlements is None:
+            raise ValidationError("Governed access repositories are not configured")
+        if gateway.capabilities.ai_gateway_policies == CapabilitySupport.UNAVAILABLE:
+            raise ValidationError(
+                "This gateway doesn't support the AI gateway policies governed access needs."
+            )
+        warnings = [
+            "This is a pool-wide batch: every direct grant and authentication-method change "
+            "listed in this snapshot will be applied together. MOSAIC-group grants remain "
+            "desired-state only.",
+            "Existing generic, product, all-API and all-access keys will not authorize this pool. "
+            "Its bootstrap subscription is suspended when present.",
+            "Governed key authentication uses Ocp-Apim-Subscription-Key (header) or "
+            "subscription-key (query); each apply explicitly enforces these parameter names.",
+        ]
+        book = await load_book(self._cost_centers, pool.tenant_id)
+        metered = token_limits_note(shape, gateway.capabilities.sku_name) is None
+        routed = {route.model_id for route in _routes(pool)}
+        grants: list[PoolAccessGrant] = []
+        quotas: dict[tuple[str, str], PoolModelQuota] = {}
+        saw_security_group = False
+        for model in pool.models:
+            entitlements = await self._entitlements.list_entitlements(
+                pool.tenant_id, resource_id=model.id
+            )
+            for entitlement in entitlements:
+                if (
+                    not is_pool_model_entitlement(entitlement)
+                    or entitlement.resource.scope_id != pool.id
+                ):
+                    continue
+                if entitlement.subject.kind == EntitlementSubjectKind.GROUP:
+                    warnings.append(
+                        f"Grant {entitlement.id} is not a supported direct pool grant and will "
+                        "not be enforced by this apply."
+                    )
+                    continue
+                if model.id not in routed:
+                    # The gateway can't serve it, so the grant would authorize nothing.
+                    if entitlement.enabled:
+                        warnings.append(
+                            f"Grant {entitlement.id}'s model {model.public_name} has no active "
+                            "deployment in this pool; it is excluded from runtime access."
+                        )
+                    continue
+                is_security_group = (
+                    entitlement.subject.kind == EntitlementSubjectKind.SECURITY_GROUP
+                )
+                saw_security_group = saw_security_group or is_security_group
+                principal = await self._directory.get_principal(
+                    pool.tenant_id, entitlement.subject.id
+                )
+                intent = cost_center_intent(entitlement, principal, book)
+                if intent is None:
+                    # Charged to a cost center MOSAIC no longer has, so it can't be charged at
+                    # all: it stays out rather than charge nobody.
+                    warnings.append(
+                        f"Grant {entitlement.id}'s cost center no longer exists; it is excluded "
+                        "from runtime access."
+                    )
+                    continue
+                charged = book.get(entitlement.cost_center_id)
+                if charged is not None and charged.recheck_pending(
+                    entitlement.id, entitlement.subject.id
+                ):
+                    warnings.append(
+                        f"Grant {entitlement.id} is waiting for MOSAIC to check that its subject "
+                        f"may still charge {charged.name} ({charged.code}); it is excluded from "
+                        "runtime access until then. Open the cost center and choose Check grants "
+                        "again."
+                    )
+                    continue
+                enforcement = effective_enforcement(entitlement, intent)
+                if not metered and enforcement is not None and enforcement.tokens is not None:
+                    # Granting access without the token limits an administrator set would widen
+                    # it, so the grant stays out until its limits fit what the gateway can apply.
+                    warnings.append(
+                        f"Grant {entitlement.id} sets token limits, itself or through its cost "
+                        "center's per-person limits, which this gateway can't apply to this "
+                        "pool; it is excluded from runtime access. Use call limits instead."
+                    )
+                    continue
+                if (
+                    not metered
+                    and intent.pool is not None
+                    and intent.pool.monthly_tokens is not None
+                ):
+                    warnings.append(
+                        f"Grant {entitlement.id}'s cost center pools tokens on this model, which "
+                        "this gateway can't meter; it is excluded from runtime access until the "
+                        "pool counts calls instead."
+                    )
+                    continue
+                if principal is None or entitlement.subject.kind != subject_kind_for(
+                    principal.kind
+                ):
+                    warnings.append(
+                        f"Grant {entitlement.id} has a missing or mismatched principal; it is "
+                        "excluded from runtime access."
+                    )
+                    continue
+                if is_security_group and not settings.entra_enabled:
+                    warning = (
+                        "Grants to security groups need Entra access. Turn on Entra sign-in for "
+                        "this pool to apply them."
+                    )
+                    if warning not in warnings:
+                        warnings.append(warning)
+                    continue
+                grants.append(
+                    PoolAccessGrant(
+                        entitlement_id=entitlement.id,
+                        pool_model_id=model.id,
+                        subject=entitlement.subject,
+                        object_id=(
+                            principal.object_id.casefold()
+                            if is_security_group
+                            else principal.object_id
+                        ),
+                        display_name=principal.label or principal.object_id,
+                        key_name=entitlement_key_name(pool, entitlement),
+                        enabled=entitlement.enabled,
+                        enforcement=enforcement,
+                        intent_digest=entitlement_intent_digest(entitlement, principal, intent),
+                        cost_center_id=intent.cost_center_id,
+                        cost_center_code=intent.code,
+                        default_cost_center=intent.default_for_subject,
+                        granted_at=entitlement.created_at,
+                        keys_allowed=intent.keys_allowed,
+                        revoked=entitlement.revocation is not None,
+                    )
+                )
+                if intent.pool is not None:
+                    quotas[(model.id, intent.cost_center_id)] = PoolModelQuota(
+                        cost_center_id=intent.cost_center_id,
+                        cost_center_code=intent.code,
+                        monthly_tokens=intent.pool.monthly_tokens,
+                        monthly_calls=intent.pool.monthly_calls,
+                        pool_model_id=model.id,
+                    )
+        if saw_security_group and not self._security_group_claims:
+            warnings.append(
+                "Group claims aren't configured for this deployment, so the gateway can't match "
+                "grants to security groups."
+            )
+        for model in pool.models:
+            group_grants = [
+                grant
+                for grant in grants
+                if grant.enabled and grant.is_group_grant and grant.pool_model_id == model.id
+            ]
+            if len(group_grants) >= 2:
+                ordered = sorted(
+                    group_grants,
+                    key=lambda grant: grant_precedence_key(grant.enforcement, grant.entitlement_id),
+                )
+                warnings.append(
+                    "Members of more than one of these groups get only the most generous grant "
+                    f"to {model.public_name}: "
+                    f"{', '.join(grant.display_name for grant in ordered)}. "
+                    f"{ordered[0].display_name} wins."
+                )
+        # An applied grant this snapshot no longer has stays in it, off, so the apply takes its
+        # access away and the key it shared is suspended rather than forgotten.
+        included = {grant.entitlement_id for grant in grants}
+        identities = {identity for grant in grants for identity in _grant_identities(grant)}
+        for grant in pool.applied_access.grants if pool.applied_access else []:
+            if grant.entitlement_id in included or (
+                grant.is_group_grant and not settings.entra_enabled
+            ):
+                continue
+            if identities & _grant_identities(grant):
+                # A newer grant to the same model under the same cost center replaces it.
+                continue
+            grants.append(grant.model_copy(update={"enabled": False}))
+            identities |= _grant_identities(grant)
+        grants.sort(key=lambda grant: grant.entitlement_id)
+        return (
+            PoolAccessSnapshot(
+                version=pool.applied_access.version + 1 if pool.applied_access else 1,
+                settings=settings,
+                audience=self._runtime_audience,
+                token_metering=metered,
+                grants=grants,
+                quotas=sorted(
+                    quotas.values(), key=lambda quota: (quota.pool_model_id, quota.cost_center_id)
+                ),
+            ),
+            warnings,
+        )
+
+    @staticmethod
+    def _validate_subscription_scope(
+        pool: ModelPool, resource: ApimResourceId, name: str, live: dict[str, Any]
+    ) -> None:
+        """Refuse a key whose scope moved: MOSAIC changes only the keys it scoped to the pool."""
+
+        properties = live.get("properties") or {}
+        relative = (
+            f"/products/{pool.product_name}"
+            if name == pool.subscription_name
+            else f"/apis/{pool.api_name}"
+        )
+        expected = {relative.casefold(), f"{resource.canonical}{relative}".casefold()}
+        if str(properties.get("scope", "")).rstrip("/").casefold() not in expected:
+            raise ConflictError(
+                "The pool's subscription's live scope changed. Resolve it before applying.",
+                details={"subscriptionName": name},
+            )
+
     async def create(self, actor: Actor, request: ModelPoolCreate) -> ModelPool:
         api_name = request.api_name or default_pool_api_name(request.display_name)
         pool_id = model_pool_id(actor.tenant_id, request.gateway_id, api_name)
@@ -802,6 +1203,17 @@ class ModelPoolService:
             pool = await self.get_pool(actor, pool_id)
             if pool.status == PublicationStatus.APPLYING:
                 raise ConflictError(_APPLYING, details={"id": pool_id})
+            if pool.access_state == "unknown":
+                raise ConflictError(_UNKNOWN_ACCESS, details={"id": pool_id})
+            if (
+                "governed_access" in request.model_fields_set
+                and request.governed_access is None
+                and (pool.governed_access is not None or pool.applied_access is not None)
+            ):
+                raise ValidationError(
+                    "Governed access cannot be cleared. Disable keys and Entra independently "
+                    "instead."
+                )
             changes: dict[str, Any] = {}
             for name in (
                 "display_name",
@@ -810,6 +1222,7 @@ class ModelPoolService:
                 "pool_type",
                 "breaker_preset",
                 "max_retries",
+                "governed_access",
             ):
                 value = getattr(request, name)
                 if value is not None:
@@ -1652,6 +2065,228 @@ class ModelPoolService:
         )
         return steps
 
+    async def _governed_steps(
+        self,
+        pool: ModelPool,
+        snapshot: PoolAccessSnapshot,
+        client: ApimClient,
+        resource: ApimResourceId,
+        desired: list[_Resource],
+    ) -> list[PublishPlanStep]:
+        """A governed apply's steps, in stages that keep the pool closed while they run.
+
+        Prepare denies every call, suspends every key, and writes what the policy routes to.
+        Policy installs the reviewed access policy. Activate turns on only what it allows.
+        """
+
+        steps: list[PublishPlanStep] = [
+            # First of all: every governed policy reads the gateway's blocked list (ADR 0023).
+            BlockedListGate.plan_step(
+                resource,
+                exists=await client.get_named_value(BLOCKED_COST_CENTERS_NAMED_VALUE) is not None,
+            )
+        ]
+        base: dict[tuple[PublishedResourceKind, str], PublishPlanStep] = {}
+        for item in desired:
+            existed = await self._exists(client, pool, item.kind, item.name)
+            if (
+                existed
+                and item.kind in _CLAIMED_KINDS
+                and not self._owns(pool, item.kind, item.name)
+            ):
+                raise ConflictError(
+                    f"API Management already has a {_noun(item.kind)} named {item.name}, and "
+                    "MOSAIC didn't create it. Governed access won't replace it, so choose other "
+                    "names.",
+                    details={"kind": str(item.kind), "name": item.name},
+                )
+            verb = "Update" if existed else "Create"
+            base[(item.kind, item.name)] = PublishPlanStep(
+                kind=item.kind,
+                name=item.name,
+                action=PublishAction.UPDATE if existed else PublishAction.CREATE,
+                reason=f"{verb} the pool's {_noun(item.kind)}.",
+                resource_id=item.resource_id,
+                existed=existed,
+                stage="prepare",
+            )
+        api = base[(PublishedResourceKind.API, pool.api_name)]
+        api_policy = base[(PublishedResourceKind.API_POLICY, "policy")]
+        if api.existed:
+            steps.append(
+                api_policy.model_copy(
+                    update={
+                        "stage": "prepare",
+                        "reason": "Temporarily deny all calls while this pool-wide batch applies.",
+                    }
+                )
+            )
+        routing = {
+            PublishedResourceKind.NAMED_VALUE,
+            PublishedResourceKind.BACKEND,
+            PublishedResourceKind.BACKEND_POOL,
+        }
+        steps.extend(base[(item.kind, item.name)] for item in desired if item.kind in routing)
+        steps.append(
+            api.model_copy(
+                update={
+                    "reason": "Require a subscription until the governed policy is installed, "
+                    "and reset key parameter names to Ocp-Apim-Subscription-Key/subscription-key."
+                }
+            )
+        )
+        if not api.existed:
+            steps.append(
+                api_policy.model_copy(
+                    update={
+                        "stage": "prepare",
+                        "reason": "Deny every call until the reviewed access policy is installed.",
+                    }
+                )
+            )
+            api_policy = api_policy.model_copy(
+                update={"action": PublishAction.UPDATE, "existed": True}
+            )
+
+        keys = snapshot.key_grants()
+        names = set(keys)
+        names.update(
+            item.name
+            for item in pool.created_resources()
+            if item.kind == PublishedResourceKind.SUBSCRIPTION
+        )
+        suspensions: list[PublishPlanStep] = []
+        deletions: list[PublishPlanStep] = []
+        for name in sorted(names):
+            live = await client.get_subscription(name)
+            # Keys are created on request, by a grant's holder or an administrator, and never by
+            # an apply. A grant without one keeps none; the policy already knows its name, so a
+            # key created later works without another apply.
+            if live is None:
+                continue
+            if not self._owns(pool, PublishedResourceKind.SUBSCRIPTION, name):
+                raise ConflictError(
+                    "A key this pool's grants use already exists, and MOSAIC didn't create it. "
+                    "Governed access won't take it over.",
+                    details={"subscriptionName": name},
+                )
+            self._validate_subscription_scope(pool, resource, name, live)
+            served = keys.get(name, [])
+            resource_id = f"{resource.canonical}/subscriptions/{name}"
+            if served and all(grant.revoked for grant in served):
+                deletions.append(
+                    PublishPlanStep(
+                        kind=PublishedResourceKind.SUBSCRIPTION,
+                        name=name,
+                        action=PublishAction.DELETE,
+                        reason=(
+                            f"Delete the key of {_grant_label(served)}, revoked when its subject "
+                            "left its cost center."
+                        ),
+                        resource_id=resource_id,
+                        existed=True,
+                        entitlement_id=served[0].entitlement_id,
+                        stage="prepare",
+                    )
+                )
+                continue
+            if served:
+                reason = f"Suspend the key of {_grant_label(served)} while access is applied."
+            elif name == pool.subscription_name:
+                reason = (
+                    "Suspend the pool's bootstrap subscription; governed callers use their own "
+                    "keys."
+                )
+            else:
+                reason = "Suspend this key; none of its grants is in this snapshot."
+            suspensions.append(
+                PublishPlanStep(
+                    kind=PublishedResourceKind.SUBSCRIPTION,
+                    name=name,
+                    action=PublishAction.UPDATE,
+                    reason=reason,
+                    resource_id=resource_id,
+                    existed=True,
+                    entitlement_id=served[0].entitlement_id if served else None,
+                    subscription_state="suspended",
+                    stage="prepare",
+                )
+            )
+        steps.extend(deletions)
+        steps.extend(suspensions)
+        placed = routing | {
+            PublishedResourceKind.API,
+            PublishedResourceKind.API_POLICY,
+            PublishedResourceKind.POLICY_FRAGMENT,
+        }
+        steps.extend(base[(item.kind, item.name)] for item in desired if item.kind not in placed)
+        # The reviewed fragment goes in only once nothing can reach it: the API's policy denies
+        # every call until the next step replaces it.
+        steps.append(
+            base[(PublishedResourceKind.POLICY_FRAGMENT, pool.fragment_name)].model_copy(
+                update={"stage": "policy"}
+            )
+        )
+        steps.append(
+            api_policy.model_copy(
+                update={
+                    "stage": "policy",
+                    "reason": "Install the reviewed, fail-closed access policy.",
+                }
+            )
+        )
+        steps.append(
+            api.model_copy(
+                update={
+                    "stage": "activate",
+                    "reason": (
+                        "Allow token-only calls after installing the reviewed authorization policy."
+                        if snapshot.settings.entra_enabled
+                        else "Keep subscription authentication required."
+                    ),
+                }
+            )
+        )
+        for step in suspensions:
+            usable = [
+                grant
+                for grant in keys.get(step.name, [])
+                if grant.enabled and grant.keys_allowed
+            ]
+            if usable and snapshot.settings.keys_enabled:
+                steps.append(
+                    step.model_copy(
+                        update={
+                            "stage": "activate",
+                            "subscription_state": "active",
+                            "reason": f"Activate key access for {_grant_label(usable)}.",
+                        }
+                    )
+                )
+        wanted = {(item.kind, item.name) for item in desired}
+        stale = sorted(
+            (
+                item
+                for item in pool.created_resources()
+                # A key outlives the open access it was made for, suspended, until unpublish.
+                if (item.kind, item.name) not in wanted
+                and item.kind != PublishedResourceKind.SUBSCRIPTION
+            ),
+            key=lambda item: -_ORDER[item.kind],
+        )
+        steps.extend(
+            PublishPlanStep(
+                kind=item.kind,
+                name=item.name,
+                action=PublishAction.DELETE,
+                reason=f"The pool no longer uses this {_noun(item.kind)}.",
+                resource_id=item.resource_id,
+                existed=True,
+            )
+            for item in stale
+        )
+        return steps
+
     @staticmethod
     def _require_shape(pool: ModelPool, assessment: _Assessment) -> ApiShape:
         if assessment.problems:
@@ -1673,16 +2308,29 @@ class ModelPoolService:
             pool = await self.get_pool(actor, pool_id)
             if pool.status == PublicationStatus.APPLYING:
                 raise ConflictError(_APPLYING, details={"id": pool_id})
+            if pool.access_state == "unknown":
+                raise ConflictError(_UNKNOWN_ACCESS, details={"id": pool_id})
             gateway = await self._load_gateway(actor, pool.gateway_id)
             self._require_writable(gateway)
             assessment = await self._assess(actor, pool, gateway)
             shape = self._require_shape(pool, assessment)
             await self._reject_desired_collisions(actor, pool)
-            client = self._client_factory(ApimResourceId.parse(gateway.azure_resource_id))
+            resource = ApimResourceId.parse(gateway.azure_resource_id)
+            client = self._client_factory(resource)
             await self._reject_collisions(actor, pool, gateway, client)
-            policy = _render(pool, shape)
+            snapshot, access_warnings = await self._access_snapshot(pool, gateway, shape)
+            policy = _policy(pool, shape, snapshot)
             desired = _desired(pool, gateway, assessment, shape)
-            steps = await self._steps(client, pool, desired)
+            if snapshot is None:
+                steps = await self._steps(client, pool, desired)
+            else:
+                steps = await self._governed_steps(pool, snapshot, client, resource, desired)
+                if _customized_key_names(await client.get_api(pool.api_name)):
+                    access_warnings.append(
+                        "This API's customized subscription key names will be reset to "
+                        "Ocp-Apim-Subscription-Key (header) and subscription-key (query). "
+                        "Callers must use these governed defaults."
+                    )
             plan = PublishPlan(
                 id=new_id("publishplan"),
                 tenant_id=actor.tenant_id,
@@ -1690,12 +2338,18 @@ class ModelPoolService:
                 target="pool",
                 operation="publish",
                 gateway_id=gateway.id,
-                digest=pool_digest(pool, shape, policy, desired, assessment.fingerprints()),
+                digest=pool_digest(
+                    pool, shape, policy, desired, assessment.fingerprints(), snapshot
+                ),
                 steps=steps,
                 facets=policy.facets,
                 policy_content_sha256=policy.content_sha256,
-                warnings=assessment.warnings,
+                warnings=[*assessment.warnings, *access_warnings],
                 actor_object_id=actor.object_id,
+                pool_access_snapshot=snapshot,
+                previous_access_version=(
+                    pool.applied_access.version if pool.applied_access else None
+                ),
             )
             await self._repository.save_publish_plan(plan)
             await self._repository.record_model_pool_state(
@@ -1752,20 +2406,31 @@ class ModelPoolService:
         self, actor: Actor, pool_id: str, plan_id: str | None, owner: str
     ) -> PublishRun:
         pool = await self.get_pool(actor, pool_id)
+        if pool.access_state == "unknown":
+            raise ConflictError(_UNKNOWN_ACCESS, details={"id": pool_id})
         gateway = await self._load_gateway(actor, pool.gateway_id)
         self._require_writable(gateway)
         plan = await self._resolve_plan(actor, pool, plan_id)
         assessment = await self._assess(actor, pool, gateway)
         shape = self._require_shape(pool, assessment)
-        policy = _render(pool, shape)
+        snapshot, _ = await self._access_snapshot(pool, gateway, shape)
+        policy = _policy(pool, shape, snapshot)
         desired = _desired(pool, gateway, assessment, shape)
-        if pool_digest(pool, shape, policy, desired, assessment.fingerprints()) != plan.digest:
+        if (
+            pool_digest(pool, shape, policy, desired, assessment.fingerprints(), snapshot)
+            != plan.digest
+        ):
             raise ConflictError(_STALE_PLAN, details={"planId": plan.id, "reason": "stalePlan"})
         run = self._claim(actor, pool, plan, owner)
         await self._repository.save_publish_run(run)
         await self._mark_applying(pool, run.id)
         client = self._client_factory(ApimResourceId.parse(gateway.azure_resource_id))
-        self._spawn(self._run_apply(pool, gateway, client, plan, policy, desired, run))
+        if snapshot is None:
+            self._spawn(self._run_apply(pool, gateway, client, plan, policy, desired, run))
+        else:
+            self._spawn(
+                self._run_governed_apply(pool, gateway, client, plan, policy, desired, shape, run)
+            )
         return run
 
     @staticmethod
@@ -1779,6 +2444,7 @@ class ModelPoolService:
             plan_id=plan.id,
             plan_digest=plan.digest,
             actor_object_id=actor.object_id,
+            pool_access_snapshot=plan.pool_access_snapshot,
         )
 
     def _spawn(self, coroutine: Coroutine[Any, Any, None]) -> None:
@@ -1808,8 +2474,15 @@ class ModelPoolService:
         error: str | None,
         applied: bool = False,
         unpublished: bool = False,
+        access_snapshot: PoolAccessSnapshot | None = None,
+        access_state: Literal["pending", "applying", "applied", "failed", "unknown"]
+        | None = None,
+        applied_model_ids: list[str] | None = None,
     ) -> None:
-        """Re-read before writing, so a run never brings back a pool that was removed."""
+        """Re-read before writing, so a run never brings back a pool that was removed.
+
+        The applied snapshot, access state, and served models change only when given.
+        """
 
         current = await self._repository.get_model_pool(pool.tenant_id, pool.id)
         if current is None:
@@ -1822,6 +2495,12 @@ class ModelPoolService:
             "last_error": error,
             "updated_at": now,
         }
+        if access_snapshot is not None:
+            update["applied_access"] = access_snapshot
+        if access_state is not None:
+            update["access_state"] = access_state
+        if applied_model_ids is not None:
+            update["applied_model_ids"] = list(applied_model_ids)
         if applied:
             update.update(
                 {
@@ -1837,6 +2516,7 @@ class ModelPoolService:
                     "last_plan_id": None,
                     "last_plan_digest": None,
                     "applied_intent_digest": None,
+                    "applied_model_ids": [],
                 }
             )
         await self._repository.record_model_pool_state(current.model_copy(update=update))
@@ -1848,6 +2528,7 @@ class ModelPoolService:
             resources=pool.resources,
             run_id=run_id,
             error=None,
+            access_state="applying" if pool.governed_access else None,
         )
 
     async def _progress(
@@ -1889,6 +2570,13 @@ class ModelPoolService:
                             "status": PublicationStatus.FAILED,
                             "last_error": message,
                             "updated_at": utc_now(),
+                            # Nobody knows what a governed run left in force, so nothing plans
+                            # again until an administrator recovers it.
+                            "access_state": (
+                                "unknown"
+                                if latest.governed_access or latest.applied_access
+                                else latest.access_state
+                            ),
                         }
                     )
                 )
@@ -2011,6 +2699,589 @@ class ModelPoolService:
         finally:
             self._active.discard(pool.id)
 
+    async def _run_governed_apply(
+        self,
+        pool: ModelPool,
+        gateway: Gateway,
+        client: ApimClient,
+        plan: PublishPlan,
+        policy: PublicationPolicy,
+        desired: list[_Resource],
+        shape: str,
+        run: PublishRun,
+    ) -> None:
+        """Run a reviewed governed plan, stage by stage, keeping the pool closed until it's done.
+
+        Nothing is rolled back: a failure leaves the pool with no more access than its last
+        applied snapshot allowed, as :meth:`_governed_failure` describes.
+        """
+
+        started = utc_now()
+        resource = ApimResourceId.parse(gateway.azure_resource_id)
+        writer = self._writer_factory(resource)
+        items = {(item.kind, item.name): item for item in desired}
+        owned = list(pool.resources)
+        results: list[PublishStepResult] = []
+        # Stale resources the run couldn't remove. They don't fail a pool that now works.
+        leftovers: list[PublishedResource] = []
+        cleanup: list[str] = []
+        failure: str | None = None
+        try:
+            snapshot = plan.pool_access_snapshot
+            if snapshot is None:
+                raise ConflictError("A governed apply needs the access snapshot its plan reviewed")
+            try:
+                for step in plan.steps:
+                    await self._assert_lock(pool, run)
+                    result = PublishStepResult(
+                        kind=step.kind,
+                        name=step.name,
+                        action=step.action,
+                        resource_id=step.resource_id,
+                        stage=step.stage,
+                    )
+                    results.append(result)
+                    if (
+                        step.action == PublishAction.DELETE
+                        and step.kind != PublishedResourceKind.SUBSCRIPTION
+                    ):
+                        # Stale, and last: the policy no longer routes to it.
+                        try:
+                            await self._progress(pool, run, results, owned)
+                            await self._remove(writer, pool, step.kind, step.name)
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception as error:
+                            result.status = PublishStepStatus.FAILED
+                            result.error = str(error)
+                            cleanup.append(f"{_noun(step.kind)} {step.name}: {error}")
+                            leftovers.extend(
+                                item
+                                for item in owned
+                                if item.kind == step.kind and item.name == step.name
+                            )
+                        else:
+                            result.status = PublishStepStatus.SUCCEEDED
+                            owned = [
+                                item
+                                for item in owned
+                                if not (item.kind == step.kind and item.name == step.name)
+                            ]
+                        await self._progress(pool, run, results, owned)
+                        continue
+                    write_started = False
+                    try:
+                        if is_blocked_list(step.kind, step.name):
+                            await self._progress(pool, run, results, owned)
+                            await ensure_blocked_list(
+                                self._blocked_list, client, writer, pool.tenant_id
+                            )
+                        elif step.action == PublishAction.DELETE:
+                            await self._progress(pool, run, results, owned)
+                            owned = await self._delete_revoked_key(
+                                pool, client, writer, step.name, owned
+                            )
+                        else:
+                            exists = await self._exists(client, pool, step.kind, step.name)
+                            if step.kind == PublishedResourceKind.SUBSCRIPTION and not exists:
+                                # Deleted since the plan: there's nothing left to suspend or
+                                # activate, and an apply never creates a key.
+                                result.status = PublishStepStatus.SKIPPED
+                                await self._progress(pool, run, results, owned)
+                                continue
+                            if (
+                                exists
+                                and step.kind in _CLAIMED_KINDS
+                                and not self._owns(
+                                    pool.model_copy(update={"resources": owned}),
+                                    step.kind,
+                                    step.name,
+                                )
+                            ):
+                                raise ConflictError(
+                                    f"The {_noun(step.kind)} {step.name} appeared without MOSAIC "
+                                    "ownership; the reviewed plan can't overwrite it.",
+                                    details={"kind": str(step.kind), "name": step.name},
+                                )
+                            if step.kind == PublishedResourceKind.SUBSCRIPTION:
+                                live = await client.get_subscription(step.name)
+                                self._validate_subscription_scope(
+                                    pool, resource, step.name, live or {}
+                                )
+                            result.created_by_mosaic = not exists
+                            await self._progress(pool, run, results, owned)
+                            write_started = True
+                            await self._write_governed_step(
+                                writer,
+                                pool,
+                                policy,
+                                step,
+                                items.get((step.kind, step.name)),
+                                snapshot,
+                            )
+                            owned = _merge_resources(
+                                owned,
+                                [
+                                    PublishedResource(
+                                        kind=step.kind,
+                                        name=step.name,
+                                        resource_id=step.resource_id,
+                                        created_by_mosaic=result.created_by_mosaic,
+                                    )
+                                ],
+                            )
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as error:
+                        result.status = PublishStepStatus.FAILED
+                        result.error = str(error)
+                        failure = f"{_noun(step.kind)} {step.name}: {error}"
+                        if (
+                            write_started
+                            and result.created_by_mosaic
+                            and await self._exists(client, pool, step.kind, step.name)
+                        ):
+                            # A write that failed may still have made it; it's the pool's.
+                            owned = _merge_resources(
+                                owned,
+                                [
+                                    PublishedResource(
+                                        kind=step.kind,
+                                        name=step.name,
+                                        resource_id=step.resource_id,
+                                        created_by_mosaic=True,
+                                    )
+                                ],
+                            )
+                        break
+                    result.status = PublishStepStatus.SUCCEEDED
+                    await self._progress(pool, run, results, owned)
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                logger.exception("pool_apply_failed", pool_id=pool.id)
+                failure = failure or str(error)
+            if failure is None:
+                await self._finish_success(
+                    pool,
+                    run,
+                    results,
+                    owned,
+                    desired,
+                    started,
+                    cleanup,
+                    leftovers,
+                    access_snapshot=snapshot,
+                )
+                await self._release_run(pool, run)
+            else:
+                await self._governed_failure(
+                    pool, client, writer, run, results, owned, started, failure, shape
+                )
+        except asyncio.CancelledError:
+            await self._interrupted(pool, run, STALE_RUN_MESSAGE)
+            raise
+        except Exception as error:
+            await self._interrupted(
+                pool, run, f"Apply outcome could not be durably established: {error}"
+            )
+            raise
+        finally:
+            self._active.discard(pool.id)
+
+    async def _delete_revoked_key(
+        self,
+        pool: ModelPool,
+        client: ApimClient,
+        writer: ApimWriter,
+        name: str,
+        owned: list[PublishedResource],
+    ) -> list[PublishedResource]:
+        """Delete a key every grant of which was revoked. MOSAIC deletes only keys it created."""
+
+        if not self._owns(
+            pool.model_copy(update={"resources": owned}), PublishedResourceKind.SUBSCRIPTION, name
+        ):
+            raise ConflictError(
+                "MOSAIC deletes only the keys it created for this pool's grants.",
+                details={"subscriptionName": name},
+            )
+        live = await client.get_subscription(name)
+        if live is not None:
+            self._validate_subscription_scope(pool, writer.resource, name, live)
+            await writer.delete_subscription(name)
+        return [
+            item
+            for item in owned
+            if not (item.kind == PublishedResourceKind.SUBSCRIPTION and item.name == name)
+        ]
+
+    async def _write_governed_step(
+        self,
+        writer: ApimWriter,
+        pool: ModelPool,
+        policy: PublicationPolicy,
+        step: PublishPlanStep,
+        item: _Resource | None,
+        snapshot: PoolAccessSnapshot,
+    ) -> None:
+        if step.kind == PublishedResourceKind.API_POLICY and step.stage == "prepare":
+            await writer.put_api_policy(pool.api_name, DENY_ALL_POLICY)
+            return
+        if step.kind == PublishedResourceKind.SUBSCRIPTION:
+            state = step.subscription_state or "suspended"
+            if step.name == pool.subscription_name:
+                await writer.put_subscription(
+                    step.name,
+                    display_name=f"{pool.display_name[:90]} (pool)",
+                    product_name=pool.product_name,
+                    state="suspended",
+                )
+                return
+            await writer.put_api_subscription(
+                step.name,
+                display_name=_key_display_name(pool, snapshot.key_grants().get(step.name, [])),
+                api_name=pool.api_name,
+                state=state,
+            )
+            return
+        if item is None:
+            raise ConflictError(
+                "MOSAIC lost track of this pool resource. Plan the pool again.",
+                details={"kind": str(step.kind), "name": step.name},
+            )
+        if step.kind == PublishedResourceKind.API:
+            payload = item.payload
+            await writer.put_api(
+                item.name,
+                display_name=payload["displayName"],
+                path=payload["path"],
+                description=payload["description"],
+                # Token-only calls are allowed only once the policy that checks tokens is in.
+                subscription_required=(
+                    step.stage != "activate" or not snapshot.settings.entra_enabled
+                ),
+                use_default_subscription_key_names=True,
+            )
+            return
+        await self._write(writer, pool, policy, item)
+
+    async def _establish_deny(
+        self,
+        pool: ModelPool,
+        client: ApimClient,
+        writer: ApimWriter,
+        journal: RecoveryJournal | None = None,
+    ) -> tuple[bool, list[str]]:
+        """Make the pool's API refuse every call. True once it does, or when it has no API."""
+
+        if not self._owns(pool, PublishedResourceKind.API, pool.api_name):
+            return True, []
+        if await client.get_api(pool.api_name) is None:
+            return True, []
+        errors: list[str] = []
+        try:
+            existed = await client.get_api_policy(pool.api_name) is not None
+            await writer.put_api_policy(pool.api_name, DENY_ALL_POLICY)
+            if journal is not None:
+                await journal(PublishedResourceKind.API_POLICY, "policy", not existed, "policy")
+            return True, []
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            errors.append(f"Denying every call to the pool's API failed: {error}")
+        if self._owns(pool, PublishedResourceKind.POLICY_FRAGMENT, pool.fragment_name):
+            # The API's policy, whichever MOSAIC wrote, includes the fragment.
+            try:
+                await writer.put_policy_fragment(
+                    pool.fragment_name, DENY_ALL_FRAGMENT, description="MOSAIC fail-closed recovery"
+                )
+                if journal is not None:
+                    await journal(
+                        PublishedResourceKind.POLICY_FRAGMENT, pool.fragment_name, False, "policy"
+                    )
+                return True, errors
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                errors.append(f"Denying every call through the pool's fragment failed: {error}")
+        return False, errors
+
+    async def _suspend_owned_subscriptions(
+        self,
+        pool: ModelPool,
+        client: ApimClient,
+        writer: ApimWriter,
+        journal: RecoveryJournal | None = None,
+    ) -> list[str]:
+        """Suspend every key the pool's record says MOSAIC created. Returns what failed."""
+
+        errors: list[str] = []
+        applied = pool.applied_access.key_grants() if pool.applied_access else {}
+        for item in pool.created_resources():
+            if item.kind != PublishedResourceKind.SUBSCRIPTION:
+                continue
+            try:
+                live = await client.get_subscription(item.name)
+                if live is None:
+                    continue
+                self._validate_subscription_scope(pool, writer.resource, item.name, live)
+                if item.name == pool.subscription_name:
+                    await writer.put_subscription(
+                        item.name,
+                        display_name=f"{pool.display_name[:90]} (pool)",
+                        product_name=pool.product_name,
+                        state="suspended",
+                    )
+                else:
+                    await writer.put_api_subscription(
+                        item.name,
+                        display_name=_live_display_name(live)
+                        or _key_display_name(pool, applied.get(item.name, [])),
+                        api_name=pool.api_name,
+                        state="suspended",
+                    )
+                if journal is not None:
+                    await journal(PublishedResourceKind.SUBSCRIPTION, item.name, False, "prepare")
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                errors.append(f"Suspending subscription {item.name} failed: {error}")
+        return errors
+
+    def _recovery_journal(
+        self,
+        pool: ModelPool,
+        writer: ApimWriter,
+        run: PublishRun,
+        results: list[PublishStepResult],
+        resources: list[PublishedResource],
+    ) -> RecoveryJournal:
+        """Record each recovery write as a step of the run, and what it made as the pool's."""
+
+        async def record(
+            kind: PublishedResourceKind, name: str, created: bool, stage: str
+        ) -> None:
+            resource_id = next(
+                (
+                    item.resource_id
+                    for item in pool.resources
+                    if item.kind == kind and item.name == name
+                ),
+                None,
+            ) or writer.resource_id(_segment(pool, kind, name))
+            results.append(
+                PublishStepResult(
+                    kind=kind,
+                    name=name,
+                    action=PublishAction.CREATE if created else PublishAction.UPDATE,
+                    status=PublishStepStatus.SUCCEEDED,
+                    resource_id=resource_id,
+                    created_by_mosaic=created,
+                    stage=stage,
+                )
+            )
+            resources[:] = _merge_resources(
+                resources,
+                [
+                    PublishedResource(
+                        kind=kind, name=name, resource_id=resource_id, created_by_mosaic=created
+                    )
+                ],
+            )
+            await self._progress(pool, run, results, resources)
+
+        return record
+
+    async def _governed_failure(
+        self,
+        pool: ModelPool,
+        client: ApimClient,
+        writer: ApimWriter,
+        run: PublishRun,
+        results: list[PublishStepResult],
+        resources: list[PublishedResource],
+        started: datetime,
+        failure: str,
+        shape: str,
+    ) -> None:
+        """Fail closed, then put back no more access than the last applied snapshot allowed.
+
+        First the pool refuses every call and every key MOSAIC made for it is suspended. Once
+        that holds, the last applied snapshot's grants come back, less any this plan turned off,
+        and only the keys they allow are active again. When the pool can't be shown to refuse
+        calls, its access is unknown and the run keeps the lock until an administrator recovers
+        it.
+        """
+
+        target = run.pool_access_snapshot
+        if target is None:
+            raise ConflictError("A governed apply's run must keep the snapshot it applied")
+        await self._assert_lock(pool, run)
+        errors = [failure]
+        journal = self._recovery_journal(pool, writer, run, results, resources)
+        denied, problems = await self._establish_deny(
+            pool.model_copy(update={"resources": list(resources)}), client, writer, journal
+        )
+        errors.extend(problems)
+        errors.extend(
+            await self._suspend_owned_subscriptions(
+                pool.model_copy(update={"resources": list(resources)}), client, writer, journal
+            )
+        )
+        safe = denied_pool_access_snapshot(target)
+        if denied:
+            candidate = safe_pool_access_snapshot(pool, target)
+            actual = pool.model_copy(update={"resources": list(resources)})
+            # The restored policy includes the pool's fragment. Without one MOSAIC made, nothing
+            # was ever applied that the deny took away, so the pool stays denied.
+            if self._owns(actual, PublishedResourceKind.API, pool.api_name) and self._owns(
+                actual, PublishedResourceKind.POLICY_FRAGMENT, pool.fragment_name
+            ):
+                try:
+                    restored = _policy(pool, shape, candidate)
+                    await ensure_blocked_list(self._blocked_list, client, writer, pool.tenant_id)
+                    await writer.put_policy_fragment(
+                        pool.fragment_name,
+                        restored.fragment_xml,
+                        description="MOSAIC last safe access snapshot",
+                    )
+                    await journal(
+                        PublishedResourceKind.POLICY_FRAGMENT, pool.fragment_name, False, "policy"
+                    )
+                    await writer.put_api_policy(pool.api_name, restored.api_policy_xml)
+                    await journal(PublishedResourceKind.API_POLICY, "policy", False, "policy")
+                    await writer.put_api(
+                        pool.api_name,
+                        display_name=pool.display_name,
+                        path=pool.api_path,
+                        subscription_required=not candidate.settings.entra_enabled,
+                        description="Published by MOSAIC; restricted recovery state.",
+                        use_default_subscription_key_names=True,
+                    )
+                    await journal(PublishedResourceKind.API, pool.api_name, False, "activate")
+                    if candidate.settings.keys_enabled:
+                        for name, grants in sorted(candidate.key_grants().items()):
+                            if not any(grant.enabled and grant.keys_allowed for grant in grants):
+                                continue
+                            if not self._owns(actual, PublishedResourceKind.SUBSCRIPTION, name):
+                                continue
+                            live = await client.get_subscription(name)
+                            if live is None:
+                                continue
+                            self._validate_subscription_scope(pool, writer.resource, name, live)
+                            await writer.put_api_subscription(
+                                name,
+                                display_name=_live_display_name(live)
+                                or _key_display_name(pool, grants),
+                                api_name=pool.api_name,
+                                state="active",
+                            )
+                            await journal(
+                                PublishedResourceKind.SUBSCRIPTION, name, False, "activate"
+                            )
+                    safe = candidate
+                except asyncio.CancelledError:
+                    raise
+                except Exception as error:
+                    errors.append(f"Restoring the last safe access snapshot failed: {error}")
+                    actual = pool.model_copy(update={"resources": list(resources)})
+                    denied, problems = await self._establish_deny(actual, client, writer, journal)
+                    errors.extend(problems)
+                    errors.extend(
+                        await self._suspend_owned_subscriptions(actual, client, writer, journal)
+                    )
+        if denied:
+            errors.append(
+                "Access was restricted to the last safe snapshot. Keys were retained for a "
+                "reviewed retry; suspension failures are listed above. No keys were rotated."
+            )
+        else:
+            errors.append(
+                "Runtime denial could not be confirmed. The durable lock is retained; stop the "
+                "original writer and complete explicit recovery."
+            )
+        await self._record_state(
+            pool,
+            status=PublicationStatus.FAILED,
+            resources=resources,
+            run_id=run.id,
+            error=failure,
+            access_snapshot=safe if denied else None,
+            access_state="failed" if denied else "unknown",
+        )
+        if denied:
+            await self._project_bindings(pool, safe, run)
+        await self._finish_run(
+            run,
+            PublishRunStatus.FAILED if denied else PublishRunStatus.INTERRUPTED,
+            started,
+            results=results,
+            errors=errors,
+            orphaned=[] if denied else [item for item in resources if item.created_by_mosaic],
+        )
+        if denied:
+            await self._release_run(pool, run)
+
+    async def _project_bindings(
+        self, pool: ModelPool, snapshot: PoolAccessSnapshot | None, run: PublishRun
+    ) -> None:
+        """Point each grant the gateway now enforces at the key and counters it's enforced with.
+
+        Usage and analytics read these bindings to charge a call to its grant and cost center. A
+        grant the gateway no longer enforces loses the binding an apply gave it; one bound some
+        other way is left alone.
+        """
+
+        if self._entitlements is None:
+            return
+        grants = {grant.entitlement_id: grant for grant in snapshot.grants} if snapshot else {}
+        model_ids = {model.id for model in pool.models}
+        if pool.applied_access is not None:
+            model_ids.update(grant.pool_model_id for grant in pool.applied_access.grants)
+        model_ids.update(grant.pool_model_id for grant in grants.values())
+        actor = Actor(run.actor_object_id or "system:publishing", pool.tenant_id)
+        for model_id in sorted(model_ids):
+            records = await self._entitlements.list_entitlements(
+                pool.tenant_id, resource_id=model_id
+            )
+            for entitlement in records:
+                if (
+                    not is_pool_model_entitlement(entitlement)
+                    or entitlement.resource.scope_id != pool.id
+                ):
+                    continue
+                grant = grants.get(entitlement.id)
+                binding = entitlement.binding
+                if (
+                    grant is not None
+                    and grant.enabled
+                    and snapshot is not None
+                    and (snapshot.settings.keys_enabled or snapshot.settings.entra_enabled)
+                ):
+                    binding = EntitlementBinding(
+                        gateway_id=pool.gateway_id,
+                        apim_subscription_name=grant.key_name,
+                        counter_key_expression=pool_grant_counter_key_expression(pool, grant),
+                        attribution_key=pool_grant_counter_identity(pool, grant),
+                        attribution_per_member=grant.is_group_grant,
+                        source=BindingSource.ORCHESTRATED,
+                        bound_at=utc_now(),
+                    )
+                elif binding is not None and binding.source == BindingSource.ORCHESTRATED:
+                    binding = None
+                else:
+                    continue
+                await self._entitlements.save_entitlement(
+                    entitlement.model_copy(update={"binding": binding, "runtime": None}),
+                    self._audit(
+                        actor,
+                        "entitlement.runtimeProjected",
+                        entitlement.id,
+                        resource_type="entitlement",
+                    ),
+                )
+
     async def _finish_success(
         self,
         pool: ModelPool,
@@ -2021,6 +3292,8 @@ class ModelPoolService:
         started: datetime,
         cleanup: list[str],
         leftovers: list[PublishedResource],
+        *,
+        access_snapshot: PoolAccessSnapshot | None = None,
     ) -> None:
         await self._assert_lock(pool, run)
         applied_at = utc_now()
@@ -2032,12 +3305,14 @@ class ModelPoolService:
             and result.action != PublishAction.DELETE
         }
         # What the pool no longer wants stays recorded only while MOSAIC still has to remove it.
+        # The gateway's blocked list isn't the pool's: every governed policy on it reads it.
         resources = [
             item.model_copy(update={"applied_at": applied_at})
             if (item.kind, item.name) in written
             else item
             for item in tracked
-            if (item.kind, item.name) in wanted or item.created_by_mosaic
+            if ((item.kind, item.name) in wanted or item.created_by_mosaic)
+            and not is_blocked_list(item.kind, item.name)
         ]
         note = (
             "The pool is published, but MOSAIC couldn't remove some resources it no longer "
@@ -2052,7 +3327,12 @@ class ModelPoolService:
             run_id=run.id,
             error=note,
             applied=True,
+            access_snapshot=access_snapshot,
+            access_state="applied" if access_snapshot is not None else None,
+            applied_model_ids=[route.model_id for route in _routes(pool)],
         )
+        if access_snapshot is not None:
+            await self._project_bindings(pool, access_snapshot, run)
         await self._finish_run(
             run,
             PublishRunStatus.SUCCEEDED,
@@ -2190,6 +3470,8 @@ class ModelPoolService:
             pool = await self.get_pool(actor, pool_id)
             if pool.status == PublicationStatus.APPLYING:
                 raise ConflictError(_APPLYING, details={"id": pool_id})
+            if pool.access_state == "unknown":
+                raise ConflictError(_UNKNOWN_ACCESS, details={"id": pool_id})
             gateway = await self._load_gateway(actor, pool.gateway_id)
             self._require_writable(gateway)
             removals = sorted(
@@ -2203,11 +3485,21 @@ class ModelPoolService:
                     "nothing to remove.",
                     details={"id": pool_id},
                 )
+            governed = _is_governed(pool)
+            if governed:
+                # The API goes first: until it's gone, its deny policy is what answers callers.
+                removals.sort(key=lambda item: item.kind != PublishedResourceKind.API)
+            keys = pool.applied_access.key_grants() if pool.applied_access else {}
             warnings = []
             if pool.has_applied_api():
                 warnings.append(
                     f"Unpublishing removes the {pool.display_name} API at /{pool.api_path} and "
                     "its subscription key, so every app calling the pool stops working."
+                )
+            if governed:
+                warnings.append(
+                    "Before it deletes anything, MOSAIC replaces this API's policy with one that "
+                    "refuses every call, and suspends every key, so callers are cut off first."
                 )
             plan = PublishPlan(
                 id=new_id("publishplan"),
@@ -2225,11 +3517,18 @@ class ModelPoolService:
                         reason=f"Remove the pool's {_noun(item.kind)}.",
                         resource_id=item.resource_id,
                         existed=True,
+                        entitlement_id=(
+                            min(grant.entitlement_id for grant in keys[item.name])
+                            if item.kind == PublishedResourceKind.SUBSCRIPTION
+                            and keys.get(item.name)
+                            else None
+                        ),
                     )
                     for item in removals
                 ],
                 warnings=warnings,
                 actor_object_id=actor.object_id,
+                pool_access_snapshot=pool.applied_access if governed else None,
             )
             await self._repository.save_publish_plan(plan)
             return plan
@@ -2287,7 +3586,27 @@ class ModelPoolService:
         results: list[PublishStepResult] = []
         remaining = list(pool.resources)
         errors: list[str] = []
+        governed = _is_governed(pool)
+        applied = pool.applied_access
+        denied_snapshot = (
+            denied_pool_access_snapshot(applied).model_copy(update={"version": applied.version + 1})
+            if governed and applied is not None
+            else None
+        )
         try:
+            if governed:
+                # Callers are cut off before anything is deleted, so a failure part way through
+                # leaves the pool refusing calls rather than half there.
+                await self._assert_lock(pool, run)
+                client = self._client_factory(writer.resource)
+                denied, problems = await self._establish_deny(pool, client, writer)
+                problems.extend(await self._suspend_owned_subscriptions(pool, client, writer))
+                if not denied:
+                    raise ConflictError(
+                        "Unpublish could not establish a fail-closed runtime policy: "
+                        + "; ".join(problems)
+                    )
+                errors.extend(problems)
             for step in plan.steps:
                 await self._assert_lock(pool, run)
                 result = PublishStepResult(
@@ -2314,6 +3633,9 @@ class ModelPoolService:
                     ]
                 results.append(result)
                 await self._progress(pool, run, results, remaining)
+                if governed and result.status == PublishStepStatus.FAILED:
+                    # What's left still refuses every call. Stop, rather than delete around it.
+                    break
         except asyncio.CancelledError:
             await self._interrupted(pool, run, STALE_RUN_MESSAGE)
             self._active.discard(pool.id)
@@ -2324,16 +3646,27 @@ class ModelPoolService:
             raise
 
         try:
-            succeeded = not errors
+            succeeded = not any(result.status == PublishStepStatus.FAILED for result in results)
+            access_state: Literal["pending", "applied", "failed"] | None = None
+            if governed:
+                # After a clean unpublish, what's applied is the denial, or nothing ever was.
+                access_state = (
+                    "failed" if not succeeded else "applied" if denied_snapshot else "pending"
+                )
             await self._record_state(
                 pool,
                 status=PublicationStatus.DRAFT if succeeded else PublicationStatus.FAILED,
                 # Once everything MOSAIC made is gone, nothing else is the pool's to manage.
                 resources=[] if succeeded else remaining,
                 run_id=run.id,
-                error="; ".join(errors) or None,
+                error=None if succeeded else "; ".join(errors) or None,
                 unpublished=succeeded,
+                access_snapshot=denied_snapshot,
+                access_state=access_state,
             )
+            if governed:
+                # Every call is refused now, so no grant is bound to anything the gateway runs.
+                await self._project_bindings(pool, None, run)
             await self._finish_run(
                 run,
                 PublishRunStatus.SUCCEEDED if succeeded else PublishRunStatus.FAILED,
@@ -2441,16 +3774,59 @@ class ModelPoolService:
                         )
                     ],
                 )
+        governed = _is_governed(pool) or run.pool_access_snapshot is not None
+        safe: PoolAccessSnapshot | None = None
+        recovery_steps = list(run.steps)
+        if governed:
+            # Nobody knows what the stopped run left in force, so recovery shuts the pool before
+            # it lets go: every call refused, every key MOSAIC made suspended.
+            self._require_writable(gateway)
+            writer = self._writer_factory(ApimResourceId.parse(gateway.azure_resource_id))
+            await self._assert_lock(pool, run)
+            actual = pool.model_copy(update={"resources": resources})
+            journal = self._recovery_journal(actual, writer, run, recovery_steps, resources)
+            denied, errors = await self._establish_deny(actual, client, writer, journal)
+            errors.extend(await self._suspend_owned_subscriptions(actual, client, writer, journal))
+            if not denied or errors:
+                await self._interrupted(
+                    actual,
+                    run,
+                    "Explicit recovery could not confirm complete denial: " + "; ".join(errors),
+                )
+                return await self.get_run(actor, pool_id, run.id)
+            target = run.pool_access_snapshot or pool.applied_access
+            if target is not None:
+                safe = denied_pool_access_snapshot(target).model_copy(
+                    update={
+                        "version": max(
+                            target.version,
+                            pool.applied_access.version if pool.applied_access else 0,
+                        )
+                        + 1
+                    }
+                )
         message = (
-            "An administrator confirmed this run stopped. Plan the pool again and review the "
+            "An administrator confirmed this run stopped, and runtime access is denied. Plan the "
+            "pool again and review the changes before restoring any grants."
+            if governed
+            else "An administrator confirmed this run stopped. Plan the pool again and review the "
             "changes before applying or unpublishing it."
         )
         await self._record_state(
-            pool, status=PublicationStatus.FAILED, resources=resources, run_id=run.id, error=message
+            pool,
+            status=PublicationStatus.FAILED,
+            resources=resources,
+            run_id=run.id,
+            error=message,
+            access_snapshot=safe,
+            access_state="failed" if governed else None,
         )
+        if governed:
+            await self._project_bindings(pool, safe, run)
         recovered = run.model_copy(
             update={
                 "status": PublishRunStatus.INTERRUPTED,
+                "steps": recovery_steps,
                 "errors": [*run.errors, message],
                 "completed_at": utc_now(),
                 "updated_at": utc_now(),
@@ -2494,6 +3870,12 @@ class ModelPoolService:
                         update={
                             "status": PublicationStatus.FAILED,
                             "last_error": STALE_RUN_MESSAGE,
+                            # A run that lost its lock stops at its next step, so it never got
+                            # far without one; and with no lock left to recover through,
+                            # "unknown" would strand the pool. The next apply denies first.
+                            "access_state": (
+                                "failed" if pool.access_state == "applying" else pool.access_state
+                            ),
                             "updated_at": completed,
                         }
                     )

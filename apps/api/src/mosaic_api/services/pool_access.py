@@ -96,8 +96,9 @@ def entitlement_key_name(pool: ModelPool, entitlement: Entitlement) -> str | Non
 def pool_grant_needs_retention(pool: ModelPool, entitlement_id: str) -> bool:
     """Whether a grant must stay until an apply has taken its access away.
 
-    A key is shared, so deleting a disabled grant never orphans it: the next apply deletes a key
-    once no grant uses it.
+    A key is shared, so deleting a disabled grant never orphans it: the key stays the pool's,
+    suspended unless another of its grants is enabled, until every grant it serves is revoked or
+    the pool is unpublished.
     """
 
     grant = applied_pool_grant(pool, entitlement_id)

@@ -203,11 +203,21 @@ class BlockedListGate:
     # -- the budget check -------------------------------------------------------------------
 
     async def gateways(self, tenant_id: str) -> list[Gateway]:
-        """Managed gateways that carry a publication of MOSAIC's, whose policy reads the list."""
+        """Managed gateways whose policies read the list.
 
-        published = {
-            item.gateway_id for item in await self._gateways.list_publications(tenant_id)
-        } | {item.gateway_id for item in await self._gateways.list_mcp_publications(tenant_id)}
+        That is every gateway with a publication of MOSAIC's, and every gateway with a governed
+        model pool. An ungoverned pool's policy charges no cost center, so it never reads it.
+        """
+
+        published = (
+            {item.gateway_id for item in await self._gateways.list_publications(tenant_id)}
+            | {item.gateway_id for item in await self._gateways.list_mcp_publications(tenant_id)}
+            | {
+                pool.gateway_id
+                for pool in await self._gateways.list_model_pools(tenant_id)
+                if pool.governed_access is not None or pool.applied_access is not None
+            }
+        )
         return [
             gateway
             for gateway in await self._gateways.list_gateways(tenant_id)

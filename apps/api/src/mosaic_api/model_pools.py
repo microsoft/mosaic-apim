@@ -607,6 +607,8 @@ class ModelPoolUpdate(MosaicModel):
     max_retries: int | None = Field(default=None, ge=0, le=MAX_ATTEMPTS - 1)
     safeguard: PoolSafeguard | None = None
     models: list[PoolModelSpec] | None = Field(default=None, max_length=MAX_POOL_MODELS)
+    # Opting in is one-way: once set, it can change but not be cleared.
+    governed_access: ModelAccessSettings | None = None
 
     @model_validator(mode="after")
     def validate_models(self) -> Self:

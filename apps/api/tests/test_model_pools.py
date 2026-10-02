@@ -10,6 +10,7 @@ from apim_double import CONTRIBUTOR_PERMISSIONS, RESOURCE_ID, FakeApim
 from conftest import build_endpoint_service, build_gateway_service, build_model_pool_service
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from mosaic_api.config import AuthMode, Environment, RepositoryBackend, Settings
 from mosaic_api.domain import (
     ApiShape,
     AuditEvent,
@@ -75,7 +76,8 @@ from mosaic_api.services.directory import Actor
 from mosaic_api.services.model_endpoints import ModelEndpointService
 from pydantic import ValidationError as SchemaError
 
-TENANT = "tenant-test"
+# A tenant ID like Entra's: a governed pool's Entra policy names the tenant whose tokens it takes.
+TENANT = "aaaaaaaa-1111-4aaa-8aaa-aaaaaaaaaaaa"
 ACTOR = Actor(object_id="admin-object-id", tenant_id=TENANT)
 GATEWAY_URL = "https://apim-contoso-dev.azure-api.net"
 AOAI_OPERATIONS = {
@@ -366,6 +368,19 @@ async def estate() -> Estate:
     built = Estate()
     await built.setup()
     return built
+
+
+@pytest.fixture
+def settings() -> Settings:
+    """The API's settings, signed in to the estate's tenant."""
+
+    return Settings(
+        environment=Environment.TEST,
+        auth_mode=AuthMode.LOCAL,
+        repository_backend=RepositoryBackend.MEMORY,
+        tenant_id=TENANT,
+        cors_origins=["http://localhost:5173"],
+    )
 
 
 async def test_create_derives_names_and_the_model_from_inventory(estate: Estate) -> None:

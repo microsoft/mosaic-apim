@@ -231,6 +231,11 @@ def build_model_pool_service(
     endpoint_repository: InMemoryModelEndpointRepository,
     *,
     environment_repository: InMemoryEnvironmentRepository | None = None,
+    directory_repository: InMemoryDirectoryRepository | None = None,
+    entitlement_repository: InMemoryEntitlementRepository | None = None,
+    cost_center_repository: InMemoryCostCenterRepository | None = None,
+    runtime_client_id: str | None = "22222222-2222-2222-2222-222222222222",
+    security_group_claims: bool = True,
 ) -> ModelPoolService:
     arm = build_arm_client(fake)
     return ModelPoolService(
@@ -239,6 +244,11 @@ def build_model_pool_service(
         client_factory=lambda resource: ApimClient(arm, resource),
         writer_factory=lambda resource: ApimWriter(arm, resource),
         environment_repository=environment_repository,
+        directory_repository=directory_repository,
+        entitlement_repository=entitlement_repository,
+        cost_center_repository=cost_center_repository,
+        model_runtime_client_id=runtime_client_id,
+        security_group_claims=security_group_claims,
     )
 
 
