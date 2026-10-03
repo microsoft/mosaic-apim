@@ -902,12 +902,15 @@ FOUNDRY_DEPLOYMENTS = [
     ),
     _claude("claude-opus-4-5", "20251101", capacity=250),
     _claude("claude-sonnet-4-5", "20250929", capacity=500),
+    _claude("claude-haiku-4-5", "20251001", capacity=400),
 ]
 
-# Contoso's other Foundry resources serve Claude only. Opus is on all three, Sonnet on two.
+# Contoso's other Foundry resources serve Claude only. Opus is on all three and Sonnet on two.
+# Haiku is on two as well, but no pool serves it yet, so the Pools page suggests one.
 FOUNDRY_NORTH_CENTRAL_DEPLOYMENTS = [
     _claude("claude-opus-4-5", "20251101", capacity=150),
     _claude("claude-sonnet-4-5", "20250929", capacity=300),
+    _claude("claude-haiku-4-5", "20251001", capacity=200),
 ]
 FOUNDRY_WEST_DEPLOYMENTS = [_claude("claude-opus-4-5", "20251101", capacity=150)]
 

@@ -59,7 +59,8 @@ one under **Settings > Appearance**.
     7 days of gateway usage rolled up from Log Analytics: requests, tokens, active callers, errors,
     and latency, what this month has cost so far with its month-end forecast, the daily trend, how
     current each gateway's telemetry is, each budget's progress this month with any cost center it
-    blocks, and the top models, callers, and APIs.</td>
+    blocks, any model pool with a deployment its gateway can't use or a failed apply, and the top
+    models, callers, and APIs.</td>
   </tr>
   <tr>
     <td><img src="docs/images/screenshots/portal-catalog-light.png" alt="The portal catalog in the light theme"></td>
@@ -121,10 +122,12 @@ one under **Settings > Appearance**.
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/console-pools.png" alt="The Model pools page listing two Anthropic pools with their gateway, models, routing type, active members, access, readiness, and status">
+      <img src="docs/images/screenshots/console-pools.png" alt="The Model pools page listing two Anthropic pools with their gateway, models, routing type, active members, access, readiness, and status, and below them a suggested pool for Claude Haiku 4.5">
       <p><b>Model pools.</b> Each pool serves one vendor's models from deployments on many
       endpoints and regions through a single API, with its routing type, how many deployments
-      are active, whether callers need a grant, and whether it is a draft or published.</p>
+      are active, whether callers need a grant, and whether it is a draft or published. Where a
+      model is deployed on two or more endpoints a gateway can reach and no pool serves it, MOSAIC
+      suggests one.</p>
     </td>
     <td width="50%" valign="top">
       <img src="docs/images/screenshots/console-pool-detail.png" alt="A breaker pool serving Claude Opus 4.5 and Claude Sonnet 4.5 from five deployments in three regions, with weights, readiness, and drain switches">
@@ -146,6 +149,21 @@ one under **Settings > Appearance**.
       answered them, read from the traces the pool's policy writes to the gateway's logs. An
       administrator sees which region throttles or trips its breaker, and how often the pool retried
       elsewhere.</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/images/screenshots/console-pool-editor.png" alt="The Create a model pool dialog on its Models step, opened from the Claude Haiku 4.5 suggestion, with the name callers send, the display name, and the model's deployments on two Foundry endpoints with their capacity, readiness, weight, and drain switch">
+      <p><b>Create a pool.</b> A suggestion opens the pool editor with the model and every
+      deployment the gateway can use already chosen. An administrator names the model for callers
+      and for the portal, weights or drains each deployment, and reviews the pool's routing and
+      limits before saving it.</p>
+    </td>
+    <td width="50%" valign="top">
+      <img src="docs/images/screenshots/console-endpoint-pools.png" alt="Contoso AI Foundry's deployments with the pools each one serves, and a Used by pools card listing the two Claude pools with their gateway, the deployments each uses, and status">
+      <p><b>Pools on an endpoint.</b> Each endpoint's deployments list the pools that serve them,
+      and a card names every pool that uses the endpoint. Before removing an endpoint or a
+      deployment, an administrator can see which pools would lose it.</p>
     </td>
   </tr>
   <tr>

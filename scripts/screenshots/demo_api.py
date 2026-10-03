@@ -1219,6 +1219,7 @@ async def seed_estate(services: DemoServices, tenant_id: str) -> Estate:
     for claude_model, input_price, output_price in (
         ("claude-opus-4-5", 5.0, 25.0),
         ("claude-sonnet-4-5", 3.0, 15.0),
+        ("claude-haiku-4-5", 1.0, 5.0),
     ):
         await services.pricing.add_price(
             admin,

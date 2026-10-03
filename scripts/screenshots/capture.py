@@ -382,8 +382,12 @@ def scroll_to_text(text: str, margin: int = 24) -> Action:
 # The README embeds these by name. Keep the two in step: a renamed or removed shot here needs its
 # README reference updated, and a new README screenshot needs an entry here.
 OPEN_GATEWAY = (click_link("Contoso AI Gateway"), wait_for_text("Published by MOSAIC"))
-# The overview's usage panels and gateway health load after its inventory counts.
-DASHBOARD_LOADED = (wait_for_text("Contoso Support Copilot"), wait_for_text("Partner Gateway"))
+# The overview's usage panels, gateway health, and pools load after its inventory counts.
+DASHBOARD_LOADED = (
+    wait_for_text("Contoso Support Copilot"),
+    wait_for_text("Partner Gateway"),
+    wait_for_text("published pool"),
+)
 TELEMETRY_READY = "This gateway is ready for usage analytics."
 
 SHOTS: list[Shot] = [
@@ -395,7 +399,7 @@ SHOTS: list[Shot] = [
         "light",
         "MOSAIC groups",
         actions=DASHBOARD_LOADED,
-        height=2000,
+        height=2150,
     ),
     Shot(
         "console-dashboard-dark",
@@ -404,7 +408,7 @@ SHOTS: list[Shot] = [
         "dark",
         "MOSAIC groups",
         actions=DASHBOARD_LOADED,
-        height=2000,
+        height=2150,
     ),
     Shot("portal-catalog-light", "portal", "/catalog", "light", "Docs search MCP", height=1040),
     Shot("portal-catalog-dark", "portal", "/catalog", "dark", "Docs search MCP", height=1040),
@@ -464,7 +468,17 @@ SHOTS: list[Shot] = [
         # short enough to scroll the endpoints MOSAIC found out of view.
         height=1100,
     ),
-    Shot("console-pools", "console", "/pools", "light", "Claude evaluation"),
+    Shot(
+        "console-pools",
+        "console",
+        "/pools",
+        "light",
+        "Claude evaluation",
+        # The suggestions load after the pools.
+        actions=(wait_for_text("Suggested pools"),),
+        # Tall enough for both pools and, below them, the pool MOSAIC suggests for Claude Haiku 4.5.
+        height=1130,
+    ),
     Shot(
         "console-pool-detail",
         "console",
@@ -509,6 +523,38 @@ SHOTS: list[Shot] = [
         ),
         # Tall enough to end just below the card, after its footnote.
         height=974,
+    ),
+    Shot(
+        "console-pool-editor",
+        "console",
+        "/pools",
+        "light",
+        "Suggested pools",
+        # Create pool on the Claude Haiku 4.5 suggestion opens the editor with the deployments the
+        # gateway can use. The shot never saves the pool, so the estate is unchanged for the shots
+        # after it.
+        actions=(
+            click_button("Create pool for Anthropic on Contoso AI Gateway"),
+            wait_for_text("Create a model pool"),
+            click_tab("3. Models"),
+            wait_for_text("Name callers send"),
+        ),
+        height=1040,
+    ),
+    Shot(
+        "console-endpoint-pools",
+        "console",
+        "/models",
+        "dark",
+        "GPT-4o mini",
+        # Contoso AI Foundry, the endpoint selected first, serves both pools: its deployments with
+        # the pools each one serves, and the card listing those pools.
+        actions=(
+            wait_for_text("Used by pools"),
+            scroll_to_text("Models on Contoso AI Foundry", margin=110),
+        ),
+        # Tall enough to end just below the card listing the pools.
+        height=1080,
     ),
     Shot(
         "console-mcps",
@@ -643,7 +689,7 @@ SHOTS: list[Shot] = [
         "dark",
         "Contoso Support Copilot",
         # Tall enough for the trend, the three rankings, and the gateway health below them.
-        height=1500,
+        height=1568,
     ),
     Shot(
         "console-analytics-cost",
@@ -652,7 +698,7 @@ SHOTS: list[Shot] = [
         "light",
         "Month-end forecast",
         # Tall enough for this month's spend, the trend, and the cost of each model and deployment.
-        height=1700,
+        height=1768,
     ),
     Shot(
         "console-pricing",

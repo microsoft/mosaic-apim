@@ -122,38 +122,40 @@ portal at `http://localhost:5174` signs you in as the demo end user, Megan Bowen
   and deny access. It builds two model pools on the production gateway: **Anthropic Claude**, a
   published breaker pool that serves Claude Opus 4.5 from three regions and Claude Sonnet 4.5 from
   two, and **Claude evaluation**, a hidden linear draft. Both use the Sonnet deployments, so each
-  warns that it shares their capacity with the other. Anthropic Claude is then governed: Megan
-  Bowen holds both its models under Customer Insights, the Market Research Agent holds Opus, and
-  the Agent Builders group holds Sonnet. Customer Insights sets a per-person Sonnet limit and a
-  pooled quota that counts every region, and Isaiah Langer's request for Opus is pending. Grants'
-  subscription keys exist only where someone asked for one: the support copilot's, the one Megan
-  Bowen's notebook uses, and the one she calls both Claude models with. One MCP server keeps only
-  a legacy label, so Settings has something to classify, and the development gateway's routes to
-  production produce environment findings. Grants and decided requests are then dated back as far
-  as 120 days. Last, it enables API diagnostics on the production gateway and generates a quarter
-  of gateway traffic from the estate's people and workloads, including throttled and refused calls
-  and calls to adopted APIs. Each call to the Claude pool lands on one of its deployments, drawn by
-  weight, and Johanna Lorenz's calls to it are refused because she holds no grant. Pool calls also
-  leave the attempt traces the pool's policy writes. North Central US runs short of Opus capacity,
-  so some Opus calls are throttled there and retried in another region, which the pool's **Health**
-  card shows. MOSAIC's rollup job reads the traffic back, so the Dashboard, Analytics, and the
-  portal's **Usage & cost** page show measured figures. They are priced from the price list MOSAIC
-  ships, plus what the seed sets through the pricing service: the partner's declared GPT-4.1 mini
-  deployment's type, a negotiated GPT-4o rate from next month, which the **Pricing** page shows as
-  scheduled, and what Contoso pays for Claude Opus 4.5 and Claude Sonnet 4.5, which prices each
-  pool call at the deployment that served it. The partner's Claude, Mistral Large, Cohere, and
-  realtime deployments and the adopted APIs stay unpriced, so the **Unpriced deployments** tab has
-  something to show. Every page therefore renders what the product would show for that estate.
-  Budget email is turned on against a Communication Services double that accepts every message and
-  delivers none, and the seed sets budgets from this month's spend so far: Customer Insights near
-  its limit, Customer Support past its own and blocked at the gateways, Finance on track, and an
-  organization budget that only warns. Sizing them from the month's spend keeps those levels
-  whatever the date, so in a capture's first UTC day the amounts are only a few hours' worth. The
-  demo runs no rollup or budget loop afterwards, so every shot in a run shows the same figures. The
-  traffic and timestamps follow the clock, though, so they shift a little from one run to the next.
-  Requests from the portal's origin are answered as Megan Bowen with the `User` role, and all
-  others as Adele Vance with `Admin` and `User`. Local authentication is refused outside local and
-  test environments, so the demo can't be pointed at a deployed MOSAIC.
+  warns that it shares their capacity with the other. Claude Haiku 4.5 is deployed in two of those
+  regions but served by no pool, so the **Pools** page suggests one for it. Anthropic Claude is
+  then governed: Megan Bowen holds both its models under Customer Insights, the Market Research
+  Agent holds Opus, and the Agent Builders group holds Sonnet. Customer Insights sets a per-person
+  Sonnet limit and a pooled quota that counts every region, and Isaiah Langer's request for Opus is
+  pending. Grants' subscription keys exist only where someone asked for one: the support copilot's,
+  the one Megan Bowen's notebook uses, and the one she calls both Claude models with. One MCP
+  server keeps only a legacy label, so Settings has something to classify, and the development
+  gateway's routes to production produce environment findings. Grants and decided requests are then
+  dated back as far as 120 days. Last, it enables API diagnostics on the production gateway and
+  generates a quarter of gateway traffic from the estate's people and workloads, including
+  throttled and refused calls and calls to adopted APIs. Each call to the Claude pool lands on one
+  of its deployments, drawn by weight, and Johanna Lorenz's calls to it are refused because she
+  holds no grant. Pool calls also leave the attempt traces the pool's policy writes. North Central
+  US runs short of Opus capacity, so some Opus calls are throttled there and retried in another
+  region, which the pool's **Health** card shows. MOSAIC's rollup job reads the traffic back, so
+  the Dashboard, Analytics, and the portal's **Usage & cost** page show measured figures. They are
+  priced from the price list MOSAIC ships, plus what the seed sets through the pricing service: the
+  partner's declared GPT-4.1 mini deployment's type, a negotiated GPT-4o rate from next month,
+  which the **Pricing** page shows as scheduled, and what Contoso pays for Claude Opus 4.5, Claude
+  Sonnet 4.5, and Claude Haiku 4.5, which prices each pool call at the deployment that served it.
+  The partner's Claude, Mistral Large, Cohere, and realtime deployments and the adopted APIs stay
+  unpriced, so the **Unpriced deployments** tab has something to show. Every page therefore renders
+  what the product would show for that estate. Budget email is turned on against a Communication
+  Services double that accepts every message and delivers none, and the seed sets budgets from this
+  month's spend so far: Customer Insights near its limit, Customer Support past its own and blocked
+  at the gateways, Finance on track, and an organization budget that only warns. Sizing them from
+  the month's spend keeps those levels whatever the date, so in a capture's first UTC day the
+  amounts are only a few hours' worth. The demo runs no rollup or budget loop afterwards, so every
+  shot in a run shows the same figures. The traffic and timestamps follow the clock, though, so
+  they shift a little from one run to the next. Requests from the portal's origin are answered as
+  Megan Bowen with the `User` role, and all others as Adele Vance with `Admin` and `User`. Local
+  authentication is refused outside local and test environments, so the demo can't be pointed at a
+  deployed MOSAIC.
 - `capture.py` opens each shot in a fresh Chromium context 1440 pixels wide, with the shot's theme
   set both as the operating-system preference and as MOSAIC's stored preference. It waits for
   every spinner to clear and for the shot's ready text, runs the shot's actions, captures the
@@ -234,10 +236,12 @@ shows both themes. Keep new shots in that pattern.
 | `console-models` | Console | `/models` | Dark | Models |
 | `console-register-key-endpoint` | Console | `/models?register=1`, **Azure AI with an API key** tab with a pasted, masked key, filled in and never submitted | Light | Register with an API key |
 | `console-key-endpoint` | Console | `/models`, Fabrikam partner Foundry selected, scrolled to its **Access** card with **Replace API key** | Dark | Endpoint reached with an API key |
-| `console-pools` | Console | `/pools`, listing the published Anthropic Claude pool and the Claude evaluation draft | Light | Model pools |
+| `console-pools` | Console | `/pools`, listing the published Anthropic Claude pool and the Claude evaluation draft, with the pool suggested for Claude Haiku 4.5 | Light | Model pools |
 | `console-pool-detail` | Console | `/pools`, Anthropic Claude opened, with its models, members, request example, and **Run history** | Dark | A model pool |
 | `console-pool-access` | Console | `/pools`, Anthropic Claude opened, scrolled to **Who can call it** | Light | Who can call a pool |
 | `console-pool-health` | Console | `/pools`, Anthropic Claude opened, scrolled to **Health** for the last 24 hours | Dark | Pool health |
+| `console-pool-editor` | Console | `/pools`, **Create pool** on the Claude Haiku 4.5 suggestion, on the **3. Models** step, never saved | Light | Create a pool |
+| `console-endpoint-pools` | Console | `/models`, Contoso AI Foundry selected, scrolled to its deployments and **Used by pools** | Dark | Pools on an endpoint |
 | `console-mcps` | Console | `/mcps`, showing published and registered MCP servers | Light | MCP servers |
 | `console-identity` | Console | `/identity?tab=agents` | Dark | Identity |
 | `console-directory-picker` | Console | `/identity?tab=agents`, **Add agent** dialog with query `agent` | Light | Directory picker |
