@@ -1852,6 +1852,19 @@ export interface PoolCandidates {
   models: PoolCandidateModel[]
 }
 
+/** An active member with a problem, such as a gateway that can't call it. */
+export interface PoolMemberProblem {
+  poolModelId: string
+  modelDisplayName: string
+  modelEndpointId: string
+  endpointName?: string | null
+  deploymentName: string
+  region?: string | null
+  readiness: PoolReadiness
+  /** Each a sentence an administrator can act on, without the member's name. */
+  problems: string[]
+}
+
 /** A pool as the console's list shows it, with its active members counted. */
 export interface ModelPoolSummary {
   pool: ModelPool
@@ -1864,6 +1877,8 @@ export interface ModelPoolSummary {
   problemCount: number
   warningCount: number
   unappliedChanges: boolean
+  /** The active members with a problem. A drained member takes no calls, so it's never one. */
+  memberProblems?: PoolMemberProblem[]
 }
 
 /** One of a pool's deployments on a model endpoint. */

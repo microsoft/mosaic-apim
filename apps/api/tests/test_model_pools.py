@@ -857,7 +857,53 @@ async def test_summaries_count_active_members_by_capacity_and_readiness(estate: 
     assert summary.readiness == {"notConfirmed": 1, "ready": 1}
     assert summary.problem_count == 0
     assert summary.warning_count >= 1
+    assert summary.member_problems == []
     assert await estate.service.summaries(ACTOR, "gateway-elsewhere") == []
+
+
+async def test_summaries_list_the_active_members_with_problems(estate: Estate) -> None:
+    pool = await estate.create(
+        "OpenAI",
+        _model(
+            _member("aoai-east", "gpt-4o"),
+            _member("aoai-sweden", "gpt-4o"),
+            _member("aoai-ptu", "gpt-4o", drained=True),
+            display_name="GPT-4o",
+        ),
+    )
+    denied = GatewayRuntimeAccess(
+        gateway_id=estate.gateway_id,
+        gateway_name="apim-contoso-dev",
+        can_invoke=False,
+        evaluation=RuntimeAccessEvaluation.ROLE_ASSIGNMENTS,
+        reason=RuntimeAccessReason.MISSING_ROLE,
+    )
+    await estate.update_endpoint("aoai-sweden", runtime_access=[denied])
+    await estate.update_endpoint("aoai-ptu", runtime_access=[denied])
+    await estate.observe("aoai-east", [])
+
+    [summary] = await estate.service.summaries(ACTOR)
+
+    # The drained member can't be called either, but it takes no calls, so it isn't listed.
+    assert [
+        (item.endpoint_name, item.deployment_name, item.region, item.readiness)
+        for item in summary.member_problems
+    ] == [
+        ("aoai-east", "gpt-4o", "eastus2", "ready"),
+        ("aoai-sweden", "gpt-4o", "swedencentral", "cannotInvoke"),
+    ]
+    east, sweden = summary.member_problems
+    assert (east.pool_model_id, east.model_display_name) == (pool.models[0].id, "GPT-4o")
+    assert east.model_endpoint_id == _endpoint_id("aoai-east")
+    assert east.problems == [
+        "MOSAIC no longer sees gpt-4o on aoai-east. Sync the endpoint, or remove the deployment "
+        "from the pool."
+    ]
+    # The dashboard names the member above its problems, so a problem doesn't repeat the name.
+    [denial] = sweden.problems
+    assert denial.startswith("The gateway's managed identity has no role that lets it call")
+    assert summary.problem_count >= 2
+    assert summary.readiness == {"ready": 1, "cannotInvoke": 1}
 
 
 async def test_an_endpoint_lists_the_pools_that_use_it_and_the_deployments_they_use(
@@ -2338,6 +2384,7 @@ async def test_an_administrator_publishes_and_unpublishes_a_pool_over_http(
     assert summary["pool"]["id"] == pool_id
     assert summary["capacity"] == {"payAsYouGo": 2}
     assert summary["problemCount"] == 0
+    assert summary["memberProblems"] == []
     used = client.get(f"/api/v1/model-endpoints/{_endpoint_id('aoai-east')}/pools")
     assert used.status_code == 200, used.text
     [use] = used.json()

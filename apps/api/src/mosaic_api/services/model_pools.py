@@ -110,6 +110,7 @@ from mosaic_api.model_pools import (
     PoolCandidateModel,
     PoolCandidates,
     PoolMember,
+    PoolMemberProblem,
     PoolMemberView,
     PoolModel,
     PoolModelQuota,
@@ -340,6 +341,34 @@ class _Member:
         """Whether the gateway reaches this member with an API key rather than its identity."""
 
         return self.endpoint is not None and self.endpoint.uses_backend_key()
+
+    @property
+    def label(self) -> str:
+        """The member as its problems name it, such as "gpt-4o on aoai-east"."""
+
+        if self.endpoint is None:
+            return self.member.deployment_name
+        return f"{self.member.deployment_name} on {self.endpoint.name}"
+
+    def problem_entry(self) -> PoolMemberProblem:
+        """The member's problems as the dashboard lists them, under the member's own name.
+
+        The dashboard names the member above them, so a problem that opens with the member's
+        name drops it.
+        """
+
+        prefix = f"{self.label}: "
+        problems = [problem.removeprefix(prefix) for problem in self.problems]
+        return PoolMemberProblem(
+            pool_model_id=self.model.id,
+            model_display_name=self.model.display_name,
+            model_endpoint_id=self.member.model_endpoint_id,
+            endpoint_name=self.view.endpoint_name,
+            deployment_name=self.member.deployment_name,
+            region=self.view.region,
+            readiness=self.view.readiness,
+            problems=[problem[:1].upper() + problem[1:] for problem in problems],
+        )
 
 
 @dataclass
@@ -1216,7 +1245,7 @@ class ModelPoolService:
     async def summaries(
         self, actor: Actor, gateway_id: str | None = None
     ) -> list[ModelPoolSummary]:
-        """Every pool, with its active members counted by capacity type and readiness."""
+        """Every pool, with its active members counted, and those with a problem listed."""
 
         gateways: dict[str, Gateway | None] = {}
         summaries: list[ModelPoolSummary] = []
@@ -1236,12 +1265,15 @@ class ModelPoolService:
             assessment = await self._assess(actor, pool, gateway)
             capacity: dict[str, int] = {}
             readiness: dict[str, int] = {}
+            member_problems: list[PoolMemberProblem] = []
             for item in assessment.members:
                 if item.member.drained:
                     continue
                 kind = str(item.view.capacity_type)
                 capacity[kind] = capacity.get(kind, 0) + 1
                 readiness[item.view.readiness] = readiness.get(item.view.readiness, 0) + 1
+                if item.problems:
+                    member_problems.append(item.problem_entry())
             summaries.append(
                 ModelPoolSummary(
                     pool=pool,
@@ -1252,6 +1284,7 @@ class ModelPoolService:
                     problem_count=len(assessment.problems),
                     warning_count=len(assessment.warnings),
                     unapplied_changes=has_unapplied_changes(pool),
+                    member_problems=member_problems,
                 )
             )
         return summaries

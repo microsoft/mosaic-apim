@@ -747,6 +747,20 @@ class ModelPoolDetail(MosaicModel):
     unapplied_changes: bool = False
 
 
+class PoolMemberProblem(MosaicModel):
+    """An active member with a problem, such as a gateway that can't call it."""
+
+    pool_model_id: str
+    model_display_name: str
+    model_endpoint_id: str
+    endpoint_name: str | None = None
+    deployment_name: str
+    region: str | None = None
+    readiness: Literal["ready", "notConfirmed", "cannotInvoke"] = "notConfirmed"
+    # Each a sentence an administrator can act on, in the order the pool's page lists them.
+    problems: list[str] = Field(default_factory=list)
+
+
 class ModelPoolSummary(MosaicModel):
     """A pool as the console's list shows it, with its active members counted."""
 
@@ -760,6 +774,8 @@ class ModelPoolSummary(MosaicModel):
     problem_count: int = 0
     warning_count: int = 0
     unapplied_changes: bool = False
+    # The dashboard lists these. A drained member takes no calls, so it's never one of them.
+    member_problems: list[PoolMemberProblem] = Field(default_factory=list)
 
 
 class EndpointPoolDeployment(MosaicModel):

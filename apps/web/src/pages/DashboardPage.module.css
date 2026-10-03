@@ -269,6 +269,97 @@
   color: var(--mosaic-text-muted);
 }
 
+.poolsPanel {
+  grid-column: 1 / -1;
+}
+
+.poolRows {
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 24px;
+  list-style: none;
+}
+
+/* The pool's name is the button. It stretches over the whole row, so the row opens the pool. */
+.poolRow {
+  position: relative;
+  padding: 12px;
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  border: 1px solid var(--mosaic-border-soft);
+  border-radius: 8px;
+  background: var(--mosaic-surface);
+}
+
+.poolRow:hover {
+  border-color: var(--mosaic-primary);
+}
+
+.poolRowHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.poolOpen {
+  min-width: 0;
+  padding: 0;
+  display: grid;
+  gap: 2px;
+  border: 0;
+  background: none;
+  color: var(--mosaic-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.poolOpen::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 8px;
+}
+
+.poolOpen:focus-visible {
+  outline: none;
+}
+
+.poolOpen:focus-visible::after {
+  outline: 2px solid var(--mosaic-primary);
+  outline-offset: 2px;
+}
+
+.poolOpen strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.poolOpen small,
+.poolLine,
+.poolMembers small {
+  color: var(--mosaic-text-muted);
+  font-size: 12px;
+}
+
+.poolMembers {
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+  list-style: none;
+}
+
+.poolMembers li {
+  display: grid;
+  gap: 2px;
+}
+
 .panelHeading {
   display: grid;
   gap: 2px;
@@ -327,6 +418,10 @@
   }
 
   .budgetRows {
+    grid-template-columns: 1fr;
+  }
+
+  .poolRows {
     grid-template-columns: 1fr;
   }
 }

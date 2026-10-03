@@ -1,10 +1,12 @@
 import { API_SHAPE_SHORT_LABELS } from './key-endpoint'
+import { holdsApi } from './publication-state'
 import type {
   ApiShape,
   BreakerPreset,
   CapacityType,
   Gateway,
   ModelPool,
+  ModelPoolSummary,
   ModelPoolType,
   ModelPoolVisibility,
   PoolCandidateDeployment,
@@ -885,4 +887,31 @@ export function readinessSummary(readiness: Partial<Record<PoolReadiness, number
   if (readiness.notConfirmed) return { label: `${readiness.notConfirmed} not confirmed`, tone: 'warning' }
   if (readiness.ready) return { label: 'All ready', tone: 'success' }
   return { label: 'No active members', tone: 'muted' }
+}
+
+/** Whether the pool's last apply failed, whether or not MOSAIC could roll it back. */
+export function poolApplyFailed(pool: Pick<ModelPool, 'status'>): boolean {
+  return pool.status === 'failed' || pool.status === 'rolledBack'
+}
+
+/**
+ * The pools the dashboard lists, worst first: those whose last apply failed, and those the gateway
+ * runs that have a problem. A pool that isn't published serves no calls, so its problems wait for
+ * the Pools page.
+ */
+export function poolsNeedingAttention(summaries: ModelPoolSummary[]): ModelPoolSummary[] {
+  const members = (summary: ModelPoolSummary) => summary.memberProblems?.length ?? 0
+  return summaries
+    .filter(
+      (summary) =>
+        poolApplyFailed(summary.pool) ||
+        (holdsApi(summary.pool) && (members(summary) > 0 || summary.problemCount > 0)),
+    )
+    .sort(
+      (a, b) =>
+        members(b) - members(a) ||
+        Number(poolApplyFailed(b.pool)) - Number(poolApplyFailed(a.pool)) ||
+        b.problemCount - a.problemCount ||
+        a.pool.displayName.localeCompare(b.pool.displayName),
+    )
 }
