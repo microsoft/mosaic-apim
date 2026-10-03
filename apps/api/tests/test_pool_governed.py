@@ -34,6 +34,7 @@ from mosaic_api.domain import (
     subject_kind_for,
 )
 from mosaic_api.errors import ConflictError, ValidationError
+from mosaic_api.integrations.apim.policy_semantics import content_digest
 from mosaic_api.integrations.apim.writer import DEFAULT_SUBSCRIPTION_KEY_NAMES
 from mosaic_api.integrations.pool_policy import (
     pool_grant_counter_identity,
@@ -49,7 +50,17 @@ from mosaic_api.repositories import (
 from mosaic_api.services.budget_gate import BlockedListGate
 from mosaic_api.services.pool_access import entitlement_key_name
 from mosaic_api.services.publishing import DENY_ALL_FRAGMENT, DENY_ALL_POLICY
-from test_model_pools import ACTOR, TENANT, Estate, _audit, _gpt4o, _interrupt, _policy
+from test_model_pools import (
+    ACTOR,
+    TENANT,
+    Estate,
+    _audit,
+    _drift,
+    _edit,
+    _gpt4o,
+    _interrupt,
+    _policy,
+)
 
 GENERAL = general_cost_center_id(TENANT)
 RUNTIME_CLIENT_ID = "22222222-2222-2222-2222-222222222222"
@@ -439,6 +450,27 @@ async def test_a_later_apply_suspends_keys_while_it_runs_and_then_activates_them
     assert applied.owns_key(key)
     assert applied.applied_access is not None
     assert applied.applied_access.version == 2
+
+
+async def test_a_governed_replan_warns_about_policy_edits_made_outside_mosaic(
+    governed: GovernedEstate,
+) -> None:
+    pool, _, _ = await _published_with_key(governed)
+    applied = _policy(governed.apim, _api_policy(pool))
+    # What MOSAIC compares against is the policy the run left in force, not the deny before it.
+    assert applied != DENY_ALL_POLICY
+    assert (await governed.pool(pool.id)).applied_policy_sha256 == content_digest(applied)
+    assert _drift(await governed.service.plan(ACTOR, pool.id)) == []
+
+    _edit(governed.apim, _api_policy(pool))
+
+    assert _drift(await governed.service.plan(ACTOR, pool.id)) == [
+        "Someone changed the pool's API policy in API Management after MOSAIC last applied it. "
+        "Applying replaces those changes."
+    ]
+    await governed.publish(pool.id)
+    assert _policy(governed.apim, _api_policy(pool)) == applied
+    assert _drift(await governed.service.plan(ACTOR, pool.id)) == []
 
 
 async def test_a_disabled_grant_keeps_its_key_suspended_and_loses_its_binding(

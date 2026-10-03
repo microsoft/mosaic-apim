@@ -353,6 +353,11 @@ class ModelPool(Entity):
     # What the gateway was asked to run when an apply last succeeded. The console compares it with
     # the saved intent to tell an administrator their changes aren't on the gateway yet.
     applied_intent_digest: str | None = None
+    # Digests of the API's policy and the pool's fragment as API Management returned them right
+    # after the last apply succeeded. A plan compares them with what it reads, to warn that someone
+    # changed them outside MOSAIC. Every run clears them until it succeeds.
+    applied_policy_sha256: str | None = None
+    applied_fragment_sha256: str | None = None
     unpublished_at: datetime | None = None
     last_error: str | None = None
     # Governed access (phase 2). None until an administrator opts the pool in. Then its policy

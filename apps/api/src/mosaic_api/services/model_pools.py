@@ -75,6 +75,7 @@ from mosaic_api.integrations.apim.model_apis import (
     is_anthropic_model,
     token_limits_note,
 )
+from mosaic_api.integrations.apim.policy_semantics import content_digest
 from mosaic_api.integrations.apim.writer import DEFAULT_SUBSCRIPTION_KEY_NAMES, ApimWriter
 from mosaic_api.integrations.backend_keys import backend_key_name
 from mosaic_api.integrations.policy import PublicationPolicy
@@ -809,6 +810,49 @@ def _base_url(gateway: Gateway, pool: ModelPool) -> str | None:
 
 def _noun(kind: PublishedResourceKind) -> str:
     return _KIND_NOUNS.get(kind, str(kind))
+
+
+def _removed_outside(pool: ModelPool, steps: list[PublishPlanStep]) -> list[str]:
+    """What MOSAIC created for the pool that a plan found missing, labeled for a warning.
+
+    What goes with a removed API or product, such as its operations, policy, or link, isn't
+    named again.
+    """
+
+    gone: list[tuple[PublishedResourceKind, str]] = []
+    for step in steps:
+        key = (step.kind, step.name)
+        if (
+            step.existed
+            or step.action == PublishAction.DELETE
+            or key in gone
+            or is_blocked_list(step.kind, step.name)
+        ):
+            continue
+        if any(
+            item.kind == step.kind and item.name == step.name and item.created_by_mosaic
+            for item in pool.resources
+        ):
+            gone.append(key)
+    kinds = {kind for kind, _ in gone}
+    api_gone = PublishedResourceKind.API in kinds
+    labels: list[str] = []
+    for kind, name in gone:
+        if api_gone and kind in {
+            PublishedResourceKind.API_OPERATION,
+            PublishedResourceKind.API_POLICY,
+            PublishedResourceKind.PRODUCT_API,
+        }:
+            continue
+        if kind == PublishedResourceKind.PRODUCT_API and PublishedResourceKind.PRODUCT in kinds:
+            continue
+        if kind == PublishedResourceKind.API_POLICY:
+            labels.append("the API's policy")
+        elif kind == PublishedResourceKind.PRODUCT_API:
+            labels.append(f"the link from product {pool.product_name} to the API")
+        else:
+            labels.append(f"{_noun(kind)} {name}")
+    return labels
 
 
 def _customized_key_names(live: dict[str, Any] | None) -> bool:
@@ -2494,6 +2538,61 @@ class ModelPoolService:
                 details={"apiPath": pool.api_path, "conflictingApi": clash.name},
             )
 
+    async def _policy_digests(
+        self, client: ApimClient, pool: ModelPool
+    ) -> tuple[str | None, str | None]:
+        """Digests of the pool's API policy and fragment, as API Management returns them now.
+
+        A failed read leaves nothing to compare later, rather than failing an apply that worked.
+        """
+
+        try:
+            policy = await client.get_api_policy(pool.api_name)
+            fragment = await client.get_policy_fragment(pool.fragment_name)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning("pool_policy_digest_unread", pool_id=pool.id, exc_info=True)
+            return None, None
+        return (
+            content_digest(policy) if policy is not None else None,
+            content_digest(fragment) if fragment is not None else None,
+        )
+
+    async def _drift(
+        self, client: ApimClient, pool: ModelPool, steps: list[PublishPlanStep]
+    ) -> list[str]:
+        """What changed in API Management outside MOSAIC since the pool's last apply.
+
+        An apply puts it all back, so the plan warns about what the apply undoes. Backend URLs
+        and API settings aren't compared, since every apply writes them again.
+        """
+
+        warnings: list[str] = []
+        removed = _removed_outside(pool, steps)
+        if removed:
+            them = "it" if len(removed) == 1 else "them"
+            warnings.append(
+                f"API Management no longer has {', '.join(removed)}, which MOSAIC created for "
+                f"this pool. Someone removed {them} outside MOSAIC, and applying creates {them} "
+                "again."
+            )
+        changed: list[str] = []
+        if pool.applied_policy_sha256 is not None:
+            live = await client.get_api_policy(pool.api_name)
+            if live is not None and content_digest(live) != pool.applied_policy_sha256:
+                changed.append("API policy")
+        if pool.applied_fragment_sha256 is not None:
+            live = await client.get_policy_fragment(pool.fragment_name)
+            if live is not None and content_digest(live) != pool.applied_fragment_sha256:
+                changed.append(f"policy fragment {pool.fragment_name}")
+        warnings.extend(
+            f"Someone changed the pool's {label} in API Management after MOSAIC last applied "
+            "it. Applying replaces those changes."
+            for label in changed
+        )
+        return warnings
+
     async def _exists(
         self, client: ApimClient, pool: ModelPool, kind: PublishedResourceKind, name: str
     ) -> bool:
@@ -2834,6 +2933,7 @@ class ModelPoolService:
                         "Ocp-Apim-Subscription-Key (header) and subscription-key (query). "
                         "Callers must use these governed defaults."
                     )
+            drift = await self._drift(client, pool, steps)
             plan = PublishPlan(
                 id=new_id("publishplan"),
                 tenant_id=actor.tenant_id,
@@ -2847,7 +2947,7 @@ class ModelPoolService:
                 steps=steps,
                 facets=policy.facets,
                 policy_content_sha256=policy.content_sha256,
-                warnings=[*assessment.warnings, *access_warnings],
+                warnings=[*drift, *assessment.warnings, *access_warnings],
                 actor_object_id=actor.object_id,
                 pool_access_snapshot=snapshot,
                 previous_access_version=(
@@ -2981,10 +3081,12 @@ class ModelPoolService:
         access_state: Literal["pending", "applying", "applied", "failed", "unknown"]
         | None = None,
         applied_model_ids: list[str] | None = None,
+        policy_digests: tuple[str | None, str | None] | None = None,
     ) -> None:
         """Re-read before writing, so a run never brings back a pool that was removed.
 
-        The applied snapshot, access state, and served models change only when given.
+        The applied snapshot, access state, served models, and policy digests change only when
+        given.
         """
 
         current = await self._repository.get_model_pool(pool.tenant_id, pool.id)
@@ -3004,6 +3106,8 @@ class ModelPoolService:
             update["access_state"] = access_state
         if applied_model_ids is not None:
             update["applied_model_ids"] = list(applied_model_ids)
+        if policy_digests is not None:
+            update["applied_policy_sha256"], update["applied_fragment_sha256"] = policy_digests
         if applied:
             update.update(
                 {
@@ -3020,11 +3124,14 @@ class ModelPoolService:
                     "last_plan_digest": None,
                     "applied_intent_digest": None,
                     "applied_model_ids": [],
+                    "applied_policy_sha256": None,
+                    "applied_fragment_sha256": None,
                 }
             )
         await self._repository.record_model_pool_state(current.model_copy(update=update))
 
     async def _mark_applying(self, pool: ModelPool, run_id: str) -> None:
+        # Until the run succeeds, nobody can tell which of the policy's changes were MOSAIC's.
         await self._record_state(
             pool,
             status=PublicationStatus.APPLYING,
@@ -3032,6 +3139,7 @@ class ModelPoolService:
             run_id=run_id,
             error=None,
             access_state="applying" if pool.governed_access else None,
+            policy_digests=(None, None),
         )
 
     async def _progress(
@@ -3188,7 +3296,7 @@ class ModelPoolService:
         try:
             if failure is None:
                 await self._finish_success(
-                    pool, run, results, tracked, desired, started, cleanup, leftovers
+                    pool, client, run, results, tracked, desired, started, cleanup, leftovers
                 )
             else:
                 await self._rollback(pool, writer, run, results, tracked, started, failure)
@@ -3367,6 +3475,7 @@ class ModelPoolService:
             if failure is None:
                 await self._finish_success(
                     pool,
+                    client,
                     run,
                     results,
                     owned,
@@ -3800,6 +3909,7 @@ class ModelPoolService:
     async def _finish_success(
         self,
         pool: ModelPool,
+        client: ApimClient,
         run: PublishRun,
         results: list[PublishStepResult],
         tracked: list[PublishedResource],
@@ -3845,6 +3955,7 @@ class ModelPoolService:
             access_snapshot=access_snapshot,
             access_state="applied" if access_snapshot is not None else None,
             applied_model_ids=[route.model_id for route in _routes(pool)],
+            policy_digests=await self._policy_digests(client, pool),
         )
         if access_snapshot is not None:
             await self._project_bindings(pool, access_snapshot, run)

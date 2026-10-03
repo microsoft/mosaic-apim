@@ -42,6 +42,8 @@ from mosaic_api.domain import (
     new_id,
 )
 from mosaic_api.errors import ConflictError, NotFoundError, ValidationError
+from mosaic_api.integrations.apim.client import ApimClient
+from mosaic_api.integrations.apim.policy_semantics import content_digest
 from mosaic_api.integrations.pool_policy import (
     ATTEMPT_TRACE_SUMMARY,
     NOT_FOUND_BODY,
@@ -1095,6 +1097,153 @@ async def test_the_console_learns_which_saved_changes_the_gateway_does_not_run(
     assert run.status == PublishRunStatus.SUCCEEDED, run.errors
     assert (await estate.pool(pool.id)).applied_intent_digest is None
     assert not await waiting()
+
+
+def _drift(plan: PublishPlan) -> list[str]:
+    """The plan's warnings about what changed in API Management outside MOSAIC."""
+
+    return [
+        warning
+        for warning in plan.warnings
+        if "outside MOSAIC" in warning or "after MOSAIC last applied" in warning
+    ]
+
+
+def _edit(fake: FakeApim, suffix: str) -> None:
+    """Change a policy in API Management, as someone working in the Azure portal would."""
+
+    value = _policy(fake, suffix)
+    edited = value.replace(">", ">\n<!-- edited by hand -->", 1)
+    assert edited != value
+    fake.written[suffix]["properties"]["value"] = edited
+
+
+async def test_a_replan_warns_that_applying_replaces_policy_edits_made_outside_mosaic(
+    estate: Estate,
+) -> None:
+    pool = await estate.create("OpenAI", _gpt4o("aoai-east", "aoai-sweden"))
+    api_policy = f"apis/{pool.api_name}/policies/policy"
+    fragment = f"policyFragments/{pool.fragment_name}"
+
+    # Nothing of a draft has been applied, so there's nothing to compare.
+    assert _drift(await estate.service.plan(ACTOR, pool.id)) == []
+
+    await estate.publish(pool.id)
+    published = await estate.pool(pool.id)
+    assert published.applied_policy_sha256 == content_digest(_policy(estate.apim, api_policy))
+    assert published.applied_fragment_sha256 == content_digest(_policy(estate.apim, fragment))
+    assert _drift(await estate.service.plan(ACTOR, pool.id)) == []
+
+    _edit(estate.apim, api_policy)
+    assert _drift(await estate.service.plan(ACTOR, pool.id)) == [
+        "Someone changed the pool's API policy in API Management after MOSAIC last applied it. "
+        "Applying replaces those changes."
+    ]
+
+    _edit(estate.apim, fragment)
+    assert _drift(await estate.service.plan(ACTOR, pool.id)) == [
+        "Someone changed the pool's API policy in API Management after MOSAIC last applied it. "
+        "Applying replaces those changes.",
+        f"Someone changed the pool's policy fragment {pool.fragment_name} in API Management "
+        "after MOSAIC last applied it. Applying replaces those changes.",
+    ]
+
+    # Applying puts MOSAIC's policies back, and records them as the ones to compare against.
+    await estate.publish(pool.id)
+    assert "edited by hand" not in _policy(estate.apim, api_policy)
+    assert "edited by hand" not in _policy(estate.apim, fragment)
+    assert _drift(await estate.service.plan(ACTOR, pool.id)) == []
+
+
+async def test_a_replan_warns_that_applying_recreates_what_was_removed_outside_mosaic(
+    estate: Estate,
+) -> None:
+    pool = await estate.create("OpenAI", _gpt4o("aoai-east", "aoai-sweden"))
+    await estate.publish(pool.id)
+    sweden = pool.models[0].members[1]
+    estate.apim.written.pop(f"backends/{sweden.backend_name}")
+
+    plan = await estate.service.plan(ACTOR, pool.id)
+
+    assert ("backend", sweden.backend_name, "create") in _steps(plan)
+    assert _drift(plan) == [
+        f"API Management no longer has backend {sweden.backend_name}, which MOSAIC created for "
+        "this pool. Someone removed it outside MOSAIC, and applying creates it again."
+    ]
+    await estate.publish(pool.id)
+    assert f"backends/{sweden.backend_name}" in estate.apim.written
+    assert _drift(await estate.service.plan(ACTOR, pool.id)) == []
+
+
+async def test_a_removed_api_is_named_once_rather_than_with_everything_it_held(
+    estate: Estate,
+) -> None:
+    pool = await estate.create("OpenAI", _gpt4o("aoai-east", "aoai-sweden"))
+    await estate.publish(pool.id)
+    sweden = pool.models[0].members[1]
+    held = [
+        key
+        for key in estate.apim.written
+        if key == f"apis/{pool.api_name}"
+        or key.startswith(f"apis/{pool.api_name}/")
+        or key == f"products/{pool.product_name}/apis/{pool.api_name}"
+    ]
+    assert f"apis/{pool.api_name}/policies/policy" in held
+    for key in [*held, f"backends/{sweden.backend_name}"]:
+        estate.apim.written.pop(key)
+
+    plan = await estate.service.plan(ACTOR, pool.id)
+
+    # The policy went with the API, so there's nothing to say about edits to it.
+    assert _drift(plan) == [
+        f"API Management no longer has backend {sweden.backend_name}, API {pool.api_name}, "
+        "which MOSAIC created for this pool. Someone removed them outside MOSAIC, and applying "
+        "creates them again."
+    ]
+
+
+async def test_only_a_successful_apply_records_the_policies_to_compare(estate: Estate) -> None:
+    pool = await estate.create("OpenAI", _gpt4o("aoai-east", "aoai-sweden"))
+    await estate.publish(pool.id)
+
+    # A run that fails can leave some of its own policy changes behind, which aren't edits.
+    estate.apim.fail_write(f"products/{pool.product_name}")
+    plan = await estate.service.plan(ACTOR, pool.id)
+    run = await estate.apply(pool.id, plan)
+    assert run.status != PublishRunStatus.SUCCEEDED
+    failed = await estate.pool(pool.id)
+    assert (failed.applied_policy_sha256, failed.applied_fragment_sha256) == (None, None)
+    _edit(estate.apim, f"apis/{pool.api_name}/policies/policy")
+    assert _drift(await estate.service.plan(ACTOR, pool.id)) == []
+
+    estate.apim.write_failures.clear()
+    await estate.publish(pool.id)
+    assert (await estate.pool(pool.id)).applied_policy_sha256 is not None
+
+    run = await estate.unpublish(pool.id)
+    assert run.status == PublishRunStatus.SUCCEEDED, run.errors
+    gone = await estate.pool(pool.id)
+    assert (gone.applied_policy_sha256, gone.applied_fragment_sha256) == (None, None)
+    assert _drift(await estate.service.plan(ACTOR, pool.id)) == []
+
+
+async def test_an_unreadable_policy_leaves_nothing_to_compare_but_the_apply_succeeds(
+    estate: Estate, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pool = await estate.create("OpenAI", _gpt4o("aoai-east"))
+    plan = await estate.service.plan(ACTOR, pool.id)
+
+    async def unreadable(self: ApimClient, name: str) -> str | None:
+        raise RuntimeError("API Management timed out")
+
+    monkeypatch.setattr(ApimClient, "get_policy_fragment", unreadable)
+
+    run = await estate.apply(pool.id, plan)
+
+    assert run.status == PublishRunStatus.SUCCEEDED, run.errors
+    published = await estate.pool(pool.id)
+    assert published.status == PublicationStatus.PUBLISHED
+    assert (published.applied_policy_sha256, published.applied_fragment_sha256) == (None, None)
 
 
 async def test_a_member_whose_capacity_changes_makes_the_plan_stale(estate: Estate) -> None:
