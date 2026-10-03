@@ -1,10 +1,12 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { fireEvent, render, screen, within } from '@testing-library/react'
-import { MemoryRouter, Route, Routes } from 'react-router-dom'
+import { MemoryRouter, Route, Routes, useParams } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { DashboardPage } from './DashboardPage'
 import { overviewFixture, pricedOverviewFixture, spendFixture, statusFixture } from '../test/analytics-fixtures'
 import { budgetOverviewFixture, emptyBudgetOverviewFixture } from '../test/budget-fixtures'
+import { anthropicPool, draftPool, poolSummaries } from '../test/pool-fixtures'
+import type { ModelPool, ModelPoolSummary, PoolMemberProblem } from '../types'
 
 const timestamps = { createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:00Z' }
 
@@ -16,10 +18,65 @@ const api = {
   getAnalyticsOverview: vi.fn(),
   getAnalyticsStatus: vi.fn(),
   getBudgets: vi.fn(),
+  listModelPoolSummaries: vi.fn(),
 }
 vi.mock('../api', () => ({
   useMosaicApi: () => api,
 }))
+
+const noRole =
+  'The gateway’s managed identity has no role that lets it call foundry-northcentralus. Grant it Cognitive ' +
+  'Services User on the endpoint.'
+
+function memberProblem(overrides: Partial<PoolMemberProblem> = {}): PoolMemberProblem {
+  return {
+    poolModelId: 'poolmodel_opus',
+    modelDisplayName: 'Claude Opus 4.5',
+    modelEndpointId: 'endpoint_northcentralus',
+    endpointName: 'foundry-northcentralus',
+    deploymentName: 'claude-opus-4-5',
+    region: 'northcentralus',
+    readiness: 'cannotInvoke',
+    problems: [noRole],
+    ...overrides,
+  }
+}
+
+/** A pool the gateway runs, because MOSAIC created its API. */
+function publishedSummary(
+  slug: string,
+  displayName: string,
+  overrides: Partial<ModelPoolSummary> = {},
+  pool: Partial<ModelPool> = {},
+): ModelPoolSummary {
+  const apiName = `mosaic-pool-${slug}`
+  return {
+    ...poolSummaries[0],
+    problemCount: 0,
+    warningCount: 0,
+    ...overrides,
+    pool: {
+      ...anthropicPool,
+      id: `modelpool_${slug}`,
+      displayName,
+      apiName,
+      resources: [{ ...anthropicPool.resources[0], name: apiName, resourceId: `/apis/${apiName}` }],
+      ...pool,
+    },
+  }
+}
+
+function PoolPageProbe() {
+  const { poolId } = useParams()
+  return <p>{`Pool page for ${poolId}`}</p>
+}
+
+async function poolRows() {
+  const list = await screen.findByRole('list', { name: 'Pools that need attention' })
+  return within(list)
+    .getAllByRole('button')
+    .map((button) => button.closest('li') as HTMLElement)
+}
 
 function renderPage() {
   const queryClient = new QueryClient({
@@ -32,6 +89,8 @@ function renderPage() {
           <Route path="/dashboard" element={<DashboardPage />} />
           <Route path="/cost-centers/:costCenterId" element={<p>Cost center page</p>} />
           <Route path="/cost-centers" element={<p>Cost centers page</p>} />
+          <Route path="/pools/:poolId" element={<PoolPageProbe />} />
+          <Route path="/pools" element={<p>Pools page</p>} />
         </Routes>
       </MemoryRouter>
     </QueryClientProvider>,
@@ -106,6 +165,131 @@ describe('DashboardPage', () => {
     api.getAnalyticsOverview.mockResolvedValue(overviewFixture)
     api.getAnalyticsStatus.mockResolvedValue(statusFixture)
     api.getBudgets.mockResolvedValue(emptyBudgetOverviewFixture)
+    api.listModelPoolSummaries.mockResolvedValue([])
+  })
+
+  it('lists the published pools with members the gateway can’t use, worst first, and opens one', async () => {
+    api.listModelPoolSummaries.mockResolvedValue([
+      publishedSummary('anthropic', 'Anthropic Claude', { problemCount: 1, memberProblems: [memberProblem()] }),
+      publishedSummary('openai', 'OpenAI GPT', {
+        problemCount: 4,
+        memberProblems: [
+          memberProblem({
+            poolModelId: 'poolmodel_gpt',
+            modelDisplayName: 'GPT-4o',
+            modelEndpointId: 'endpoint_sweden',
+            endpointName: 'aoai-sweden',
+            deploymentName: 'gpt-4o',
+            region: 'swedencentral',
+            problems: ['MOSAIC no longer sees gpt-4o on aoai-sweden.', 'It has no key.'],
+          }),
+          memberProblem({ poolModelId: 'poolmodel_gpt', deploymentName: 'gpt-4o-east', endpointName: 'aoai-east' }),
+          memberProblem({ poolModelId: 'poolmodel_gpt', deploymentName: 'gpt-4o-west', endpointName: 'aoai-west' }),
+          memberProblem({ poolModelId: 'poolmodel_gpt', deploymentName: 'gpt-4o-north', endpointName: 'aoai-north' }),
+        ],
+      }),
+      // A published pool with nothing wrong, and a draft that serves no calls yet.
+      publishedSummary('mistral', 'Mistral'),
+      { ...poolSummaries[1], problemCount: 1, memberProblems: [memberProblem()] },
+    ])
+    renderPage()
+
+    const rows = await poolRows()
+    expect(rows.map((row) => row.querySelector('strong')?.textContent)).toEqual(['OpenAI GPT', 'Anthropic Claude'])
+    expect(screen.queryByText('Mistral')).not.toBeInTheDocument()
+    expect(screen.queryByText('OpenAI chat')).not.toBeInTheDocument()
+
+    const [openai, anthropic] = rows
+    expect(within(openai).getByText('4 members have problems')).toBeVisible()
+    const openaiMembers = within(openai).getAllByRole('listitem')
+    expect(openaiMembers).toHaveLength(3)
+    expect(openaiMembers[0]).toHaveTextContent('gpt-4o on aoai-sweden · swedencentral')
+    expect(
+      within(openaiMembers[0]).getByText('MOSAIC no longer sees gpt-4o on aoai-sweden. (+1 more)'),
+    ).toBeVisible()
+    expect(within(openai).getByText('1 more member on the pool’s page.')).toBeVisible()
+
+    expect(within(anthropic).getByText('1 member has a problem')).toBeVisible()
+    expect(within(anthropic).getByText('Contoso AI gateway')).toBeVisible()
+    const anthropicMembers = within(anthropic).getByRole('list', { name: 'Anthropic Claude members with problems' })
+    expect(anthropicMembers).toHaveTextContent('claude-opus-4-5 on foundry-northcentralus · northcentralus')
+    expect(within(anthropicMembers).getByText(noRole)).toBeVisible()
+
+    fireEvent.click(within(anthropic).getByRole('button'))
+    expect(await screen.findByText('Pool page for modelpool_anthropic')).toBeVisible()
+  })
+
+  it('lists a pool whose last apply failed, published or not', async () => {
+    api.listModelPoolSummaries.mockResolvedValue([
+      { ...poolSummaries[1], pool: { ...draftPool, status: 'failed' }, problemCount: 0 },
+      publishedSummary('anthropic', 'Anthropic Claude', {}, { status: 'rolledBack' }),
+      publishedSummary('mistral', 'Mistral', { problemCount: 2 }),
+    ])
+    renderPage()
+
+    const rows = await poolRows()
+    expect(rows.map((row) => row.querySelector('strong')?.textContent)).toEqual([
+      'Anthropic Claude',
+      'OpenAI chat',
+      'Mistral',
+    ])
+    const [rolledBack, failed, mistral] = rows
+    expect(within(rolledBack).getByText('Apply failed')).toBeVisible()
+    expect(within(rolledBack).getByText('The last apply failed and was rolled back.')).toBeVisible()
+    expect(within(failed).getByText('The last apply failed.')).toBeVisible()
+    // A pool-wide problem, with no member to name, sends the administrator to the pool.
+    expect(within(mistral).getByText('2 problems')).toBeVisible()
+    expect(within(mistral).getByText('Open the pool to see what to fix.')).toBeVisible()
+  })
+
+  it('says when every published pool is fine', async () => {
+    api.listModelPoolSummaries.mockResolvedValue(poolSummaries)
+    renderPage()
+
+    expect(await screen.findByText('1 published pool, none with a problem.')).toBeVisible()
+    expect(screen.queryByRole('list', { name: 'Pools that need attention' })).not.toBeInTheDocument()
+  })
+
+  it('says no pool serves calls while every pool is a draft', async () => {
+    api.listModelPoolSummaries.mockResolvedValue([poolSummaries[1]])
+    renderPage()
+
+    expect(await screen.findByText('No pool is published yet, so none serves calls.')).toBeVisible()
+  })
+
+  it('says what a pool is when there are none, and opens the Pools page', async () => {
+    renderPage()
+
+    expect(await screen.findByText(/No pools yet/)).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Open pools' }))
+    expect(await screen.findByText('Pools page')).toBeVisible()
+  })
+
+  it('shows the four worst pools and counts the rest', async () => {
+    api.listModelPoolSummaries.mockResolvedValue(
+      ['a', 'b', 'c', 'd', 'e', 'f'].map((slug, index) =>
+        publishedSummary(slug, `Pool ${slug.toUpperCase()}`, {
+          problemCount: index + 1,
+          memberProblems: Array.from({ length: index + 1 }, (_, member) =>
+            memberProblem({ deploymentName: `deployment-${member}` }),
+          ),
+        }),
+      ),
+    )
+    renderPage()
+
+    const rows = await poolRows()
+    expect(rows.map((row) => row.querySelector('strong')?.textContent)).toEqual(['Pool F', 'Pool E', 'Pool D', 'Pool C'])
+    expect(screen.getByText('2 more pools to look at on the Pools page.')).toBeVisible()
+  })
+
+  it('shows the rest of the dashboard when pools fail to load', async () => {
+    api.listModelPoolSummaries.mockRejectedValue(new Error('Pools failed'))
+    renderPage()
+
+    expect(await screen.findByText('Pools failed')).toBeVisible()
+    expect(screen.getByRole('heading', { name: 'Pools' })).toBeVisible()
+    expect(await screen.findByText('2 gateways')).toBeVisible()
   })
 
   it('shows each budget worst first, with the organization on top, and opens its cost center', async () => {

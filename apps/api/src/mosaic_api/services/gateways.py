@@ -228,6 +228,12 @@ class GatewayService:
                 await stack.enter_async_context(
                     publication_lock(self._repository, actor.tenant_id, mcp_publication.id)
                 )
+            for pool in await self._repository.list_model_pools(
+                actor.tenant_id, gateway_id=gateway_id
+            ):
+                await stack.enter_async_context(
+                    publication_lock(self._repository, actor.tenant_id, pool.id)
+                )
             return await self._update(actor, gateway_id, request)
 
     async def _update(self, actor: Actor, gateway_id: str, request: GatewayUpdate) -> Gateway:
@@ -279,6 +285,12 @@ class GatewayService:
                 await stack.enter_async_context(
                     publication_lock(self._repository, actor.tenant_id, mcp_publication.id)
                 )
+            for pool in await self._repository.list_model_pools(
+                actor.tenant_id, gateway_id=gateway_id
+            ):
+                await stack.enter_async_context(
+                    publication_lock(self._repository, actor.tenant_id, pool.id)
+                )
             await self._delete(actor, gateway_id)
 
     async def _delete(self, actor: Actor, gateway_id: str) -> None:
@@ -315,6 +327,19 @@ class GatewayService:
                 "MOSAIC published MCP servers into this gateway. Unpublish them first, so their "
                 "API Management resources are removed rather than orphaned.",
                 details={"publications": [item.display_name for item in mcp_published]},
+            )
+        pools = [
+            item
+            for item in await self._repository.list_model_pools(
+                actor.tenant_id, gateway_id=gateway_id
+            )
+            if item.may_own_gateway_state()
+        ]
+        if pools:
+            raise ConflictError(
+                "MOSAIC published model pools into this gateway. Unpublish them first, so their "
+                "API Management resources are removed rather than orphaned.",
+                details={"modelPools": [item.display_name for item in pools]},
             )
         await self._repository.delete_gateway(
             gateway, self._audit(actor, "gateway.removed", gateway.id)
@@ -703,6 +728,16 @@ class GatewayService:
             )
         return gateway
 
+    async def _pool_api_names(self, actor: Actor, gateway_id: str) -> set[str]:
+        """The APIs MOSAIC's model pools use on this gateway, which aren't offered for import."""
+
+        return {
+            pool.api_name.casefold()
+            for pool in await self._repository.list_model_pools(
+                actor.tenant_id, gateway_id=gateway_id
+            )
+        }
+
     async def list_importable_apis(
         self, actor: Actor, gateway_id: str
     ) -> ModelApiCandidateList:
@@ -717,6 +752,7 @@ class GatewayService:
         observed = await self._repository.list_observed(
             ObservedApi, actor.tenant_id, gateway_id, "observedApi"
         )
+        pooled = await self._pool_api_names(actor, gateway_id)
         adopted = {
             item.api_name.casefold()
             for item in await self._repository.list_model_apis(
@@ -737,6 +773,7 @@ class GatewayService:
                 already_imported=api.name.casefold() in adopted,
             )
             for api in observed
+            if api.name.casefold() not in pooled
         ]
         candidates.sort(key=lambda item: (not item.recommended, item.display_name.casefold()))
         return ModelApiCandidateList(
@@ -833,6 +870,15 @@ class GatewayService:
             ObservedApi, actor.tenant_id, gateway_id, "observedApi"
         )
         selected = self._match_requested(request.api_names, observed, lambda api: api.name, "API")
+        pooled = await self._pool_api_names(actor, gateway_id)
+        refused = [api.name for api in selected if api.name.casefold() in pooled]
+        if refused:
+            # ADR 0024: access to a pool is granted per pool model, never to its API as a whole.
+            raise ValidationError(
+                "A model pool's API can't be imported as a model API. Grant access to the pool's "
+                "models instead.",
+                details={"apiNames": refused},
+            )
 
         imported: list[ModelApi] = []
         for api in selected:

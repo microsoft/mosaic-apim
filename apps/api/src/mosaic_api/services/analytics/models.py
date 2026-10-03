@@ -49,7 +49,8 @@ ConsumerKind = Literal["person", "application", "group"]
 GrantState = Literal["active", "disabled", "removed"]
 LimitStatus = Literal["ok", "near", "reached", "unknown"]
 UntrackedReason = Literal["mosaicGroup", "notApplied", "noLink"]
-# sharedKey: the call used a model publication's own subscription, whose key isn't any one caller's.
+# sharedKey: the call used a model publication's or model pool's own subscription, whose key isn't
+# any one caller's.
 UnattributedReason = Literal["noSubscription", "unknownSubscription", "sharedKey"]
 BackfillStatus = Literal["idle", "running", "done", "failed"]
 
@@ -394,7 +395,7 @@ class AnalyticsApiRow(AnalyticsUsage):
     gateway_name: str
     api_name: str
     label: str
-    kind: Literal["model", "mcp"] | None
+    kind: Literal["model", "mcp", "pool"] | None
     resource_id: str | None
     removed: bool
     metered_requests: int

@@ -327,6 +327,69 @@ export const claudeConnection: ModelConnection = {
   },
 }
 
+export const poolEndpoint = 'https://gateway.example.test/models/anthropic'
+export const poolMessagesUrl = `${poolEndpoint}/anthropic/v1/messages`
+
+/**
+ * A grant on a model that several endpoints serve behind one API. Its resource names the model
+ * and, as its scope, the group that serves it, but nothing a person reads names either.
+ */
+export const poolGrant: Entitlement = {
+  ...directGrant,
+  id: 'entitlement_opus',
+  resource: { kind: 'poolModel', id: 'pool_model_opus', scopeId: 'pool_anthropic' },
+  binding: null,
+  runtime: {
+    ...directGrant.runtime!,
+    publicationId: 'pool_anthropic',
+    subscriptionName: 'mosaic-pool-key-0a1b2c3d',
+  },
+}
+
+export const poolSummary: ResourceSummary = {
+  kind: 'poolModel',
+  id: 'pool_model_opus',
+  scopeId: 'pool_anthropic',
+  displayName: 'Claude Opus',
+  gatewayId: 'gateway_1',
+  gatewayName: 'Production gateway',
+  environment: 'production',
+  available: true,
+}
+
+export const poolResolved: ResolvedEntitlement = {
+  entitlement: poolGrant,
+  resourceSummary: poolSummary,
+  costCenter: researchCostCenter,
+  via: 'direct',
+  viaGroupId: null,
+  viaGroupName: null,
+}
+
+/** The grant's key also works for Sonnet, which the same person holds under the same cost center. */
+export const poolConnection: ModelConnection = {
+  ...connection,
+  entitlementId: poolGrant.id,
+  publicationId: 'pool_anthropic',
+  endpoint: poolEndpoint,
+  deploymentName: 'claude-opus-4-5',
+  runtime: poolGrant.runtime,
+  apiShape: 'anthropicMessages',
+  operations: [{ name: 'messages', method: 'POST', path: '/anthropic/v1/messages' }],
+  publicationLimits: {
+    counterKeyExpression: 'pool_model_opus',
+    tokensPerMinute: 400_000,
+    tokenQuota: null,
+    tokenQuotaPeriod: null,
+    estimatePromptTokens: false,
+  },
+  poolId: 'pool_anthropic',
+  poolModelId: 'pool_model_opus',
+  keySharedWith: [
+    { poolModelId: 'pool_model_sonnet', displayName: 'Claude Sonnet', publicName: 'claude-sonnet-4-5' },
+  ],
+}
+
 export const revealedPrimary: KeyRevealResult = {
   entitlementId: directGrant.id,
   subscriptionName: 'grant-subscription',

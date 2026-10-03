@@ -16,6 +16,7 @@ from aoai_double import (
 )
 from apim_double import APIM_PRINCIPAL_ID, APIM_PUBLIC_IP, RESOURCE_ID, SERVICE_NAME
 from conftest import build_endpoint_service
+from mosaic_api.deployment_capacity import CapacityType, ProcessingScope
 from mosaic_api.domain import (
     AZURE_AI_DEVELOPER_ROLE_ID,
     FOUNDRY_USER_ROLE_NAME,
@@ -421,7 +422,60 @@ class TestDiscovery:
         assert chat.model_name == "gpt-4o"
         assert chat.model_version == "2024-11-20"
         assert chat.sku_capacity == 50
+        assert chat.capacity_type == CapacityType.PAY_AS_YOU_GO
+        assert chat.processing_scope == ProcessingScope.REGIONAL
+        assert chat.spillover_deployment_name is None
         assert chat.request_paths == ["/chat/completions"]
+
+    @pytest.mark.asyncio
+    async def test_reads_capacity_type_and_azure_spillover(
+        self, endpoint_service, fake_aoai: FakeCognitiveServices
+    ) -> None:
+        fake_aoai.deployments = [
+            {
+                "name": "gpt-4o-ptu",
+                "sku": {"name": "GlobalProvisionedManaged", "capacity": 100},
+                "properties": {
+                    "model": {"format": "OpenAI", "name": "gpt-4o", "version": "2024-11-20"},
+                    "provisioningState": "Succeeded",
+                    "spilloverDeploymentName": "gpt-4o-standard",
+                },
+            },
+            {
+                "name": "gpt-4o-standard",
+                "sku": {"name": "DataZoneStandard", "capacity": 20},
+                "properties": {
+                    "model": {"format": "OpenAI", "name": "gpt-4o", "version": "2024-11-20"},
+                    "provisioningState": "Succeeded",
+                },
+            },
+            {
+                "name": "gpt-4o-batch",
+                "sku": {"name": "GlobalBatch", "capacity": 10},
+                "properties": {
+                    "model": {"format": "OpenAI", "name": "gpt-4o", "version": "2024-11-20"},
+                    "provisioningState": "Succeeded",
+                },
+            },
+        ]
+        endpoint = await endpoint_service.register(ACTOR, _create())
+        await endpoint_service.sync_now(ACTOR, endpoint.id)
+
+        deployments = {
+            item.deployment_name: item
+            for item in await endpoint_service.list_deployments(ACTOR, endpoint.id)
+        }
+        provisioned = deployments["gpt-4o-ptu"]
+        assert provisioned.capacity_type == CapacityType.PROVISIONED
+        assert provisioned.processing_scope == ProcessingScope.GLOBAL
+        assert provisioned.spillover_deployment_name == "gpt-4o-standard"
+        standard = deployments["gpt-4o-standard"]
+        assert standard.capacity_type == CapacityType.PAY_AS_YOU_GO
+        assert standard.processing_scope == ProcessingScope.DATA_ZONE
+        assert standard.spillover_deployment_name is None
+        batch = deployments["gpt-4o-batch"]
+        assert batch.capacity_type == CapacityType.BATCH
+        assert batch.processing_scope == ProcessingScope.GLOBAL
 
     @pytest.mark.asyncio
     async def test_available_models_carry_lifecycle(self, endpoint_service) -> None:

@@ -156,6 +156,20 @@ function sentence(text: string) {
   return /[.!?]$/.test(text) ? text : `${text}.`
 }
 
+/** "A", "A and B", or "A, B, and C". */
+export function listOf(names: string[]) {
+  if (names.length <= 2) return names.join(' and ')
+  return `${names.slice(0, -1).join(', ')}, and ${names[names.length - 1]}`
+}
+
+/** The other models a grant's key works for, as a phrase, or null when it's this model's alone. */
+export function sharedKeyModels(connection: Pick<ModelConnection, 'keySharedWith'>) {
+  const names = (connection.keySharedWith ?? []).map(
+    (model) => model.displayName.trim() || model.publicName,
+  )
+  return names.length > 0 ? listOf(names) : null
+}
+
 export function isClientError(error: unknown) {
   const status = errorStatus(error)
   return status !== undefined && status >= 400 && status < 500

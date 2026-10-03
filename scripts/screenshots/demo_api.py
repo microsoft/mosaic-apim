@@ -87,6 +87,15 @@ from mosaic_api.integrations.apim.credentials import ApimCredentialClient, ApimK
 from mosaic_api.integrations.email import EmailMessage, EmailSendResult
 from mosaic_api.integrations.graph.fake import FakeDirectoryLookup
 from mosaic_api.main import create_app
+from mosaic_api.model_pools import (
+    ModelPoolCreate,
+    ModelPoolType,
+    ModelPoolUpdate,
+    ModelPoolVisibility,
+    PoolMemberSpec,
+    PoolModelSpec,
+    uses_backend_pools,
+)
 from mosaic_api.pricing import DeploymentPricingUpdate, EndpointPricingUpdate, PriceCreate
 from mosaic_api.repositories import GatewayRepository, InMemoryEntitlementRepository
 from mosaic_api.services import (
@@ -107,22 +116,27 @@ from mosaic_api.services.cost_centers import CostCenterService
 from mosaic_api.services.directory import Actor
 from mosaic_api.services.mcp_endpoints import build_mcp_client_factory
 from mosaic_api.services.mcp_publishing import McpPublishingService
+from mosaic_api.services.model_pools import ModelPoolService
+from mosaic_api.services.pool_health import PoolHealthService
 from mosaic_api.services.portal_access import PortalAccessService
 from mosaic_api.services.pricing import PricingService
-from mosaic_api.services.telemetry import TelemetryService
+from mosaic_api.services.telemetry import TelemetryService, member_host
 from mosaic_api.services.usage import RollupUsageSource
 from mosaic_api.services.usage_rollup import UsageRollupService
 
 from scripts.screenshots.demo_fakes import (
     AI_RESOURCE_ID,
     DEV_GATEWAY_RESOURCE_ID,
+    FOUNDRY_NORTH_CENTRAL_RESOURCE_ID,
     FOUNDRY_RESOURCE_ID,
+    FOUNDRY_WEST_RESOURCE_ID,
     GATEWAY_RESOURCE_ID,
     KEY_VAULT_ID,
     PARTNER_GATEWAY_RESOURCE_ID,
     DemoApim,
     DemoLogs,
     FakeCredential,
+    PoolMemberTraffic,
     TrafficStream,
     build_cognitive_accounts,
     build_key_store,
@@ -176,8 +190,9 @@ CLAIMS_TRIAGE = Person(
     "Claims triage function", "c2fbc41d-f6b8-4d9a-8f2a-3b4c5d6e7f80", "managedIdentity"
 )
 DOCS_INDEXER = Person("Docs indexer", "d3acd52e-a7c9-4eab-9a3b-4c5d6e7f8091", "managedIdentity")
-# The managed identity the Docs Search MCP server runs as. Its tools call GPT-4o mini as it, on its
-# own grant, for the people who called the server. See ADR 0025.
+# The managed identity the Docs Search MCP server runs as. Its tools call GPT-4o mini, and Claude
+# Sonnet through the Anthropic pool, as it, on its own grants, for the people who called the
+# server. See ADR 0025.
 DOCS_SEARCH_SERVICE = Person(
     "Docs Search service", "f6a7b8c9-d0e1-4f23-8a45-b6c7d8e9f0a1", "managedIdentity"
 )
@@ -524,6 +539,7 @@ class DemoServices:
     portal_access: PortalAccessService
     analytics: AnalyticsService
     budgets: BudgetService
+    pools: ModelPoolService
     clients: list[httpx.AsyncClient] = field(default_factory=list)
 
     async def aclose(self) -> None:
@@ -534,6 +550,7 @@ class DemoServices:
         await self.publishing.aclose()
         await self.mcp_publishing.aclose()
         await self.mcp_endpoints.aclose()
+        await self.pools.aclose()
         for client in self.clients:
             await client.aclose()
 
@@ -638,6 +655,20 @@ def install_demo_services(app: FastAPI, portal_origins: Iterable[str]) -> DemoSe
     state.publishing_service = publishing
     state.mcp_publishing_service = mcp_publishing
     state.mcp_endpoint_service = mcp_endpoints
+    pools = ModelPoolService(
+        state.gateway_repository,
+        endpoint_repository=state.model_endpoint_repository,
+        client_factory=lambda resource: ApimClient(gateway_arm, resource),
+        writer_factory=lambda resource: ApimWriter(gateway_arm, resource),
+        environment_repository=state.environment_repository,
+        directory_repository=state.repository,
+        entitlement_repository=state.entitlement_repository,
+        cost_center_repository=state.cost_center_repository,
+        model_runtime_client_id=settings.model_runtime_client_id,
+        security_group_claims=settings.entra_group_claims,
+        blocked_list=blocked_list,
+    )
+    state.model_pool_service = pools
     portal_access = PortalAccessService(
         state.entitlement_service,
         repository=state.entitlement_repository,
@@ -674,9 +705,18 @@ def install_demo_services(app: FastAPI, portal_origins: Iterable[str]) -> DemoSe
         retention_days=settings.usage_rollup_retention_days,
         backfill_max_days=settings.usage_rollup_backfill_max_days,
         cost_center_repository=state.cost_center_repository,
+        endpoint_repository=state.model_endpoint_repository,
     )
     state.telemetry_service = telemetry
     state.usage_rollup_service = usage_rollups
+    # A pool's health reads the attempts its policy traced, from the same demo logs.
+    state.pool_health_service = PoolHealthService(
+        pools,
+        gateway_repository=state.gateway_repository,
+        endpoint_repository=state.model_endpoint_repository,
+        logs=logs,
+        principal_id=MOSAIC_PRINCIPAL_ID,
+    )
     # Costs come from MOSAIC's own price list: the shipped seed, plus what the estate sets below.
     pricing: PricingService = state.pricing_service
     state.usage_service = UsageService(
@@ -744,6 +784,7 @@ def install_demo_services(app: FastAPI, portal_origins: Iterable[str]) -> DemoSe
         portal_access=portal_access,
         analytics=state.analytics_service,
         budgets=budgets,
+        pools=pools,
         clients=[gateway_http, ai_http, vault_http, mcp_http],
     )
 
@@ -791,8 +832,12 @@ class Estate:
     partner_gateway_id: str = ""
     aoai_endpoint_id: str = ""
     foundry_endpoint_id: str = ""
+    foundry_north_central_endpoint_id: str = ""
+    foundry_west_endpoint_id: str = ""
     partner_foundry_endpoint_id: str = ""
     publications: dict[str, str] = field(default_factory=dict)
+    # Model pool IDs by display name.
+    pools: dict[str, str] = field(default_factory=dict)
     model_apis: dict[str, str] = field(default_factory=dict)
     dev_model_apis: dict[str, str] = field(default_factory=dict)
     mcp_endpoints: dict[str, str] = field(default_factory=dict)
@@ -830,6 +875,15 @@ async def _publish_mcp(
     finished = await services.mcp_publishing.get_run(actor, publication_id, run.id)
     if finished.status != PublishRunStatus.SUCCEEDED:
         raise SeedError(f"Publishing MCP {label} ended {finished.status}: {finished.model_dump()}")
+
+
+async def _publish_pool(services: DemoServices, actor: Actor, pool_id: str, label: str) -> None:
+    plan = await services.pools.plan(actor, pool_id)
+    run = await services.pools.apply(actor, pool_id, plan.id)
+    await services.pools.wait_for_idle()
+    finished = await services.pools.get_run(actor, pool_id, run.id)
+    if finished.status != PublishRunStatus.SUCCEEDED:
+        raise SeedError(f"Publishing pool {label} ended {finished.status}: {finished.model_dump()}")
 
 
 # How long ago the estate's grants were made, other than those that came from a request.
@@ -1083,7 +1137,26 @@ async def seed_estate(services: DemoServices, tenant_id: str) -> Estate:
         ),
     )
     estate.foundry_endpoint_id = foundry.id
-    for endpoint in (aoai, foundry):
+    # Contoso runs Claude in two more regions, so a pool can spread it across all three.
+    foundry_north_central = await services.endpoints.register(
+        admin,
+        ModelEndpointCreate(
+            azure_resource_id=FOUNDRY_NORTH_CENTRAL_RESOURCE_ID,
+            name="Contoso AI Foundry North Central",
+            environment="production",
+        ),
+    )
+    estate.foundry_north_central_endpoint_id = foundry_north_central.id
+    foundry_west = await services.endpoints.register(
+        admin,
+        ModelEndpointCreate(
+            azure_resource_id=FOUNDRY_WEST_RESOURCE_ID,
+            name="Contoso AI Foundry West",
+            environment="production",
+        ),
+    )
+    estate.foundry_west_endpoint_id = foundry_west.id
+    for endpoint in (aoai, foundry, foundry_north_central, foundry_west):
         _require_synced(await services.endpoints.sync_now(admin, endpoint.id), endpoint.name)
 
     # A partner's Foundry resource in its own Microsoft Entra tenant, which MOSAIC's managed
@@ -1117,7 +1190,7 @@ async def seed_estate(services: DemoServices, tenant_id: str) -> Estate:
         raise SeedError("The partner Foundry endpoint's key check didn't pass")
     estate.partner_foundry_endpoint_id = partner_foundry.id
     # A key can't read a declared deployment's type, so the administrator says what it is and
-    # MOSAIC prices it. The Claude deployment stays unpriced: Azure's public prices don't list it.
+    # MOSAIC prices it. The partner's Claude deployment stays unpriced: nobody declared its type.
     await services.pricing.update_endpoint(
         admin,
         partner_foundry.id,
@@ -1149,6 +1222,28 @@ async def seed_estate(services: DemoServices, tenant_id: str) -> Estate:
             overrides="commercial.openai.gpt-4o.2024-11-20.globalstandard",
         ),
     )
+    # The price list MOSAIC ships doesn't carry Claude, so Contoso records what it pays. Each
+    # region a pool sends a call to is priced from its own deployment, like any other.
+    for claude_model, input_price, output_price in (
+        ("claude-opus-4-5", 5.0, 25.0),
+        ("claude-sonnet-4-5", 3.0, 15.0),
+        ("claude-haiku-4-5", 1.0, 5.0),
+    ):
+        await services.pricing.add_price(
+            admin,
+            PriceCreate(
+                cloud="commercial",
+                publisher="Anthropic",
+                model=claude_model,
+                deployment_type="GlobalStandard",
+                input_per_million=input_price,
+                cached_input_per_million=input_price / 10,
+                output_per_million=output_price,
+                effective_from=(month_start - timedelta(days=95)).replace(day=1),
+                source_url="https://contoso.example/agreements/foundry-claude-2026",
+                note="Claude in Microsoft Foundry, under Contoso's Marketplace agreement.",
+            ),
+        )
 
     # Sales CRM keeps only a legacy free-text label, so Settings has one resource to classify.
     mcp_endpoints = [
@@ -1242,6 +1337,75 @@ async def seed_estate(services: DemoServices, tenant_id: str) -> Estate:
             admin, published.model_api_id, CatalogEntryUpdate(summary=summary)
         )
 
+    # Claude runs in three regions, and callers see one API with one name per model (ADR 0024).
+    def claude_member(endpoint_id: str, deployment: str, weight: int = 1) -> PoolMemberSpec:
+        return PoolMemberSpec(
+            model_endpoint_id=endpoint_id, deployment_name=deployment, weight=weight
+        )
+
+    claude_pool = await services.pools.create(
+        admin,
+        ModelPoolCreate(
+            gateway_id=gateway.id,
+            display_name="Anthropic Claude",
+            description=(
+                "Claude for every team, across East US 2, North Central US, and West US 3. "
+                "A region that throttles is skipped until it recovers."
+            ),
+            models=[
+                PoolModelSpec(
+                    display_name="Claude Opus 4.5",
+                    members=[
+                        claude_member(foundry.id, "claude-opus-4-5", weight=2),
+                        claude_member(foundry_north_central.id, "claude-opus-4-5"),
+                        claude_member(foundry_west.id, "claude-opus-4-5"),
+                    ],
+                ),
+                PoolModelSpec(
+                    display_name="Claude Sonnet 4.5",
+                    members=[
+                        claude_member(foundry.id, "claude-sonnet-4-5", weight=2),
+                        claude_member(foundry_north_central.id, "claude-sonnet-4-5"),
+                    ],
+                ),
+            ],
+        ),
+    )
+    await _publish_pool(services, admin, claude_pool.id, claude_pool.display_name)
+    estate.pools[claude_pool.display_name] = claude_pool.id
+    # Then Contoso governs it: callers need a grant on each model they use, and the next apply
+    # suspends the shared key the pool was first published with.
+    claude_pool = await services.pools.update(
+        admin,
+        claude_pool.id,
+        ModelPoolUpdate(
+            governed_access=ModelAccessSettings(keys_enabled=True, entra_enabled=True)
+        ),
+    )
+    claude_models = {model.display_name: model.id for model in claude_pool.models}
+    # A second pool, saved but not yet published. Evaluation runs start in North Central US and
+    # move to East US 2 only when it fails.
+    evaluation_pool = await services.pools.create(
+        admin,
+        ModelPoolCreate(
+            gateway_id=gateway.id,
+            display_name="Claude evaluation",
+            description="Offline evaluation runs, kept off the catalog.",
+            visibility=ModelPoolVisibility.HIDDEN,
+            pool_type=ModelPoolType.LINEAR,
+            models=[
+                PoolModelSpec(
+                    display_name="Claude Sonnet 4.5",
+                    members=[
+                        claude_member(foundry_north_central.id, "claude-sonnet-4-5"),
+                        claude_member(foundry.id, "claude-sonnet-4-5"),
+                    ],
+                )
+            ],
+        ),
+    )
+    estate.pools[evaluation_pool.display_name] = evaluation_pool.id
+
     async def grant(
         subject: Person | str,
         resource_kind: str,
@@ -1250,8 +1414,12 @@ async def seed_estate(services: DemoServices, tenant_id: str) -> Estate:
         notes: str | None = None,
         *,
         cost_center: str | None = None,
+        scope_id: str | None = None,
     ) -> None:
-        """Grant a resource, charged to ``cost_center`` by code, or to the subject's default."""
+        """Grant a resource, charged to ``cost_center`` by code, or to the subject's default.
+
+        ``scope_id`` names the pool a pool model belongs to.
+        """
 
         if isinstance(subject, Person):
             kind = subject_kind_for(PrincipalKind(subject.kind)).value
@@ -1264,7 +1432,7 @@ async def seed_estate(services: DemoServices, tenant_id: str) -> Estate:
             EntitlementCreate(
                 subject=EntitlementSubject.model_validate({"kind": kind, "id": subject_id}),
                 resource=EntitlementResource.model_validate(
-                    {"kind": resource_kind, "id": resource_id}
+                    {"kind": resource_kind, "id": resource_id, "scopeId": scope_id}
                 ),
                 cost_center_id=estate.cost_centers[cost_center] if cost_center else None,
                 enforcement=enforcement,
@@ -1312,12 +1480,25 @@ async def seed_estate(services: DemoServices, tenant_id: str) -> Estate:
     def model(resource_id: str) -> EntitlementResource:
         return EntitlementResource.model_validate({"kind": "modelApi", "id": resource_id})
 
+    def pool_model(resource_id: str) -> EntitlementResource:
+        return EntitlementResource.model_validate(
+            {"kind": "poolModel", "id": resource_id, "scopeId": claude_pool.id}
+        )
+
+    opus = claude_models["Claude Opus 4.5"]
+    sonnet = claude_models["Claude Sonnet 4.5"]
     cost_center_limits: dict[str, list[CostCenterLimit]] = {
         "CI-204": [
             CostCenterLimit(
                 resource=model(gpt4o),
                 person=PersonLimits(tokens_per_minute=20_000),
                 pool=PooledQuota(monthly_tokens=40_000_000),
+            ),
+            # One quota across every region the pool sends Claude Sonnet calls to.
+            CostCenterLimit(
+                resource=pool_model(sonnet),
+                person=PersonLimits(tokens_per_minute=20_000),
+                pool=PooledQuota(monthly_tokens=20_000_000),
             ),
             CostCenterLimit(
                 resource=EntitlementResource.model_validate(
@@ -1471,12 +1652,19 @@ async def seed_estate(services: DemoServices, tenant_id: str) -> Estate:
     )
 
     async def request_access(
-        person: Person, kind: str, resource_id: str, justification: str
+        person: Person,
+        kind: str,
+        resource_id: str,
+        justification: str,
+        *,
+        scope_id: str | None = None,
     ) -> str:
         created = await services.entitlements.create_access_request(
             Actor(person.object_id, tenant_id),
             AccessRequestCreate(
-                resource=EntitlementResource.model_validate({"kind": kind, "id": resource_id}),
+                resource=EntitlementResource.model_validate(
+                    {"kind": kind, "id": resource_id, "scopeId": scope_id}
+                ),
                 justification=justification,
             ),
         )
@@ -1542,6 +1730,50 @@ async def seed_estate(services: DemoServices, tenant_id: str) -> Estate:
         services.entitlement_repository,
         {approved: timedelta(days=52), denied: timedelta(days=33), prototype: timedelta(days=16)},
     )
+    # Contoso began granting Claude five weeks ago. Megan's two grants share one key under CI-204,
+    # the market research agent calls Opus with its own token, every agent builder may call
+    # Sonnet with theirs, and the Docs Search server's tools draft longer answers with Sonnet.
+    await grant(PORTAL_USER, "poolModel", sonnet, scope_id=claude_pool.id)
+    await grant(
+        PORTAL_USER,
+        "poolModel",
+        opus,
+        EntitlementEnforcement(tokens=_tokens(per_minute=10_000)),
+        "Long-form drafting for the churn analysis.",
+        scope_id=claude_pool.id,
+    )
+    await grant(
+        MARKET_RESEARCH_AGENT,
+        "poolModel",
+        opus,
+        EntitlementEnforcement(tokens=_tokens(per_minute=30_000)),
+        "Long-form competitor research reports.",
+        scope_id=claude_pool.id,
+    )
+    await grant(AGENT_BUILDERS, "poolModel", sonnet, scope_id=claude_pool.id)
+    await grant(
+        DOCS_SEARCH_SERVICE,
+        "poolModel",
+        sonnet,
+        EntitlementEnforcement(tokens=_tokens(per_minute=40_000)),
+        "The Docs Search MCP server's answer tool drafts longer answers.",
+        cost_center="general",
+        scope_id=claude_pool.id,
+    )
+    claude_granted_at = utc_now() - timedelta(days=35)
+    repository = services.entitlement_repository
+    for entitlement_id, entitlement in list(repository.entitlements.items()):
+        if entitlement.resource.kind == "poolModel":
+            repository.entitlements[entitlement_id] = entitlement.model_copy(
+                update={"created_at": claude_granted_at}
+            )
+    await request_access(
+        ISAIAH,
+        "poolModel",
+        opus,
+        "Comparing Claude and GPT-4o on long contract summaries.",
+        scope_id=claude_pool.id,
+    )
 
     # Apply the governed publications so their grants reach the gateway, then add one grant
     # afterwards so the console also shows a change still waiting to be applied. The Docs Search
@@ -1555,11 +1787,14 @@ async def seed_estate(services: DemoServices, tenant_id: str) -> Estate:
     await _publish_mcp(services, admin, published_docs.id, published_docs.display_name)
     for display_name in ("GPT-4o", "GPT-4o mini", "Phi-4"):
         await _publish(services, admin, estate.publications[display_name], display_name)
-    # Keys exist only where someone asked for one: the support copilot's, and the key Megan's
-    # notebook uses. Her General grant has none yet.
+    await _publish_pool(services, admin, claude_pool.id, claude_pool.display_name)
+    # Keys exist only where someone asked for one: the support copilot's, the key Megan's
+    # notebook uses, and the one she calls Claude with, which covers both her Claude models. Her
+    # General grant has none yet.
     for subject, resource_id, code in (
         (SUPPORT_COPILOT, gpt4o_mini, "CS-110"),
         (PORTAL_USER, gpt4o, "CI-204"),
+        (PORTAL_USER, sonnet, "CI-204"),
     ):
         held = _held_grant(services, estate, subject, resource_id, code)
         await services.portal_access.create_key(admin, held.id, administrator=True)
@@ -1618,6 +1853,45 @@ async def traffic_streams(
         phi4: published["Phi-4"].api_name,
         docs: estate.docs_mcp_api,
     }
+    # Every Claude model is called through the pool's one API, and each call lands on whichever
+    # region the pool picks for it. North Central US is short of Opus capacity, so it throttles
+    # some calls and the pool sends them on. The pool's policy traces every attempt, which is what
+    # the pool's health reads.
+    claude = await services.pools.get_pool(admin, estate.pools["Anthropic Claude"])
+    claude_models = {model.display_name: model.id for model in claude.models}
+    opus = claude_models["Claude Opus 4.5"]
+    sonnet = claude_models["Claude Sonnet 4.5"]
+    keyed = {
+        member.backend_name
+        for model in (await services.pools.detail(admin, claude.id)).models
+        for member in model.members
+        if member.api_key
+    }
+    hosts = {
+        endpoint.id: member_host(claude.api_shape, endpoint)
+        for endpoint in await services.endpoints.list_endpoints(admin)
+    }
+    throttle_rates = {(opus, estate.foundry_north_central_endpoint_id): 0.08}
+    members: dict[str, tuple[PoolMemberTraffic, ...]] = {}
+    for pool_model in claude.models:
+        api_names[pool_model.id] = claude.api_name
+        members[pool_model.id] = tuple(
+            PoolMemberTraffic(
+                backend=member.backend_name,
+                weight=member.weight,
+                # An attempt through the model's backend pool names the backend pool. Only a
+                # member reached with an API key is tried on a backend of its own.
+                traced_backend=(
+                    pool_model.backend_pool_name
+                    if uses_backend_pools(claude.pool_type) and member.backend_name not in keyed
+                    else member.backend_name
+                ),
+                host=hosts.get(member.model_endpoint_id, ""),
+                path="/anthropic/v1/messages",
+                throttle_rate=throttle_rates.get((pool_model.id, member.model_endpoint_id), 0.0),
+            )
+            for member in pool_model.active_members()
+        )
 
     def granted(
         name: str,
@@ -1684,16 +1958,36 @@ async def traffic_streams(
         return TrafficStream(name=name, api=api, subscription=subscription, **shape)
 
     # The model calls the Docs Search server's tools make as its managed identity, passing on each
-    # MCP call's reference, so MOSAIC counts them for the person who called. See ADR 0025.
+    # MCP call's reference, so MOSAIC counts them for the person who called. Most summarize with
+    # GPT-4o mini, and one in four drafts a longer answer with Claude Sonnet, through the pool. See
+    # ADR 0025.
     served = {
         "model_caller": DOCS_SEARCH_SERVICE.object_id,
-        "model_calls": granted(
-            "docs-search-model",
-            DOCS_SEARCH_SERVICE,
-            gpt4o_mini,
-            client_app=DOCS_SEARCH_SERVICE.object_id,
-            per_day=0,
-            **chat("gpt-4o-mini", 1700, 260, 1100),
+        "model_calls": (
+            (
+                granted(
+                    "docs-search-model",
+                    DOCS_SEARCH_SERVICE,
+                    gpt4o_mini,
+                    client_app=DOCS_SEARCH_SERVICE.object_id,
+                    per_day=0,
+                    **chat("gpt-4o-mini", 1700, 260, 1100),
+                ),
+                3,
+            ),
+            (
+                granted(
+                    "docs-search-claude",
+                    DOCS_SEARCH_SERVICE,
+                    sonnet,
+                    client_app=DOCS_SEARCH_SERVICE.object_id,
+                    per_day=0,
+                    members=members[sonnet],
+                    pool_model=sonnet,
+                    **chat("claude-sonnet-4-5", 2400, 700, 3600),
+                ),
+                1,
+            ),
         ),
     }
 
@@ -1890,6 +2184,69 @@ async def traffic_streams(
             rhythm="nightly",
             weekend=1.0,
             **chat("gpt-4o-mini", 2400, 380, 1400),
+        ),
+        # Claude, through the pool. Megan's one key covers both her Claude models, and the agent
+        # builders' grant serves each agent in the group with its own token.
+        granted(
+            "megan-claude-sonnet",
+            MEGAN,
+            sonnet,
+            key=True,
+            cost_center="CI-204",
+            per_day=22,
+            tokens_per_minute=20_000,
+            members=members[sonnet],
+            pool_model=sonnet,
+            **chat("claude-sonnet-4-5", 1500, 520, 2800),
+        ),
+        granted(
+            "megan-claude-opus",
+            MEGAN,
+            opus,
+            key=True,
+            cost_center="CI-204",
+            per_day=8,
+            tokens_per_minute=10_000,
+            members=members[opus],
+            pool_model=opus,
+            **chat("claude-opus-4-5", 2600, 900, 5200),
+        ),
+        granted(
+            "market-research-claude-opus",
+            MARKET_RESEARCH_AGENT,
+            opus,
+            client_app=MARKET_RESEARCH_AGENT.object_id,
+            per_day=90,
+            rhythm="always",
+            weekend=0.5,
+            tokens_per_minute=30_000,
+            burst=4,
+            members=members[opus],
+            pool_model=opus,
+            **chat("claude-opus-4-5", 3200, 1100, 6100),
+        ),
+        granted(
+            "invoices-claude-sonnet",
+            AGENT_BUILDERS,
+            sonnet,
+            caller=INVOICE_RECONCILIATION_AGENT,
+            client_app=INVOICE_RECONCILIATION_AGENT.object_id,
+            per_day=40,
+            rhythm="always",
+            weekend=0.3,
+            burst=2,
+            members=members[sonnet],
+            pool_model=sonnet,
+            **chat("claude-sonnet-4-5", 1800, 360, 2600),
+        ),
+        refused(
+            "johanna-claude",
+            claude.api_name,
+            "no-grant",
+            caller=JOHANNA,
+            client_app=VS_CODE,
+            per_day=2,
+            since=today - timedelta(days=12),
         ),
         # Nestor's grant isn't applied yet, so the gateway still refuses him.
         refused(
@@ -2129,6 +2486,7 @@ def build_demo_app(console_port: int, portal_port: int) -> FastAPI:
                     "MOSAIC demo estate ready: "
                     f"{len(estate.principals)} principals, {len(estate.groups)} groups, "
                     f"{len(estate.publications)} publications, "
+                    f"{len(estate.pools)} model pools, "
                     f"{len(estate.model_apis)} model APIs, {len(estate.mcp_servers)} MCP servers, "
                     f"{len(services.logs.streams)} traffic streams",
                     flush=True,

@@ -19,6 +19,7 @@ from .kql import (
     denials_query,
     deployment_peaks_query,
     peaks_query,
+    pool_health_query,
     probe_query,
 )
 
@@ -38,6 +39,7 @@ __all__ = [
     "deployment_peaks_query",
     "parse_tables",
     "peaks_query",
+    "pool_health_query",
     "probe_query",
     "query_scope",
 ]

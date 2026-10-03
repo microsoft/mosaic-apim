@@ -27,7 +27,7 @@ design.
 | Owners | Email addresses of the people responsible for it. |
 | Members | The people, applications, agents, and Entra security groups that may charge it. |
 | Keys allowed | Whether its grants may use subscription keys. Off, they use Microsoft Entra tokens only. |
-| Limits | For each model API or MCP server: per-person default limits, and an optional pooled monthly quota. |
+| Limits | For each model API, [model pool](../README.md#model-pools) model, or MCP server: per-person default limits, and an optional pooled monthly quota. |
 
 A cost center spans gateways: one cost center can hold grants on models published through any of
 them.
@@ -108,11 +108,16 @@ A **pooled monthly quota** is shared by every grant under the cost center on tha
 calls:
 - **Monthly tokens** is a second `llm-token-limit` in the model's policy, with a `Monthly` quota,
   counted per cost center and publication. A call has to fit both the caller's own limits and the
-  pool.
+  pooled quota.
 - **Monthly calls** is a `quota-by-key` over the calendar month, counted the same way.
-- MCP servers, and models whose gateway tier can't meter tokens, pool calls only.
+- MCP servers, and models whose gateway tier can't meter tokens, have a pooled call quota only.
 
-API Management counts each gateway separately, so a pool is per model, per gateway.
+API Management counts each gateway separately, so a pooled quota is per model, per gateway.
+
+A [model pool](../README.md#model-pools)'s models take per-person defaults and pooled quotas like
+any model. A model pool serves each model from deployments in several regions, and its limits
+count every call to the model, whichever deployment served it. Its pooled quota is counted per
+cost center and pool model.
 
 The gateway reports what's left in response headers:
 
@@ -138,6 +143,9 @@ same model under two cost centers, as two grants, each with its own limits, key,
   centers.
 - **Approvals:** the dialog shows the cost center the person chose, and you can charge another they
   may charge. Leaving limits empty applies the cost center's per-person defaults, when it has any.
+- **Model pools:** a grant on a [model pool](../README.md#model-pools)'s model names a cost center
+  like any other grant, and so does a request for one. A person who holds two of a pool's models
+  under one cost center has two grants, each with its own limits, and one key.
 
 ## Choose a cost center on a call
 
@@ -158,8 +166,8 @@ Without the header, the gateway uses, in order:
 2. their other direct grants, oldest first;
 3. their security-group grants, the most generous first.
 
-A key belongs to one grant, so it always charges that grant's cost center, and needs no header. The
-gateway refuses a call with **403** when:
+A key belongs to one grant, or to one model pool and cost center, so it always charges that cost
+center, and needs no header. The gateway refuses a call with **403** when:
 - the header isn't a single valid code (denial reason `cost-center`);
 - the caller holds no grant under the cost center it names (`cost-center`); or
 - a key comes with a header naming a different cost center (`cost-center-mismatch`).
@@ -182,6 +190,12 @@ Keys work only when the model's governed access accepts keys and the grant's cos
 them. Turning a cost center's keys off suspends its grants' keys at the next apply, and keeps them
 for when keys are allowed again. Security-group grants never have keys.
 
+A [model pool](../README.md#model-pools) gives each person, application, or agent one key per pool
+and cost center. It serves every model they hold directly in the pool under that cost center, so
+the same key calls any of them, and the portal says which. Creating, rotating, or deleting it from
+any of those grants acts on that one key. Revoking one of the grants ends only that model, at the
+pool's next apply, and that apply deletes the key once every grant it serves is revoked.
+
 ## Reports
 
 - **Analytics:** every tab has a **Cost center** filter. Filtered, it counts only calls through the
@@ -192,6 +206,9 @@ for when keys are allowed again. Security-group grants never have keys.
 - **Chargeback:** the CSV has **Cost center** and **Cost center name** columns after **Object ID**.
   **Unattributed calls** and **Reserved capacity with no calls** belong to no grant, so their cost
   center is empty. See [Pricing](pricing.md#chargeback).
+- **Model pools:** a [model pool](../README.md#model-pools)'s calls count under the cost center of
+  the grant that made them, like any model's, each priced at the deployment that served it. Calls
+  to a pool without governed access belong to no grant.
 - **Portal:** **Usage & cost** shows a person their own use, limits, and rate-limit use, as before.
   For each cost center they hold an enabled grant under, it adds the cost center's total this
   month, from everyone's calls, and the total on each resource they hold there that has a pooled
@@ -215,7 +232,7 @@ Administrators (`Admin`):
 | PUT | `/cost-centers/{id}/members/{principalId}` | Add a member |
 | DELETE | `/cost-centers/{id}/members/{principalId}` | Remove a member, and revoke the grants that relied on it |
 | POST | `/cost-centers/{id}/recheck` | Check again the grants its pending rechecks cover |
-| PUT | `/cost-centers/{id}/limits` | Replace its per-person defaults and pooled quotas |
+| PUT | `/cost-centers/{id}/limits` | Replace its per-person defaults and pooled quotas. A limit on a pool model names a `poolModel` resource, whose `scopeId` is the pool |
 | GET, PUT, DELETE | `/cost-centers/{id}/budget` | Its monthly budget; see [Budgets and alerts](budgets-and-alerts.md#api) |
 | GET, PUT | `/cost-center-settings` | The tenant's default cost center |
 | GET | `/entitlements?costCenter={id}` | Grants charged to a cost center |
@@ -237,7 +254,7 @@ People (`User`), for themselves only:
 
 - Group membership comes from the token at call time, so removing someone from a group takes effect
   when their token expires, usually within about an hour.
-- A pool counts per gateway. The same model on two gateways has two pools.
+- A pooled quota counts per gateway. The same model on two gateways has two pooled quotas.
 - A cost center's totals in the portal are totals, including the person's own calls. When only one
   other grant charges the cost center, or a pooled resource under it, subtracting their own use
   from that total shows the other's.

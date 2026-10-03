@@ -15,6 +15,7 @@ from mosaic_api.services.analytics.cost import (
     CostBook,
     Priced,
     add_cost,
+    part_of,
 )
 from mosaic_api.services.analytics.models import (
     AnalyticsCost,
@@ -540,29 +541,34 @@ def chargeback_rows(
         api = scope.apis.get((summary.gateway_id, api_name)) if api_name else None
         if grant is not None and str(grant.resource_kind) == "mcpServer":
             continue
-        key = api.deployment_key if api else None
-        priced = costs.price(key, summary.period, start, entry.metrics)
-        item = charge(
-            month_first(start),
-            _party(scope, grant),
-            key,
-            entry.metrics,
-            priced,
-            scope.cost_center(grant),
-        )
         shared = shares.get((summary.period, summary.period_start, summary.gateway_id, entry.key))
-        if not shared:
-            item.parts.setdefault("", _Amount()).add(entry.metrics, priced)
-            continue
-        # Each part is priced as the grant's calls are, so it carries its own share of the cost.
-        for person, metrics in shared.items():
-            item.parts.setdefault(person, _Amount()).add(
-                metrics, costs.price(key, summary.period, start, metrics)
+        for key, metrics, priced in costs.priced_parts(api, summary.period, start, entry.metrics):
+            item = charge(
+                month_first(start),
+                _party(scope, grant),
+                key,
+                metrics,
+                priced,
+                scope.cost_center(grant),
             )
-        own = _less(entry.metrics, shared.values())
-        item.parts.setdefault("", _Amount()).add(
-            own, costs.price(key, summary.period, start, own)
-        )
+            if not shared:
+                item.parts.setdefault("", _Amount()).add(metrics, priced)
+                continue
+            # Each part is priced as the grant's calls are, so it carries its own share of the
+            # cost. A pool's person keeps which member served their calls, so it's priced there.
+            mine = {
+                person: part
+                for person, used in shared.items()
+                if (part := part_of(api, key, used)).requests or part.total_tokens
+            }
+            for person, used in mine.items():
+                item.parts.setdefault(person, _Amount()).add(
+                    used, costs.price_part(api, key, summary.period, start, used)
+                )
+            own = _less(metrics, mine.values())
+            item.parts.setdefault("", _Amount()).add(
+                own, costs.price_part(api, key, summary.period, start, own)
+            )
 
     for summary, entry in entries(unattributed, scope, "unattributed"):
         start = date.fromisoformat(summary.period_start)
@@ -570,15 +576,14 @@ def chargeback_rows(
         api = scope.apis.get((summary.gateway_id, api_name))
         if api is not None and api.kind == "mcp":
             continue
-        key = api.deployment_key if api else None
-        priced = costs.price(key, summary.period, start, entry.metrics)
-        charge(
-            month_first(start),
-            (UNATTRIBUTED_PARTY, "unattributed", None),
-            key,
-            entry.metrics,
-            priced,
-        )
+        for key, metrics, priced in costs.priced_parts(api, summary.period, start, entry.metrics):
+            charge(
+                month_first(start),
+                (UNATTRIBUTED_PARTY, "unattributed", None),
+                key,
+                metrics,
+                priced,
+            )
 
     for key in costs.idle_keys():
         month = month_first(window.first_day)

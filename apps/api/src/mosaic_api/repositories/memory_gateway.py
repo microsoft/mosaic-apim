@@ -15,6 +15,7 @@ from mosaic_api.domain import (
     utc_now,
 )
 from mosaic_api.errors import ConflictError
+from mosaic_api.model_pools import ModelPool
 from mosaic_api.observed import ObservedEntity
 from mosaic_api.repositories.observation_writes import GATEWAY_AUTHORED_FIELDS, merge_observation
 
@@ -32,6 +33,7 @@ class InMemoryGatewayRepository:
         self.mcp_servers: dict[str, McpServer] = {}
         self.publications: dict[str, Publication] = {}
         self.mcp_publications: dict[str, McpPublication] = {}
+        self.model_pools: dict[str, ModelPool] = {}
         self.publish_plans: dict[str, PublishPlan] = {}
         self.publish_runs: dict[str, PublishRun] = {}
         self.publication_locks: dict[tuple[str, str], str] = {}
@@ -140,6 +142,12 @@ class InMemoryGatewayRepository:
             if item.tenant_id == gateway.tenant_id and item.gateway_id == gateway.id
         ]:
             self.mcp_publications.pop(publication_key, None)
+        for pool_id in [
+            item.id
+            for item in self.model_pools.values()
+            if item.tenant_id == gateway.tenant_id and item.gateway_id == gateway.id
+        ]:
+            self.model_pools.pop(pool_id, None)
         self.gateways.pop(gateway.id, None)
         self._gateway_versions.pop(gateway.id, None)
         self._deleted_gateways.add(gateway.id)
@@ -332,6 +340,34 @@ class InMemoryGatewayRepository:
         self, publication: McpPublication, audit_event: AuditEvent
     ) -> None:
         self.mcp_publications.pop(publication.id, None)
+        self.audit_events[audit_event.id] = audit_event
+
+    async def list_model_pools(
+        self, tenant_id: str, *, gateway_id: str | None = None
+    ) -> list[ModelPool]:
+        items = [
+            item
+            for item in self.model_pools.values()
+            if item.tenant_id == tenant_id
+            and (gateway_id is None or item.gateway_id == gateway_id)
+        ]
+        return sorted(items, key=lambda item: item.display_name.casefold())
+
+    async def get_model_pool(self, tenant_id: str, pool_id: str) -> ModelPool | None:
+        item = self.model_pools.get(pool_id)
+        return item if item and item.tenant_id == tenant_id else None
+
+    async def save_model_pool(self, pool: ModelPool, audit_event: AuditEvent) -> ModelPool:
+        self.model_pools[pool.id] = pool
+        self.audit_events[audit_event.id] = audit_event
+        return pool
+
+    async def record_model_pool_state(self, pool: ModelPool) -> ModelPool:
+        self.model_pools[pool.id] = pool
+        return pool
+
+    async def delete_model_pool(self, pool: ModelPool, audit_event: AuditEvent) -> None:
+        self.model_pools.pop(pool.id, None)
         self.audit_events[audit_event.id] = audit_event
 
     async def save_publish_plan(self, plan: PublishPlan) -> PublishPlan:

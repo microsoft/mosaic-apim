@@ -129,8 +129,8 @@ NOT_CONFIGURED = (
     "Set MOSAIC_USAGE_SOURCE to rollups to turn it on."
 )
 NO_GATEWAYS = (
-    "No gateway in scope has a model API or MCP server MOSAIC governs, so there are no calls to "
-    "report."
+    "No gateway in scope has a model API, model pool, or MCP server MOSAIC governs, so there are "
+    "no calls to report."
 )
 PENDING = (
     "MOSAIC hasn't rolled up any gateway telemetry yet. Figures appear after the first rollup, "
@@ -162,6 +162,43 @@ HYGIENE_NOTE = "Access hygiene always covers the last 30 days, whatever range is
 NO_PRICES = "This deployment has no price list, so MOSAIC can't put a cost on usage."
 
 Reader = Callable[..., Awaitable[AnalyticsReport]]
+
+
+def _with_past_members(api: RolledUpApi, remembered: RolledUpApi | None) -> RolledUpApi:
+    """A governed pool's API with the members its rollups remember, so their calls keep a price."""
+
+    if api.kind != "pool" or remembered is None or not remembered.members:
+        return api
+    current = {member.deployment_key.casefold() for member in api.members}
+    past = [
+        member
+        for member in remembered.members
+        if member.deployment_key.casefold() not in current
+    ]
+    return api.model_copy(update={"members": [*api.members, *past]}) if past else api
+
+
+def _deployment_split(api: RolledUpApi, metrics: UsageMetrics) -> list[tuple[str, UsageMetrics]]:
+    """A grant's calls by the deployment that served them, keyed as the deployment figures are.
+
+    A pool's calls MOSAIC couldn't place on a member reach no deployment it can name.
+    """
+
+    if api.kind != "pool":
+        key = api.deployment_key
+        return [(key, metrics)] if key else []
+    return [
+        (
+            key,
+            UsageMetrics(
+                requests=usage.requests,
+                prompt_tokens=usage.prompt_tokens,
+                completion_tokens=usage.completion_tokens,
+                total_tokens=usage.total_tokens,
+            ),
+        )
+        for key, usage in sorted((metrics.members or {}).items())
+    ]
 
 
 def _day(value: date) -> str:
@@ -231,7 +268,9 @@ class AnalyticsService:
                 apis[(state.gateway_id, api.api_name)] = api
         for gateway_id, current in governed.items():
             for api in current:
-                apis[(gateway_id, api.api_name)] = api
+                apis[(gateway_id, api.api_name)] = _with_past_members(
+                    api, apis.get((gateway_id, api.api_name))
+                )
         allowed_apis: set[tuple[str, str]] | None = None
         resource_ids: set[str] | None = None
         if filters.resource_id is not None:
@@ -424,11 +463,19 @@ class AnalyticsService:
         )
         found = [summary for summary in summaries if summary.dimension in kept]
         if rebuilt:
+            # A pool's API calls several models, so its grants are named from what MOSAIC
+            # observed of the deployments that served them.
+            observed = (
+                await self._deployments(scope)
+                if "model" in rebuilt and any(api.kind == "pool" for api in scope.apis.values())
+                else {}
+            )
             found.extend(
                 self._from_grants(
                     scope,
                     [summary for summary in summaries if summary.dimension == "grant"],
                     rebuilt,
+                    observed,
                 )
             )
         return found
@@ -438,6 +485,7 @@ class AnalyticsService:
         scope: Scope,
         grants: Sequence[UsageSummary],
         dimensions: Sequence[SummaryDimension],
+        observed: dict[str, DeploymentInfo] | None = None,
     ) -> list[UsageSummary]:
         groups: dict[tuple[SummaryPeriod, str, str, SummaryDimension], dict[str, UsageMetrics]]
         groups = defaultdict(lambda: defaultdict(UsageMetrics))
@@ -445,18 +493,28 @@ class AnalyticsService:
             base = (summary.period, summary.period_start, summary.gateway_id)
             if "total" in dimensions:
                 groups[(*base, "total")][""].add(entry.metrics)
-            api = scope.grant_api(summary.gateway_id, scope.grants.get(entry.key))
+            grant = scope.grants.get(entry.key)
+            api = scope.grant_api(summary.gateway_id, grant)
             if api is None:
                 continue
             if "api" in dimensions:
                 groups[(*base, "api")][api.api_name].add(entry.metrics)
-            deployment = api.deployment_key
-            if deployment and "deployment" in dimensions:
-                groups[(*base, "deployment")][deployment].add(entry.metrics)
+            if "deployment" in dimensions:
+                for key, usage in _deployment_split(api, entry.metrics):
+                    groups[(*base, "deployment")][key].add(usage)
             if "model" in dimensions and api.kind == "model":
                 # A grant's figures name no model, so they count under the one MOSAIC knows the
                 # API calls, as any call whose LLM log named none does.
                 groups[(*base, "model")][f"|{api.api_name}"].add(entry.metrics)
+            elif "model" in dimensions and api.kind == "pool":
+                # A pool grant is one of the pool's models, whichever member served it: the model
+                # those members run, else the pool model granted, else none MOSAIC can name.
+                served = ((observed or {}).get(key) for key in entry.metrics.members or {})
+                named = (info.model_name for info in served if info and info.model_name)
+                model = next(named, None) or (grant.resource_name if grant else None) or ""
+                groups[(*base, "model")][f"{model.casefold()}|{api.api_name}"].add(
+                    entry.metrics
+                )
         return [
             UsageSummary(
                 id=f"costcenter-{dimension}-{gateway_id}-{period}-{period_start}",
@@ -561,7 +619,7 @@ class AnalyticsService:
         if self._pricing is None or not self._configured:
             return None
         endpoint_ids = {
-            api.model_endpoint_id for api in scope.apis.values() if api.model_endpoint_id
+            endpoint_id for api in scope.apis.values() for endpoint_id in api.endpoint_ids()
         }
         pricer = await self._pricing.pricer(scope.tenant_id, endpoint_ids)
         first = min(window.previous_first_day, window.first_day, month_first(window.today))
@@ -652,12 +710,12 @@ class AnalyticsService:
         )
 
     async def _deployments(self, scope: Scope) -> dict[str, DeploymentInfo]:
-        """What MOSAIC last observed of each deployment a governed model API calls."""
+        """What MOSAIC last observed of each deployment a governed model API or pool calls."""
 
         if self._endpoints is None:
             return {}
         endpoint_ids = sorted(
-            {api.model_endpoint_id for api in scope.apis.values() if api.model_endpoint_id}
+            {endpoint_id for api in scope.apis.values() for endpoint_id in api.endpoint_ids()}
         )
         if not endpoint_ids:
             return {}

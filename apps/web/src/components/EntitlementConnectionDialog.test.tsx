@@ -3,8 +3,9 @@ import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, useNavigate, type NavigateFunction } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { GOVERNED_COUNTER_KEY } from '../entitlement-limits'
 import { connectionInfo, directGrant } from '../test/model-access'
-import type { Entitlement, KeyRevealResult } from '../types'
+import type { Entitlement, KeyRevealResult, ModelConnection } from '../types'
 import { EntitlementConnectionDialog } from './EntitlementConnectionDialog'
 
 const auth = vi.hoisted(() => ({
@@ -579,5 +580,96 @@ describe('EntitlementConnectionDialog', () => {
     expect(screen.queryByText(revealed.key)).not.toBeInTheDocument()
     expect(secrets()).toHaveLength(0)
     expectNoCachedSecret(queryClient)
+  })
+
+  describe('pool models', () => {
+    const poolGrant: Entitlement = {
+      ...directGrant,
+      id: 'pool_grant',
+      resource: { kind: 'poolModel', id: 'poolmodel_opus', scopeId: 'modelpool_anthropic' },
+      enforcement: {
+        tokens: { counterKeyExpression: GOVERNED_COUNTER_KEY, estimatePromptTokens: true, tokensPerMinute: 20000 },
+      },
+      // A pool grant has no binding: the pool's last apply is what makes it trusted.
+      binding: null,
+      runtime: {
+        ...directGrant.runtime!,
+        publicationId: 'modelpool_anthropic',
+        subscriptionName: 'mosaic-pool-anthropic-claude-megan',
+        keyExists: true,
+      },
+    }
+    const poolConnection: ModelConnection = {
+      ...connectionInfo,
+      entitlementId: poolGrant.id,
+      publicationId: 'modelpool_anthropic',
+      gatewayId: 'gateway_contoso',
+      endpoint: 'https://gateway.example.test/pools/anthropic',
+      deploymentName: 'claude-opus-4-5',
+      poolId: 'modelpool_anthropic',
+      poolName: 'Anthropic Claude',
+      poolModelId: 'poolmodel_opus',
+      keySharedWith: [{ poolModelId: 'poolmodel_sonnet', displayName: 'Claude Sonnet 4.5', publicName: 'claude-sonnet-4-5' }],
+      tokenMetering: true,
+      runtime: poolGrant.runtime,
+      publicationLimits: { counterKeyExpression: 'pool', estimatePromptTokens: true, tokensPerMinute: 200000 },
+      grantLimits: poolGrant.enforcement,
+      keyExists: true,
+    }
+
+    it('names the model to send and its pool, the pool’s shared limit, and the models its key also serves', async () => {
+      const user = userEvent.setup()
+      api.getEntitlementConnection.mockResolvedValue(poolConnection)
+      api.revealEntitlementKey.mockResolvedValue({
+        entitlementId: poolGrant.id,
+        subscriptionName: 'mosaic-pool-anthropic-claude-megan',
+        slot: 'primary',
+        key: 'test-only-pool-secret',
+      })
+      renderDialog(poolGrant)
+
+      expect(await screen.findByText('Model name to send')).toBeVisible()
+      expect(screen.getByText('claude-opus-4-5')).toBeVisible()
+      expect(screen.queryByText('Deployment')).not.toBeInTheDocument()
+      expect(screen.getByText('Pool')).toBeVisible()
+      expect(screen.getByText('Anthropic Claude')).toBeVisible()
+      expect(screen.getByText('Limits usage to 20,000 tokens per minute.')).toBeVisible()
+      expect(screen.getByText('Pool: Every caller shares 200,000 tokens per minute.')).toBeVisible()
+      expect(screen.getByText(
+        "This grant's key also serves Claude Sonnet 4.5 in the same pool, because one key serves every model its holder is granted there under one cost center.",
+      )).toBeVisible()
+
+      // The pool's last apply, not a binding, makes the key safe to reveal.
+      const primary = screen.getByRole('button', { name: 'Reveal primary key' })
+      await waitFor(() => expect(primary).toBeEnabled())
+      await user.click(primary)
+      expect(await screen.findByText('test-only-pool-secret')).toBeVisible()
+      expect(api.revealEntitlementKey).toHaveBeenCalledWith(poolGrant.id, 'primary', expect.any(AbortSignal))
+
+      await user.click(screen.getByRole('button', { name: 'Rotate secondary key' }))
+      expect(screen.getByText(
+        'Clients using the old secondary value stop working now. The other slot keeps working. The same key serves Claude Sonnet 4.5, so this changes those models too.',
+      )).toBeVisible()
+    })
+
+    it('says a pool key waits for the pool’s last apply', async () => {
+      api.getEntitlementConnection.mockResolvedValue({
+        ...poolConnection,
+        runtime: { ...poolConnection.runtime!, status: 'pending' },
+      })
+      renderDialog({ ...poolGrant, runtime: { ...poolGrant.runtime!, status: 'pending' } })
+
+      expect(await screen.findByText(
+        'Key reveal requires an enabled direct grant that the pool’s last apply enforces, with key authentication and allowed cost-center keys.',
+      )).toBeVisible()
+      expect(screen.getByRole('button', { name: 'Reveal primary key' })).toBeDisabled()
+    })
+
+    it('says when the gateway can’t count the pool model’s tokens', async () => {
+      api.getEntitlementConnection.mockResolvedValue({ ...poolConnection, tokenMetering: false })
+      renderDialog(poolGrant)
+
+      expect(await screen.findByText("Pool: This gateway's tier can't count this model's tokens.")).toBeVisible()
+    })
   })
 })

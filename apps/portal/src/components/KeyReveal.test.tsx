@@ -8,6 +8,7 @@ import {
   connection,
   directGrant,
   persistedText,
+  poolConnection,
   revealedPrimary,
   revealedSecondary,
   securityGroupConnection,
@@ -465,5 +466,71 @@ describe('KeyReveal', () => {
     expect(screen.queryByRole('button', { name: 'Show primary key' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Show secondary key' })).not.toBeInTheDocument()
     expect(api.revealMyEntitlementKey).not.toHaveBeenCalled()
+  })
+
+  describe('a key several models share', () => {
+    const shared = { ...poolConnection, entitlementId: directGrant.id }
+    const sonnet = poolConnection.keySharedWith![0]
+    const haiku = { poolModelId: 'pool_model_haiku', displayName: 'Claude Haiku', publicName: 'claude-haiku-4-5' }
+
+    it('says which other models the key works for', () => {
+      renderKeyReveal(shared)
+
+      expect(screen.getByText(/This key also works for/)).toHaveTextContent(
+        'This key also works for Claude Sonnet, which you hold under the same cost center. Rotating or deleting it affects them too.',
+      )
+    })
+
+    it('lists every model that shares the key', () => {
+      renderKeyReveal({ ...shared, keySharedWith: [sonnet, haiku] })
+
+      expect(screen.getByText(/This key also works for/)).toHaveTextContent(
+        /^This key also works for Claude Sonnet and Claude Haiku, which/,
+      )
+    })
+
+    it('names a model by its public name when it has no display name', () => {
+      renderKeyReveal({ ...shared, keySharedWith: [{ ...sonnet, displayName: ' ' }] })
+
+      expect(screen.getByText(/This key also works for/)).toHaveTextContent(
+        /^This key also works for claude-sonnet-4-5, which/,
+      )
+    })
+
+    it('says a new key will work for the other models too', () => {
+      renderKeyReveal({ ...shared, keyExists: false })
+
+      expect(screen.getByText(/A key you create here/)).toHaveTextContent(
+        /^A key you create here also works for Claude Sonnet, which you hold under the same cost center\.$/,
+      )
+      expect(screen.queryByText(/This key also works for/)).not.toBeInTheDocument()
+    })
+
+    it('warns that rotating or deleting the key stops apps calling the other models too', async () => {
+      const user = userEvent.setup()
+      renderKeyReveal(shared)
+
+      await user.click(screen.getByRole('button', { name: 'Rotate primary key' }))
+      expect(screen.getByRole('group', { name: 'Confirm rotate primary key' })).toHaveTextContent(
+        'Apps using the old primary value stop working, including apps that call Claude Sonnet with it. The other slot keeps working.',
+      )
+      await user.click(screen.getByRole('button', { name: 'Cancel' }))
+
+      await user.click(screen.getByRole('button', { name: 'Delete key' }))
+      expect(screen.getByRole('group', { name: 'Confirm delete key' })).toHaveTextContent(
+        'Every app using this key stops working, including apps that call Claude Sonnet with it. You can create a new one later.',
+      )
+    })
+
+    it('says nothing about sharing when no other model shares the key', async () => {
+      const user = userEvent.setup()
+      renderKeyReveal({ ...shared, keySharedWith: [] })
+
+      expect(screen.queryByText(/also works for/)).not.toBeInTheDocument()
+      await user.click(screen.getByRole('button', { name: 'Delete key' }))
+      expect(screen.getByRole('group', { name: 'Confirm delete key' })).toHaveTextContent(
+        'Every app using this key stops working. You can create a new one later.',
+      )
+    })
   })
 })

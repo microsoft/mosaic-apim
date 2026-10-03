@@ -15,10 +15,12 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 from mosaic_api.errors import ValidationError
-from mosaic_api.usage_telemetry import LATENCY_BUCKETS_MS
+from mosaic_api.usage_telemetry import LATENCY_BUCKETS_MS, PoolMembers, only_member
 
 API_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$")
 DEPLOYMENT_KEY = re.compile(r"^[A-Za-z0-9._:/-]{1,300}$")
+# A lowercased backend name, host or deployment name spliced into a pool's member lookups.
+_NAME_PART = re.compile(r"^[a-z0-9][a-z0-9._-]{0,255}$")
 # An LLM log row can be written a little after its gateway log row, as a streamed response ends.
 # The LLM leg reads this much either side of the window so a call near midnight keeps its tokens.
 LLM_LOG_MARGIN = timedelta(hours=1)
@@ -101,10 +103,12 @@ let gatewayRows = union isfuzzy=true
         ApimSubscriptionId = tostring(ApimSubscriptionId), ResponseCode = toint(ResponseCode),
         BackendResponseCode = toint(BackendResponseCode), TotalTime = tolong(TotalTime),
         BackendTime = tolong(BackendTime), LastErrorSource = tostring(LastErrorSource),
+        BackendId = tostring(BackendId), BackendUrl = tostring(BackendUrl),
         Traces = tostring(TraceRecords)),
     (datatable(TimeGenerated: datetime, CorrelationId: string, ApiId: string,
         ApimSubscriptionId: string, ResponseCode: int, BackendResponseCode: int, TotalTime: long,
-        BackendTime: long, LastErrorSource: string, Traces: string)[])
+        BackendTime: long, LastErrorSource: string, BackendId: string, BackendUrl: string,
+        Traces: string)[])
 | extend api = tolower(extract(@"([^/;]+)(?:;rev=[0-9]+)?$", 1, ApiId))
 | where api in (mosaicApis)
 | extend attribution = extract(@"mosaic-attribution ([^""\\\\]*)", 1, Traces),
@@ -213,23 +217,48 @@ def _on_behalf_columns() -> str:
 """
 
 
-def calls_query(window: QueryWindow, apis: Iterable[str]) -> str:
+def _pool_backends(pool_apis: Iterable[str]) -> tuple[str, str]:
+    """For model pool APIs, the backend that served each call: the `let`, and the group-by columns.
+
+    API Management picks a pool's member, so the attribution trace can't name it. The backend ID
+    and URL can. Other APIs answer "" for all three, so their rows don't split.
+    """
+
+    pools = _api_names(pool_apis)
+    if not pools:
+        return "", ""
+    return (
+        f"let poolApis = {_dynamic(pools)};\n",
+        """| extend pooled = api in (poolApis)
+| extend backendId = iff(pooled, tolower(BackendId), ""),
+    backendUrl = iff(pooled, tolower(BackendUrl), "")
+| extend backendHost = extract(@"^[a-z][a-z0-9+.-]*://([^/:?#]+)", 1, backendUrl),
+    backendDeployment = extract(@"/openai/deployments/([^/?#]+)", 1, backendUrl)
+""",
+    )
+
+
+def calls_query(window: QueryWindow, apis: Iterable[str], pool_apis: Iterable[str] = ()) -> str:
     """Admitted calls by hour, trace keys, subscription, API and model deployment.
 
     Refused calls are left to :func:`denials_query`. 429 is a rate limit, and a 403 raised by a
     token-limit or quota policy is a spent quota. Tokens count only for calls the model deployment
     served. A model call an MCP server's application made also says which MCP call it served; see
-    :func:`_on_behalf_columns`.
+    :func:`_on_behalf_columns`. Calls to the ``pool_apis`` are also grouped by the backend that
+    served them.
     """
 
+    pool_let, pool_columns = _pool_backends(pool_apis)
+    by_backend = ",\n        backendId, backendHost, backendDeployment" if pool_let else ""
     return (
         _gateway_rows(window, apis)
         + _llm_rows(window)
+        + pool_let
         + _mcp_calls(window)
         + f"""gatewayRows
 | where isempty(reason)
 | join kind=leftouter llmRows on CorrelationId
-{_SERVED_TOKENS}{_ATTRIBUTION_KEYS}{_on_behalf_columns()}| extend status = case(
+{_SERVED_TOKENS}{_ATTRIBUTION_KEYS}{_on_behalf_columns()}{pool_columns}| extend status = case(
     ResponseCode == 429, "throttled",
     ResponseCode == 403 and (LastErrorSource contains "token-limit"
         or LastErrorSource contains "quota"), "quota",
@@ -253,7 +282,7 @@ def calls_query(window: QueryWindow, apis: Iterable[str]) -> str:
     {_latency_counts()},
     lastSeen = max(TimeGenerated)
     by hour = hourofday(TimeGenerated), v, g, m, a, api, subscription,
-        deployment = llmDeployment, model = llmModel, onBehalf, og, om, oi, oapi
+        deployment = llmDeployment, model = llmModel, onBehalf, og, om, oi, oapi{by_backend}
 """
     )
 
@@ -280,10 +309,16 @@ def peaks_query(window: QueryWindow, apis: Iterable[str]) -> str:
     )
 
 
-def deployment_peaks_query(window: QueryWindow, deployments: Mapping[str, str]) -> str:
+def deployment_peaks_query(
+    window: QueryWindow,
+    deployments: Mapping[str, str],
+    pools: Mapping[str, PoolMembers] | None = None,
+) -> str:
     """Each hour's busiest minute per model deployment, across every caller.
 
-    ``deployments`` maps API names to the deployment key they front. Requests count only calls
+    ``deployments`` maps API names to the deployment key they front. ``pools`` maps model pool
+    API names to how their calls are placed on a member deployment, which the query repeats from
+    each call's backend just as :meth:`PoolMembers.member_for` does. Requests count only calls
     that reached the model, and tokens only calls it served.
     """
 
@@ -292,19 +327,154 @@ def deployment_peaks_query(window: QueryWindow, deployments: Mapping[str, str]) 
         if not DEPLOYMENT_KEY.fullmatch(key):
             raise ValidationError("A deployment key MOSAIC would query is not valid")
         mapping[_api_names([api])[0]] = key
+    placement = _member_placement(pools) if pools else {}
+    pooled = _api_names(pools or {})
+    member_lets = "".join(
+        f"let {name} = {_dynamic(dict(sorted(lookup.items())))};\n"
+        for name, lookup in placement.items()
+    )
+    deployment_key = (
+        """coalesce(tostring(deploymentOf[api]),
+    tostring(memberByBackend[strcat(api, "|", backendId)]),
+    iff(isnotnull(memberByHost[hostKey]),
+        coalesce(tostring(memberByRoute[strcat(hostKey, "|", backendDeployment)]),
+            tostring(memberByHost[hostKey])),
+        tostring(memberByDeployment[strcat(api, "|", backendDeployment)])))"""
+        if pooled
+        else "tostring(deploymentOf[api])"
+    )
+    member_columns = (
+        """| extend backendId = tolower(BackendId), backendUrl = tolower(BackendUrl)
+| extend backendHost = extract(@"^[a-z][a-z0-9+.-]*://([^/:?#]+)", 1, backendUrl),
+    backendDeployment = tolower(coalesce(
+        extract(@"/openai/deployments/([^/?#]+)", 1, backendUrl), llmDeployment))
+| extend hostKey = strcat(api, "|", backendHost)
+"""
+        if pooled
+        else ""
+    )
     return (
-        _gateway_rows(window, mapping)
+        _gateway_rows(window, [*mapping, *pooled])
         + _llm_rows(window)
         + f"""let deploymentOf = {_dynamic(dict(sorted(mapping.items())))};
-gatewayRows
+{member_lets}gatewayRows
 | where isempty(reason)
 | join kind=leftouter llmRows on CorrelationId
-{_SERVED_TOKENS}| extend deploymentKey = tostring(deploymentOf[api])
+{_SERVED_TOKENS}{member_columns}| extend deploymentKey = {deployment_key}
 | where isnotempty(deploymentKey)
 | summarize tokens = sum(totalTokens), requests = countif(BackendResponseCode > 0)
     by deploymentKey, minute = bin(TimeGenerated, 1m)
 | summarize peakTokens = max(tokens), peakRequests = max(requests)
     by deploymentKey, hour = hourofday(minute)
+"""
+    )
+
+
+def _member_placement(pools: Mapping[str, PoolMembers]) -> dict[str, dict[str, str]]:
+    """Each pool's member placement as KQL lookups, keyed by API name and then the call's parts.
+
+    ``memberByHost`` names a host's member, or "" when it has several, so a host the pool uses is
+    never placed by deployment alone. A part that isn't a plain name is left out, so the calls it
+    would place stay off every member's peaks.
+    """
+
+    by_backend: dict[str, str] = {}
+    by_route: dict[str, str] = {}
+    by_host: dict[str, str] = {}
+    by_deployment: dict[str, str] = {}
+    for api, members in pools.items():
+        name = _api_names([api])[0]
+        for backend, key in members.by_backend.items():
+            if _NAME_PART.fullmatch(backend) and DEPLOYMENT_KEY.fullmatch(key):
+                by_backend[f"{name}|{backend}"] = key
+        for (host, deployment), key in members.by_route.items():
+            if (
+                _NAME_PART.fullmatch(host)
+                and _NAME_PART.fullmatch(deployment)
+                and DEPLOYMENT_KEY.fullmatch(key)
+            ):
+                by_route[f"{name}|{host}|{deployment}"] = key
+        for host, keys in members.by_host.items():
+            if _NAME_PART.fullmatch(host):
+                only = only_member(keys)
+                by_host[f"{name}|{host}"] = only if only and DEPLOYMENT_KEY.fullmatch(only) else ""
+        for deployment, keys in members.by_deployment.items():
+            only = only_member(keys)
+            if only and _NAME_PART.fullmatch(deployment) and DEPLOYMENT_KEY.fullmatch(only):
+                by_deployment[f"{name}|{deployment}"] = only
+    return {
+        "memberByBackend": by_backend,
+        "memberByRoute": by_route,
+        "memberByHost": by_host,
+        "memberByDeployment": by_deployment,
+    }
+
+
+def pool_health_query(window: QueryWindow, api: str, *, trip_count: int, trip_errors: bool) -> str:
+    """One model pool's traced attempts, with the minutes they'd have tripped a breaker.
+
+    The pool's policy writes a ``mosaic-attempt`` trace after each attempt. Each row of the result
+    has a ``rowKind``:
+
+    - ``attempts``: attempts and how they were answered, by pool model (``m``), the backend the
+      attempt was sent to (``b``), the host and deployment it called (``h`` and ``d``), and
+      whether the backend pool had no member left (``exhausted``). A call's last attempt is the
+      one that answered it.
+    - ``trips``: the minutes in which those attempts would have tripped a member's breaker, which
+      takes ``trip_count`` 429s, or with ``trip_errors`` 429s and server errors, in a minute.
+    - ``untraced``: admitted calls that reached a backend without writing a trace, which a policy
+      from before the trace sends.
+    """
+
+    if isinstance(trip_count, bool) or not isinstance(trip_count, int) or trip_count < 1:
+        raise ValidationError("A breaker's trip count must be a positive whole number")
+    tripping = "throttled + failed" if trip_errors else "throttled"
+    # A trace message ends at the quote that closes it in TraceRecords. A serializer may write a
+    # path's slashes as \/, so they're unescaped before the path is read.
+    return (
+        _gateway_rows(window, [api])
+        + f"""let poolCalls = gatewayRows
+| where isempty(reason)
+| extend attemptTraces = extract_all(@"mosaic-attempt ([^""]*)", Traces);
+let poolAttempts = poolCalls
+| extend attemptCount = array_length(attemptTraces)
+| where attemptCount > 0
+| mv-expand with_itemindex = attemptIndex attemptTrace = attemptTraces to typeof(string)
+| extend attemptTrace = replace_string(attemptTrace, @"\\/", "/")
+| extend v = extract(@"(?:^| )v=([^ ]*)", 1, attemptTrace),
+    m = tolower(extract(@"(?:^| )m=([^ ]*)", 1, attemptTrace)),
+    b = tolower(extract(@"(?:^| )b=([^ ]*)", 1, attemptTrace)),
+    s = toint(extract(@"(?:^| )s=([^ ]*)", 1, attemptTrace)),
+    exhausted = extract(@"(?:^| )e=([^ ]*)", 1, attemptTrace) == "1",
+    h = tolower(extract(@"(?:^| )h=([^ ]*)", 1, attemptTrace)),
+    p = tolower(extract(@"(?:^| )p=([^ ]*)", 1, attemptTrace))
+| where v == "1"
+| extend d = extract(@"/openai/deployments/([^/?#]+)", 1, p),
+    lastAttempt = attemptIndex == attemptCount - 1;
+union
+    (poolAttempts
+    | summarize attempts = count(),
+        succeeded = countif(s >= 200 and s < 400),
+        throttled = countif(s == 429),
+        failed = countif(s >= 500 or s <= 0),
+        clientErrors = countif(s >= 400 and s < 500 and s != 429),
+        served = countif(lastAttempt),
+        servedOk = countif(lastAttempt and s >= 200 and s < 400),
+        servedUnavailable = countif(lastAttempt and (s == 429 or s >= 500 or s <= 0)),
+        retried = countif(lastAttempt and attemptIndex > 0),
+        lastSeen = max(TimeGenerated)
+        by m, b, h, d, exhausted
+    | extend rowKind = "attempts"),
+    (poolAttempts
+    | where not(exhausted)
+    | summarize throttled = countif(s == 429), failed = countif(s >= 500 and s < 600)
+        by m, b, h, d, minute = bin(TimeGenerated, 1m)
+    | summarize trippedMinutes = countif({tripping} >= {trip_count}) by m, b, h, d
+    | extend rowKind = "trips"),
+    (poolCalls
+    | where coalesce(array_length(attemptTraces), 0) == 0 and isnotempty(BackendUrl)
+    | summarize requests = count(), lastSeen = max(TimeGenerated)
+    | extend rowKind = "untraced")
 """
     )
 

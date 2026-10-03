@@ -1,0 +1,26 @@
+.header {
+  display: grid;
+  gap: 4px;
+  max-width: 72ch;
+}
+
+.cellStack {
+  display: grid;
+  gap: 4px;
+  justify-items: start;
+}
+
+.poolLink {
+  color: var(--mosaic-primary);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.poolLink:hover,
+.poolLink:focus-visible {
+  text-decoration: underline;
+}
+
+.muted {
+  color: var(--colorNeutralForeground3);
+}

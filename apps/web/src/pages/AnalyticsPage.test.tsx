@@ -34,6 +34,7 @@ const api = {
   listGateways: vi.fn(),
   listModelApis: vi.fn(),
   listMcpServers: vi.fn(),
+  listModelPools: vi.fn(),
   listCostCenters: vi.fn(),
   getAnalyticsOverview: vi.fn(),
   getAnalyticsConsumers: vi.fn(),
@@ -76,6 +77,7 @@ describe('AnalyticsPage', () => {
     api.listGateways.mockResolvedValue([{ id: 'gateway-prod', name: 'Production gateway' }])
     api.listModelApis.mockResolvedValue([{ id: 'model-api-chat', displayName: 'Chat' }])
     api.listMcpServers.mockResolvedValue([{ id: 'mcp-tickets', displayName: 'Ticket tools' }])
+    api.listModelPools.mockResolvedValue([])
     api.listCostCenters.mockResolvedValue([{ id: 'cc-support', name: 'Support', code: 'support' }])
     api.getAnalyticsOverview.mockResolvedValue(overviewFixture)
     api.getAnalyticsConsumers.mockResolvedValue(consumersFixture)
@@ -126,13 +128,34 @@ describe('AnalyticsPage', () => {
     await waitFor(() => expect(api.exportAnalytics).toHaveBeenCalledWith('trend', expect.objectContaining({ costCenterId: 'cc-support' })))
   })
 
+  it('offers model pools whose API is in API Management as resources', async () => {
+    api.listModelPools.mockResolvedValue([
+      { id: 'pool-claude', displayName: 'Claude', apiName: 'claude', resources: [{ kind: 'api', name: 'claude', createdByMosaic: true }] },
+      { id: 'pool-draft', displayName: 'Draft pool', apiName: 'draft-pool', resources: [] },
+    ])
+    const user = userEvent.setup()
+    renderPage()
+
+    await screen.findByText('Alice Admin')
+    const resource = screen.getByLabelText('Resource')
+    const pools = await within(resource).findByRole('group', { name: 'Model pools' })
+    expect(within(pools).getByRole('option', { name: 'Claude' })).toBeInTheDocument()
+    expect(within(resource).getByRole('group', { name: 'Model APIs' })).toBeInTheDocument()
+    expect(within(resource).getByRole('group', { name: 'MCP servers' })).toBeInTheDocument()
+    // A pool that has never been applied has no API to report on.
+    expect(within(resource).queryByRole('option', { name: 'Draft pool' })).not.toBeInTheDocument()
+
+    await user.selectOptions(resource, 'pool-claude')
+    await waitFor(() => expect(api.getAnalyticsOverview).toHaveBeenLastCalledWith(expect.objectContaining({ resourceId: 'pool-claude' })))
+  })
+
   it.each([
     ['Consumers', 'Grants', 'Scheduling Assistant'],
     ['Models', 'Deployments', 'chat-prod'],
     ['Reliability', 'Denials by reason', 'No grant for this caller'],
     ['Limits', 'Grant limits', '15,000 / 20,000'],
     ['Access hygiene', 'Unused keys', 'Platform team'],
-    ['Unattributed', 'Unattributed calls', "Publication's shared key"],
+    ['Unattributed', 'Unattributed calls', 'Shared key'],
   ])('renders the %s tab from live fixtures', async (label, heading, text) => {
     const user = userEvent.setup()
     renderPage()

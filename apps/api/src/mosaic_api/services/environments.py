@@ -335,8 +335,18 @@ class EnvironmentService:
             if gateway_ids or mcp_endpoint_ids
             else frozenset()
         )
+        pool_ids = (
+            frozenset(
+                pool.id
+                for pool in await self._gateways.list_model_pools(tenant_id)
+                if pool.gateway_id in gateway_ids
+                or not pool.member_endpoint_ids().isdisjoint(endpoint_ids)
+            )
+            if gateway_ids or endpoint_ids
+            else frozenset()
+        )
         return AssignmentScopes(
-            gateway_ids, endpoint_ids, model_publication_ids | mcp_publication_ids
+            gateway_ids, endpoint_ids, model_publication_ids | mcp_publication_ids | pool_ids
         )
 
     def _validate_assignment_keys(
@@ -559,6 +569,11 @@ class EnvironmentService:
             if change_by_gateway
             else {}
         )
+        model_pools = (
+            {item.id: item for item in await self._gateways.list_model_pools(tenant_id)}
+            if change_by_gateway
+            else {}
+        )
         product_names: dict[tuple[str, str], str] = {}
         for gateway_id in change_by_gateway:
             for product in await self._gateways.list_observed(
@@ -597,6 +612,13 @@ class EnvironmentService:
                 deployment_name = deployment_names.get((scope_id, resource.id))
                 if moved is not None and deployment_name is not None:
                     resource_name = f"{deployment_name} on {moved.resource.name}"
+            elif resource.kind == EntitlementResourceKind.POOL_MODEL:
+                model_pool = model_pools.get(scope_id)
+                pool_model = model_pool.pool_model(resource.id) if model_pool else None
+                if model_pool is not None:
+                    moved = change_by_gateway.get(model_pool.gateway_id)
+                    if pool_model is not None:
+                        resource_name = f"{pool_model.display_name} in {model_pool.display_name}"
             if moved is None:
                 continue
             affected.append(
@@ -706,6 +728,24 @@ class EnvironmentService:
             verdict = permits(catalog, gateway_env, endpoint_env)
             if verdict.level == VerdictLevel.WARNING and verdict.reason not in warnings:
                 warnings.append(verdict.reason)
+        for pool in await self._gateways.list_model_pools(tenant_id):
+            gateway = gateways.get(pool.gateway_id)
+            if gateway is None:
+                continue
+            gateway_env = gateway_targets.get(gateway.id, gateway.environment)
+            for endpoint_id in sorted(pool.member_endpoint_ids()):
+                if (
+                    pool.gateway_id not in assigned_gateway_ids
+                    and endpoint_id not in assigned_endpoint_ids
+                ):
+                    continue
+                endpoint = endpoints.get(endpoint_id)
+                if endpoint is None:
+                    continue
+                endpoint_env = endpoint_targets.get(endpoint.id, endpoint.environment)
+                verdict = permits(catalog, gateway_env, endpoint_env)
+                if verdict.level == VerdictLevel.WARNING and verdict.reason not in warnings:
+                    warnings.append(verdict.reason)
         return warnings
 
     async def _assignment_groups(
@@ -740,6 +780,14 @@ class EnvironmentService:
             right = ("mcpEndpoint", mcp_publication.mcp_endpoint_id)
             if left in by_key and right in by_key:
                 union(left, right)
+        for pool in await self._gateways.list_model_pools(tenant_id):
+            if not pool.may_own_gateway_state():
+                continue
+            left = ("gateway", pool.gateway_id)
+            for endpoint_id in pool.live_endpoint_ids():
+                right = ("modelEndpoint", endpoint_id)
+                if left in by_key and right in by_key:
+                    union(left, right)
         groups: dict[tuple[str, str], list[AssignmentRecord]] = {}
         for key, record in by_key.items():
             groups.setdefault(find(key), []).append(record)
@@ -991,6 +1039,47 @@ class EnvironmentService:
                         verdict=verdict,
                     )
                 )
+        for pool in await self._gateways.list_model_pools(tenant_id):
+            if not include_drafts and not pool.may_own_gateway_state():
+                continue
+            gateway = gateways.get(pool.gateway_id)
+            if not gateway:
+                continue
+            gateway_environment = overrides.get(("gateway", gateway.id), gateway.environment)
+            # A draft member can't route anything, so only the members the gateway may hold count,
+            # unless the caller is gathering drafts to lock.
+            endpoint_ids = (
+                pool.member_endpoint_ids() if include_drafts else pool.live_endpoint_ids()
+            )
+            for endpoint_id in sorted(endpoint_ids):
+                if publication_filter and not publication_filter(
+                    pool.gateway_id, "modelEndpoint", endpoint_id
+                ):
+                    continue
+                endpoint = endpoints.get(endpoint_id)
+                if not endpoint:
+                    continue
+                endpoint_environment = overrides.get(
+                    ("modelEndpoint", endpoint.id), endpoint.environment
+                )
+                verdict = permits(catalog, gateway_environment, endpoint_environment)
+                if verdict.level == VerdictLevel.BLOCKED:
+                    blocked.append(
+                        BlockedPublication(
+                            kind="pool",
+                            publication_id=pool.id,
+                            display_name=pool.display_name,
+                            status=str(pool.status),
+                            gateway_id=gateway.id,
+                            gateway_name=gateway.name,
+                            gateway_environment=gateway_environment,
+                            model_endpoint_id=endpoint.id,
+                            model_endpoint_name=endpoint.name,
+                            endpoint_environment=endpoint_environment,
+                            deployment_name=", ".join(pool.deployments_on(endpoint.id)) or None,
+                            verdict=verdict,
+                        )
+                    )
         return blocked
 
     @staticmethod

@@ -30,14 +30,23 @@ import {
   environmentLabel,
   findEnvironment,
 } from '../environments'
-import type { AccessRequest, AccessRequestApproval, CostCenter, EnvironmentCatalogView, Publication, QuotaPeriod } from '../types'
+import type {
+  AccessRequest,
+  AccessRequestApproval,
+  CostCenter,
+  EnvironmentCatalogView,
+  ModelPool,
+  Publication,
+  QuotaPeriod,
+} from '../types'
 import { ErrorState } from './AsyncState'
 import styles from '../pages/EntitlementsPage.module.css'
 
 /** The per-person defaults a cost center sets on the requested resource, if any. */
 function personDefaultsFor(costCenter: CostCenter | undefined, resource: AccessRequest['resource']) {
   return costCenter?.limits.find(
-    (limit) => limit.resource.kind === resource.kind && limit.resource.id === resource.id,
+    (limit) => limit.resource.kind === resource.kind && limit.resource.id === resource.id
+      && (limit.resource.scopeId ?? '') === (resource.scopeId ?? ''),
   )?.person ?? null
 }
 
@@ -63,6 +72,7 @@ export function ApproveAccessRequestDialog({
   costCenters = [],
   environmentCatalog,
   publication,
+  pool,
   governed,
   existingGrant,
   pending,
@@ -77,6 +87,8 @@ export function ApproveAccessRequestDialog({
   environmentCatalog?: EnvironmentCatalogView
   /** The publication of the requested model API, the only source of default grant limits. */
   publication?: Publication
+  /** The pool of a requested pool model. */
+  pool?: Pick<ModelPool, 'displayName' | 'governedAccess'>
   /** Whether MOSAIC applies this grant to API Management through the model's plan. */
   governed: boolean
   /** The requester already holds a direct grant for this resource, so approval would conflict. */
@@ -105,6 +117,10 @@ export function ApproveAccessRequestDialog({
   const rateError = callRateError(limits)
   // MCP servers are limited by calls, never tokens, so their grants offer no token limits.
   const mcp = accessRequest.resource.kind === 'mcpServer'
+  const pooled = accessRequest.resource.kind === 'poolModel'
+  const inheritedNote = pooled
+    ? "The pool's shared token limit still applies"
+    : 'Inherited publication safeguards still apply'
   const prefilled = Boolean(
     publication?.enforcement?.tokensPerMinute || publication?.enforcement?.tokenQuota,
   )
@@ -243,7 +259,11 @@ export function ApproveAccessRequestDialog({
                 </MessageBar>
               )}
               <Text>
-                {governed && mcp
+                {pooled
+                  ? pool?.governedAccess
+                    ? `Approving creates grant intent only. API Management is unchanged until the ${pool.displayName} plan is reviewed and applied.`
+                    : `Approving creates grant intent only. ${pool?.displayName ?? 'The pool'} doesn't use governed access yet, so the grant waits until it does and the pool's plan is applied.`
+                  : governed && mcp
                   ? 'Approving creates grant intent only. API Management is unchanged until this MCP server is planned and applied from the MCPs page.'
                   : governed && publication
                     ? `Approving creates grant intent only. API Management is unchanged until the ${publication.displayName} model plan is reviewed and applied.`
@@ -253,7 +273,7 @@ export function ApproveAccessRequestDialog({
                 <Text size={200}>
                   {charged.name} sets per-person defaults here: {describePersonLimits(personDefaults)}.
                   Leave every limit empty to apply them; any limit you set replaces them all.
-                  Inherited publication safeguards still apply.
+                  {` ${inheritedNote}.`}
                 </Text>
               ) : mcp ? (
                 <Text size={200}>
@@ -265,8 +285,8 @@ export function ApproveAccessRequestDialog({
                   {prefilled && publication
                     ? `Limits are prefilled from the ${publication.displayName} publication's token limit. Change or clear them before approving.`
                     : 'This resource has no default limits to prefill.'}{' '}
-                  Leave a limit empty to add no grant-specific restriction. Inherited publication
-                  safeguards still apply; this does not mean unrestricted gateway access.
+                  Leave a limit empty to add no grant-specific restriction. {inheritedNote}; this
+                  does not mean unrestricted gateway access.
                 </Text>
               )}
               {!mcp && (

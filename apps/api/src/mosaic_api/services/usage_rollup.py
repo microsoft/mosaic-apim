@@ -54,11 +54,13 @@ from mosaic_api.integrations.loganalytics import (
     deployment_peaks_query,
     peaks_query,
 )
+from mosaic_api.model_pools import ModelPool
 from mosaic_api.repositories import (
     CostCenterRepository,
     DirectoryRepository,
     EntitlementRepository,
     GatewayRepository,
+    ModelEndpointRepository,
     UsageRollupRepository,
 )
 from mosaic_api.services.cost_centers import load_book
@@ -75,8 +77,11 @@ from mosaic_api.usage_telemetry import (
     SUMMARY_DIMENSIONS,
     SUMMARY_SHARD_SIZE,
     AttributionRecord,
+    MemberUsage,
     OnBehalfUnresolvedReason,
+    PoolMembers,
     RolledUpApi,
+    RolledUpMember,
     SummaryDimension,
     SummaryPeriod,
     UsageBreakdown,
@@ -95,6 +100,7 @@ from mosaic_api.usage_telemetry import (
     month_start,
     period_bucket,
     subscription_attribution_key,
+    summary_entry_weight,
     usage_fact_id,
     usage_rollup_state_id,
     usage_summary_id,
@@ -285,6 +291,7 @@ class DayFold:
     def __init__(self, resolver: LinkResolver, apis: Sequence[RolledUpApi]) -> None:
         self._resolver = resolver
         self._apis = {api.api_name: api for api in apis}
+        self._pools = {api.api_name: PoolMembers.of(api) for api in apis if api.kind == "pool"}
         self.facts: dict[tuple[UsageLink, str, str | None], _Fact] = {}
         self.entries: dict[SummaryDimension, dict[str, UsageSummaryEntry]] = {}
         self.total_hours: dict[int, UsageHour] = {}
@@ -294,6 +301,16 @@ class DayFold:
 
     def _entry(self, dimension: SummaryDimension, key: str) -> UsageSummaryEntry:
         return self.entries.setdefault(dimension, {}).setdefault(key, UsageSummaryEntry(key=key))
+
+    def _member(self, api: str, row: Row, deployment: str | None) -> str | None:
+        pool = self._pools.get(api)
+        if pool is None:
+            return None
+        return pool.member_for(
+            _text(row.get("backendId")),
+            _text(row.get("backendHost")),
+            _text(row.get("backendDeployment")) or deployment or "",
+        )
 
     def add_calls(self, rows: Iterable[Row]) -> None:
         for row in rows:
@@ -308,6 +325,22 @@ class DayFold:
             subscription = _text(row.get("subscription")).casefold()
             deployment = _text(row.get("deployment")) or None
             model = _text(row.get("model")) or None
+            served_by = self._member(api, row, deployment)
+            # Figures that price calls carry which pool member served them; the rest don't.
+            plain = metrics
+            if served_by is not None:
+                metrics = metrics.model_copy(
+                    update={
+                        "members": {
+                            served_by: MemberUsage(
+                                requests=metrics.requests,
+                                prompt_tokens=metrics.prompt_tokens,
+                                completion_tokens=metrics.completion_tokens,
+                                total_tokens=metrics.total_tokens,
+                            )
+                        }
+                    }
+                )
             if version and version != TRACE_VERSION:
                 self.unknown_versions += metrics.requests
             application: str | None = None
@@ -336,9 +369,10 @@ class DayFold:
                 fact.metrics.add(metrics)
                 _add_hour(fact.hours, hour, metrics)
                 breakdown_key = (api, deployment, model, client_app or None)
-                fact.breakdown.setdefault(breakdown_key, UsageMetrics()).add(metrics)
+                fact.breakdown.setdefault(breakdown_key, UsageMetrics()).add(plain)
                 behalf = self._on_behalf(row, caller)
                 if isinstance(behalf, tuple):
+                    # A person's share keeps which pool member served it, so it's priced there.
                     person, mcp_api, mcp_key = behalf
                     share = fact.on_behalf.setdefault((person, mcp_api, mcp_key), _OnBehalf())
                     share.metrics.add(metrics)
@@ -348,9 +382,9 @@ class DayFold:
                     ).metrics.add(metrics)
                 elif behalf is not None:
                     self._entry("onBehalfUnresolved", f"{link}:{link_key}|{behalf}").metrics.add(
-                        metrics
+                        plain
                     )
-            self._entry("total", "").metrics.add(metrics)
+            self._entry("total", "").metrics.add(plain)
             _add_hour(self.total_hours, hour, metrics)
             self._entry("api", api).metrics.add(metrics)
             _add_hour(self.api_hours.setdefault(api, {}), hour, metrics)
@@ -360,9 +394,9 @@ class DayFold:
                 if application:
                     client.application_object_id = application
             known = self._apis.get(api)
-            deployment_key = known.deployment_key if known else None
+            deployment_key = served_by or (known.deployment_key if known else None)
             if deployment_key:
-                self._entry("deployment", deployment_key).metrics.add(metrics)
+                self._entry("deployment", deployment_key).metrics.add(plain)
             if model or _carries_tokens(metrics):
                 # Calls whose LLM log named no model are kept under none, so the model breakdown
                 # still adds up to the total. Reports name the model MOSAIC knows for the API.
@@ -466,7 +500,7 @@ class DayFold:
                 fact.metrics
             )
             if fact.caller:
-                self._entry("caller", fact.caller).metrics.add(fact.metrics)
+                self._entry("caller", fact.caller).metrics.add(fact.metrics.without_members())
         if self.total_hours:
             self._entry("total", "").hours = [
                 self.total_hours[hour] for hour in sorted(self.total_hours)
@@ -525,6 +559,24 @@ class DayFold:
         return items
 
 
+def _shards(entries: Sequence[UsageSummaryEntry]) -> list[list[UsageSummaryEntry]]:
+    """Entries in order, split so no shard holds more than ``SUMMARY_SHARD_SIZE`` entries' worth."""
+
+    shards: list[list[UsageSummaryEntry]] = []
+    current: list[UsageSummaryEntry] = []
+    room = 0
+    for entry in entries:
+        weight = summary_entry_weight(entry)
+        if current and room + weight > SUMMARY_SHARD_SIZE:
+            shards.append(current)
+            current, room = [], 0
+        current.append(entry)
+        room += weight
+    if current:
+        shards.append(current)
+    return shards
+
+
 def summary_items(
     tenant_id: str,
     period: SummaryPeriod,
@@ -537,7 +589,7 @@ def summary_items(
     items: list[RollupItem] = []
     for dimension in SUMMARY_DIMENSIONS:
         ordered = sorted(entries.get(dimension, {}).values(), key=lambda entry: entry.key)
-        for shard, offset in enumerate(range(0, len(ordered), SUMMARY_SHARD_SIZE)):
+        for shard, part in enumerate(_shards(ordered)):
             items.append(
                 _hashed(
                     UsageSummary(
@@ -551,7 +603,7 @@ def summary_items(
                         gateway_id=gateway_id,
                         dimension=dimension,
                         shard=shard,
-                        entries=ordered[offset : offset + SUMMARY_SHARD_SIZE],
+                        entries=part,
                         ttl=ttl,
                     )
                 )
@@ -575,6 +627,31 @@ def fold_month(
     return folded
 
 
+def _merge_members(
+    fresh: Sequence[RolledUpMember], remembered: Sequence[RolledUpMember], now: datetime
+) -> list[RolledUpMember]:
+    """A pool's members now, plus the ones it had, so calls they served keep their price."""
+
+    known = {member.backend_name.casefold(): member for member in remembered}
+    merged: list[RolledUpMember] = []
+    for member in fresh:
+        before = known.pop(member.backend_name.casefold(), None)
+        first_seen = (before.first_seen_at if before else None) or member.first_seen_at or now
+        merged.append(
+            member.model_copy(
+                update={
+                    "first_seen_at": first_seen,
+                    "host": member.host or (before.host if before else ""),
+                }
+            )
+        )
+    merged.extend(
+        member if member.first_seen_at else member.model_copy(update={"first_seen_at": now})
+        for member in known.values()
+    )
+    return merged
+
+
 def merge_apis(
     remembered: Sequence[RolledUpApi], current: Sequence[RolledUpApi], now: datetime
 ) -> list[RolledUpApi]:
@@ -589,9 +666,10 @@ def merge_apis(
                 api if api.removed_at else api.model_copy(update={"removed_at": now})
             )
         else:
-            merged[api.api_name] = fresh.model_copy(
-                update={"first_seen_at": api.first_seen_at, "removed_at": None}
-            )
+            update: dict[str, Any] = {"first_seen_at": api.first_seen_at, "removed_at": None}
+            if fresh.kind == "pool":
+                update["members"] = _merge_members(fresh.members, api.members, now)
+            merged[api.api_name] = fresh.model_copy(update=update)
     for api in current:
         merged.setdefault(api.api_name, api)
     return [merged[name] for name in sorted(merged)]
@@ -678,7 +756,8 @@ def _resource_identity(
     resource: EntitlementResource,
     model_apis: Mapping[str, ModelApi],
     mcp_servers: Mapping[str, McpServer],
-) -> tuple[str | None, Literal["model", "mcp"] | None, str | None]:
+    model_pools: Mapping[str, ModelPool],
+) -> tuple[str | None, Literal["model", "mcp", "pool"] | None, str | None]:
     if resource.kind == EntitlementResourceKind.MODEL_API:
         model_api = model_apis.get(resource.id)
         if model_api is not None:
@@ -689,6 +768,12 @@ def _resource_identity(
         if server is not None:
             return server.publication_id, "mcp", server.display_name
         return None, "mcp", None
+    if resource.kind == EntitlementResourceKind.POOL_MODEL:
+        pool = model_pools.get(resource.scope_id or "")
+        model = pool.pool_model(resource.id) if pool is not None else None
+        if pool is not None and model is not None:
+            return pool.id, "pool", f"{pool.display_name}: {model.display_name}"
+        return pool.id if pool is not None else None, "pool", None
     return None, None, resource.id
 
 
@@ -721,8 +806,10 @@ class UsageRollupService:
         clock: Callable[[], datetime] = utc_now,
         owner_id: str | None = None,
         cost_center_repository: CostCenterRepository | None = None,
+        endpoint_repository: ModelEndpointRepository | None = None,
     ) -> None:
         self._cost_centers = cost_center_repository
+        self._endpoints = endpoint_repository
         self._repository = repository
         self._gateways = gateway_repository
         self._entitlements = entitlement_repository
@@ -885,7 +972,9 @@ class UsageRollupService:
             (record.kind, record.key): record
             for record in await self._repository.list_attribution_records(tenant_id)
         }
-        apis = await governed_apis(self._gateways, tenant_id, now=now)
+        apis = await governed_apis(
+            self._gateways, tenant_id, now=now, endpoint_repository=self._endpoints
+        )
         runs: list[_GatewayRun] = []
         for gateway in await self._gateways.list_gateways(tenant_id):
             run = await self._leased_gateway_run(gateway, apis.get(gateway.id, []), registry)
@@ -1155,20 +1244,25 @@ class UsageRollupService:
             return None
         window = QueryWindow(start, end)
         names = [api.api_name for api in apis]
+        pools = {api.api_name: PoolMembers.of(api) for api in apis if api.kind == "pool"}
         deployments = {
             api.api_name: api.deployment_key
             for api in apis
             if api.deployment_key and DEPLOYMENT_KEY.fullmatch(api.deployment_key)
         }
         resource_id = gateway.azure_resource_id
-        calls = await self._query(resource_id, lambda part: calls_query(part, names), window)
+        calls = await self._query(
+            resource_id, lambda part: calls_query(part, names, list(pools)), window
+        )
         peaks = await self._query(resource_id, lambda part: peaks_query(part, names), window)
         denials = await self._query(resource_id, lambda part: denials_query(part, names), window)
         deployment_peaks = (
             await self._query(
-                resource_id, lambda part: deployment_peaks_query(part, deployments), window
+                resource_id,
+                lambda part: deployment_peaks_query(part, deployments, pools),
+                window,
             )
-            if deployments
+            if deployments or pools
             else []
         )
         fold = DayFold(resolver, apis)
@@ -1270,6 +1364,7 @@ class UsageRollupService:
         mcp_servers = {
             server.id: server for server in await self._gateways.list_mcp_servers(tenant_id)
         }
+        model_pools = {pool.id: pool for pool in await self._gateways.list_model_pools(tenant_id)}
         existing: dict[tuple[str, str], AttributionRecord] = {
             (record.kind, record.key): record
             for record in await self._repository.list_attribution_records(tenant_id)
@@ -1283,7 +1378,7 @@ class UsageRollupService:
                 entitlement.subject, principals, groups
             )
             publication_id, publication_kind, resource_name = _resource_identity(
-                entitlement.resource, model_apis, mcp_servers
+                entitlement.resource, model_apis, mcp_servers, model_pools
             )
             keys: list[tuple[str, str]] = []
             if binding.attribution_key:

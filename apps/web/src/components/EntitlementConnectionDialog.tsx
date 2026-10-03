@@ -16,7 +16,7 @@ import { useEffect, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
 import { useLocation } from 'react-router-dom'
 import { useMosaicApi } from '../api'
-import { describeAccessMethods, describeLimits } from '../entitlement-limits'
+import { describeAccessMethods, describeLimits, describePoolSafeguard } from '../entitlement-limits'
 import { PRINCIPAL_KIND_LABELS } from '../labels'
 import { runtimeConfig } from '../runtime-config'
 import type { Entitlement, KeySlot, McpConnection, ModelConnection } from '../types'
@@ -169,6 +169,8 @@ function ConnectionSession({
   const controller = useRef<AbortController | null>(null)
   const mounted = useRef(true)
   const isMcp = entitlement.resource.kind === 'mcpServer'
+  // A pool model's grant has no binding: its pool's governed access is the trusted path.
+  const isPool = entitlement.resource.kind === 'poolModel'
   const connection = useQuery<ModelConnection | McpConnection>({
     queryKey: ['entitlement-connection', identity, entitlement.id],
     queryFn: () => isMcp ? api.getMcpConnection(entitlement.id) : api.getEntitlementConnection(entitlement.id),
@@ -182,13 +184,15 @@ function ConnectionSession({
     !closed && !connection.isError && modelInfo && modelInfo.keysAvailable !== false
     && keysAllowedByCostCenter
     && entitlement.enabled && entitlement.subject.kind !== 'group'
-    && entitlement.resource.kind === 'modelApi' && entitlement.binding?.source === 'orchestrated'
+    && (isPool || (entitlement.resource.kind === 'modelApi' && entitlement.binding?.source === 'orchestrated'))
     && entitlement.runtime?.status === 'applied' && entitlement.runtime.appliedMethods?.keysEnabled
     && modelInfo.runtime?.status === 'applied' && modelInfo.appliedMethods?.keysEnabled
     && modelInfo.entitlementId === entitlement.id
     && modelInfo.publicationId === entitlement.runtime.publicationId,
   )
   const eligible = Boolean(keyCapable && keyExists)
+  const sharedWith = modelInfo?.keySharedWith ?? []
+  const sharedNames = sharedWith.map((model) => model.displayName).join(', ')
 
   function keyErrorMessage(failure: unknown) {
     const body = (failure as { body?: { details?: { reason?: unknown } } })?.body
@@ -352,7 +356,8 @@ function ConnectionSession({
               <>
                 <dl className={styles.detailList}>
                   <div><dt>Endpoint</dt><dd>{modelInfo.endpoint}</dd></div>
-                  <div><dt>Deployment</dt><dd>{modelInfo.deploymentName}</dd></div>
+                  {isPool && modelInfo.poolName && <div><dt>Pool</dt><dd>{modelInfo.poolName}</dd></div>}
+                  <div><dt>{isPool ? 'Model name to send' : 'Deployment'}</dt><dd>{modelInfo.deploymentName}</dd></div>
                   <div><dt>Tenant</dt><dd>{modelInfo.tenantId}</dd></div>
                   {modelInfo.costCenter && <div><dt>Cost center</dt><dd>{modelInfo.costCenter.name} ({modelInfo.costCenter.code})</dd></div>}
                   {modelInfo.costCenterHeader && modelInfo.costCenter && <div><dt>Cost center header</dt><dd>{modelInfo.costCenterHeader}: {modelInfo.costCenter.code}</dd></div>}
@@ -371,7 +376,7 @@ function ConnectionSession({
                   <MessageBar intent="warning"><MessageBarBody>{modelInfo.runtime.error}</MessageBarBody></MessageBar>
                 )}
                 {modelInfo.runtime?.status === 'unknown' && (
-                  <ModelAccessRecovery publicationId={modelInfo.publicationId} />
+                  <ModelAccessRecovery publicationId={modelInfo.publicationId} target={isPool ? 'pool' : 'model'} />
                 )}
                 {modelInfo.operations.map((operation) => (
                   <Text key={`${operation.name}:${operation.method}:${operation.path}`}>
@@ -389,7 +394,21 @@ function ConnectionSession({
                   </MessageBar>
                 )}
                 <Text weight="semibold">Last recorded limits</Text>
-                {describeLimits({ enforcement: modelInfo.grantLimits }, modelInfo.publicationLimits).map((limit) => <Text key={limit}>{limit}</Text>)}
+                {(isPool
+                  ? [
+                      ...describeLimits({ enforcement: modelInfo.grantLimits }),
+                      ...describePoolSafeguard(modelInfo.publicationLimits, modelInfo.tokenMetering !== false).map(
+                        (limit) => `Pool: ${limit}`,
+                      ),
+                    ]
+                  : describeLimits({ enforcement: modelInfo.grantLimits }, modelInfo.publicationLimits)
+                ).map((limit) => <Text key={limit}>{limit}</Text>)}
+                {sharedWith.length > 0 && (
+                  <Text>
+                    This grant&apos;s key also serves {sharedNames} in the same pool, because one key serves
+                    every model its holder is granted there under one cost center.
+                  </Text>
+                )}
                 {modelInfo.keysAvailable === false ? (
                   <MessageBar intent="warning">
                     <MessageBarBody>
@@ -415,7 +434,13 @@ function ConnectionSession({
               request. It is cleared from this dialog on close, navigation, or account change.
               Sharing a key delegates this grant&apos;s access.
             </Text>
-            {!keyCapable && <Text>Key reveal requires an enabled, applied direct grant with key authentication, allowed cost-center keys, and a trusted orchestrated binding.</Text>}
+            {!keyCapable && (
+              <Text>
+                {isPool
+                  ? 'Key reveal requires an enabled direct grant that the pool’s last apply enforces, with key authentication and allowed cost-center keys.'
+                  : 'Key reveal requires an enabled, applied direct grant with key authentication, allowed cost-center keys, and a trusted orchestrated binding.'}
+              </Text>
+            )}
             {keyCapable && !keyExists && <Text>No key exists for this grant yet.</Text>}
             {/* A browser takes focus off a button that becomes disabled, so a busy button stays focusable. */}
             {modelInfo?.keysAvailable !== false && !isMcp && keysAllowedByCostCenter && (
@@ -477,6 +502,7 @@ function ConnectionSession({
                 {confirmation === 'delete'
                   ? 'Every client using this key stops working now. You can create a new key afterwards.'
                   : `Clients using the old ${confirmation === 'rotate-primary' ? 'primary' : 'secondary'} value stop working now. The other slot keeps working.`}
+                {sharedWith.length > 0 && ` The same key serves ${sharedNames}, so this changes those models too.`}
               </Text>
             </DialogContent>
             <DialogActions>

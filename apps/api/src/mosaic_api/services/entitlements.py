@@ -60,6 +60,7 @@ from mosaic_api.domain import (
 )
 from mosaic_api.errors import ConflictError, DirectoryError, NotFoundError, ValidationError
 from mosaic_api.integrations.graph import DirectoryLookup
+from mosaic_api.model_pools import ModelPool
 from mosaic_api.observed import (
     ObservedApimUser,
     ObservedModelDeployment,
@@ -89,6 +90,13 @@ from mosaic_api.services.model_access import (
     model_api_offered,
     publication_lock,
 )
+from mosaic_api.services.pool_access import (
+    decorate_pool_entitlement,
+    entitlement_model_pool,
+    pool_grant_needs_retention,
+    pool_model_listed,
+    pool_model_offered,
+)
 
 logger = structlog.get_logger()
 
@@ -107,7 +115,8 @@ class ResourceDescriptor:
 
 
 class GovernedRecords:
-    """Gateway, model API, MCP server and publication records, each kind read at most once.
+    """Gateway, model API, MCP server, publication, and model pool records, each kind read at most
+    once.
 
     Naming, summarising, and scoping one list of grants or requests all need the same records.
     Sharing one of these across those lookups keeps a response to one read per kind however many
@@ -123,6 +132,7 @@ class GovernedRecords:
         self._mcp_servers: dict[str, McpServer] | None = None
         self._publications: dict[str, Publication] | None = None
         self._mcp_publications: dict[str, McpPublication] | None = None
+        self._model_pools: dict[str, ModelPool] | None = None
 
     async def gateways(self) -> dict[str, Gateway]:
         if self._gateways is None:
@@ -160,6 +170,13 @@ class GovernedRecords:
                 for item in await self._repository.list_mcp_publications(self._tenant_id)
             }
         return self._mcp_publications
+
+    async def model_pools(self) -> dict[str, ModelPool]:
+        if self._model_pools is None:
+            self._model_pools = {
+                item.id: item for item in await self._repository.list_model_pools(self._tenant_id)
+            }
+        return self._model_pools
 
     async def model_api_offered(self, model_api: ModelApi) -> bool:
         """See :func:`model_api_offered`. Reads publications only for a published model API."""
@@ -486,6 +503,16 @@ class EntitlementService:
                     id=deployment.id,
                     display_name=deployment.deployment_name,
                 )
+        elif resource.kind == "poolModel":
+            pool = await self._gateways.get_model_pool(actor.tenant_id, resource.scope_id or "")
+            pool_model = pool.pool_model(resource.id) if pool else None
+            if pool and pool_model:
+                return ResourceDescriptor(
+                    kind="poolModel",
+                    id=pool_model.id,
+                    display_name=pool_model.display_name,
+                    gateway_id=pool.gateway_id,
+                )
 
         raise ValidationError(
             "MOSAIC does not govern the resource named by this entitlement",
@@ -495,13 +522,13 @@ class EntitlementService:
     async def _catalog_visible_resource(
         self, tenant_id: str, resource: EntitlementResource
     ) -> ResourceSummary | None:
-        """The summary of a model API or MCP server the catalog shows or would show.
+        """The summary of a model API, MCP server, or pool model the catalog shows or would show.
 
         None unless the resource exists, an administrator made it discoverable, and its gateway is
         registered. It may still be unavailable: see :class:`ResourceSummary`.
         """
 
-        if resource.kind not in {"modelApi", "mcpServer"}:
+        if resource.kind not in {"modelApi", "mcpServer", "poolModel"}:
             return None
         summary = await self.resource_summary(tenant_id, resource)
         if summary.gateway_name is None:
@@ -513,6 +540,10 @@ class EntitlementService:
         elif resource.kind == "mcpServer":
             mcp_server = await self._gateways.get_mcp_server(tenant_id, resource.id)
             if mcp_server is None or mcp_server.visibility != CatalogVisibility.CATALOG:
+                return None
+        elif resource.kind == "poolModel":
+            pool = await self._gateways.get_model_pool(tenant_id, resource.scope_id or "")
+            if not pool_model_listed(pool, resource.id):
                 return None
         return summary
 
@@ -603,6 +634,7 @@ class EntitlementService:
         )
         model_apis = await records.model_apis() if "modelApi" in kinds else {}
         mcp_servers = await records.mcp_servers() if "mcpServer" in kinds else {}
+        model_pools = await records.model_pools() if "poolModel" in kinds else {}
         product_scopes = {
             resource.scope_id or ""
             for resource in resources
@@ -725,6 +757,30 @@ class EntitlementService:
                         environment=endpoint.environment,
                         available=True,
                     )
+            elif resource.kind == "poolModel":
+                pool = model_pools.get(resource.scope_id or "")
+                pool_model = pool.pool_model(resource.id) if pool else None
+                gateway = gateways.get(pool.gateway_id) if pool else None
+                if pool and pool_model and gateway:
+                    summary = ResourceSummary(
+                        kind=resource.kind,
+                        id=resource.id,
+                        scope_id=resource.scope_id,
+                        display_name=pool_model.display_name,
+                        gateway_id=gateway.id,
+                        gateway_name=gateway.name,
+                        environment=gateway.environment,
+                        available=pool_model_offered(pool, resource.id),
+                    )
+                elif pool and pool_model:
+                    summary = ResourceSummary(
+                        kind=resource.kind,
+                        id=resource.id,
+                        scope_id=resource.scope_id,
+                        display_name=pool_model.display_name,
+                        gateway_id=pool.gateway_id,
+                        available=False,
+                    )
 
             if summary is None:
                 summary = self._snapshot_summary(
@@ -770,6 +826,11 @@ class EntitlementService:
                 desired[("mcpServer", mcp_server.id)] = mcp_server.display_name
 
         observed: dict[tuple[str, str, str], str] = {}
+        if "poolModel" in kinds:
+            # A pool model's ID is only unique with its pool, so it's named like an observed one.
+            for pool in (await records.model_pools()).values():
+                for pool_model in pool.models:
+                    observed[("poolModel", pool_model.id, pool.id)] = pool_model.display_name
         for scope_id in {scope for kind, _, scope in keys if kind == "product" and scope}:
             for product in await self._gateways.list_observed(
                 ObservedProduct, actor.tenant_id, scope_id, "observedProduct"
@@ -803,6 +864,9 @@ class EntitlementService:
         """
 
         if not descriptor.gateway_id or subject.kind == "group":
+            return None
+        # A pool model's grant is bound only by the apply that issues its key.
+        if descriptor.kind == "poolModel":
             return None
         principal = await self._directory.get_principal(actor.tenant_id, subject.id)
         if not principal:
@@ -853,14 +917,27 @@ class EntitlementService:
     ) -> Entitlement:
         publication = await entitlement_publication(self._gateways, entitlement)
         mcp_publication = await entitlement_mcp_publication(self._gateways, entitlement)
+        model_pool = await entitlement_model_pool(self._gateways, entitlement)
         principal = (
             await self._directory.get_principal(entitlement.tenant_id, entitlement.subject.id)
             if entitlement.subject.kind != "group"
             else None
         )
-        if (publication is not None or mcp_publication is not None) and book is None:
+        if (
+            publication is not None or mcp_publication is not None or model_pool is not None
+        ) and book is None:
             book = await self.cost_center_book(entitlement.tenant_id)
         intent = cost_center_intent(entitlement, principal, book)
+        if entitlement.resource.kind == "poolModel":
+            pool_locked = bool(
+                model_pool
+                and await self._gateways.get_publication_lock(
+                    entitlement.tenant_id, model_pool.id
+                )
+            )
+            return decorate_pool_entitlement(
+                entitlement, model_pool, principal, locked=pool_locked, cost_center=intent
+            )
         locked = bool(
             publication
             and await self._gateways.get_publication_lock(
@@ -885,7 +962,8 @@ class EntitlementService:
     async def _mutation(self, entitlement: Entitlement) -> AsyncIterator[None]:
         publication = await entitlement_publication(self._gateways, entitlement)
         mcp_publication = await entitlement_mcp_publication(self._gateways, entitlement)
-        target = publication or mcp_publication
+        model_pool = await entitlement_model_pool(self._gateways, entitlement)
+        target = publication or mcp_publication or model_pool
         if target is None:
             yield
         else:
@@ -1021,6 +1099,7 @@ class EntitlementService:
         changes = request.model_dump(exclude_unset=True)
         publication = await entitlement_publication(self._gateways, entitlement)
         mcp_publication = await entitlement_mcp_publication(self._gateways, entitlement)
+        model_pool = await entitlement_model_pool(self._gateways, entitlement)
         if "enforcement" in changes:
             _reject_mcp_token_limits(entitlement.resource, request.enforcement)
         if "binding" in changes and (
@@ -1033,6 +1112,7 @@ class EntitlementService:
                 mcp_publication is not None
                 and mcp_grant_needs_retention(mcp_publication, entitlement.id)
             )
+            or (model_pool is not None and pool_grant_needs_retention(model_pool, entitlement.id))
             or (request.binding and request.binding.source == BindingSource.ORCHESTRATED)
         ):
             raise ConflictError(
@@ -1374,6 +1454,13 @@ class EntitlementService:
                     "This MCP grant is still applied or its runtime state is uncertain. Disable "
                     "the grant and apply the MCP server's access before deleting it.",
                     details={"publicationId": mcp_publication.id},
+                )
+            model_pool = await entitlement_model_pool(self._gateways, entitlement)
+            if model_pool and pool_grant_needs_retention(model_pool, entitlement.id):
+                raise ConflictError(
+                    "This pool model grant is still applied or its runtime state is uncertain. "
+                    "Disable the grant and apply the pool before deleting it.",
+                    details={"modelPoolId": model_pool.id},
                 )
             await self._repository.delete_entitlement(
                 entitlement,

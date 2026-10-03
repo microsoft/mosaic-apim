@@ -53,6 +53,9 @@ RESOURCE_NAMES = [
     "rg-contoso-partners",
     "rg-contoso-ai",
     "contoso-aoai",
+    # Longer names first, so a suffix of a regional account's name is never left showing.
+    "contoso-foundry-ncus",
+    "contoso-foundry-west",
     "contoso-foundry",
     "contoso-safety",
     "kv-contoso-ai",
@@ -379,8 +382,12 @@ def scroll_to_text(text: str, margin: int = 24) -> Action:
 # The README embeds these by name. Keep the two in step: a renamed or removed shot here needs its
 # README reference updated, and a new README screenshot needs an entry here.
 OPEN_GATEWAY = (click_link("Contoso AI Gateway"), wait_for_text("Published by MOSAIC"))
-# The overview's usage panels and gateway health load after its inventory counts.
-DASHBOARD_LOADED = (wait_for_text("Contoso Support Copilot"), wait_for_text("Partner Gateway"))
+# The overview's usage panels, gateway health, and pools load after its inventory counts.
+DASHBOARD_LOADED = (
+    wait_for_text("Contoso Support Copilot"),
+    wait_for_text("Partner Gateway"),
+    wait_for_text("published pool"),
+)
 TELEMETRY_READY = "This gateway is ready for usage analytics."
 
 SHOTS: list[Shot] = [
@@ -392,7 +399,7 @@ SHOTS: list[Shot] = [
         "light",
         "MOSAIC groups",
         actions=DASHBOARD_LOADED,
-        height=2000,
+        height=2150,
     ),
     Shot(
         "console-dashboard-dark",
@@ -401,7 +408,7 @@ SHOTS: list[Shot] = [
         "dark",
         "MOSAIC groups",
         actions=DASHBOARD_LOADED,
-        height=2000,
+        height=2150,
     ),
     Shot("portal-catalog-light", "portal", "/catalog", "light", "Docs search MCP", height=1040),
     Shot("portal-catalog-dark", "portal", "/catalog", "dark", "Docs search MCP", height=1040),
@@ -460,6 +467,94 @@ SHOTS: list[Shot] = [
         # Tall enough for the key check, each gateway's verdict, and the declared deployments, and
         # short enough to scroll the endpoints MOSAIC found out of view.
         height=1100,
+    ),
+    Shot(
+        "console-pools",
+        "console",
+        "/pools",
+        "light",
+        "Claude evaluation",
+        # The suggestions load after the pools.
+        actions=(wait_for_text("Suggested pools"),),
+        # Tall enough for both pools and, below them, the pool MOSAIC suggests for Claude Haiku 4.5.
+        height=1130,
+    ),
+    Shot(
+        "console-pool-detail",
+        "console",
+        "/pools",
+        "dark",
+        "Anthropic Claude",
+        actions=(click_link("Anthropic Claude"), wait_for_text("Run history")),
+        # Tall enough for both models' deployments, ending above the pool's health card.
+        height=1482,
+    ),
+    Shot(
+        "console-pool-access",
+        "console",
+        "/pools",
+        "light",
+        "Anthropic Claude",
+        # The governed Claude pool's access card: how callers sign in, the grants the gateway
+        # enforces on each model, and the cost center's pooled quota. The health card above it
+        # loads first, so the scroll lands where the card finally sits.
+        actions=(
+            click_link("Anthropic Claude"),
+            wait_for_text("Grants in force"),
+            wait_for_text("Breaker tripped"),
+            scroll_to_text("Who can call it", margin=110),
+        ),
+        # Tall enough to end just below the card, after the pooled quotas.
+        height=867,
+    ),
+    Shot(
+        "console-pool-health",
+        "console",
+        "/pools",
+        "dark",
+        "Anthropic Claude",
+        # The Claude pool's last day from its attempt traces: how calls to each model ended, and
+        # how each deployment answered, with North Central US throttling Opus and tripping its
+        # breaker while the other regions take the retries.
+        actions=(
+            click_link("Anthropic Claude"),
+            wait_for_text("Breaker tripped"),
+            scroll_to_text("calls to each model ended", margin=168),
+        ),
+        # Tall enough to end just below the card, after its footnote.
+        height=974,
+    ),
+    Shot(
+        "console-pool-editor",
+        "console",
+        "/pools",
+        "light",
+        "Suggested pools",
+        # Create pool on the Claude Haiku 4.5 suggestion opens the editor with the deployments the
+        # gateway can use. The shot never saves the pool, so the estate is unchanged for the shots
+        # after it.
+        actions=(
+            click_button("Create pool for Anthropic on Contoso AI Gateway"),
+            wait_for_text("Create a model pool"),
+            click_tab("3. Models"),
+            wait_for_text("Name callers send"),
+        ),
+        height=1040,
+    ),
+    Shot(
+        "console-endpoint-pools",
+        "console",
+        "/models",
+        "dark",
+        "GPT-4o mini",
+        # Contoso AI Foundry, the endpoint selected first, serves both pools: its deployments with
+        # the pools each one serves, and the card listing those pools.
+        actions=(
+            wait_for_text("Used by pools"),
+            scroll_to_text("Models on Contoso AI Foundry", margin=110),
+        ),
+        # Tall enough to end just below the card listing the pools.
+        height=1080,
     ),
     Shot(
         "console-mcps",
@@ -719,6 +814,25 @@ SHOTS: list[Shot] = [
             scroll_to_text("Cost center header", margin=96),
         ),
         height=1240,
+    ),
+    Shot(
+        "portal-pool-connection",
+        "portal",
+        "/access",
+        "dark",
+        "My access",
+        # Megan's Claude Sonnet 4.5 grant, served by the Anthropic Claude pool: the base URL and
+        # the model name she sends, and the key she also uses for Claude Opus 4.5. Nothing on it
+        # names the pool, its deployments, or their regions.
+        actions=(
+            click_card_button_matching(
+                ("Claude Sonnet 4.5", "Applied to APIM"), "Connection details"
+            ),
+            wait_for_text("This key also works for"),
+            scroll_to_card_matching(("Claude Sonnet 4.5", "Applied to APIM"), margin=58),
+        ),
+        # Tall enough to end on the note naming the other model the key works for.
+        height=1700,
     ),
     Shot(
         "portal-mcp-connection",

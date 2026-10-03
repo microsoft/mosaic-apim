@@ -32,7 +32,14 @@ export interface PortalProfile {
   defaultCostCenter?: CostCenterRef | null
 }
 
-export type PortalResourceKind = 'modelApi' | 'mcpServer'
+/**
+ * `poolModel` is a model MOSAIC serves from several deployments behind one name (ADR 0024). The
+ * portal offers it as a model, and never says where it runs.
+ */
+export type PortalResourceKind = 'modelApi' | 'mcpServer' | 'poolModel'
+
+/** What serves a model: reserved throughput, pay-as-you-go, or reserved with overflow. */
+export type ModelCapacity = 'provisioned' | 'payAsYouGo' | 'provisionedWithOverflow'
 
 export interface CostCenterRef {
   id: string
@@ -48,6 +55,8 @@ export interface PortalCostCenter extends CostCenterRef {
 export interface CatalogEntry {
   kind: PortalResourceKind
   id: string
+  /** Set for a `poolModel`: a request for it must send this as its resource's `scopeId`. */
+  scopeId?: string | null
   displayName: string
   summary: string | null
   gatewayId: string
@@ -58,10 +67,14 @@ export interface CatalogEntry {
   enforced?: boolean | null
   entitledCostCenterIds?: string[]
   requestedCostCenterIds?: string[]
+  /** `poolModel` only: the API the model is called with. */
+  apiStyle?: ApiShape | null
+  /** `poolModel` only. Null when the model's capacity is hidden or unknown. */
+  capacity?: ModelCapacity | null
 }
 
 export interface EntitlementResource {
-  kind: 'modelApi' | 'mcpServer' | 'modelDeployment' | 'product'
+  kind: 'modelApi' | 'mcpServer' | 'poolModel' | 'modelDeployment' | 'product'
   id: string
   scopeId: string | null
 }
@@ -430,9 +443,29 @@ export interface ModelConnection {
   /** Older APIs omit it. */
   apiShape?: ApiShape | null
   operations: ConnectionOperation[]
-  /** Null when the gateway's tier can't apply token limits to this model's API. */
+  /**
+   * Null when the gateway's tier can't apply token limits to this model's API. For a `poolModel`
+   * grant, the limit every caller of the model shares.
+   */
   publicationLimits: TokenEnforcement | null
   grantLimits?: EntitlementEnforcement | null
+  /**
+   * Set for a `poolModel` grant, whose `deploymentName` is the model name to send. Older APIs
+   * omit them.
+   */
+  poolId?: string | null
+  poolModelId?: string | null
+  /** The other models this grant's key also works for. Rotating or deleting it affects them. */
+  keySharedWith?: KeySharedModel[]
+  /** False when the gateway's tier can't count this model's tokens, so no token limit applies. */
+  tokenMetering?: boolean
+}
+
+/** Another model a grant's key works for, because the person holds both under one cost center. */
+export interface KeySharedModel {
+  poolModelId: string
+  displayName: string
+  publicName: string
 }
 
 export type PrincipalKind =
@@ -485,6 +518,8 @@ export interface GrantKey {
   exists: boolean
   costCenter: CostCenterRef | null
   rotated: KeySlot | null
+  poolId?: string | null
+  keySharedWith?: KeySharedModel[]
 }
 
 export interface ApiErrorBody {

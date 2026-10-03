@@ -9,7 +9,10 @@ const api = {
   diagnosePublicationRecovery: vi.fn(),
   getMcpPublicationLock: vi.fn(),
   recoverMcpPublication: vi.fn(),
+  getModelPoolLock: vi.fn(),
+  recoverModelPool: vi.fn(),
   applyPublishPlan: vi.fn(),
+  applyModelPool: vi.fn(),
 }
 vi.mock('../api', () => ({ useMosaicApi: () => api }))
 
@@ -98,5 +101,42 @@ describe('ModelAccessRecovery', () => {
       confirmQuiesced: false,
     })
     expect(api.diagnosePublicationRecovery).not.toHaveBeenCalled()
+  })
+
+  it('uses pool recovery endpoints for model pools without confirming quiescence', async () => {
+    const user = userEvent.setup()
+    api.getModelPoolLock.mockResolvedValue({ publicationId: 'modelpool_1', ownerId: 'run_1' })
+    api.recoverModelPool.mockResolvedValue({
+      id: 'run_1', status: 'interrupted', errors: ['Original worker may still own ARM operations.'],
+    })
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+    render(
+      <QueryClientProvider client={queryClient}>
+        <ModelAccessRecovery publicationId="modelpool_1" runId="run_1" target="pool" />
+      </QueryClientProvider>,
+    )
+    expect(screen.getByText(/The pool's apply lock may still be retained/)).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Check recovery status (diagnostic only)' }))
+    expect(api.getModelPoolLock).toHaveBeenCalledWith('modelpool_1')
+    expect(api.recoverModelPool).toHaveBeenCalledWith('modelpool_1', { runId: 'run_1', confirmQuiesced: false })
+    expect(await screen.findByText('Diagnostic reported run status: interrupted')).toBeVisible()
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['model-pools'] })
+    expect(api.getPublicationLock).not.toHaveBeenCalled()
+    expect(api.diagnosePublicationRecovery).not.toHaveBeenCalled()
+    expect(api.applyModelPool).not.toHaveBeenCalled()
+  })
+
+  it('says so when no pool write lock is held', async () => {
+    const user = userEvent.setup()
+    api.getModelPoolLock.mockResolvedValue({ publicationId: 'modelpool_1', ownerId: null })
+    render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <ModelAccessRecovery publicationId="modelpool_1" runId="run_1" target="pool" />
+      </QueryClientProvider>,
+    )
+    await user.click(screen.getByRole('button', { name: 'Check recovery status (diagnostic only)' }))
+    expect(await screen.findByText('No pool write lock is currently held.')).toBeVisible()
+    expect(api.recoverModelPool).not.toHaveBeenCalled()
   })
 })

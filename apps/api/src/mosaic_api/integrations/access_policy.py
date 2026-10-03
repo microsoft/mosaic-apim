@@ -30,6 +30,7 @@ from mosaic_api.domain import (
     EntitlementSubject,
     EntitlementSubjectKind,
     ModelAccessGrant,
+    ModelAccessSettings,
     ModelAccessSnapshot,
     PolicyFacet,
     PolicyFacetKind,
@@ -305,9 +306,7 @@ def grant_counter_identity(publication: AccessPolicyPublication, grant: AccessPo
     return hashlib.sha256(identity.encode("utf-8")).hexdigest()
 
 
-def cost_center_counter_identity(
-    publication: AccessPolicyPublication, cost_center_id: str
-) -> str:
+def cost_center_counter_identity(publication: AccessPolicyPublication, cost_center_id: str) -> str:
     """A pooled quota's counter identity: one cost center on one publication."""
 
     identity = json.dumps(
@@ -869,11 +868,14 @@ def _token_lookup(
     *,
     delegated_scope: str = "Models.Invoke",
     application_role: str = "Models.Invoke.Application",
+    filter_cost_center: bool = True,
 ) -> str:
     """A token's grant, as ``identity|code``, under the cost center the call names, if any.
 
     A call that names none gets the caller's direct grant under their default cost center, then
-    their other direct grants oldest first, then the most generous of their group grants.
+    their other direct grants oldest first, then the most generous of their group grants. Without
+    ``filter_cost_center`` the named cost center is ignored, which tells whether the caller holds
+    any of ``grants`` at all.
     """
 
     direct_grants = sorted(
@@ -892,7 +894,7 @@ def _token_lookup(
         "if (objects == null || objects.Length != 1 || String.IsNullOrWhiteSpace(objects[0]))"
         ' { return ""; }',
         "var oid = objects[0];",
-        f"var cc = {_SELECTED_COST_CENTER};",
+        f"var cc = {_SELECTED_COST_CENTER};" if filter_cost_center else 'var cc = "";',
         *_token_kind_lines(application_role, delegated_scope),
     ]
     for grant in direct_grants:
@@ -975,15 +977,13 @@ def _token_groups_overage() -> str:
     )
 
 
-def _authentication(
-    fragment: ET.Element,
-    publication: Publication,
-    snapshot: ModelAccessSnapshot,
-    grants: list[ModelAccessGrant],
-    *,
-    delegated_scope: str = "Models.Invoke",
-    application_role: str = "Models.Invoke.Application",
-) -> None:
+def _credential_prelude(fragment: ET.Element, settings: ModelAccessSettings) -> None:
+    """Note which credentials the call presents, refuse those turned off, and read the header.
+
+    Also clears every variable the key and token branches fill in, so a later step can read them
+    whichever branches ran.
+    """
+
     _variable(
         fragment,
         "mosaic-has-key",
@@ -995,9 +995,9 @@ def _authentication(
     )
     _initialize_caller(fragment)
     _reject(fragment, f"@(!{_HAS_KEY} && !{_HAS_TOKEN})", reason="no-credential", code=401)
-    if not snapshot.settings.keys_enabled:
+    if not settings.keys_enabled:
         _reject(fragment, f"@({_HAS_KEY})", reason="keys-off", code=401)
-    if not snapshot.settings.entra_enabled:
+    if not settings.entra_enabled:
         _reject(fragment, f"@({_HAS_TOKEN})", reason="tokens-off", code=401)
     _read_cost_center_header(fragment)
     _reject(
@@ -1011,6 +1011,77 @@ def _authentication(
     _variable(fragment, "mosaic-token-grant", "")
     _variable(fragment, "mosaic-token-cost-center", "")
     _variable(fragment, "mosaic-member", "")
+
+
+def _validate_token(parent: ET.Element, *, tenant_id: str, audience: str | None) -> None:
+    """Refuse a malformed bearer token, validate it, and record the validated caller."""
+
+    _reject(
+        parent,
+        _expression(
+            [
+                'var values = context.Request.Headers["Authorization"];',
+                "if (values == null || values.Length != 1) { return true; }",
+                "var authorization = values[0];",
+                "return String.IsNullOrWhiteSpace(authorization)"
+                ' || !authorization.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)'
+                " || String.IsNullOrWhiteSpace(authorization.Substring(7));",
+            ]
+        ),
+        reason="token-malformed",
+        code=401,
+    )
+    validation = ET.SubElement(
+        parent,
+        "validate-azure-ad-token",
+        {
+            "tenant-id": tenant_id,
+            "header-name": "Authorization",
+            "failed-validation-httpcode": "401",
+            "failed-validation-error-message": _DENIED,
+            "output-token-variable-name": "mosaic-validated-token",
+        },
+    )
+    ET.SubElement(ET.SubElement(validation, "audiences"), "audience").text = audience
+    claim = ET.SubElement(
+        ET.SubElement(validation, "required-claims"),
+        "claim",
+        {
+            "name": "ver",
+            "match": "all",
+        },
+    )
+    ET.SubElement(claim, "value").text = "2.0"
+    _record_validated_caller(parent)
+
+
+def _select_grant(fragment: ET.Element) -> None:
+    """The call's grant and cost center: the key's, or else the token's, which must agree."""
+
+    _reject(
+        fragment,
+        f"@({_HAS_KEY} && {_HAS_TOKEN} && {_KEY_GRANT} != {_TOKEN_GRANT})",
+        reason="grant-mismatch",
+        with_caller=True,
+    )
+    _variable(fragment, "mosaic-grant", f"@({_HAS_KEY} ? {_KEY_GRANT} : {_TOKEN_GRANT})")
+    _variable(
+        fragment,
+        "mosaic-cost-center",
+        f"@({_HAS_KEY} ? {_KEY_COST_CENTER} : {_TOKEN_COST_CENTER})",
+    )
+
+
+def _authentication(
+    fragment: ET.Element,
+    publication: Publication,
+    snapshot: ModelAccessSnapshot,
+    grants: list[ModelAccessGrant],
+    *,
+    delegated_scope: str = "Models.Invoke",
+    application_role: str = "Models.Invoke.Application",
+) -> None:
+    _credential_prelude(fragment, snapshot.settings)
 
     if snapshot.settings.keys_enabled:
         key = ET.SubElement(
@@ -1043,43 +1114,7 @@ def _authentication(
         token = ET.SubElement(
             ET.SubElement(fragment, "choose"), "when", {"condition": f"@({_HAS_TOKEN})"}
         )
-        _reject(
-            token,
-            _expression(
-                [
-                    'var values = context.Request.Headers["Authorization"];',
-                    "if (values == null || values.Length != 1) { return true; }",
-                    "var authorization = values[0];",
-                    "return String.IsNullOrWhiteSpace(authorization)"
-                    ' || !authorization.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)'
-                    " || String.IsNullOrWhiteSpace(authorization.Substring(7));",
-                ]
-            ),
-            reason="token-malformed",
-            code=401,
-        )
-        validation = ET.SubElement(
-            token,
-            "validate-azure-ad-token",
-            {
-                "tenant-id": publication.tenant_id,
-                "header-name": "Authorization",
-                "failed-validation-httpcode": "401",
-                "failed-validation-error-message": _DENIED,
-                "output-token-variable-name": "mosaic-validated-token",
-            },
-        )
-        ET.SubElement(ET.SubElement(validation, "audiences"), "audience").text = snapshot.audience
-        claim = ET.SubElement(
-            ET.SubElement(validation, "required-claims"),
-            "claim",
-            {
-                "name": "ver",
-                "match": "all",
-            },
-        )
-        ET.SubElement(claim, "value").text = "2.0"
-        _record_validated_caller(token)
+        _validate_token(token, tenant_id=publication.tenant_id, audience=snapshot.audience)
         _resolve_token_grant(
             token,
             publication,
@@ -1089,18 +1124,7 @@ def _authentication(
             overage_message=_GROUPS_OVERAGE_DENIED,
         )
 
-    _reject(
-        fragment,
-        f"@({_HAS_KEY} && {_HAS_TOKEN} && {_KEY_GRANT} != {_TOKEN_GRANT})",
-        reason="grant-mismatch",
-        with_caller=True,
-    )
-    _variable(fragment, "mosaic-grant", f"@({_HAS_KEY} ? {_KEY_GRANT} : {_TOKEN_GRANT})")
-    _variable(
-        fragment,
-        "mosaic-cost-center",
-        f"@({_HAS_KEY} ? {_KEY_COST_CENTER} : {_TOKEN_COST_CENTER})",
-    )
+    _select_grant(fragment)
     _cost_center_ids(fragment, grants)
     append_budget_check(fragment, grants)
 
@@ -1342,6 +1366,64 @@ def _pool_limits(
             )
 
 
+def _grant_token_limits(
+    fragment: ET.Element,
+    publication: AccessPolicyPublication,
+    grants: Sequence[AccessPolicyGrant],
+    *,
+    prefix: str = _COUNTER_PREFIX,
+) -> None:
+    """Each grant's own token limit, in the grant's ``when`` beside its request limits."""
+
+    token_limited = [grant for grant in grants if grant.enforcement is not None]
+    if not token_limited:
+        return
+    choose = next(
+        (
+            element
+            for element in fragment.findall("choose")
+            if any(
+                child.get("condition", "").startswith(f"@({_GRANT} ==")
+                for child in element.findall("when")
+            )
+        ),
+        None,
+    )
+    if choose is None:
+        choose = ET.SubElement(fragment, "choose")
+    for grant in token_limited:
+        enforcement = grant.enforcement
+        assert enforcement is not None
+        if tokens := enforcement.tokens:
+            identity = grant_counter_identity(publication, grant)
+            condition = f"@({_GRANT} == {_literal(identity)})"
+            when = next(
+                (child for child in choose.findall("when") if child.get("condition") == condition),
+                None,
+            )
+            if when is None:
+                when = ET.SubElement(choose, "when", {"condition": condition})
+            headers: dict[str, str] = {}
+            if tokens.tokens_per_minute:
+                headers["remaining-tokens-header-name"] = REMAINING_TOKENS_HEADER
+            if tokens.token_quota:
+                headers["remaining-quota-tokens-header-name"] = REMAINING_QUOTA_TOKENS_HEADER
+            ET.SubElement(
+                when,
+                "llm-token-limit",
+                {
+                    **_token_limit_attributes(tokens),
+                    "counter-key": _grant_counter_key(
+                        "grant-tokens",
+                        identity,
+                        per_member=grant.is_group_grant,
+                        prefix=prefix,
+                    ),
+                    **headers,
+                },
+            )
+
+
 def _limits(
     fragment: ET.Element,
     publication: Publication,
@@ -1349,55 +1431,7 @@ def _limits(
     grants: list[ModelAccessGrant],
 ) -> None:
     _grant_limits(fragment, publication, grants)
-    token_limited = [grant for grant in grants if grant.enforcement is not None]
-    if token_limited:
-        choose = next(
-            (
-                element
-                for element in fragment.findall("choose")
-                if any(
-                    child.get("condition", "").startswith(f"@({_GRANT} ==")
-                    for child in element.findall("when")
-                )
-            ),
-            None,
-        )
-        if choose is None:
-            choose = ET.SubElement(fragment, "choose")
-        for grant in token_limited:
-            enforcement = grant.enforcement
-            assert enforcement is not None
-            if tokens := enforcement.tokens:
-                identity = grant_counter_identity(publication, grant)
-                condition = f"@({_GRANT} == {_literal(identity)})"
-                when = next(
-                    (
-                        child
-                        for child in choose.findall("when")
-                        if child.get("condition") == condition
-                    ),
-                    None,
-                )
-                if when is None:
-                    when = ET.SubElement(choose, "when", {"condition": condition})
-                headers: dict[str, str] = {}
-                if tokens.tokens_per_minute:
-                    headers["remaining-tokens-header-name"] = REMAINING_TOKENS_HEADER
-                if tokens.token_quota:
-                    headers["remaining-quota-tokens-header-name"] = REMAINING_QUOTA_TOKENS_HEADER
-                ET.SubElement(
-                    when,
-                    "llm-token-limit",
-                    {
-                        **_token_limit_attributes(tokens),
-                        "counter-key": _grant_counter_key(
-                            "grant-tokens",
-                            identity,
-                            per_member=grant.is_group_grant,
-                        ),
-                        **headers,
-                    },
-                )
+    _grant_token_limits(fragment, publication, grants)
     enabled_codes = {_code(grant) for grant in grants}
     _pool_limits(
         fragment,
@@ -1450,16 +1484,28 @@ def cost_center_details() -> list[str]:
     ]
 
 
-def describe_limit_facet(facet: PolicyFacet, element: ET.Element, prefix: str) -> None:
-    """Explain a limit by what it counts: a grant, a cost center's pool, or the publication."""
+def describe_limit_facet(
+    facet: PolicyFacet,
+    element: ET.Element,
+    prefix: str,
+    *,
+    owner: str = "publication",
+    pooled_owner: str | None = None,
+) -> None:
+    """Explain a limit by what it counts: a grant, a cost center's pool, or the publication.
+
+    ``owner`` names what the grants belong to, and ``pooled_owner`` what a cost center's pooled
+    quota is counted on, when that differs: a model pool counts it per pool model.
+    """
 
     counter = element.get("counter-key", "")
     namespace = next(name for name in _COUNTER_NAMESPACES if f"{prefix}{name}:" in counter)
     pooled = namespace.startswith("cost-center")
+    pooled_scope = pooled_owner or owner
     counted = (
-        "counted per cost center on this publication."
+        f"counted per cost center on this {pooled_scope}."
         if pooled
-        else "counted per stable tenant/publication/entitlement grant."
+        else f"counted per stable tenant/{owner}/entitlement grant."
     )
     facet.summary = re.sub(r"counted .+\.$", counted, facet.summary)
     facet.attributes.update(
@@ -1471,7 +1517,7 @@ def describe_limit_facet(facet: PolicyFacet, element: ET.Element, prefix: str) -
     if pooled:
         facet.details.extend(
             [
-                "Every grant under the cost center on this publication shares this monthly "
+                f"Every grant under the cost center on this {pooled_scope} shares this monthly "
                 "pool, whoever calls, beside each grant's own limits.",
                 "Native APIM limits are distributed/per gateway, not exact global or "
                 "billing totals.",
@@ -1495,9 +1541,7 @@ def describe_limit_facet(facet: PolicyFacet, element: ET.Element, prefix: str) -
         else:
             facet.details.append("Applies only to the matching enabled grant.")
     headers = [
-        value
-        for name, value in sorted(element.attrib.items())
-        if name.endswith("-header-name")
+        value for name, value in sorted(element.attrib.items()) if name.endswith("-header-name")
     ]
     if headers:
         facet.details.append(f"Reports what remains in the {', '.join(headers)} response header.")
@@ -1508,9 +1552,7 @@ def describe_limit_facet(facet: PolicyFacet, element: ET.Element, prefix: str) -
             f"{_PERIOD_LABELS[period]}, {counted}"
         )
         facet.attributes["calendar-period"] = period
-        facet.details.append(
-            "A period-qualified key resets the quota at UTC calendar boundaries."
-        )
+        facet.details.append("A period-qualified key resets the quota at UTC calendar boundaries.")
 
 
 def _operations_facet(
@@ -1639,9 +1681,11 @@ def _facets(
             and facet.attributes.get("name", "").casefold() == ON_BEHALF_HEADER
         ):
             describe_on_behalf_removal(facet, "model")
-        elif facet.element == "set-header" and is_backend_key_facet(
-            facet, publication.api_shape
-        ) and publication.backend_key_name is not None:
+        elif (
+            facet.element == "set-header"
+            and is_backend_key_facet(facet, publication.api_shape)
+            and publication.backend_key_name is not None
+        ):
             describe_backend_key(facet)
         facets.append(facet)
     return facets, sorted(

@@ -22,6 +22,7 @@ from mosaic_api.domain import (
     utc_now,
 )
 from mosaic_api.errors import ConflictError
+from mosaic_api.model_pools import MODEL_POOL_ENTITY, ModelPool
 from mosaic_api.observed import ObservedEntity
 from mosaic_api.repositories.cosmos import CosmosRepositoryBase
 from mosaic_api.repositories.observation_writes import GATEWAY_AUTHORED_FIELDS
@@ -144,6 +145,9 @@ class CosmosGatewayRepository(CosmosRepositoryBase):
         adopted.extend(
             item.id
             for item in await self.list_mcp_publications(tenant_id, gateway_id=gateway_id)
+        )
+        adopted.extend(
+            item.id for item in await self.list_model_pools(tenant_id, gateway_id=gateway_id)
         )
         for item_id in adopted:
             try:
@@ -402,6 +406,33 @@ class CosmosGatewayRepository(CosmosRepositoryBase):
             audit_event,
             "delete",
             conflict_message="The MCP publication changed; reload it and try again",
+        )
+
+    async def list_model_pools(
+        self, tenant_id: str, *, gateway_id: str | None = None
+    ) -> list[ModelPool]:
+        extra, parameters = self._gateway_filter(gateway_id)
+        items = await self._query(ModelPool, tenant_id, MODEL_POOL_ENTITY, extra, parameters)
+        return sorted(items, key=lambda item: item.display_name.casefold())
+
+    async def get_model_pool(self, tenant_id: str, pool_id: str) -> ModelPool | None:
+        return await self._read(ModelPool, tenant_id, pool_id)
+
+    async def save_model_pool(self, pool: ModelPool, audit_event: AuditEvent) -> ModelPool:
+        await self._mutate(pool, None, audit_event, "upsert")
+        return pool
+
+    async def record_model_pool_state(self, pool: ModelPool) -> ModelPool:
+        await self._desired.upsert_item(self._document(pool))
+        return pool
+
+    async def delete_model_pool(self, pool: ModelPool, audit_event: AuditEvent) -> None:
+        await self._mutate(
+            pool,
+            pool.id,
+            audit_event,
+            "delete",
+            conflict_message="The model pool changed; reload it and try again",
         )
 
     # Plans and runs are reconciliation records rather than administrator-authored intent, so they

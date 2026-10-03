@@ -1,0 +1,732 @@
+import type {
+  EnvironmentVerdict,
+  Gateway,
+  ModelPool,
+  ModelPoolDetail,
+  ModelPoolSummary,
+  PoolCandidateDeployment,
+  PoolCandidates,
+  PoolHealth,
+  PoolMemberHealth,
+  PoolMemberView,
+  PublishPlan,
+  PublishRun,
+} from '../types'
+
+const allowed: EnvironmentVerdict = {
+  level: 'allowed',
+  reason: 'Same environment.',
+  gatewayEnvironment: 'production',
+  endpointEnvironment: 'production',
+  viaException: false,
+}
+
+export const poolGateway: Gateway = {
+  id: 'gateway_contoso',
+  tenantId: 'tenant-test',
+  name: 'Contoso AI gateway',
+  provider: 'apim',
+  azureResourceId:
+    '/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-contoso' +
+    '/providers/Microsoft.ApiManagement/service/apim-contoso-ai',
+  subscriptionId: '00000000-0000-0000-0000-000000000000',
+  resourceGroup: 'rg-contoso',
+  serviceName: 'apim-contoso-ai',
+  environment: 'production',
+  managementMode: 'manage',
+  status: 'connected',
+  access: {
+    canRead: true,
+    canWrite: true,
+    evaluation: 'effectivePermissions',
+    checkedAt: '2026-09-01T12:00:00Z',
+    missingActions: [],
+    remediation: null,
+    message: 'MOSAIC can manage this gateway.',
+  },
+  capabilities: {
+    skuName: 'StandardV2',
+    skuCapacity: 1,
+    provisioningState: 'Succeeded',
+    location: 'eastus2',
+    gatewayUrl: 'https://apim-contoso-ai.example.test',
+    managementApiVersion: '2024-05-01',
+    aiGatewayPolicies: 'available',
+    mcpServers: 'available',
+    identityObserved: true,
+    notes: [],
+  },
+  inventory: {
+    apis: 4,
+    aiApis: 2,
+    mcpServers: 0,
+    operations: 8,
+    products: 2,
+    subscriptions: 2,
+    users: 0,
+    groups: 0,
+    backends: 3,
+    namedValues: 0,
+    policyDocuments: 2,
+    policyFragments: 1,
+    recognizedFacets: 2,
+    unrecognizedFacets: 0,
+    mosaicManagedFacets: 2,
+  },
+  lastSyncedAt: '2026-09-01T12:05:00Z',
+  lastSyncError: null,
+  createdAt: '2026-09-01T11:00:00Z',
+  updatedAt: '2026-09-01T12:05:00Z',
+}
+
+export const observedGateway: Gateway = {
+  ...poolGateway,
+  id: 'gateway_observed',
+  name: 'Fabrikam test gateway',
+  serviceName: 'apim-fabrikam-test',
+  managementMode: 'observe',
+  access: { ...poolGateway.access, canWrite: false },
+}
+
+function deployment(overrides: Partial<PoolCandidateDeployment>): PoolCandidateDeployment {
+  return {
+    modelEndpointId: 'endpoint_eastus2',
+    endpointName: 'foundry-eastus2',
+    region: 'eastus2',
+    environment: 'production',
+    deploymentName: 'claude-opus-4-5',
+    modelVersion: '1',
+    skuName: 'GlobalStandard',
+    skuCapacity: 250,
+    capacityType: 'payAsYouGo',
+    processingScope: 'global',
+    spilloverDeploymentName: null,
+    readiness: 'ready',
+    environmentVerdict: allowed,
+    eligible: true,
+    reason: null,
+    poolIds: [],
+    declared: false,
+    apiKey: false,
+    ...overrides,
+  }
+}
+
+export const opusEastUs2 = deployment({
+  skuName: 'GlobalProvisionedManaged',
+  skuCapacity: 100,
+  capacityType: 'provisioned',
+  spilloverDeploymentName: 'claude-opus-4-5-overflow',
+})
+export const opusNorthCentral = deployment({
+  modelEndpointId: 'endpoint_northcentralus',
+  endpointName: 'foundry-northcentralus',
+  region: 'northcentralus',
+  skuCapacity: 250,
+})
+export const opusWestUs3 = deployment({
+  modelEndpointId: 'endpoint_westus3',
+  endpointName: 'foundry-westus3',
+  region: 'westus3',
+  skuCapacity: 500,
+  readiness: 'notConfirmed',
+})
+/** A deployment an administrator declared on an endpoint the gateway reaches with an API key. */
+export const opusSwedenKeyed = deployment({
+  modelEndpointId: 'endpoint_swedencentral',
+  endpointName: 'foundry-swedencentral',
+  region: 'swedencentral',
+  skuName: null,
+  skuCapacity: null,
+  capacityType: 'unknown',
+  processingScope: 'unknown',
+  readiness: 'notConfirmed',
+  declared: true,
+  apiKey: true,
+})
+export const opusEastUsCreating = deployment({
+  modelEndpointId: 'endpoint_eastus',
+  endpointName: 'foundry-eastus',
+  region: 'eastus',
+  readiness: 'notConfirmed',
+  eligible: false,
+  reason: 'The deployment is Creating.',
+})
+/**
+ * Claude Opus on AWS Bedrock: declared by its Bedrock model ID, which callers could never send, and
+ * reached with a Bedrock API key.
+ */
+export const opusBedrockUsEast1 = deployment({
+  modelEndpointId: 'endpoint_bedrock_us_east_1',
+  endpointName: 'bedrock-us-east-1',
+  region: 'us-east-1',
+  deploymentName: 'us.anthropic.claude-opus-4-5-20251101-v1:0',
+  modelVersion: null,
+  skuName: null,
+  skuCapacity: null,
+  capacityType: 'unknown',
+  processingScope: 'unknown',
+  readiness: 'notConfirmed',
+  declared: true,
+  apiKey: true,
+  provider: 'awsBedrock',
+})
+
+export const poolCandidates: PoolCandidates = {
+  gatewayId: poolGateway.id,
+  gatewayEnvironment: 'production',
+  poolTypes: { breaker: null, preferential: null, linear: null },
+  models: [
+    {
+      modelName: 'claude-opus-4-5',
+      modelFormat: 'Anthropic',
+      apiShape: 'anthropicMessages',
+      deployments: [opusEastUs2, opusNorthCentral, opusWestUs3, opusSwedenKeyed, opusEastUsCreating],
+    },
+    {
+      modelName: 'claude-sonnet-4-5',
+      modelFormat: 'Anthropic',
+      apiShape: 'anthropicMessages',
+      deployments: [
+        deployment({ deploymentName: 'claude-sonnet-4-5', skuCapacity: 300 }),
+        deployment({
+          modelEndpointId: 'endpoint_westus3',
+          endpointName: 'foundry-westus3',
+          region: 'westus3',
+          deploymentName: 'claude-sonnet-4-5',
+          skuCapacity: 300,
+        }),
+      ],
+    },
+    {
+      modelName: 'gpt-4o',
+      modelFormat: 'OpenAI',
+      apiShape: 'azureOpenAi',
+      deployments: [
+        deployment({
+          modelEndpointId: 'endpoint_openai_eastus2',
+          endpointName: 'openai-eastus2',
+          deploymentName: 'gpt-4o',
+          modelVersion: '2024-11-20',
+        }),
+      ],
+    },
+  ],
+}
+
+const appliedAt = '2026-09-02T09:30:00Z'
+
+export const anthropicPool: ModelPool = {
+  id: 'modelpool_anthropic',
+  tenantId: 'tenant-test',
+  entityType: 'modelPool',
+  gatewayId: poolGateway.id,
+  displayName: 'Anthropic Claude',
+  description: 'Claude models for every team, served from four regions.',
+  visibility: 'listed',
+  showCapacity: true,
+  poolType: 'breaker',
+  breakerPreset: 'throttling',
+  maxRetries: 3,
+  apiShape: 'anthropicMessages',
+  vendor: 'Anthropic',
+  apiName: 'mosaic-pool-anthropic-claude',
+  apiPath: 'mosaic/pool-anthropic-claude',
+  fragmentName: 'mosaic-pool-anthropic-claude-routing',
+  productName: 'mosaic-pool-anthropic-claude',
+  subscriptionName: 'mosaic-pool-anthropic-claude',
+  safeguard: { tokensPerMinute: 200000 },
+  models: [
+    {
+      id: 'poolmodel_opus',
+      publicName: 'claude-opus-4-5',
+      displayName: 'Claude Opus 4.5',
+      modelName: 'claude-opus-4-5',
+      modelFormat: 'Anthropic',
+      expectedVersion: '1',
+      allowMixedVersions: false,
+      listed: true,
+      backendPoolName: 'mosaic-pool-anthropic-claude-opus',
+      members: [
+        {
+          modelEndpointId: opusEastUs2.modelEndpointId,
+          deploymentName: opusEastUs2.deploymentName,
+          weight: 2,
+          drained: false,
+          backendName: 'mosaic-pool-anthropic-claude-opus-eastus2',
+        },
+        {
+          modelEndpointId: opusNorthCentral.modelEndpointId,
+          deploymentName: opusNorthCentral.deploymentName,
+          weight: 1,
+          drained: false,
+          backendName: 'mosaic-pool-anthropic-claude-opus-northcentralus',
+        },
+        {
+          modelEndpointId: opusWestUs3.modelEndpointId,
+          deploymentName: opusWestUs3.deploymentName,
+          weight: 2,
+          drained: true,
+          backendName: 'mosaic-pool-anthropic-claude-opus-westus3',
+        },
+      ],
+    },
+  ],
+  status: 'published',
+  resources: [
+    {
+      kind: 'api',
+      name: 'mosaic-pool-anthropic-claude',
+      resourceId: '/apis/mosaic-pool-anthropic-claude',
+      createdByMosaic: true,
+      appliedAt,
+    },
+    {
+      kind: 'backendPool',
+      name: 'mosaic-pool-anthropic-claude-opus',
+      resourceId: '/backends/mosaic-pool-anthropic-claude-opus',
+      createdByMosaic: true,
+      appliedAt,
+    },
+  ],
+  lastPlanId: 'publishplan_anthropic',
+  lastPlanDigest: 'digest-anthropic',
+  lastRunId: 'publishrun_anthropic',
+  lastAppliedAt: appliedAt,
+  unpublishedAt: null,
+  lastError: null,
+  createdAt: '2026-09-01T12:30:00Z',
+  updatedAt: appliedAt,
+}
+
+export const draftPool: ModelPool = {
+  ...anthropicPool,
+  id: 'modelpool_openai',
+  displayName: 'OpenAI chat',
+  description: null,
+  poolType: 'linear',
+  apiShape: null,
+  vendor: null,
+  apiName: 'mosaic-pool-openai-chat',
+  apiPath: 'mosaic/pool-openai-chat',
+  safeguard: null,
+  models: [],
+  status: 'draft',
+  resources: [],
+  lastPlanId: null,
+  lastPlanDigest: null,
+  lastRunId: null,
+  lastAppliedAt: null,
+}
+
+export const anthropicPoolDetail: ModelPoolDetail = {
+  pool: anthropicPool,
+  gatewayName: poolGateway.name,
+  gatewayEnvironment: 'production',
+  baseUrl: 'https://apim-contoso-ai.example.test/mosaic/pool-anthropic-claude',
+  models: [
+    {
+      id: 'poolmodel_opus',
+      publicName: 'claude-opus-4-5',
+      displayName: 'Claude Opus 4.5',
+      modelName: 'claude-opus-4-5',
+      modelFormat: 'Anthropic',
+      expectedVersion: '1',
+      listed: true,
+      backendPoolName: 'mosaic-pool-anthropic-claude-opus',
+      capacity: 'provisionedWithOverflow',
+      members: [
+        {
+          modelEndpointId: opusEastUs2.modelEndpointId,
+          endpointName: opusEastUs2.endpointName,
+          deploymentName: opusEastUs2.deploymentName,
+          backendName: 'mosaic-pool-anthropic-claude-opus-eastus2',
+          weight: 2,
+          drained: false,
+          priority: 1,
+          region: 'eastus2',
+          environment: 'production',
+          modelName: 'claude-opus-4-5',
+          modelVersion: '1',
+          skuName: 'GlobalProvisionedManaged',
+          skuCapacity: 100,
+          capacityType: 'provisioned',
+          processingScope: 'global',
+          spilloverDeploymentName: 'claude-opus-4-5-overflow',
+          provisioningState: 'Succeeded',
+          observed: true,
+          declared: false,
+          apiKey: false,
+          readiness: 'ready',
+          environmentVerdict: allowed,
+        },
+        {
+          modelEndpointId: opusNorthCentral.modelEndpointId,
+          endpointName: opusNorthCentral.endpointName,
+          deploymentName: opusNorthCentral.deploymentName,
+          backendName: 'mosaic-pool-anthropic-claude-opus-northcentralus',
+          weight: 1,
+          drained: false,
+          priority: 1,
+          region: 'northcentralus',
+          environment: 'production',
+          modelName: 'claude-opus-4-5',
+          modelVersion: '1',
+          skuName: 'GlobalStandard',
+          skuCapacity: 250,
+          capacityType: 'payAsYouGo',
+          processingScope: 'global',
+          provisioningState: 'Succeeded',
+          observed: true,
+          declared: false,
+          apiKey: false,
+          readiness: 'ready',
+          environmentVerdict: allowed,
+        },
+        {
+          modelEndpointId: opusWestUs3.modelEndpointId,
+          endpointName: opusWestUs3.endpointName,
+          deploymentName: opusWestUs3.deploymentName,
+          backendName: 'mosaic-pool-anthropic-claude-opus-westus3',
+          weight: 2,
+          drained: true,
+          region: 'westus3',
+          environment: 'production',
+          modelName: 'claude-opus-4-5',
+          modelVersion: '1',
+          skuName: 'GlobalStandard',
+          skuCapacity: 500,
+          capacityType: 'payAsYouGo',
+          processingScope: 'global',
+          provisioningState: 'Succeeded',
+          observed: true,
+          declared: false,
+          apiKey: false,
+          readiness: 'notConfirmed',
+          readinessMessage: "MOSAIC hasn't confirmed it can call this deployment.",
+          environmentVerdict: allowed,
+        },
+      ],
+    },
+  ],
+  problems: [],
+  warnings: ['foundry-westus3 hasn\'t been synced in 3 days.'],
+  facets: [],
+  unappliedChanges: false,
+}
+
+const [eastUs2Member, northCentralMember] = anthropicPoolDetail.models[0].members
+
+function keyedMember(region: string, order: number): PoolMemberView {
+  return {
+    modelEndpointId: `endpoint_${region}`,
+    endpointName: `foundry-${region}`,
+    deploymentName: 'claude-opus-4-5',
+    backendName: `mosaic-pool-anthropic-claude-opus-${region}`,
+    weight: 1,
+    drained: false,
+    order,
+    priority: null,
+    region,
+    environment: 'production',
+    modelName: 'claude-opus-4-5',
+    modelVersion: '1',
+    capacityType: 'unknown',
+    processingScope: 'unknown',
+    observed: false,
+    declared: true,
+    apiKey: true,
+    readiness: 'notConfirmed',
+    readinessMessage:
+      "MOSAIC couldn't confirm that the gateway's managed identity can read this endpoint's API key from Key Vault. Check the endpoint's gateway access.",
+    environmentVerdict: allowed,
+  }
+}
+
+/**
+ * A preferential pool that also reaches two deployments with an API key: provisioned capacity
+ * first, pay-as-you-go overflow next, then each keyed deployment once.
+ */
+export const keyedAnthropicPoolDetail: ModelPoolDetail = {
+  ...anthropicPoolDetail,
+  pool: { ...anthropicPool, poolType: 'preferential' },
+  models: [
+    {
+      ...anthropicPoolDetail.models[0],
+      members: [
+        { ...eastUs2Member, priority: 1 },
+        { ...northCentralMember, priority: 2 },
+        keyedMember('swedencentral', 1),
+        keyedMember('norwayeast', 2),
+      ],
+    },
+  ],
+  warnings: [],
+}
+
+/** A breaker pool whose Claude Opus is also served from AWS Bedrock, tried once after Azure. */
+export const bedrockAnthropicPoolDetail: ModelPoolDetail = {
+  ...anthropicPoolDetail,
+  models: [
+    {
+      ...anthropicPoolDetail.models[0],
+      members: [
+        eastUs2Member,
+        northCentralMember,
+        {
+          ...keyedMember('us-east-1', 1),
+          modelEndpointId: 'endpoint_bedrock_us_east_1',
+          endpointName: 'bedrock-us-east-1',
+          deploymentName: 'us.anthropic.claude-opus-4-5-20251101-v1:0',
+          backendName: 'mosaic-pool-anthropic-claude-opus-bedrock-us-east-1',
+          modelVersion: null,
+          provider: 'awsBedrock',
+          readinessMessage:
+            "The gateway can read this endpoint's API key from Key Vault, but MOSAIC doesn't send keys to " +
+            "AWS, so it can't confirm that AWS accepts it. The first request through the pool shows " +
+            'whether it does.',
+        },
+      ],
+    },
+  ],
+  warnings: [],
+}
+
+const westUs3Member = anthropicPoolDetail.models[0].members[2]
+
+function memberHealth(member: PoolMemberView, figures: Partial<PoolMemberHealth> = {}): PoolMemberHealth {
+  return {
+    modelEndpointId: member.modelEndpointId,
+    endpointName: member.endpointName,
+    deploymentName: member.deploymentName,
+    backendName: member.backendName,
+    region: member.region,
+    drained: member.drained,
+    apiKey: member.apiKey,
+    overflow: false,
+    attempts: 0,
+    succeeded: 0,
+    throttled: 0,
+    failed: 0,
+    clientErrors: 0,
+    served: 0,
+    servedOk: 0,
+    trippedMinutes: 0,
+    lastSeen: null,
+    ...figures,
+  }
+}
+
+/** The Anthropic pool's last day: East US 2 throttled often enough to trip its breaker. */
+export const anthropicPoolHealth: PoolHealth = {
+  status: 'ok',
+  message: null,
+  command: null,
+  hours: 24,
+  start: '2026-09-03T10:00:00Z',
+  end: '2026-09-04T10:00:00Z',
+  untraced: 0,
+  models: [
+    {
+      modelId: 'poolmodel_opus',
+      publicName: 'claude-opus-4-5',
+      displayName: 'Claude Opus 4.5',
+      requests: 1240,
+      succeeded: 1198,
+      unavailable: 30,
+      clientErrors: 12,
+      retried: 88,
+      overflowed: 0,
+      exhausted: 3,
+      unplaced: 0,
+      members: [
+        memberHealth(eastUs2Member, {
+          attempts: 860,
+          succeeded: 790,
+          throttled: 58,
+          failed: 4,
+          clientErrors: 8,
+          served: 800,
+          servedOk: 790,
+          trippedMinutes: 6,
+          lastSeen: '2026-09-04T09:58:00Z',
+        }),
+        memberHealth(northCentralMember, {
+          attempts: 470,
+          succeeded: 408,
+          throttled: 52,
+          failed: 6,
+          clientErrors: 4,
+          served: 437,
+          servedOk: 408,
+          lastSeen: '2026-09-04T09:57:00Z',
+        }),
+        memberHealth(westUs3Member),
+      ],
+    },
+  ],
+}
+
+/** The answer from a deployment of MOSAIC that doesn't read gateway telemetry. */
+export const notConfiguredPoolHealth: PoolHealth = {
+  status: 'notConfigured',
+  message: "This deployment doesn't read gateway telemetry.",
+  command: null,
+  hours: 24,
+  start: '2026-09-03T10:00:00Z',
+  end: '2026-09-04T10:00:00Z',
+  untraced: 0,
+  models: [],
+}
+
+/** The pool after a plan applied governed access: a person's key and a security group's Entra tokens. */
+export const governedAnthropicPool: ModelPool = {
+  ...anthropicPool,
+  governedAccess: { keysEnabled: true, entraEnabled: true },
+  accessState: 'applied',
+  appliedModelIds: ['poolmodel_opus'],
+  appliedAccess: {
+    version: 2,
+    settings: { keysEnabled: true, entraEnabled: true },
+    audience: 'https://cognitiveservices.azure.com',
+    tokenMetering: true,
+    grants: [
+      {
+        entitlementId: 'entitlement_pool_megan',
+        poolModelId: 'poolmodel_opus',
+        subject: { kind: 'user', id: 'principal_megan' },
+        objectId: '11111111-1111-1111-1111-111111111111',
+        displayName: 'Megan Bowen',
+        keyName: 'mosaic-pool-anthropic-claude-megan',
+        enabled: true,
+        enforcement: {
+          tokens: {
+            counterKeyExpression: '@(context.Subscription.Id)',
+            estimatePromptTokens: true,
+            tokensPerMinute: 20000,
+          },
+        },
+        intentDigest: 'digest-megan',
+        costCenterId: 'costcenter_finance',
+        costCenterCode: 'FIN-001',
+        defaultCostCenter: true,
+        keysAllowed: true,
+      },
+      {
+        entitlementId: 'entitlement_pool_research',
+        poolModelId: 'poolmodel_opus',
+        subject: { kind: 'securityGroup', id: 'principal_research' },
+        objectId: '22222222-2222-2222-2222-222222222222',
+        displayName: 'Research engineers',
+        keyName: null,
+        enabled: true,
+        enforcement: null,
+        intentDigest: 'digest-research',
+        costCenterId: 'costcenter_research',
+        costCenterCode: 'RES-002',
+      },
+    ],
+    quotas: [
+      {
+        poolModelId: 'poolmodel_opus',
+        costCenterId: 'costcenter_finance',
+        costCenterCode: 'FIN-001',
+        monthlyTokens: 5000000,
+        monthlyCalls: null,
+      },
+    ],
+  },
+}
+
+export const governedAnthropicPoolDetail: ModelPoolDetail = {
+  ...anthropicPoolDetail,
+  pool: governedAnthropicPool,
+}
+
+export const poolSummaries: ModelPoolSummary[] = [
+  {
+    pool: anthropicPool,
+    gatewayName: poolGateway.name,
+    gatewayEnvironment: 'production',
+    capacity: { provisioned: 1, payAsYouGo: 1 },
+    readiness: { ready: 2 },
+    problemCount: 0,
+    warningCount: 1,
+    unappliedChanges: false,
+  },
+  {
+    pool: draftPool,
+    gatewayName: poolGateway.name,
+    gatewayEnvironment: 'production',
+    capacity: {},
+    readiness: {},
+    problemCount: 1,
+    warningCount: 0,
+    unappliedChanges: false,
+  },
+]
+
+export const poolPlan: PublishPlan = {
+  id: 'publishplan_anthropic_2',
+  tenantId: 'tenant-test',
+  entityType: 'publishPlan',
+  publicationId: anthropicPool.id,
+  gatewayId: poolGateway.id,
+  digest: 'digest-anthropic-2',
+  target: 'pool',
+  operation: 'publish',
+  steps: [
+    {
+      kind: 'backendPool',
+      name: 'mosaic-pool-anthropic-claude-opus',
+      action: 'update',
+      reason: 'A member was drained.',
+      resourceId: '/backends/mosaic-pool-anthropic-claude-opus',
+      existed: true,
+    },
+    {
+      kind: 'api',
+      name: 'mosaic-pool-anthropic-claude',
+      action: 'noChange',
+      reason: 'Already matches.',
+      resourceId: '/apis/mosaic-pool-anthropic-claude',
+      existed: true,
+    },
+  ],
+  facets: [],
+  policyContentSha256: null,
+  warnings: [],
+  createdAt: '2026-09-03T10:00:00Z',
+  updatedAt: '2026-09-03T10:00:00Z',
+}
+
+export const poolRun: PublishRun = {
+  id: 'publishrun_anthropic_2',
+  tenantId: 'tenant-test',
+  entityType: 'publishRun',
+  publicationId: anthropicPool.id,
+  gatewayId: poolGateway.id,
+  planId: poolPlan.id,
+  planDigest: poolPlan.digest,
+  status: 'succeeded',
+  startedAt: '2026-09-03T10:01:00Z',
+  completedAt: '2026-09-03T10:01:20Z',
+  durationMs: 20000,
+  steps: [
+    {
+      kind: 'backendPool',
+      name: 'mosaic-pool-anthropic-claude-opus',
+      action: 'update',
+      status: 'succeeded',
+      resourceId: '/backends/mosaic-pool-anthropic-claude-opus',
+      createdByMosaic: true,
+      error: null,
+    },
+  ],
+  rolledBack: false,
+  orphanedResources: [],
+  errors: [],
+  target: 'pool',
+  createdAt: '2026-09-03T10:01:00Z',
+  updatedAt: '2026-09-03T10:01:20Z',
+}

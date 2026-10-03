@@ -14,6 +14,13 @@ from mosaic_api.domain import (
     new_id,
 )
 from mosaic_api.main import create_app
+from mosaic_api.model_pools import (
+    ModelPool,
+    PoolModel,
+    backend_pool_name,
+    model_pool_id,
+    pool_model_id,
+)
 from mosaic_api.repositories import (
     InMemoryDirectoryRepository,
     InMemoryEntitlementRepository,
@@ -133,6 +140,68 @@ async def test_overlap_report_covers_groups_direct_and_multiple_group_membership
         "multipleGroups",
     }
     assert next(item for item in report.overlaps if item.kind == "groups").principal_id is None
+
+
+async def test_overlaps_on_a_pool_model_are_labelled_with_its_pool() -> None:
+    directory = InMemoryDirectoryRepository()
+    entitlements = InMemoryEntitlementRepository()
+    gateways = InMemoryGatewayRepository()
+    await seed(directory, entitlements, gateways)
+    api_name = "mosaic-pool-anthropic"
+    pool_id = model_pool_id(TENANT, "gateway", api_name)
+    model_id = pool_model_id(pool_id, "claude-opus-4-5")
+    await gateways.save_model_pool(
+        ModelPool(
+            id=pool_id,
+            tenant_id=TENANT,
+            gateway_id="gateway",
+            display_name="Anthropic",
+            vendor="Anthropic",
+            api_name=api_name,
+            api_path="mosaic/pool-anthropic",
+            fragment_name=api_name,
+            product_name=api_name,
+            subscription_name=api_name,
+            models=[
+                PoolModel(
+                    id=model_id,
+                    public_name="claude-opus-4-5",
+                    display_name="Claude Opus 4.5",
+                    backend_pool_name=backend_pool_name(api_name, model_id, "claude-opus-4-5"),
+                )
+            ],
+        ),
+        audit(),
+    )
+    resource = EntitlementResource(kind="poolModel", id=model_id, scope_id=pool_id)
+    for entitlement in [
+        Entitlement(
+            id="pool-direct",
+            tenant_id=TENANT,
+            subject=EntitlementSubject(kind="user", id="principal-user"),
+            resource=resource,
+        ),
+        Entitlement(
+            id="pool-group-a",
+            tenant_id=TENANT,
+            subject=EntitlementSubject(kind="securityGroup", id="group-a"),
+            resource=resource,
+        ),
+    ]:
+        await entitlements.create_entitlement(entitlement, audit())
+
+    report = await GrantOverlapService(
+        entitlements,
+        directory_repository=directory,
+        gateway_repository=gateways,
+        directory_lookup=FakeLookup({USER_OBJECT: {GROUP_A_OBJECT}}),
+    ).list_overlaps(Actor(object_id="admin", tenant_id=TENANT))
+
+    [overlap] = [item for item in report.overlaps if item.resource.kind == "poolModel"]
+    assert (overlap.kind, overlap.resource_label) == (
+        "directAndGroup",
+        "Claude Opus 4.5 in Anthropic",
+    )
 
 
 async def test_overlap_report_degrades_when_membership_lookup_is_unavailable() -> None:

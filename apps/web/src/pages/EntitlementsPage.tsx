@@ -27,7 +27,7 @@ import {
 import { AddRegular } from '@fluentui/react-icons'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { type FormEvent, useCallback, useMemo, useRef, useState } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { Link as RouterLink, useNavigate, useSearchParams } from 'react-router-dom'
 import { useMosaicApi } from '../api'
 import {
   ApproveAccessRequestDialog,
@@ -46,6 +46,7 @@ import {
   buildEnforcement,
   callRateError,
   describeLimits,
+  describePoolSafeguard,
   emptyLimitForm,
   type LimitForm,
 } from '../entitlement-limits'
@@ -69,6 +70,7 @@ import type {
   EntitlementSubject,
   EntitlementSubjectKind,
   CostCenter,
+  ModelPool,
   QuotaPeriod,
   Publication,
   PublishPlan,
@@ -87,9 +89,18 @@ interface SubjectOption {
 }
 
 interface ResourceOption {
+  /** The option's form value: the resource's ID, or for a pool model its pool and model IDs. */
+  value: string
   id: string
   kind: EntitlementResourceKind
   label: string
+  /** A pool model's pool. */
+  scopeId?: string
+}
+
+/** Pool model IDs are unique only within their pool, so a pool model's key names its pool too. */
+function resourceKey(resource: Pick<EntitlementResource, 'kind' | 'id' | 'scopeId'>): string {
+  return resource.kind === 'poolModel' ? `poolModel:${resource.scopeId ?? ''}:${resource.id}` : resource.id
 }
 
 interface GrantForm extends LimitForm {
@@ -111,6 +122,21 @@ interface Banner {
   text: string
   /** A published model whose plan must be reviewed and applied before the change takes effect. */
   review?: { publicationId: string; displayName: string }
+  /** A pool whose plan, on its own page, must be reviewed and applied before the change takes effect. */
+  pool?: { id: string; displayName: string }
+}
+
+/** What saving a grant on a pool model means, which depends on whether the pool governs access yet. */
+function poolGrantSaved(lead: string, pool: Pick<ModelPool, 'id' | 'displayName' | 'governedAccess'> | undefined): Banner {
+  if (!pool) {
+    return { text: `${lead} API Management is unchanged until the pool's plan is reviewed and applied.` }
+  }
+  return {
+    text: pool.governedAccess
+      ? `${lead} API Management is unchanged until the ${pool.displayName} plan is reviewed and applied.`
+      : `${lead} ${pool.displayName} doesn't use governed access yet, so its callers still share one subscription. Turn on governed access for the pool, then review and apply its plan.`,
+    pool: { id: pool.id, displayName: pool.displayName },
+  }
 }
 
 /**
@@ -126,6 +152,8 @@ function requestingPrincipal(accessRequest: AccessRequest, principals: Principal
 }
 
 function requestResourceLabel(accessRequest: AccessRequest, fallback?: string) {
+  // A pool model's summary names only the model. The console's own label names its pool too.
+  if (accessRequest.resource.kind === 'poolModel' && fallback) return fallback
   return (
     accessRequest.resourceSummary?.displayName ??
     accessRequest.resourceSnapshot?.displayName ??
@@ -141,14 +169,19 @@ interface ApprovalContext {
   resourceLabel: string
   publication?: Publication
   reviewable?: Publication
+  /** The pool of a requested pool model. */
+  pool?: ModelPool
   governed: boolean
   existingGrant: boolean
 }
 
-function approvalBanner({ accessRequest, requester, publication, reviewable, governed }: ApprovalContext): Banner {
+function approvalBanner({ accessRequest, requester, publication, reviewable, pool, governed }: ApprovalContext): Banner {
   const lead = requester.registered
     ? `Approved the request and created grant intent for ${requester.label}.`
     : `Approved the request, registered ${requester.label} as a user principal, and created their grant intent.`
+  if (accessRequest.resource.kind === 'poolModel') {
+    return poolGrantSaved(lead, pool)
+  }
   if (governed && accessRequest.resource.kind === 'mcpServer') {
     return {
       text: `${lead} API Management is unchanged; use Plan and apply on the MCPs page to activate it.`,
@@ -187,9 +220,47 @@ function overriddenByLabel(winner: ResolvedEntitlement | undefined): string {
     : `Overridden by MOSAIC group ${group}`
 }
 
+/**
+ * A pool grant's key. A subject has one per pool and cost center, serving every pool model it holds
+ * there, and a security group has none: its members sign in with Entra tokens.
+ */
+function PoolGrantKey({ entitlement }: { entitlement: Entitlement }) {
+  const runtime = entitlement.runtime
+  if (!runtime) {
+    return (
+      <Text className={styles.secondaryCell}>
+        {entitlement.subject.kind === 'group' ? 'Desired state only' : 'Waits for the pool to govern access'}
+      </Text>
+    )
+  }
+  if (!runtime.subscriptionName) {
+    return (
+      <div className={styles.cellStack}>
+        <Badge appearance="tint" shape="rounded" className={styles.bindingBadge}>Entra token</Badge>
+        <Text className={styles.secondaryCell}>No key</Text>
+      </div>
+    )
+  }
+  return (
+    <div className={styles.cellStack}>
+      <Badge
+        appearance="tint"
+        shape="rounded"
+        className={`${runtime.keyExists ? styles.statusReady : styles.statusAttention} ${styles.bindingBadge}`}
+      >
+        {runtime.subscriptionName}
+      </Badge>
+      <Text className={styles.secondaryCell}>
+        {runtime.keyExists ? 'Pool key' : 'Pool key, created when the plan applies'}
+      </Text>
+    </div>
+  )
+}
+
 export function EntitlementsPage() {
   const api = useMosaicApi()
   const queryClient = useQueryClient()
+  const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
   const costCenterFilter = searchParams.get('costCenter') ?? 'all'
   const [dialogOpen, setDialogOpen] = useState(false)
@@ -215,6 +286,7 @@ export function EntitlementsPage() {
   const groups = useQuery({ queryKey: ['groups'], queryFn: () => api.listGroups() })
   const modelApis = useQuery({ queryKey: ['model-apis'], queryFn: () => api.listModelApis() })
   const mcpServers = useQuery({ queryKey: ['mcp-servers'], queryFn: () => api.listMcpServers() })
+  const modelPools = useQuery({ queryKey: ['model-pools', 'list'], queryFn: () => api.listModelPools() })
   const costCenters = useQuery({ queryKey: ['cost-centers'], queryFn: api.listCostCenters })
   const gateways = useQuery({ queryKey: ['gateways'], queryFn: () => api.listGateways() })
   const modelEndpoints = useQuery({
@@ -267,26 +339,38 @@ export function EntitlementsPage() {
   const resourceOptions = useMemo<ResourceOption[]>(
     () => [
       ...(modelApis.data ?? []).map<ResourceOption>((item) => ({
+        value: item.id,
         id: item.id,
         kind: 'modelApi',
         label: `${item.displayName} (model API)`,
       })),
+      ...(modelPools.data ?? []).flatMap((pool) =>
+        pool.models.map<ResourceOption>((model) => ({
+          value: resourceKey({ kind: 'poolModel', id: model.id, scopeId: pool.id }),
+          id: model.id,
+          kind: 'poolModel',
+          scopeId: pool.id,
+          label: `${model.displayName} in ${pool.displayName} (pool model)`,
+        })),
+      ),
       ...(mcpServers.data ?? []).map<ResourceOption>((item) => ({
+        value: item.id,
         id: item.id,
         kind: 'mcpServer',
         label: `${item.displayName} (MCP server)`,
       })),
     ],
-    [mcpServers.data, modelApis.data],
+    [mcpServers.data, modelApis.data, modelPools.data],
   )
 
   const labels = useMemo(() => {
     const map = new Map<string, string>()
-    for (const option of [...subjectOptions, ...resourceOptions]) {
-      map.set(option.id, option.label)
-    }
+    for (const option of subjectOptions) map.set(option.id, option.label)
+    for (const option of resourceOptions) map.set(option.value, option.label)
     return map
   }, [resourceOptions, subjectOptions])
+  const resourceLabel = (resource: Pick<EntitlementResource, 'kind' | 'id' | 'scopeId'>) =>
+    labels.get(resourceKey(resource))
 
   const costCenterById = useMemo(
     () => new Map((costCenters.data ?? []).map((costCenter: CostCenter) => [costCenter.id, costCenter])),
@@ -313,6 +397,11 @@ export function EntitlementsPage() {
       setForm(emptyForm)
       setDirectModelId(null)
       await queryClient.invalidateQueries({ queryKey: ['publications'] })
+      if (variables.resource.kind === 'poolModel') {
+        await queryClient.invalidateQueries({ queryKey: ['model-pools'] })
+        setBanner(poolGrantSaved('Saved grant intent.', poolFor(variables.resource)))
+        return
+      }
       announce(variables.resource.kind === 'mcpServer'
         ? 'Saved grant intent. API Management is unchanged; use Plan and apply on the MCPs page to activate it on a MOSAIC-published MCP server.'
         : 'Saved grant intent. API Management is unchanged; review and apply the model plan to activate a supported direct grant.')
@@ -323,11 +412,20 @@ export function EntitlementsPage() {
     mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) =>
       api.updateEntitlement(id, { enabled }),
     onSuccess: async (_, variables) => {
+      const grant = entitlements.data?.find((item) => item.id === variables.id)
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['entitlements'] }),
         queryClient.invalidateQueries({ queryKey: ['publications'] }),
         queryClient.invalidateQueries({ queryKey: ['entitlement-connection'] }),
+        queryClient.invalidateQueries({ queryKey: ['model-pools'] }),
       ])
+      if (grant?.resource.kind === 'poolModel') {
+        setBanner(poolGrantSaved(
+          variables.enabled ? 'Saved enabled intent.' : 'Saved disabled intent.',
+          poolFor(grant.resource),
+        ))
+        return
+      }
       announce(variables.enabled
         ? 'Saved enabled intent. Runtime access changes only after a supported model plan is reviewed and applied.'
         : 'Saved disabled intent. Managed revocation is pending until the model plan is reviewed, applied, and propagated; API Management is unchanged by this save.')
@@ -351,6 +449,7 @@ export function EntitlementsPage() {
         queryClient.invalidateQueries({ queryKey: ['entitlements'] }),
         queryClient.invalidateQueries({ queryKey: ['principals'] }),
         queryClient.invalidateQueries({ queryKey: ['publications'] }),
+        queryClient.invalidateQueries({ queryKey: ['model-pools'] }),
       ])
       setApproving((current) => (current?.accessRequest.id === context.accessRequest.id ? null : current))
       setBanner(approvalBanner(context))
@@ -399,7 +498,14 @@ export function EntitlementsPage() {
     )
   }
 
+  function poolFor(resource: Pick<EntitlementResource, 'kind' | 'scopeId'>) {
+    if (resource.kind !== 'poolModel') return undefined
+    return modelPools.data?.find((pool) => pool.id === resource.scopeId)
+  }
+
   function managedGrant(entitlement: Pick<Entitlement, 'resource' | 'subject' | 'runtime'>) {
+    // A pool applies every direct grant on its models once it governs access. Until then they wait.
+    if (entitlement.resource.kind === 'poolModel') return entitlement.subject.kind !== 'group'
     const publication = publicationFor(entitlement)
     if (entitlement.resource.kind === 'mcpServer') {
       return entitlement.subject.kind !== 'group' && Boolean(entitlement.runtime || mcpPublicationFor(entitlement)?.appliedAccess)
@@ -424,9 +530,10 @@ export function EntitlementsPage() {
         objectId: accessRequest.requesterObjectId,
         registered: Boolean(principal),
       },
-      resourceLabel: requestResourceLabel(accessRequest, labels.get(resource.id)),
+      resourceLabel: requestResourceLabel(accessRequest, resourceLabel(resource)),
       publication,
       reviewable: publishedModels.find((item) => item.id === publication?.id),
+      pool: poolFor(resource),
       governed: managedGrant({ resource, subject }),
       existingGrant: Boolean(principal) && (entitlements.data ?? []).some(
         (item) => item.subject.kind === subject.kind && item.subject.id === subject.id
@@ -463,13 +570,13 @@ export function EntitlementsPage() {
   function submit(event: FormEvent) {
     event.preventDefault()
     const subject = subjectOptions.find((option) => option.id === form.subject)
-    const resource = resourceOptions.find((option) => option.id === form.resource)
+    const resource = resourceOptions.find((option) => option.value === form.resource)
     if (!subject || !resource || callRateError(form) || (directModelId && subject.kind === 'group')) {
       return
     }
     const target = {
       subject: { kind: subject.kind, id: subject.id },
-      resource: { kind: resource.kind, id: resource.id },
+      resource: { kind: resource.kind, id: resource.id, ...(resource.scopeId ? { scopeId: resource.scopeId } : {}) },
     }
     createMutation.mutate({
       ...target,
@@ -490,6 +597,7 @@ export function EntitlementsPage() {
           modelApis: modelApis.data,
           mcpServers: mcpServers.data,
           modelEndpoints: modelEndpoints.data,
+          modelPools: modelPools.data,
         },
         entitlement,
       ),
@@ -499,20 +607,24 @@ export function EntitlementsPage() {
       if (environmentFilter === 'unclassified') return row.environment == null
       return row.environment === environmentFilter
     })
-  const unbound = rows.filter((item) => !item.binding).length
+  // A pool grant is never bound to its own subscription: the pool's policy checks it on every call.
+  const unbound = rows.filter((item) => !item.binding && item.resource.kind !== 'poolModel').length
   const rateError = callRateError(form)
-  const mcpSelected = resourceOptions.find((option) => option.id === form.resource)?.kind === 'mcpServer'
+  const selectedResource = resourceOptions.find((option) => option.value === form.resource)
+  const mcpSelected = selectedResource?.kind === 'mcpServer'
+  const poolSelected = selectedResource?.kind === 'poolModel'
+  const selectedPool = selectedResource ? poolFor(selectedResource) : undefined
   const connectionGrant = rows.find((entitlement) => entitlement.id === connectionGrantId)
   // The approval dialog reports whether the requester is registered and already holds a grant,
   // and prefills limits from the publication, so it waits until those are known.
   const approvalReady = principals.isSuccess && entitlements.isSuccess && !publications.isPending
-    && !modelApis.isPending && !mcpServers.isPending
+    && !modelApis.isPending && !mcpServers.isPending && !modelPools.isPending
 
   return (
     <section className={styles.page}>
       <PageHeader
         title="Entitlements"
-        description="Save desired grants and limits, then explicitly review and apply them: model grants below, MCP server grants with Plan and apply on the MCPs page. Saving alone never changes API Management. MOSAIC-group and imported-only grants remain desired state."
+        description="Save desired grants and limits, then explicitly review and apply them: model grants below, pool model grants on their pool's page, and MCP server grants with Plan and apply on the MCPs page. Saving alone never changes API Management. MOSAIC-group and imported-only grants remain desired state."
         source="live"
         actions={
           <Button
@@ -550,6 +662,12 @@ export function EntitlementsPage() {
                 </Link>
               </>
             )}
+            {banner.pool && (
+              <>
+                {' '}
+                <RouterLink to={`/pools/${banner.pool.id}`}>Go to {banner.pool.displayName}</RouterLink>
+              </>
+            )}
           </MessageBarBody>
         </MessageBar>
       )}
@@ -560,6 +678,7 @@ export function EntitlementsPage() {
       {groups.isError && <ErrorState error={groups.error} />}
       {modelApis.isError && <ErrorState error={modelApis.error} />}
       {mcpServers.isError && <ErrorState error={mcpServers.error} />}
+      {modelPools.isError && <ErrorState error={modelPools.error} />}
       {gateways.isError && <ErrorState error={gateways.error} />}
       {modelEndpoints.isError && <ErrorState error={modelEndpoints.error} />}
       {runtimeConfig.authMode === 'local' && (
@@ -709,6 +828,10 @@ export function EntitlementsPage() {
                     const appliedMcpGrant = relatedMcpPublication?.appliedAccess?.grants.find(
                       (grant) => grant.entitlementId === entitlement.id,
                     )
+                    const relatedPool = poolFor(entitlement.resource)
+                    const appliedPoolGrant = relatedPool?.appliedAccess?.grants.find(
+                      (grant) => grant.entitlementId === entitlement.id,
+                    )
                     const managed = managedGrant(entitlement)
                     return (
                       <TableRow
@@ -744,7 +867,7 @@ export function EntitlementsPage() {
                       <TableCell>
                         <div className={styles.cellStack}>
                           <Text className={styles.primaryCell}>
-                            {labels.get(entitlement.resource.id) ?? entitlement.resource.id}
+                            {resourceLabel(entitlement.resource) ?? entitlement.resource.id}
                           </Text>
                           <Text className={styles.secondaryCell}>{entitlement.resource.kind}</Text>
                         </div>
@@ -771,6 +894,14 @@ export function EntitlementsPage() {
                               {sentence}
                             </Text>
                           ))}
+                          {relatedPool && describePoolSafeguard(
+                            relatedPool.safeguard,
+                            relatedPool.appliedAccess?.tokenMetering !== false,
+                          ).map((sentence) => (
+                            <Text key={`pool:${sentence}`} className={styles.secondaryCell}>
+                              Pool: {sentence}
+                            </Text>
+                          ))}
                           {appliedGrant && (
                             <>
                               <Text size={200} weight="semibold">Last applied limits {appliedGrant.enabled ? '' : '(grant disabled)'}</Text>
@@ -787,6 +918,19 @@ export function EntitlementsPage() {
                               ))}
                             </>
                           )}
+                          {appliedPoolGrant && (
+                            <>
+                              <Text size={200} weight="semibold">Last applied limits {appliedPoolGrant.enabled ? '' : '(grant disabled)'}</Text>
+                              {describeLimits(appliedPoolGrant).map((sentence) => (
+                                <Text key={`pool-applied:${sentence}`} className={styles.secondaryCell}>{sentence}</Text>
+                              ))}
+                              {appliedPoolGrant.keysAllowed === false && (
+                                <Text className={styles.secondaryCell}>
+                                  Its cost center turned keys off, so only Entra tokens work.
+                                </Text>
+                              )}
+                            </>
+                          )}
                         </div>
                       </TableCell>
                       <TableCell>
@@ -800,7 +944,9 @@ export function EntitlementsPage() {
                         </div>
                       </TableCell>
                       <TableCell>
-                        {entitlement.binding ? (
+                        {entitlement.resource.kind === 'poolModel' ? (
+                          <PoolGrantKey entitlement={entitlement} />
+                        ) : entitlement.binding ? (
                           <div className={styles.cellStack}>
                             <Badge
                               appearance="tint"
@@ -849,6 +995,9 @@ export function EntitlementsPage() {
                           </Button>
                           {managed && relatedPublication && (
                             <Button appearance="subtle" onClick={() => setSelectedPublicationId(relatedPublication.id)}>Manage model</Button>
+                          )}
+                          {entitlement.resource.kind === 'poolModel' && relatedPool && (
+                            <Button appearance="subtle" onClick={() => navigate(`/pools/${relatedPool.id}`)}>Manage pool</Button>
                           )}
                           {(managed && entitlement.runtime) || entitlement.resource.kind === 'mcpServer' ? (
                             <Button onClick={() => setConnectionGrantId(entitlement.id)}>Connection info</Button>
@@ -1004,7 +1153,7 @@ export function EntitlementsPage() {
                         <TableCell>
                           <div className={styles.cellStack}>
                             <Text className={styles.primaryCell}>
-                              {requestResourceLabel(accessRequest, labels.get(accessRequest.resource.id))}
+                              {requestResourceLabel(accessRequest, resourceLabel(accessRequest.resource))}
                             </Text>
                             {accessRequest.resourceSummary?.available === false && (
                               <Text className={styles.secondaryCell}>No longer available</Text>
@@ -1107,7 +1256,7 @@ export function EntitlementsPage() {
                 {resolved.data.map((item) => (
                   <div key={item.entitlement.id}>
                     <dt>
-                      {labels.get(item.entitlement.resource.id) ?? item.entitlement.resource.id}
+                      {resourceLabel(item.entitlement.resource) ?? item.entitlement.resource.id}
                     </dt>
                     <dd>
                       {grantPathLabel(item)}
@@ -1169,7 +1318,7 @@ export function EntitlementsPage() {
                     value={form.resource}
                     disabled={Boolean(directModelId)}
                     onChange={(_, data) => {
-                      const mcp = resourceOptions.find((option) => option.id === data.value)?.kind === 'mcpServer'
+                      const mcp = resourceOptions.find((option) => option.value === data.value)?.kind === 'mcpServer'
                       // MCP servers are limited by calls, never tokens. Clear token limits the
                       // form no longer shows, so none are sent or silently dropped.
                       setForm(mcp
@@ -1177,9 +1326,9 @@ export function EntitlementsPage() {
                         : { ...form, resource: data.value })
                     }}
                   >
-                    <option value="">Select a model API or MCP server</option>
+                    <option value="">Select a model API, pool model, or MCP server</option>
                     {resourceOptions.map((option) => (
-                      <option key={option.id} value={option.id}>
+                      <option key={option.value} value={option.value}>
                         {option.label}
                       </option>
                     ))}
@@ -1205,10 +1354,20 @@ export function EntitlementsPage() {
                   </Text>
                 ) : (
                   <>
-                    <Text size={200}>
-                      Leave a limit empty to add no grant-specific restriction. Inherited publication
-                      safeguards still apply; this does not mean unrestricted gateway access.
-                    </Text>
+                    {poolSelected ? (
+                      <Text size={200}>
+                        Leave a limit empty to add no grant-specific restriction. The pool&apos;s
+                        shared token limit still applies; this does not mean unrestricted gateway
+                        access.
+                        {selectedPool && !selectedPool.governedAccess
+                          && ` ${selectedPool.displayName} doesn't use governed access yet, so this grant waits until it does.`}
+                      </Text>
+                    ) : (
+                      <Text size={200}>
+                        Leave a limit empty to add no grant-specific restriction. Inherited publication
+                        safeguards still apply; this does not mean unrestricted gateway access.
+                      </Text>
+                    )}
                     <div className={styles.dialogGrid}>
                       <Field label="Tokens per minute">
                         <Input
@@ -1306,6 +1465,7 @@ export function EntitlementsPage() {
           costCenters={costCenters.data ?? []}
           environmentCatalog={environmentCatalog.data}
           publication={approving.publication}
+          pool={approving.pool}
           governed={approving.governed}
           existingGrant={approving.existingGrant}
           pending={approveMutation.isPending}

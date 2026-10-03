@@ -5,6 +5,7 @@ import type {
   McpServer,
   ModelApi,
   ModelEndpoint,
+  ModelPool,
 } from './types'
 
 export interface EntitlementEnvironmentLookups {
@@ -12,6 +13,7 @@ export interface EntitlementEnvironmentLookups {
   modelApis?: ModelApi[]
   mcpServers?: McpServer[]
   modelEndpoints?: ModelEndpoint[]
+  modelPools?: ModelPool[]
 }
 
 function gatewayEnvironment(gateways: Gateway[] | undefined, gatewayId: string | null | undefined) {
@@ -39,6 +41,14 @@ export function entitlementResourceEnvironment(
     return gatewayEnvironment(
       lookups.gateways,
       lookups.mcpServers?.find((server) => server.id === resource.id)?.gatewayId,
+    )
+  }
+
+  // A pool model's scope is its pool, which serves every model from one gateway.
+  if (resource.kind === 'poolModel') {
+    return gatewayEnvironment(
+      lookups.gateways,
+      lookups.modelPools?.find((pool) => pool.id === resource.scopeId)?.gatewayId,
     )
   }
 

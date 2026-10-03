@@ -523,7 +523,7 @@ class PortalEnvironment(MosaicModel):
 
 
 class BlockedPublication(MosaicModel):
-    kind: Literal["model", "mcp"] = "model"
+    kind: Literal["model", "mcp", "pool"] = "model"
     publication_id: str
     display_name: str | None = None
     status: str

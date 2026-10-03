@@ -64,15 +64,18 @@ Content-Type: application/json
   reference, and names the application. The applied access snapshot's `modelCaller` shows what's
   live.
 - **The application needs its own model grant.** Grant the application `Models.Invoke.Application`
-  on the models its tools call, on the same gateway, and apply them. The plan warns when MOSAIC
-  can't find an enabled direct grant for the application on a model this gateway publishes. It
+  on the models its tools call, on the same gateway, and apply them. A grant on a model in a
+  governed [model pool](../README.md#model-pools) counts too. The plan warns when MOSAIC can't find
+  an enabled direct grant for the application on a model this gateway publishes, or on a model in
+  one of its governed pools. It
   warns too when MOSAIC can no longer name the principal as an application. Then the server
   receives no reference until that's fixed, and its own access is unaffected.
 - **Can't be deleted while named.** MOSAIC refuses to delete a principal an MCP server calls models
   as, or to change it to a kind that isn't an application. Clear it on the server first.
 
-Models need no setting of their own. Every governed model records a reference from an application
-token. Re-apply a model once after upgrading, so that its policy reads and removes the header.
+Models need no setting of their own. Every governed model and governed model pool records a
+reference from an application token. Re-apply each once after upgrading, so that its policy reads
+and removes the header.
 
 ## Pass the reference on
 
@@ -159,6 +162,10 @@ other figure, and counts a reference it couldn't use by its reason. See
 - **The portal.** Each person's **Usage & cost** page lists their own model use through MCP
   servers, by MCP server and model, with its estimated cost and the cost center of the
   application's grant, which paid for it. It's not in their totals, and nobody sees anyone else's.
+
+Calls to a model in a [model pool](../README.md#model-pools) count the same way. Each is priced at
+the member that served it, as the application's own pool calls are. The portal names the model,
+never the pool, and says "Unknown model" once the model is gone from its pool.
 
 ## Limits
 
