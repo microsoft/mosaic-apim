@@ -2,13 +2,14 @@
 
 **Status:** Proposed
 
-Phases 1 and 2 are implemented. Administrators create, publish, unpublish, and recover breaker,
-linear, and preferential pools of Azure deployments reached with Microsoft Entra ID, and the
-console lists and shows them. A governed pool admits only callers granted one of its models under
-a cost center, each with their own key or a Microsoft Entra token. Its calls count toward the
-cost center's limits, pooled quotas, spend, and budget, and they're priced at the member that
-served each one. The portal lists a governed pool's models by display name, unless they're hidden,
-and never names the pool. Phases 3 to 5, which add members reached with a key, health, and a
+Phases 1 to 3 are implemented. Administrators create, publish, unpublish, and recover breaker,
+linear, and preferential pools, and the console lists and shows them. A pool's members are Azure
+deployments, reached with the gateway's Microsoft Entra ID or with a key, and Claude models on AWS
+Bedrock, reached with a Bedrock API key. A governed pool admits only callers granted one of its
+models under a cost center, each with their own key or a Microsoft Entra token. Its calls count
+toward the cost center's limits, pooled quotas, spend, and budget, and they're priced at the
+member that served each one. The portal lists a governed pool's models by display name, unless
+they're hidden, and never names the pool or its members. Phases 4 and 5, which add health and a
 router, aren't built yet. Nor are the console's suggested pools, its list of the pools that use an
 endpoint, its warning about a model offered twice, and its dashboard tile. The
 [README](../../README.md#model-pools) describes what is built.
@@ -41,6 +42,10 @@ key-authenticated endpoints were merged. What changed in this record:
 - A pool's calls are priced per member, not per API.
 - Endpoints reached with a key can be members, through ADR 0018's named values.
 - Pools are unpublished through a reviewed plan.
+
+**Revised 2026-10-02** after phase 3 was built. *Members reached with a key* now records how
+AWS Bedrock members are registered, routed, disclosed, and priced, and answers the questions
+phase 3 had left open.
 
 ## Context
 
@@ -280,13 +285,14 @@ attributes are derived from it:
   confirmed* is a warning.
 - **Authentication.** Members that share a backend pool must authenticate the same way, because
   the policy doesn't know which of them API Management will pick.
-  - Until phase 3, every member is an Azure deployment on an endpoint registered by resource ID.
-    The gateway reaches it with its managed identity, as it reaches a publication's.
-  - From phase 3, a member on an endpoint reached with a key (ADR 0018, ADR 0021) is a target on
-    its own, and the policy sets that member's key for its attempt. See *Members reached with a
-    key*.
+  - A member on an Azure endpoint registered by resource ID is reached with the gateway's managed
+    identity, as a publication's deployment is.
+  - From phase 3, a member reached with a key, on an Azure endpoint (ADR 0018, ADR 0021) or on
+    AWS Bedrock, is a target on its own, and the policy sets that member's key for its attempt.
+    See *Members reached with a key*.
 - **Live deployment.** A member's deployment must appear in the endpoint's latest inventory, and
-  its provisioning must have succeeded.
+  its provisioning must have succeeded. On an endpoint reached with a key, MOSAIC can't list
+  deployments, so the member must be one the administrator declared for the endpoint.
 - **Environment.** The gateway's environment must permit the member's endpoint. See
   *Environments* below.
 - **Size.** A backend pool holds at most 30 members, which is API Management's limit.
@@ -671,50 +677,81 @@ mechanism, unchanged, for each such member:
 **AWS Bedrock.** Amazon Bedrock serves Claude through the Anthropic Messages API
 ([Amazon Bedrock documentation](https://docs.aws.amazon.com/bedrock/latest/userguide/inference-messages-api.html)):
 
-- The route is `https://bedrock-runtime.{region}.amazonaws.com/anthropic/v1/messages`. The
-  `bedrock-mantle` endpoint serves the same API.
-- A Bedrock API key goes in `x-api-key`, with an `anthropic-version` header.
+- Two hosts serve it at `/anthropic/v1/messages`: `bedrock-runtime.{region}.amazonaws.com`, which
+  AWS recommends, and `bedrock-mantle.{region}.api.aws`.
+- Both take a Bedrock API key in `x-api-key`, with `anthropic-version: 2023-06-01`. Both stream
+  when the request sets `stream`, in Anthropic's server-sent events.
 - The request's `model` is a Bedrock model ID or inference profile, such as
   `us.anthropic.claude-sonnet-5`, not an Azure deployment name.
+- AWS documents counting tokens only on `bedrock-mantle` hosts.
 
 So a Claude pool can take Bedrock members, like this:
 
-- **Bedrock endpoints.** MOSAIC can't discover AWS.
-  [ADR 0006](0006-model-endpoint-onboarding.md) already registers endpoints by URL, with a Key
-  Vault secret URI, for the `openAiCompatible` provider. Phase 3 adds an `awsBedrock` provider on
-  the same path. The administrator supplies:
-  - the region;
-  - the base URL;
-  - the model IDs it serves, and their capacity type.
-
-  Readiness is always *not confirmed*, because MOSAIC can't read AWS IAM.
+- **Registration.** MOSAIC can't discover AWS, so an administrator registers a Bedrock endpoint by
+  URL, as [ADR 0006](0006-model-endpoint-onboarding.md) registers `openAiCompatible` endpoints.
+  - Its provider is `awsBedrock`. MOSAIC also infers it from a Bedrock host given with a key or
+    with model IDs. The host alone isn't enough, because Bedrock hosts also serve
+    OpenAI-compatible routes.
+  - The region is read from the URL. FIPS, China, and control-plane hosts are refused, and so is
+    a resource ID.
+  - The administrator gives a Bedrock API key, which MOSAIC stores in its own Key Vault
+    (ADR 0021), or the URI of a Key Vault secret that holds one. Exactly one of the two.
+  - A host is registered once. To use another key, the administrator replaces the existing
+    endpoint's key.
+  - The administrator declares the model IDs the host serves, up to 50, each with the Anthropic
+    Messages shape. Provisioned-throughput ARNs aren't accepted.
+  - MOSAIC can't list Bedrock's models with an API key, so model sync is refused.
+- **Capacity** is read from the model ID, and every accepted ID is pay-as-you-go:
+  - `anthropic.` is regional;
+  - `global.` is a global inference profile;
+  - another geography prefix, such as `us.` or `eu.`, is a data zone;
+  - anything else has an unknown scope.
 - **The key stays in Key Vault**, behind a named value the pool owns, exactly as for an Azure key
   member. The gateway's system-assigned identity needs Key Vault Secrets User on the vault.
-  MOSAIC never reads the key.
-- **Routing.** A Bedrock member is always a target on its own, because its model ID and
-  authentication differ from Azure members'.
-  - The inbound policy acquires the gateway's managed identity token once, into a variable.
-  - Each attempt sets its member's authentication: that token for a managed-identity target, or
-    the member's named value in its key header for a key member.
-  - Each attempt also sets its member's model name.
-  - In breaker and preferential pools, targets reached with a key follow the managed-identity
-    targets. In a linear pool, they can go anywhere.
-  - A target after a backend pool is tried once that pool has no member left.
-- **Disclosure.** The plan warns that prompts may be processed outside Azure.
-- **Pricing.** A Bedrock member is priced as any other provider's deployment is, by a price an
-  administrator adds (ADR 0020). Until then its calls stay unpriced.
+  - MOSAIC reads the secret only to check that it's there and has no stray whitespace. It never
+    sends the key to AWS, so a Bedrock member's readiness stays *not confirmed*. The first request
+    through the pool tells whether AWS accepts the key.
+  - The console asks for a long-term key, because a short-term one expires within 12 hours.
+  - Replacing a key MOSAIC stores writes a new version of the same secret. MOSAIC reads it at
+    once, and API Management within four hours.
+- **Only through pools.** Publishing refuses a Bedrock endpoint, and the list of deployments to
+  publish leaves it out.
+- **Routing.** A key member, on Azure or on Bedrock, is always a target on its own.
+  - The inbound policy puts the gateway's managed identity token in a variable, and acquires it
+    only when some member is reached with it.
+  - Each attempt sets its member's credential and deletes the other kind: the token, or the
+    member's named value, in `x-api-key` for the Anthropic shape and `api-key` for the others.
+  - When a member's model ID differs from the model's name in the pool, as a Bedrock ID usually
+    does, each attempt also sets its own member's ID in the body.
+  - A Bedrock member's backend is the host's origin.
+  - In breaker and preferential pools, the gateway tries each key target once, in the pool's
+    order, with no breaker. It does so after the backend pool's attempts, or as soon as the
+    backend pool answers that no member is left. In a preferential pool, the plan warns when a
+    provisioned member is reached with a key, because it's tried only after the backend pool.
+  - In a linear pool, key members keep their place in the order.
+  - The plan refuses a model that would need more than 10 attempts.
+  - The gateway removes the headers AWS adds to a response, such as `x-amzn-requestid` and the
+    `x-amzn-bedrock-*` latencies and token counts, which would tell a caller that AWS answered.
+- **Disclosure.** For each Bedrock member, the plan tells the administrator that AWS processes
+  the requests it serves, prompts included, outside Azure.
+  - For a global or data zone profile, it adds that AWS may process them in other regions too.
+  - For a `bedrock-runtime` host, it adds that a token count may fail. A governed Claude pool
+    offers only `messages`, so this affects only a pool without governed access.
+  - Users aren't told. A pool hides its members, and the portal never shows the pool's
+    description, because it may name them. An administrator who must tell users can say so in
+    the model's display name, or outside MOSAIC.
+- **Pricing.** MOSAIC can't tell an AWS host's cloud, so a Bedrock member's calls stay unpriced
+  until an administrator names its cloud and adds a price (ADR 0020).
+- **Metering.** A Bedrock response reports usage in the Anthropic format, as a Foundry Claude
+  response does. That the token policies and the LLM log read it is still to be confirmed (see
+  *Verify on a real gateway*).
+- **Features.** A member that lacks a feature the request uses answers with a 4xx status, which
+  the pool doesn't retry. A pool should mix only members that serve the same features.
 
 If backend credentials prove to work (see *Verify on a real gateway*), key members can share
 a backend pool with each other, each carrying its own key on its backend. That doesn't put the
 key anywhere new: ADR 0018 already notes that anyone who can edit policies can read any named
 value. The pool would still own those backends, so no other API routes to them.
-
-Still open for phase 3:
-
-- Which kind of Bedrock key is supplied, and how it's rotated.
-- Streaming and feature parity between Bedrock and Foundry.
-- Token metering of Bedrock responses on v2 tiers.
-- Whether users must be told a model can be served outside Azure.
 
 ### Phases
 
@@ -781,6 +818,13 @@ Phase 3:
   backend pool.
 - Whether an endpoint that gets both a bearer token and a key refuses the call. If it does, the
   policy must never send both.
+- That `llm-token-limit`, `llm-emit-token-metric`, and `ApiManagementGatewayLlmLog` read the usage
+  in a Bedrock response, streamed and not, on every tier that runs them.
+- Whether API Management refuses a policy that names a named value that doesn't exist. After a
+  governed apply fails, MOSAIC restores a policy for the planned members, and the run may not have
+  created their named values. If it's refused, the pool stays denied until the next apply.
+- That both Bedrock hosts accept the request the gateway forwards, with the member's key in
+  `x-api-key` and its model ID in the body, streamed and not.
 
 ## Alternatives considered
 
@@ -854,3 +898,7 @@ Known limitations:
   publications.
 - **Members reached with a key aren't balanced** unless backend credentials prove to work. Until
   then each is a target on its own, tried in order after the balanced targets.
+- **Users can't be told a model may be served outside Azure.** A pool hides its members, so the
+  portal can't say that AWS may process a request. Only the administrator sees the plan's warning.
+- **A Bedrock key isn't checked until it's used.** MOSAIC never sends it to AWS, so a wrong or
+  expired key shows only as failed calls.
