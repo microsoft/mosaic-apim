@@ -11,14 +11,20 @@ API Management picks the member, so the attribution trace can't name it. The gat
 the backend that served the call, the host and deployment its backend URL called, or a host or
 deployment only one member has. One of Grace's calls went somewhere none of these name, so it's
 left out of cost and reported, never priced at a guess. See ADR 0024.
+
+Some tests add Dispatch tools, an MCP server that calls the model as its own application, the
+Dispatch assistant, while it serves Ada and Hedy. Each person's share is priced at the member that
+served it, and the portal names only the model. See ADR 0025.
 """
 
 from __future__ import annotations
 
 import csv
 import io
+from collections import defaultdict
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from typing import Any
 
 import pytest
@@ -32,6 +38,7 @@ from mosaic_api.domain import (
     EntitlementResource,
     EntitlementSubject,
     Gateway,
+    McpServer,
     ModelAccessSettings,
     ModelEndpoint,
     ModelEndpointCapabilities,
@@ -53,7 +60,11 @@ from mosaic_api.model_pools import (
 from mosaic_api.observed import ObservedModelDeployment
 from mosaic_api.services.analytics.cost import POOL_UNPLACED
 from mosaic_api.services.telemetry import governed_apis
-from mosaic_api.services.usage import POOL_PART_UNPRICED_NOTE, POOL_UNPRICED_NOTE
+from mosaic_api.services.usage import (
+    POOL_PART_UNPRICED_NOTE,
+    POOL_UNPRICED_NOTE,
+    UNKNOWN_POOL_MODEL,
+)
 from mosaic_api.usage_telemetry import PoolMembers, RolledUpApi, RolledUpMember
 from test_cost import (
     GATEWAY,
@@ -80,6 +91,13 @@ ADA = "ada-oid"
 GRACE = "grace-oid"
 LINUS = "linus-oid"
 RESEARCH = "costCenter_research"
+# Dispatch tools, whose application calls the model, and each MCP call's own reference.
+DISPATCH = "mcp-dispatch"
+ASSISTANT = "dispatch-assistant-oid"
+HEDY = "hedy-oid"
+OPERATIONS = "costCenter_operations"
+ADA_DISPATCH = "aaaabbbb-cccc-dddd-eeee-ffff0000ada1"
+HEDY_DISPATCH = "aaaabbbb-cccc-dddd-eeee-ffff0000bed1"
 
 # Each member: its endpoint's name, region and host, and its deployment's name, SKU, capacity
 # and creation day.
@@ -113,6 +131,7 @@ ENDPOINTS = {
     ),
 }
 EAST_BACKEND = member_backend_name(POOL_API, MODEL_ID, EAST, "chat-east")
+SWEDEN_BACKEND = member_backend_name(POOL_API, MODEL_ID, SWEDEN, "chat-sweden")
 PTU_URL = "https://contoso-ptu.openai.azure.com/openai/v1/chat/completions"
 SWEDEN_URL = "https://contoso-sweden.openai.azure.com/openai/deployments/chat-sweden/chat/completions"
 ELSEWHERE_URL = "https://elsewhere.example.com/openai/deployments/gpt-4o/chat/completions"
@@ -126,6 +145,10 @@ RESERVED_COST = 18 * 240.0
 ADA_COST = EAST_COST + RESERVED_COST / 4
 GRACE_COST = SWEDEN_COST + RESERVED_COST * 3 / 4
 TOTAL = EAST_COST + SWEDEN_COST + RESERVED_COST
+# The Dispatch assistant's calls: Ada's share on East, Hedy's on Sweden, and one of its own on East.
+ADA_BEHALF_COST = (200_000 * 2.5 + 20_000 * 10) / 1e6
+HEDY_BEHALF_COST = (100_000 * 3.025 + 10_000 * 12.1) / 1e6
+ASSISTANT_OWN_COST = (100_000 * 2.5 + 10_000 * 10) / 1e6
 
 
 def _pool_model(endpoint_ids: tuple[str, ...] = (EAST, SWEDEN, RESERVED)) -> PoolModel:
@@ -183,17 +206,28 @@ def _pool(*, applied: bool = True, api_name: str = POOL_API) -> ModelPool:
     )
 
 
-async def _grant(harness: Harness, grant_id: str, principal_id: str, key: str) -> None:
+async def _grant(
+    harness: Harness,
+    grant_id: str,
+    principal_id: str,
+    key: str,
+    *,
+    kind: str = "user",
+    resource: EntitlementResource | None = None,
+    cost_center_id: str = "",
+) -> None:
     await harness.state.entitlement_repository.save_entitlement(
         Entitlement(
             id=grant_id,
             tenant_id=TENANT,
             created_at=NOW - timedelta(days=90),
-            subject=EntitlementSubject(kind="user", id=principal_id),
-            resource=EntitlementResource(kind="poolModel", id=MODEL_ID, scope_id=POOL_ID),
+            subject=EntitlementSubject.model_validate({"kind": kind, "id": principal_id}),
+            resource=resource
+            or EntitlementResource(kind="poolModel", id=MODEL_ID, scope_id=POOL_ID),
             binding=EntitlementBinding(
                 gateway_id=GATEWAY, attribution_key=key, source=BindingSource.ORCHESTRATED
             ),
+            cost_center_id=cost_center_id,
         ),
         _audit("entitlement"),
     )
@@ -316,6 +350,108 @@ async def rolled_up(harness: Harness, *extra: GatewayCall) -> Harness:
     harness.logs.calls.extend(extra)
     await _roll_up(harness)
     return harness
+
+
+def _at(hour: int, minute: int = 0, second: int = 0) -> datetime:
+    return datetime(2026, 3, 18, hour, minute, second, tzinfo=UTC)
+
+
+def _dispatch(at: datetime, key: str, member: str, reference: str) -> GatewayCall:
+    return GatewayCall(
+        time=at,
+        api="dispatch",
+        grant=key,
+        member=member,
+        client_app="vscode",
+        reference=reference,
+        model_caller=ASSISTANT,
+        total_time_ms=60_000,
+    )
+
+
+def _assistant(
+    at: datetime,
+    prompt: int,
+    completion: int,
+    deployment: str,
+    backend: str,
+    reference: str = "",
+) -> GatewayCall:
+    return GatewayCall(
+        time=at,
+        api=POOL_API,
+        grant="k-assistant",
+        client_app="dispatch-assistant-app",
+        reference=reference,
+        prompt_tokens=prompt,
+        completion_tokens=completion,
+        deployment=deployment,
+        model="gpt-4o",
+        backend_id=backend,
+    )
+
+
+async def on_behalf(harness: Harness) -> Harness:
+    """The pool, and the Dispatch assistant's calls to its model for Ada, Hedy, and itself."""
+
+    await seed(harness)
+    state = harness.state
+    await state.cost_center_repository.create_cost_center(
+        CostCenter(id=OPERATIONS, tenant_id=TENANT, name="Operations", code="OPS"),
+        _audit("costCenter"),
+    )
+    await state.gateway_repository.save_mcp_server(
+        McpServer(
+            id=DISPATCH,
+            tenant_id=TENANT,
+            gateway_id=GATEWAY,
+            api_name="dispatch",
+            display_name="Dispatch tools",
+            path="dispatch",
+            imported_from_snapshot_id="snapshot",
+        ),
+        _audit("mcp"),
+    )
+    assistant = await _principal(
+        harness, ASSISTANT, PrincipalKind.SERVICE_PRINCIPAL, "Dispatch assistant"
+    )
+    hedy = await _principal(harness, HEDY, PrincipalKind.USER, "Hedy")
+    # The assistant's grant is on the pool's model; Ada's and Hedy's are on the MCP server only.
+    await _grant(
+        harness,
+        "grant-assistant",
+        assistant,
+        "k-assistant",
+        kind="application",
+        cost_center_id=OPERATIONS,
+    )
+    dispatch = EntitlementResource(kind="mcpServer", id=DISPATCH)
+    await _grant(
+        harness, "grant-ada-dispatch", f"principal-{ADA}", "k-ada-dispatch", resource=dispatch
+    )
+    await _grant(harness, "grant-hedy-dispatch", hedy, "k-hedy-dispatch", resource=dispatch)
+    harness.logs.calls.extend(
+        [
+            _dispatch(_at(11), "k-ada-dispatch", ADA, ADA_DISPATCH),
+            _assistant(_at(11, 0, 30), 200_000, 20_000, "chat-east", EAST_BACKEND, ADA_DISPATCH),
+            _dispatch(_at(11, 30), "k-hedy-dispatch", HEDY, HEDY_DISPATCH),
+            _assistant(
+                _at(11, 30, 20), 100_000, 10_000, "chat-sweden", SWEDEN_BACKEND, HEDY_DISPATCH
+            ),
+            # The assistant's own call, made for nobody.
+            _assistant(_at(12, 30), 100_000, 10_000, "chat-east", EAST_BACKEND),
+        ]
+    )
+    await _roll_up(harness)
+    return harness
+
+
+def _chargeback(harness: Harness) -> list[dict[str, str]]:
+    response = harness.client.get(
+        "/api/v1/analytics/export", params={"view": "chargeback", "range": "30d"}
+    )
+    assert response.status_code == 200, response.text
+    return list(csv.DictReader(io.StringIO(response.text.lstrip("\ufeff"))))
 
 
 async def test_the_overview_prices_each_call_at_the_member_that_served_it(
@@ -525,7 +661,10 @@ def _strings(value: Any) -> Iterator[str]:
 
 
 def _assert_hides_the_pool(report: Any) -> None:
-    """The portal never names the pool, its members, their endpoints, or where they run."""
+    """The portal never names the pool, its members, their endpoints, or where they run.
+
+    Its IDs name nothing, so they may appear, alone or in the keys built from them.
+    """
 
     hidden = [
         "northwind",
@@ -545,8 +684,9 @@ def _assert_hides_the_pool(report: Any) -> None:
     for text in _strings(report):
         folded = text.casefold()
         assert not any(word in folded for word in hidden), text
-        if text not in {POOL_ID, MODEL_ID, "poolModel"}:
-            assert "pool" not in folded, text
+        for opaque in (POOL_ID, MODEL_ID, "poolModel"):
+            folded = folded.replace(opaque.casefold(), "")
+        assert "pool" not in folded, text
 
 
 async def test_the_unpriced_list_names_a_pools_unplaced_calls(harness: Harness) -> None:
@@ -674,3 +814,177 @@ def test_a_call_is_placed_on_a_member_only_when_its_log_says_which(
     backend: str, host: str, deployment: str, expected: str | None
 ) -> None:
     assert _fleet().member_for(backend, host, deployment) == expected
+
+
+# -- Model use through MCP servers -----------------------------------------------------------
+
+
+async def test_each_persons_share_of_an_applications_pool_calls_is_priced_where_it_ran(
+    harness: Harness,
+) -> None:
+    await on_behalf(harness)
+
+    report = harness.get("/api/v1/analytics/consumers", range="30d")
+
+    rows = {row["personLabel"]: row for row in report["onBehalf"]}
+    assert set(rows) == {"Ada", "Hedy"}
+    ada = rows["Ada"]
+    assert (ada["mcpLabel"], ada["mcpServerId"], ada["applicationLabel"]) == (
+        "Dispatch tools",
+        DISPATCH,
+        "Dispatch assistant",
+    )
+    assert (ada["requests"], ada["totalTokens"]) == (1, 220_000)
+    # Ada's share ran in East US 2, and Hedy's in Sweden Central, which costs more.
+    assert ada["cost"] == pytest.approx(ADA_BEHALF_COST)
+    assert rows["Hedy"]["cost"] == pytest.approx(HEDY_BEHALF_COST)
+    # Ada's own calls are still hers alone, and the application's grant carries all of its own.
+    people = {row["label"]: row["cost"] for row in report["people"]}
+    assert people["Ada"] == pytest.approx(ADA_COST)
+    grants = {row["entitlementId"]: row["cost"] for row in report["grants"]}
+    assert grants["grant-assistant"] == pytest.approx(
+        ADA_BEHALF_COST + HEDY_BEHALF_COST + ASSISTANT_OWN_COST
+    )
+
+
+async def test_the_chargeback_splits_a_pool_grant_by_person_and_member(harness: Harness) -> None:
+    await on_behalf(harness)
+
+    split = _chargeback(harness)
+
+    mine = [row for row in split if row["Charged to"] == "Dispatch assistant"]
+    for row in mine:
+        assert (row["Kind"], row["Object ID"], row["Model"]) == ("application", ASSISTANT, "gpt-4o")
+        assert (row["Cost center"], row["Cost center name"]) == ("OPS", "Operations")
+        assert row["Priced"] == "yes"
+    parts = {(row["Deployment"], row["On behalf of"]): row for row in mine}
+    assert set(parts) == {("chat-east", ""), ("chat-east", "Ada"), ("chat-sweden", "Hedy")}
+    own = parts["chat-east", ""]
+    assert (own["On behalf of object ID"], own["Requests"], own["Total tokens"]) == (
+        "",
+        "1",
+        "110000",
+    )
+    assert float(own["Cost (USD)"]) == pytest.approx(ASSISTANT_OWN_COST)
+    ada = parts["chat-east", "Ada"]
+    assert (ada["On behalf of object ID"], ada["Requests"], ada["Total tokens"]) == (
+        ADA,
+        "1",
+        "220000",
+    )
+    assert float(ada["Cost (USD)"]) == pytest.approx(ADA_BEHALF_COST)
+    hedy = parts["chat-sweden", "Hedy"]
+    assert (hedy["On behalf of object ID"], hedy["Total tokens"]) == (HEDY, "110000")
+    assert float(hedy["Cost (USD)"]) == pytest.approx(HEDY_BEHALF_COST)
+    assert all(row["On behalf of"] == "" for row in split if row not in mine)
+
+    # The parts add up exactly to the rows the file had before anyone's share was split out.
+    summaries = harness.state.usage_rollup_repository._summaries
+    for key, summary in list(summaries.items()):
+        if summary.dimension in {"onBehalf", "onBehalfUnresolved"}:
+            del summaries[key]
+    whole = _chargeback(harness)
+    assert len(split) == len(whole) + 1
+    identity = ("Month", "Charged to", "Object ID", "Cost center", "Model", "Deployment")
+    columns = ("Requests", "Prompt tokens", "Completion tokens", "Total tokens", "Cost (USD)")
+    sums: dict[tuple[str, ...], list[Decimal]] = defaultdict(
+        lambda: [Decimal(0) for _ in columns]
+    )
+    for row in split:
+        total = sums[tuple(row[name] for name in identity)]
+        for index, name in enumerate(columns):
+            total[index] += Decimal(row[name] or "0")
+    for row in whole:
+        assert sums[tuple(row[name] for name in identity)] == [
+            Decimal(row[name] or "0") for name in columns
+        ], row["Charged to"]
+
+
+async def test_a_person_sees_their_share_by_the_models_name_and_nothing_of_the_pool(
+    harness: Harness,
+) -> None:
+    await on_behalf(harness)
+    harness.sign_in(ADA, ["User"], frozenset())
+
+    report = harness.get("/api/v1/me/usage", period="30d")
+
+    [row] = report["onBehalf"]
+    assert (row["mcpServer"]["id"], row["mcpServer"]["displayName"]) == (
+        DISPATCH,
+        "Dispatch tools",
+    )
+    resource = row["resource"]
+    assert (resource["kind"], resource["id"], resource["scopeId"]) == (
+        "poolModel",
+        MODEL_ID,
+        POOL_ID,
+    )
+    assert (resource["displayName"], resource["available"]) == ("Contoso Chat", True)
+    assert row["model"] == "gpt-4o"
+    assert (row["requests"], row["totalTokens"]) == (1, 220_000)
+    # Priced at the member that served it, as her own calls to the model are.
+    assert row["estimatedCost"] == pytest.approx(ADA_BEHALF_COST)
+    assert row["costNote"] is None
+    # Charged to the application's grant's cost center, so none of it is in her own figures.
+    assert row["costCenter"] == {"id": OPERATIONS, "name": "Operations", "code": "OPS"}
+    assert report["totals"]["estimatedCost"] == pytest.approx(ADA_COST)
+    _assert_hides_the_pool(report)
+
+
+async def test_someone_with_no_grant_on_the_pool_sees_their_share_priced(
+    harness: Harness,
+) -> None:
+    await on_behalf(harness)
+    harness.sign_in(HEDY, ["User"], frozenset())
+
+    report = harness.get("/api/v1/me/usage", period="30d")
+
+    [row] = report["onBehalf"]
+    assert (row["resource"]["displayName"], row["model"]) == ("Contoso Chat", "gpt-4o")
+    # Priced in Sweden Central, where it ran, though Hedy may call none of the pool's models.
+    assert row["estimatedCost"] == pytest.approx(HEDY_BEHALF_COST)
+    assert row["costNote"] is None
+    assert report["totals"]["totalTokens"] == 0
+    assert report["totals"]["estimatedCost"] is None
+    _assert_hides_the_pool(report)
+
+
+async def test_a_share_of_a_pool_model_thats_gone_stays_priced_and_unnamed(
+    harness: Harness,
+) -> None:
+    await on_behalf(harness)
+    await harness.state.gateway_repository.save_model_pool(
+        _pool().model_copy(update={"models": []}), _audit("pool")
+    )
+    harness.sign_in(HEDY, ["User"], frozenset())
+
+    report = harness.get("/api/v1/me/usage", period="30d")
+
+    [row] = report["onBehalf"]
+    resource = row["resource"]
+    assert (resource["displayName"], resource["available"]) == (UNKNOWN_POOL_MODEL, False)
+    assert row["model"] is None
+    assert row["estimatedCost"] == pytest.approx(HEDY_BEHALF_COST)
+    _assert_hides_the_pool(report)
+
+
+async def test_a_share_mosaic_cant_follow_to_a_grant_never_names_the_pool(
+    harness: Harness,
+) -> None:
+    await on_behalf(harness)
+    records = harness.state.usage_rollup_repository._records
+    for key, record in list(records.items()):
+        if record.entitlement_id == "grant-assistant":
+            del records[key]
+    harness.sign_in(HEDY, ["User"], frozenset())
+
+    report = harness.get("/api/v1/me/usage", period="30d")
+
+    [row] = report["onBehalf"]
+    # Without the application's grant, MOSAIC can't say which of the pool's models it called.
+    assert (row["resource"]["kind"], row["resource"]["displayName"]) == (
+        "poolModel",
+        UNKNOWN_POOL_MODEL,
+    )
+    assert row["estimatedCost"] == pytest.approx(HEDY_BEHALF_COST)
+    _assert_hides_the_pool(report)

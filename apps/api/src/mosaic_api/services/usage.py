@@ -43,6 +43,7 @@ from mosaic_api.services.cost_centers import load_book
 from mosaic_api.services.directory import Actor
 from mosaic_api.services.environments import load_environment_catalog
 from mosaic_api.services.model_access import with_inherited_limits
+from mosaic_api.services.pool_access import pool_model_offered
 from mosaic_api.services.portal import PortalService
 from mosaic_api.services.pricing import PricingService
 from mosaic_api.usage_telemetry import (
@@ -562,6 +563,8 @@ MCP_COST_NOTE = "MCP servers are billed by their own service, not by tokens."
 PRODUCT_COST_NOTE = "Products bundle several APIs, so MOSAIC can't price them."
 UNKNOWN_DEPLOYMENT_NOTE = "MOSAIC doesn't know which deployment this API calls."
 UNKNOWN_MODEL_API = "Unknown model API"
+# A pool model MOSAIC no longer has. It's never named by its pool, which is the admins' to see.
+UNKNOWN_POOL_MODEL = "Unknown model"
 # A pool model's notes never say where its calls ran: the pool's deployments are the admins'.
 POOL_UNPRICED_NOTE = "MOSAIC can't price this model's calls."
 POOL_PART_UNPRICED_NOTE = "MOSAIC can't price all of this model's calls."
@@ -1024,11 +1027,18 @@ def _measured_zero(is_mcp: bool) -> DailyUsage:
 def _model_api(
     fact: UsageFact, record: AttributionRecord | None, apis: Mapping[str, RolledUpApi]
 ) -> RolledUpApi | None:
-    """The model API a fact's calls reached: its grant's, else the one API all its calls named."""
+    """The model API a fact's calls reached: its grant's, else the one API all its calls named.
+
+    A pool model grant's calls reach its pool's API.
+    """
 
     if record is not None:
+        resource = record.resource
         for api in apis.values():
-            if record.resource.id in {api.resource_id, api.publication_id}:
+            if resource.kind == EntitlementResourceKind.POOL_MODEL:
+                if api.kind == "pool" and resource.scope_id == api.resource_id:
+                    return api
+            elif resource.id in {api.resource_id, api.publication_id}:
                 return api
     names = {item.api_name for item in fact.breakdown}
     return apis.get(next(iter(names))) if len(names) == 1 else None
@@ -1044,12 +1054,36 @@ class _OnBehalfGroup:
     days: dict[date, DailyUsage] = field(default_factory=dict)
 
 
+@dataclass
+class _OnBehalfModel:
+    """What MOSAIC knows of a model resource the caller's model use through MCP servers reached."""
+
+    # The deployment its calls reach, keyed as rollups key it, and its model.
+    key: str | None = None
+    model: str | None = None
+    # A pool model's deployments today, or None when it isn't a pool model. Its calls are priced
+    # at the deployment that served each, so it's named by the model alone, never by its pool.
+    members: list[str] | None = None
+    display_name: str | None = None
+    available: bool = False
+    # Every deployment to load a price for, keyed as rollups key them.
+    prices: set[str] = field(default_factory=set)
+
+
 def _on_behalf_resource(use: OnBehalfUse) -> EntitlementResource:
-    """The model resource the application's grant covers, or the model API its calls reached."""
+    """The model resource the application's grant covers, or the model API its calls reached.
+
+    Without the grant, a pool's calls are to one of its models, though MOSAIC can't say which.
+    """
 
     if use.record is not None:
         return use.record.resource
-    api_id = use.model_api.resource_id if use.model_api else f"unknown:{use.gateway_id}"
+    api = use.model_api
+    if api is not None and api.kind == "pool":
+        return EntitlementResource(
+            kind=EntitlementResourceKind.POOL_MODEL, id=api.resource_id, scope_id=api.resource_id
+        )
+    api_id = api.resource_id if api else f"unknown:{use.gateway_id}"
     return EntitlementResource(kind=EntitlementResourceKind.MODEL_API, id=api_id)
 
 
@@ -1066,6 +1100,8 @@ def _add_metrics(usage: DailyUsage, metrics: UsageMetrics) -> None:
         usage.last_seen is None or metrics.last_seen > usage.last_seen
     ):
         usage.last_seen = metrics.last_seen
+    for key, served in (metrics.members or {}).items():
+        usage.members[key] = usage.members.get(key, MemberUsage()).plus(served)
 
 
 def _cost_center_ref(
@@ -1230,7 +1266,7 @@ class UsageService:
         behalf = (
             await self._source.on_behalf_usage(actor, start=start, end=end) if measured else []
         )
-        behalf_deployments = await self._on_behalf_deployments(actor.tenant_id, behalf)
+        behalf_models = await self._on_behalf_models(actor.tenant_id, behalf)
         freshness = await self._source.freshness(
             actor, entitlements, gateway_ids={use.gateway_id for use in behalf}
         )
@@ -1242,7 +1278,7 @@ class UsageService:
                 usage,
                 start=start,
                 end=end,
-                extra=[key for key, _ in behalf_deployments.values() if key],
+                extra=sorted({key for model in behalf_models.values() for key in model.prices}),
             )
             if measured
             else None
@@ -1419,7 +1455,7 @@ class UsageService:
             last_used_at=max(last_used) if last_used else None,
         )
         behalf_rows = await self._on_behalf_rows(
-            actor.tenant_id, behalf, behalf_deployments, pricing, book, start=start, end=end
+            actor.tenant_id, behalf, behalf_models, pricing, book, start=start, end=end
         )
         return MyUsageReport(
             data_source=self._source.data_source,
@@ -1456,36 +1492,72 @@ class UsageService:
             on_behalf=behalf_rows,
         )
 
-    async def _on_behalf_deployments(
+    async def _on_behalf_models(
         self, tenant_id: str, uses: Sequence[OnBehalfUse]
-    ) -> dict[tuple[str, str, str], tuple[str | None, str | None]]:
-        """The deployment each model resource of the caller's MCP model use reaches, and its model.
+    ) -> dict[tuple[str, str, str], _OnBehalfModel]:
+        """What MOSAIC knows of each model resource of the caller's MCP model use, by resource.
 
-        Keyed by the resource. A resource MOSAIC can't follow to a deployment falls back to the
-        deployment its model API fronted on the gateway, as the rollups last knew it.
+        A pool model's calls are priced at the deployments that served them, so those are priced
+        too, current or not.
         """
 
-        found: dict[tuple[str, str, str], tuple[str | None, str | None]] = {}
+        found: dict[tuple[str, str, str], _OnBehalfModel] = {}
         for use in uses:
             resource = _on_behalf_resource(use)
             known = _resource_key(resource)
-            if known in found:
-                continue
-            key, model = await self._deployment_for_resource(tenant_id, resource)
-            api = use.model_api
-            if key is None and api is not None and api.deployment_key is not None:
-                key = api.deployment_key
-                model = await self._observed_model_name(
-                    tenant_id, api.model_endpoint_id or "", api.deployment_name or ""
+            model = found.get(known)
+            if model is None:
+                model = found[known] = await self._on_behalf_model(
+                    tenant_id, resource, use.model_api
                 )
-            found[known] = (key, model)
+            if model.members is not None:
+                model.prices.update(use.metrics.members or {})
         return found
+
+    async def _on_behalf_model(
+        self, tenant_id: str, resource: EntitlementResource, api: RolledUpApi | None
+    ) -> _OnBehalfModel:
+        """A resource's deployment and model, or a pool model's deployments, name and state.
+
+        A resource MOSAIC can't follow to a deployment falls back to the deployment its model API
+        fronted on the gateway, as the rollups last knew it.
+        """
+
+        if resource.kind == EntitlementResourceKind.POOL_MODEL:
+            pool = (
+                await self._gateways.get_model_pool(tenant_id, resource.scope_id)
+                if resource.scope_id
+                else None
+            )
+            pool_model = pool.pool_model(resource.id) if pool is not None else None
+            if pool is None or pool_model is None:
+                return _OnBehalfModel(members=[], display_name=UNKNOWN_POOL_MODEL)
+            return _OnBehalfModel(
+                model=_pool_model_name(pool_model),
+                members=[
+                    deployment_key(member.model_endpoint_id, member.deployment_name)
+                    for member in pool_model.active_members()
+                ],
+                display_name=pool_model.display_name,
+                available=pool_model_offered(pool, resource.id),
+                prices={
+                    deployment_key(member.model_endpoint_id, member.deployment_name)
+                    for member in pool_model.members
+                },
+            )
+        key, model = await self._deployment_for_resource(tenant_id, resource)
+        if key is None and api is not None and api.deployment_key is not None:
+            key = api.deployment_key
+            model = await self._observed_model_name(
+                tenant_id, api.model_endpoint_id or "", api.deployment_name or ""
+            )
+        return _OnBehalfModel(key=key, model=model, prices={key} if key else set())
 
     async def _on_behalf_rows(
         self,
         tenant_id: str,
         uses: Sequence[OnBehalfUse],
-        deployments: Mapping[tuple[str, str, str], tuple[str | None, str | None]],
+        models: Mapping[tuple[str, str, str], _OnBehalfModel],
         pricing: _MeasuredPricing | None,
         book: CostCenterBook,
         *,
@@ -1495,7 +1567,9 @@ class UsageService:
         """The caller's model use through MCP servers, a row per server, model and cost center.
 
         Each row is priced through its model's deployment, as the caller's own model rows are,
-        and names the cost center of the application's grant, which paid for it.
+        and names the cost center of the application's grant, which paid for it. A pool model's
+        calls are priced at the deployment that served each, and the row names the model alone:
+        never its pool, nor where its calls ran.
         """
 
         if not uses:
@@ -1524,7 +1598,7 @@ class UsageService:
         rows: list[UsageOnBehalfRow] = []
         for group in groups.values():
             use = group.first
-            key, model = deployments.get(_resource_key(group.resource), (None, None))
+            known = models.get(_resource_key(group.resource)) or _OnBehalfModel()
             figures = [(day, group.days.get(day)) for day in _days(start, end)]
             present = [usage for _, usage in figures if usage is not None]
             cost: float | None = None
@@ -1533,11 +1607,23 @@ class UsageService:
                 note = "No price list yet."
             elif group.resource.kind == EntitlementResourceKind.PRODUCT:
                 note = PRODUCT_COST_NOTE
-            elif key is None:
+            elif known.members is not None:
+                cost, _, note = pricing.price_pool_days(known.members, figures, end)
+            elif known.key is None:
                 note = UNKNOWN_DEPLOYMENT_NOTE
             else:
-                cost, _, note = pricing.price_days(key, figures, end)
+                cost, _, note = pricing.price_days(known.key, figures, end)
             gateway = gateways.get(use.gateway_id)
+            if known.members is not None:
+                display_name = known.display_name or UNKNOWN_POOL_MODEL
+                available = known.available and gateway is not None
+            else:
+                display_name = (
+                    use.model_api.display_name
+                    if use.model_api
+                    else (use.record.resource_name if use.record else None)
+                ) or UNKNOWN_MODEL_API
+                available = use.model_api is not None and use.model_api.removed_at is None
             seen = [usage.last_seen for usage in present if usage.last_seen is not None]
             rows.append(
                 UsageOnBehalfRow(
@@ -1561,18 +1647,13 @@ class UsageService:
                         kind=group.resource.kind,
                         id=group.resource.id,
                         scope_id=group.resource.scope_id,
-                        display_name=(
-                            use.model_api.display_name
-                            if use.model_api
-                            else (use.record.resource_name if use.record else None)
-                        )
-                        or UNKNOWN_MODEL_API,
+                        display_name=display_name,
                         gateway_id=use.gateway_id,
                         gateway_name=gateway.name if gateway else None,
                         environment=gateway.environment if gateway else None,
-                        available=use.model_api is not None and use.model_api.removed_at is None,
+                        available=available,
                     ),
-                    model=model,
+                    model=known.model,
                     requests=sum(usage.requests or 0 for usage in present),
                     prompt_tokens=sum(usage.prompt_tokens or 0 for usage in present),
                     completion_tokens=sum(usage.completion_tokens or 0 for usage in present),
