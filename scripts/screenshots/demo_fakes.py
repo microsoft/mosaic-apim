@@ -51,7 +51,7 @@ from key_vault_double import (  # noqa: E402
     FakeKeyVaultArm,
     vault_role_assignment,
 )
-from loganalytics_double import FakeLogs, GatewayCall  # noqa: E402
+from loganalytics_double import FakeLogs, GatewayCall, PoolAttempt  # noqa: E402
 from mcp_double import FakeMcpServer  # noqa: E402
 
 __all__ = [
@@ -69,6 +69,7 @@ __all__ = [
     "DemoLogs",
     "DemoMcpServer",
     "FakeCredential",
+    "PoolMemberTraffic",
     "TrafficStream",
     "build_cognitive_accounts",
     "build_key_store",
@@ -1323,6 +1324,24 @@ def log_every_call(apim: DemoApim) -> None:
 
 
 @dataclass(frozen=True)
+class PoolMemberTraffic:
+    """A pool member a stream's calls can land on, and how the pool's attempt trace names it.
+
+    The gateway logs ``backend`` as the one that served a call. The attempt trace names
+    ``traced_backend``, the model's backend pool for a member reached with the managed identity,
+    with the ``host`` and ``path`` the attempt was sent to. ``throttle_rate`` is how often the
+    member answers 429 to a call the pool then sends to another member.
+    """
+
+    backend: str
+    weight: int = 1
+    traced_backend: str = ""
+    host: str = ""
+    path: str = ""
+    throttle_rate: float = 0.0
+
+
+@dataclass(frozen=True)
 class TrafficStream:
     """A steady flow of calls from one caller to one API, as the gateway would log them.
 
@@ -1358,9 +1377,11 @@ class TrafficStream:
     denial: str = ""
     error_rate: float = 0.004
     backend_throttle_rate: float = 0.0
-    # A pool's members, as backend names and weights. Each call that reaches a backend lands on
-    # one of them, as the pool's load balancer spreads calls by weight.
-    members: tuple[tuple[str, int], ...] = ()
+    # A pool's members. Each call that reaches a backend lands on one of them, as the pool's load
+    # balancer spreads calls by weight.
+    members: tuple[PoolMemberTraffic, ...] = ()
+    # The pool model the calls ask for. The pool's policy traces it with every attempt.
+    pool_model: str = ""
 
 
 def _call_times(rng: random.Random, day: date, count: int, stream: TrafficStream) -> list[datetime]:
@@ -1383,12 +1404,40 @@ def _tokens(rng: random.Random, mean: int) -> int:
     return max(1, round(rng.gauss(mean, mean * 0.35))) if mean else 0
 
 
+def _attempts(
+    rng: random.Random, stream: TrafficStream, served: PoolMemberTraffic, status: int
+) -> list[PoolAttempt]:
+    """The attempts a pool's policy traced for one call, ending on the member that served it.
+
+    A member that throttles answers some calls 429 first, and the pool sends them on.
+    """
+
+    def attempt(member: PoolMemberTraffic, code: int) -> PoolAttempt:
+        return PoolAttempt(
+            model=stream.pool_model,
+            backend=member.traced_backend or member.backend,
+            status=code,
+            host=member.host,
+            path=member.path,
+        )
+
+    attempts = [
+        attempt(member, 429)
+        for member in stream.members
+        if member is not served and member.throttle_rate and rng.random() < member.throttle_rate
+    ]
+    attempts.append(attempt(served, status))
+    return attempts
+
+
 def stream_calls(stream: TrafficStream, day: date, today: date) -> list[GatewayCall]:
     """One day of a stream's calls: the same calls every time for the same stream and day."""
 
     if (stream.since and day < stream.since) or (stream.until and day > stream.until):
         return []
     rng = random.Random(f"{stream.name}|{day.isoformat()}")
+    # Attempts draw from a generator of their own, so tracing them leaves the calls the same.
+    attempt_rng = random.Random(f"{stream.name}|{day.isoformat()}|attempts")
     age = min(max((today - day).days, 0), GROWTH_DAYS)
     volume = stream.per_day * (1 - GROWTH * age / GROWTH_DAYS)
     if day.weekday() >= 5:
@@ -1457,11 +1506,14 @@ def stream_calls(stream: TrafficStream, day: date, today: date) -> list[GatewayC
         if backend == 0:
             total = quick
         backend_id = ""
+        attempts: list[PoolAttempt] = []
         # Only a pool's calls draw a member, so every other stream's calls stay the same.
         if stream.members and backend:
-            names = [name for name, _ in stream.members]
-            weights = [weight for _, weight in stream.members]
-            backend_id = rng.choices(names, weights=weights)[0]
+            weights = [member.weight for member in stream.members]
+            served = rng.choices(stream.members, weights=weights)[0]
+            backend_id = served.backend
+            if stream.pool_model:
+                attempts = _attempts(attempt_rng, stream, served, backend)
         calls.append(
             GatewayCall(
                 time=time,
@@ -1481,6 +1533,7 @@ def stream_calls(stream: TrafficStream, day: date, today: date) -> list[GatewayC
                 deployment=stream.deployment if metered and admitted else None,
                 model=stream.model if metered and admitted else None,
                 backend_id=backend_id,
+                attempts=attempts,
             )
         )
     return calls

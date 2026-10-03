@@ -472,7 +472,7 @@ SHOTS: list[Shot] = [
         "dark",
         "Anthropic Claude",
         actions=(click_link("Anthropic Claude"), wait_for_text("Run history")),
-        # Tall enough for both models' deployments, ending above the pool's access card.
+        # Tall enough for both models' deployments, ending above the pool's health card.
         height=1482,
     ),
     Shot(
@@ -482,14 +482,33 @@ SHOTS: list[Shot] = [
         "light",
         "Anthropic Claude",
         # The governed Claude pool's access card: how callers sign in, the grants the gateway
-        # enforces on each model, and the cost center's pooled quota.
+        # enforces on each model, and the cost center's pooled quota. The health card above it
+        # loads first, so the scroll lands where the card finally sits.
         actions=(
             click_link("Anthropic Claude"),
             wait_for_text("Grants in force"),
+            wait_for_text("Breaker tripped"),
             scroll_to_text("Who can call it", margin=110),
         ),
         # Tall enough to end just below the card, after the pooled quotas.
         height=806,
+    ),
+    Shot(
+        "console-pool-health",
+        "console",
+        "/pools",
+        "dark",
+        "Anthropic Claude",
+        # The Claude pool's last day from its attempt traces: how calls to each model ended, and
+        # how each deployment answered, with North Central US throttling Opus and tripping its
+        # breaker while the other regions take the retries.
+        actions=(
+            click_link("Anthropic Claude"),
+            wait_for_text("Breaker tripped"),
+            scroll_to_text("calls to each model ended", margin=168),
+        ),
+        # Tall enough to end just below the card, after its footnote.
+        height=974,
     ),
     Shot(
         "console-mcps",

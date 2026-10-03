@@ -93,6 +93,7 @@ from mosaic_api.model_pools import (
     ModelPoolVisibility,
     PoolMemberSpec,
     PoolModelSpec,
+    uses_backend_pools,
 )
 from mosaic_api.pricing import DeploymentPricingUpdate, EndpointPricingUpdate, PriceCreate
 from mosaic_api.repositories import GatewayRepository, InMemoryEntitlementRepository
@@ -115,9 +116,10 @@ from mosaic_api.services.directory import Actor
 from mosaic_api.services.mcp_endpoints import build_mcp_client_factory
 from mosaic_api.services.mcp_publishing import McpPublishingService
 from mosaic_api.services.model_pools import ModelPoolService
+from mosaic_api.services.pool_health import PoolHealthService
 from mosaic_api.services.portal_access import PortalAccessService
 from mosaic_api.services.pricing import PricingService
-from mosaic_api.services.telemetry import TelemetryService
+from mosaic_api.services.telemetry import TelemetryService, member_host
 from mosaic_api.services.usage import RollupUsageSource
 from mosaic_api.services.usage_rollup import UsageRollupService
 
@@ -133,6 +135,7 @@ from scripts.screenshots.demo_fakes import (
     DemoApim,
     DemoLogs,
     FakeCredential,
+    PoolMemberTraffic,
     TrafficStream,
     build_cognitive_accounts,
     build_key_store,
@@ -698,6 +701,14 @@ def install_demo_services(app: FastAPI, portal_origins: Iterable[str]) -> DemoSe
     )
     state.telemetry_service = telemetry
     state.usage_rollup_service = usage_rollups
+    # A pool's health reads the attempts its policy traced, from the same demo logs.
+    state.pool_health_service = PoolHealthService(
+        pools,
+        gateway_repository=state.gateway_repository,
+        endpoint_repository=state.model_endpoint_repository,
+        logs=logs,
+        principal_id=MOSAIC_PRINCIPAL_ID,
+    )
     # Costs come from MOSAIC's own price list: the shipped seed, plus what the estate sets below.
     pricing: PricingService = state.pricing_service
     state.usage_service = UsageService(
@@ -1809,16 +1820,43 @@ async def traffic_streams(
         docs: estate.docs_mcp_api,
     }
     # Every Claude model is called through the pool's one API, and each call lands on whichever
-    # region the pool picks for it.
+    # region the pool picks for it. North Central US is short of Opus capacity, so it throttles
+    # some calls and the pool sends them on. The pool's policy traces every attempt, which is what
+    # the pool's health reads.
     claude = await services.pools.get_pool(admin, estate.pools["Anthropic Claude"])
     claude_models = {model.display_name: model.id for model in claude.models}
     opus = claude_models["Claude Opus 4.5"]
     sonnet = claude_models["Claude Sonnet 4.5"]
-    members: dict[str, tuple[tuple[str, int], ...]] = {}
+    keyed = {
+        member.backend_name
+        for model in (await services.pools.detail(admin, claude.id)).models
+        for member in model.members
+        if member.api_key
+    }
+    hosts = {
+        endpoint.id: member_host(claude.api_shape, endpoint)
+        for endpoint in await services.endpoints.list_endpoints(admin)
+    }
+    throttle_rates = {(opus, estate.foundry_north_central_endpoint_id): 0.08}
+    members: dict[str, tuple[PoolMemberTraffic, ...]] = {}
     for pool_model in claude.models:
         api_names[pool_model.id] = claude.api_name
         members[pool_model.id] = tuple(
-            (member.backend_name, member.weight) for member in pool_model.active_members()
+            PoolMemberTraffic(
+                backend=member.backend_name,
+                weight=member.weight,
+                # An attempt through the model's backend pool names the backend pool. Only a
+                # member reached with an API key is tried on a backend of its own.
+                traced_backend=(
+                    pool_model.backend_pool_name
+                    if uses_backend_pools(claude.pool_type) and member.backend_name not in keyed
+                    else member.backend_name
+                ),
+                host=hosts.get(member.model_endpoint_id, ""),
+                path="/anthropic/v1/messages",
+                throttle_rate=throttle_rates.get((pool_model.id, member.model_endpoint_id), 0.0),
+            )
+            for member in pool_model.active_members()
         )
 
     def granted(
@@ -2073,6 +2111,7 @@ async def traffic_streams(
             per_day=22,
             tokens_per_minute=20_000,
             members=members[sonnet],
+            pool_model=sonnet,
             **chat("claude-sonnet-4-5", 1500, 520, 2800),
         ),
         granted(
@@ -2084,6 +2123,7 @@ async def traffic_streams(
             per_day=8,
             tokens_per_minute=10_000,
             members=members[opus],
+            pool_model=opus,
             **chat("claude-opus-4-5", 2600, 900, 5200),
         ),
         granted(
@@ -2097,6 +2137,7 @@ async def traffic_streams(
             tokens_per_minute=30_000,
             burst=4,
             members=members[opus],
+            pool_model=opus,
             **chat("claude-opus-4-5", 3200, 1100, 6100),
         ),
         granted(
@@ -2110,6 +2151,7 @@ async def traffic_streams(
             weekend=0.3,
             burst=2,
             members=members[sonnet],
+            pool_model=sonnet,
             **chat("claude-sonnet-4-5", 1800, 360, 2600),
         ),
         refused(

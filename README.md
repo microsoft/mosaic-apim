@@ -140,7 +140,13 @@ one under **Settings > Appearance**.
       each charging a cost center and signing in with their own key or a Microsoft Entra token. The
       card lists the grants in force, their limits, and each cost center's pooled quota.</p>
     </td>
-    <td width="50%" valign="top"></td>
+    <td width="50%" valign="top">
+      <img src="docs/images/screenshots/console-pool-health.png" alt="A breaker pool's Health card for the last 24 hours, with each Claude model's calls, successes, unavailable calls, and retries, and how each regional deployment answered, including throttled attempts and breaker trips">
+      <p><b>Pool health.</b> How the gateway's calls to each model ended, and how each deployment
+      answered them, read from the traces the pool's policy writes to the gateway's logs. An
+      administrator sees which region throttles or trips its breaker, and how often the pool retried
+      elsewhere.</p>
+    </td>
   </tr>
   <tr>
     <td width="50%" valign="top">

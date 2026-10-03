@@ -133,26 +133,27 @@ portal at `http://localhost:5174` signs you in as the demo end user, Megan Bowen
   as 120 days. Last, it enables API diagnostics on the production gateway and generates a quarter
   of gateway traffic from the estate's people and workloads, including throttled and refused calls
   and calls to adopted APIs. Each call to the Claude pool lands on one of its deployments, drawn by
-  weight, and Johanna Lorenz's calls to it are refused because she holds no grant. MOSAIC's rollup
-  job reads it all back, so the Dashboard, Analytics, and the portal's **Usage & cost** page show
-  measured figures. They are priced from the price list MOSAIC ships, plus what the seed sets
-  through the pricing service: the partner's declared GPT-4.1 mini deployment's type, a negotiated
-  GPT-4o rate from next month, which the **Pricing** page shows as scheduled, and what Contoso pays
-  for Claude Opus 4.5 and Claude Sonnet 4.5, which prices each pool call at the deployment that
-  served it. The partner's Claude, Mistral Large, Cohere, and realtime deployments and the adopted
-  APIs stay unpriced, so the **Unpriced deployments** tab has something to show. Every page
-  therefore renders what the product would show for that estate. Budget email is turned on
-  against a Communication Services double that accepts every message and delivers none, and the
-  seed sets budgets from this month's spend so far: Customer Insights near its limit, Customer
-  Support past its own and blocked at the gateways, Finance on track, and an organization budget
-  that only warns. Sizing them from the
-  month's spend keeps those levels whatever the date, so in a capture's first UTC day the amounts
-  are only a few hours' worth. The demo runs no rollup or budget loop afterwards, so every shot in
-  a run shows the same figures. The traffic and timestamps follow the clock, though, so they shift a
-  little from one run to the next. Requests from the portal's origin are answered as Megan Bowen
-  with the `User` role, and all others as Adele Vance with `Admin` and `User`. Local
-  authentication is refused outside local and test environments, so the demo can't be pointed at a
-  deployed MOSAIC.
+  weight, and Johanna Lorenz's calls to it are refused because she holds no grant. Pool calls also
+  leave the attempt traces the pool's policy writes. North Central US runs short of Opus capacity,
+  so some Opus calls are throttled there and retried in another region, which the pool's **Health**
+  card shows. MOSAIC's rollup job reads the traffic back, so the Dashboard, Analytics, and the
+  portal's **Usage & cost** page show measured figures. They are priced from the price list MOSAIC
+  ships, plus what the seed sets through the pricing service: the partner's declared GPT-4.1 mini
+  deployment's type, a negotiated GPT-4o rate from next month, which the **Pricing** page shows as
+  scheduled, and what Contoso pays for Claude Opus 4.5 and Claude Sonnet 4.5, which prices each
+  pool call at the deployment that served it. The partner's Claude, Mistral Large, Cohere, and
+  realtime deployments and the adopted APIs stay unpriced, so the **Unpriced deployments** tab has
+  something to show. Every page therefore renders what the product would show for that estate.
+  Budget email is turned on against a Communication Services double that accepts every message and
+  delivers none, and the seed sets budgets from this month's spend so far: Customer Insights near
+  its limit, Customer Support past its own and blocked at the gateways, Finance on track, and an
+  organization budget that only warns. Sizing them from the month's spend keeps those levels
+  whatever the date, so in a capture's first UTC day the amounts are only a few hours' worth. The
+  demo runs no rollup or budget loop afterwards, so every shot in a run shows the same figures. The
+  traffic and timestamps follow the clock, though, so they shift a little from one run to the next.
+  Requests from the portal's origin are answered as Megan Bowen with the `User` role, and all
+  others as Adele Vance with `Admin` and `User`. Local authentication is refused outside local and
+  test environments, so the demo can't be pointed at a deployed MOSAIC.
 - `capture.py` opens each shot in a fresh Chromium context 1440 pixels wide, with the shot's theme
   set both as the operating-system preference and as MOSAIC's stored preference. It waits for
   every spinner to clear and for the shot's ready text, runs the shot's actions, captures the
@@ -236,6 +237,7 @@ shows both themes. Keep new shots in that pattern.
 | `console-pools` | Console | `/pools`, listing the published Anthropic Claude pool and the Claude evaluation draft | Light | Model pools |
 | `console-pool-detail` | Console | `/pools`, Anthropic Claude opened, with its models, members, request example, and **Run history** | Dark | A model pool |
 | `console-pool-access` | Console | `/pools`, Anthropic Claude opened, scrolled to **Who can call it** | Light | Who can call a pool |
+| `console-pool-health` | Console | `/pools`, Anthropic Claude opened, scrolled to **Health** for the last 24 hours | Dark | Pool health |
 | `console-mcps` | Console | `/mcps`, showing published and registered MCP servers | Light | MCP servers |
 | `console-identity` | Console | `/identity?tab=agents` | Dark | Identity |
 | `console-directory-picker` | Console | `/identity?tab=agents`, **Add agent** dialog with query `agent` | Light | Directory picker |
