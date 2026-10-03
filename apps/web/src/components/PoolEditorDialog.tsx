@@ -52,7 +52,7 @@ import {
   safeguardTierNote,
   specsFromDrafts,
 } from '../pools'
-import type { DraftPoolModel, PoolFamily, SafeguardFields } from '../pools'
+import type { DraftPoolModel, PoolFamily, PoolPrefill, SafeguardFields } from '../pools'
 import { holdsApi } from '../publication-state'
 import { runtimeConfig } from '../runtime-config'
 import type {
@@ -96,10 +96,10 @@ interface FormState {
   safeguard: SafeguardFields
 }
 
-function initialForm(pool: ModelPool | null | undefined): FormState {
+function initialForm(pool: ModelPool | null | undefined, prefill?: Pick<PoolPrefill, 'displayName'> | null): FormState {
   return {
     gatewayId: pool?.gatewayId ?? '',
-    displayName: pool?.displayName ?? '',
+    displayName: pool?.displayName ?? prefill?.displayName ?? '',
     description: pool?.description ?? '',
     apiName: null,
     apiPath: null,
@@ -130,19 +130,23 @@ export interface PoolEditorDialogProps {
   pool?: ModelPool | null
   /** The gateway a new pool starts on, such as the one the list is filtered to. */
   initialGatewayId?: string | null
+  /** The name and models a new pool starts with, such as a suggested pool's. */
+  prefill?: Pick<PoolPrefill, 'displayName' | 'models'> | null
   onClose: () => void
   /** Called once the pool is saved. `review` asks for its plan next. */
   onSaved: (pool: ModelPool, review: boolean) => void
 }
 
 /** Create a model pool, or change one. Saving records intent only; publishing is a reviewed plan. */
-export function PoolEditorDialog({ pool, initialGatewayId, onClose, onSaved }: PoolEditorDialogProps) {
+export function PoolEditorDialog({ pool, initialGatewayId, prefill, onClose, onSaved }: PoolEditorDialogProps) {
   const api = useMosaicApi()
   const queryClient = useQueryClient()
   const catalog = useEnvironmentCatalog()
   const [step, setStep] = useState<EditorStep>('basics')
-  const [form, setForm] = useState<FormState>(() => initialForm(pool))
-  const [drafts, setDrafts] = useState<DraftPoolModel[]>(() => (pool ? draftsFromPool(pool) : []))
+  const [form, setForm] = useState<FormState>(() => initialForm(pool, prefill))
+  const [drafts, setDrafts] = useState<DraftPoolModel[]>(() =>
+    pool ? draftsFromPool(pool) : (prefill?.models ?? []),
+  )
   const [attempted, setAttempted] = useState(false)
   const [stepMoves, setStepMoves] = useState(0)
   const [blockedSaves, setBlockedSaves] = useState(0)

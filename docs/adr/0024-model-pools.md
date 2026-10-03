@@ -620,6 +620,12 @@ A pool is unpublished the way ADR 0010's 2026-09-30 amendment unpublishes a publ
   - its mix of provisioned and pay-as-you-go capacity;
   - status and readiness;
   - from phase 2, its grants.
+
+  Below the pools, a *Suggested pools* list names models deployed on two or more endpoints that a
+  managed gateway may front, when no pool on that gateway serves them yet. There is one suggestion
+  per gateway, vendor, and API style, and it names the gateway's pools that already serve that
+  vendor through that API. *Create pool* opens the wizard named for the vendor, with the models and
+  every deployment of them the gateway can use already chosen.
 - **Pool detail.**
   - The base URL, and Plan, Apply, and Unpublish.
   - Each model, with a diagram of its targets and a table of its members.
@@ -643,8 +649,6 @@ A pool is unpublished the way ADR 0010's 2026-09-30 amendment unpublishes a publ
   - A warning when users would see one model twice on one gateway:
     - a deployment that is published on its own and is in a pool the catalog shows;
     - two pools the catalog shows that offer the same public model name.
-  - A *Suggested pools* callout, when the same model is deployed on two or more endpoints that can
-    reach the same gateway, and that the gateway may front.
 - **Endpoint detail.** A "Used by pools" list.
 - **Entitlements and access requests** (from phase 2). Pool models appear by display name, with
   their environment and cost center, like any other resource. A direct grant's key actions say

@@ -64,3 +64,21 @@
 .gatewayNote {
   max-width: 72ch;
 }
+
+.suggestedModels {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 8px;
+}
+
+.familyNote {
+  margin: 8px 0 0;
+  max-width: 52ch;
+  color: var(--mosaic-text-muted);
+}
+
+.suggestionError {
+  margin: 12px 18px 0;
+}

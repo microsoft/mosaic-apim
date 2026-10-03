@@ -9,11 +9,13 @@ import type {
   ModelPoolVisibility,
   PoolCandidateDeployment,
   PoolCandidateModel,
+  PoolCandidates,
   PoolCapacityBadge,
   PoolMemberView,
   PoolModelSpec,
   PoolReadiness,
   PoolSafeguard,
+  PoolSuggestion,
   PublishedResourceKind,
   PublishRun,
   PublishRunStatus,
@@ -553,6 +555,65 @@ export function draftFromCandidate(model: PoolCandidateModel, poolType: ModelPoo
     listed: true,
     allowMixedVersions: false,
     members,
+  }
+}
+
+/** What a new pool starts with when an administrator creates it from a suggestion. */
+export interface PoolPrefill {
+  gatewayId: string
+  displayName: string
+  models: DraftPoolModel[]
+}
+
+type NamedPool = Pick<ModelPool, 'displayName' | 'apiName' | 'apiPath'>
+
+/**
+ * A name for a new pool that no other pool on its gateway has, whose default API name and path are
+ * free there too: Anthropic, then Anthropic 2.
+ */
+export function uniquePoolName(base: string, pools: NamedPool[]): string {
+  const names = new Set(pools.map((pool) => pool.displayName.trim().toLowerCase()))
+  const apiNames = new Set(pools.map((pool) => pool.apiName.toLowerCase()))
+  const apiPaths = new Set(pools.map((pool) => pool.apiPath.replace(/^\/+|\/+$/g, '').toLowerCase()))
+  // Each pool rules out at most three of the names tried, so one of these is free.
+  for (let count = 1; count <= pools.length * 3 + 1; count += 1) {
+    const name = count === 1 ? base : `${base} ${count}`
+    if (
+      !names.has(name.toLowerCase()) &&
+      !apiNames.has(defaultPoolApiName(name)) &&
+      !apiPaths.has(defaultPoolApiPath(name))
+    ) {
+      return name
+    }
+  }
+  return base
+}
+
+/**
+ * A suggested pool, ready to edit: named for its vendor, with each suggested model and every
+ * deployment of it the gateway can use, as adding the model by hand would choose them.
+ */
+export function poolPrefill(
+  suggestion: Pick<PoolSuggestion, 'gatewayId' | 'vendor' | 'apiShape' | 'models'>,
+  candidates: Pick<PoolCandidates, 'poolTypes' | 'models'>,
+  pools: (NamedPool & Pick<ModelPool, 'gatewayId'>)[],
+): PoolPrefill {
+  // The type a new pool starts with in the editor.
+  const poolType = POOL_TYPES.find((type) => !candidates.poolTypes[type]) ?? 'breaker'
+  const wanted = new Set(
+    suggestion.models.map((model) =>
+      candidateKey({ modelName: model.modelName, modelFormat: model.modelFormat, apiShape: suggestion.apiShape }),
+    ),
+  )
+  return {
+    gatewayId: suggestion.gatewayId,
+    displayName: uniquePoolName(
+      suggestion.vendor || 'Models',
+      pools.filter((pool) => pool.gatewayId === suggestion.gatewayId),
+    ),
+    models: candidates.models
+      .filter((model) => wanted.has(candidateKey(model)))
+      .map((model) => draftFromCandidate(model, poolType)),
   }
 }
 

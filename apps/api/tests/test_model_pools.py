@@ -62,7 +62,9 @@ from mosaic_api.model_pools import (
     PoolAccessSnapshot,
     PoolMember,
     PoolModel,
+    PoolReference,
     PoolSafeguard,
+    PoolSuggestionModel,
     backend_pool_name,
     circuit_breaker,
     member_backend_name,
@@ -902,6 +904,96 @@ async def test_an_endpoint_lists_the_pools_that_use_it_and_the_deployments_they_
     estate.gateway_repository.gateways.pop(estate.gateway_id)
     gone = await estate.service.endpoint_pools(ACTOR, _endpoint_id("aoai-ptu"))
     assert [(use.pool.display_name, use.gateway_name) for use in gone] == [("Backup", None)]
+
+
+def _sonnet(name: str = "claude-sonnet-4-5") -> dict[str, Any]:
+    return _deployment(
+        name, "claude-sonnet-4-5", version="1", model_format="Anthropic", sku="GlobalStandard"
+    )
+
+
+async def test_suggestions_offer_one_pool_per_vendor_for_models_on_two_or_more_endpoints(
+    estate: Estate,
+) -> None:
+    suggestions = await estate.service.suggestions(ACTOR)
+
+    # gpt-4o-mini, Llama, and gpt-4o through the Foundry API are each on one endpoint only.
+    assert [(item.vendor, item.api_shape) for item in suggestions] == [
+        ("Anthropic", ApiShape.ANTHROPIC_MESSAGES),
+        ("OpenAI", ApiShape.AZURE_OPENAI),
+    ]
+    claude, openai = suggestions
+    assert (claude.gateway_id, claude.gateway_name, claude.gateway_environment) == (
+        estate.gateway_id,
+        "apim-contoso-dev",
+        "development",
+    )
+    assert claude.models == [
+        PoolSuggestionModel(
+            model_name="claude-opus-4-5",
+            model_format="Anthropic",
+            deployment_count=3,
+            endpoint_count=2,
+            regions=["eastus2", "westus3"],
+        )
+    ]
+    assert (claude.endpoint_count, claude.regions, claude.family_pools) == (
+        2,
+        ["eastus2", "westus3"],
+        [],
+    )
+    # The batch deployment can't serve a pool. The declared one on the keyed endpoint can.
+    [gpt] = openai.models
+    assert (gpt.model_name, gpt.deployment_count, gpt.endpoint_count) == ("gpt-4o", 5, 4)
+    assert gpt.regions == ["eastus", "eastus2", "swedencentral", "westeurope"]
+    assert openai.endpoint_count == 4
+
+
+async def test_suggestions_leave_out_pooled_models_and_name_the_pools_that_could_take_the_rest(
+    estate: Estate,
+) -> None:
+    for name in ("foundry-east", "foundry-west"):
+        await estate.observe(name, [*ESTATE[name]["deployments"], _sonnet()])
+    # The pool uses only some of opus's deployments, which still takes opus out of suggestions:
+    # a second pool listing it would show portal users the model twice.
+    claude = await estate.create(
+        "Claude",
+        _model(
+            _member("foundry-east", "claude-opus-4-5"),
+            _member("foundry-west", "opus-west"),
+            public_name="claude-opus-4-5",
+        ),
+    )
+    await estate.create("OpenAI", _gpt4o("aoai-east"))
+
+    [suggestion] = await estate.service.suggestions(ACTOR)
+
+    assert (suggestion.vendor, suggestion.api_shape) == ("Anthropic", ApiShape.ANTHROPIC_MESSAGES)
+    assert [item.model_name for item in suggestion.models] == ["claude-sonnet-4-5"]
+    assert suggestion.family_pools == [PoolReference(id=claude.id, display_name="Claude")]
+
+
+async def test_suggestions_count_only_deployments_the_gateway_can_use_and_skip_observed_gateways(
+    estate: Estate,
+) -> None:
+    await estate.update_endpoint(
+        "foundry-west",
+        runtime_access=[
+            GatewayRuntimeAccess(
+                gateway_id=estate.gateway_id,
+                gateway_name="apim-contoso-dev",
+                can_invoke=False,
+                evaluation=RuntimeAccessEvaluation.ROLE_ASSIGNMENTS,
+                reason=RuntimeAccessReason.MISSING_ROLE,
+            )
+        ],
+    )
+
+    # Opus is left on one endpoint the gateway can call.
+    assert [item.vendor for item in await estate.service.suggestions(ACTOR)] == ["OpenAI"]
+
+    await estate.update_gateway(management_mode=ManagementMode.OBSERVE)
+    assert await estate.service.suggestions(ACTOR) == []
 
 
 def _steps(plan: PublishPlan) -> list[tuple[str, str, str]]:
@@ -2191,6 +2283,19 @@ async def test_an_administrator_publishes_and_unpublishes_a_pool_over_http(
         ("aoai-east", "gpt-4o-batch", False),
         ("aoai-key", "gpt-4o", True),
     }
+    suggested = client.get("/api/v1/model-pool-suggestions")
+    assert suggested.status_code == 200, suggested.text
+    assert [(item["vendor"], item["apiShape"]) for item in suggested.json()] == [
+        ("Anthropic", ApiShape.ANTHROPIC_MESSAGES.value),
+        ("OpenAI", ApiShape.AZURE_OPENAI.value),
+    ]
+    assert suggested.json()[1]["models"][0] == {
+        "modelName": "gpt-4o",
+        "modelFormat": "OpenAI",
+        "deploymentCount": 5,
+        "endpointCount": 4,
+        "regions": ["eastus", "eastus2", "swedencentral", "westeurope"],
+    }
 
     body = {
         "gatewayId": gateway_id,
@@ -2247,6 +2352,10 @@ async def test_an_administrator_publishes_and_unpublishes_a_pool_over_http(
         for item in use["deployments"]
     ] == [("gpt-4o", "GPT-4o", False, None)]
     assert client.get("/api/v1/model-endpoints/ep-missing/pools").status_code == 404
+    # The pool now serves gpt-4o here, so only Anthropic is still suggested.
+    assert [item["vendor"] for item in client.get("/api/v1/model-pool-suggestions").json()] == [
+        "Anthropic"
+    ]
 
     unplanned = client.post(f"/api/v1/model-pools/{pool_id}/apply")
     assert unplanned.status_code == 409, unplanned.text

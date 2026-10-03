@@ -13,16 +13,39 @@ import {
   poolGateway,
   poolSummaries,
 } from '../test/pool-fixtures'
-import type { ModelPoolSummary } from '../types'
+import type { ModelPoolSummary, PoolSuggestion } from '../types'
 import { PoolsPage } from './PoolsPage'
 
 const api = {
   getEnvironmentCatalog: vi.fn(),
   listModelPoolSummaries: vi.fn(),
+  listModelPoolSuggestions: vi.fn(),
   listGateways: vi.fn(),
   getPoolCandidates: vi.fn(),
   createModelPool: vi.fn(),
 }
+
+const sonnetSuggestion: PoolSuggestion = {
+  gatewayId: poolGateway.id,
+  gatewayName: poolGateway.name,
+  gatewayEnvironment: 'production',
+  vendor: 'Anthropic',
+  apiShape: 'anthropicMessages',
+  models: [
+    {
+      modelName: 'claude-sonnet-4-5',
+      modelFormat: 'Anthropic',
+      deploymentCount: 2,
+      endpointCount: 2,
+      regions: ['eastus2', 'westus3'],
+    },
+  ],
+  endpointCount: 2,
+  regions: ['eastus2', 'westus3'],
+  familyPools: [{ id: anthropicPool.id, displayName: anthropicPool.displayName }],
+}
+
+const createSuggestedName = 'Create pool for Anthropic on Contoso AI gateway'
 
 vi.mock('../api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api')>()
@@ -67,6 +90,7 @@ describe('PoolsPage', () => {
       updatedAt: null,
     })
     api.listModelPoolSummaries.mockResolvedValue(poolSummaries)
+    api.listModelPoolSuggestions.mockResolvedValue([])
     api.listGateways.mockResolvedValue([poolGateway])
     api.getPoolCandidates.mockResolvedValue(poolCandidates)
   })
@@ -184,5 +208,109 @@ describe('PoolsPage', () => {
     expect(api.createModelPool).toHaveBeenCalledWith(
       expect.objectContaining({ displayName: 'Anthropic', gatewayId: poolGateway.id, models: [] }),
     )
+  })
+
+  it('suggests a pool for models deployed on two or more endpoints, and the pools that could take them', async () => {
+    api.listModelPoolSuggestions.mockResolvedValue([sonnetSuggestion])
+    renderPage()
+
+    const table = await screen.findByRole('table', { name: 'Suggested pools' })
+    expect(screen.getByRole('heading', { name: 'Suggested pools', level: 2 })).toBeVisible()
+    const [, row] = within(table).getAllByRole('row')
+    expect(within(row).getByText('Contoso AI gateway')).toBeVisible()
+    expect(within(row).getByText('Anthropic · Anthropic Messages')).toBeVisible()
+    expect(within(row).getByText('1 model')).toBeVisible()
+    expect(within(row).getByText('claude-sonnet-4-5')).toBeVisible()
+    expect(within(row).getByText('2 deployments on 2 endpoints · eastus2, westus3')).toBeVisible()
+    const family = within(row).getByRole('link', { name: 'Anthropic Claude' })
+    expect(family).toHaveAttribute('href', `/pools/${anthropicPool.id}`)
+    expect(family.closest('p')).toHaveTextContent(
+      'Or add it to Anthropic Claude, which already serves Anthropic models on this gateway.',
+    )
+    expect(within(row).getByRole('button', { name: createSuggestedName })).toBeVisible()
+  })
+
+  it('shows no suggestions when every model is pooled or on one endpoint', async () => {
+    renderPage()
+
+    await screen.findByRole('table', { name: 'Model pools' })
+    await waitFor(() => expect(api.listModelPoolSuggestions).toHaveBeenCalled())
+    expect(screen.queryByRole('table', { name: 'Suggested pools' })).not.toBeInTheDocument()
+  })
+
+  it('shows only the suggestions for the gateway the list is filtered to', async () => {
+    const user = userEvent.setup()
+    const observed: ModelPoolSummary = {
+      ...poolSummaries[1],
+      pool: { ...draftPool, id: 'modelpool_fabrikam', displayName: 'Fabrikam models', gatewayId: observedGateway.id },
+      gatewayName: observedGateway.name,
+    }
+    api.listModelPoolSummaries.mockResolvedValue([...poolSummaries, observed])
+    api.listModelPoolSuggestions.mockResolvedValue([sonnetSuggestion])
+    renderPage()
+
+    expect(await screen.findByRole('table', { name: 'Suggested pools' })).toBeVisible()
+    await user.selectOptions(screen.getByRole('combobox', { name: /gateway/i }), observedGateway.id)
+    expect(screen.queryByRole('table', { name: 'Suggested pools' })).not.toBeInTheDocument()
+    await user.selectOptions(screen.getByRole('combobox', { name: /gateway/i }), poolGateway.id)
+    expect(screen.getByRole('table', { name: 'Suggested pools' })).toBeVisible()
+  })
+
+  it('opens a suggested pool in the editor with its name and models chosen', async () => {
+    const user = userEvent.setup()
+    api.listModelPoolSuggestions.mockResolvedValue([sonnetSuggestion])
+    api.createModelPool.mockResolvedValue({ ...draftPool, id: 'modelpool_new', displayName: 'Anthropic' })
+    renderPage()
+
+    await user.click(await screen.findByRole('button', { name: createSuggestedName }))
+    const dialog = await screen.findByRole('dialog', { name: 'Create a model pool' })
+    expect(api.getPoolCandidates).toHaveBeenCalledWith(poolGateway.id)
+    expect(within(dialog).getByRole('textbox', { name: /^Name/ })).toHaveValue('Anthropic')
+    await user.click(within(dialog).getByRole('tab', { name: '4. Limits and review' }))
+    await user.click(within(dialog).getByRole('button', { name: 'Save as draft' }))
+
+    expect(await screen.findByText('Opened modelpool_new with {"openPlan":false}')).toBeVisible()
+    expect(api.createModelPool).toHaveBeenCalledWith(
+      expect.objectContaining({
+        displayName: 'Anthropic',
+        gatewayId: poolGateway.id,
+        models: [
+          expect.objectContaining({
+            publicName: 'claude-sonnet-4-5',
+            members: [
+              expect.objectContaining({ modelEndpointId: 'endpoint_eastus2', deploymentName: 'claude-sonnet-4-5' }),
+              expect.objectContaining({ modelEndpointId: 'endpoint_westus3', deploymentName: 'claude-sonnet-4-5' }),
+            ],
+          }),
+        ],
+      }),
+    )
+  })
+
+  it('names a suggested pool so it doesn’t clash with a pool already on the gateway', async () => {
+    const user = userEvent.setup()
+    api.listModelPoolSummaries.mockResolvedValue([
+      { ...poolSummaries[0], pool: { ...anthropicPool, displayName: 'Anthropic' } },
+    ])
+    api.listModelPoolSuggestions.mockResolvedValue([sonnetSuggestion])
+    renderPage()
+
+    await user.click(await screen.findByRole('button', { name: createSuggestedName }))
+    const dialog = await screen.findByRole('dialog', { name: 'Create a model pool' })
+    expect(within(dialog).getByRole('textbox', { name: /^Name/ })).toHaveValue('Anthropic 2')
+  })
+
+  it('says so when it can’t load the deployments for a suggested pool', async () => {
+    const user = userEvent.setup()
+    api.listModelPoolSuggestions.mockResolvedValue([sonnetSuggestion])
+    api.getPoolCandidates.mockRejectedValue(new Error('The gateway didn’t answer.'))
+    renderPage()
+
+    await user.click(await screen.findByRole('button', { name: createSuggestedName }))
+
+    expect(
+      await screen.findByText(/MOSAIC couldn’t load the deployments for that pool\. The gateway didn’t answer\./),
+    ).toBeVisible()
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   })
 })

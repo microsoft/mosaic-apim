@@ -783,6 +783,39 @@ class EndpointPoolUse(MosaicModel):
     deployments: list[EndpointPoolDeployment] = Field(default_factory=list)
 
 
+class PoolSuggestionModel(MosaicModel):
+    """A model a suggested pool would serve, and the deployments of it the pool could use."""
+
+    model_name: str
+    model_format: str | None = None
+    deployment_count: int
+    endpoint_count: int
+    regions: list[str] = Field(default_factory=list)
+
+
+class PoolReference(MosaicModel):
+    id: str
+    display_name: str
+
+
+class PoolSuggestion(MosaicModel):
+    """A pool an administrator could create: one vendor's models, each deployed on two or more
+    endpoints a gateway can front, that no pool on the gateway serves yet."""
+
+    gateway_id: str
+    gateway_name: str
+    gateway_environment: str | None = None
+    vendor: str | None = None
+    api_shape: ApiShape
+    models: list[PoolSuggestionModel] = Field(default_factory=list)
+    # Across every model: the endpoints the deployments are on, and their regions.
+    endpoint_count: int
+    regions: list[str] = Field(default_factory=list)
+    # Pools on the gateway that already serve the vendor through the same API, which could take
+    # these models instead of a new pool.
+    family_pools: list[PoolReference] = Field(default_factory=list)
+
+
 class PoolMemberHealth(MosaicModel):
     """How one member answered the attempts the gateway sent it over a window."""
 

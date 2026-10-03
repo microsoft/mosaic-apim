@@ -21,6 +21,7 @@ import {
   newestRunsFirst,
   percentOf,
   planProblems,
+  poolPrefill,
   poolPublishBlocker,
   poolRequestExample,
   poolRunOperation,
@@ -33,11 +34,13 @@ import {
   sameFamily,
   specsWithMemberDrained,
   suggestedWeights,
+  uniquePoolName,
   type DraftPoolModel,
 } from './pools'
 import {
   anthropicPool,
   anthropicPoolDetail,
+  draftPool,
   observedGateway,
   opusBedrockUsEast1,
   opusEastUs2,
@@ -166,6 +169,56 @@ describe('pool model drafts', () => {
     expect(specs[0].displayName).toBe('Claude Opus 4.5')
     expect(specs[0].members.map((member) => member.drained)).toEqual([true, false, true])
     expect(specs[0].members.map((member) => member.weight)).toEqual([2, 1, 2])
+  })
+})
+
+describe('suggested pools', () => {
+  const sonnet = {
+    modelName: 'claude-sonnet-4-5',
+    modelFormat: 'Anthropic',
+    deploymentCount: 2,
+    endpointCount: 2,
+    regions: ['eastus2', 'westus3'],
+  }
+  const suggestion = {
+    gatewayId: poolGateway.id,
+    vendor: 'Anthropic',
+    apiShape: 'anthropicMessages' as const,
+    // The gateway no longer finds haiku by the time the editor opens.
+    models: [sonnet, { ...sonnet, modelName: 'claude-haiku-4-5' }],
+  }
+
+  it('names a pool for its vendor, unless a pool on the gateway has that name, API name, or path', () => {
+    expect(uniquePoolName('Anthropic', [anthropicPool])).toBe('Anthropic')
+    expect(uniquePoolName('Anthropic', [{ ...anthropicPool, displayName: ' anthropic ' }])).toBe('Anthropic 2')
+    expect(uniquePoolName('Anthropic', [{ ...draftPool, apiName: 'Mosaic-Pool-Anthropic' }])).toBe('Anthropic 2')
+    expect(uniquePoolName('Anthropic', [{ ...draftPool, apiPath: '/mosaic/pool-anthropic/' }])).toBe('Anthropic 2')
+    expect(
+      uniquePoolName('Anthropic', [
+        { ...anthropicPool, displayName: 'Anthropic' },
+        { ...draftPool, apiName: 'mosaic-pool-anthropic-2' },
+      ]),
+    ).toBe('Anthropic 3')
+  })
+
+  it('starts with the suggested models and every deployment of them the gateway can use', () => {
+    const elsewhere = { ...draftPool, gatewayId: observedGateway.id, displayName: 'Anthropic' }
+    const prefill = poolPrefill(suggestion, poolCandidates, [anthropicPool, elsewhere])
+
+    expect(prefill.gatewayId).toBe(poolGateway.id)
+    // Only the pools on the same gateway take names.
+    expect(prefill.displayName).toBe('Anthropic')
+    expect(prefill.models).toHaveLength(1)
+    expect(prefill.models[0]).toMatchObject({ modelName: 'claude-sonnet-4-5', publicName: 'claude-sonnet-4-5' })
+    expect(prefill.models[0].members.map((member) => member.modelEndpointId)).toEqual([
+      'endpoint_eastus2',
+      'endpoint_westus3',
+    ])
+  })
+
+  it('names a pool for its models when their vendor is unknown', () => {
+    const prefill = poolPrefill({ ...suggestion, vendor: null }, poolCandidates, [])
+    expect(prefill.displayName).toBe('Models')
   })
 })
 

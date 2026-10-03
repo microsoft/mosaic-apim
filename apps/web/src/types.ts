@@ -1884,6 +1884,35 @@ export interface EndpointPoolUse {
   deployments: EndpointPoolDeployment[]
 }
 
+/** A model a suggested pool would serve, and where it's deployed. */
+export interface PoolSuggestionModel {
+  modelName: string
+  modelFormat?: string | null
+  /** The deployments of the model the gateway can use. */
+  deploymentCount: number
+  endpointCount: number
+  regions: string[]
+}
+
+export interface PoolReference {
+  id: string
+  displayName: string
+}
+
+/** A pool worth creating on a gateway: one vendor's models deployed on two or more endpoints. */
+export interface PoolSuggestion {
+  gatewayId: string
+  gatewayName: string
+  gatewayEnvironment?: string | null
+  vendor?: string | null
+  apiShape: ApiShape
+  models: PoolSuggestionModel[]
+  endpointCount: number
+  regions: string[]
+  /** The gateway's pools that already serve this vendor's models through the same API. */
+  familyPools: PoolReference[]
+}
+
 /** Another pool model a direct grant's key also serves. */
 export interface KeySharedModel {
   poolModelId: string

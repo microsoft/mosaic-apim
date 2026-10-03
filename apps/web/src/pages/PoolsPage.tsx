@@ -10,8 +10,8 @@ import {
   useRestoreFocusTarget,
 } from '@fluentui/react-components'
 import { AddRegular } from '@fluentui/react-icons'
-import { useQuery } from '@tanstack/react-query'
-import { useMemo, useState } from 'react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { Fragment, useMemo, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useMosaicApi } from '../api'
 import { EmptyState, ErrorState, Loading } from '../components/AsyncState'
@@ -21,9 +21,16 @@ import { PoolStatusBadge, ReadinessSummaryBadge, UnappliedChangesBadge } from '.
 import { PoolEditorDialog } from '../components/PoolEditorDialog'
 import { useEnvironmentCatalog } from '../environments'
 import { plural } from '../labels'
-import { POOL_TYPE_LABELS, capacitySummary, poolAccessLabel, poolFamilyLabel, poolGrantCount } from '../pools'
-import type { PoolLocationState } from '../pools'
-import type { EnvironmentCatalogView, ModelPoolSummary } from '../types'
+import {
+  POOL_TYPE_LABELS,
+  capacitySummary,
+  poolAccessLabel,
+  poolFamilyLabel,
+  poolGrantCount,
+  poolPrefill,
+} from '../pools'
+import type { PoolLocationState, PoolPrefill } from '../pools'
+import type { EnvironmentCatalogView, ModelPoolSummary, PoolSuggestion } from '../types'
 import styles from './PoolsPage.module.css'
 
 function PoolRow({ summary, catalog }: { summary: ModelPoolSummary; catalog?: EnvironmentCatalogView }) {
@@ -88,19 +95,105 @@ function PoolRow({ summary, catalog }: { summary: ModelPoolSummary; catalog?: En
   )
 }
 
+function SuggestionRow({
+  suggestion,
+  catalog,
+  busy,
+  onCreate,
+}: {
+  suggestion: PoolSuggestion
+  catalog?: EnvironmentCatalogView
+  busy: boolean
+  onCreate: () => void
+}) {
+  const restoreFocus = useRestoreFocusTarget()
+  const { familyPools, models } = suggestion
+  return (
+    <tr>
+      <td>
+        <div className={styles.cellStack}>
+          <Text>{suggestion.gatewayName}</Text>
+          <EnvironmentBadge environment={suggestion.gatewayEnvironment ?? null} catalog={catalog} size="small" />
+        </div>
+      </td>
+      <td>
+        <div className={styles.cellStack}>
+          <Text>{poolFamilyLabel(suggestion.vendor, suggestion.apiShape)}</Text>
+          <Text size={200} className={styles.muted}>{plural(models.length, 'model')}</Text>
+        </div>
+      </td>
+      <td>
+        <ul className={styles.suggestedModels}>
+          {models.map((model) => (
+            <li key={`${model.modelFormat ?? ''}|${model.modelName}`} className={styles.cellStack}>
+              <Text weight="semibold">{model.modelName}</Text>
+              <Text size={200} className={styles.muted}>
+                {plural(model.deploymentCount, 'deployment')} on {plural(model.endpointCount, 'endpoint')}
+                {model.regions.length > 0 && ` · ${model.regions.join(', ')}`}
+              </Text>
+            </li>
+          ))}
+        </ul>
+        {familyPools.length > 0 && (
+          <Text as="p" size={200} className={styles.familyNote}>
+            Or add {models.length === 1 ? 'it' : 'them'} to{' '}
+            {familyPools.map((pool, index) => (
+              <Fragment key={pool.id}>
+                {index > 0 && (index === familyPools.length - 1 ? ' or ' : ', ')}
+                <Link className={styles.poolLink} to={`/pools/${pool.id}`}>{pool.displayName}</Link>
+              </Fragment>
+            ))}
+            , which already {familyPools.length === 1 ? 'serves' : 'serve'}{' '}
+            {suggestion.vendor ? `${suggestion.vendor} models` : 'models from the same vendor'} on this gateway.
+          </Text>
+        )}
+      </td>
+      <td>
+        <Button
+          size="small"
+          icon={<AddRegular />}
+          aria-label={`Create pool for ${suggestion.vendor || 'these models'} on ${suggestion.gatewayName}`}
+          disabledFocusable={busy}
+          onClick={onCreate}
+          {...restoreFocus}
+        >
+          Create pool
+        </Button>
+      </td>
+    </tr>
+  )
+}
+
 export function PoolsPage() {
   const api = useMosaicApi()
   const navigate = useNavigate()
+  const queryClient = useQueryClient()
   const restoreFocus = useRestoreFocusTarget()
   const catalog = useEnvironmentCatalog()
-  const [creating, setCreating] = useState(false)
+  const [editor, setEditor] = useState<{ prefill?: PoolPrefill } | null>(null)
   const [gatewayFilter, setGatewayFilter] = useState('all')
 
   const summaries = useQuery({
     queryKey: ['model-pools', 'summaries'],
     queryFn: () => api.listModelPoolSummaries(),
   })
+  const suggestions = useQuery({
+    queryKey: ['model-pools', 'suggestions'],
+    queryFn: () => api.listModelPoolSuggestions(),
+  })
   const gateways = useQuery({ queryKey: ['gateways'], queryFn: () => api.listGateways() })
+
+  // A suggested pool opens in the editor with the deployments the gateway can use today.
+  const createSuggested = useMutation({
+    mutationFn: async (suggestion: PoolSuggestion) => {
+      const candidates = await queryClient.fetchQuery({
+        queryKey: ['model-pools', 'candidates', suggestion.gatewayId],
+        queryFn: () => api.getPoolCandidates(suggestion.gatewayId),
+      })
+      return poolPrefill(suggestion, candidates, (summaries.data ?? []).map((summary) => summary.pool))
+    },
+    onSuccess: (prefill) => setEditor({ prefill }),
+  })
 
   const gatewayOptions = useMemo(() => {
     const names = new Map<string, string>()
@@ -112,6 +205,9 @@ export function PoolsPage() {
 
   const all = summaries.data ?? []
   const shown = gatewayFilter === 'all' ? all : all.filter((summary) => summary.pool.gatewayId === gatewayFilter)
+  const suggested = (suggestions.data ?? []).filter(
+    (suggestion) => gatewayFilter === 'all' || suggestion.gatewayId === gatewayFilter,
+  )
   const noGateways = gateways.data?.length === 0
 
   return (
@@ -125,7 +221,7 @@ export function PoolsPage() {
             appearance="primary"
             icon={<AddRegular />}
             disabled={!gateways.data || noGateways}
-            onClick={() => setCreating(true)}
+            onClick={() => setEditor({})}
             {...restoreFocus}
           >
             Create pool
@@ -204,11 +300,66 @@ export function PoolsPage() {
         </Card>
       )}
 
-      {creating && (
+      {suggestions.isError && (
+        <ErrorState error={suggestions.error} title="Couldn’t work out which pools to suggest" />
+      )}
+      {suggested.length > 0 && (
+        <Card className={styles.listCard}>
+          <div className={styles.cardHeader}>
+            <div className={styles.cardHeaderText}>
+              <Title3 as="h2">Suggested pools</Title3>
+              <Text size={200} className={styles.muted}>
+                These models are deployed on two or more endpoints a gateway can reach, and no pool there
+                serves them yet. A pool lets users call each model by one name while the gateway spreads
+                their requests across the deployments.
+              </Text>
+            </div>
+          </div>
+          {createSuggested.isError && (
+            <MessageBar intent="error" className={styles.suggestionError}>
+              <MessageBarBody>
+                MOSAIC couldn’t load the deployments for that pool.{' '}
+                {createSuggested.error instanceof Error ? createSuggested.error.message : ''}
+              </MessageBarBody>
+            </MessageBar>
+          )}
+          <div className="table-scroll">
+            <table aria-label="Suggested pools">
+              <thead>
+                <tr>
+                  <th>Gateway</th>
+                  <th>Serves</th>
+                  <th>Models</th>
+                  <th><span className="sr-only">Actions</span></th>
+                </tr>
+              </thead>
+              <tbody>
+                {suggested.map((suggestion) => (
+                  <SuggestionRow
+                    key={`${suggestion.gatewayId}|${suggestion.vendor ?? ''}|${suggestion.apiShape}`}
+                    suggestion={suggestion}
+                    catalog={catalog.data}
+                    busy={createSuggested.isPending}
+                    onCreate={() => createSuggested.mutate(suggestion)}
+                  />
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <Text size={200} className={styles.footnote}>
+            Creating a pool from a suggestion opens the editor with every deployment the gateway can use.
+            Review them before you save.
+          </Text>
+        </Card>
+      )}
+
+      {editor && (
         <PoolEditorDialog
-          onClose={() => setCreating(false)}
+          initialGatewayId={editor.prefill?.gatewayId}
+          prefill={editor.prefill}
+          onClose={() => setEditor(null)}
           onSaved={(pool, review) => {
-            setCreating(false)
+            setEditor(null)
             const state: PoolLocationState = { openPlan: review }
             navigate(`/pools/${pool.id}`, { state })
           }}

@@ -99,6 +99,7 @@ import type {
   ObservedSubscription,
   PoolCandidates,
   PoolHealth,
+  PoolSuggestion,
   Publication,
   PublicationLockInfo,
   PublishableModel,
@@ -336,6 +337,8 @@ export interface MosaicApi {
   getPoolCandidates(gatewayId: string): Promise<PoolCandidates>
   listModelPools(gatewayId?: string): Promise<ModelPool[]>
   listModelPoolSummaries(gatewayId?: string): Promise<ModelPoolSummary[]>
+  /** Pools worth creating: per managed gateway, one vendor's models deployed on two or more endpoints. */
+  listModelPoolSuggestions(): Promise<PoolSuggestion[]>
   listEndpointPools(endpointId: string): Promise<EndpointPoolUse[]>
   createModelPool(payload: ModelPoolCreate): Promise<ModelPool>
   getModelPool(poolId: string): Promise<ModelPool>
@@ -884,6 +887,7 @@ export function useMosaicApi(): MosaicApi {
         request<ModelPoolSummary[]>(
           `/api/v1/model-pool-summaries${gatewayId ? `?gateway=${encodeURIComponent(gatewayId)}` : ''}`,
         ),
+      listModelPoolSuggestions: () => request<PoolSuggestion[]>('/api/v1/model-pool-suggestions'),
       listEndpointPools: (endpointId) =>
         request<EndpointPoolUse[]>(`/api/v1/model-endpoints/${encodeURIComponent(endpointId)}/pools`),
       createModelPool: (payload) =>

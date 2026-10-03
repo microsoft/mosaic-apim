@@ -1672,6 +1672,7 @@ records intent. Nothing changes in API Management until a reviewed plan is appli
 | Method | Route under `/api/v1` | Result |
 | --- | --- | --- |
 | GET | `/gateways/{gatewayId}/pool-candidates` | The deployments a pool on that gateway could use, grouped by model, and why others can't be used |
+| GET | `/model-pool-suggestions` | Pools worth creating: on each managed gateway, one per vendor and API, with the models deployed on two or more endpoints the gateway can use that no pool there serves yet, and the gateway's existing pools for that vendor |
 | GET | `/model-pools`, `/model-pool-summaries` | Pools, optionally on one `gateway`. A summary counts active members by capacity type and readiness |
 | GET | `/model-endpoints/{id}/pools` | The pools with members on that endpoint, the deployments each one uses there, and a warning on any deployment portal users would also see published on its own |
 | POST | `/model-pools` | Creates a pool, `201` |

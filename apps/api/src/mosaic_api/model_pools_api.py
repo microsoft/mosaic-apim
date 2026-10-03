@@ -20,6 +20,7 @@ from mosaic_api.model_pools import (
     ModelPoolUpdate,
     PoolCandidates,
     PoolHealth,
+    PoolSuggestion,
 )
 from mosaic_api.services.model_pools import ModelPoolService
 from mosaic_api.services.pool_health import HEALTH_HOURS, MAX_HEALTH_HOURS, PoolHealthService
@@ -56,6 +57,14 @@ async def list_model_pool_summaries(
     """Every pool with its active members counted by capacity type and readiness."""
 
     return await _pools(request).summaries(_actor(auth), gateway)
+
+
+@model_pools_router.get("/model-pool-suggestions", response_model=list[PoolSuggestion])
+async def list_model_pool_suggestions(request: Request, auth: Admin) -> list[PoolSuggestion]:
+    """Pools worth creating: models deployed on two or more endpoints a managed gateway can front,
+    grouped by vendor and API, that no pool on the gateway serves yet."""
+
+    return await _pools(request).suggestions(_actor(auth))
 
 
 @model_pools_router.get(

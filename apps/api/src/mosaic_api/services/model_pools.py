@@ -115,6 +115,9 @@ from mosaic_api.model_pools import (
     PoolModelQuota,
     PoolModelSpec,
     PoolModelView,
+    PoolReference,
+    PoolSuggestion,
+    PoolSuggestionModel,
     backend_pool_name,
     capacity_badge,
     circuit_breaker,
@@ -562,6 +565,21 @@ def _pool_type_problem(gateway: Gateway, pool_type: ModelPoolType | str) -> str 
             "The Consumption tier has no backend pools, so this gateway can run only linear pools."
         )
     return None
+
+
+def _regions(deployments: Iterable[PoolCandidateDeployment]) -> list[str]:
+    return sorted({item.region for item in deployments if item.region}, key=str.casefold)
+
+
+def _suggested_model(model: PoolCandidateModel) -> PoolSuggestionModel:
+    eligible = [item for item in model.deployments if item.eligible]
+    return PoolSuggestionModel(
+        model_name=model.model_name,
+        model_format=model.model_format,
+        deployment_count=len(eligible),
+        endpoint_count=len({item.model_endpoint_id for item in eligible}),
+        regions=_regions(eligible),
+    )
 
 
 def _digest(payload: dict[str, Any]) -> str:
@@ -2433,8 +2451,88 @@ class ModelPoolService:
         """Every deployment a pool on the gateway could use, grouped by the model it serves."""
 
         gateway = await self._load_gateway(actor, gateway_id)
+        return await self._candidates(
+            actor, gateway, await self._catalog(actor), await self._entries(actor)
+        )
+
+    async def suggestions(self, actor: Actor) -> list[PoolSuggestion]:
+        """Pools worth creating: on each managed gateway, one per vendor and API, with the models
+        deployed on two or more endpoints the gateway can front that no pool there serves yet."""
+
         catalog = await self._catalog(actor)
-        pools = await self._repository.list_model_pools(actor.tenant_id, gateway_id=gateway_id)
+        entries = await self._entries(actor)
+        suggestions: list[PoolSuggestion] = []
+        for gateway in await self._repository.list_gateways(actor.tenant_id):
+            if gateway.management_mode != ManagementMode.MANAGE:
+                continue
+            candidates = await self._candidates(actor, gateway, catalog, entries)
+            if all(candidates.pool_types.values()):
+                continue
+            families: dict[tuple[str, ApiShape], list[PoolCandidateModel]] = {}
+            vendors: dict[tuple[str, ApiShape], str | None] = {}
+            for model in candidates.models:
+                # A model a pool here already serves isn't suggested again: a second pool listing
+                # it would show portal users the model twice.
+                if model.api_shape is None or any(item.pool_ids for item in model.deployments):
+                    continue
+                eligible = {item.model_endpoint_id for item in model.deployments if item.eligible}
+                if len(eligible) < 2:
+                    continue
+                family = ((model.model_format or "").casefold(), model.api_shape)
+                families.setdefault(family, []).append(model)
+                vendors.setdefault(family, model.model_format)
+            if not families:
+                continue
+            pools = await self._repository.list_model_pools(actor.tenant_id, gateway_id=gateway.id)
+            for family, models in families.items():
+                deployments = [
+                    item for model in models for item in model.deployments if item.eligible
+                ]
+                suggestions.append(
+                    PoolSuggestion(
+                        gateway_id=gateway.id,
+                        gateway_name=gateway.name,
+                        gateway_environment=gateway.environment,
+                        vendor=vendors[family],
+                        api_shape=family[1],
+                        models=[_suggested_model(model) for model in models],
+                        endpoint_count=len({item.model_endpoint_id for item in deployments}),
+                        regions=_regions(deployments),
+                        family_pools=[
+                            PoolReference(id=pool.id, display_name=pool.display_name)
+                            for pool in sorted(pools, key=lambda item: item.display_name.casefold())
+                            if pool.api_shape == family[1]
+                            and (pool.vendor or "").casefold() == family[0]
+                        ],
+                    )
+                )
+        return sorted(
+            suggestions,
+            key=lambda item: (
+                item.gateway_name.casefold(),
+                item.gateway_id,
+                (item.vendor or "").casefold(),
+                str(item.api_shape),
+            ),
+        )
+
+    async def _entries(self, actor: Actor) -> list[_Inventory]:
+        """What MOSAIC knows about every endpoint a pool could use."""
+
+        return [
+            await self._entry(actor, endpoint)
+            for endpoint in await self._endpoints.list_endpoints(actor.tenant_id)
+            if endpoint.provider != ModelProvider.OPENAI_COMPATIBLE
+        ]
+
+    async def _candidates(
+        self,
+        actor: Actor,
+        gateway: Gateway,
+        catalog: EnvironmentCatalog,
+        entries: list[_Inventory],
+    ) -> PoolCandidates:
+        pools = await self._repository.list_model_pools(actor.tenant_id, gateway_id=gateway.id)
         # One group per model and API: deployments of one model that need different APIs, such as
         # gpt-4o on an Azure OpenAI resource and on a Foundry resource, can't share a pool.
         groups: dict[tuple[str, str, str], tuple[str, str | None, ApiShape | None]] = {}
@@ -2442,10 +2540,8 @@ class ModelPoolService:
         # Declared deployments of models MOSAIC doesn't recognise, which have no vendor to group
         # them by until the others are grouped.
         unknown: list[tuple[str, ApiShape | None, PoolCandidateDeployment]] = []
-        for endpoint in await self._endpoints.list_endpoints(actor.tenant_id):
-            if endpoint.provider == ModelProvider.OPENAI_COMPATIBLE:
-                continue
-            entry = await self._entry(actor, endpoint)
+        for entry in entries:
+            endpoint = entry.endpoint
             verdict = permits(catalog, gateway.environment, endpoint.environment)
             readiness, message = _readiness(endpoint, gateway.id)
             for deployment in entry.deployments.values():
