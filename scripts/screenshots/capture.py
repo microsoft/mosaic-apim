@@ -719,6 +719,21 @@ SHOTS: list[Shot] = [
         height=1300,
     ),
     Shot(
+        "console-analytics-mcp-model-use",
+        "console",
+        "/analytics?tab=consumers",
+        "dark",
+        "Contoso Support Copilot",
+        # The people the Docs Search server's model calls were made for, below the consumers that
+        # already count those calls as its own, and the references MOSAIC couldn't use.
+        actions=(
+            wait_for_text("Docs Search service"),
+            # Below the sticky top bar, with the card's heading above its description.
+            scroll_to_text("Model calls an MCP server", margin=150),
+        ),
+        height=760,
+    ),
+    Shot(
         "console-analytics-limits",
         "console",
         "/analytics?tab=limits",

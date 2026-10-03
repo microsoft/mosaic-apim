@@ -60,6 +60,7 @@ from mosaic_api.domain import (
     GroupCreate,
     ImportRequest,
     McpEndpointCreate,
+    McpModelCallerUpdate,
     McpPublicationCreate,
     ModelAccessSettings,
     ModelEndpointCreate,
@@ -189,6 +190,11 @@ CLAIMS_TRIAGE = Person(
     "Claims triage function", "c2fbc41d-f6b8-4d9a-8f2a-3b4c5d6e7f80", "managedIdentity"
 )
 DOCS_INDEXER = Person("Docs indexer", "d3acd52e-a7c9-4eab-9a3b-4c5d6e7f8091", "managedIdentity")
+# The managed identity the Docs Search MCP server runs as. Its tools call GPT-4o mini as it, on its
+# own grant, for the people who called the server. See ADR 0025.
+DOCS_SEARCH_SERVICE = Person(
+    "Docs Search service", "f6a7b8c9-d0e1-4f23-8a45-b6c7d8e9f0a1", "managedIdentity"
+)
 SALES_INSIGHTS = Person(
     "Sales insights bot", "e4bde63f-b8da-4fbc-8b4c-5d6e7f8091a2", "servicePrincipal"
 )
@@ -237,6 +243,7 @@ PEOPLE = [
     SUPPORT_COPILOT,
     CLAIMS_TRIAGE,
     DOCS_INDEXER,
+    DOCS_SEARCH_SERVICE,
     SALES_INSIGHTS,
     MARKET_RESEARCH_AGENT,
     INVOICE_RECONCILIATION_AGENT,
@@ -1546,6 +1553,15 @@ async def seed_estate(services: DemoServices, tenant_id: str) -> Estate:
         embeddings,
         EntitlementEnforcement(tokens=_tokens(per_minute=150_000)),
     )
+    # The Docs Search server's own grant, which its tools' model calls are made on and charged to.
+    await grant(
+        DOCS_SEARCH_SERVICE,
+        "modelApi",
+        gpt4o_mini,
+        EntitlementEnforcement(tokens=_tokens(per_minute=60_000)),
+        "The Docs Search MCP server's tools summarize what they find.",
+        cost_center="general",
+    )
     await grant(
         SALES_INSIGHTS,
         "mcpServer",
@@ -1750,7 +1766,14 @@ async def seed_estate(services: DemoServices, tenant_id: str) -> Estate:
     )
 
     # Apply the governed publications so their grants reach the gateway, then add one grant
-    # afterwards so the console also shows a change still waiting to be applied.
+    # afterwards so the console also shows a change still waiting to be applied. The Docs Search
+    # server calls models as its own managed identity, so its model calls count for the people
+    # they served once it's applied.
+    await services.mcp_publishing.set_model_caller(
+        admin,
+        published_docs.id,
+        McpModelCallerUpdate(principal_id=estate.principals[DOCS_SEARCH_SERVICE.label]),
+    )
     await _publish_mcp(services, admin, published_docs.id, published_docs.display_name)
     for display_name in ("GPT-4o", "GPT-4o mini", "Phi-4"):
         await _publish(services, admin, estate.publications[display_name], display_name)
@@ -1924,6 +1947,20 @@ async def traffic_streams(
         shape.setdefault("resource_id", GATEWAY_RESOURCE_ID)
         return TrafficStream(name=name, api=api, subscription=subscription, **shape)
 
+    # The model calls the Docs Search server's tools make as its managed identity, passing on each
+    # MCP call's reference, so MOSAIC counts them for the person who called. See ADR 0025.
+    served = {
+        "model_caller": DOCS_SEARCH_SERVICE.object_id,
+        "model_calls": granted(
+            "docs-search-model",
+            DOCS_SEARCH_SERVICE,
+            gpt4o_mini,
+            client_app=DOCS_SEARCH_SERVICE.object_id,
+            per_day=0,
+            **chat("gpt-4o-mini", 1700, 260, 1100),
+        ),
+    }
+
     return [
         granted(
             "support-copilot",
@@ -2070,6 +2107,8 @@ async def traffic_streams(
             latency_ms=450,
             calls_per_minute=60,
             burst=3,
+            model_call_share=0.6,
+            **served,
         ),
         granted(
             "market-research-docs",
@@ -2091,6 +2130,8 @@ async def traffic_streams(
             client_app=VS_CODE,
             per_day=17,
             latency_ms=450,
+            model_call_share=0.5,
+            **served,
         ),
         granted(
             "lidia-docs",
@@ -2100,6 +2141,19 @@ async def traffic_streams(
             client_app=VS_CODE,
             per_day=8,
             latency_ms=450,
+            model_call_share=0.7,
+            **served,
+        ),
+        # The Docs Search server's own model use: refreshing its summaries each night.
+        granted(
+            "docs-search-own",
+            DOCS_SEARCH_SERVICE,
+            gpt4o_mini,
+            client_app=DOCS_SEARCH_SERVICE.object_id,
+            per_day=12,
+            rhythm="nightly",
+            weekend=1.0,
+            **chat("gpt-4o-mini", 2400, 380, 1400),
         ),
         # Claude, through the pool. Megan's one key covers both her Claude models, and the agent
         # builders' grant serves each agent in the group with its own token.

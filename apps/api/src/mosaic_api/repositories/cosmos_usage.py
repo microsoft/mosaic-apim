@@ -179,6 +179,7 @@ class CosmosUsageRollupRepository:
         end_day: str,
         link_keys: Sequence[str] | None = None,
         gateway_ids: Sequence[str] | None = None,
+        on_behalf_object_id: str | None = None,
     ) -> list[UsageFact]:
         extra = " AND c.day >= @startDay AND c.day <= @endDay"
         parameters: list[dict[str, Any]] = [
@@ -195,6 +196,14 @@ class CosmosUsageRollupRepository:
                 return []
             extra += " AND ARRAY_CONTAINS(@gatewayIds, c.gatewayId)"
             parameters.append({"name": "@gatewayIds", "value": sorted(set(gateway_ids))})
+        if on_behalf_object_id is not None:
+            if not on_behalf_object_id:
+                return []
+            # A partial match: any on-behalf entry whose objectId is the person's.
+            extra += ' AND ARRAY_CONTAINS(c.onBehalf, {"objectId": @onBehalfObjectId}, true)'
+            parameters.append(
+                {"name": "@onBehalfObjectId", "value": on_behalf_object_id.casefold()}
+            )
         return await self._query(UsageFact, tenant_id, "usageFact", extra, parameters)
 
     async def list_summaries(

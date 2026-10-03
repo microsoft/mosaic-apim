@@ -1,19 +1,21 @@
 """The Cost tab, this month's spend and forecast, and the chargeback export. See ADR 0020."""
 
+import math
 from collections import defaultdict
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from typing import Any
 
 from mosaic_api.domain import CostCenterRef
 from mosaic_api.pricing import cloud_label, days_in_month, month_first, month_last, round_cost
-from mosaic_api.services.analytics.consumers import consumers_report
+from mosaic_api.services.analytics.consumers import consumers_report, on_behalf_key
 from mosaic_api.services.analytics.cost import (
     HOURS_NOTE,
     CostBook,
     Priced,
     add_cost,
+    part_of,
 )
 from mosaic_api.services.analytics.models import (
     AnalyticsCost,
@@ -23,7 +25,7 @@ from mosaic_api.services.analytics.models import (
     AnalyticsSpend,
 )
 from mosaic_api.services.analytics.rows import bucket_points, entries, fold
-from mosaic_api.services.analytics.scope import GrantInfo, Scope
+from mosaic_api.services.analytics.scope import UNKNOWN_MODEL, GrantInfo, Scope
 from mosaic_api.services.analytics.views import (
     Context,
     api_costs,
@@ -166,8 +168,8 @@ def cost_report(
 
     by_model: dict[str, tuple[str, str | None, str | None, UsageMetrics, float | None]] = {}
     for item, entry in entries(models, scope, "model"):
-        model, _, api_name = entry.key.rpartition("|")
-        label = model or "unknown"
+        api_name = entry.key.rpartition("|")[2]
+        label = scope.model_label(item.gateway_id, entry.key)
         current = by_model.get(label) or (label, None, None, UsageMetrics(), None)
         current[3].add(entry.metrics)
         by_model[label] = (
@@ -324,6 +326,10 @@ CHARGEBACK_COLUMNS = [
     ("Object ID", "party_object_id"),
     ("Cost center", "cost_center"),
     ("Cost center name", "cost_center_name"),
+    # The person an MCP server's application made a grant's calls for. Empty on the application's
+    # own use, and on every row that isn't an application's grant's. See ADR 0025.
+    ("On behalf of", "on_behalf"),
+    ("On behalf of object ID", "on_behalf_object_id"),
     ("Model", "model"),
     ("Deployment", "deployment"),
     ("Endpoint", "endpoint"),
@@ -335,6 +341,26 @@ CHARGEBACK_COLUMNS = [
     ("Priced", "priced"),
     ("Note", "note"),
 ]
+# Costs are exported to the ten-thousandth of a dollar, as round_cost rounds them.
+_COST_UNITS = 10_000
+
+
+@dataclass
+class _Amount:
+    """Calls, what they cost, and how many of their tokens nothing could price."""
+
+    metrics: UsageMetrics = field(default_factory=UsageMetrics)
+    cost: float | None = None
+    unpriced_tokens: int = 0
+    note: str | None = None
+
+    def add(self, metrics: UsageMetrics, priced: Priced) -> None:
+        self.metrics.add(metrics)
+        self.cost = add_cost(self.cost, priced.amount)
+        share_left = 1.0 if priced.amount is None else priced.unpriced_share
+        self.unpriced_tokens += round(metrics.total_tokens * share_left)
+        if priced.unpriced is not None and self.note is None and share_left > 0:
+            self.note = priced.unpriced.message
 
 
 @dataclass
@@ -350,18 +376,70 @@ class _Charge:
     model: str
     deployment: str | None
     endpoint: str | None
-    metrics: UsageMetrics = field(default_factory=UsageMetrics)
-    cost: float | None = None
-    unpriced_tokens: int = 0
-    note: str | None = None
+    whole: _Amount = field(default_factory=_Amount)
+    # The same calls split by the person an MCP server's application made them for, keyed by
+    # object ID, with "" for the rest: the application's own use. Holds no one until some of
+    # the grant's calls were made for someone.
+    parts: dict[str, _Amount] = field(default_factory=dict)
 
     def add(self, metrics: UsageMetrics, priced: Priced) -> None:
-        self.metrics.add(metrics)
-        self.cost = add_cost(self.cost, priced.amount)
-        share_left = 1.0 if priced.amount is None else priced.unpriced_share
-        self.unpriced_tokens += round(metrics.total_tokens * share_left)
-        if priced.unpriced is not None and self.note is None and share_left > 0:
-            self.note = priced.unpriced.message
+        self.whole.add(metrics, priced)
+
+    @property
+    def people(self) -> dict[str, _Amount]:
+        return {person: amount for person, amount in self.parts.items() if person}
+
+
+def _less(whole: UsageMetrics, parts: Iterable[UsageMetrics]) -> UsageMetrics:
+    """The calls and tokens in ``whole`` that none of ``parts`` holds."""
+
+    taken = UsageMetrics()
+    for part in parts:
+        taken.add(part)
+    return UsageMetrics(
+        requests=max(0, whole.requests - taken.requests),
+        prompt_tokens=max(0, whole.prompt_tokens - taken.prompt_tokens),
+        completion_tokens=max(0, whole.completion_tokens - taken.completion_tokens),
+        total_tokens=max(0, whole.total_tokens - taken.total_tokens),
+    )
+
+
+def split_cost(total: float | None, amounts: Sequence[float | None]) -> list[float | None]:
+    """A rounded total shared in proportion to each part's own cost, adding up to it exactly.
+
+    Each part's share is a whole number of the units the export rounds to, and the units
+    rounding leaves over go to the parts with the largest remainders. A part nothing could price
+    gets no share and stays None. When no part has a cost to weigh by, the first part, the
+    application's own use, keeps the total.
+    """
+
+    if total is None:
+        return [None] * len(amounts)
+    units = max(0, round(total * _COST_UNITS))
+    weights = [max(amount, 0.0) if amount is not None else 0.0 for amount in amounts]
+    weighed = sum(weights)
+    if weighed <= 0:
+        shares = [0] * len(amounts)
+        if shares:
+            shares[0] = units
+    else:
+        quotas = [units * weight / weighed for weight in weights]
+        shares = [math.floor(quota) for quota in quotas]
+        left = max(0, units - sum(shares))
+        order = sorted(
+            range(len(amounts)),
+            key=lambda index: (
+                -(quotas[index] - shares[index]),
+                amounts[index] is None,
+                index,
+            ),
+        )
+        for index in order[:left]:
+            shares[index] += 1
+    return [
+        None if amount is None and share == 0 else share / _COST_UNITS
+        for amount, share in zip(amounts, shares, strict=True)
+    ]
 
 
 _SUBJECT_KINDS = {
@@ -382,17 +460,49 @@ def _party(scope: Scope, grant: GrantInfo | None) -> tuple[str, str, str | None]
     return name.label, kind or "person", grant.subject_object_id if grant else None
 
 
+def _shares(
+    scope: Scope, on_behalf: Sequence[UsageSummary]
+) -> dict[tuple[str, str, str, str], dict[str, UsageMetrics]]:
+    """Each grant entry's calls made for each person, by the summary they were rolled up in."""
+
+    found: dict[tuple[str, str, str, str], dict[str, UsageMetrics]] = defaultdict(
+        lambda: defaultdict(UsageMetrics)
+    )
+    for summary, entry in entries(on_behalf, scope, "onBehalf"):
+        parsed = on_behalf_key(entry.key)
+        if parsed is None:
+            continue
+        grant_key, _, person, _ = parsed
+        place = (summary.period, summary.period_start, summary.gateway_id, grant_key)
+        found[place][person.casefold()].add(entry.metrics)
+    return found
+
+
+def _status(amount: _Amount, cost: float | None) -> str:
+    if cost is None:
+        return "no"
+    return "partly" if amount.unpriced_tokens > 0 else "yes"
+
+
 def chargeback_rows(
     context: Context,
     *,
     grants: Sequence[UsageSummary],
     unattributed: Sequence[UsageSummary],
     costs: CostBook,
+    on_behalf: Sequence[UsageSummary] = (),
 ) -> list[dict[str, Any]]:
-    """Each month's cost by who it's charged to and the model that served it."""
+    """Each month's cost by who it's charged to and the model that served it.
+
+    A grant's calls that an MCP server's application made for the people who called that MCP
+    server are split out, a row for each person, still charged to the grant's subject and cost
+    center. The rest stays one row, the application's own use. A grant's split rows add up to
+    exactly what its one row would have been. See ADR 0025.
+    """
 
     scope, window = context.scope, context.window
     charges: dict[tuple[Any, ...], _Charge] = {}
+    shares = _shares(scope, on_behalf)
 
     def charge(
         month: date,
@@ -401,9 +511,9 @@ def chargeback_rows(
         metrics: UsageMetrics,
         priced: Priced,
         cost_center: CostCenterRef | None = None,
-    ) -> None:
+    ) -> _Charge:
         facts = costs.pricer.facts_for(key)
-        model = (facts.model if facts else None) or "Unknown model"
+        model = (facts.model if facts else None) or UNKNOWN_MODEL
         deployment = facts.deployment_name if facts else None
         endpoint = facts.endpoint_name if facts else None
         code = cost_center.code if cost_center else None
@@ -422,6 +532,7 @@ def chargeback_rows(
                 endpoint=endpoint,
             )
         item.add(metrics, priced)
+        return item
 
     for summary, entry in entries(grants, scope, "grant"):
         start = date.fromisoformat(summary.period_start)
@@ -430,14 +541,33 @@ def chargeback_rows(
         api = scope.apis.get((summary.gateway_id, api_name)) if api_name else None
         if grant is not None and str(grant.resource_kind) == "mcpServer":
             continue
+        shared = shares.get((summary.period, summary.period_start, summary.gateway_id, entry.key))
         for key, metrics, priced in costs.priced_parts(api, summary.period, start, entry.metrics):
-            charge(
+            item = charge(
                 month_first(start),
                 _party(scope, grant),
                 key,
                 metrics,
                 priced,
                 scope.cost_center(grant),
+            )
+            if not shared:
+                item.parts.setdefault("", _Amount()).add(metrics, priced)
+                continue
+            # Each part is priced as the grant's calls are, so it carries its own share of the
+            # cost. A pool's person keeps which member served their calls, so it's priced there.
+            mine = {
+                person: part
+                for person, used in shared.items()
+                if (part := part_of(api, key, used)).requests or part.total_tokens
+            }
+            for person, used in mine.items():
+                item.parts.setdefault(person, _Amount()).add(
+                    used, costs.price_part(api, key, summary.period, start, used)
+                )
+            own = _less(metrics, mine.values())
+            item.parts.setdefault("", _Amount()).add(
+                own, costs.price_part(api, key, summary.period, start, own)
             )
 
     for summary, entry in entries(unattributed, scope, "unattributed"):
@@ -468,36 +598,73 @@ def chargeback_rows(
     rows: list[dict[str, Any]] = []
     for item in sorted(
         charges.values(),
-        key=lambda value: (value.month, -(value.cost or 0.0), value.party.casefold(), value.model),
+        key=lambda value: (
+            value.month,
+            -(value.whole.cost or 0.0),
+            value.party.casefold(),
+            value.model,
+        ),
     ):
         first = max(item.month, window.first_day)
         last = min(month_last(item.month), window.last_day)
-        if item.cost is None:
-            status = "no"
-        elif item.unpriced_tokens > 0:
-            status = "partly"
-        else:
-            status = "yes"
-        rows.append(
-            {
-                "month": item.month.strftime("%Y-%m"),
-                "first_day": first,
-                "last_day": last,
-                "party": item.party,
-                "party_kind": item.party_kind,
-                "party_object_id": item.party_object_id,
-                "cost_center": item.cost_center,
-                "cost_center_name": item.cost_center_name,
-                "model": item.model,
-                "deployment": item.deployment,
-                "endpoint": item.endpoint,
-                "requests": item.metrics.requests,
-                "prompt_tokens": item.metrics.prompt_tokens,
-                "completion_tokens": item.metrics.completion_tokens,
-                "total_tokens": item.metrics.total_tokens,
-                "cost": round_cost(item.cost),
-                "priced": status,
-                "note": item.note if status != "yes" else None,
-            }
+        base = {
+            "month": item.month.strftime("%Y-%m"),
+            "first_day": first,
+            "last_day": last,
+            "party": item.party,
+            "party_kind": item.party_kind,
+            "party_object_id": item.party_object_id,
+            "cost_center": item.cost_center,
+            "cost_center_name": item.cost_center_name,
+            "model": item.model,
+            "deployment": item.deployment,
+            "endpoint": item.endpoint,
+        }
+        people = item.people
+        if not people:
+            rows.append(_charge_row(base, item.whole, round_cost(item.whole.cost)))
+            continue
+        named = {person: scope.caller(person).label for person in people}
+        parts: list[tuple[str, _Amount]] = [
+            ("", item.parts.get("") or _Amount()),
+            *sorted(
+                people.items(),
+                key=lambda pair: (
+                    -(pair[1].cost or 0.0),
+                    named[pair[0]].casefold(),
+                    pair[0],
+                ),
+            ),
+        ]
+        split = split_cost(
+            round_cost(item.whole.cost), [amount.cost for _, amount in parts]
         )
+        for (person, amount), cost in zip(parts, split, strict=True):
+            if not person and not (amount.metrics.requests or amount.metrics.total_tokens or cost):
+                continue
+            rows.append(
+                _charge_row(
+                    {
+                        **base,
+                        "on_behalf": named[person] if person else None,
+                        "on_behalf_object_id": person or None,
+                    },
+                    amount,
+                    cost,
+                )
+            )
     return rows
+
+
+def _charge_row(base: Mapping[str, Any], amount: _Amount, cost: float | None) -> dict[str, Any]:
+    status = _status(amount, cost)
+    return {
+        **base,
+        "requests": amount.metrics.requests,
+        "prompt_tokens": amount.metrics.prompt_tokens,
+        "completion_tokens": amount.metrics.completion_tokens,
+        "total_tokens": amount.metrics.total_tokens,
+        "cost": cost,
+        "priced": status,
+        "note": amount.note if status != "yes" else None,
+    }

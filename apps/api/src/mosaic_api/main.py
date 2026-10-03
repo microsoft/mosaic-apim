@@ -32,7 +32,7 @@ from mosaic_api.integrations.loganalytics import LogAnalyticsClient
 from mosaic_api.integrations.mcp import EntraTokenProvider, KeyVaultSecretReader
 from mosaic_api.mcp_publishing_api import mcp_publishing_router
 from mosaic_api.model_pools_api import model_pools_router
-from mosaic_api.observability import configure_logging, configure_telemetry
+from mosaic_api.observability import configure_logging, configure_telemetry, instrument_requests
 from mosaic_api.pricing import load_seed
 from mosaic_api.pricing_api import pricing_router
 from mosaic_api.repositories import (
@@ -608,6 +608,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         description="Desired-state control plane for Azure API Management AI gateway governance.",
         lifespan=lifespan,
     )
+    # The instrumentation wraps the middleware stack when it is built, so it is the outermost
+    # layer, around the middleware added below, and records the requests they answer themselves.
+    instrument_requests(app, app_settings)
     app.state.settings = app_settings
     app.add_exception_handler(DomainError, domain_error_handler)
     app.add_exception_handler(RequestValidationError, request_validation_error_handler)

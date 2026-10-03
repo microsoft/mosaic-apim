@@ -47,8 +47,13 @@ TOKEN_MARGIN_SECONDS = 60
 # Rejections in a row, after MOSAIC reports a grant revoked, that show the revocation took effect.
 REVOCATION_CONFIRMATIONS = 2
 # How API Management's own limit policies word their 429s. A model deployment's 429 passes through
-# the gateway unchanged, with an {"error": ...} body instead.
-GATEWAY_LIMIT_MESSAGES = {"calls": "Rate limit is exceeded", "tokens": "Token limit is exceeded"}
+# the gateway unchanged, with an {"error": ...} body instead. A token limit says "is exceeded" once
+# its window is spent, and "will exceed" when it refuses a prompt that would spend more than is left
+# (the gateway logs that as TokenLimitExceededAfterPrompt).
+GATEWAY_LIMIT_MESSAGES = {
+    "calls": ("Rate limit is exceeded",),
+    "tokens": ("Token limit is exceeded", "Token limit will exceed"),
+}
 
 USER_CONTROL_TOKEN = "MOSAIC_SMOKE_USER_CONTROL_TOKEN"
 ADMIN_CONTROL_TOKEN = "MOSAIC_SMOKE_ADMIN_CONTROL_TOKEN"
@@ -825,7 +830,7 @@ def gateway_limit(response: httpx.Response) -> str | None:
     if not isinstance(message, str):
         return None
     return next(
-        (limit for limit, text in GATEWAY_LIMIT_MESSAGES.items() if message.startswith(text)),
+        (limit for limit, texts in GATEWAY_LIMIT_MESSAGES.items() if message.startswith(texts)),
         None,
     )
 

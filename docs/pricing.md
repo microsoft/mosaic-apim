@@ -17,6 +17,11 @@ MOSAIC multiplies the usage it measures by a price list. Every cost is:
 - **Null when MOSAIC can't price it**, shown as **No price**, never as $0. Each report counts the
   tokens, requests, and items it left out, and the **Unpriced deployments** tab says why each one
   has no price.
+- **Only for calls the model served.** A call the gateway refused for a limit or a quota, or that
+  the deployment throttled or failed itself, has no tokens, so it costs nothing. Azure doesn't
+  bill a call that never reached the model, or one the deployment throttled. Whether it bills the
+  prompt of a call a content filter blocked with 400 is still to be confirmed.
+  [Usage analytics](usage-analytics.md#calls) says what counts.
 
 The rollups don't separate cached prompt tokens from the rest, so every prompt token is priced at
 the full input price. Cost is shown for whole days only, so the **Last 24 hours** range shows none.
@@ -186,7 +191,9 @@ Utilization is blank for a model Learn has no figures for.
 - **Analytics > Cost** shows the total and trend for the chosen range, cost by model, deployment,
   caller, and API, and this month's spend and forecast. **Cost by consumer** ranks the people and
   applications that called, so a security group's calls count once, under its members. The other
-  tabs add a cost column where usage has one.
+  tabs add a cost column where usage has one. A call whose LLM log named no model counts under the
+  model MOSAIC knows its deployment serves, so cost by model adds up to the same total as cost by
+  API.
 - **Spend this month** is the calendar month so far, in UTC. The **Month-end forecast**, marked
   **Projected**, is pay-as-you-go spend so far, times the days in the month, divided by the days
   MOSAIC has figures for, to the hour, plus each provisioned deployment's whole month, from the
@@ -196,7 +203,10 @@ Utilization is blank for a model Learn has no figures for.
   report says so.
 - **The portal** shows each person the cost of their own calls, per grant and in total, and how many
   of their resources have no price. A grant only some of whose calls have a price shows the priced
-  part, says why the rest has none, and counts among the resources the total leaves out.
+  part, says why the rest has none, and counts among the resources the total leaves out. Model
+  calls an MCP server's application made for them are listed apart, priced the same way and named
+  with the cost center of the application's grant, which paid for them. Their totals leave them
+  out.
 
 ## Chargeback
 
@@ -213,6 +223,20 @@ row for each of its cost centers. Calls MOSAIC couldn't attribute are charged to
 belongs to a grant, so their cost center is empty, and no cost center's spend includes them. Rows
 are split by calendar month, and the first and last month are cut to the chosen range. Filtering
 the Cost tab by cost center exports only that cost center's rows.
+
+**On behalf of** and **On behalf of object ID**, after **Cost center name**, split out the model
+calls an MCP server's application made for the people who called that MCP server
+([MCP servers that call models](mcp-servers-that-call-models.md)):
+- Each person gets a row of their own, with their calls, tokens and cost. The row is still charged
+  to the application, under its grant's cost center, because the application's grant paid for the
+  calls. The person is a reporting dimension only.
+- The rest of the application's calls, its own use and any MOSAIC couldn't attribute to anyone,
+  stay one row with both columns empty. A row that isn't an application's grant's leaves them
+  empty too.
+- The split rows add up exactly to the row they replace: the same requests and tokens, and the
+  same cost to the ten-thousandth of a dollar. The row's rounded cost is shared in proportion to
+  what each part's calls cost, and what rounding leaves over goes to the largest remainders, so a
+  person's row can differ from their figure in Analytics by a ten-thousandth of a dollar.
 
 ## Refreshing the seed
 

@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event'
 import { MemoryRouter, useLocation } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { McpsPage } from './McpsPage'
-import type { Gateway, McpEndpoint, McpPublication, McpServer, ObservedMcpTool, PublishPlan, PublishRun } from '../types'
+import type { Gateway, McpEndpoint, McpPublication, McpServer, ObservedMcpTool, Principal, PublishPlan, PublishRun } from '../types'
 
 const RESOURCE_ID =
   '/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-contoso-dev' +
@@ -123,6 +123,27 @@ const mcpPublication: McpPublication = {
   accessState: 'applied',
   createdAt: '2026-09-01T12:00:00Z',
   updatedAt: '2026-09-01T12:20:00Z',
+}
+
+const supportBot: Principal = {
+  id: 'principal-support-bot',
+  tenantId: 'tenant-test',
+  objectId: 'aaaabbbb-cccc-dddd-eeee-ffff00001111',
+  kind: 'servicePrincipal',
+  label: 'Support bot',
+  detail: 'Contoso support application',
+  createdAt: '2026-09-01T12:00:00Z',
+  updatedAt: '2026-09-01T12:00:00Z',
+}
+
+const adele: Principal = {
+  id: 'principal-adele',
+  tenantId: 'tenant-test',
+  objectId: 'bbbbcccc-dddd-eeee-ffff-000011112222',
+  kind: 'user',
+  label: 'Adele Vance',
+  createdAt: '2026-09-01T12:00:00Z',
+  updatedAt: '2026-09-01T12:00:00Z',
 }
 
 const mcpPlan: PublishPlan = {
@@ -282,6 +303,8 @@ const api = {
   unpublishMcpPublication: vi.fn(),
   listPrincipals: vi.fn(),
   deleteMcpPublication: vi.fn(),
+  setMcpModelCaller: vi.fn(),
+  clearMcpModelCaller: vi.fn(),
   getMcpPublicationLock: vi.fn(),
   recoverMcpPublication: vi.fn(),
   listMcpServers: vi.fn(),
@@ -360,6 +383,8 @@ describe('McpsPage', () => {
     api.unpublishMcpPublication.mockResolvedValue(mcpRun)
     api.listPrincipals.mockResolvedValue([])
     api.deleteMcpPublication.mockResolvedValue(undefined)
+    api.setMcpModelCaller.mockResolvedValue(mcpPublication)
+    api.clearMcpModelCaller.mockResolvedValue(mcpPublication)
     api.getMcpPublicationLock.mockResolvedValue({ publicationId: 'mcp_pub_1', ownerId: null })
     api.recoverMcpPublication.mockResolvedValue(mcpRun)
     api.createMcpPublication.mockResolvedValue(mcpPublication)
@@ -438,6 +463,129 @@ describe('McpsPage', () => {
     expect(await screen.findByRole('dialog')).toBeVisible()
     expect(api.planMcpPublication).toHaveBeenCalledWith('mcp_pub_1')
     expect(await screen.findByRole('table', { name: 'MCP publish plan steps' })).toBeVisible()
+  })
+
+  it('shows the applied model caller for a published MCP server', async () => {
+    api.listPrincipals.mockResolvedValue([supportBot])
+    api.listMcpPublications.mockResolvedValue([{
+      ...mcpPublication,
+      modelCallerId: supportBot.id,
+      appliedAccess: {
+        version: 1,
+        audience: 'runtime-client-id',
+        delegatedScope: 'Mcp.Invoke',
+        applicationRole: 'Mcp.Invoke.Application',
+        modelCaller: { principalId: supportBot.id, objectId: supportBot.objectId, displayName: 'Support bot' },
+        grants: [],
+      },
+    }])
+
+    renderPage()
+
+    const table = await screen.findByRole('table', { name: 'Published MCP servers' })
+    expect(within(table).getByText('Calls models as')).toBeVisible()
+    expect(within(table).getByText('Support bot')).toBeVisible()
+    expect(within(table).getByText('Applied')).toBeVisible()
+  })
+
+  it('shows a changed model caller as not applied until plan and apply', async () => {
+    api.listPrincipals.mockResolvedValue([supportBot])
+    api.listMcpPublications.mockResolvedValue([{
+      ...mcpPublication,
+      modelCallerId: supportBot.id,
+      appliedAccess: {
+        version: 1,
+        audience: 'runtime-client-id',
+        delegatedScope: 'Mcp.Invoke',
+        applicationRole: 'Mcp.Invoke.Application',
+        modelCaller: { principalId: 'principal-old-bot', objectId: 'ccccdddd-eeee-ffff-0000-111122223333', displayName: 'Old bot' },
+        grants: [],
+      },
+    }])
+
+    renderPage()
+
+    const table = await screen.findByRole('table', { name: 'Published MCP servers' })
+    expect(within(table).getByText(/Not applied yet/)).toBeVisible()
+    expect(within(table).getByText('Still live as Old bot. Plan and apply to switch.')).toBeVisible()
+    expect(within(table).getByRole('button', { name: 'Plan and apply' })).toBeVisible()
+  })
+
+  it('says what to do when a model caller is named but never applied, or cleared while live', async () => {
+    api.listPrincipals.mockResolvedValue([supportBot])
+    const live = {
+      version: 1,
+      audience: 'runtime-client-id',
+      delegatedScope: 'Mcp.Invoke',
+      applicationRole: 'Mcp.Invoke.Application',
+      modelCaller: { principalId: supportBot.id, objectId: supportBot.objectId, displayName: 'Support bot' },
+      grants: [],
+    }
+    api.listMcpPublications.mockResolvedValue([
+      { ...mcpPublication, modelCallerId: supportBot.id },
+      { ...mcpPublication, id: 'mcp_pub_2', displayName: 'Contoso Search', apiName: 'search', modelCallerId: null, appliedAccess: live },
+      { ...mcpPublication, id: 'mcp_pub_3', displayName: 'Contoso Files', apiName: 'files' },
+    ])
+
+    renderPage()
+
+    const table = await screen.findByRole('table', { name: 'Published MCP servers' })
+    const [named, cleared, none] = within(table).getAllByRole('row').slice(1)
+    expect(within(named).getByText('Not applied yet')).toBeVisible()
+    expect(within(named).getByText('Plan and apply to start attributing its model calls.')).toBeVisible()
+    expect(within(cleared).getByText('None')).toBeVisible()
+    expect(
+      within(cleared).getByText('Still live as Support bot. Plan and apply to stop attributing its model calls.'),
+    ).toBeVisible()
+    expect(within(none).getAllByText('None')).toHaveLength(1)
+    expect(within(none).queryByText('Not applied yet')).not.toBeInTheDocument()
+    expect(within(none).queryByRole('button', { name: 'Clear' })).not.toBeInTheDocument()
+  })
+
+  it('sets a model caller from application principals only', async () => {
+    const user = userEvent.setup()
+    api.listPrincipals.mockResolvedValue([supportBot, adele])
+    api.listMcpPublications.mockResolvedValue([mcpPublication])
+
+    renderPage()
+
+    const table = await screen.findByRole('table', { name: 'Published MCP servers' })
+    await user.click(within(table).getByRole('button', { name: 'Choose' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Calls models as' })
+    expect(within(dialog).getByRole('option', { name: /Support bot/ })).toBeVisible()
+    expect(within(dialog).queryByRole('option', { name: /Adele Vance/ })).not.toBeInTheDocument()
+
+    await user.click(within(dialog).getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(api.setMcpModelCaller).toHaveBeenCalledWith('mcp_pub_1', supportBot.id))
+  })
+
+  it('clears a model caller', async () => {
+    const user = userEvent.setup()
+    api.listPrincipals.mockResolvedValue([supportBot])
+    api.listMcpPublications.mockResolvedValue([{ ...mcpPublication, modelCallerId: supportBot.id }])
+
+    renderPage()
+
+    const table = await screen.findByRole('table', { name: 'Published MCP servers' })
+    await user.click(within(table).getByRole('button', { name: 'Clear' }))
+
+    await waitFor(() => expect(api.clearMcpModelCaller).toHaveBeenCalledWith('mcp_pub_1'))
+  })
+
+  it('shows model caller API errors', async () => {
+    const user = userEvent.setup()
+    api.listPrincipals.mockResolvedValue([supportBot])
+    api.listMcpPublications.mockResolvedValue([mcpPublication])
+    api.setMcpModelCaller.mockRejectedValue(new Error('Only applications can call models for an MCP server.'))
+
+    renderPage()
+
+    const table = await screen.findByRole('table', { name: 'Published MCP servers' })
+    await user.click(within(table).getByRole('button', { name: 'Choose' }))
+    await user.click(within(await screen.findByRole('dialog', { name: 'Calls models as' })).getByRole('button', { name: 'Save' }))
+
+    expect((await screen.findAllByText('Only applications can call models for an MCP server.')).length).toBeGreaterThan(0)
   })
 
   it('reviews what unpublishing removes and who loses access before it unpublishes', async () => {

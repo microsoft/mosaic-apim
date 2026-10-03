@@ -8,6 +8,9 @@ deployed environment:
 3. The administrator grants those models to people and to a workload application.
 4. Those callers, and only those callers, can invoke the models through the gateway.
 
+Phase 11 extends the same path to MCP servers: published, granted, called and measured the same
+way, including an MCP server that itself calls a model through MOSAIC.
+
 A person signs in (including MFA) and the Playwright harness in [`e2e/`](../../e2e) drives the
 browser. Every phase ends at a checkpoint, so the work can pause between phases and each tenant
 change can be approved on its own. How to run the harness is in the [runbook](runbook.md).
@@ -97,6 +100,7 @@ tests and README or ADR updates wherever a decision changes.
 | G16 | **Re-plan** says "Created a fresh publish plan. Review it before applying.", but nothing shows that plan: the console discards it, and the API can't return a saved plan. On a publication without governed access, the row's **Apply** then applies the saved plan with no review. The README says re-planning shows how API Management has diverged, and the page says changes are made only after a reviewed plan is applied. Found live in A8 | Remove the row's **Apply**. **Re-plan** makes a fresh plan and opens it in the publish dialog's review, and only **Apply plan** there applies it. When an apply is refused, the dialog says "MOSAIC didn't apply the plan you reviewed", gives the server's reason, and says it has already re-planned (O13). Web only ([#32](https://github.com/microsoft/mosaic-apim/pull/32)) | ✅ deployed |
 | G17 | **Governed access can't be applied.** The policy expressions MOSAIC generates for governed access use single-statement control flow, such as `if (…) return "";`. APIM rejects every such fragment: "Block statements must be enclosed in "{" and "}". You cannot use single-statement control-flow statements in CSHTML pages." The apply then falls back to its last safe snapshot, as designed, which for a publication that never had governed access denies every call. The test fake of APIM accepts any expression, so the unit tests passed. Found live in A11 | Brace every control-flow body in the generated expressions, and make the APIM fake reject unbraced control flow the way APIM does. API only, so it ships in an image-only deploy, Batch 3d | ✅ deployed ([#36](https://github.com/microsoft/mosaic-apim/pull/36)); verified live in A11 |
 | G18 | **An Azure AI resource in another Entra tenant can't be published.** MOSAIC registers Azure OpenAI and Foundry endpoints only by resource ID, reads them with its managed identity, and has the gateway call them with its own. Neither identity can reach another tenant's resource: the environment owner's Claude deployment answered "Token tenant … does not match resource tenant". MOSAIC also had no way for API Management to use a key that MOSAIC never holds | Register an Azure AI endpoint by its URL and a Key Vault secret URI, never the key, and declare its deployments, because a key can't list them. API Management reads the key from Key Vault through a secret named value, with its own identity. The policy removes every credential a caller sent, then sets the backend's key header: `api-key`, or `x-api-key` for Claude. Readiness checks that the endpoint accepts the key, with a request that runs no model, and that each gateway can read the vault. The gateway needs Key Vault Secrets User on the environment vault, and MOSAIC's API needs Reader there ([#69](https://github.com/microsoft/mosaic-apim/pull/69), ADR 0018). [#77](https://github.com/microsoft/mosaic-apim/pull/77) (ADR 0021) lets the admin paste the key in the console instead: MOSAIC writes it to a new secret in the environment's vault and keeps only the secret's URI. **Replace API key** writes a new version, and removing the endpoint deletes the secret. For that, MOSAIC's API needs Key Vault Secrets Officer on the vault | ✅ deployed in Batches 3g and 3h. Verified live: the owner registered the Claude endpoint by pasting its key, and a call reached Claude through APIM (Phase 8) |
+| G19 | **A model call that an MCP server makes for a person isn't attributed to that person.** MOSAIC governs and measures a person's calls to an MCP server and their calls to a model separately. When a server's tool calls a model through MOSAIC, the model call belongs to the server's identity, and nothing links it to the person who called the tool. The environment owner wants to see that consumption per person, without each person needing a grant on the model (Phase 11) | Decided by the environment owner on 2 October 2026: the server calls the model with its own application grant, which alone decides access, limits and cost center, and passes on who called it. MOSAIC accepts that only from approved intermediaries, and records the person for usage, never for access. An ADR will settle how the person is passed on and trusted: a header the gateway signs when it validates the person's token, or a reference to the person's MCP call that analytics joins to the gateway's logs. It also settles who counts as an approved intermediary, and how usage reports the person. Then build it and check it in M9 | ⏳ designing |
 
 There is no G15. What was first logged as G15 turned out to be APIM's own behavior, and is
 recorded as O12.
@@ -685,7 +689,7 @@ Progress:
     allows only chat completions on these publications, so their embeddings and model-info
     operations are denied by design.
 
-### Phase 8: Runtime verification (R1 to R14, A14, A17, A18) 🔄 R3 and R4's additions pass, part of R8, and Claude's publication; the rest runs at the owner's sitting, after O37's fix
+### Phase 8: Runtime verification (R1 to R14, A14, A17, A18) 🔄 R1 to R8, A14 and A18 pass; R9 to R14 and A17 remain
 
 `scripts/verify_model_access.py` now covers this phase, with unit tests against a fake gateway
 that applies the governed policy. It reads each grant's connection details from MOSAIC, calls the
@@ -790,7 +794,15 @@ Progress:
   publication. Since Batch 3f, each authorized call to a governed model also writes one trace,
   `mosaic-attribution v=1`, that names its grant by a stable hash, both in Application Insights
   and in the resource logs. Refused calls and calls to publications without governed access
-  write none. The 429s wait for R5's and R6's runs.
+  write none. The 429s wait for R5's and R6's runs. After Batch 3i, the resource logs also keep
+  the trace's properties. A key call's trace records `mosaic-client` as `-`, as #81 intends, both
+  there and in Application Insights. On Batch 3i's build, within 15 minutes, the console's
+  **Analytics** and the `user` persona's **Usage & cost** counted Batch 3i's key calls against
+  the right grants. Each grant showed "Linked from gateway log traces", and all of them were
+  charged to General. The console also listed the workload's earlier calls under its own name, and
+  the gateway's telemetry was current. Each total was split into prompt and completion tokens, but
+  grok's parts don't add up to its total (O40). Prices are missing for Claude, which has no
+  deployment type yet, and for the Foundry models. That is R9's to check.
 - ✅ **Batch 3g**, 2026-10-01: the environment runs main as of
   [#74](https://github.com/microsoft/mosaic-apim/pull/74), which brings G18
   ([#69](https://github.com/microsoft/mosaic-apim/pull/69)), the usage analytics of
@@ -805,10 +817,31 @@ Progress:
 - ✅ **Batch 3h**, 2026-10-01: main as of [#77](https://github.com/microsoft/mosaic-apim/pull/77),
   plus Key Vault Secrets Officer on the vault for MOSAIC's API, which #77 needs to write keys.
   [#78](https://github.com/microsoft/mosaic-apim/pull/78) and
-  [#79](https://github.com/microsoft/mosaic-apim/pull/79), cost centers and budgets, were left out.
-  They give every grant a new ID, so every governed model and MCP publication must be re-applied
-  and each test grant made again. That's Batch 3i.
-- 🔄 **Claude**, 2026-10-01: from the endpoint the owner registered (Phase 2), `claude-opus-4-6`
+  [#79](https://github.com/microsoft/mosaic-apim/pull/79), cost centers and budgets, were left out
+  for Batch 3i, because every governed model must be re-applied after them.
+- ✅ **Batch 3i**, 2026-10-02: main as of [#82](https://github.com/microsoft/mosaic-apim/pull/82),
+  which adds cost centers (#78), budgets (#79) and O37's fix
+  ([#81](https://github.com/microsoft/mosaic-apim/pull/81)). No infrastructure or settings changed:
+  email stays off, and budgets need no new setting. Existing grants kept their IDs and keys. A
+  grant made before cost centers is charged to the built-in **General**, the tenant default, which
+  everyone may charge and which allows keys. #78's advice to re-seed applies to grants made again,
+  because a new grant's ID includes its cost center. At startup, MOSAIC's budget check created
+  the gateway's list of blocked cost centers, a plain named value holding `-`. Each of the eight
+  governed models was then re-planned and applied in the console. In each plan the list's step
+  said "No change", and every other step updated the model's own resources: 15 to 23 steps per
+  model, and all succeeded. In API Management, only the eight policy fragments, the grants'
+  subscriptions, whose display names now name the cost center, and the new named value changed.
+  Every grant's key reached its model, Claude's included, and the portal's **My access** shows
+  each grant under General. The new API took about seven minutes to replace the old one (O38).
+- ✅ **Batch 3j**, 2026-10-02: MOSAIC's API only, from main as of
+  [#84](https://github.com/microsoft/mosaic-apim/pull/84), O39's fix. Nothing else changed, and
+  API Management was untouched. The new API took over about three and a half minutes after the
+  deploy finished. In the ten minutes before, the API sent about 2,430 records of the Azure SDK's
+  calls and the exporter's uploads to Application Insights. After the switch, it sent none. Its
+  first rollup on the new build still logged its token requests, outbound HTTP calls and rollup
+  results, and Cosmos DB calls are still recorded as dependencies. Checking this showed that the
+  API had never recorded its incoming requests (O41).
+- ✅ **Claude**, 2026-10-01: from the endpoint the owner registered (Phase 2), `claude-opus-4-6`
   was published in the console in 11 steps, among them a Key Vault named value for the key, and
   all succeeded. A Messages call with the bootstrap key reached Claude. Its governed access, a
   direct grant for the `user` persona with 60 calls per 60 seconds and no token limit (G5), applied
@@ -816,22 +849,65 @@ Progress:
   only this publication's resources and the grant's new subscription changed. The portal's
   **My access** lists the grant as applied, and its connection details explain the Messages route:
   the base URL for an Anthropic SDK, and a key in `Ocp-Apim-Subscription-Key`, because the gateway
-  removes `x-api-key`, or a token. The grant's key got 500 (O37), so R1's Claude call waits until
-  its fix, [#81](https://github.com/microsoft/mosaic-apim/pull/81), is deployed.
+  removes `x-api-key`, or a token. The grant's key got 500 (O37) until Batch 3i deployed its fix,
+  [#81](https://github.com/microsoft/mosaic-apim/pull/81). Since then the key reaches Claude.
 
-Claude's import, publication and grant are done. The sitting waits for O37's fix to be deployed
-and Claude's publication re-applied: R1 calls Claude with its key, and A14's toggles and R7
-re-apply governed models, which would break their keys on the current build. It then runs, in
-order: R1, R2 and R4's cross-subject
-checks in one run, with an `outsider` as the ungranted user; R5's proof; R6's proof; A14's method
-toggles on R5's and R6's models; and a last run that checks the toggled methods and watches R6's
-revocation (R7). Each run needs one device-code sign-in for the `user` persona, and R1's run
-another for the `outsider`. R8 is checked in
-Application Insights and Log Analytics afterwards. R1 covers the persona's applied grants on six
-models on five endpoints, with the same limits except Claude's: AOAI B `gpt-4o-mini`, Foundry
-multi-provider `grok-4.3` and `DeepSeek-V4-Pro`, Foundry project
-`Llama-4-Maverick-17B-128E-Instruct-FP8`, Foundry hub-connected `gpt-5.1-chat`, and Claude
-`claude-opus-4-6`. Each Foundry model's first governed apply had 14 steps, and all succeeded.
+- ✅ **The sitting**, 2 October 2026, about an hour on Batch 3j's build, with the environment owner
+  confirming six device-code sign-ins:
+  - **R1, R2 and R4**: each of the `user` persona's six grants reached its model with the grant's
+    key and with the persona's Entra token: AOAI B `gpt-4o-mini`, `grok-4.3`, `DeepSeek-V4-Pro`,
+    `Llama-4-Maverick-17B-128E-Instruct-FP8`, `gpt-5.1-chat` and Claude `claude-opus-4-6`. Each
+    refused an anonymous call, an invalid key, a MOSAIC control-plane token, an invalid token with
+    a valid key, and an `outsider`'s token, which has no grant. The persona couldn't list, read or
+    retrieve the key of the `guest` persona's grant, and its usage report left that grant out.
+    Grok and Llama answered tokens on `/models/chat/completions`, so G6 isn't needed. The workload
+    was left out, because its client secret had expired; R3 passed on Batch 3f's build.
+  - **R5**: the primary key, the Entra token and the secondary key shared one budget of 2 calls
+    per 300 seconds, and the gateway's call limit returned the third call's 429.
+  - **R6**: the grant's 100 tokens per minute returned 429 with `Retry-After` after 7 calls. The
+    first try failed on the verifier. API Management words a token-limit 429 two ways: "Token
+    limit is exceeded" once the window is spent, and "Token limit will exceed" when it refuses a
+    prompt that would spend more than is left. The verifier knew only the first, so it blamed the
+    deployment. It accepts both now, and a test covers the second.
+  - **A14**: with keys turned off on R6's model, its grant's key was refused with 401. With Entra
+    tokens turned off on R5's model, the persona's token was refused there, while the key still
+    worked, and R6's model still took tokens.
+  - **R7**: R6's grant was revoked in the console while the verifier watched. MOSAIC reported it
+    applying, then revoked, and the persona's token was refused from then on.
+  - **R8**: every call showed up in the gateway's resource logs with its status, and each refusal
+    with its reason. The 429s named their limit: `RateLimitExceeded` for R5,
+    `TokenLimitExceededAfterPrompt` and `OpenAITokenLimitExceeded` for R6. Each authorized call's
+    attribution trace was in Application Insights and the resource logs. The token metrics split
+    grok's tokens into prompt, completion and reasoning tokens (O40).
+  - Afterwards R5's grant was revoked too, and both models' methods were restored. In API
+    Management, only those two models' policy fragments and grant subscriptions changed, and both
+    subscriptions are suspended.
+
+The `user` persona keeps its User role for now, because Phase 11 needs it. The environment owner
+had decided to remove it after Phase 8.
+
+R9 to R14 and A17 check pricing, cost centers and budgets, which Batches 3g and 3i deployed.
+
+- 🔄 **A17**, 2 October, read-only. **Pricing** lists its prices with their source: seeded from
+  the Azure Retail Prices API on 30 September, 25 of 48 deployments priced. Each price row has
+  **Override** and its history. **Unpriced deployments** lists the other 23, each with its reason,
+  such as "No price for grok-4.3 1 (GlobalStandard) in eastus2 in Azure Commercial", and a fix.
+  **Clouds and endpoints** reads each endpoint's cloud from its host. Each Azure endpoint showed
+  Azure Commercial and its region; the Claude endpoint, registered by URL, has no region. The
+  override part is still to do. All of the day's priced usage fell on 2 October, and an override
+  takes effect from a date, so showing that earlier days keep their price needs usage on two
+  days. The override dialog says that saving again with the same date corrects a price, which
+  makes the test easy to undo.
+- 🔄 **R9**, 2 October. **Analytics > Cost** priced the day's calls to priced deployments, and left
+  out, by name, the 848 tokens with no price. The `user` persona's **Usage & cost** shows only
+  their own cost. **Unpriced deployments** lists the three declared Claude deployments as
+  "Deployment type unknown", with **Set facts**. Two problems came up: cost by model and cost by
+  API disagree (O43), and the price list has no price for most models this environment runs
+  (O42). Comparing a month's estimate with Cost Management waits until Cost Management has the
+  days' charges.
+
+R10 to R14 need new grants, and R13 and R14 need email set up, so each waits for the owner's
+approval.
 
 A call quota (O28) can't be set in the console, so these grants have none. A weekly one adds a
 policy expression that API Management hasn't compiled yet.
@@ -874,8 +950,12 @@ policy expression that API Management hasn't compiled yet.
     [comment](https://github.com/microsoft/mosaic-apim/issues/49#issuecomment-5901935028).
 
   O11's product suggestion waits for its Phase 8 check. O12's check passed (Phase 8), and its
-  product suggestion stands for publications without governed access. G6 looks unnecessary, and
-  R1 confirms it.
+  product suggestion stands for publications without governed access. R1 confirmed that G6 isn't
+  needed.
+- The `outsider` persona's browser profile holds a session for the `user` persona: its portal
+  opens as the `user` persona. The verifier wasn't fooled, because it refuses an "ungranted" token
+  that belongs to the granted user. But a portal check run as the `outsider` would see the wrong
+  person. Sign that profile out of the `user` persona before running one.
 - ✅ A15, on AOAI C `o4-mini`, a publication without governed access. **Unpublish** removed its
   API, with the API's operations and policy, and its product, backend, policy fragment and
   bootstrap subscription. Nothing else in API Management changed, apart from the subscription
@@ -903,6 +983,57 @@ an API key or SigV4. The environment owner writes the secrets and shares only th
 G18 has since built the backend-credential part for Azure AI endpoints, a Key Vault-backed named
 value that the gateway reads with its own identity, and Phase 10 would reuse it.
 
+### Phase 11 (next): MCP servers end to end ⬜ requested by the environment owner (2026-10-02)
+
+MOSAIC publishes MCP servers through API Management and governs them with grants, as it does
+models, but no journey has exercised that yet. Phase 11 deploys a few generic MCP servers and
+takes them through the whole path: registration, publication, access requests and grants, calls
+from a real MCP client, and usage. One of the servers calls a model through MOSAIC, so the phase
+also shows how a model call made by an MCP server is attributed to the person who called the
+server (G19). It runs after Phase 9's cleanup, with the same environment, harness, personas and
+ledger.
+
+**Prerequisites**, each needing the environment owner's approval:
+
+- **Batch 5a, Entra.** MCP runtime tokens use the `Mcp.Invoke` delegated scope and the
+  `Mcp.Invoke.Application` app role on MOSAIC's runtime registration
+  ([connect-to-mcp-servers.md](../connect-to-mcp-servers.md)). The registration has only
+  `Models.Invoke` and `Models.Invoke.Application` today, because #51's Entra changes haven't been
+  made. Add the MCP scope and role. Consent the MCP test client for the scope. Create an app
+  registration for the agent server's workload identity, and an audience for the server that
+  accepts only the gateway's managed identity.
+- **Batch 5b, Azure.** Deploy the servers, all with streamable HTTP, public network access, the
+  smallest scale, and logs to the environment's workspace:
+  - **M-tools**, on Container Apps: a few deterministic tools, such as echo, the time and adding
+    two numbers. Upstream authentication **None**.
+  - **M-protected**, on Azure Functions with its MCP extension: the same kind of tools, accepting
+    only a token from the gateway's managed identity for its audience. Upstream authentication
+    **Managed identity**.
+  - **M-agent**, on Container Apps: a tool that answers by calling a governed model through
+    MOSAIC with the agent's own application grant, so a call to it leads to a second, governed
+    call (G19).
+  - Optionally, an SSE-only server as a negative case, because MOSAIC doesn't publish one.
+- **The gateway's diagnostics** must log 0 bytes of response bodies for MCP APIs, or streaming
+  breaks. MOSAIC warns about this when it plans a publication.
+
+**Journeys** (see the MCP table under the journey matrix): M1 registers each server and syncs its
+tools; M2 publishes it after a reviewed plan; M3 sets governed access for people and the agent's
+identity; M4 is a person's request and its approval in the portal; M5 is calls from a real MCP
+client; M6 is call limits and pooled quotas; M7 is revocation; M8 is usage; M9 is the agent
+server's governed model call; and M10 is unpublishing. A scripted MCP client, built on the MCP
+Python SDK, signs in with a device code as the verifier does, and the live driver enters the codes.
+
+**Product decisions before M9:**
+
+- **G19**: how a model call made by an MCP server, on a person's behalf, is attributed to that
+  person. The environment owner decided on 2 October 2026: the server calls with its own
+  application grant and passes on who called it, and MOSAIC records that person for usage only,
+  trusting the value only from approved intermediaries. A person needs no grant on the model.
+  The ADR settles the mechanism before M9 runs.
+- **Which tool was called**: MOSAIC's MCP traces read only policy variables, never a body, so
+  usage counts calls to a server but not to each tool. Reading the JSON-RPC request's method and
+  tool name in the policy would add that. M8 shows how much is missing.
+
 ## Journey matrix
 
 A journey passes only when the stated observable outcome happens in the UI, or at the gateway for
@@ -927,11 +1058,11 @@ has passed, and ❌ means the latest run failed on the product gap named.
 | A11 | Governed access with keys, Entra and limits is reviewed and applied, and the applied state shows | 6 | ✅ |
 | A12 | Workload connection details and key handoff work, and the key is never logged | 6 | ✅ |
 | A13 | Approving an access request creates grant intent, which is then reviewed and applied (G2) | 7 | ✅ |
-| A14 | Disable, revoke and method toggles go through review and apply | 8 | ⬜ |
+| A14 | Disable, revoke and method toggles go through review and apply | 8 | ✅ |
 | A15 | Unpublishing removes only what MOSAIC created | 9 | ✅ |
 | A16 | Settings lists the built-in environments; an Unclassified pairing warns but isn't blocked, and classifying both sides clears the warning (#40) | 6 | ✅ |
-| A17 | **Pricing** lists the seeded price of each target deployment with its source, detects each endpoint's cloud from its host, and says why any deployment has no price; an override from a date prices only the days from then (ADR 0020) | 8 | ⬜ |
-| A18 | An endpoint in another Entra tenant is registered by its URL and a pasted API key (G18, ADR 0021); its access card confirms the endpoint accepts the key and the gateway can read it; its Claude deployment is published and granted, the bootstrap key is refused once governed access applies, and the grant's key and token reach Claude | 8 | 🔄 |
+| A17 | **Pricing** lists the seeded price of each target deployment with its source, detects each endpoint's cloud from its host, and says why any deployment has no price; an override from a date prices only the days from then (ADR 0020) | 8 | 🔄 |
+| A18 | An endpoint in another Entra tenant is registered by its URL and a pasted API key (G18, ADR 0021); its access card confirms the endpoint accepts the key and the gateway can read it; its Claude deployment is published and granted, the bootstrap key is refused once governed access applies, and the grant's key and token reach Claude | 8 | ✅ |
 
 ### Portal
 
@@ -952,20 +1083,35 @@ has passed, and ❌ means the latest run failed on the product gap named.
 
 | ID | Journey | Phase | Status |
 | --- | --- | --- | --- |
-| R1 | A granted user reaches every provider by key: Azure OpenAI, Foundry OpenAI, Grok, Llama, DeepSeek and Claude (G5, G18) | 8 | ⬜ |
-| R2 | A granted user's Entra token works (G4); a token without a grant and a wrong-audience token are denied | 8 | ⬜ |
+| R1 | A granted user reaches every provider by key: Azure OpenAI, Foundry OpenAI, Grok, Llama, DeepSeek and Claude (G5, G18) | 8 | ✅ |
+| R2 | A granted user's Entra token works (G4); a token without a grant and a wrong-audience token are denied | 8 | ✅ |
 | R3 | The workload's client-credentials token and its handed-off key both work | 8 | ✅ |
-| R4 | Anonymous, invalid-key and cross-subject calls are denied | 8 | 🔄 |
-| R5 | A shared budget of 2 calls per 300 seconds, spent by primary key and token, returns 429 for the secondary key | 8 | ⬜ |
-| R6 | The tokens-per-minute limit returns 429 with `Retry-After` | 8 | ⬜ |
-| R7 | After revocation propagates, calls fail | 8 | ⬜ |
-| R8 | Calls show up in Application Insights and Log Analytics, and with ADR 0019, in MOSAIC's usage and analytics (optional) | 8 | 🔄 |
-| R9 | With ADR 0020, the run's calls are priced at list price in Analytics, the Dashboard, and the user's own portal page (optional) | 8 | ⬜ |
+| R4 | Anonymous, invalid-key and cross-subject calls are denied | 8 | ✅ |
+| R5 | A shared budget of 2 calls per 300 seconds, spent by primary key and token, returns 429 for the secondary key | 8 | ✅ |
+| R6 | The tokens-per-minute limit returns 429 with `Retry-After` | 8 | ✅ |
+| R7 | After revocation propagates, calls fail | 8 | ✅ |
+| R8 | Calls show up in Application Insights and Log Analytics, and with ADR 0019, in MOSAIC's usage and analytics (optional) | 8 | ✅ |
+| R9 | With ADR 0020, the run's calls are priced at list price in Analytics, the Dashboard, and the user's own portal page (optional) | 8 | 🔄 |
 | R10 | With ADR 0022, `x-mosaic-cost-center` selects the grant, a missing header falls back to the default cost center, and an unknown code or a key with another cost center's code is refused with 403; the backend never sees the header | 8 | ⬜ |
 | R11 | With ADR 0022, a cost center's pooled `llm-token-limit` is shared by its grants, reports `x-mosaic-cost-center-remaining-quota-tokens`, and returns 429 once spent, alongside each grant's own limits | 8 | ⬜ |
 | R12 | With ADR 0023, how long a changed `mosaic-blocked-cost-centers` named value takes to reach the gateway, blocking and unblocking | 8 | ⬜ |
 | R13 | With ADR 0023, Communication Services Email works in Azure Government with MOSAIC's managed identity, and a repeated `Operation-Id` sends one email | 8 | ⬜ |
 | R14 | With ADR 0023, a blocking budget's round trip: each email once, 403 with `r=budget` for that cost center only, the portal banner, and calls working again once the budget is raised | 8 | ⬜ |
+
+### MCP servers (Phase 11)
+
+| ID | Journey | Phase | Status |
+| --- | --- | --- | --- |
+| M1 | The admin registers each MCP server by its URL, and MOSAIC syncs its tools; an SSE-only server is refused | 11 | ⬜ |
+| M2 | Publishing a server through the gateway shows a reviewed plan, including the diagnostics warning and the environment verdict; every step succeeds; the server serves its protected resource metadata, and the portal's catalog lists it | 11 | ⬜ |
+| M3 | Governed access for an MCP server: a direct grant for the `user` persona and an application grant for the agent's identity are reviewed and applied | 11 | ⬜ |
+| M4 | In the portal, a person requests access to an MCP server, an admin approves it, and the person's connection details give the server URL, the metadata URL and the scope, but never a token | 11 | ⬜ |
+| M5 | A real MCP client, signed in with the `Mcp.Invoke` scope, lists and calls tools through the gateway; an anonymous call gets 401 with the metadata URL, and an ungranted person's token gets 403 | 11 | ⬜ |
+| M6 | An MCP grant's call limit, and a cost center's pooled call quota on the server, refuse calls once spent | 11 | ⬜ |
+| M7 | After an MCP grant is revoked and its plan applied, its calls are refused | 11 | ⬜ |
+| M8 | **Analytics** and **Usage & cost** count each person's calls to each MCP server under their grant and cost center; the gap: which tool was called | 11 | ⬜ |
+| M9 | A call to the agent server's tool leads to a governed model call, which usage attributes to the agent's grant and, by G19's design, to the person who called the tool | 11 | ⬜ |
+| M10 | Unpublishing an MCP server removes only what MOSAIC created | 11 | ⬜ |
 
 ## Findings
 
@@ -1010,7 +1156,13 @@ be confirmed, or fixed, once the journeys that exercise them have run.
 | O34 | After unpublishing, the publication shows **Draft** with its old **Last applied** time. Its entry under **Imported model APIs** stays discoverable, and the portal's catalog still lists the model with **Request access**, though the gateway no longer serves it. Seen in A15 | Fixed in [#65](https://github.com/microsoft/mosaic-apim/pull/65), and deployed with Batch 3f. While a model or MCP server MOSAIC publishes has no API in API Management, the portal leaves it out of the catalog, refuses a new request for it with a `409`, marks grants and requests for it as no longer available, and gives no connection details for it. The console shows the publication as **Unpublished**, with when. Model APIs imported from a gateway are unaffected. Seen live in A15's rerun: the catalog dropped the model, and a request from a page loaded earlier got the reason |
 | O35 | With directory lookup turned off, **Overlapping grants** warns that principal membership overlaps weren't checked, and the warning ends in two periods: the console adds one after the API's reason, which already ends with one. Seen after Batch 3e | Add the period only when the reason lacks one. Cosmetic |
 | O36 | A key-authenticated endpoint (G18) may name any secret in any Key Vault that MOSAIC's identity and the gateway's can read. Today both can read only the environment's vault, and it holds no other secrets. But once the gateway holds Key Vault Secrets User there, a key endpoint could point at a secret stored for another purpose, and the gateway would send it to that endpoint. From #69's review | Accept only the environment's vault, or only secrets marked for MOSAIC, for example by a name prefix or content type. A follow-up, not blocking |
-| O37 | **A grant's key gets HTTP 500 from a governed model.** Since [#71](https://github.com/microsoft/mosaic-apim/pull/71), the attribution trace in every governed policy also records the caller's client ID as trace metadata. A caller with a key has no client ID, so the value is empty, and API Management refuses a trace metadata element with no value: "Expression value is invalid. The value field is required." The call fails before it reaches the model. Seen live on Claude's grant key after its first governed apply on Batch 3h's build, and the gateway's resource log names the trace as the source. Tokens carry a client ID, so they're not affected. The seven governed models applied in Batch 3f record only the grant, so their keys still work until they're re-applied. [#62](https://github.com/microsoft/mosaic-apim/pull/62)'s member metadata, added when a publication has a group grant, is empty in the same way for every caller of a direct grant on that publication, for models and MCP servers | Fixed in [#81](https://github.com/microsoft/mosaic-apim/pull/81), merged: every trace property records `-` for a value the call doesn't have, the message the usage queries read is unchanged, and a test fails if code adds trace metadata any other way. Deploying it, re-applying Claude's publication and rerunning its key call wait for the owner's approval. Until then, re-applying any governed model breaks its keys, so the sitting's A14 toggles and R7, and Batch 3i, wait for it |
+| O37 | **A grant's key gets HTTP 500 from a governed model.** Since [#71](https://github.com/microsoft/mosaic-apim/pull/71), the attribution trace in every governed policy also records the caller's client ID as trace metadata. A caller with a key has no client ID, so the value is empty, and API Management refuses a trace metadata element with no value: "Expression value is invalid. The value field is required." The call fails before it reaches the model. Seen live on Claude's grant key after its first governed apply on Batch 3h's build, and the gateway's resource log names the trace as the source. Tokens carry a client ID, so they're not affected. The seven governed models applied in Batch 3f record only the grant, so their keys still work until they're re-applied. [#62](https://github.com/microsoft/mosaic-apim/pull/62)'s member metadata, added when a publication has a group grant, is empty in the same way for every caller of a direct grant on that publication, for models and MCP servers | Fixed in [#81](https://github.com/microsoft/mosaic-apim/pull/81): every trace property records `-` for a value the call doesn't have, the message the usage queries read is unchanged, and a test fails if code adds trace metadata any other way. Deployed in Batch 3i and verified live: after the re-applies, every governed model's grant key reaches its model, Claude's included, and a key call's trace records `-` as its client, both in the resource logs and in Application Insights. The case of a direct grant beside a group grant wasn't seen live, because no publication here has a group grant |
+| O38 | After `azd deploy api` finished, the old API container kept answering for about seven minutes, until the new one passed its warm-up probe, which took 204 seconds. The console, deployed meanwhile, already called the new API routes, so **Cost centers** said "Unable to load data: Not Found" until the new API took over. Nothing the API returns says which build it runs, so only the missing routes showed it hadn't switched. Seen in Batch 3i. In Batch 3j, the warm-up took 69 seconds and the new API took over about three and a half minutes after `azd deploy api` finished | Report the build, such as the commit or image tag, on `/healthz` or a version route, and have deployments wait for it before they deploy the console and the portal. Find out why the warm-up varies from about one minute to over three. A follow-up, not blocking |
+| O39 | MOSAIC's API sends the Azure SDK's log of every HTTP request it makes, and the Azure Monitor exporter's log of each of its own uploads, to Application Insights. A quiet dev deployment logged about 330,000 such entries in a day, against about 4,500 others. Each upload logs more entries to upload. No secret is in them: credential headers don't appear, and bodies are only noted as present. But they cost ingestion and bury MOSAIC's own logs. The cause is the root logger's INFO level, from which the exporter collects. Found while checking R8 after Batch 3i | Fixed in [#84](https://github.com/microsoft/mosaic-apim/pull/84), merged: it raises three loggers to at least `WARNING`, azure-core's HTTP logging policy, Cosmos DB's own HTTP logging policy and the exporter's. MOSAIC's logs, other libraries' records, and every warning and error still reach Application Insights. [#85](https://github.com/microsoft/mosaic-apim/pull/85), merged, adds a test that other Azure SDK loggers still export at INFO, so the fix can't widen unnoticed. Deployed in Batch 3j and verified live: from about 2,430 such records in ten minutes to none, while MOSAIC's own logs, other libraries' records and Cosmos DB dependencies still arrive |
+| O41 | MOSAIC's API has never recorded its incoming requests in Application Insights: there were none in 48 hours, while its traces and Cosmos DB dependencies arrive. Reproduced locally. The Azure Monitor distro instruments FastAPI by replacing `fastapi.FastAPI` with an instrumented subclass, but `main.py` imports the class before that, so the app it builds isn't instrumented. Operators can't see the API's request rates, failures or latency there. MOSAIC's outbound calls through httpx, to Azure Resource Manager, Log Analytics and API Management, aren't recorded as dependencies either, because nothing instruments httpx. Found while verifying Batch 3j | Fixed in [#86](https://github.com/microsoft/mosaic-apim/pull/86), merged: the API instruments its app explicitly once it's created, leaves out the health probes, and never records headers or bodies. Its review found that the recorded URL keeps query values, and the directory search's `q` holds names and email addresses, so a follow-up redacts them. Neither is deployed yet. Tracing httpx calls would add a dependency, so it's a separate decision |
+| O42 | MOSAIC's price list has no price for most models this environment runs, though the Azure Retail Prices API lists some of them. Its seed is a curated list of models, each mapped to its meters, which covers GPT-4o, GPT-4.1, GPT-5 and the o-series, Llama 3.3, DeepSeek-R1, Phi-4 and embeddings. In eastus2 the API has global prices for `Llama-4-Maverick-17B-128E-Instruct-FP8`, as "Llama 4 Maverick 17B" ($0.25 in, $1.00 out per million tokens), and for GPT-5.1 chat. The seed has neither. Azure reports the `gpt-5.1-chat` deployment's model by its alias, `gpt-chat-latest`, so no curated name would match it anyway. DeepSeek-V4-Pro has only Data Zone prices, under Fireworks, and Grok 4.3 has none yet, so those are correctly unpriced. Seen in R9 | Add the models with retail meters to the seed: Llama 4, GPT-5.1 and its chat model, GPT-5.4 and GPT-5.4-nano. Decide how an alias such as `gpt-chat-latest` maps to a price, for example by its version date. **Add price** covers the rest. A follow-up, not blocking |
+| O43 | Usage and cost count tokens for calls the gateway refused before they reached the model. When a grant's token limit refused two calls with 429 (`TokenLimitExceededAfterPrompt`), the gateway's LLM log still recorded its prompt estimate for them, 22 tokens with no model name. MOSAIC counted and priced those tokens, though Azure doesn't bill a call that never reached it. Because the rows have no model name, **Cost by model** left them out: its shares summed to 96.2%, and it gave the model 473 tokens where **Cost by API** gave its two APIs 495. Seen in R9 after the sitting's R6 run | Count and price tokens only for calls that reached the model, and attribute a counted row with no model name to its deployment's model, so every breakdown adds up to the total. A fix is in progress |
+| O40 | For `grok-4.3`, **Usage & cost** and **Analytics** show 196 tokens for one call, broken down as "Prompt 8 · Completion 2". The gateway's LLM log recorded a total of 196, but only 8 prompt and 2 completion tokens. The other 186 are probably the model's reasoning tokens, which the breakdown doesn't name. The grant's tokens-per-minute limit counts all 196, so a person whose calls are refused sees parts that don't add up to what was counted. Seen in R8 after Batch 3i. The sitting's token metrics confirm they're reasoning tokens: its two grok calls' metrics read 16 prompt, 4 completion and 456 reasoning tokens, 476 in all | Show reasoning tokens as their own part wherever a total is broken down, as the gateway's metrics already do, and check whether the LLM log names them. A follow-up, not blocking |
 The Phase 3 check on whether the gateway role recommendation narrows once the account kind is
 known led to G8: it does narrow, and the check then rejects the broader role it recommended
 before.
@@ -1020,8 +1172,10 @@ before.
 - **Anthropic token limits on classic APIM.** A Developer-tier gateway can't run `llm-token-limit`
   or `llm-emit-token-metric` for Anthropic. G5 decided: on classic tiers, a Claude publication
   applies no token limits, and its grants use call limits instead. So R6 (the tokens-per-minute
-  429) can't cover Claude here, and analytics show no token metrics for it. A v2-tier gateway would
-  lift this, at extra cost.
+  429) can't cover Claude here, and Application Insights gets no token metric for it. MOSAIC's
+  analytics still count its tokens. They read the gateway's LLM log, which recorded Claude's 14
+  input and 4 output tokens on this tier after Batch 3i. A v2-tier gateway would lift the limits'
+  restriction, at extra cost.
 - **Model availability and terms.** Claude needs an eligible subscription and region, available
   quota and accepted marketplace terms. Accepting terms may need someone in the Azure portal.
 - **Network reach.** A Developer-tier gateway without a virtual network can't reach private
@@ -1043,5 +1197,6 @@ before.
 
 ## Out of scope
 
-MCP servers, group-based grants, analytics beyond R8's check, chargeback, production hardening,
-and running the live suite in CI (it needs interactive sign-in).
+Group-based grants, analytics beyond R8's check, chargeback, production hardening, and running
+the live suite in CI (it needs interactive sign-in). MCP servers were out of scope until the
+environment owner asked for them on 2 October 2026; Phase 11 covers them.

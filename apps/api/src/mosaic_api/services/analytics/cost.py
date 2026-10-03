@@ -75,6 +75,39 @@ def add_cost(current: float | None, value: float | None) -> float | None:
     return value if current is None else current + value
 
 
+def _has_tokens(metrics: UsageMetrics) -> bool:
+    return bool(metrics.total_tokens or metrics.prompt_tokens or metrics.completion_tokens)
+
+
+def part_of(api: RolledUpApi | None, key: str | None, metrics: UsageMetrics) -> UsageMetrics:
+    """The calls in ``metrics`` that make the part ``key`` of :meth:`CostBook.priced_parts`.
+
+    A model API's calls make one part. A pool's are its member ``key``'s calls, or with ``key``
+    None the calls MOSAIC couldn't place on any member.
+    """
+
+    if api is None or api.kind != "pool":
+        return metrics
+    members = metrics.members or {}
+    if key is not None:
+        served = members.get(key) or MemberUsage()
+        return UsageMetrics(
+            requests=served.requests,
+            prompt_tokens=served.prompt_tokens,
+            completion_tokens=served.completion_tokens,
+            total_tokens=served.total_tokens,
+        )
+    placed = MemberUsage()
+    for served in members.values():
+        placed = placed.plus(served)
+    return UsageMetrics(
+        requests=max(metrics.requests - placed.requests, 0),
+        prompt_tokens=max(metrics.prompt_tokens - placed.prompt_tokens, 0),
+        completion_tokens=max(metrics.completion_tokens - placed.completion_tokens, 0),
+        total_tokens=max(metrics.total_tokens - placed.total_tokens, 0),
+    )
+
+
 @dataclass
 class Priced:
     amount: float | None
@@ -351,27 +384,29 @@ class CostBook:
             key = api.deployment_key if api else None
             return [(key, metrics, self.price(key, period, start, metrics))]
         parts: list[tuple[str | None, UsageMetrics, Priced]] = []
-        placed = MemberUsage()
-        for key, usage in sorted((metrics.members or {}).items()):
-            part = UsageMetrics(
-                requests=usage.requests,
-                prompt_tokens=usage.prompt_tokens,
-                completion_tokens=usage.completion_tokens,
-                total_tokens=usage.total_tokens,
-            )
-            parts.append((key, part, self.price(key, period, start, part)))
-            placed = placed.plus(usage)
-        rest = UsageMetrics(
-            requests=max(metrics.requests - placed.requests, 0),
-            prompt_tokens=max(metrics.prompt_tokens - placed.prompt_tokens, 0),
-            completion_tokens=max(metrics.completion_tokens - placed.completion_tokens, 0),
-            total_tokens=max(metrics.total_tokens - placed.total_tokens, 0),
-        )
-        if rest.total_tokens or rest.prompt_tokens or rest.completion_tokens:
-            parts.append((None, rest, Priced(None, unpriced=POOL_UNPLACED, unpriced_share=1.0)))
-        elif not parts:
-            parts.append((None, rest, Priced(0.0)))
+        for key in sorted(metrics.members or {}):
+            part = part_of(api, key, metrics)
+            parts.append((key, part, self.price_part(api, key, period, start, part)))
+        rest = part_of(api, None, metrics)
+        if _has_tokens(rest) or not parts:
+            parts.append((None, rest, self.price_part(api, None, period, start, rest)))
         return parts
+
+    def price_part(
+        self,
+        api: RolledUpApi | None,
+        key: str | None,
+        period: SummaryPeriod,
+        start: date,
+        metrics: UsageMetrics,
+    ) -> Priced:
+        """What calls in the part ``key`` of :meth:`priced_parts` cost, priced as the part is."""
+
+        if api is not None and api.kind == "pool" and key is None:
+            if _has_tokens(metrics):
+                return Priced(None, unpriced=POOL_UNPLACED, unpriced_share=1.0)
+            return Priced(0.0)
+        return self.price(key, period, start, metrics)
 
     def api_cost(
         self,

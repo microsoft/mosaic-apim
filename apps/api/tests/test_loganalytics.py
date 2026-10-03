@@ -9,6 +9,7 @@ import pytest
 from apim_double import RESOURCE_ID
 from azure.core.credentials import AccessToken
 from azure.core.exceptions import ClientAuthenticationError
+from loganalytics_double import served_gate_span, served_only, token_gate_span
 from mosaic_api.errors import UpstreamNotFoundError, ValidationError
 from mosaic_api.integrations.loganalytics import (
     LogAnalyticsClient,
@@ -139,6 +140,40 @@ def test_calls_query_contains_gateway_filters_trace_extraction_and_summaries() -
     assert "by hour = hourofday(TimeGenerated), v, g, m, a, api, subscription" in query
 
 
+def test_calls_query_finds_the_mcp_call_a_model_call_names() -> None:
+    query = calls_query(WINDOW, ["chat-api", "mcp-search"])
+
+    # MCP calls are read either side of the window, among MOSAIC's APIs only, and only those whose
+    # trace names both their own reference and the application their server calls models as.
+    leg = query[query.index("let mcpCalls") : query.index("gatewayRows\n| where isempty(reason)")]
+    assert "where TimeGenerated >= datetime(2026-09-29T09:00:00Z)" in leg
+    assert "TimeGenerated < datetime(2026-09-29T13:00:00Z)" in leg
+    assert "| where mcpApi in (mosaicApis)" in leg
+    assert 'mcpRef = tolower(extract(@"(?:^| )r=([^ ]*)", 1, mcpAttribution))' in leg
+    assert 'oi = tolower(extract(@"(?:^| )i=([^ ]*)", 1, mcpAttribution))' in leg
+    assert "| where isnotempty(mcpRef) and isnotempty(oi)" in leg
+    assert "| summarize arg_min(mcpTime, mcpTotalTime, mcpApi, og, om, oi) by mcpRef;" in leg
+    # A call's own reference names another call only when its trace names no model caller.
+    assert 'r = tolower(extract(@"(?:^| )r=([^ ]*)", 1, attribution))' in query
+    assert 'i = tolower(extract(@"(?:^| )i=([^ ]*)", 1, attribution))' in query
+    assert '| extend mcpCall = iff(isempty(i), r, "")' in query
+    assert "| join kind=leftouter mcpCalls on $left.mcpCall == $right.mcpRef" in query
+    assert (
+        "abs(datetime_diff('millisecond', TimeGenerated, mcpTime)) <= mcpTotalTime + 300000"
+        in query
+    )
+    states = query[query.index("| extend onBehalf = case(") :]
+    assert states.index('isempty(mcpCall), ""') < states.index('mcpCall == "!", "malformed"')
+    assert states.index('"malformed"') < states.index('isempty(mcpRef), "missing"')
+    assert states.index('"missing"') < states.index('during, "found"') < states.index('"late")')
+    for column in ("og", "om", "oi"):
+        assert f'{column} = iff(onBehalf == "found", {column}, "")' in query
+    assert 'oapi = iff(onBehalf == "found", mcpApi, "")' in query
+    assert (
+        "deployment = llmDeployment, model = llmModel, onBehalf, og, om, oi, oapi" in query
+    )
+
+
 def test_calls_query_orders_and_deduplicates_api_names_deterministically() -> None:
     first = calls_query(WINDOW, ["Orders", "chat-api", "orders"])
     second = calls_query(WINDOW, ["orders", "Orders", "chat-api"])
@@ -194,6 +229,115 @@ def test_deployment_peaks_query_sorts_mapping_and_keeps_keys_in_dynamic_literal(
     assert query == deployment_peaks_query(
         WINDOW, {"chat-api": "west", "Orders": "aoai:/east/gpt-4o"}
     )
+
+
+# What every query that sums tokens has to do with a call's LLM log row before it sums anything.
+GATED = ("promptTokens", "completionTokens", "totalTokens")
+TOKEN_QUERIES = {
+    "calls": (calls_query(WINDOW, ["chat-api"]), "| summarize requests = count()"),
+    "peaks": (peaks_query(WINDOW, ["chat-api"]), "| summarize tokens = sum(totalTokens)"),
+    "deploymentPeaks": (
+        deployment_peaks_query(WINDOW, {"chat-api": "west"}),
+        "| summarize tokens = sum(totalTokens)",
+    ),
+}
+
+
+@pytest.mark.parametrize("kind", sorted(TOKEN_QUERIES))
+def test_queries_read_tokens_only_for_calls_the_model_deployment_served(kind: str) -> None:
+    query, summary = TOKEN_QUERIES[kind]
+
+    joined = query.index("| join kind=leftouter llmRows on CorrelationId\n")
+    served = served_gate_span(query)
+    assert served is not None
+    summary_start = query.index(summary)
+    assert joined < served[0] < served[1] < summary_start
+    for column in GATED:
+        gated = token_gate_span(query, column)
+        assert gated is not None
+        assert served[0] < gated[0] < gated[1] < summary_start
+    # The double that answers these queries in tests reads the same rule from them.
+    assert served_only(query) == {"promptTokens", "completionTokens", "totalTokens"}
+
+
+def test_served_only_is_tolerant_of_equivalent_whitespace() -> None:
+    query = """
+ApiManagementGatewayLogs
+| join kind=leftouter llmRows on CorrelationId
+| extend served  =  isnotnull( BackendResponseCode )
+    and   BackendResponseCode   between ( 200..299 )
+| extend promptTokens=iff( served,promptTokens,long( null ) ),
+    completionTokens = iff(
+        served,
+        completionTokens,
+        long(null)
+    ),
+    totalTokens = iff(served, totalTokens, long(null))
+| summarize tokens = sum(totalTokens)
+"""
+
+    assert served_only(query) == {"promptTokens", "completionTokens", "totalTokens"}
+
+
+@pytest.mark.parametrize(
+    ("query", "gated"),
+    [
+        (
+            """
+| extend promptTokens = iff(served, promptTokens, long(null)),
+    completionTokens = iff(served, completionTokens, long(null)),
+    totalTokens = iff(served, totalTokens, long(null))
+""",
+            frozenset(),
+        ),
+        (
+            """
+| extend served = isnotnull(BackendResponseCode)
+    and BackendResponseCode between (200 .. 499)
+| extend promptTokens = iff(served, promptTokens, long(null)),
+    completionTokens = iff(served, completionTokens, long(null)),
+    totalTokens = iff(served, totalTokens, long(null))
+""",
+            frozenset(),
+        ),
+        (
+            """
+| extend served = isnotnull(BackendResponseCode)
+    and BackendResponseCode between (200 .. 299)
+| extend promptTokens = iff(served, promptTokens, long(null)),
+    completionTokens = completionTokens,
+    totalTokens = iff(served, totalTokens, long(null))
+""",
+            frozenset({"promptTokens", "totalTokens"}),
+        ),
+    ],
+)
+def test_served_only_rejects_missing_or_changed_token_gates(
+    query: str, gated: frozenset[str]
+) -> None:
+    assert served_only(query) == gated
+
+
+def test_calls_query_still_counts_every_admitted_call_and_its_status() -> None:
+    query = calls_query(WINDOW, ["chat-api"])
+    summary = query[query.index("| summarize requests = count()") :]
+
+    # Requests and statuses come from the gateway log alone, whatever the model did.
+    for count in (
+        'throttled = countif(status == "throttled")',
+        'quota = countif(status == "quota")',
+        "backendThrottled = countif(BackendResponseCode == 429)",
+        # A call counts as metered only when its tokens are read, so only when it was served.
+        "metered = countif(isnotnull(totalTokens))",
+    ):
+        assert count in summary
+    assert "served" not in summary
+
+
+def test_queries_that_sum_no_tokens_read_no_llm_log() -> None:
+    for query in (denials_query(WINDOW, ["chat-api"]), probe_query()):
+        assert served_only(query) == frozenset()
+        assert "llmRows" not in query
 
 
 @pytest.mark.parametrize(
@@ -307,7 +451,7 @@ def test_calls_query_groups_pool_calls_by_the_backend_that_served_them() -> None
     # Other APIs answer "" for every backend column, so their rows don't split.
     assert 'backendId = iff(pooled, tolower(BackendId), "")' in query
     assert 'backendUrl = iff(pooled, tolower(BackendUrl), "")' in query
-    assert "model = llmModel,\n        backendId, backendHost, backendDeployment\n" in query
+    assert "oi, oapi,\n        backendId, backendHost, backendDeployment\n" in query
 
 
 def test_calls_query_reads_no_backend_without_pools() -> None:
@@ -315,7 +459,7 @@ def test_calls_query_reads_no_backend_without_pools() -> None:
 
     assert "poolApis" not in query
     assert "backendId" not in query
-    assert query.endswith("deployment = llmDeployment, model = llmModel\n")
+    assert query.endswith("model = llmModel, onBehalf, og, om, oi, oapi\n")
 
 
 @pytest.mark.parametrize("name", ["", "bad name", 'bad"name', "bad|where true"])

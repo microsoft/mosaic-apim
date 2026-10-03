@@ -62,14 +62,18 @@ def claims_of(token: str) -> dict[str, Any] | None:
     return decoded
 
 
-def gateway_429(limit: str, seconds: int, *, retry_after: bool = True) -> httpx.Response:
-    """The 429 that the gateway's own call ("Rate") or token ("Token") limit returns."""
+def gateway_429(
+    limit: str, seconds: int, *, retry_after: bool = True, after_prompt: bool = False
+) -> httpx.Response:
+    """The 429 that the gateway's own call ("Rate") or token ("Token") limit returns. A token limit
+    that refuses a prompt because it would spend more than is left says "will exceed" instead."""
+    verb = "will exceed" if after_prompt else "is exceeded"
     return httpx.Response(
         429,
         headers={"Retry-After": str(seconds)} if retry_after else {},
         json={
             "statusCode": 429,
-            "message": f"{limit} limit is exceeded. Try again in {seconds} seconds.",
+            "message": f"{limit} limit {verb}. Try again in {seconds} seconds.",
         },
     )
 
@@ -203,6 +207,9 @@ class FakeWorld:
         }
         # Model calls the deployments serve before they throttle with their own 429s.
         self.backend_capacity: int | None = None
+        # The tokens the gateway estimates a prompt will spend. When set, a token limit refuses a
+        # prompt that would spend more than the grant has left, before the window is spent.
+        self.prompt_estimate: int | None = None
         # A revocation's timeline: MOSAIC shows it pending, then applies the model's plan. While
         # the plan applies, the gateway refuses every call to the model.
         self.apply_delay = 20.0
@@ -520,8 +527,11 @@ class FakeWorld:
                 return gateway_429("Rate", 300)
             grant.calls[counter] = [*window, self.clock.now]
         if tokens := limits.get("tokens"):
-            if grant.tokens_used >= tokens["tokensPerMinute"]:
+            remaining = tokens["tokensPerMinute"] - grant.tokens_used
+            if remaining <= 0:
                 return gateway_429("Token", 60, retry_after=self.retry_after)
+            if self.prompt_estimate is not None and self.prompt_estimate > remaining:
+                return gateway_429("Token", 60, retry_after=self.retry_after, after_prompt=True)
         if self.backend_capacity is not None:
             if self.backend_capacity <= 0:
                 # The deployment's own 429 passes through the gateway unchanged.
@@ -1288,6 +1298,20 @@ class ModelAccessVerifierTests(unittest.TestCase):
         )
         self.assertEqual(code, 1)
         self.assertIn("had no Retry-After in seconds", err)
+
+        # The gateway refused a prompt that would spend more than the grant had left. That is the
+        # grant's token limit too, though its 429 says "will exceed".
+        world = FakeWorld(FakeGrant("user-aoai", "user", "aoai", USER_OID, limits=limits))
+        world.prompt_estimate = 25
+        code, out, err = self.verify(
+            world, ["--user-entitlement", "user-aoai", "--prove-token-limit"]
+        )
+        self.assertEqual(code, 0, err)
+        self.assertIn(
+            "PASS: User grant 1 (gpt-4o-mini) returned 429 with Retry-After after 3 more call(s) "
+            "spent its 100 tokens per minute",
+            out,
+        )
 
         # The deployment's own 429 says nothing about the grant's limit.
         world = FakeWorld(FakeGrant("user-aoai", "user", "aoai", USER_OID, limits=limits))

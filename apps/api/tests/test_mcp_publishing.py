@@ -29,12 +29,16 @@ from mosaic_api.domain import (
     McpEndpoint,
     McpEndpointStatus,
     McpInventorySummary,
+    McpModelCaller,
+    McpModelCallerUpdate,
     McpPublicationCreate,
     McpPublicationUpdate,
     McpServer,
+    ModelApi,
     ModelProvider,
     Principal,
     PrincipalKind,
+    PrincipalUpdate,
     Publication,
     PublicationStatus,
     PublishAction,
@@ -58,7 +62,7 @@ from mosaic_api.repositories import (
     InMemoryModelEndpointRepository,
 )
 from mosaic_api.services import McpEndpointService
-from mosaic_api.services.directory import Actor
+from mosaic_api.services.directory import Actor, DirectoryService
 from mosaic_api.services.model_access import cost_center_intent, entitlement_intent_digest
 from mosaic_api.services.publishing import DENY_ALL_FRAGMENT, DENY_ALL_POLICY
 
@@ -1295,3 +1299,293 @@ async def test_an_mcp_apply_that_cant_create_the_list_writes_no_policy_that_read
     assert completed.status == PublishRunStatus.FAILED
     assert not any(path.startswith("policyFragments/") for path in harness.apim.write_paths("PUT"))
     assert harness.apim.dangling_references == []
+
+
+# -- the application an MCP server calls models as (ADR 0025) -----------------------------------
+
+SEARCH_APP_OID = "AAAABBBB-CCCC-DDDD-EEEE-FFFF00001111"
+FRAGMENT = "policyFragments/mosaic-mcp-orders-mcp"
+
+
+def _caller_changes(harness: Harness) -> list[AuditEvent]:
+    return [
+        event
+        for event in harness.gateway_repository.audit_events.values()
+        if event.action == "mcpPublication.modelCallerChanged"
+    ]
+
+
+async def _search_app(
+    harness: Harness, kind: PrincipalKind = PrincipalKind.SERVICE_PRINCIPAL
+) -> Principal:
+    return await harness.principal(
+        "principal-search-app", SEARCH_APP_OID, kind=kind, label="Contoso Search App"
+    )
+
+
+async def _model_grant(
+    harness: Harness, principal: Principal, gateway_id: str, *, enabled: bool = True
+) -> None:
+    model = ModelApi(
+        id=f"model-api-{gateway_id}",
+        tenant_id=TENANT_ID,
+        gateway_id=gateway_id,
+        api_name="mosaic-gpt-4o",
+        display_name="GPT-4o",
+        path="mosaic/gpt-4o",
+        imported_from_snapshot_id="snapshot",
+    )
+    await harness.gateway_repository.save_model_api(
+        model,
+        AuditEvent(
+            id=new_id("audit"),
+            tenant_id=TENANT_ID,
+            action="modelApi.saved",
+            resource_type="modelApi",
+            resource_id=model.id,
+            actor_object_id=ACTOR.object_id,
+        ),
+    )
+    entitlement = Entitlement(
+        id=f"entitlement-model-{gateway_id}",
+        tenant_id=TENANT_ID,
+        subject=EntitlementSubject(kind=EntitlementSubjectKind.APPLICATION, id=principal.id),
+        resource=EntitlementResource(kind=EntitlementResourceKind.MODEL_API, id=model.id),
+        enabled=enabled,
+    )
+    await harness.entitlement_repository.save_entitlement(
+        entitlement,
+        AuditEvent(
+            id=new_id("audit"),
+            tenant_id=TENANT_ID,
+            action="entitlement.saved",
+            resource_type="entitlement",
+            resource_id=entitlement.id,
+            actor_object_id=ACTOR.object_id,
+        ),
+    )
+
+
+async def test_a_model_caller_is_recorded_audited_and_applied_with_the_next_plan(
+    harness: Harness,
+) -> None:
+    publication_id = await harness.create()
+    app = await _search_app(harness)
+    await _model_grant(harness, app, harness.gateway_id)
+    unlinked = await harness.service.plan(ACTOR, publication_id)
+
+    updated = await harness.service.set_model_caller(
+        ACTOR, publication_id, McpModelCallerUpdate(principal_id=app.id)
+    )
+
+    assert updated.model_caller_id == app.id
+    # The saved plan no longer describes the publication, so it can't be applied.
+    assert updated.last_plan_id is None and updated.last_plan_digest is None
+    assert updated.status == PublicationStatus.DRAFT
+    [event] = _caller_changes(harness)
+    assert event.resource_id == publication_id
+    assert event.actor_object_id == ACTOR.object_id
+    assert event.details == {"previous": None, "modelCaller": app.id}
+    with pytest.raises(ConflictError):
+        await harness.service.apply(ACTOR, publication_id, unlinked.id)
+
+    plan = await harness.service.plan(ACTOR, publication_id)
+    assert plan.mcp_access_snapshot is not None
+    assert plan.mcp_access_snapshot.model_caller == McpModelCaller(
+        principal_id=app.id, object_id=SEARCH_APP_OID.lower(), display_name="Contoso Search App"
+    )
+    assert plan.digest != unlinked.digest
+    assert not any("no enabled direct grant" in warning for warning in plan.warnings)
+    assert any(
+        facet.summary.startswith("Passes this call's reference") for facet in plan.facets
+    )
+    run = await harness.service.apply(ACTOR, publication_id, plan.id)
+    await harness.service.wait_for_idle()
+
+    assert (await harness.service.get_run(ACTOR, publication_id, run.id)).status == (
+        PublishRunStatus.SUCCEEDED
+    )
+    applied = await harness.service.get_publication(ACTOR, publication_id)
+    assert applied.applied_access is not None
+    assert applied.applied_access.model_caller == plan.mcp_access_snapshot.model_caller
+    fragment = harness.apim.written[FRAGMENT]["properties"]["value"]
+    assert 'name="x-mosaic-on-behalf-of" exists-action="override"' in fragment
+    assert f'" i=" + "{SEARCH_APP_OID.lower()}"' in fragment
+    assert harness.apim.dangling_references == []
+
+    # Naming the same application again changes nothing, and records nothing.
+    again = await harness.service.set_model_caller(
+        ACTOR, publication_id, McpModelCallerUpdate(principal_id=app.id)
+    )
+    assert again.last_plan_id == applied.last_plan_id
+    assert len(_caller_changes(harness)) == 1
+
+    cleared = await harness.service.clear_model_caller(ACTOR, publication_id)
+    assert cleared.model_caller_id is None
+    assert cleared.status == PublicationStatus.PUBLISHED
+    assert _caller_changes(harness)[-1].details == {"previous": app.id, "modelCaller": None}
+    replanned = await harness.service.plan(ACTOR, publication_id)
+    assert replanned.mcp_access_snapshot is not None
+    assert replanned.mcp_access_snapshot.model_caller is None
+    run = await harness.service.apply(ACTOR, publication_id, replanned.id)
+    await harness.service.wait_for_idle()
+    fragment = harness.apim.written[FRAGMENT]["properties"]["value"]
+    assert 'name="x-mosaic-on-behalf-of" exists-action="override"' not in fragment
+    assert 'name="x-mosaic-on-behalf-of" exists-action="delete"' in fragment
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [PrincipalKind.SERVICE_PRINCIPAL, PrincipalKind.MANAGED_IDENTITY, PrincipalKind.AGENT_IDENTITY],
+)
+async def test_an_mcp_server_calls_models_as_an_application(
+    harness: Harness, kind: PrincipalKind
+) -> None:
+    publication_id = await harness.create()
+    app = await _search_app(harness, kind)
+
+    updated = await harness.service.set_model_caller(
+        ACTOR, publication_id, McpModelCallerUpdate(principal_id=app.id)
+    )
+
+    assert updated.model_caller_id == app.id
+
+
+@pytest.mark.parametrize(
+    ("kind", "object_id"),
+    [
+        (PrincipalKind.USER, SEARCH_APP_OID),
+        (PrincipalKind.AGENT_USER, SEARCH_APP_OID),
+        (PrincipalKind.SECURITY_GROUP, SEARCH_APP_OID),
+        (PrincipalKind.SERVICE_PRINCIPAL, "search-app"),
+    ],
+)
+async def test_a_model_caller_that_isnt_an_application_by_object_id_is_refused(
+    harness: Harness, kind: PrincipalKind, object_id: str
+) -> None:
+    publication_id = await harness.create()
+    principal = await harness.principal(
+        "principal-not-an-app", object_id, kind=kind, label="Not an application"
+    )
+
+    with pytest.raises(ValidationError, match="calls models as an application"):
+        await harness.service.set_model_caller(
+            ACTOR, publication_id, McpModelCallerUpdate(principal_id=principal.id)
+        )
+    with pytest.raises(NotFoundError):
+        await harness.service.set_model_caller(
+            ACTOR, publication_id, McpModelCallerUpdate(principal_id="principal-missing")
+        )
+
+    publication = await harness.service.get_publication(ACTOR, publication_id)
+    assert publication.model_caller_id is None
+    assert _caller_changes(harness) == []
+
+
+@pytest.mark.parametrize("grant", ["elsewhere", "disabled here", "none"])
+async def test_the_plan_warns_when_the_model_caller_has_no_grant_through_this_gateway(
+    harness: Harness, grant: str
+) -> None:
+    publication_id = await harness.create()
+    app = await _search_app(harness)
+    if grant == "elsewhere":
+        await _model_grant(harness, app, "gateway-elsewhere")
+    elif grant == "disabled here":
+        await _model_grant(harness, app, harness.gateway_id, enabled=False)
+    await harness.service.set_model_caller(
+        ACTOR, publication_id, McpModelCallerUpdate(principal_id=app.id)
+    )
+
+    plan = await harness.service.plan(ACTOR, publication_id)
+
+    assert plan.mcp_access_snapshot is not None
+    assert plan.mcp_access_snapshot.model_caller is not None
+    assert any(
+        warning.startswith(
+            "Contoso Search App has no enabled direct grant on a model this gateway publishes"
+        )
+        for warning in plan.warnings
+    )
+
+
+@pytest.mark.parametrize("change", ["deleted", "now a person"])
+async def test_a_model_caller_mosaic_can_no_longer_name_compiles_to_nothing(
+    harness: Harness, change: str
+) -> None:
+    publication_id = await harness.create()
+    app = await _search_app(harness)
+    await harness.service.set_model_caller(
+        ACTOR, publication_id, McpModelCallerUpdate(principal_id=app.id)
+    )
+    audit = AuditEvent(
+        id=new_id("audit"),
+        tenant_id=TENANT_ID,
+        action="principal.changed",
+        resource_type="principal",
+        resource_id=app.id,
+        actor_object_id=ACTOR.object_id,
+    )
+    if change == "deleted":
+        await harness.directory_repository.delete_principal(app, audit)
+    else:
+        await harness.directory_repository.save_principal(
+            app.model_copy(update={"kind": PrincipalKind.USER}), audit
+        )
+
+    plan = await harness.service.plan(ACTOR, publication_id)
+
+    # Attribution is never a reason to hold back the server's own access.
+    assert plan.mcp_access_snapshot is not None
+    assert plan.mcp_access_snapshot.model_caller is None
+    assert any("no longer one MOSAIC can name" in warning for warning in plan.warnings)
+
+
+async def test_the_model_caller_waits_for_an_interrupted_apply_to_be_recovered(
+    harness: Harness,
+) -> None:
+    publication_id = await harness.create()
+    app = await _search_app(harness)
+    publication = await harness.service.get_publication(ACTOR, publication_id)
+    await harness.gateway_repository.record_mcp_publication_state(
+        publication.model_copy(update={"access_state": "unknown"})
+    )
+
+    with pytest.raises(ConflictError, match="Recover"):
+        await harness.service.set_model_caller(
+            ACTOR, publication_id, McpModelCallerUpdate(principal_id=app.id)
+        )
+    with pytest.raises(ConflictError, match="Recover"):
+        await harness.service.clear_model_caller(ACTOR, publication_id)
+
+
+async def test_a_model_caller_cant_be_deleted_or_stop_being_an_application(
+    harness: Harness,
+) -> None:
+    publication_id = await harness.create()
+    app = await _search_app(harness)
+    await harness.service.set_model_caller(
+        ACTOR, publication_id, McpModelCallerUpdate(principal_id=app.id)
+    )
+    directory = DirectoryService(
+        harness.directory_repository,
+        gateway_repository=harness.gateway_repository,
+        entitlement_repository=harness.entitlement_repository,
+    )
+
+    with pytest.raises(ConflictError, match="Calls models as") as deleting:
+        await directory.delete_principal(ACTOR, app.id)
+    assert deleting.value.details == {
+        "reason": "mcpModelCaller",
+        "mcpPublicationIds": [publication_id],
+    }
+    with pytest.raises(ConflictError, match="Calls models as"):
+        await directory.update_principal(ACTOR, app.id, PrincipalUpdate(kind=PrincipalKind.USER))
+    # Another application kind still calls models as an application.
+    moved = await directory.update_principal(
+        ACTOR, app.id, PrincipalUpdate(kind=PrincipalKind.MANAGED_IDENTITY)
+    )
+    assert moved.kind == PrincipalKind.MANAGED_IDENTITY
+
+    await harness.service.clear_model_caller(ACTOR, publication_id)
+    await directory.delete_principal(ACTOR, app.id)
+    assert await harness.directory_repository.get_principal(TENANT_ID, app.id) is None

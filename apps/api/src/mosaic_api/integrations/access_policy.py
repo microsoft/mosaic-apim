@@ -17,12 +17,13 @@ import re
 import xml.etree.ElementTree as ET
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
-from typing import Protocol
+from typing import Literal, Protocol
 
 from mosaic_api.budgets import BLOCKED_COST_CENTERS_NAMED_VALUE, BLOCKED_LIST_PATTERN, budget_key
 from mosaic_api.domain import (
     COST_CENTER_CODE_PATTERN,
     COST_CENTER_HEADER,
+    ON_BEHALF_HEADER,
     ApiShape,
     AppliedCostCenterPool,
     EntitlementEnforcement,
@@ -95,6 +96,15 @@ _KEYS_OFF = "-"
 # validates, so nothing unvalidated is ever recorded.
 _CALLER = '(string)context.Variables["mosaic-caller"]'
 _CLIENT = '(string)context.Variables["mosaic-client"]'
+# The MCP call a call belongs to: on an MCP server MOSAIC publishes with a model caller, its own
+# request ID; on a governed model, the reference an application's token brought. See ADR 0025.
+MCP_CALL = '(string)context.Variables["mosaic-mcp-call"]'
+# What a governed model records for a reference an application sent that isn't one GUID, so the
+# server's builder can see it's wrong. Nothing else about the call changes.
+MCP_CALL_MALFORMED = "!"
+_MCP_CALL_PATTERN = (
+    "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
 # Readers split the message on spaces into key=value pairs and ignore keys they don't know.
 # Only a change that breaks those readers bumps the version.
 GRANT_ATTRIBUTION_TRACE_PREFIX = "mosaic-attribution v=1"
@@ -458,23 +468,39 @@ def governed_counter_key_expression(
 
 
 def append_grant_attribution_trace(
-    fragment: ET.Element, grants: Sequence[AccessPolicyGrant]
+    fragment: ET.Element,
+    grants: Sequence[AccessPolicyGrant],
+    *,
+    keys: Sequence[tuple[str, str, str]] = (),
 ) -> None:
+    """Tag an authorized call with its grant, member and client, and any further ``keys``.
+
+    Each of ``keys`` is a message key, the C# expression for its value, and the name of the
+    Application Insights property that repeats it.
+    """
+
     # Resource logs keep the message. APIM documents metadata only as Application Insights
     # properties, so the message carries every value and the metadata repeats them there. The
     # message keeps an empty m= or a= for a value the call doesn't have; the metadata can't.
     trace = ET.SubElement(fragment, "trace", {"source": "mosaic", "severity": "information"})
-    ET.SubElement(trace, "message").text = (
-        f'@("{GRANT_ATTRIBUTION_TRACE_PREFIX} g=" + {_GRANT} + " m=" + {_MEMBER}'
-        f' + " a=" + {_CLIENT})'
-    )
+    parts = [
+        f'"{GRANT_ATTRIBUTION_TRACE_PREFIX} g=" + {_GRANT}',
+        f'" m=" + {_MEMBER}',
+        f'" a=" + {_CLIENT}',
+        *(f'" {key}=" + {expression}' for key, expression, _ in keys),
+    ]
+    ET.SubElement(trace, "message").text = "@(" + " + ".join(parts) + ")"
     append_trace_metadata(trace, "mosaic-grant", _GRANT)
     if any(grant.enabled and grant.is_group_grant for grant in grants):
         append_trace_metadata(trace, "mosaic-member", _MEMBER)
     append_trace_metadata(trace, "mosaic-client", _CLIENT)
+    for _, expression, metadata in keys:
+        append_trace_metadata(trace, metadata, expression)
 
 
-def describe_grant_attribution_trace(facet: PolicyFacet, *, has_group_grants: bool) -> None:
+def describe_grant_attribution_trace(
+    facet: PolicyFacet, *, has_group_grants: bool, message: str = ""
+) -> None:
     facet.summary = "Tags each authorized call with its MOSAIC grant so usage can be attributed."
     facet.details = [
         "The message records the grant as versioned key=value text. Resource logs keep it in "
@@ -486,10 +512,39 @@ def describe_grant_attribution_trace(facet: PolicyFacet, *, has_group_grants: bo
     ]
     if has_group_grants:
         facet.details.append("Security-group grants also record the caller's validated object ID.")
+    if '" i=" + ' in message:
+        facet.details.append(
+            "Records this call's request ID, which the server receives as its reference, and the "
+            "application the server calls models as. MOSAIC attributes a model call that brings "
+            "the reference to this call's caller only when that application made it."
+        )
+    elif '" r=" + ' in message:
+        facet.details.append(
+            f"Records the MCP call an application's model call names in {ON_BEHALF_HEADER}. "
+            "MOSAIC attributes the call to that MCP call's caller only when the MCP server "
+            "names this application as its model caller. It never decides access."
+        )
     facet.details.append(
         "The trace's Application Insights properties repeat these values, with "
         f"{TRACE_METADATA_ABSENT} for any value the call doesn't have."
     )
+
+
+def describe_on_behalf_removal(facet: PolicyFacet, backend: Literal["model", "MCP"]) -> None:
+    """Word the on-behalf header's removal. See ADR 0025."""
+
+    if backend == "model":
+        facet.summary = f"Removes {ON_BEHALF_HEADER} before the call reaches the model."
+        facet.details = [
+            "An MCP server's application sends it to name the MCP call it's serving. The trace "
+            "records it first, and it grants nothing.",
+        ]
+    else:
+        facet.summary = f"Removes any {ON_BEHALF_HEADER} the caller sent."
+        facet.details = [
+            "The MCP server receives only a reference the gateway set, and only when the server "
+            "has a model caller.",
+        ]
 
 
 def describe_denial_trace(facet: PolicyFacet) -> None:
@@ -528,7 +583,9 @@ def classify_traces(
             denial_described = True
             describe_denial_trace(facet)
         else:
-            describe_grant_attribution_trace(facet, has_group_grants=has_group_grants)
+            describe_grant_attribution_trace(
+                facet, has_group_grants=has_group_grants, message=message
+            )
         kept.append(facet)
     return kept
 
@@ -737,6 +794,74 @@ def _key_lookup(publication: Publication, grants: list[ModelAccessGrant]) -> str
     return _expression([*lines, 'return "";'])
 
 
+def _token_kind_lines(application_role: str, delegated_scope: str | None = None) -> list[str]:
+    """C# that sorts a validated ``jwt``: ``application`` is true for an app-only token.
+
+    A token with a real scope is delegated, and never an application's. With ``delegated_scope``,
+    ``delegated`` also says whether the token carries that scope.
+    """
+
+    lines = ["bool delegated = false;"] if delegated_scope is not None else []
+    lines += [
+        "bool application = false;",
+        "bool hasRealScopes = false;",
+        'if (jwt.Claims.ContainsKey("scp")) {',
+        '    var scopes = jwt.Claims["scp"];',
+        "    if (scopes != null && scopes.Length == 1 && scopes[0] != null) {",
+        "        foreach (var scope in scopes[0].Split(' ')) {",
+        '            if (String.IsNullOrWhiteSpace(scope) || scope == "/") { continue; }',
+        "            hasRealScopes = true;",
+    ]
+    if delegated_scope is not None:
+        lines.append(
+            f"            if (String.Equals(scope, {_literal(delegated_scope)}, "
+            "StringComparison.Ordinal)) { delegated = true; }"
+        )
+    lines += [
+        "        }",
+        "    }",
+        "}",
+        'if (!hasRealScopes && jwt.Claims.ContainsKey("roles")) {',
+        '    var roles = jwt.Claims["roles"];',
+        f"    application = roles != null && roles.Contains({_literal(application_role)});",
+        "}",
+    ]
+    return lines
+
+
+def mcp_call_reference(application_role: str = "Models.Invoke.Application") -> str:
+    """The MCP call an application says its model call was made for. See ADR 0025.
+
+    The lowercased GUID in the on-behalf header, read only from a validated application token: a
+    key-only call, a person's token or a call without the header records nothing. An application
+    that sends anything but exactly one GUID records ``!``. It never refuses a call, and an error
+    reading it records nothing, because the reference is for usage only. MOSAIC checks it against
+    the MCP call it names when it reads the logs.
+    """
+
+    header = _literal(ON_BEHALF_HEADER)
+    malformed = _literal(MCP_CALL_MALFORMED)
+    return _expression(
+        [
+            "try {",
+            f'if (!context.Request.Headers.ContainsKey({header})) {{ return ""; }}',
+            'var jwt = context.Variables.ContainsKey("mosaic-validated-token")'
+            ' ? context.Variables["mosaic-validated-token"] as Jwt : null;',
+            'if (jwt == null || jwt.Claims == null) { return ""; }',
+            *_token_kind_lines(application_role),
+            'if (!application) { return ""; }',
+            f"var values = context.Request.Headers[{header}];",
+            "if (values == null || values.Length != 1 || values[0] == null)"
+            f" {{ return {malformed}; }}",
+            "var reference = values[0].Trim();",
+            "if (!System.Text.RegularExpressions.Regex.IsMatch(reference, "
+            f"{_literal(_MCP_CALL_PATTERN)})) {{ return {malformed}; }}",
+            "return reference.ToLowerInvariant();",
+            '} catch { return ""; }',
+        ]
+    )
+
+
 def _token_lookup(
     publication: AccessPolicyPublication,
     grants: Sequence[AccessPolicyGrant],
@@ -770,24 +895,7 @@ def _token_lookup(
         ' { return ""; }',
         "var oid = objects[0];",
         f"var cc = {_SELECTED_COST_CENTER};" if filter_cost_center else 'var cc = "";',
-        "bool delegated = false;",
-        "bool application = false;",
-        "bool hasRealScopes = false;",
-        'if (jwt.Claims.ContainsKey("scp")) {',
-        '    var scopes = jwt.Claims["scp"];',
-        "    if (scopes != null && scopes.Length == 1 && scopes[0] != null) {",
-        "        foreach (var scope in scopes[0].Split(' ')) {",
-        '            if (String.IsNullOrWhiteSpace(scope) || scope == "/") { continue; }',
-        "            hasRealScopes = true;",
-        f"            if (String.Equals(scope, {_literal(delegated_scope)}, "
-        "StringComparison.Ordinal)) { delegated = true; }",
-        "        }",
-        "    }",
-        "}",
-        'if (!hasRealScopes && jwt.Claims.ContainsKey("roles")) {',
-        '    var roles = jwt.Claims["roles"];',
-        f"    application = roles != null && roles.Contains({_literal(application_role)});",
-        "}",
+        *_token_kind_lines(application_role, delegated_scope),
     ]
     for grant in direct_grants:
         kind = "delegated" if grant.subject.kind == EntitlementSubjectKind.USER else "application"
@@ -1570,6 +1678,11 @@ def _facets(
             facet.summary = f"Removes the {name} query parameter before forwarding."
         elif (
             facet.element == "set-header"
+            and facet.attributes.get("name", "").casefold() == ON_BEHALF_HEADER
+        ):
+            describe_on_behalf_removal(facet, "model")
+        elif (
+            facet.element == "set-header"
             and is_backend_key_facet(facet, publication.api_shape)
             and publication.backend_key_name is not None
         ):
@@ -1625,13 +1738,21 @@ def render_governed_policy(
             application_role=application_role,
         )
         _operation_guard(fragment, publication, operations)
-        append_grant_attribution_trace(fragment, grants)
+        _variable(
+            fragment,
+            "mosaic-mcp-call",
+            mcp_call_reference(application_role) if snapshot.settings.entra_enabled else "",
+        )
+        append_grant_attribution_trace(
+            fragment, grants, keys=[("r", MCP_CALL, "mosaic-mcp-call")]
+        )
         _limits(fragment, publication, snapshot, grants)
         removed_headers = (
             "Ocp-Apim-Subscription-Key",
             "api-key",
             "Authorization",
             COST_CENTER_HEADER,
+            ON_BEHALF_HEADER,
         )
         for name in removed_headers:
             ET.SubElement(fragment, "set-header", {"name": name, "exists-action": "delete"})

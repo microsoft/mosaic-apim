@@ -21,7 +21,7 @@ import time as monotonic
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta
-from typing import Any, Literal
+from typing import Any, Literal, cast
 from uuid import uuid4
 
 import structlog
@@ -78,6 +78,7 @@ from mosaic_api.usage_telemetry import (
     SUMMARY_SHARD_SIZE,
     AttributionRecord,
     MemberUsage,
+    OnBehalfUnresolvedReason,
     PoolMembers,
     RolledUpApi,
     RolledUpMember,
@@ -88,6 +89,7 @@ from mosaic_api.usage_telemetry import (
     UsageHour,
     UsageLink,
     UsageMetrics,
+    UsageOnBehalf,
     UsageRollupState,
     UsageSummary,
     UsageSummaryEntry,
@@ -185,6 +187,17 @@ def call_metrics(row: Row) -> UsageMetrics:
     )
 
 
+def _carries_tokens(metrics: UsageMetrics) -> bool:
+    return any(
+        (
+            metrics.metered_requests,
+            metrics.prompt_tokens,
+            metrics.completion_tokens,
+            metrics.total_tokens,
+        )
+    )
+
+
 def _add_hour(hours: dict[int, UsageHour], hour: int, metrics: UsageMetrics) -> None:
     if not 0 <= hour <= 23:
         return
@@ -198,6 +211,12 @@ def _add_hour(hours: dict[int, UsageHour], hour: int, metrics: UsageMetrics) -> 
 
 
 @dataclass
+class _OnBehalf:
+    metrics: UsageMetrics = field(default_factory=UsageMetrics)
+    hours: dict[int, UsageHour] = field(default_factory=dict)
+
+
+@dataclass
 class _Fact:
     link: UsageLink
     link_key: str
@@ -207,6 +226,8 @@ class _Fact:
     metrics: UsageMetrics = field(default_factory=UsageMetrics)
     hours: dict[int, UsageHour] = field(default_factory=dict)
     breakdown: dict[BreakdownKey, UsageMetrics] = field(default_factory=dict)
+    # Keyed by the person, the MCP API and the MCP grant key. See ADR 0025.
+    on_behalf: dict[tuple[str, str, str], _OnBehalf] = field(default_factory=dict)
 
 
 class LinkResolver:
@@ -242,6 +263,11 @@ class LinkResolver:
         if record is not None and not record.per_member:
             return record.subject_object_id
         return None
+
+    def grant(self, key: str) -> AttributionRecord | None:
+        """What a trace's grant key stands for, if the registry knows it yet."""
+
+        return self._registry.get(("grant", key)) if key else None
 
     def peak_fact_key(self, link: str) -> tuple[UsageLink, str, str | None] | None:
         kind, _, rest = link.partition(":")
@@ -344,6 +370,20 @@ class DayFold:
                 _add_hour(fact.hours, hour, metrics)
                 breakdown_key = (api, deployment, model, client_app or None)
                 fact.breakdown.setdefault(breakdown_key, UsageMetrics()).add(plain)
+                behalf = self._on_behalf(row, caller)
+                if isinstance(behalf, tuple):
+                    # A person's share keeps which pool member served it, so it's priced there.
+                    person, mcp_api, mcp_key = behalf
+                    share = fact.on_behalf.setdefault((person, mcp_api, mcp_key), _OnBehalf())
+                    share.metrics.add(metrics)
+                    _add_hour(share.hours, hour, metrics)
+                    self._entry(
+                        "onBehalf", f"{link}:{link_key}|{caller or ''}|{person}|{mcp_api}"
+                    ).metrics.add(metrics)
+                elif behalf is not None:
+                    self._entry("onBehalfUnresolved", f"{link}:{link_key}|{behalf}").metrics.add(
+                        plain
+                    )
             self._entry("total", "").metrics.add(plain)
             _add_hour(self.total_hours, hour, metrics)
             self._entry("api", api).metrics.add(metrics)
@@ -357,8 +397,37 @@ class DayFold:
             deployment_key = served_by or (known.deployment_key if known else None)
             if deployment_key:
                 self._entry("deployment", deployment_key).metrics.add(plain)
-            if model:
-                self._entry("model", f"{model.casefold()}|{api}").metrics.add(metrics)
+            if model or _carries_tokens(metrics):
+                # Calls whose LLM log named no model are kept under none, so the model breakdown
+                # still adds up to the total. Reports name the model MOSAIC knows for the API.
+                self._entry("model", f"{(model or '').casefold()}|{api}").metrics.add(metrics)
+
+    def _on_behalf(
+        self, row: Row, caller: str | None
+    ) -> tuple[str, str, str] | OnBehalfUnresolvedReason | None:
+        """The person a model call was made for, through an MCP server. See ADR 0025.
+
+        The query reports the MCP call a call names, when it found one on the gateway at the time.
+        Its caller is the person only when this call's caller is the application that MCP server
+        calls models as. Otherwise the call stays its caller's own, and the reason is counted.
+        """
+
+        state = _text(row.get("onBehalf"))
+        if state in {"malformed", "missing", "late"}:
+            return cast(OnBehalfUnresolvedReason, state)
+        if state != "found":
+            return None
+        if caller is None:
+            return "unknown"
+        if caller.casefold() != _text(row.get("oi")).casefold():
+            return "caller"
+        mcp_key = _text(row.get("og")).casefold()
+        person = self._resolver.caller(
+            _text(row.get("om")).casefold(), self._resolver.grant(mcp_key)
+        )
+        if not person:
+            return "unknown"
+        return person.casefold(), _text(row.get("oapi")).casefold(), mcp_key
 
     def add_peaks(self, rows: Iterable[Row]) -> None:
         for row in rows:
@@ -471,6 +540,16 @@ class DayFold:
                                 fact.breakdown.items(),
                                 key=lambda item: tuple(part or "" for part in item[0]),
                             )
+                        ],
+                        on_behalf=[
+                            UsageOnBehalf(
+                                object_id=person,
+                                mcp_api=mcp_api,
+                                mcp_key=mcp_key,
+                                metrics=share.metrics,
+                                hours=[share.hours[hour] for hour in sorted(share.hours)],
+                            )
+                            for (person, mcp_api, mcp_key), share in sorted(fact.on_behalf.items())
                         ],
                         ttl=ttl,
                     )

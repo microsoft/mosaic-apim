@@ -9,8 +9,9 @@ product really renders without touching a tenant, a subscription, or a real pers
 import json
 import random
 import sys
+import uuid
 from collections import OrderedDict, defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta
 from itertools import accumulate
 from pathlib import Path
@@ -1385,6 +1386,13 @@ class TrafficStream:
     members: tuple[PoolMemberTraffic, ...] = ()
     # The pool model the calls ask for. The pool's policy traces it with every attempt.
     pool_model: str = ""
+    # An MCP stream whose server calls models as an application (ADR 0025): ``model_caller`` is
+    # the application's object ID, which the MCP call's trace names beside its own reference, and
+    # ``model_calls`` the shape of the model calls the server makes while serving a tool call,
+    # passing the reference on. ``model_call_share`` is how many tool calls use a model.
+    model_caller: str = ""
+    model_calls: "TrafficStream | None" = None
+    model_call_share: float = 1.0
 
 
 def _call_times(rng: random.Random, day: date, count: int, stream: TrafficStream) -> list[datetime]:
@@ -1441,6 +1449,9 @@ def stream_calls(stream: TrafficStream, day: date, today: date) -> list[GatewayC
     rng = random.Random(f"{stream.name}|{day.isoformat()}")
     # Attempts draw from a generator of their own, so tracing them leaves the calls the same.
     attempt_rng = random.Random(f"{stream.name}|{day.isoformat()}|attempts")
+    # Model calls an MCP server makes draw on their own generator, so every stream's own calls
+    # stay the same whether or not its server calls models.
+    tools = random.Random(f"{stream.name}|{day.isoformat()}|tools")
     age = min(max((today - day).days, 0), GROWTH_DAYS)
     volume = stream.per_day * (1 - GROWTH * age / GROWTH_DAYS)
     if day.weekday() >= 5:
@@ -1517,29 +1528,79 @@ def stream_calls(stream: TrafficStream, day: date, today: date) -> list[GatewayC
             backend_id = served.backend
             if stream.pool_model:
                 attempts = _attempts(attempt_rng, stream, served, backend)
-        calls.append(
+        call = GatewayCall(
+            time=time,
+            api=stream.api,
+            response_code=code,
+            backend_code=backend,
+            total_time_ms=total,
+            backend_time_ms=max(0, total - rng.randint(6, 30)) if backend else 0,
+            subscription=stream.subscription,
+            grant=stream.grant,
+            member=stream.member,
+            client_app=stream.client_app,
+            traced=bool(stream.grant),
+            last_error_source=source,
+            prompt_tokens=prompt if metered and admitted else None,
+            completion_tokens=completion if metered and admitted else None,
+            deployment=stream.deployment if metered and admitted else None,
+            model=stream.model if metered and admitted else None,
+            backend_id=backend_id,
+            attempts=attempts,
+        )
+        if admitted and stream.model_calls is not None and stream.model_caller:
+            calls.extend(_served_model_calls(stream, call, tools))
+        else:
+            calls.append(call)
+    return calls
+
+
+def _served_model_calls(
+    stream: TrafficStream, mcp_call: GatewayCall, rng: random.Random
+) -> list[GatewayCall]:
+    """An MCP call that names its model caller, and the model calls its server made serving it.
+
+    The gateway gives every call to such a server its own reference. A tool that uses a model
+    passes it on, as the server's application, so the model calls run while the MCP call does.
+    Now and then one passes on a reference no MCP call has, or calls after its MCP call ended, so
+    the rollup has a reference it can't use to count. These draw on their own ``rng``, so the MCP
+    calls themselves stay as they were.
+    """
+
+    shape = stream.model_calls
+    reference = str(uuid.UUID(int=rng.getrandbits(128), version=4))
+    mcp = replace(mcp_call, reference=reference, model_caller=stream.model_caller)
+    if shape is None or rng.random() >= stream.model_call_share:
+        return [mcp]
+    served: list[GatewayCall] = []
+    offset = rng.randint(80, 400)
+    for _ in range(rng.choice((1, 1, 1, 2))):
+        latency = max(300, round(shape.latency_ms * rng.lognormvariate(0, 0.35)))
+        passed = reference
+        start = mcp.time + timedelta(milliseconds=offset)
+        roll = rng.random()
+        if roll < 0.015:
+            passed = str(uuid.UUID(int=rng.getrandbits(128), version=4))
+        elif roll < 0.025:
+            start = mcp.time + timedelta(minutes=8)
+        served.append(
             GatewayCall(
-                time=time,
-                api=stream.api,
-                response_code=code,
-                backend_code=backend,
-                total_time_ms=total,
-                backend_time_ms=max(0, total - rng.randint(6, 30)) if backend else 0,
-                subscription=stream.subscription,
-                grant=stream.grant,
-                member=stream.member,
-                client_app=stream.client_app,
-                traced=bool(stream.grant),
-                last_error_source=source,
-                prompt_tokens=prompt if metered and admitted else None,
-                completion_tokens=completion if metered and admitted else None,
-                deployment=stream.deployment if metered and admitted else None,
-                model=stream.model if metered and admitted else None,
-                backend_id=backend_id,
-                attempts=attempts,
+                time=start,
+                api=shape.api,
+                total_time_ms=latency,
+                backend_time_ms=max(0, latency - rng.randint(6, 30)),
+                grant=shape.grant,
+                client_app=shape.client_app,
+                reference=passed,
+                prompt_tokens=_tokens(rng, shape.prompt_tokens),
+                completion_tokens=_tokens(rng, shape.completion_tokens),
+                deployment=shape.deployment,
+                model=shape.model,
             )
         )
-    return calls
+        offset += latency + rng.randint(40, 200)
+    # The tool call lasts as long as the model calls it waited for.
+    return [replace(mcp, total_time_ms=mcp.total_time_ms + offset), *served]
 
 
 @dataclass

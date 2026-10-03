@@ -168,11 +168,11 @@ one under **Settings > Appearance**.
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/console-mcps.png" alt="Registered and published MCP servers with environment, status, authentication, and tools">
+      <img src="docs/images/screenshots/console-mcps.png" alt="Registered and published MCP servers with environment, status, authentication, and tools, and the application a published server calls models as">
       <p><b>MCP servers.</b> Servers registered directly or imported from a gateway, with their
       environment, connection status, authentication method, and tools, and the servers MOSAIC
-      publishes, with their gateway apply state. MOSAIC reads what a server offers and never calls
-      a tool.</p>
+      publishes, with their gateway apply state and the application each calls models as, applied
+      or not yet. MOSAIC reads what a server offers and never calls a tool.</p>
     </td>
     <td width="50%" valign="top">
       <img src="docs/images/screenshots/console-identity.png" alt="The Identity page's Agents tab listing agent identities and an agent user, with a detail panel that shows the agent's default cost center">
@@ -232,10 +232,10 @@ one under **Settings > Appearance**.
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/console-mcp-publish.png" alt="MCP publish review with access changes and plan steps">
+      <img src="docs/images/screenshots/console-mcp-publish.png" alt="MCP publish review with access changes, the application the server calls models as, and plan steps">
       <p><b>MCP publish review.</b> A MOSAIC-owned MCP server is published through API
-      Management only after the administrator reviews the access snapshot and the exact gateway
-      resources that will change.</p>
+      Management only after the administrator reviews the access snapshot, including the
+      application its tools call models as, and the exact gateway resources that will change.</p>
     </td>
     <td width="50%" valign="top">
       <img src="docs/images/screenshots/console-analytics.png" alt="Analytics with request, token, cost, caller, error, and latency figures, a daily trend, and the top models, callers, and cost centers">
@@ -266,8 +266,8 @@ one under **Settings > Appearance**.
       <img src="docs/images/screenshots/console-analytics-consumers.png" alt="The Consumers tab listing people, agents, applications, and security groups with their requests, tokens, grants, resources, last call, and cost">
       <p><b>Consumers.</b> Each person, agent, application, and security group that called a
       governed API, with requests, tokens, grants, resources, when they were last seen, and what
-      their calls cost. Below it, the same usage by grant, by cost center, and by client
-      application.</p>
+      their calls cost. Below it, model use through MCP servers by person, and the same usage by
+      grant, by cost center, and by client application.</p>
     </td>
     <td width="50%" valign="top">
       <img src="docs/images/screenshots/console-analytics-limits.png" alt="The Limits tab showing each grant's cost center and its quota and rate-limit use with reached, near-limit, and OK badges">
@@ -328,7 +328,13 @@ one under **Settings > Appearance**.
       signs in to as its managed identity, so no key is kept. It's off until an administrator saves
       an endpoint and a sender here, and <b>Send test email</b> checks both.</p>
     </td>
-    <td width="50%" valign="top"></td>
+    <td width="50%" valign="top">
+      <img src="docs/images/screenshots/console-analytics-mcp-model-use.png" alt="The Consumers tab's Model use through MCP servers table, listing each person, the MCP server, and the application that called models for them, with requests, tokens, share, and cost, below a count of the references MOSAIC couldn't attribute, by reason">
+      <p><b>Model use through MCP servers.</b> The model calls an MCP server's application made for
+      each person who called the server, with the application, requests, tokens, and cost, and the
+      references MOSAIC couldn't use, by reason. The calls stay the application's own in every
+      other figure, so the table adds to no total.</p>
+    </td>
   </tr>
 </table>
 
@@ -373,12 +379,13 @@ one under **Settings > Appearance**.
       show when they used it.</p>
     </td>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/portal-usage-resources.png" alt="Each of a person's cost centers with this month's total, and each pooled resource's total against its quota, then usage by resource with each grant's requests, tokens, estimated cost, quota use, busiest minute, and usage tracking">
+      <img src="docs/images/screenshots/portal-usage-resources.png" alt="Each of a person's cost centers with this month's total, and each pooled resource's total against its quota, then their model use through MCP servers with the cost center each was charged to, then usage by resource with each grant's requests, tokens, estimated cost, quota use, busiest minute, and usage tracking">
       <p><b>Cost centers and usage by resource.</b> Each cost center the person charges, with this
       month's total from everyone who charges it, and each pooled resource they hold there against
-      its quota: totals only, never who used them. Below, their own figures by granted resource,
-      with each one's estimated cost, or <b>No price</b> and why, each quota's use, the busiest
-      minute against each rate limit, and how its calls are linked.</p>
+      its quota: totals only, never who used them. Then the model calls MCP servers made for them,
+      charged to each server's application grant, not to them. Below, their own figures by granted
+      resource, with each one's estimated cost, or <b>No price</b> and why, each quota's use, the
+      busiest minute against each rate limit, and how its calls are linked.</p>
     </td>
   </tr>
   <tr>
@@ -661,6 +668,24 @@ Budgets and their email have these. See [Budgets and alerts](docs/budgets-and-al
 | `MOSAIC_BUDGET_INTERVAL_SECONDS` | `900` | How often every budget is checked, from 60 to 86,400 seconds. |
 | `MOSAIC_BUDGET_FAST_INTERVAL_SECONDS` | `300` | How often a budget at 90% or more, with a threshold or a block to come, is checked, from 60 to 3,600 seconds. |
 | `MOSAIC_EMAIL_SUGGESTED_ENDPOINT`, `MOSAIC_EMAIL_SUGGESTED_SENDER` | None | The Communication Services endpoint and sender `azd` created. They only fill in **Settings > Email**; email stays off until an administrator saves it there. |
+
+Logging has one setting.
+
+| Setting | Default | Purpose |
+| --- | --- | --- |
+| `MOSAIC_LOG_LEVEL` | `INFO` | The least severe level the API logs, to stdout and, when `MOSAIC_APPLICATIONINSIGHTS_CONNECTION_STRING` is set as `azd` sets it, to Application Insights. Libraries log at this level too, but the loggers for the Azure SDK's HTTP calls and the Azure Monitor exporter's uploads never go below `WARNING`. |
+
+With `MOSAIC_APPLICATIONINSIGHTS_CONNECTION_STRING` set, the API also records each request it
+serves in Application Insights, as a row in `AppRequests` named for its method and route, such as
+`GET /api/v1/principals/{principal_id}`, with its status code and duration. Its URL keeps the
+query's parameter names, but each value is recorded as `REDACTED`, so the text someone types into
+the directory search isn't kept, and a query that can't be read that way is left out. If redaction
+fails, the request is recorded without its URL and the API logs a `request_query_redaction_failed`
+warning. The health probes `/healthz` and `/readyz` aren't recorded, because App Service's health
+check and the deployment's smoke checks call them often enough to bury the rest. No header or body
+of a request or response is recorded, so no bearer token or API key reaches Application Insights;
+don't set OpenTelemetry's `OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_*` variables, which would
+record the headers they name. Without the connection string, nothing is instrumented.
 
 In a second terminal:
 
@@ -1871,6 +1896,14 @@ URL:
 See [Connect to MCP servers published through MOSAIC](docs/connect-to-mcp-servers.md) for people,
 agent identities, agent users, security groups and troubleshooting.
 
+An MCP server whose tools call governed models through MOSAIC does so as its own application, on
+that application's own model grant. Name that application on the published server, under
+**Calls models as** on the MCP servers page, and the server receives each call's reference to pass
+on, so its model calls can be attributed to the people it serves without giving them a grant on the
+model. Analytics, the chargeback, and each person's **Usage & cost** then show that use by person.
+See [MCP servers that call models](docs/mcp-servers-that-call-models.md) and
+[ADR 0025](docs/adr/0025-mcp-model-calls-on-a-persons-behalf.md).
+
 **Unpublish** on the MCP servers page opens the same review as for models, and its routes are
 `POST /mcp-publications/{id}/unpublish-plan` and `POST /mcp-publications/{id}/unpublish?plan={planId}`.
 The review lists the grants whose Entra tokens the gateway stops accepting. The portal lists a
@@ -2295,7 +2328,7 @@ API, [model pool](#model-pools), or MCP server), kind of subject, and [cost cent
 | --- | --- |
 | Overview | Requests, tokens, active callers, errors, p95 latency, and cost against the previous period, the trend, and the top models, callers, and APIs |
 | Cost | What usage cost at list price: the total and trend, spend this month and the month-end forecast, and cost by model, deployment, caller, and API, with each provisioned deployment's monthly cost and utilization |
-| Consumers | Each person, agent, application, and Entra security group, with requests, tokens, cost, grants, resources, and when they were last seen; then each grant, and each client application |
+| Consumers | Each person, agent, application, and Entra security group, with requests, tokens, cost, grants, resources, and when they were last seen; the model calls MCP servers' applications made for each person, which those applications already count; then each grant, and each client application |
 | Models | Each model, each deployment's busiest minute against its capacity, and each API and MCP server, with their cost |
 | Reliability | Successful, gateway-throttled, backend 429, and denied calls, an estimated latency histogram, denials by reason, and each API's reliability |
 | Limits | How close each grant is to each quota and rate limit, and the calls the gateway throttled or refused for quota |
@@ -2303,14 +2336,16 @@ API, [model pool](#model-pools), or MCP server), kind of subject, and [cost cent
 | Unattributed | Calls MOSAIC couldn't link to a grant, such as those made with a publication's or model pool's shared key, and what they cost |
 
 Every tab exports CSV, and tables that show cost export it too. The Cost tab exports a chargeback by
-month, person, application, or group, cost center, and model. These routes need `Admin`:
+month, person, application, or group, cost center, and model. It splits an MCP server's
+application's rows by the person each model call was made for, still charged to the application's
+cost center. These routes need `Admin`:
 
 | Method | Route under `/api/v1` | Result |
 | --- | --- | --- |
 | GET | `/analytics/status` | Where the figures come from, and how current each gateway's rollup is |
 | POST | `/analytics/refresh` | Roll up every gateway now; 202, or 429 within a minute of the last |
 | GET | `/analytics/{view}` | `overview`, `cost`, `consumers`, `models`, `reliability`, `limits`, `hygiene`, or `unattributed`, filtered by `range` (`24h`, `7d`, `30d`, `90d`, `12m`, or `custom` with `start` and `end`), `gatewayId`, `environment`, `resourceId`, `subjectKind`, and `costCenterId` |
-| GET | `/analytics/export?view=` | One table as CSV, with the same filters; `chargeback` is the chargeback by month, and `costDeployments` the cost of each deployment |
+| GET | `/analytics/export?view=` | One table as CSV, with the same filters; `chargeback` is the chargeback by month, `costDeployments` the cost of each deployment, and `onBehalf` the model use through MCP servers |
 | GET | `/gateways/{id}/telemetry` | The gateway's telemetry checks and each governed API's diagnostic |
 | POST | `/gateways/{id}/telemetry/enable` | Create the logger and set API diagnostics on what MOSAIC published; audited |
 | POST | `/gateways/{id}/telemetry/refresh` | Roll up this gateway now; 202, or 429 within a minute of the last |
@@ -2358,6 +2393,12 @@ hold there that has a pooled quota, against that quota. It never shows who else 
 When one of those cost centers is at 80% of its [budget](#budgets-and-alerts), past 100%, or
 blocked, this page and **My access** show a banner with the cost center's share of its budget,
 from `GET /api/v1/me/budgets`.
+
+When an MCP server's application calls models for someone, as
+[MCP servers that call models](docs/mcp-servers-that-call-models.md) describes, the page adds
+**Model use through MCP servers**: their own share of those calls, by MCP server and model, with
+its estimated cost and the cost center of the application's grant, which paid for it. It never
+shows the application's own calls or anyone else's, and it's left out of the person's totals.
 
 In Azure the figures are measured, and the page says how current they are. The gateway applies
 limits as calls arrive, so someone can reach one before the page shows it. A row with nothing to

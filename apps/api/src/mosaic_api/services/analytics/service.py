@@ -76,6 +76,7 @@ from mosaic_api.services.analytics.views import (
     ROW_LIMIT,
     Context,
     DeploymentInfo,
+    deployment_model,
     lag_minutes,
     models_report,
     overview,
@@ -145,8 +146,11 @@ COST_CENTER_NOTE = (
     "applications, reserved capacity nobody called, and figures by the hour belong to no grant, "
     "so they're left out."
 )
-# Figures a cost-center filter keeps as they're rolled up: they're kept per grant.
-_GRANT_LINKED: frozenset[SummaryDimension] = frozenset({"grant", "grantCaller"})
+# Figures a cost-center filter keeps as they're rolled up: they're kept per grant. The on-behalf
+# figures are kept per application's model grant, so they follow that grant's cost center.
+_GRANT_LINKED: frozenset[SummaryDimension] = frozenset(
+    {"grant", "grantCaller", "onBehalf", "onBehalfUnresolved"}
+)
 # Figures kept per API, which a cost-center filter rebuilds from its grants' figures.
 _FROM_GRANTS: frozenset[SummaryDimension] = frozenset({"total", "api", "model", "deployment"})
 HOURS_NOTE = (
@@ -346,24 +350,50 @@ class AnalyticsService:
 
         calls: dict[str, int] = defaultdict(int)
         for summary in summaries:
-            if summary.dimension not in {"grantCaller", "denial"}:
+            if summary.dimension not in {"grantCaller", "denial", "onBehalf"}:
                 continue
             for entry in summary.entries:
-                caller = (
-                    entry.key.rpartition("|")[2]
-                    if summary.dimension == "grantCaller"
-                    else [*entry.key.split("|", 3), "", ""][1]
-                )
-                folded = caller.casefold()
-                if (
-                    folded
-                    and folded not in scope.principals_by_object
-                    and folded not in scope.subject_names
-                ):
-                    calls[folded] += entry.metrics.requests
+                if summary.dimension == "grantCaller":
+                    callers = [entry.key.rpartition("|")[2]]
+                elif summary.dimension == "denial":
+                    callers = [[*entry.key.split("|", 3), "", ""][1]]
+                else:
+                    # The application that called the model, and the person it called for.
+                    callers = entry.key.rsplit("|", 3)[1:3]
+                for caller in callers:
+                    folded = caller.casefold()
+                    if (
+                        folded
+                        and folded not in scope.principals_by_object
+                        and folded not in scope.subject_names
+                    ):
+                        calls[folded] += entry.metrics.requests
         if calls:
             ordered = sorted(calls, key=lambda object_id: (-calls[object_id], object_id))
             scope.directory = await self._names.resolve(ordered, limit=NAME_LOOKUPS)
+
+    async def _name_models(
+        self,
+        scope: Scope,
+        summaries: Iterable[UsageSummary],
+        observed: dict[str, DeploymentInfo] | None = None,
+    ) -> None:
+        """Name the model of calls whose LLM log named none, from what MOSAIC knows of the API."""
+
+        unnamed = {
+            (summary.gateway_id, entry.key.rpartition("|")[2])
+            for summary in summaries
+            if summary.dimension == "model"
+            for entry in summary.entries
+            if not entry.key.rpartition("|")[0]
+        }
+        if not unnamed:
+            return
+        known = observed if observed is not None else await self._deployments(scope)
+        for gateway_id, api_name in unnamed:
+            model = deployment_model(scope.apis.get((gateway_id, api_name)), known)
+            if model:
+                scope.models[(gateway_id, api_name)] = model
 
     # -- reading summaries ------------------------------------------------------------------
 
@@ -433,22 +463,30 @@ class AnalyticsService:
         )
         found = [summary for summary in summaries if summary.dimension in kept]
         if rebuilt:
+            # A pool's API calls several models, so its grants are named from what MOSAIC
+            # observed of the deployments that served them.
+            observed = (
+                await self._deployments(scope)
+                if "model" in rebuilt and any(api.kind == "pool" for api in scope.apis.values())
+                else {}
+            )
             found.extend(
-                await self._from_grants(
+                self._from_grants(
                     scope,
                     [summary for summary in summaries if summary.dimension == "grant"],
                     rebuilt,
+                    observed,
                 )
             )
         return found
 
-    async def _from_grants(
+    def _from_grants(
         self,
         scope: Scope,
         grants: Sequence[UsageSummary],
         dimensions: Sequence[SummaryDimension],
+        observed: dict[str, DeploymentInfo] | None = None,
     ) -> list[UsageSummary]:
-        observed = await self._deployments(scope) if "model" in dimensions else {}
         groups: dict[tuple[SummaryPeriod, str, str, SummaryDimension], dict[str, UsageMetrics]]
         groups = defaultdict(lambda: defaultdict(UsageMetrics))
         for summary, entry in entries(grants, scope, "grant"):
@@ -461,22 +499,19 @@ class AnalyticsService:
                 continue
             if "api" in dimensions:
                 groups[(*base, "api")][api.api_name].add(entry.metrics)
-            deployment = api.deployment_key
             if "deployment" in dimensions:
                 for key, usage in _deployment_split(api, entry.metrics):
                     groups[(*base, "deployment")][key].add(usage)
             if "model" in dimensions and api.kind == "model":
-                info = observed.get(deployment) if deployment else None
-                model = (info.model_name if info else None) or api.deployment_name or "unknown"
-                groups[(*base, "model")][f"{model.casefold()}|{api.api_name}"].add(
-                    entry.metrics
-                )
+                # A grant's figures name no model, so they count under the one MOSAIC knows the
+                # API calls, as any call whose LLM log named none does.
+                groups[(*base, "model")][f"|{api.api_name}"].add(entry.metrics)
             elif "model" in dimensions and api.kind == "pool":
-                # A pool grant is one of the pool's models, whichever member served it.
-                served = (observed.get(key) for key in entry.metrics.members or {})
-                model = next((info.model_name for info in served if info), None) or (
-                    (grant.resource_name if grant else None) or "unknown"
-                )
+                # A pool grant is one of the pool's models, whichever member served it: the model
+                # those members run, else the pool model granted, else none MOSAIC can name.
+                served = ((observed or {}).get(key) for key in entry.metrics.members or {})
+                named = (info.model_name for info in served if info and info.model_name)
+                model = next(named, None) or (grant.resource_name if grant else None) or ""
                 groups[(*base, "model")][f"{model.casefold()}|{api.api_name}"].add(
                     entry.metrics
                 )
@@ -659,7 +694,7 @@ class AnalyticsService:
         for cost_center_id in wanted:
             narrowed = replace(scope, filters=replace(filters, cost_center_id=cost_center_id))
             book = CostBook(costs.pricer, narrowed, today, costs.provisioned_tokens)
-            api = await self._from_grants(narrowed, grants, ["api"])
+            api = self._from_grants(narrowed, grants, ["api"])
             spend.cost_centers[cost_center_id] = spend_report(book, narrowed, api, today, through)
         return spend
 
@@ -883,7 +918,7 @@ class AnalyticsService:
             self._breakdown(scope, window, ["grantCaller", "unattributed"], costs),
             self._spend(scope, costs),
         )
-        await self._name(scope, breakdown)
+        await asyncio.gather(self._name(scope, breakdown), self._name_models(scope, current))
         return overview(
             context,
             api=[summary for summary in current if summary.dimension == "api"],
@@ -906,10 +941,15 @@ class AnalyticsService:
         context, _ = await self._prepare(actor, filters, limit=limit)
         costs = await self._costs(context.scope, context.window)
         summaries = await self._breakdown(
-            context.scope, context.window, ["grantCaller", "clientApp"], costs
+            context.scope,
+            context.window,
+            ["grantCaller", "clientApp", "onBehalf", "onBehalfUnresolved"],
+            costs,
         )
         await self._name(context.scope, summaries)
-        return consumers_report(context, callers=summaries, clients=summaries, costs=costs)
+        return consumers_report(
+            context, callers=summaries, clients=summaries, costs=costs, on_behalf=summaries
+        )
 
     async def models(
         self, actor: Actor, filters: AnalyticsFilters, *, limit: int = ROW_LIMIT
@@ -923,6 +963,7 @@ class AnalyticsService:
             self._priced_read(scope, window, first, last, ["api", "model", "deployment"], costs),
             self._deployments(scope),
         )
+        await self._name_models(scope, summaries, observed)
         return models_report(
             context,
             api=summaries,
@@ -958,7 +999,7 @@ class AnalyticsService:
             self._breakdown(scope, window, ["grantCaller"], costs),
             self._spend(scope, costs),
         )
-        await self._name(scope, callers)
+        await asyncio.gather(self._name(scope, callers), self._name_models(scope, summaries))
         return cost_report(
             context,
             api=summaries,
@@ -981,10 +1022,11 @@ class AnalyticsService:
         if costs is None:
             return report, []
         summaries = await self._breakdown(
-            context.scope, context.window, ["grant", "unattributed"], costs
+            context.scope, context.window, ["grant", "unattributed", "onBehalf"], costs
         )
+        await self._name(context.scope, summaries)
         return report, chargeback_rows(
-            context, grants=summaries, unattributed=summaries, costs=costs
+            context, grants=summaries, unattributed=summaries, costs=costs, on_behalf=summaries
         )[:EXPORT_LIMIT]
 
     async def reliability(

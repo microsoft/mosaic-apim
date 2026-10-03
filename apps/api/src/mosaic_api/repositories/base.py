@@ -569,8 +569,14 @@ class UsageRollupRepository(Protocol):
         end_day: str,
         link_keys: Sequence[str] | None = None,
         gateway_ids: Sequence[str] | None = None,
+        on_behalf_object_id: str | None = None,
     ) -> list[UsageFact]:
-        """Facts whose day falls in the inclusive range, optionally only for some link keys."""
+        """Facts whose day falls in the inclusive range, optionally only for some link keys.
+
+        ``on_behalf_object_id`` keeps only facts with calls an MCP server's application made for
+        that person, lowercased as the rollup stores it. Such a fact is still the application's,
+        so a reader sums only the person's own ``on_behalf`` entries, never the whole fact.
+        """
         ...
 
     async def list_summaries(

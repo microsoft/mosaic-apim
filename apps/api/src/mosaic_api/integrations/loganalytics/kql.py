@@ -24,6 +24,9 @@ _NAME_PART = re.compile(r"^[a-z0-9][a-z0-9._-]{0,255}$")
 # An LLM log row can be written a little after its gateway log row, as a streamed response ends.
 # The LLM leg reads this much either side of the window so a call near midnight keeps its tokens.
 LLM_LOG_MARGIN = timedelta(hours=1)
+# A model call an MCP server's application makes for an MCP call counts for that call's caller
+# only while the MCP call ran, give or take this much. See ADR 0025.
+MCP_CALL_ALLOWANCE = timedelta(minutes=5)
 
 
 @dataclass(frozen=True)
@@ -140,10 +143,77 @@ def _llm_rows(window: QueryWindow) -> str:
 """
 
 
+# A call uses tokens only when the model deployment answers it with a 2xx status. The LLM log also
+# has a row for a call the gateway refused, holding the gateway's estimate of its prompt, and one
+# for a call the deployment throttled or failed, whose usage Azure doesn't bill. So a call's token
+# counts are read only when the deployment served it. Every other call still counts as a request,
+# with its status. See ADR 0019.
+_SERVED_TOKENS = """| extend served = isnotnull(BackendResponseCode)
+    and BackendResponseCode between (200 .. 299)
+| extend promptTokens = iff(served, promptTokens, long(null)),
+    completionTokens = iff(served, completionTokens, long(null)),
+    totalTokens = iff(served, totalTokens, long(null))
+"""
+
+
+def _mcp_calls(window: QueryWindow) -> str:
+    """Admitted MCP calls whose server calls models as an application, by their own reference.
+
+    Read either side of the window, as the LLM leg is, because a tool's model calls are logged
+    while its MCP call is still running, and the MCP call is logged when it ends. See ADR 0025.
+    """
+
+    start, end = window.timespan
+    return f"""let mcpCalls = union isfuzzy=true
+    (ApiManagementGatewayLogs
+    | where TimeGenerated >= {_time(start)} and TimeGenerated < {_time(end)}
+    | project mcpTime = TimeGenerated, mcpTotalTime = tolong(TotalTime),
+        mcpApiId = tostring(ApiId), mcpTraces = tostring(TraceRecords)),
+    (datatable(mcpTime: datetime, mcpTotalTime: long, mcpApiId: string, mcpTraces: string)[])
+| extend mcpApi = tolower(extract(@"([^/;]+)(?:;rev=[0-9]+)?$", 1, mcpApiId))
+| where mcpApi in (mosaicApis)
+| extend mcpAttribution = extract(@"mosaic-attribution ([^""\\\\]*)", 1, mcpTraces)
+| extend mcpRef = tolower(extract(@"(?:^| )r=([^ ]*)", 1, mcpAttribution)),
+    oi = tolower(extract(@"(?:^| )i=([^ ]*)", 1, mcpAttribution))
+| where isnotempty(mcpRef) and isnotempty(oi)
+| extend og = tolower(extract(@"(?:^| )g=([^ ]*)", 1, mcpAttribution)),
+    om = tolower(extract(@"(?:^| )m=([^ ]*)", 1, mcpAttribution))
+| summarize arg_min(mcpTime, mcpTotalTime, mcpApi, og, om, oi) by mcpRef;
+"""
+
+
 _ATTRIBUTION_KEYS = """| extend v = extract(@"(?:^| )v=([^ ]*)", 1, attribution),
     g = tolower(extract(@"(?:^| )g=([^ ]*)", 1, attribution)),
     m = tolower(extract(@"(?:^| )m=([^ ]*)", 1, attribution)),
-    a = tolower(extract(@"(?:^| )a=([^ ]*)", 1, attribution))
+    a = tolower(extract(@"(?:^| )a=([^ ]*)", 1, attribution)),
+    r = tolower(extract(@"(?:^| )r=([^ ]*)", 1, attribution)),
+    i = tolower(extract(@"(?:^| )i=([^ ]*)", 1, attribution))
+"""
+
+
+def _on_behalf_columns() -> str:
+    """Each model call's MCP call, when it names one: found, or why it couldn't be used.
+
+    ``onBehalf`` is empty without a reference, ``found`` when the MCP call it names ran on this
+    gateway at the time, and otherwise ``malformed``, ``missing`` or ``late``. Only a found call
+    keeps the MCP call's grant (``og``), member (``om``), model caller (``oi``) and API (``oapi``);
+    the rollup decides whether this call's caller is that model caller. An MCP call's own trace
+    carries its reference beside its model caller (``i``), and names no other call.
+    """
+
+    allowance = int(MCP_CALL_ALLOWANCE.total_seconds() * 1000)
+    return f"""| extend mcpCall = iff(isempty(i), r, "")
+| join kind=leftouter mcpCalls on $left.mcpCall == $right.mcpRef
+| extend during = isnotempty(mcpRef)
+    and abs(datetime_diff('millisecond', TimeGenerated, mcpTime)) <= mcpTotalTime + {allowance}
+| extend onBehalf = case(
+    isempty(mcpCall), "",
+    mcpCall == "!", "malformed",
+    isempty(mcpRef), "missing",
+    during, "found",
+    "late")
+| extend og = iff(onBehalf == "found", og, ""), om = iff(onBehalf == "found", om, ""),
+    oi = iff(onBehalf == "found", oi, ""), oapi = iff(onBehalf == "found", mcpApi, "")
 """
 
 
@@ -172,8 +242,10 @@ def calls_query(window: QueryWindow, apis: Iterable[str], pool_apis: Iterable[st
     """Admitted calls by hour, trace keys, subscription, API and model deployment.
 
     Refused calls are left to :func:`denials_query`. 429 is a rate limit, and a 403 raised by a
-    token-limit or quota policy is a spent quota. Calls to the ``pool_apis`` are also grouped by the
-    backend that served them.
+    token-limit or quota policy is a spent quota. Tokens count only for calls the model deployment
+    served. A model call an MCP server's application made also says which MCP call it served; see
+    :func:`_on_behalf_columns`. Calls to the ``pool_apis`` are also grouped by the backend that
+    served them.
     """
 
     pool_let, pool_columns = _pool_backends(pool_apis)
@@ -182,10 +254,11 @@ def calls_query(window: QueryWindow, apis: Iterable[str], pool_apis: Iterable[st
         _gateway_rows(window, apis)
         + _llm_rows(window)
         + pool_let
+        + _mcp_calls(window)
         + f"""gatewayRows
 | where isempty(reason)
 | join kind=leftouter llmRows on CorrelationId
-{_ATTRIBUTION_KEYS}{pool_columns}| extend status = case(
+{_SERVED_TOKENS}{_ATTRIBUTION_KEYS}{_on_behalf_columns()}{pool_columns}| extend status = case(
     ResponseCode == 429, "throttled",
     ResponseCode == 403 and (LastErrorSource contains "token-limit"
         or LastErrorSource contains "quota"), "quota",
@@ -209,7 +282,7 @@ def calls_query(window: QueryWindow, apis: Iterable[str], pool_apis: Iterable[st
     {_latency_counts()},
     lastSeen = max(TimeGenerated)
     by hour = hourofday(TimeGenerated), v, g, m, a, api, subscription,
-        deployment = llmDeployment, model = llmModel{by_backend}
+        deployment = llmDeployment, model = llmModel, onBehalf, og, om, oi, oapi{by_backend}
 """
     )
 
@@ -223,7 +296,7 @@ def peaks_query(window: QueryWindow, apis: Iterable[str]) -> str:
         + f"""gatewayRows
 | where isempty(reason)
 | join kind=leftouter llmRows on CorrelationId
-{_ATTRIBUTION_KEYS}| extend link = case(
+{_SERVED_TOKENS}{_ATTRIBUTION_KEYS}| extend link = case(
     v == "1" and isnotempty(g), strcat("t:", g, "|", m),
     isnotempty(subscription), strcat("s:", subscription),
     "")
@@ -245,8 +318,8 @@ def deployment_peaks_query(
 
     ``deployments`` maps API names to the deployment key they front. ``pools`` maps model pool
     API names to how their calls are placed on a member deployment, which the query repeats from
-    each call's backend just as :meth:`PoolMembers.member_for` does. Requests count only calls that
-    reached the model; tokens exist only for those anyway.
+    each call's backend just as :meth:`PoolMembers.member_for` does. Requests count only calls
+    that reached the model, and tokens only calls it served.
     """
 
     mapping: dict[str, str] = {}
@@ -287,7 +360,7 @@ def deployment_peaks_query(
 {member_lets}gatewayRows
 | where isempty(reason)
 | join kind=leftouter llmRows on CorrelationId
-{member_columns}| extend deploymentKey = {deployment_key}
+{_SERVED_TOKENS}{member_columns}| extend deploymentKey = {deployment_key}
 | where isnotempty(deploymentKey)
 | summarize tokens = sum(totalTokens), requests = countif(BackendResponseCode > 0)
     by deploymentKey, minute = bin(TimeGenerated, 1m)

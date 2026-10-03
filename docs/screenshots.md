@@ -106,12 +106,12 @@ portal at `http://localhost:5174` signs you in as the demo end user, Megan Bowen
 
 - `demo_fakes.py` is the fictional Azure side. It extends the API's test doubles in
   `apps/api/tests` into a Contoso estate: a production gateway MOSAIC can read, a development copy
-  of it whose APIs still point at the production accounts, a partner gateway that answers `403`
-  so it shows **Access needed**, Azure OpenAI and Foundry accounts, two more Foundry accounts in
-  other regions that host Claude, a Key Vault that MOSAIC keeps a partner's Foundry key in and the
-  gateways can read it from, and MCP servers. MOSAIC reaches them
-  through `httpx` mock transports, so nothing leaves the machine. A fake Log Analytics workspace
-  answers MOSAIC's usage queries from the gateways' generated logs, a day at a time.
+  of it whose APIs still point at the production accounts, a partner gateway that answers `403` so
+  it shows **Access needed**, Azure OpenAI and Foundry accounts, two more Foundry accounts in other
+  regions that host Claude, a Key Vault that MOSAIC keeps a partner's Foundry key in and the
+  gateways can read it from, and MCP servers. MOSAIC reaches them through `httpx` mock transports,
+  so nothing leaves the machine. A fake Log Analytics workspace answers MOSAIC's usage queries from
+  the gateways' generated logs, a day at a time.
 - `demo_api.py` runs the production FastAPI app with in-memory repositories and swaps its
   Azure-facing services for the fakes. It then seeds the estate through MOSAIC's own services, in
   the order an operator would: add a custom Partner environment, create cost centers with their
@@ -137,25 +137,27 @@ portal at `http://localhost:5174` signs you in as the demo end user, Megan Bowen
   of its deployments, drawn by weight, and Johanna Lorenz's calls to it are refused because she
   holds no grant. Pool calls also leave the attempt traces the pool's policy writes. North Central
   US runs short of Opus capacity, so some Opus calls are throttled there and retried in another
-  region, which the pool's **Health** card shows. MOSAIC's rollup job reads the traffic back, so
-  the Dashboard, Analytics, and the portal's **Usage & cost** page show measured figures. They are
-  priced from the price list MOSAIC ships, plus what the seed sets through the pricing service: the
-  partner's declared GPT-4.1 mini deployment's type, a negotiated GPT-4o rate from next month,
-  which the **Pricing** page shows as scheduled, and what Contoso pays for Claude Opus 4.5, Claude
-  Sonnet 4.5, and Claude Haiku 4.5, which prices each pool call at the deployment that served it.
-  The partner's Claude, Mistral Large, Cohere, and realtime deployments and the adopted APIs stay
-  unpriced, so the **Unpriced deployments** tab has something to show. Every page therefore renders
-  what the product would show for that estate. Budget email is turned on against a Communication
-  Services double that accepts every message and delivers none, and the seed sets budgets from this
-  month's spend so far: Customer Insights near its limit, Customer Support past its own and blocked
-  at the gateways, Finance on track, and an organization budget that only warns. Sizing them from
-  the month's spend keeps those levels whatever the date, so in a capture's first UTC day the
-  amounts are only a few hours' worth. The demo runs no rollup or budget loop afterwards, so every
-  shot in a run shows the same figures. The traffic and timestamps follow the clock, though, so
-  they shift a little from one run to the next. Requests from the portal's origin are answered as
-  Megan Bowen with the `User` role, and all others as Adele Vance with `Admin` and `User`. Local
-  authentication is refused outside local and test environments, so the demo can't be pointed at a
-  deployed MOSAIC.
+  region, which the pool's **Health** card shows. The published Docs Search MCP server calls GPT-4o
+  mini as its own managed identity, so many of its tool calls make model calls that pass on the
+  gateway's reference, and a few pass on one MOSAIC can't use. MOSAIC's rollup job reads it all
+  back, so the Dashboard, Analytics, and the portal's **Usage & cost** page show measured figures.
+  They are priced from the price list MOSAIC ships, plus what the seed sets through the pricing
+  service: the partner's declared GPT-4.1 mini deployment's type, a negotiated GPT-4o rate from
+  next month, which the **Pricing** page shows as scheduled, and what Contoso pays for Claude Opus
+  4.5, Claude Sonnet 4.5, and Claude Haiku 4.5, which prices each pool call at the deployment that
+  served it. The partner's Claude, Mistral Large, Cohere, and realtime deployments and the adopted
+  APIs stay unpriced, so the **Unpriced deployments** tab has something to show. Every page
+  therefore renders what the product would show for that estate. Budget email is turned on against
+  a Communication Services double that accepts every message and delivers none, and the seed sets
+  budgets from this month's spend so far: Customer Insights near its limit, Customer Support past
+  its own and blocked at the gateways, Finance on track, and an organization budget that only
+  warns. Sizing them from the month's spend keeps those levels whatever the date, so in a capture's
+  first UTC day the amounts are only a few hours' worth. The demo runs no rollup or budget loop
+  afterwards, so every shot in a run shows the same figures. The traffic and timestamps follow the
+  clock, though, so they shift a little from one run to the next. Requests from the portal's origin
+  are answered as Megan Bowen with the `User` role, and all others as Adele Vance with `Admin` and
+  `User`. Local authentication is refused outside local and test environments, so the demo can't be
+  pointed at a deployed MOSAIC.
 - `capture.py` opens each shot in a fresh Chromium context 1440 pixels wide, with the shot's theme
   set both as the operating-system preference and as MOSAIC's stored preference. It waits for
   every spinner to clear and for the shot's ready text, runs the shot's actions, captures the
@@ -242,7 +244,7 @@ shows both themes. Keep new shots in that pattern.
 | `console-pool-health` | Console | `/pools`, Anthropic Claude opened, scrolled to **Health** for the last 24 hours | Dark | Pool health |
 | `console-pool-editor` | Console | `/pools`, **Create pool** on the Claude Haiku 4.5 suggestion, on the **3. Models** step, never saved | Light | Create a pool |
 | `console-endpoint-pools` | Console | `/models`, Contoso AI Foundry selected, scrolled to its deployments and **Used by pools** | Dark | Pools on an endpoint |
-| `console-mcps` | Console | `/mcps`, showing published and registered MCP servers | Light | MCP servers |
+| `console-mcps` | Console | `/mcps`, showing published and registered MCP servers, and the application the published one calls models as | Light | MCP servers |
 | `console-identity` | Console | `/identity?tab=agents` | Dark | Identity |
 | `console-directory-picker` | Console | `/identity?tab=agents`, **Add agent** dialog with query `agent` | Light | Directory picker |
 | `console-security-group-members` | Console | `/identity?tab=workloads`, filtered to **AI Model Users** | Dark | Security group members |
@@ -257,6 +259,7 @@ shows both themes. Keep new shots in that pattern.
 | `console-analytics-cost` | Console | `/analytics?tab=cost` | Light | Cost |
 | `console-pricing` | Console | `/pricing`, **Prices** tab filtered to `2024-11-20` | Dark | Pricing |
 | `console-analytics-consumers` | Console | `/analytics?tab=consumers` | Light | Consumers |
+| `console-analytics-mcp-model-use` | Console | `/analytics?tab=consumers`, scrolled to **Model use through MCP servers** | Dark | Model use through MCP servers |
 | `console-analytics-limits` | Console | `/analytics?tab=limits` | Dark | Grant limits |
 | `console-gateway-telemetry` | Console | Contoso AI Gateway, **Overview** tab, scrolled to **Telemetry** | Light | Gateway telemetry |
 | `console-analytics-reliability` | Console | `/analytics?tab=reliability` | Dark | Reliability |
@@ -269,5 +272,5 @@ shows both themes. Keep new shots in that pattern.
 | `portal-mcp-connection` | Portal | `/access`, with an enforced MCP grant's **Connection details** open | Dark | MCP connection |
 | `portal-requests` | Portal | `/requests` | Dark | My requests |
 | `portal-usage` | Portal | `/usage` | Light | Usage & cost |
-| `portal-usage-resources` | Portal | `/usage`, scrolled to **Cost centers** | Dark | Cost centers and usage by resource |
+| `portal-usage-resources` | Portal | `/usage`, scrolled to **Cost centers**, then **Model use through MCP servers** | Dark | Cost centers and usage by resource |
 | `portal-budget-banner` | Portal | `/access`, with the budget banner for Customer Insights | Light | Budget banner |

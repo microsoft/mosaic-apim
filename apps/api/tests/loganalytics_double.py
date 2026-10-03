@@ -3,6 +3,9 @@
 Each query is recognised by its shape, and answered by applying in Python what the KQL does:
 the same filters, grouping, and sums. Tests describe the calls a gateway handled, and the rollup job
 reads them back exactly as it would read the real tables.
+
+Which calls a query reads token counts for is read from the query itself, so a query that stops
+leaving out the tokens of calls the model never served is answered with those tokens.
 """
 
 from __future__ import annotations
@@ -16,6 +19,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from mosaic_api.integrations.loganalytics import PROBE_HOURS, Row
+from mosaic_api.integrations.loganalytics.kql import LLM_LOG_MARGIN, MCP_CALL_ALLOWANCE
 from mosaic_api.usage_telemetry import LATENCY_BUCKETS_MS
 
 _START = re.compile(r"let startTime = datetime\(([^)]+)\);")
@@ -27,6 +31,43 @@ _MEMBER_LOOKUP = re.compile(r"let (memberBy[A-Za-z]+) = dynamic\((\{.*?\})\);")
 _BACKEND_HOST = re.compile(r"^[a-z][a-z0-9+.-]*://([^/:?#]+)")
 _BACKEND_DEPLOYMENT = re.compile(r"/openai/deployments/([^/?#]+)")
 _TRIP_RULE = re.compile(r"countif\((throttled(?: \+ failed)?) >= ([0-9]+)\)")
+# How a query marks the calls the model deployment served, spelled out here rather than taken
+# from the code under test, and the token columns it can keep for those calls only.
+_SERVED = re.compile(
+    r"\|\s*extend\s+served\s*=\s*isnotnull\(\s*BackendResponseCode\s*\)\s+"
+    r"and\s+BackendResponseCode\s+between\s*\(\s*200\s*\.\.\s*299\s*\)"
+)
+_TOKEN_COLUMNS = ("promptTokens", "completionTokens", "totalTokens")
+_TOKEN_GATES = {
+    column: re.compile(
+        rf"\b{column}\s*=\s*iff\(\s*served\s*,\s*{column}\s*,\s*long\(\s*null\s*\)\s*\)"
+    )
+    for column in _TOKEN_COLUMNS
+}
+
+
+def served_gate_span(query: str) -> tuple[int, int] | None:
+    """The location of the gate that marks calls the model deployment served."""
+
+    match = _SERVED.search(query)
+    return match.span() if match else None
+
+
+def token_gate_span(query: str, column: str) -> tuple[int, int] | None:
+    """The location of ``column`` being kept only for served calls."""
+
+    match = _TOKEN_GATES[column].search(query)
+    return match.span() if match else None
+
+
+def served_only(query: str) -> frozenset[str]:
+    """The token columns ``query`` reads only for calls the model deployment served."""
+
+    if served_gate_span(query) is None:
+        return frozenset()
+    return frozenset(
+        column for column in _TOKEN_COLUMNS if token_gate_span(query, column) is not None
+    )
 
 
 @dataclass
@@ -61,6 +102,10 @@ class GatewayCall:
     client_app: str = ""
     version: str = "1"
     traced: bool = True
+    # The trace's MCP call reference: on a model call, the MCP call an application named; on an
+    # MCP call to a server with a model caller, its own request ID, beside that model caller.
+    reference: str = ""
+    model_caller: str = ""
     # A refusal by MOSAIC's policy: its reason, and the caller and client app it validated.
     denial_reason: str = ""
     denied_caller: str = ""
@@ -80,6 +125,24 @@ class GatewayCall:
         if self.prompt_tokens is None and self.completion_tokens is None:
             return None
         return (self.prompt_tokens or 0) + (self.completion_tokens or 0)
+
+    @property
+    def served(self) -> bool:
+        """Whether the model deployment answered the call with a 2xx status."""
+
+        return 200 <= self.backend_code < 300
+
+    def tokens(self, gated: frozenset[str]) -> tuple[int | None, int | None, int | None]:
+        """The prompt, completion, and total tokens a query that gates ``gated`` reads."""
+
+        def read(column: str, value: int | None) -> int | None:
+            return value if self.served or column not in gated else None
+
+        return (
+            read("promptTokens", self.prompt_tokens),
+            read("completionTokens", self.completion_tokens),
+            read("totalTokens", self.total_tokens),
+        )
 
     @property
     def reason(self) -> str:
@@ -184,14 +247,38 @@ class FakeLogs:
         admitted = [call for call in rows if not call.reason]
         if kind == "poolHealth":
             return self._pool_health(admitted, query)
+        gated = served_only(query)
         if kind == "deploymentPeaks":
             mapping = json.loads(_DEPLOYMENTS.search(query).group(1))  # type: ignore[union-attr]
             lookups = {name: json.loads(value) for name, value in _MEMBER_LOOKUP.findall(query)}
-            return self._deployment_peaks(admitted, mapping, lookups)
+            return self._deployment_peaks(admitted, mapping, gated, lookups)
         if kind == "peaks":
-            return self._peaks(admitted)
+            return self._peaks(admitted, gated)
         pools = _POOLS.search(query)
-        return self._calls(admitted, set(json.loads(pools.group(1))) if pools else None)
+        return self._calls(
+            admitted,
+            gated,
+            self._mcp_calls(window_start, window_end, apis),
+            set(json.loads(pools.group(1))) if pools else None,
+        )
+
+    def _mcp_calls(
+        self, start: datetime, end: datetime, apis: set[str]
+    ) -> dict[str, GatewayCall]:
+        """The calls query's MCP leg: traced calls naming a model caller, by their reference.
+
+        Read either side of the window, by the LLM margin, and the earliest call wins a reference.
+        """
+
+        found: dict[str, GatewayCall] = {}
+        for call in sorted(self.calls, key=lambda item: item.time):
+            if not (start - LLM_LOG_MARGIN <= call.time < end + LLM_LOG_MARGIN):
+                continue
+            if call.api.casefold() not in apis or not call.traced:
+                continue
+            if call.reference and call.model_caller:
+                found.setdefault(call.reference.casefold(), call)
+        return found
 
     @staticmethod
     def _kind(query: str) -> str:
@@ -243,7 +330,39 @@ class FakeLogs:
             call.client_app.casefold(),
         )
 
-    def _calls(self, calls: list[GatewayCall], pools: set[str] | None = None) -> list[Row]:
+    @staticmethod
+    def _on_behalf(
+        call: GatewayCall, mcp_calls: dict[str, GatewayCall]
+    ) -> tuple[str, str, str, str, str]:
+        """What the calls query reports of the MCP call a model call names, as KQL works it out."""
+
+        reference = call.reference.casefold() if call.traced and not call.model_caller else ""
+        if not reference:
+            return "", "", "", "", ""
+        if reference == "!":
+            return "malformed", "", "", "", ""
+        mcp = mcp_calls.get(reference)
+        if mcp is None:
+            return "missing", "", "", "", ""
+        allowance = MCP_CALL_ALLOWANCE.total_seconds() * 1000
+        apart = abs((call.time - mcp.time).total_seconds() * 1000)
+        if apart > mcp.total_time_ms + allowance:
+            return "late", "", "", "", ""
+        return (
+            "found",
+            mcp.grant.casefold(),
+            mcp.member.casefold(),
+            mcp.model_caller.casefold(),
+            mcp.api.casefold(),
+        )
+
+    def _calls(
+        self,
+        calls: list[GatewayCall],
+        gated: frozenset[str],
+        mcp_calls: dict[str, GatewayCall] | None = None,
+        pools: set[str] | None = None,
+    ) -> list[Row]:
         groups: dict[tuple[Any, ...], list[GatewayCall]] = defaultdict(list)
         for call in calls:
             version, grant, member, client_app = self._trace(call)
@@ -257,6 +376,7 @@ class FakeLogs:
                 call.subscription.casefold(),
                 call.deployment if call.total_tokens is not None else None,
                 call.model if call.total_tokens is not None else None,
+                *self._on_behalf(call, mcp_calls or {}),
                 _backend(call, pools) if pools is not None else None,
             )
             groups[key].append(call)
@@ -272,9 +392,15 @@ class FakeLogs:
                 subscription,
                 deployment,
                 model,
+                on_behalf,
+                mcp_grant,
+                mcp_member,
+                model_caller,
+                mcp_api,
                 backend,
             ) = key
             statuses = [call.status for call in members]
+            tokens = [call.tokens(gated) for call in members]
             served_by = (
                 dict(zip(("backendId", "backendHost", "backendDeployment"), backend, strict=True))
                 if backend is not None
@@ -291,6 +417,11 @@ class FakeLogs:
                     "subscription": subscription,
                     "deployment": deployment or "",
                     "model": model or "",
+                    "onBehalf": on_behalf,
+                    "og": mcp_grant,
+                    "om": mcp_member,
+                    "oi": model_caller,
+                    "oapi": mcp_api,
                     **served_by,
                     "requests": len(members),
                     "ok": statuses.count("ok"),
@@ -300,10 +431,10 @@ class FakeLogs:
                     "serverErrors": statuses.count("serverError"),
                     "backendThrottled": sum(1 for call in members if call.backend_code == 429),
                     "keyRequests": sum(1 for call in members if call.subscription),
-                    "metered": sum(1 for call in members if call.total_tokens is not None),
-                    "promptTokens": _sum(call.prompt_tokens for call in members),
-                    "completionTokens": _sum(call.completion_tokens for call in members),
-                    "totalTokens": _sum(call.total_tokens for call in members),
+                    "metered": sum(1 for _, _, total in tokens if total is not None),
+                    "promptTokens": _sum(prompt for prompt, _, _ in tokens),
+                    "completionTokens": _sum(completion for _, completion, _ in tokens),
+                    "totalTokens": _sum(total for _, _, total in tokens),
                     "totalTime": sum(call.total_time_ms for call in members),
                     "backendTime": sum(call.backend_time_ms for call in members),
                     **_latency(members),
@@ -317,10 +448,11 @@ class FakeLogs:
         groups: dict[tuple[str, datetime], list[GatewayCall]],
         requests: Callable[[list[GatewayCall]], int],
         name: str,
+        gated: frozenset[str],
     ) -> list[Row]:
         peaks: dict[tuple[str, int], tuple[int, int]] = {}
         for (key, minute), members in groups.items():
-            tokens = _sum(call.total_tokens for call in members)
+            tokens = _sum(call.tokens(gated)[2] for call in members)
             count = requests(members)
             held = peaks.get((key, minute.hour), (0, 0))
             peaks[(key, minute.hour)] = (max(held[0], tokens), max(held[1], count))
@@ -329,7 +461,7 @@ class FakeLogs:
             for (key, hour), (tokens, count) in peaks.items()
         ]
 
-    def _peaks(self, calls: list[GatewayCall]) -> list[Row]:
+    def _peaks(self, calls: list[GatewayCall], gated: frozenset[str]) -> list[Row]:
         groups: dict[tuple[str, datetime], list[GatewayCall]] = defaultdict(list)
         for call in calls:
             version, grant, member, _ = self._trace(call)
@@ -341,12 +473,13 @@ class FakeLogs:
                 continue
             minute = call.time.replace(second=0, microsecond=0)
             groups[(link, minute)].append(call)
-        return self._busiest_minutes(groups, len, "link")
+        return self._busiest_minutes(groups, len, "link", gated)
 
     def _deployment_peaks(
         self,
         calls: list[GatewayCall],
         mapping: dict[str, str],
+        gated: frozenset[str],
         lookups: dict[str, dict[str, str]] | None = None,
     ) -> list[Row]:
         groups: dict[tuple[str, datetime], list[GatewayCall]] = defaultdict(list)
@@ -358,6 +491,7 @@ class FakeLogs:
             groups,
             lambda members: sum(1 for call in members if call.backend_code > 0),
             "deploymentKey",
+            gated,
         )
 
     @staticmethod
