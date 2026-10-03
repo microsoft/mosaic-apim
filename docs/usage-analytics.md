@@ -49,6 +49,11 @@ or the deployment alone, when only one of the pool's deployments has it. It repo
 the deployment it finds. A call it can't place counts toward the pool and its model, on no
 deployment, and has no price.
 
+A pool's policy also writes a `mosaic-attempt v=1` trace after each attempt, naming the pool model,
+the backend, host, and path it called, and the status it got. The rollup job ignores these traces.
+A pool's **Health** card in the console queries the workspace for them when it opens, as a
+gateway's **Telemetry** check does, and needs the same Monitoring Reader role.
+
 ## Set up a gateway
 
 | What MOSAIC needs | Why | Who sets it up |

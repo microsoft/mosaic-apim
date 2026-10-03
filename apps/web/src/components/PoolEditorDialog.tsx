@@ -372,7 +372,7 @@ export function PoolEditorDialog({ pool, initialGatewayId, prefill, onClose, onS
                   label="Name"
                   required
                   validationMessage={shown(nameProblem, form.displayName)}
-                  hint="Administrators see it now, and users will see it in the portal, for example Anthropic."
+                  hint="For administrators, for example Anthropic. The portal lists the pool’s models by their own names and never names the pool."
                 >
                   <Input value={form.displayName} onChange={(_, data) => update({ displayName: data.value })} />
                 </Field>
@@ -407,7 +407,7 @@ export function PoolEditorDialog({ pool, initialGatewayId, prefill, onClose, onS
                 )}
                 <Field
                   label="Portal catalog"
-                  hint="The portal doesn’t list pools yet. This applies once access requests cover pools."
+                  hint="Listed models appear in the portal catalog once callers need a grant and the gateway serves them. Hidden ones can’t be found or requested, but anyone already granted one still connects."
                 >
                   <RadioGroup
                     layout="horizontal"

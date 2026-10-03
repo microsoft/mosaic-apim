@@ -484,7 +484,11 @@ explicit local/test modes and application startup rejects them when `MOSAIC_ENVI
   plan and explicit apply as a publication. A governed pool admits only callers granted one of its
   models under a cost center, with one key per person and cost center for all of the pool's models
   they hold, and its calls count toward cost center limits, budgets, Analytics, pricing, and the
-  usage report. See [Model pools](#model-pools)
+  usage report. Each pool's page shows how its deployments answered, from a trace its policy writes
+  for every attempt, and a re-plan warns when someone changed the pool's resources in API
+  Management. The console suggests pools for models deployed on two or more endpoints, names the
+  pools that use each deployment, warns when portal users would see a model twice, and lists pools
+  with problems on the dashboard. See [Model pools](#model-pools)
 - Async repository abstraction with explicit in-memory and Cosmos implementations
 - React/TypeScript/Vite administrator console using Fluent UI, React Router, TanStack Query, and
   MSAL, with responsive navigation and persisted light/dark/system themes. It confirms the caller
@@ -1486,7 +1490,7 @@ it's throttled. A **model pool** serves one vendor's models from all of those de
 one API. Callers send a model name, such as `claude-opus-4-5`, to one base URL, and the gateway
 sends each request to a deployment that can take it. They never see the endpoints, regions, or
 deployments behind the pool. [ADR 0024](docs/adr/0024-model-pools.md) records the design. Its first
-three phases are built, and this section describes them.
+four phases are built, and this section describes them.
 
 A pool runs on one gateway and takes that gateway's environment. It serves one vendor's models
 through one API shape ([ADR 0012](docs/adr/0012-format-aware-model-publishing.md)), such as
@@ -1669,6 +1673,36 @@ models, **Approvals** says the pool's plan applies an approved grant, **Connecti
 models one key serves, and **Analytics** labels a pool grant with its pool and model. Saving a pool
 records intent. Nothing changes in API Management until a reviewed plan is applied.
 
+**Health.** After every attempt, the pool's policy writes a trace naming the pool model, the
+backend it sent the attempt to, the host and path it called, and the status it got. It never
+records a query string, a header, or a body. A pool's **Health** card reads those traces from the
+gateway's logs for the last hour, 6 hours, 24 hours, or 7 days:
+
+- for each model, how many calls succeeded, how many were unavailable because the last deployment
+  tried was throttled or failed, how many got a client error, how many were retried, and how many
+  its overflow deployments answered;
+- for each deployment, its attempts, successes, 429s, failures, and client errors, the minutes its
+  breaker would have tripped, and its last attempt.
+
+It reads the logs that [Measuring a gateway's usage](#measuring-a-gateways-usage) sets up. When
+MOSAIC lacks permission to read them, the card shows the command that grants Monitoring Reader. A
+pool applied before the trace existed shows its calls as untraced until it's applied again. The
+newest calls take a few minutes to show.
+
+**Drift and duplicates.** A plan for a published pool warns when someone removed a resource MOSAIC
+created for it, or changed its API policy or policy fragment, outside MOSAIC, since applying puts
+them back. A pool's page and its plans also warn when portal users would see one of its models
+twice: a deployment behind it is also published on its own, or another pool on the gateway offers
+a model under the same name.
+
+**Suggestions and where pools are used.** The Pools page's **Suggested pools** proposes a pool for
+each managed gateway, vendor, and API, with the models deployed on two or more endpoints the
+gateway can use that no pool there uses yet. **Create pool** opens the editor with those models
+and their deployments chosen. On the Models page, each deployment names the pools that use it,
+and an endpoint's **Used by pools** card lists them with the deployments each one uses there. The
+Dashboard's **Pools** panel lists the published pools with a deployment the gateway can't use or
+another problem, and the pools whose last apply failed.
+
 | Method | Route under `/api/v1` | Result |
 | --- | --- | --- |
 | GET | `/gateways/{gatewayId}/pool-candidates` | The deployments a pool on that gateway could use, grouped by model, and why others can't be used |
@@ -1678,6 +1712,7 @@ records intent. Nothing changes in API Management until a reviewed plan is appli
 | POST | `/model-pools` | Creates a pool, `201` |
 | GET, PATCH, DELETE | `/model-pools/{id}` | Reads, changes, or removes a pool. `governedAccess` turns on governed access, and can't be cleared once set. Removal is refused while the pool owns API Management resources |
 | GET | `/model-pools/{id}/detail` | The pool with each member judged against today's inventory, environments, and gateway |
+| GET | `/model-pools/{id}/health?hours=` | How each model's calls ended and how each member answered over the last 1 to 168 hours, 24 by default, from the gateway's logs |
 | POST | `/model-pools/{id}/plan` | A plan to review |
 | POST | `/model-pools/{id}/apply?plan={planId}` | Runs that plan, `202` with the run |
 | POST | `/model-pools/{id}/unpublish-plan` | The unpublish plan to review. Removes nothing |
@@ -1689,12 +1724,8 @@ records intent. Nothing changes in API Management until a reviewed plan is appli
 Entitlement, access request, and portal routes take a `poolModel` resource, whose `scopeId` is the
 pool. Pools add no routes of their own for access.
 
-**Not built yet.** ADR 0024's later phases add:
-
-- A pool health view, with the member behind each attempt, throttling, breaker trips, and overflow,
-  and drift shown on re-plan. A helper to start a pool from existing publications of one model.
-- In the console, suggested pools, which pools use an endpoint, a warning when two pools serve the
-  same model, and a pools tile on the dashboard.
+**Not built yet.** ADR 0024's last phase adds a model router pool type, on API Management's unified
+model API, once that's generally available.
 
 Pools are built and tested against the API Management test double. The behaviors ADR 0024 lists
 under *Verify on a real gateway* still need confirming on a real one.
@@ -2228,7 +2259,11 @@ diagnostic's verbosity to Error.
 
 A governed [model pool](#model-pools) traces its calls the same way. MOSAIC places each call on the
 member deployment that served it, from the backend the gateway logged, and prices it at that
-deployment. Calls it can't place stay with the pool, unpriced.
+deployment. Calls it can't place stay with the pool, unpriced. Every pool, governed or not, also
+writes a `mosaic-attempt v=1` trace after each attempt, naming the pool model, the backend, host,
+and path it called, and the status it got, but no caller. The pool's **Health** card reads them.
+Application Insights at Information records them too, so a retried call adds a trace there for
+each attempt.
 
 ### Usage analytics in the console
 
@@ -2349,7 +2384,8 @@ plan**. A plan compares what exists, not what it contains: a resource missing fr
 shows as Create, and one someone changed shows as Update, the same as one nobody touched, because
 applying replaces it with what the publication describes. This is the same gap
 [ADR 0005](docs/adr/0005-adopting-model-apis-and-mcp-servers.md) already acknowledged for imported
-records.
+records. A [model pool](#model-pools)'s plan goes further: it warns when a resource MOSAIC created
+for the pool is missing, or when its API policy or policy fragment changed after the last apply.
 
 ## Roadmap
 
@@ -2393,18 +2429,21 @@ records.
    [ADR 0023](docs/adr/0023-budgets-and-notifications.md).
 8. **Model pools:** serve one vendor's models from many deployments, across endpoints and regions,
    behind one API whose callers never see the deployments.
-   - Built: the first three phases. Administrators create **breaker** (load-balanced, with circuit
+   - Built: the first four phases. Administrators create **breaker** (load-balanced, with circuit
      breakers), **linear** (ordered failover), and **preferential** (provisioned throughput first,
      with pay-as-you-go overflow) pools of Azure deployments, and publish, unpublish, and recover
      them through reviewed plans. The Models page shows each deployment's capacity type
-     (provisioned, pay-as-you-go, or batch), its processing scope, and any Azure spillover. A
-     governed pool admits only people, applications, and agents granted one of its models under a
-     cost center, each with one key per pool and cost center, created on request. Pools reuse cost
-     center limits, budget blocking, and grant attribution, each call is priced at the member
-     deployment that served it, and the portal lists a pool's models rather than its deployments.
-     A pool's members can be reached with an API key, on an Azure endpoint registered with one or,
-     for Claude, on AWS Bedrock. See [Model pools](#model-pools).
-   - Next: a pool health view, with the member behind each attempt, and drift shown on re-plan.
+     (provisioned, pay-as-you-go, or batch), its processing scope, any Azure spillover, and the
+     pools that use it. A governed pool admits only people, applications, and agents granted one of
+     its models under a cost center, each with one key per pool and cost center, created on request.
+     Pools reuse cost center limits, budget blocking, and grant attribution, each call is priced at
+     the member deployment that served it, and the portal lists a pool's models rather than its
+     deployments. A pool's members can be reached with an API key, on an Azure endpoint registered
+     with one or, for Claude, on AWS Bedrock. Each pool shows how its deployments answered, a
+     re-plan warns about drift, and the console suggests pools and lists those with problems on the
+     Dashboard. See [Model pools](#model-pools).
+   - Next: a model router pool type, once API Management's unified model API is generally
+     available.
 
    See [ADR 0024](docs/adr/0024-model-pools.md).
 9. **Catalog ecosystem:** API Center experiences, MCP tool-level governance, broader self-service

@@ -2,17 +2,19 @@
 
 **Status:** Proposed
 
-Phases 1 to 3 are implemented. Administrators create, publish, unpublish, and recover breaker,
+Phases 1 to 4 are implemented. Administrators create, publish, unpublish, and recover breaker,
 linear, and preferential pools, and the console lists and shows them. A pool's members are Azure
 deployments, reached with the gateway's Microsoft Entra ID or with a key, and Claude models on AWS
 Bedrock, reached with a Bedrock API key. A governed pool admits only callers granted one of its
 models under a cost center, each with their own key or a Microsoft Entra token. Its calls count
 toward the cost center's limits, pooled quotas, spend, and budget, and they're priced at the
 member that served each one. The portal lists a governed pool's models by display name, unless
-they're hidden, and never names the pool or its members. Phases 4 and 5, which add health and a
-router, aren't built yet. Nor are the console's suggested pools, its list of the pools that use an
-endpoint, its warning about a model offered twice, and its dashboard tile. The
-[README](../../README.md#model-pools) describes what is built.
+they're hidden, and never names the pool or its members. Each pool's page shows how its members
+answered, from a trace the policy writes for every attempt, and a re-plan warns when someone
+changed the pool's resources outside MOSAIC. The console suggests pools, lists the pools that use
+each endpoint, warns when portal users would see a model twice, and puts pools with problems on
+the dashboard. Phase 5, a model router, isn't built. The [README](../../README.md#model-pools)
+describes what is built.
 
 For pools only, this record amends [ADR 0011](0011-governed-model-access.md), as
 [ADR 0022](0022-cost-centers.md) amended it: a person or application gets one key per pool and
@@ -46,6 +48,18 @@ key-authenticated endpoints were merged. What changed in this record:
 **Revised 2026-10-02** after phase 3 was built. *Members reached with a key* now records how
 AWS Bedrock members are registered, routed, disclosed, and priced, and answers the questions
 phase 3 had left open.
+
+**Revised 2026-10-03** after phase 4 was built. *Health and drift (phase 4)* records what was
+built. Where it differs from the plan:
+
+- Each attempt writes a trace, not a custom metric. Traces land in the gateway's resource logs,
+  which MOSAIC already reads, and `emit-metric` would need Application Insights.
+- The helper that creates a pool became *Suggested pools*. It starts from models deployed on two
+  or more endpoints, published or not, rather than from publications alone.
+- The dashboard lists pools with problems, not every degraded member, and leaves health to each
+  pool's page.
+- Drift covers the pool's API policy and fragment, and resources removed outside MOSAIC, but not
+  backends or API settings.
 
 ## Context
 
@@ -632,6 +646,7 @@ A pool is unpublished the way ADR 0010's 2026-09-30 amendment unpublishes a publ
   - For each member: order or priority, endpoint, region, deployment, capacity type and size,
     processing scope, version, readiness, Azure spillover, and a drain toggle.
   - Resilience and access settings, and run history.
+  - From phase 4, a *Health* card: how the pool's calls ended, and how each member answered.
 - **Create wizard.**
   1. Basics: gateway, vendor and API style, name, path, and visibility. The gateway's environment
      is shown, and becomes the pool's.
@@ -657,8 +672,8 @@ A pool is unpublished the way ADR 0010's 2026-09-30 amendment unpublishes a publ
 - **Analytics** (from phase 2). A pool's API appears as any API does, its grants as any grants
   do, and its members as the deployments its calls were priced at. The resource filter offers the
   pool once its API is in API Management, and calls made with its shared key are unattributed.
-- **Dashboard.** A pools tile that lists degraded members, such as *cannot invoke* or a missing
-  deployment.
+- **Dashboard** (from phase 4). A *Pools* panel lists the published pools with a problem, worst
+  first, and the members behind it. See *Health and drift (phase 4)*.
 
 ### Members reached with a key (phase 3)
 
@@ -757,6 +772,119 @@ a backend pool with each other, each carrying its own key on its backend. That d
 key anywhere new: ADR 0018 already notes that anyone who can edit policies can read any named
 value. The pool would still own those backends, so no other API routes to them.
 
+### Health and drift (phase 4)
+
+Phase 4 tells administrators how a pool's members are answering, and when its resources changed
+outside MOSAIC.
+
+**Attempt traces.** Inside `retry`, after each `forward-request`, the pool's policy writes a trace
+with source `mosaic`:
+
+```text
+mosaic-attempt v=1 m=<pool model> n=<attempt> b=<backend> s=<status> e=<exhausted> h=<host> p=<path>
+```
+
+- `b` is the backend the attempt was sent to: a member's own backend, or the model's backend pool.
+- `s` is the status the attempt got, or 0 when no response came back.
+- `e` is 1 when the backend pool answered that no member was left to try.
+- `h` and `p` are the host and path the attempt called. They place an attempt that went through a
+  backend pool on a member. The path comes last, because part of it is the caller's, and readers
+  take the first value of each key.
+- It never records a query string, a header, or a request or response body.
+- Readers split the message into `key=value` pairs and ignore keys they don't know. Only a change
+  that breaks them bumps `v`.
+
+The traces land in `ApiManagementGatewayLogs.TraceRecords` when the gateway's Azure Monitor
+diagnostic logs at Information, as ADR 0019 already requires. A custom metric was rejected,
+because `emit-metric` needs Application Insights. If the gateway also logs to Application Insights
+at Information, it records one trace per attempt, and setting that verbosity to Error stops it.
+The plan's policy facets describe the trace.
+
+**Health.** `GET /api/v1/model-pools/{id}/health?hours=` reads the pool's traces over the last 1 to
+168 whole hours, 24 by default, up to the next hour. Only administrators can read it.
+
+- For each pool model:
+  - its calls;
+  - how many succeeded, and how many were unavailable, because their last attempt was throttled
+    or failed;
+  - the rest, which got a client error;
+  - how many were retried;
+  - how many attempts the gateway answered itself, because the backend pool had no member left;
+  - how many attempts couldn't be placed on a member;
+  - and how many calls its overflow members answered successfully.
+- For each member:
+  - its attempts, and how many succeeded, were throttled (429), failed (a server error or no
+    response), or got a client error;
+  - the calls it answered, and the time of its last attempt;
+  - and, for a member in a backend pool, the minutes in which its breaker would have tripped.
+- An attempt is placed on a member by its backend, when that's the member's own: a linear
+  member's, or a key member's. An attempt through a backend pool is placed by the host it called
+  and, for the Azure OpenAI shape, the deployment in its path. When that doesn't name exactly one
+  member, the attempt is unplaced.
+- Overflow members are those a call reaches only once the others can't take it. In a linear pool,
+  they're every member after the first. In a preferential pool, they're the priority 2 members and
+  the key members. In a breaker pool, they're the key members. A drained member is never overflow.
+- *Throttling* trips a breaker on one 429. *Throttling and errors* trips it on three 429s or server
+  errors in a minute. The query counts the minutes in which a member's attempts met its pool's
+  rule. That's an estimate: API Management's window rolls, and the query's minutes are fixed.
+- A status says why there's nothing to show:
+  - `notConfigured`: MOSAIC reads no gateway telemetry.
+  - `notPublished`: the pool isn't on its gateway.
+  - `noData`: no calls reached the pool in the range.
+  - `accessDenied`: MOSAIC may not read the gateway's logs. The answer includes the command that
+    grants Monitoring Reader.
+  - `error`: the gateway is gone, or the query failed.
+- Calls that reached a backend without writing a trace are counted apart. When no call carries a
+  trace, the pool's policy predates it, and the answer says to apply the pool again.
+
+The pool's page shows this in a *Health* card below its models, for the last hour, 6 hours,
+24 hours, or 7 days.
+
+**Drift.** After a successful apply, MOSAIC reads the pool's API policy and fragment back and
+records each one's digest. Every run clears them when it starts, and so does an unpublish. If
+they can't be read, MOSAIC records none, and the next plan doesn't compare them. A plan then adds
+two kinds of warning:
+
+- A resource MOSAIC created for the pool is missing. Someone removed it outside MOSAIC, and
+  applying creates it again.
+- The live API policy or fragment no longer matches its digest. Someone changed it after the last
+  apply, and applying replaces those changes.
+
+Backend URLs and API settings aren't compared, because every apply writes them again.
+
+**Models offered twice.** For a pool the catalog shows, the pool's detail and its plans warn when
+portal users would see one of its listed models twice on the gateway: the model's member
+deployment is also published on its own, or another pool the catalog shows offers a listed model
+with the same public name. Imported model APIs aren't compared.
+
+**Pools that use an endpoint.** `GET /api/v1/model-endpoints/{id}/pools` lists the pools with
+members on the endpoint, the deployments each one uses there, and, for a deployment also
+published on its own, why portal users would see its model twice. The endpoint's page in the
+console shows them, and names the pools on each deployment row.
+
+**Suggested pools.** `GET /api/v1/model-pool-suggestions` proposes one pool per managed gateway,
+vendor, and API shape.
+
+- It names the models deployed on two or more endpoints the gateway can use, when no pool on the
+  gateway uses any of their deployments yet.
+- It names the gateway's pools that already serve that vendor through that shape.
+- It leaves out observe-mode gateways, gateways that can't run any pool type, and deployments with
+  no API shape.
+
+The Pools page lists the suggestions. *Create pool* opens the editor with every deployment the
+gateway can use already chosen. When a model's deployments run more than one version, the editor
+names them, and the administrator allows mixed versions or removes deployments until one is left.
+
+**Dashboard.** A *Pools* panel lists the published pools with a problem, worst first:
+
+- active members that can't be used, named with the problem;
+- a plan problem;
+- an apply that failed or was rolled back, even on a pool not yet published.
+
+It shows up to four pools, and three members of each, and links to each pool. It shows problems
+only: a *not confirmed* member, such as one on Bedrock, isn't one. Health stays on each pool's
+page, because each read is a Log Analytics query.
+
 ### Phases
 
 1. **Pools on Azure members reached with the gateway's identity:**
@@ -776,12 +904,15 @@ value. The pool would still own those backends, so no other API routes to them.
    - pool calls in the rollup, attributed by grant and priced per member, so Analytics, the usage
      report, and budgets include them.
 3. **Members reached with a key:** first Azure endpoints registered with a key, then AWS Bedrock.
-4. **Health and analytics:**
-   - a per-attempt metric that names the member;
-   - a pool health view: throttle rate, breaker trips, and overflow share;
-   - dashboard health;
+4. **Health and drift:**
+   - a trace for each attempt that names the member;
+   - a pool health view: how calls ended, throttling, breaker trips, and overflow;
+   - the dashboard's *Pools* panel;
    - drift, shown on re-plan;
-   - a helper that creates a pool from existing publications.
+   - suggested pools, built from models deployed on two or more endpoints;
+   - the pools that use each endpoint, and the warning about a model offered twice.
+
+   See *Health and drift (phase 4)*.
 5. **Later:** a model router pool type, on API Management's unified model API, once that's
    generally available.
 
@@ -829,6 +960,19 @@ Phase 3:
   created their named values. If it's refused, the pool stays denied until the next apply.
 - That both Bedrock hosts accept the request the gateway forwards, with the member's key in
   `x-api-key` and its model ID in the body, streamed and not.
+
+Phase 4:
+
+- That a `trace` after `forward-request` inside `retry` runs once for each attempt.
+- Whether a connection failure or timeout writes a trace, with `s=0`, or ends the call in
+  `on-error` before the trace runs. If it's the latter, a member that can't be reached shows no
+  failed attempts.
+- Whether `context.Request.Url` names the member a backend pool chose, and whether its `Path`
+  includes the backend URL's base path.
+- That the trace's expression compiles on every tier that runs pools.
+- How `TraceRecords` serializes a message: whether it escapes `/` as `\/`, as the query allows.
+- That reading a policy or fragment back in `rawxml` returns the same text each time, so its
+  digest only changes when someone changes it.
 
 ## Alternatives considered
 
@@ -887,6 +1031,8 @@ Phase 3:
   can run low until they're mapped. Reports say how many calls they left out.
 - "Pool" now means two things in MOSAIC: a model pool, and a cost center's pooled quota. The code
   and the console keep the names apart.
+- Every attempt a pool makes writes a trace, so retries add rows to the gateway's logs. A gateway
+  that also logs to Application Insights at Information records them there as well.
 
 Known limitations:
 
@@ -906,3 +1052,14 @@ Known limitations:
   portal can't say that AWS may process a request. Only the administrator sees the plan's warning.
 - **A Bedrock key isn't checked until it's used.** MOSAIC never sends it to AWS, so a wrong or
   expired key shows only as failed calls.
+- **Health lags and estimates.** Logs take a few minutes to arrive, so the newest calls are
+  missing. Breaker trips are counted in fixed minutes, not API Management's rolling window.
+- **Some attempts can't be placed.** An attempt through a backend pool is placed by the host it
+  called. When several of a model's members share a host and the path doesn't name the
+  deployment, as it does for Azure OpenAI, the attempt is unplaced.
+- **Drift shows only on re-plan,** and doesn't cover backends or API settings.
+- **The offered-twice warning ignores imported model APIs.**
+- **Suggestions need two endpoints.** A model deployed on one endpoint, or a gateway in observe
+  mode, gets none.
+- **The dashboard shows problems, not health.** A pool whose members throttle often, but can all
+  be used, isn't listed there.
