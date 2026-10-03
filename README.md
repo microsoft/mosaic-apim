@@ -1690,8 +1690,10 @@ priced per region and capacity. A provisioned member's reserved capacity is shar
 as it is for a publication, and a member removed from the pool keeps its price for earlier calls.
 Calls MOSAIC can't place on a member are never counted as free. Pricing lists them as unpriced,
 and the chargeback bills them as an unknown model. Cost center spend, budgets, Analytics, and the
-usage report all include pool calls. Reports for users never name the pool, its members, or their
-regions.
+usage report all include pool calls, and so does the model use an MCP server's application makes
+through a pool for the people who call the server
+([MCP servers that call models](docs/mcp-servers-that-call-models.md)). Reports for users never
+name the pool, its members, or their regions.
 
 **In the portal.** The catalog lists each model a governed pool serves as a **Model**, under its
 display name and the gateway's environment, with a capacity badge unless the pool hides capacity.
@@ -1897,11 +1899,12 @@ See [Connect to MCP servers published through MOSAIC](docs/connect-to-mcp-server
 agent identities, agent users, security groups and troubleshooting.
 
 An MCP server whose tools call governed models through MOSAIC does so as its own application, on
-that application's own model grant. Name that application on the published server, under
+that application's own model grant, which can be on a model API or on a model in a governed
+[model pool](#model-pools). Name that application on the published server, under
 **Calls models as** on the MCP servers page, and the server receives each call's reference to pass
-on, so its model calls can be attributed to the people it serves without giving them a grant on the
-model. Analytics, the chargeback, and each person's **Usage & cost** then show that use by person.
-See [MCP servers that call models](docs/mcp-servers-that-call-models.md) and
+on, so its model calls can be attributed to the people it serves without giving them a grant on
+the model. Analytics, the chargeback, and each person's **Usage & cost** then show that use by
+person. See [MCP servers that call models](docs/mcp-servers-that-call-models.md) and
 [ADR 0025](docs/adr/0025-mcp-model-calls-on-a-persons-behalf.md).
 
 **Unpublish** on the MCP servers page opens the same review as for models, and its routes are

@@ -8,13 +8,14 @@ deployments, reached with the gateway's Microsoft Entra ID or with a key, and Cl
 Bedrock, reached with a Bedrock API key. A governed pool admits only callers granted one of its
 models under a cost center, each with their own key or a Microsoft Entra token. Its calls count
 toward the cost center's limits, pooled quotas, spend, and budget, and they're priced at the
-member that served each one. The portal lists a governed pool's models by display name, unless
-they're hidden, and never names the pool or its members. Each pool's page shows how its members
-answered, from a trace the policy writes for every attempt, and a re-plan warns when someone
-changed the pool's resources outside MOSAIC. The console suggests pools, lists the pools that use
-each endpoint, warns when portal users would see a model twice, and puts pools with problems on
-the dashboard. Phase 5, a model router, isn't built. The [README](../../README.md#model-pools)
-describes what is built.
+member that served each one. An MCP server's application can call a pool model on a person's
+behalf, and that person's share is priced the same way. The portal lists a governed pool's models
+by display name, unless they're hidden, and never names the pool or its members. Each pool's page
+shows how its members answered, from a trace the policy writes for every attempt, and a re-plan
+warns when someone changed the pool's resources outside MOSAIC. The console suggests pools, lists
+the pools that use each endpoint, warns when portal users would see a model twice, and puts pools
+with problems on the dashboard. Phase 5, a model router, isn't built. The
+[README](../../README.md#model-pools) describes what is built.
 
 For pools only, this record amends [ADR 0011](0011-governed-model-access.md), as
 [ADR 0022](0022-cost-centers.md) amended it: a person or application gets one key per pool and
@@ -34,6 +35,7 @@ In everything else, pools follow these records unless this one says otherwise:
 - [ADR 0020](0020-price-list.md)
 - [ADR 0022](0022-cost-centers.md)
 - [ADR 0023](0023-budgets-and-notifications.md)
+- [ADR 0025](0025-mcp-model-calls-on-a-persons-behalf.md)
 
 **Revised 2026-10-01** after cost centers, budgets, measured usage, the price list, and
 key-authenticated endpoints were merged. What changed in this record:
@@ -60,6 +62,10 @@ built. Where it differs from the plan:
   pool's page.
 - Drift covers the pool's API policy and fragment, and resources removed outside MOSAIC, but not
   backends or API settings.
+
+**Revised 2026-10-03, again,** after [ADR 0025](0025-mcp-model-calls-on-a-persons-behalf.md) was
+merged. A pool takes part in model use through MCP servers as a governed model API does. See
+*Model use through MCP servers*, under *Access*.
 
 ## Context
 
@@ -620,6 +626,20 @@ A pool is unpublished the way ADR 0010's 2026-09-30 amendment unpublishes a publ
     - A user's usage report says only that MOSAIC can't price all of the model's calls. It never
       names the pool's deployments, endpoints, or regions.
   - A cost center's spend, and the budgets that compare it, include its grants' pool calls.
+- **Model use through MCP servers.** ADR 0025 lets an MCP server's application call models on
+  behalf of the person who called the server. A governed pool takes part as a governed model API
+  does:
+  - The pool's fragment reads `x-mosaic-on-behalf-of` with the same expression, so only from a
+    validated application token. It records the value as `r=` in the pool's attribution trace, and
+    removes the header with the caller's credentials and the cost center header.
+  - The MCP server's plan counts the application's enabled grant on a pool model, as it counts one
+    on a model API. The pool must be governed and on the server's gateway, because only then does
+    its policy enforce grants and attribute calls.
+  - A person's share of the application's pool calls is priced at the member that served each
+    call, like the application's own. The chargeback splits a pool grant's rows by person, and
+    each part by member, the same way.
+  - The person's portal names their share by the pool model's display name, never by the pool.
+    A share whose pool model was deleted is still priced, and is named "Unknown model".
 - **Without governed access**, a pool is reachable only through its bootstrap subscription, like a
   publication without governed access. As ADR 0010 says, the operator retrieves that key from
   Azure. The pool isn't in the portal catalog, and its calls are attributed to no grant. Phase 2

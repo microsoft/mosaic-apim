@@ -113,7 +113,8 @@ calls at the member that served it. It places a call on a member by the backend 
 or by the host and deployment that backend calls. A provisioned member's cost is shared among the
 pool's callers like any other's, from the day MOSAIC first saw it behind the pool, and a member
 since removed keeps its price for the days it served. A call MOSAIC can't place on a member has no
-price, and the chargeback bills it to **Unknown model**.
+price, and the chargeback bills it to **Unknown model**. Calls an MCP server's application makes
+through a pool for the people who called the server are priced the same way.
 
 ## Why a deployment has no price
 
@@ -206,7 +207,7 @@ Utilization is blank for a model Learn has no figures for.
   part, says why the rest has none, and counts among the resources the total leaves out. Model
   calls an MCP server's application made for them are listed apart, priced the same way and named
   with the cost center of the application's grant, which paid for them. Their totals leave them
-  out.
+  out. A model in a model pool is named by its display name, never by its pool.
 
 ## Chargeback
 
@@ -229,7 +230,8 @@ calls an MCP server's application made for the people who called that MCP server
 ([MCP servers that call models](mcp-servers-that-call-models.md)):
 - Each person gets a row of their own, with their calls, tokens and cost. The row is still charged
   to the application, under its grant's cost center, because the application's grant paid for the
-  calls. The person is a reporting dimension only.
+  calls. The person is a reporting dimension only. On a model pool's grant, each person gets a row
+  for each member that served their calls.
 - The rest of the application's calls, its own use and any MOSAIC couldn't attribute to anyone,
   stay one row with both columns empty. A row that isn't an application's grant's leaves them
   empty too.

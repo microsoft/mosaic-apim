@@ -21,9 +21,9 @@ flowchart LR
     Rollups --> Console[Console Dashboard and Analytics]
 ```
 
-1. The policy MOSAIC applies to a model API or MCP server checks each call against the caller's
-   grants. When it lets a call through, it adds a trace that names the grant it matched, the member
-   for a security-group grant, and the calling client application:
+1. The policy MOSAIC applies to a model API, a model pool, or an MCP server checks each call
+   against the caller's grants. When it lets a call through, it adds a trace that names the grant
+   it matched, the member for a security-group grant, and the calling client application:
    `mosaic-attribution v=1 g=<grant> m=<object ID> a=<client ID>`. A model call's trace adds
    `r=`, the MCP call an MCP server's application made it for, and an MCP server that calls models
    as an application adds `r=` and `i=`; see
@@ -402,13 +402,14 @@ application's grant, with the reason:
 **Consumers** lists these calls under **Model use through MCP servers**, below the people,
 applications and groups that already count them. Each row is one person's model use through one
 MCP server, made by one application, with its requests, tokens, share of the linked calls and
-cost. The cost is priced as the application's grant's calls are. As everywhere, only calls the
-model served carry tokens and cost, so a call the application's limits refused counts as a request
-with neither. A line above the table counts the references MOSAIC couldn't use, by reason. The
-table adds to no total, and People, Applications, Grants and every other figure stay as they were.
-The filters treat these calls as the application's grant's: a cost center, a resource or a kind of
-subject keeps them when it keeps that grant. So the model API's resource filter keeps them, and the
-MCP server's doesn't.
+cost. The cost is priced as the application's grant's calls are, so a model pool's calls are priced
+at the member that served each one. As everywhere, only calls the model served carry tokens and
+cost, so a call the application's limits refused counts as a request with neither. A line above the
+table counts the references MOSAIC couldn't use, by reason. The table adds to no total, and People,
+Applications, Grants and every other figure stay as they were. The filters treat these calls as the
+application's grant's: a cost center, a resource or a kind of subject keeps them when it keeps that
+grant. So the filter for the model API or model pool the grant reaches keeps them, and the MCP
+server's doesn't.
 
 **Client applications** are the apps callers signed in with. MOSAIC names each from the applications
 it has a record of, and recognizes Azure CLI, Azure PowerShell, and Visual Studio Code. Any other
