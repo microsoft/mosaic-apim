@@ -43,6 +43,7 @@ from mosaic_api.domain import (
 )
 from mosaic_api.errors import ConflictError, NotFoundError, ValidationError
 from mosaic_api.integrations.pool_policy import (
+    ATTEMPT_TRACE_SUMMARY,
     NOT_FOUND_BODY,
     PoolRoute,
     PoolTarget,
@@ -1879,6 +1880,89 @@ def test_the_outbound_section_hides_which_member_answered() -> None:
     }
     assert {"x-ms-region", "x-ms-deployment-name", "x-ratelimit-remaining-tokens"} <= deleted
     assert "retry-after" not in {name.casefold() for name in deleted if name}
+
+
+def _attempt_message(container: ET.Element) -> str:
+    tags = [child.tag for child in container]
+    # The trace follows the attempt it records, so a retry records every attempt.
+    assert tags[tags.index("forward-request") + 1] == "trace"
+    trace = container.find("trace")
+    assert trace is not None
+    assert trace.attrib == {"source": "mosaic", "severity": "information"}
+    return trace.findtext("message") or ""
+
+
+def test_each_attempt_records_where_it_went_and_how_it_was_answered() -> None:
+    _, policy = _render(
+        _route("model-a", "gpt-4o", ("pool-a", "gpt-4o"), attempts=3),
+        _route("model-b", "gpt-4o-mini", ("backend-b", "gpt-4o-mini"), ("backend-c", "mini")),
+    )
+
+    retry = policy.find("backend/retry")
+    assert retry is not None
+    message = _attempt_message(retry)
+    assert message.startswith('@("mosaic-attempt v=1 m=" + ')
+    # Readers take the first value of each key, so the path, part of which the caller chose,
+    # comes last.
+    positions = [message.index(f' {key}="') for key in "mnbsehp"]
+    assert positions == sorted(positions)
+    assert all(message.count(f' {key}="') == 1 for key in "mnbsehp")
+    for read in (
+        'GetValueOrDefault<string>("mosaic-pool-model-id", "")',
+        'GetValueOrDefault<int>("mosaic-pool-attempt", 0)',
+        'GetValueOrDefault<string>("mosaic-pool-backend", "")',
+        "context.Response.StatusCode",
+        'StatusReason.Contains("Backend pool")',
+        "context.Request.Url.Host",
+    ):
+        assert read in message, read
+    assert message.endswith(' + " p=" + context.Request.Url.Path)')
+    for withheld in ("Query", "Headers", "Body", "OriginalUrl"):
+        assert withheld not in message, withheld
+
+    # Each target names its backend, and a backend pool's attempts name the backend pool.
+    named: list[str | None] = []
+    for parent in policy.iter():
+        children = list(parent)
+        for index, child in enumerate(children):
+            if child.tag != "set-backend-service":
+                continue
+            follower = children[index + 1]
+            assert follower.attrib == {
+                "name": "mosaic-pool-backend",
+                "value": child.get("backend-id"),
+            }
+            named.append(follower.get("value"))
+    assert named == ["pool-a", "backend-b", "backend-c"]
+
+
+def test_a_request_sent_once_records_its_one_attempt() -> None:
+    _, policy = _render(_route("model-a", "gpt-4o", ("backend-a", "gpt-4o")))
+
+    backend = policy.find("backend")
+    assert backend is not None
+    assert [child.tag for child in backend][-2:] == ["forward-request", "trace"]
+    assert _attempt_message(backend).startswith('@("mosaic-attempt v=1 m=" + ')
+
+
+def test_the_attempt_trace_is_explained_without_naming_a_member() -> None:
+    policy = render_pool_policy(
+        pool_id="modelpool-1",
+        fragment_name="mosaic-pool-models",
+        shape=ApiShape.AZURE_OPENAI,
+        routes=[_route("model-a", "gpt-4o", ("pool-a", "gpt-4o"), attempts=2)],
+        preset=BreakerPreset.THROTTLING,
+        safeguard=None,
+    )
+
+    (facet,) = [facet for facet in policy.facets if facet.element == "trace"]
+    assert facet.summary == ATTEMPT_TRACE_SUMMARY
+    assert facet.attributes == {"trace": "attempt"}
+    withheld = "never records a query string, a header, or a request or response body"
+    assert withheld in facet.details[0]
+    text = facet.model_dump_json()
+    for hidden in ("pool-a", "model-a", "mosaic-attempt", "context."):
+        assert hidden not in text, hidden
 
 
 def _await_pool_run(client: TestClient, pool_id: str, run_id: str) -> dict[str, Any]:

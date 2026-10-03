@@ -117,6 +117,11 @@ ATTEMPT_VARIABLE = "mosaic-pool-attempt"
 BALANCED_VARIABLE = "mosaic-pool-balanced-attempts"
 # The gateway's managed identity token, in a pool whose attempts set their own credentials.
 TOKEN_VARIABLE = "mosaic-pool-identity-token"
+# The backend an attempt is sent to, which its attempt trace records.
+BACKEND_VARIABLE = "mosaic-pool-backend"
+# Readers split the message on spaces into key=value pairs and ignore keys they don't know.
+# Only a change that breaks those readers bumps the version.
+ATTEMPT_TRACE_PREFIX = "mosaic-attempt v=1"
 _AZURE_OPENAI_PREFIX = f"/openai/deployments/{{{DEPLOYMENT_PARAMETER}}}"
 # Response headers that would tell a caller which member answered, or describe one member's
 # capacity as if it were the pool's.
@@ -452,8 +457,55 @@ def _append_rewrites(
 
 def _target(parent: ET.Element, target: PoolTarget, *, rewrite: bool) -> None:
     ET.SubElement(parent, "set-backend-service", {"backend-id": target.backend_name})
+    ET.SubElement(parent, "set-variable", {"name": BACKEND_VARIABLE, "value": target.backend_name})
     if rewrite:
         ET.SubElement(parent, "set-body").text = _rewrite_model(target.deployment_name)
+
+
+def _attempt_trace(parent: ET.Element) -> None:
+    """Record where one attempt went and how it was answered, for the pool's health.
+
+    A backend pool's attempt names the backend pool, so the host and path it called are what
+    place it on a member. The path comes last: part of it is the caller's, and readers take the
+    first value of each key. The query string is never recorded.
+    """
+
+    status = "(context.Response != null ? context.Response.StatusCode : 0)"
+    exhausted = f"(context.Response != null && ({_POOL_EXHAUSTED}) ? 1 : 0)"
+    trace = ET.SubElement(parent, "trace", {"source": "mosaic", "severity": "information"})
+    ET.SubElement(trace, "message").text = (
+        f'@("{ATTEMPT_TRACE_PREFIX} m=" + {_string_variable(MODEL_ID_VARIABLE)}'
+        f' + " n=" + {_int_variable(ATTEMPT_VARIABLE, 0)}'
+        f' + " b=" + {_string_variable(BACKEND_VARIABLE)}'
+        f' + " s=" + {status} + " e=" + {exhausted}'
+        ' + " h=" + context.Request.Url.Host + " p=" + context.Request.Url.Path)'
+    )
+
+
+ATTEMPT_TRACE_SUMMARY = (
+    "Records which member each attempt reached and how it answered, so MOSAIC can show the "
+    "pool's health."
+)
+
+
+def _describe_attempt_traces(facets: Sequence[PolicyFacet]) -> None:
+    """Word the API policy's attempt trace. It's the only trace an API policy has."""
+
+    for facet in facets:
+        if facet.element != "trace":
+            continue
+        facet.summary = ATTEMPT_TRACE_SUMMARY
+        facet.details = [
+            "Each attempt records the pool model, the attempt's number, the backend it was sent "
+            "to, the status it answered, whether the backend pool had no member left to try, and "
+            "the host and path it called. It never records a query string, a header, or a "
+            "request or response body.",
+            "Resource logs keep it in TraceRecords when the gateway's Azure Monitor diagnostic "
+            "logs at Information.",
+            "Application Insights records one trace per attempt when its diagnostic verbosity is "
+            "Information; set it to Error to stop.",
+        ]
+        facet.attributes = {"trace": "attempt"}
 
 
 def _credential(
@@ -470,9 +522,7 @@ def _credential(
         header = ET.SubElement(
             parent, "set-header", {"name": "Authorization", "exists-action": "override"}
         )
-        ET.SubElement(header, "value").text = (
-            f'@("Bearer " + {_string_variable(TOKEN_VARIABLE)})'
-        )
+        ET.SubElement(header, "value").text = f'@("Bearer " + {_string_variable(TOKEN_VARIABLE)})'
         if drop_key:
             ET.SubElement(
                 parent,
@@ -626,6 +676,7 @@ def _api_policy(
         "forward-request",
         {"buffer-request-body": "true", "buffer-response": "false"},
     )
+    _attempt_trace(container)
 
     outbound = ET.SubElement(policies, "outbound")
     ET.SubElement(outbound, "base")
@@ -664,6 +715,7 @@ def render_pool_policy(
     combined = hashlib.sha256(f"{fragment_xml}\n{api_policy_xml}".encode()).hexdigest()
     fragment_analysis = analyze_policy(fragment_xml)
     api_analysis = analyze_policy(api_policy_xml)
+    _describe_attempt_traces(api_analysis.facets)
     facets = [*fragment_analysis.facets, *api_analysis.facets]
     _describe_credentials(facets, shape)
     return PublicationPolicy(
@@ -1232,6 +1284,7 @@ def _governed_facets(
     fragment_facets = classify_traces(
         fragment, fragment_analysis.facets, has_group_grants=group_grants > 0
     )
+    _describe_attempt_traces(api_analysis.facets)
     _describe_credentials([*fragment_facets, *api_analysis.facets], shape)
     for facet in [*fragment_facets, *api_analysis.facets]:
         facet.managed_by_mosaic = True

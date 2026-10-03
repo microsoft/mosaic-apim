@@ -42,6 +42,7 @@ from mosaic_api.integrations.policy import (
     managed_identity_resource,
 )
 from mosaic_api.integrations.pool_policy import (
+    ATTEMPT_TRACE_SUMMARY,
     NOT_FOUND_BODY,
     PoolRoute,
     PoolTarget,
@@ -1503,6 +1504,28 @@ def test_facets_explain_the_policy_without_naming_who_holds_what_or_where_it_run
         "security-group-grants": "1",
         "cost-centers": "3",
     }
+
+
+def test_a_governed_pool_records_each_attempt_apart_from_who_was_let_in() -> None:
+    result = _render(_snapshot(_grant(1), _group_grant(2, model=MINI)))
+
+    traces = [facet for facet in result.facets if facet.element == "trace"]
+    attempt = [facet for facet in traces if facet.attributes == {"trace": "attempt"}]
+    assert len(attempt) == 1
+    assert attempt[0].summary == ATTEMPT_TRACE_SUMMARY
+    assert attempt[0].section == PolicySection.BACKEND
+    assert attempt[0].managed_by_mosaic
+    # The fragment's traces keep their own words: one for refusals and one for attribution.
+    assert {facet.attributes.get("trace") for facet in traces} == {"denial", "attempt", None}
+    assert sum(facet.summary == ATTEMPT_TRACE_SUMMARY for facet in traces) == 1
+
+    api_policy = ET.fromstring(result.api_policy_xml)
+    retry = api_policy.find("backend/retry")
+    assert retry is not None
+    assert [child.tag for child in retry][-2:] == ["forward-request", "trace"]
+    assert (retry.findtext("trace/message") or "").startswith(
+        f'@("{pool_policy.ATTEMPT_TRACE_PREFIX} m=" + '
+    )
 
 
 @pytest.mark.parametrize(
