@@ -1,6 +1,6 @@
 # ADR 0024: Serve each model from a pool of deployments behind one governed endpoint
 
-**Status:** Proposed
+**Status:** Accepted
 
 Phases 1 to 4 are implemented. Administrators create, publish, unpublish, and recover breaker,
 linear, and preferential pools, and the console lists and shows them. A pool's members are Azure
@@ -66,6 +66,11 @@ built. Where it differs from the plan:
 **Revised 2026-10-03, again,** after [ADR 0025](0025-mcp-model-calls-on-a-persons-behalf.md) was
 merged. A pool takes part in model use through MCP servers as a governed model API does. See
 *Model use through MCP servers*, under *Access*.
+
+**Accepted 2026-10-03.** *What a pool writes to API Management* now says what phase 1 built: one
+fragment for the inbound section, with the backend and outbound sections in the API policy. The
+behaviors under *Verify on a real gateway* still need a real gateway, and the end-to-end roadmap
+tracks them.
 
 ## Context
 
@@ -378,16 +383,13 @@ A pool owns these resources:
 - **Backend pools.** One for each target that balances several members.
 - **Named values for key members** (from phase 3). One Key Vault-backed secret named value for each
   member reached with a key, `<member backend>-key`, as ADR 0018 gives each publication.
-- **`mosaic-*` policy fragments**, one for each section of the policy:
-  - Inbound: authentication, model resolution, authorization, limits, request hygiene, and the
-    target list.
-  - Backend: the retry and forward.
-  - Outbound: response hygiene.
-
-  API Management might not accept `forward-request` in a fragment. If so, MOSAIC renders the
-  backend section into the API policy instead. MOSAIC owns a pool's API outright, so the policy
-  ownership boundary in [ADR 0004](0004-gateway-onboarding-and-policy-abstraction.md) still holds.
-- **The API, its curated operations, and the API policy.**
+- **A `mosaic-*` policy fragment** for the inbound section: authentication, model resolution,
+  authorization, limits, request hygiene, and the target list.
+- **The API, its curated operations, and the API policy.** The API policy includes the fragment,
+  and holds the backend section, the retry and forward, and the outbound section, response
+  hygiene. API Management might not accept `forward-request` in a fragment, so the backend section
+  stays in the API policy. MOSAIC owns a pool's API outright, so the policy ownership boundary in
+  [ADR 0004](0004-gateway-onboarding-and-policy-abstraction.md) still holds.
 - **A product, the product/API link, and the bootstrap subscription.**
 - **The keys people asked for.** Each is an API-scoped subscription on the pool's API. A plan never
   creates one; see *Access*.
@@ -401,7 +403,7 @@ As ADR 0010 requires, everything is created after what it names:
    Management couldn't read the secret, as ADR 0018 requires.
 3. Member backends
 4. Backend pools
-5. Fragments
+5. The fragment
 6. The API
 7. Operations
 8. The API policy
@@ -412,7 +414,7 @@ As ADR 0010 requires, everything is created after what it names:
 
 Deletes run after every create and update, in reverse. Removing a member updates its backend pool
 first, and only then deletes the member's backend. A key member's named value is deleted last,
-after the fragment that names it.
+after the API policy that names it.
 
 Plans, runs, ownership, rollback, and recovery follow ADR 0010 and ADR 0011, unchanged. A plan
 resolves anything derived from observed state that shapes a written resource, so apply writes what
@@ -938,12 +940,13 @@ page, because each read is a Log Analytics query.
 
 ### Verify on a real gateway
 
-These behaviors decide details above. Each must be confirmed on a real gateway before the phase
-that depends on it ships.
+These behaviors decide details above. Unit tests cover the policy MOSAIC renders, but each of
+these still needs a real gateway to confirm it.
 
 Phase 1:
 
-- `retry` and `forward-request` inside a policy fragment.
+- Whether `retry` and `forward-request` work inside a policy fragment, which would let the backend
+  section move out of the API policy.
 - Whether a single backend with an open breaker answers 503 without calling the backend.
 - How an exhausted backend pool's 503 can be told apart from a member's 503.
 - Whether `retry` sees connection failures and timeouts, or only responses.
@@ -993,6 +996,8 @@ Phase 4:
 - How `TraceRecords` serializes a message: whether it escapes `/` as `\/`, as the query allows.
 - That reading a policy or fragment back in `rawxml` returns the same text each time, so its
   digest only changes when someone changes it.
+
+[docs/e2e/roadmap.md](../e2e/roadmap.md) tracks these as A19 and R15 to R18.
 
 ## Alternatives considered
 
