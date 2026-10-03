@@ -8,6 +8,7 @@ import { specsWithMemberDrained } from '../pools'
 import {
   anthropicPool,
   anthropicPoolDetail,
+  bedrockAnthropicPoolDetail,
   draftPool,
   governedAnthropicPool,
   governedAnthropicPoolDetail,
@@ -134,6 +135,27 @@ describe('PoolDetailPage', () => {
     expect(
       screen.getByText('Up to 3 retries in the backend pool, then one attempt on each deployment reached with an API key'),
     ).toBeVisible()
+  })
+
+  it('marks a deployment on AWS Bedrock, which the pool tries once after Azure', async () => {
+    api.getModelPoolDetail.mockResolvedValue(bedrockAnthropicPoolDetail)
+    renderPage()
+
+    const deployments = await screen.findByRole('table', { name: 'Deployments serving Claude Opus 4.5' })
+    const [, eastUs2, , bedrock] = within(deployments).getAllByRole('row')
+
+    expect(within(bedrock).getByText('us.anthropic.claude-opus-4-5-20251101-v1:0')).toBeVisible()
+    expect(within(bedrock).getByText('AWS Bedrock')).toBeVisible()
+    expect(within(bedrock).queryByText('API key')).not.toBeInTheDocument()
+    expect(within(bedrock).queryByText('Declared')).not.toBeInTheDocument()
+    expect(within(bedrock).getByText('Tried once, after the backend pool')).toBeVisible()
+    expect(within(bedrock).getByText(/MOSAIC doesn't send keys to AWS/)).toBeVisible()
+    expect(
+      within(bedrock).getByRole('switch', {
+        name: 'Drain us.anthropic.claude-opus-4-5-20251101-v1:0 on bedrock-us-east-1',
+      }),
+    ).not.toBeChecked()
+    expect(within(eastUs2).queryByText('AWS Bedrock')).not.toBeInTheDocument()
   })
 
   it('saves a drained deployment and says the gateway follows once a plan is applied', async () => {

@@ -253,7 +253,11 @@ function PoolModelCard({
                         {deployment && (
                           <span className={styles.accessBadges}>
                             <EnvironmentBadge environment={deployment.environment ?? null} catalog={catalog} size="small" />
-                            <PoolMemberAccessBadges apiKey={deployment.apiKey} declared={deployment.declared} />
+                            <PoolMemberAccessBadges
+                              apiKey={deployment.apiKey}
+                              declared={deployment.declared}
+                              provider={deployment.provider}
+                            />
                           </span>
                         )}
                         {deployment && !deployment.eligible && deployment.reason && (

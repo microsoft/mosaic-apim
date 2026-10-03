@@ -2433,4 +2433,529 @@ describe('ModelsPage model endpoints', () => {
       })
     })
   })
+
+  describe('an AWS Bedrock endpoint', () => {
+    const BEDROCK_URL = 'https://bedrock-runtime.us-east-1.amazonaws.com'
+    const SECRET_URI = 'https://kv-contoso-ai.vault.azure.net/secrets/bedrock-us-west-2-key'
+    const SONNET_ID = 'us.anthropic.claude-sonnet-4-5-20250929-v1:0'
+    const OPUS_ID = 'us.anthropic.claude-opus-4-5-20251101-v1:0'
+    // Fictional, and recognisable, so a test can tell where it went.
+    const API_KEY = 'fictional-bedrock-KEY-for-tests-5678'
+
+    function bedrockEndpoint(overrides: Partial<ModelEndpoint> = {}): ModelEndpoint {
+      return modelEndpoint({
+        id: 'endpoint_bedrock',
+        name: 'Bedrock us-east-1',
+        provider: 'awsBedrock',
+        endpoint: 'https://bedrock-runtime.us-east-1.amazonaws.com/',
+        azureResourceId: null,
+        subscriptionId: null,
+        resourceGroup: null,
+        accountName: null,
+        projectName: null,
+        authMode: 'apiKey',
+        credentialReferenceId: 'credential_bedrock',
+        keyStoredByMosaic: true,
+        status: 'pending',
+        declaredDeployments: [
+          {
+            deploymentName: SONNET_ID,
+            modelName: 'claude-sonnet-4-5',
+            apiShape: 'anthropicMessages',
+            declaredAt: '2026-09-01T12:00:00Z',
+            declaredBy: 'admin-object-id',
+          },
+        ],
+        access: {
+          canRead: false,
+          evaluation: 'notEvaluated',
+          checkedAt: '2026-09-01T12:00:00Z',
+          missingActions: [],
+          remediation: null,
+          message:
+            "MOSAIC read the Bedrock API key from Key Vault. It doesn't send keys to AWS to " +
+            'check them, so the first request through a pool is what tells whether AWS accepts it.',
+        },
+        runtimeAccess: [],
+        capabilities: { managementApiVersion: '2024-10-01', notes: [] },
+        inventory: {
+          deployments: 0,
+          availableModels: 0,
+          succeededDeployments: 0,
+          deprecatedDeployments: 0,
+        },
+        lastSyncedAt: null,
+        ...overrides,
+      })
+    }
+
+    async function openTab(user: ReturnType<typeof userEvent.setup>, tab: string) {
+      renderPage('/models?register=1')
+      const dialog = await screen.findByRole('dialog', { name: 'Register model endpoint' })
+      await user.click(within(dialog).getByRole('tab', { name: tab }))
+      return dialog
+    }
+
+    it('says requests leave Azure, and registers a pasted key with the models to pool', { timeout: 10_000 }, async () => {
+      const user = userEvent.setup()
+      api.registerModelEndpoint.mockResolvedValue(bedrockEndpoint())
+      const dialog = await openTab(user, 'AWS Bedrock')
+
+      expect(within(dialog).getByText('Requests leave Azure')).toBeVisible()
+      expect(within(dialog).getByText(/Prompts and responses for these models go to AWS/)).toBeVisible()
+      expect(within(dialog).getByRole('radio', { name: 'Paste the Bedrock API key' })).toBeChecked()
+      const key = within(dialog).getByLabelText(/^Bedrock API key/)
+      expect(key).toHaveAttribute('type', 'password')
+      expect(key).toHaveAttribute('autocomplete', 'new-password')
+      expect(within(dialog).getByText(/a short-term one expires within 12 hours/)).toBeVisible()
+      expect(within(dialog).getByText('Models to pool')).toBeVisible()
+      // Bedrock is reached only through the Anthropic Messages API, so there's no API to choose.
+      expect(within(dialog).queryByRole('combobox', { name: /API/ })).not.toBeInTheDocument()
+
+      await user.click(within(dialog).getByLabelText(/Endpoint URL/))
+      await user.paste(BEDROCK_URL)
+      await user.click(key)
+      // A key copied from AWS often brings a space or line break along.
+      await user.paste(`  ${API_KEY}\n`)
+      await user.click(within(dialog).getByLabelText('Model 1 ID'))
+      await user.paste(SONNET_ID)
+      // The model a Bedrock ID serves is offered as Azure names it, so the two pool together.
+      expect(within(dialog).getByLabelText('Model 1 name')).toHaveValue('claude-sonnet-4-5')
+      await user.click(within(dialog).getByRole('button', { name: 'Add a model' }))
+      await user.type(within(dialog).getByLabelText('Model 2 ID'), OPUS_ID)
+      expect(within(dialog).getByLabelText('Model 2 name')).toHaveValue('claude-opus-4-5')
+      await user.click(within(dialog).getByRole('button', { name: 'Add a model' }))
+      await user.click(within(dialog).getByRole('button', { name: 'Remove model 3' }))
+      await user.click(within(dialog).getByRole('button', { name: 'Register' }))
+
+      await waitFor(() => expect(api.registerModelEndpoint).toHaveBeenCalledTimes(1))
+      expect(api.registerModelEndpoint.mock.calls[0][0]).toEqual({
+        endpoint: BEDROCK_URL,
+        provider: 'awsBedrock',
+        apiKey: API_KEY,
+        name: undefined,
+        environment: 'development',
+        deployments: [
+          { deploymentName: SONNET_ID, modelName: 'claude-sonnet-4-5', apiShape: 'anthropicMessages' },
+          { deploymentName: OPUS_ID, modelName: 'claude-opus-4-5', apiShape: 'anthropicMessages' },
+        ],
+      })
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+
+      await user.click(await screen.findByRole('button', { name: 'Register endpoint' }))
+      const reopened = await screen.findByRole('dialog', { name: 'Register model endpoint' })
+      await user.click(within(reopened).getByRole('tab', { name: 'AWS Bedrock' }))
+      expect(within(reopened).getByLabelText(/^Bedrock API key/)).toHaveValue('')
+      expect(within(reopened).getByLabelText('Model 1 ID')).toHaveValue('')
+    })
+
+    it('registers a key already in Key Vault', async () => {
+      const user = userEvent.setup()
+      api.registerModelEndpoint.mockResolvedValue(bedrockEndpoint({ keyStoredByMosaic: false }))
+      const dialog = await openTab(user, 'AWS Bedrock')
+
+      await user.click(within(dialog).getByRole('radio', { name: 'Use a key already in Key Vault' }))
+      expect(within(dialog).queryByLabelText(/^Bedrock API key/)).not.toBeInTheDocument()
+      expect(
+        within(dialog).getByText(/The secret you stored a long-term Bedrock API key in/),
+      ).toBeVisible()
+      await user.click(within(dialog).getByLabelText(/Endpoint URL/))
+      await user.paste('https://bedrock-mantle.us-west-2.api.aws')
+      await user.click(within(dialog).getByLabelText(/Key Vault secret URI/))
+      await user.paste(SECRET_URI)
+      await user.click(within(dialog).getByLabelText('Model 1 ID'))
+      await user.paste('global.anthropic.claude-haiku-4-5-20251001-v1:0')
+      await user.click(within(dialog).getByLabelText(/^Display name/))
+      await user.paste('Bedrock us-west-2')
+      await user.click(within(dialog).getByRole('button', { name: 'Register' }))
+
+      await waitFor(() => expect(api.registerModelEndpoint).toHaveBeenCalledTimes(1))
+      expect(api.registerModelEndpoint.mock.calls[0][0]).toEqual({
+        endpoint: 'https://bedrock-mantle.us-west-2.api.aws',
+        provider: 'awsBedrock',
+        credentialSecretUri: SECRET_URI,
+        name: 'Bedrock us-west-2',
+        environment: 'development',
+        deployments: [
+          {
+            deploymentName: 'global.anthropic.claude-haiku-4-5-20251001-v1:0',
+            modelName: 'claude-haiku-4-5',
+            apiShape: 'anthropicMessages',
+          },
+        ],
+      })
+    })
+
+    it('offers the model an ID serves, and never replaces a name the administrator typed', async () => {
+      const user = userEvent.setup()
+      const dialog = await openTab(user, 'AWS Bedrock')
+      const id = within(dialog).getByLabelText('Model 1 ID')
+      const name = within(dialog).getByLabelText('Model 1 name')
+
+      await user.click(id)
+      await user.paste(SONNET_ID)
+      expect(name).toHaveValue('claude-sonnet-4-5')
+      // The offer follows the ID for as long as the name is still the one offered.
+      await user.clear(id)
+      await user.paste(OPUS_ID)
+      expect(name).toHaveValue('claude-opus-4-5')
+
+      await user.clear(name)
+      await user.type(name, 'claude-opus-4-1')
+      await user.clear(id)
+      await user.paste(SONNET_ID)
+      expect(name).toHaveValue('claude-opus-4-1')
+    })
+
+    it('sends an Azure endpoint to the tab that registers it', async () => {
+      const user = userEvent.setup()
+      const dialog = await openTab(user, 'AWS Bedrock')
+
+      await user.click(within(dialog).getByLabelText(/Endpoint URL/))
+      await user.paste('https://fabrikam-foundry.services.ai.azure.com')
+      expect(
+        within(dialog).getByText(
+          "That's an Azure AI endpoint. Register it on the Azure AI with an API key tab, or by " +
+            'resource ID.',
+        ),
+      ).toBeVisible()
+      await user.click(within(dialog).getByLabelText(/^Bedrock API key/))
+      await user.paste(API_KEY)
+      await user.click(within(dialog).getByRole('button', { name: 'Register' }))
+
+      expect(api.registerModelEndpoint).not.toHaveBeenCalled()
+    })
+
+    it('names the Bedrock hosts when the URL is on neither', async () => {
+      const user = userEvent.setup()
+      const dialog = await openTab(user, 'AWS Bedrock')
+
+      await user.click(within(dialog).getByLabelText(/Endpoint URL/))
+      await user.paste('https://models.example.com/v1')
+      // A URL still being typed isn't refused.
+      expect(within(dialog).queryByText(/^MOSAIC reaches AWS Bedrock at/)).not.toBeInTheDocument()
+      await user.click(within(dialog).getByLabelText(/^Bedrock API key/))
+      await user.paste(API_KEY)
+      await user.click(within(dialog).getByRole('button', { name: 'Register' }))
+
+      expect(
+        await within(dialog).findByText(
+          'MOSAIC reaches AWS Bedrock at https://bedrock-runtime.<region>.amazonaws.com or ' +
+            'https://bedrock-mantle.<region>.api.aws.',
+        ),
+      ).toBeVisible()
+      expect(api.registerModelEndpoint).not.toHaveBeenCalled()
+    })
+
+    it('sends a Bedrock URL on the API key tab to the AWS Bedrock tab', async () => {
+      const user = userEvent.setup()
+      const dialog = await openTab(user, 'Azure AI with an API key')
+
+      await user.click(within(dialog).getByLabelText(/Endpoint URL/))
+      await user.paste(BEDROCK_URL)
+      expect(
+        within(dialog).getByText(
+          "That's an AWS Bedrock endpoint. Register it on the AWS Bedrock tab.",
+        ),
+      ).toBeVisible()
+      await user.click(within(dialog).getByLabelText(/^API key/))
+      await user.paste(API_KEY)
+      await user.click(within(dialog).getByRole('button', { name: 'Register' }))
+
+      // Only the Bedrock tab says that requests leave Azure.
+      expect(api.registerModelEndpoint).not.toHaveBeenCalled()
+    })
+
+    it('never carries a pasted key from one tab to another', async () => {
+      const user = userEvent.setup()
+      const dialog = await openTab(user, 'AWS Bedrock')
+
+      await user.click(within(dialog).getByLabelText(/^Bedrock API key/))
+      await user.paste(API_KEY)
+      await user.click(within(dialog).getByRole('tab', { name: 'Azure AI with an API key' }))
+      expect(within(dialog).getByLabelText(/^API key/)).toHaveValue('')
+      await user.click(within(dialog).getByRole('tab', { name: 'AWS Bedrock' }))
+      expect(within(dialog).getByLabelText(/^Bedrock API key/)).toHaveValue('')
+    })
+
+    it("says MOSAIC doesn't check the key with AWS, and lists the declared models", async () => {
+      api.listModelEndpoints.mockResolvedValue([bedrockEndpoint()])
+
+      renderPage()
+
+      const table = await screen.findByRole('table', { name: 'Registered model endpoints' })
+      const row = within(table).getByText('Bedrock us-east-1').closest('tr') as HTMLElement
+      expect(within(row).getByText('AWS Bedrock')).toBeVisible()
+      expect(within(row).getByText('API key from Key Vault')).toBeVisible()
+      expect(within(row).getByText('1 declared')).toBeVisible()
+      expect(within(row).getByText('Not checked')).toBeVisible()
+      // A Bedrock API key can't list models, so there is nothing to sync.
+      expect(within(row).queryByRole('button', { name: 'Sync models' })).not.toBeInTheDocument()
+
+      expect(screen.getByText("MOSAIC doesn't check Bedrock keys with AWS")).toBeVisible()
+      expect(screen.getByText(/It doesn't send keys to AWS to check them/)).toBeVisible()
+      expect(
+        screen.getByText(/Authentication: Bedrock API key MOSAIC keeps in its own Key Vault/),
+      ).toBeVisible()
+      expect(screen.getByRole('button', { name: 'Replace API key' })).toBeVisible()
+      // There's no Azure resource to read settings from.
+      expect(screen.queryByText('Endpoint settings')).not.toBeInTheDocument()
+
+      expect(screen.getByRole('heading', { name: 'Models on Bedrock us-east-1' })).toBeVisible()
+      const declared = screen.getByRole('table', { name: 'Declared Bedrock models' })
+      expect(within(declared).getByRole('columnheader', { name: 'Model ID' })).toBeVisible()
+      const [, declaredRow] = within(declared).getAllByRole('row')
+      expect(within(declaredRow).getByText(SONNET_ID)).toBeVisible()
+      expect(within(declaredRow).getByText('claude-sonnet-4-5')).toBeVisible()
+      expect(within(declaredRow).getByText('Anthropic Messages API (Claude)')).toBeVisible()
+      expect(screen.getByRole('button', { name: 'Declare a model' })).toBeVisible()
+      expect(api.listModelDeployments).not.toHaveBeenCalled()
+    })
+
+    it("reports a key MOSAIC can't use, and offers no replacement for a key it doesn't keep", async () => {
+      const message =
+        'The API key in Key Vault kv-contoso-ai starts or ends with a space or a line break, ' +
+        'which no API key has. Store the key alone, and if you store it from a file, without a ' +
+        'line break at its end.'
+      api.listModelEndpoints.mockResolvedValue([
+        bedrockEndpoint({
+          keyStoredByMosaic: false,
+          status: 'degraded',
+          access: {
+            canRead: false,
+            evaluation: 'probe',
+            checkedAt: '2026-09-01T12:00:00Z',
+            missingActions: [],
+            remediation: null,
+            message,
+          },
+        }),
+      ])
+
+      renderPage()
+
+      expect(await screen.findByText("MOSAIC can't use the key")).toBeVisible()
+      expect(screen.getByText(message)).toBeVisible()
+      expect(
+        screen.getByText(
+          /^Authentication: Bedrock API key from Key Vault\. MOSAIC reads it only to confirm/,
+        ),
+      ).toBeVisible()
+      expect(screen.queryByRole('button', { name: 'Replace API key' })).not.toBeInTheDocument()
+    })
+
+    it("reports a key MOSAIC couldn't read", async () => {
+      const message =
+        "MOSAIC isn't allowed to read secrets in Key Vault kv-contoso-ai, so it can't confirm " +
+        'the Bedrock API key is there.'
+      api.listModelEndpoints.mockResolvedValue([
+        bedrockEndpoint({
+          keyStoredByMosaic: false,
+          status: 'unauthorized',
+          access: {
+            canRead: false,
+            evaluation: 'notEvaluated',
+            checkedAt: '2026-09-01T12:00:00Z',
+            missingActions: [],
+            remediation: null,
+            message,
+          },
+        }),
+      ])
+
+      renderPage()
+
+      expect(await screen.findByText("MOSAIC couldn't read the key")).toBeVisible()
+      expect(screen.queryByText("MOSAIC doesn't check Bedrock keys with AWS")).not.toBeInTheDocument()
+    })
+
+    it('declares a model, offering the model its ID serves', async () => {
+      const user = userEvent.setup()
+      api.listModelEndpoints.mockResolvedValue([bedrockEndpoint()])
+      api.declareModelDeployment.mockResolvedValue(bedrockEndpoint())
+
+      renderPage()
+
+      const opener = await screen.findByRole('button', { name: 'Declare a model' })
+      await user.click(opener)
+      const dialog = await screen.findByRole('dialog', {
+        name: 'Declare a model on Bedrock us-east-1',
+      })
+      expect(within(dialog).getByText(/MOSAIC can't check it with AWS/)).toBeVisible()
+      // Bedrock is reached only through the Anthropic Messages API, so there's no API to choose.
+      expect(within(dialog).queryByRole('combobox')).not.toBeInTheDocument()
+      await user.click(within(dialog).getByLabelText(/^Model ID/))
+      await user.paste(OPUS_ID)
+      expect(within(dialog).getByLabelText(/^Model(?! ID)/)).toHaveValue('claude-opus-4-5')
+      await user.click(within(dialog).getByRole('button', { name: 'Declare model' }))
+
+      await waitFor(() =>
+        expect(api.declareModelDeployment).toHaveBeenCalledWith('endpoint_bedrock', {
+          deploymentName: OPUS_ID,
+          modelName: 'claude-opus-4-5',
+          apiShape: 'anthropicMessages',
+        }),
+      )
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+      // Fluent returns focus to the button that opened the dialog when it closes.
+      expect(opener).toHaveAttribute('data-tabster', expect.stringContaining('restorer'))
+    })
+
+    it('removes a declared model, saying nothing changed in AWS', async () => {
+      const user = userEvent.setup()
+      api.listModelEndpoints.mockResolvedValue([bedrockEndpoint()])
+      api.removeDeclaredModelDeployment.mockResolvedValue(
+        bedrockEndpoint({ declaredDeployments: [] }),
+      )
+
+      renderPage()
+
+      await user.click(await screen.findByRole('button', { name: `Remove ${SONNET_ID}` }))
+
+      await waitFor(() =>
+        expect(api.removeDeclaredModelDeployment).toHaveBeenCalledWith(
+          'endpoint_bedrock',
+          SONNET_ID,
+        ),
+      )
+      const outcome = await screen.findByRole('status')
+      expect(outcome).toHaveTextContent(
+        `Removed ${SONNET_ID} from Bedrock us-east-1. Nothing changed in AWS.`,
+      )
+      await waitFor(() => expect(outcome).toHaveFocus())
+    })
+
+    it('says why a model a published pool uses was not removed', async () => {
+      const user = userEvent.setup()
+      const message =
+        `Remove ${SONNET_ID} from the model pool that uses it, and publish it again, before ` +
+        'removing it. API Management would keep routing traffic to it with nothing in MOSAIC to ' +
+        'change or remove the route.'
+      api.listModelEndpoints.mockResolvedValue([bedrockEndpoint()])
+      api.removeDeclaredModelDeployment.mockRejectedValue(
+        new TestApiError(message, 409, { message }),
+      )
+
+      renderPage()
+
+      await user.click(await screen.findByRole('button', { name: `Remove ${SONNET_ID}` }))
+
+      const refusal = await screen.findByText(message)
+      expect(screen.getByText("MOSAIC didn't remove this model")).toBeVisible()
+      await waitFor(() => expect(refusal.closest('[tabindex="-1"]')).toHaveFocus())
+    })
+
+    it('replaces the key without checking it with AWS', async () => {
+      const user = userEvent.setup()
+      api.listModelEndpoints.mockResolvedValue([bedrockEndpoint()])
+      api.updateModelEndpoint.mockResolvedValue(bedrockEndpoint())
+
+      renderPage()
+
+      await user.click(await screen.findByRole('button', { name: 'Replace API key' }))
+      const dialog = await screen.findByRole('dialog', {
+        name: 'Replace the API key for Bedrock us-east-1',
+      })
+      expect(within(dialog).getByText(/It doesn't send the key to AWS/)).toBeVisible()
+      const field = within(dialog).getByLabelText(/^New Bedrock API key/)
+      expect(field).toHaveAttribute('type', 'password')
+      await user.click(field)
+      await user.paste('  ')
+      await user.click(within(dialog).getByRole('button', { name: 'Store new key' }))
+      expect(await within(dialog).findByText('Paste the new Bedrock API key.')).toBeVisible()
+      expect(api.updateModelEndpoint).not.toHaveBeenCalled()
+
+      await user.clear(field)
+      await user.paste(API_KEY)
+      await user.click(within(dialog).getByRole('button', { name: 'Store new key' }))
+
+      await waitFor(() =>
+        expect(api.updateModelEndpoint).toHaveBeenCalledWith('endpoint_bedrock', {
+          apiKey: API_KEY,
+        }),
+      )
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+      expect(
+        await screen.findByText(
+          "Stored the new key for Bedrock us-east-1. MOSAIC doesn't check keys with AWS, so " +
+            'the next request through a model pool tells whether AWS accepts it. API ' +
+            'Management picks it up within four hours.',
+        ),
+      ).toBeVisible()
+    })
+
+    it('says removing the endpoint changes nothing in AWS', async () => {
+      const user = userEvent.setup()
+      api.listModelEndpoints.mockResolvedValue([bedrockEndpoint()])
+      api.deleteModelEndpoint.mockResolvedValue(undefined)
+
+      renderPage()
+
+      const table = await screen.findByRole('table', { name: 'Registered model endpoints' })
+      await user.click(within(table).getByText('Remove'))
+      const dialog = await screen.findByRole('alertdialog', { name: 'Remove Bedrock us-east-1?' })
+      expect(dialog).toHaveTextContent(
+        'MOSAIC deletes its record of this endpoint and the 1 model declared on it, and the Key ' +
+          'Vault secret it keeps the Bedrock API key in. Nothing changes in AWS: the key keeps ' +
+          'working there until you delete it.',
+      )
+      expect(dialog).toHaveTextContent(
+        'Model pools that are still drafts drop its models. MOSAIC refuses while a published ' +
+          'model pool uses one of them.',
+      )
+      await user.click(within(dialog).getByRole('button', { name: 'Remove endpoint' }))
+
+      await waitFor(() => expect(api.deleteModelEndpoint).toHaveBeenCalledWith('endpoint_bedrock'))
+      expect(
+        await screen.findByText('Removed Bedrock us-east-1 from MOSAIC. Nothing changed in AWS.'),
+      ).toBeVisible()
+    })
+
+    it('names the published model pools that keep the endpoint', async () => {
+      const user = userEvent.setup()
+      const message =
+        'Remove Bedrock us-east-1 from the model pool that uses it, and publish it again, before ' +
+        'removing it. API Management would keep routing traffic to it with nothing in MOSAIC to ' +
+        'change or remove the route.'
+      api.listModelEndpoints.mockResolvedValue([bedrockEndpoint()])
+      api.deleteModelEndpoint.mockRejectedValue(
+        new TestApiError(message, 409, {
+          message,
+          details: {
+            id: 'endpoint_bedrock',
+            name: 'Bedrock us-east-1',
+            modelPools: [
+              {
+                id: 'pool_1',
+                displayName: 'Anthropic Claude',
+                status: 'published',
+                gatewayId: 'gateway_1',
+              },
+            ],
+          },
+        }),
+      )
+
+      renderPage()
+
+      const table = await screen.findByRole('table', { name: 'Registered model endpoints' })
+      await user.click(within(table).getByText('Remove'))
+      const dialog = await screen.findByRole('alertdialog')
+      await user.click(within(dialog).getByRole('button', { name: 'Remove endpoint' }))
+
+      const refusal = await within(dialog).findByRole('alert')
+      expect(refusal).toHaveTextContent("MOSAIC didn't remove this endpoint")
+      expect(refusal).toHaveTextContent(message)
+      expect(within(dialog).getByText('Take it out of these model pools first')).toBeVisible()
+      const blocking = within(dialog).getByRole('list', { name: 'Model pools blocking removal' })
+      expect(
+        within(blocking)
+          .getAllByRole('listitem')
+          .map((item) => item.textContent),
+      ).toEqual(['Anthropic Claude (Published)'])
+      expect(
+        within(dialog).queryByRole('list', { name: 'Publications blocking removal' }),
+      ).not.toBeInTheDocument()
+    })
+  })
 })

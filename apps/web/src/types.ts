@@ -1042,7 +1042,7 @@ export interface GatewayPolicyView {
   mosaicManagedCount: number
 }
 
-export type ModelProvider = 'azureOpenAi' | 'azureAiFoundry' | 'openAiCompatible'
+export type ModelProvider = 'azureOpenAi' | 'azureAiFoundry' | 'openAiCompatible' | 'awsBedrock'
 export type EndpointAuthMode = 'managedIdentity' | 'apiKey'
 export type ModelEndpointStatus =
   | 'pending'
@@ -1199,7 +1199,7 @@ export interface ModelEndpoint {
    * gave MOSAIC the key. MOSAIC replaces it on request and deletes it with the endpoint.
    */
   keyStoredByMosaic?: boolean
-  /** Present only on an Azure endpoint registered with an API key. */
+  /** Present only on an endpoint registered with an API key: an Azure resource or AWS Bedrock. */
   declaredDeployments?: DeclaredDeployment[]
   status: ModelEndpointStatus
   access: EndpointAccess
@@ -1712,6 +1712,8 @@ export interface PoolMemberView {
   declared: boolean
   /** Whether the gateway reaches the deployment with an API key rather than its managed identity. */
   apiKey: boolean
+  /** Who serves the member, such as AWS Bedrock outside Azure. Null once its endpoint is gone. */
+  provider?: ModelProvider | null
   readiness: PoolReadiness
   readinessMessage?: string | null
   environmentVerdict?: EnvironmentVerdict | null
@@ -1766,6 +1768,8 @@ export interface PoolCandidateDeployment {
   declared: boolean
   /** Whether the gateway would reach the deployment with an API key rather than its managed identity. */
   apiKey: boolean
+  /** Who serves the deployment, such as AWS Bedrock outside Azure. */
+  provider?: ModelProvider | null
 }
 
 export interface PoolCandidateModel {

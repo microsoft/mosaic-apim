@@ -78,6 +78,7 @@ import type {
   ModelEndpoint,
   ModelEndpointSuggestionView,
   ModelEndpointSyncRun,
+  ModelProvider,
   ModelPool,
   ModelPoolCreate,
   ModelPoolDetail,
@@ -415,6 +416,8 @@ export interface MosaicApi {
   registerModelEndpoint(payload: {
     azureResourceId?: string
     endpoint?: string
+    /** Set only for AWS Bedrock; MOSAIC infers every other kind from the URL. */
+    provider?: ModelProvider
     name?: string
     environmentLabel?: string
     credentialSecretUri?: string

@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event'
 import { useState } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 import type { DraftPoolModel } from '../pools'
-import { opusSwedenKeyed, poolCandidates } from '../test/pool-fixtures'
+import { opusBedrockUsEast1, opusSwedenKeyed, poolCandidates } from '../test/pool-fixtures'
 import type { ModelPoolType, PoolCandidateModel } from '../types'
 import { PoolModelsEditor } from './PoolModelsEditor'
 
@@ -93,6 +93,26 @@ describe('PoolModelsEditor', () => {
         /A deployment reached with an API key can’t join the backend pool, so it’s tried once, after the others\.$/,
       ),
     ).toBeVisible()
+  })
+
+  it('marks a deployment on AWS Bedrock, and keeps the name callers send to the model', async () => {
+    const [opus, ...others] = poolCandidates.models
+    const { card, latest } = await addOpus('breaker', [
+      { ...opus, deployments: [...opus.deployments, opusBedrockUsEast1] },
+      ...others,
+    ])
+
+    const bedrock = within(card)
+      .getByRole('checkbox', { name: 'Use us.anthropic.claude-opus-4-5-20251101-v1:0 on bedrock-us-east-1' })
+      .closest('tr') as HTMLElement
+    expect(within(bedrock).getByText('AWS Bedrock')).toBeVisible()
+    // On AWS Bedrock the key and the declaration go without saying.
+    expect(within(bedrock).queryByText('API key')).not.toBeInTheDocument()
+    expect(within(bedrock).queryByText('Declared')).not.toBeInTheDocument()
+    expect(within(bedrock).getByText('Tried second after the backend pool')).toBeVisible()
+    expect(within(rowFor(card, 'foundry-swedencentral')).queryByText('AWS Bedrock')).not.toBeInTheDocument()
+    expect(within(card).getByRole('textbox', { name: /^Name callers send/ })).toHaveValue('claude-opus-4-5')
+    expect(order(latest())).toContain(opusBedrockUsEast1.modelEndpointId)
   })
 
   it('orders the deployments reached with an API key, and tries them alone once nothing else is active', async () => {

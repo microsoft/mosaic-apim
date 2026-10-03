@@ -142,7 +142,11 @@ function MemberRow({
             {member.endpointName ?? member.modelEndpointId}
             {member.modelVersion ? ` · version ${member.modelVersion}` : ''}
           </Text>
-          <PoolMemberAccessBadges apiKey={member.apiKey} declared={member.declared} />
+          <PoolMemberAccessBadges
+            apiKey={member.apiKey}
+            declared={member.declared}
+            provider={member.provider}
+          />
         </div>
       </td>
       <td>

@@ -38,6 +38,7 @@ import {
   anthropicPool,
   anthropicPoolDetail,
   observedGateway,
+  opusBedrockUsEast1,
   opusEastUs2,
   opusNorthCentral,
   opusSwedenKeyed,
@@ -139,6 +140,22 @@ describe('pool model drafts', () => {
     const family = { vendor: 'anthropic', apiShape: 'anthropicMessages' as const }
     expect(sameFamily(opus, family)).toBe(true)
     expect(sameFamily(poolCandidates.models[2], family)).toBe(false)
+  })
+
+  it('names a model on AWS Bedrock for the model, since callers could never send its model ID', () => {
+    const bedrockOnly = draftFromCandidate({ ...opus, deployments: [opusBedrockUsEast1] }, 'breaker')
+    const alongsideAzure = draftFromCandidate(
+      { ...opus, deployments: [opusEastUs2, opusBedrockUsEast1] },
+      'breaker',
+    )
+
+    expect(bedrockOnly.publicName).toBe('claude-opus-4-5')
+    expect(bedrockOnly.members.map((member) => member.deploymentName)).toEqual([
+      'us.anthropic.claude-opus-4-5-20251101-v1:0',
+    ])
+    expect(alongsideAzure.publicName).toBe('claude-opus-4-5')
+    // The Bedrock member is reached with an API key, so it keeps weight 1 outside any capacity group.
+    expect(alongsideAzure.members.map((member) => member.weight)).toEqual([1, 1])
   })
 
   it('drains one member and keeps every other setting, including display names', () => {

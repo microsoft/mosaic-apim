@@ -150,6 +150,25 @@ export const opusEastUsCreating = deployment({
   eligible: false,
   reason: 'The deployment is Creating.',
 })
+/**
+ * Claude Opus on AWS Bedrock: declared by its Bedrock model ID, which callers could never send, and
+ * reached with a Bedrock API key.
+ */
+export const opusBedrockUsEast1 = deployment({
+  modelEndpointId: 'endpoint_bedrock_us_east_1',
+  endpointName: 'bedrock-us-east-1',
+  region: 'us-east-1',
+  deploymentName: 'us.anthropic.claude-opus-4-5-20251101-v1:0',
+  modelVersion: null,
+  skuName: null,
+  skuCapacity: null,
+  capacityType: 'unknown',
+  processingScope: 'unknown',
+  readiness: 'notConfirmed',
+  declared: true,
+  apiKey: true,
+  provider: 'awsBedrock',
+})
 
 export const poolCandidates: PoolCandidates = {
   gatewayId: poolGateway.id,
@@ -437,6 +456,34 @@ export const keyedAnthropicPoolDetail: ModelPoolDetail = {
         { ...northCentralMember, priority: 2 },
         keyedMember('swedencentral', 1),
         keyedMember('norwayeast', 2),
+      ],
+    },
+  ],
+  warnings: [],
+}
+
+/** A breaker pool whose Claude Opus is also served from AWS Bedrock, tried once after Azure. */
+export const bedrockAnthropicPoolDetail: ModelPoolDetail = {
+  ...anthropicPoolDetail,
+  models: [
+    {
+      ...anthropicPoolDetail.models[0],
+      members: [
+        eastUs2Member,
+        northCentralMember,
+        {
+          ...keyedMember('us-east-1', 1),
+          modelEndpointId: 'endpoint_bedrock_us_east_1',
+          endpointName: 'bedrock-us-east-1',
+          deploymentName: 'us.anthropic.claude-opus-4-5-20251101-v1:0',
+          backendName: 'mosaic-pool-anthropic-claude-opus-bedrock-us-east-1',
+          modelVersion: null,
+          provider: 'awsBedrock',
+          readinessMessage:
+            "The gateway can read this endpoint's API key from Key Vault, but MOSAIC doesn't send keys to " +
+            "AWS, so it can't confirm that AWS accepts it. The first request through the pool shows " +
+            'whether it does.',
+        },
       ],
     },
   ],

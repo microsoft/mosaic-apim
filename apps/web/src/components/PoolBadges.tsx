@@ -4,7 +4,7 @@ import { POOL_CAPACITY_LABELS, POOL_READINESS_LABELS, POOL_RUN_STATUS_LABELS, re
 import type { ReadinessTone } from '../pools'
 import { isUnpublished, publicationStatusLabel } from '../publication-state'
 import type { PublicationRecord } from '../publication-state'
-import type { PoolCapacityBadge, PoolReadiness, PublishRunStatus } from '../types'
+import type { ModelProvider, PoolCapacityBadge, PoolReadiness, PublishRunStatus } from '../types'
 import styles from './PoolDialogs.module.css'
 
 const READINESS_CLASS: Record<PoolReadiness, string> = {
@@ -85,18 +85,30 @@ export function UnappliedChangesBadge() {
 /**
  * How the gateway reaches one deployment, when that's not the usual way: with the endpoint's API
  * key instead of its managed identity, or a deployment an administrator declared because MOSAIC
- * can't list the endpoint's deployments. Renders nothing for an observed deployment reached with
- * the gateway's identity.
+ * can't list the endpoint's deployments. A model on AWS Bedrock is always both, so it says where
+ * it runs instead: requests to it leave Azure. Renders nothing for an observed deployment reached
+ * with the gateway's identity.
  */
 export function PoolMemberAccessBadges({
   apiKey,
   declared,
+  provider,
   size = 'small',
 }: {
   apiKey?: boolean
   declared?: boolean
+  provider?: ModelProvider | null
   size?: BadgeProps['size']
 }) {
+  if (provider === 'awsBedrock') {
+    return (
+      <span className={styles.accessBadges}>
+        <Badge appearance="outline" size={size}>
+          AWS Bedrock
+        </Badge>
+      </span>
+    )
+  }
   if (!apiKey && !declared) return null
   return (
     <span className={styles.accessBadges}>
