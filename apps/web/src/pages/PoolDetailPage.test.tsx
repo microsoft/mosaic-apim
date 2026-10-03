@@ -8,17 +8,19 @@ import { specsWithMemberDrained } from '../pools'
 import {
   anthropicPool,
   anthropicPoolDetail,
+  anthropicPoolHealth,
   bedrockAnthropicPoolDetail,
   draftPool,
   governedAnthropicPool,
   governedAnthropicPoolDetail,
   keyedAnthropicPoolDetail,
+  notConfiguredPoolHealth,
   observedGateway,
   poolGateway,
   poolPlan,
   poolRun,
 } from '../test/pool-fixtures'
-import type { ModelPoolDetail, PublishRun } from '../types'
+import type { ModelPoolDetail, PoolHealth, PublishRun } from '../types'
 import { PoolDetailPage } from './PoolDetailPage'
 
 const api = {
@@ -32,6 +34,7 @@ const api = {
   planUnpublishModelPool: vi.fn(),
   getModelPoolLock: vi.fn(),
   recoverModelPool: vi.fn(),
+  getModelPoolHealth: vi.fn(),
 }
 
 vi.mock('../api', async (importOriginal) => {
@@ -78,6 +81,7 @@ describe('PoolDetailPage', () => {
     api.getModelPoolDetail.mockResolvedValue(anthropicPoolDetail)
     api.listModelPoolRuns.mockResolvedValue([poolRun])
     api.listGateways.mockResolvedValue([poolGateway])
+    api.getModelPoolHealth.mockResolvedValue(notConfiguredPoolHealth)
   })
 
   it('shows each model’s deployments, how the pool routes, and how callers connect', async () => {
@@ -360,5 +364,205 @@ describe('PoolDetailPage', () => {
     expect(within(access).getByText(/doesn’t know which grants the gateway enforces/)).toBeVisible()
     expect(within(access).getByRole('switch', { name: 'Dedicated subscription keys' })).toBeDisabled()
     expect(within(access).getByRole('button', { name: 'Save access settings' })).toBeDisabled()
+  })
+
+  describe('health', () => {
+    const [opus] = anthropicPoolHealth.models
+    const figure = (card: HTMLElement, term: string) =>
+      within(card).getByText(term, { selector: 'dt' }).nextElementSibling?.textContent
+    const cells = (row: HTMLElement) => within(row).getAllByRole('cell').map((cell) => cell.textContent)
+
+    it('shows how each model’s calls ended and how each deployment answered them', async () => {
+      api.getModelPoolHealth.mockResolvedValue(anthropicPoolHealth)
+      renderPage()
+
+      const card = await screen.findByRole('group', { name: 'Health' })
+      expect(await within(card).findByRole('heading', { name: 'Claude Opus 4.5', level: 3 })).toBeVisible()
+      expect(api.getModelPoolHealth).toHaveBeenCalledWith(anthropicPool.id, 24)
+      expect(within(card).getByRole('combobox', { name: 'Range' })).toHaveValue('24')
+      expect(within(card).getByText(/^Since .+\. The newest calls can take a few minutes to show\.$/)).toBeVisible()
+
+      expect(figure(card, 'Calls')).toBe('1,240')
+      expect(figure(card, 'Succeeded')).toBe('1,198 96.6%')
+      expect(figure(card, 'Unavailable')).toBe('30 2.4%')
+      expect(figure(card, 'Client errors')).toBe('12')
+      expect(figure(card, 'Retried')).toBe('88')
+      expect(within(card).queryByText('Answered by overflow')).not.toBeInTheDocument()
+      expect(
+        within(card).getByText(
+          'The gateway answered 3 attempts itself, because no deployment in the backend pool was available.',
+        ),
+      ).toBeVisible()
+
+      const table = within(card).getByRole('table', { name: 'How each deployment answered Claude Opus 4.5' })
+      expect(within(table).getByRole('columnheader', { name: 'Breaker tripped' })).toBeVisible()
+      const [, eastUs2, northCentral, westUs3] = within(table).getAllByRole('row')
+      expect(within(eastUs2).getByText('foundry-eastus2 · eastus2')).toBeVisible()
+      expect(cells(eastUs2).slice(1, 7)).toEqual(['860', '790 91.9%', '58', '4', '8', '6 minutes'])
+      expect(cells(northCentral).slice(1, 7)).toEqual(['470', '408 86.8%', '52', '6', '4', 'None'])
+      expect(within(westUs3).getByText('Drained')).toBeVisible()
+      expect(cells(westUs3).slice(1)).toEqual(['0', '0', '0', '0', '0', 'None', '—'])
+
+      expect(within(card).getByText(/^Throttled attempts got a 429/)).toHaveTextContent(
+        /Breaker trips are estimates: MOSAIC counts the minutes in which a deployment failed often enough to trip its breaker\.$/,
+      )
+      expect(within(card).queryByText(/Overflow deployments take a call/)).not.toBeInTheDocument()
+    })
+
+    it('reads the range someone picks', async () => {
+      const user = userEvent.setup()
+      api.getModelPoolHealth.mockResolvedValue(anthropicPoolHealth)
+      renderPage()
+
+      const card = await screen.findByRole('group', { name: 'Health' })
+      await user.selectOptions(within(card).getByRole('combobox', { name: 'Range' }), 'Last 7 days')
+
+      await waitFor(() => expect(api.getModelPoolHealth).toHaveBeenCalledWith(anthropicPool.id, 168))
+      expect(within(card).getByRole('combobox', { name: 'Range' })).toHaveValue('168')
+    })
+
+    it('shows overflow, and no breaker, for a linear pool', async () => {
+      const linear: PoolHealth = {
+        ...anthropicPoolHealth,
+        models: [
+          {
+            ...opus,
+            overflowed: 120,
+            exhausted: 0,
+            members: opus.members.map((member, index) => ({
+              ...member,
+              overflow: index > 0 && !member.drained,
+              trippedMinutes: null,
+            })),
+          },
+        ],
+      }
+      api.getModelPoolHealth.mockResolvedValue(linear)
+      renderPage()
+
+      const card = await screen.findByRole('group', { name: 'Health' })
+      const table = await within(card).findByRole('table', { name: 'How each deployment answered Claude Opus 4.5' })
+      expect(within(table).queryByRole('columnheader', { name: 'Breaker tripped' })).not.toBeInTheDocument()
+      const [, eastUs2, northCentral] = within(table).getAllByRole('row')
+      expect(within(northCentral).getByText('Overflow')).toBeVisible()
+      expect(within(eastUs2).queryByText('Overflow')).not.toBeInTheDocument()
+      expect(figure(card, 'Answered by overflow')).toBe('120')
+      expect(within(card).queryByText(/The gateway answered/)).not.toBeInTheDocument()
+      expect(within(card).getByText(/^Throttled attempts got a 429/)).toHaveTextContent(
+        /Overflow deployments take a call only once the others can’t\.$/,
+      )
+    })
+
+    it('leaves out calls without an attempt trace, and says when a model had no calls', async () => {
+      api.getModelPoolHealth.mockResolvedValue({
+        ...anthropicPoolHealth,
+        untraced: 1,
+        models: [
+          opus,
+          {
+            ...opus,
+            modelId: 'poolmodel_sonnet',
+            publicName: 'claude-sonnet-4-5',
+            displayName: 'Claude Sonnet 4.5',
+            requests: 0,
+            succeeded: 0,
+            unavailable: 0,
+            clientErrors: 0,
+            retried: 0,
+            exhausted: 0,
+            members: [],
+          },
+        ],
+      } satisfies PoolHealth)
+      renderPage()
+
+      const card = await screen.findByRole('group', { name: 'Health' })
+      expect(
+        await within(card).findByText(
+          '1 call reached a deployment without leaving an attempt trace, so these figures leave it out.',
+        ),
+      ).toBeVisible()
+      expect(within(card).getByRole('heading', { name: 'Claude Sonnet 4.5', level: 3 })).toBeVisible()
+      expect(within(card).getByText('No calls reached Claude Sonnet 4.5 in this range.')).toBeVisible()
+      expect(within(card).getAllByRole('table')).toHaveLength(1)
+    })
+
+    it('asks for a fresh apply when no call carries an attempt trace', async () => {
+      const message = 'Calls reached the pool, but none carries an attempt trace. Apply the pool again so its policy writes them.'
+      api.getModelPoolHealth.mockResolvedValue({ ...notConfiguredPoolHealth, status: 'ok', untraced: 40, message })
+      renderPage()
+
+      const card = await screen.findByRole('group', { name: 'Health' })
+      expect(await within(card).findByText(message)).toBeVisible()
+      expect(within(card).queryByRole('table')).not.toBeInTheDocument()
+    })
+
+    it.each([
+      ['notConfigured', "This deployment doesn't read gateway telemetry."],
+      ['notPublished', 'The pool isn’t on its gateway, so no calls reach it.'],
+      ['noData', 'The gateway logged no calls to this pool in the last 24 hours.'],
+    ] as const)('says why there are no figures when the status is %s', async (status, message) => {
+      api.getModelPoolHealth.mockResolvedValue({ ...notConfiguredPoolHealth, status, message })
+      renderPage()
+
+      const card = await screen.findByRole('group', { name: 'Health' })
+      expect(await within(card).findByText(message)).toBeVisible()
+      expect(within(card).queryByRole('table')).not.toBeInTheDocument()
+    })
+
+    it('offers the command that lets MOSAIC read the gateway’s logs', async () => {
+      const user = userEvent.setup()
+      const writeText = vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue()
+      const command =
+        'az role assignment create --assignee-object-id 00000000-0000-0000-0000-000000000000 ' +
+        '--assignee-principal-type ServicePrincipal --role "Monitoring Reader" --scope /subscriptions/sub/apim'
+      api.getModelPoolHealth.mockResolvedValue({
+        ...notConfiguredPoolHealth,
+        status: 'accessDenied',
+        message: 'MOSAIC’s identity may not read this gateway’s logs.',
+        command,
+      })
+      renderPage()
+
+      const card = await screen.findByRole('group', { name: 'Health' })
+      expect(await within(card).findByText('MOSAIC can’t read the gateway’s logs')).toBeVisible()
+      expect(within(card).getByText('MOSAIC’s identity may not read this gateway’s logs.')).toBeVisible()
+      expect(within(card).getByText(command)).toBeVisible()
+
+      await user.click(within(card).getByRole('button', { name: 'Copy command' }))
+      expect(writeText).toHaveBeenCalledWith(command)
+    })
+
+    it('says when MOSAIC couldn’t read the logs', async () => {
+      api.getModelPoolHealth.mockResolvedValue({
+        ...notConfiguredPoolHealth,
+        status: 'error',
+        message: 'The pool’s gateway is no longer registered with MOSAIC.',
+      })
+      renderPage()
+
+      const card = await screen.findByRole('group', { name: 'Health' })
+      expect(await within(card).findByText('MOSAIC couldn’t read the gateway’s logs')).toBeVisible()
+      expect(within(card).getByText('The pool’s gateway is no longer registered with MOSAIC.')).toBeVisible()
+    })
+
+    it('says when the health doesn’t load', async () => {
+      api.getModelPoolHealth.mockRejectedValue(new Error('The request timed out.'))
+      renderPage()
+
+      const card = await screen.findByRole('group', { name: 'Health' })
+      expect(await within(card).findByText('Unable to load the pool’s health')).toBeVisible()
+      expect(within(card).getByText('The request timed out.')).toBeVisible()
+    })
+
+    it('isn’t shown for a pool with no models', async () => {
+      api.getModelPoolDetail.mockResolvedValue(draftDetail)
+      api.listModelPoolRuns.mockResolvedValue([])
+      renderPage(`/pools/${draftPool.id}`)
+
+      expect(await screen.findByRole('heading', { name: 'No models yet', level: 3 })).toBeVisible()
+      expect(screen.queryByRole('group', { name: 'Health' })).not.toBeInTheDocument()
+      expect(api.getModelPoolHealth).not.toHaveBeenCalled()
+    })
   })
 })

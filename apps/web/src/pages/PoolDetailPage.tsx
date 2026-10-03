@@ -10,12 +10,12 @@ import {
   Title3,
   useRestoreFocusTarget,
 } from '@fluentui/react-components'
-import { CheckmarkRegular, CopyRegular } from '@fluentui/react-icons'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { useMosaicApi } from '../api'
 import { EmptyState, ErrorState, Loading } from '../components/AsyncState'
+import { CopyButton } from '../components/CopyButton'
 import { EnvironmentBadge } from '../components/EnvironmentBadge'
 import { ModelAccessRecovery } from '../components/ModelAccessRecovery'
 import { PageHeader } from '../components/PageHeader'
@@ -30,6 +30,7 @@ import {
   UnappliedChangesBadge,
 } from '../components/PoolBadges'
 import { PoolEditorDialog } from '../components/PoolEditorDialog'
+import { PoolHealthCard } from '../components/PoolHealthCard'
 import { PoolPlanDialog } from '../components/PoolPlanDialog'
 import type { PoolPlanMode } from '../components/PoolPlanDialog'
 import { PoolTypeDiagram } from '../components/PoolTypeDiagram'
@@ -267,29 +268,6 @@ function PoolModelCard({
   )
 }
 
-/** A copy button. `label` names what it copies, mid-sentence, such as "base URL". */
-function CopyButton({ value, label }: { value: string; label: string }) {
-  const [copied, setCopied] = useState(false)
-  async function copy() {
-    try {
-      await navigator.clipboard?.writeText(value)
-      setCopied(true)
-    } catch {
-      setCopied(false)
-    }
-  }
-  return (
-    <Button
-      size="small"
-      icon={copied ? <CheckmarkRegular /> : <CopyRegular />}
-      aria-label={copied ? `Copied ${label}` : `Copy ${label}`}
-      onClick={() => void copy()}
-    >
-      {copied ? 'Copied' : 'Copy'}
-    </Button>
-  )
-}
-
 function ConnectionCard({ detail, published }: { detail: ModelPoolDetail; published: boolean }) {
   const { pool } = detail
   const model = detail.models.find((candidate) => candidate.listed) ?? detail.models[0]
@@ -462,6 +440,7 @@ function PoolDetail({ poolId }: { poolId: string }) {
       navigate('/pools', { replace: true })
       queryClient.removeQueries({ queryKey: ['model-pools', 'detail', poolId] })
       queryClient.removeQueries({ queryKey: ['model-pools', 'runs', poolId] })
+      queryClient.removeQueries({ queryKey: ['model-pools', 'health', poolId] })
       void queryClient.invalidateQueries({ queryKey: ['model-pools'] })
     },
   })
@@ -712,6 +691,8 @@ function PoolDetail({ poolId }: { poolId: string }) {
           ))
         )}
       </section>
+
+      {detail.data.models.length > 0 && <PoolHealthCard poolId={pool.id} models={detail.data.models} />}
 
       <PoolAccessCard
         key={JSON.stringify(pool.governedAccess ?? null)}

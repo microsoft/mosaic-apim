@@ -1746,6 +1746,71 @@ export interface ModelPoolDetail {
   unappliedChanges: boolean
 }
 
+export type PoolHealthStatus = 'ok' | 'noData' | 'notPublished' | 'notConfigured' | 'accessDenied' | 'error'
+
+/** How one member answered the attempts the gateway sent it over a window. */
+export interface PoolMemberHealth {
+  modelEndpointId: string
+  endpointName?: string | null
+  deploymentName: string
+  backendName: string
+  region?: string | null
+  drained: boolean
+  apiKey: boolean
+  /**
+   * Whether it takes requests only once others can't: a later member of a linear pool, a
+   * pay-as-you-go member of a preferential pool, or one reached with an API key.
+   */
+  overflow: boolean
+  attempts: number
+  succeeded: number
+  throttled: number
+  /** Server errors, and attempts that got no response. */
+  failed: number
+  clientErrors: number
+  /** Calls whose last attempt it answered, and how many of those it answered successfully. */
+  served: number
+  servedOk: number
+  /** Minutes in which its breaker would have tripped, an estimate. Null when it has no breaker. */
+  trippedMinutes?: number | null
+  lastSeen?: string | null
+}
+
+/** How the calls to one pool model ended, and how its members answered them. */
+export interface PoolModelHealth {
+  modelId: string
+  publicName: string
+  displayName: string
+  requests: number
+  succeeded: number
+  /** Calls that ended on a 429, a server error, or no response. */
+  unavailable: number
+  clientErrors: number
+  /** Calls that took more than one attempt. */
+  retried: number
+  /** Successful calls that an overflow member answered. */
+  overflowed: number
+  /** Attempts the backend pool answered itself, because none of its members was available. */
+  exhausted: number
+  /** Attempts MOSAIC couldn't place on a member. */
+  unplaced: number
+  members: PoolMemberHealth[]
+}
+
+/** A pool's health over a window of whole hours, read from its attempt traces. */
+export interface PoolHealth {
+  status: PoolHealthStatus
+  message?: string | null
+  /** A command that fixes what stops MOSAIC reading the logs, when there is one. */
+  command?: string | null
+  hours: number
+  start?: string | null
+  end?: string | null
+  /** Calls the gateway logged with no attempt trace, sent by a policy from before traces. */
+  untraced: number
+  models: PoolModelHealth[]
+}
+
 export interface PoolCandidateDeployment {
   modelEndpointId: string
   endpointName: string

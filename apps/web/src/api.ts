@@ -97,6 +97,7 @@ import type {
   ObservedProduct,
   ObservedSubscription,
   PoolCandidates,
+  PoolHealth,
   Publication,
   PublicationLockInfo,
   PublishableModel,
@@ -344,6 +345,8 @@ export interface MosaicApi {
   planUnpublishModelPool(poolId: string): Promise<PublishPlan>
   unpublishModelPool(poolId: string, planId: string): Promise<PublishRun>
   listModelPoolRuns(poolId: string): Promise<PublishRun[]>
+  /** How the gateway's calls to a pool ended over the last `hours` hours, from its attempt traces. */
+  getModelPoolHealth(poolId: string, hours?: number): Promise<PoolHealth>
   getModelPoolRun(poolId: string, runId: string): Promise<PublishRun>
   recoverModelPool(poolId: string, payload: { runId: string; confirmQuiesced: boolean }): Promise<PublishRun>
   getModelPoolLock(poolId: string): Promise<PublicationLockInfo>
@@ -911,6 +914,10 @@ export function useMosaicApi(): MosaicApi {
         ),
       listModelPoolRuns: (id) =>
         request<PublishRun[]>(`/api/v1/model-pools/${encodeURIComponent(id)}/runs`),
+      getModelPoolHealth: (id, hours) =>
+        request<PoolHealth>(
+          `/api/v1/model-pools/${encodeURIComponent(id)}/health${hours ? `?hours=${hours}` : ''}`,
+        ),
       getModelPoolRun: (id, runId) =>
         request<PublishRun>(
           `/api/v1/model-pools/${encodeURIComponent(id)}/runs/${encodeURIComponent(runId)}`,

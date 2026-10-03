@@ -397,6 +397,20 @@ async def test_a_pool_with_no_calls_lists_its_members_with_nothing_to_show(
     assert [member["attempts"] for member in model["members"]] == [0, 0, 0]
 
 
+@pytest.mark.parametrize(
+    ("hours", "span"),
+    [(1, "hour"), (24, "24 hours"), (25, "25 hours"), (48, "2 days"), (168, "7 days")],
+)
+async def test_a_pool_with_no_calls_names_its_window_in_words(
+    harness: Harness, hours: int, span: str
+) -> None:
+    await _seeded(harness)
+
+    health = _health(harness, hours=hours)
+
+    assert health["message"] == f"The gateway logged no calls to this pool in the last {span}."
+
+
 async def test_calls_without_traces_ask_for_the_pool_to_be_applied_again(
     harness: Harness,
 ) -> None:

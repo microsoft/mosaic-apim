@@ -6,6 +6,8 @@ import type {
   ModelPoolSummary,
   PoolCandidateDeployment,
   PoolCandidates,
+  PoolHealth,
+  PoolMemberHealth,
   PoolMemberView,
   PublishPlan,
   PublishRun,
@@ -488,6 +490,93 @@ export const bedrockAnthropicPoolDetail: ModelPoolDetail = {
     },
   ],
   warnings: [],
+}
+
+const westUs3Member = anthropicPoolDetail.models[0].members[2]
+
+function memberHealth(member: PoolMemberView, figures: Partial<PoolMemberHealth> = {}): PoolMemberHealth {
+  return {
+    modelEndpointId: member.modelEndpointId,
+    endpointName: member.endpointName,
+    deploymentName: member.deploymentName,
+    backendName: member.backendName,
+    region: member.region,
+    drained: member.drained,
+    apiKey: member.apiKey,
+    overflow: false,
+    attempts: 0,
+    succeeded: 0,
+    throttled: 0,
+    failed: 0,
+    clientErrors: 0,
+    served: 0,
+    servedOk: 0,
+    trippedMinutes: 0,
+    lastSeen: null,
+    ...figures,
+  }
+}
+
+/** The Anthropic pool's last day: East US 2 throttled often enough to trip its breaker. */
+export const anthropicPoolHealth: PoolHealth = {
+  status: 'ok',
+  message: null,
+  command: null,
+  hours: 24,
+  start: '2026-09-03T10:00:00Z',
+  end: '2026-09-04T10:00:00Z',
+  untraced: 0,
+  models: [
+    {
+      modelId: 'poolmodel_opus',
+      publicName: 'claude-opus-4-5',
+      displayName: 'Claude Opus 4.5',
+      requests: 1240,
+      succeeded: 1198,
+      unavailable: 30,
+      clientErrors: 12,
+      retried: 88,
+      overflowed: 0,
+      exhausted: 3,
+      unplaced: 0,
+      members: [
+        memberHealth(eastUs2Member, {
+          attempts: 860,
+          succeeded: 790,
+          throttled: 58,
+          failed: 4,
+          clientErrors: 8,
+          served: 800,
+          servedOk: 790,
+          trippedMinutes: 6,
+          lastSeen: '2026-09-04T09:58:00Z',
+        }),
+        memberHealth(northCentralMember, {
+          attempts: 470,
+          succeeded: 408,
+          throttled: 52,
+          failed: 6,
+          clientErrors: 4,
+          served: 437,
+          servedOk: 408,
+          lastSeen: '2026-09-04T09:57:00Z',
+        }),
+        memberHealth(westUs3Member),
+      ],
+    },
+  ],
+}
+
+/** The answer from a deployment of MOSAIC that doesn't read gateway telemetry. */
+export const notConfiguredPoolHealth: PoolHealth = {
+  status: 'notConfigured',
+  message: "This deployment doesn't read gateway telemetry.",
+  command: null,
+  hours: 24,
+  start: '2026-09-03T10:00:00Z',
+  end: '2026-09-04T10:00:00Z',
+  untraced: 0,
+  models: [],
 }
 
 /** The pool after a plan applied governed access: a person's key and a security group's Entra tokens. */

@@ -19,6 +19,7 @@ import {
   memberPositions,
   memberShares,
   newestRunsFirst,
+  percentOf,
   planProblems,
   poolPublishBlocker,
   poolRequestExample,
@@ -528,5 +529,19 @@ describe('pool runs', () => {
 
     expect(newestRunsFirst(runs).map((run) => run.id)).toEqual(['newer', poolRun.id, 'older'])
     expect(runs.map((run) => run.id)).toEqual(['older', poolRun.id, 'newer'])
+  })
+})
+
+describe('pool health', () => {
+  it('gives a part of a whole as a percentage, never rounding to all or none', () => {
+    expect(percentOf(2, 3)).toBe('66.7%')
+    expect(percentOf(1, 3)).toBe('33.3%')
+    expect(percentOf(29, 200)).toBe('14.5%')
+    expect(percentOf(67, 100)).toBe('67%')
+    expect(percentOf(9_999, 10_000)).toBe('99.9%')
+    expect(percentOf(1, 10_000)).toBe('0.1%')
+    expect(percentOf(5, 5)).toBe('100%')
+    expect(percentOf(0, 5)).toBe('0%')
+    expect(percentOf(0, 0)).toBeNull()
   })
 })

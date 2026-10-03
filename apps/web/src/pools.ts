@@ -511,6 +511,18 @@ export function formatRunDuration(durationMs: number | null | undefined): string
   return seconds ? `${minutes} min ${seconds} s` : `${minutes} min`
 }
 
+/**
+ * A part of a whole as a percentage to one decimal place, such as "66.7%", or null when there's no
+ * whole. Only all of it is "100%" and only none of it is "0%", so a rare failure never rounds away.
+ */
+export function percentOf(part: number, whole: number): string | null {
+  if (!(whole > 0)) return null
+  if (part >= whole) return '100%'
+  if (part <= 0) return '0%'
+  const tenths = Math.min(999, Math.max(1, Math.round((part * 1000) / whole)))
+  return `${tenths / 10}%`
+}
+
 /** The name callers send by default: the members' shared deployment name, or the model's. */
 export function defaultPublicName(model: PoolCandidateModel, members: DraftPoolMember[]): string {
   const names = new Set(members.map((member) => member.deploymentName.toLowerCase()))

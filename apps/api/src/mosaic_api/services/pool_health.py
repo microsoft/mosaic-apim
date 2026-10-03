@@ -59,6 +59,16 @@ def _text(row: Row, name: str) -> str:
     return value.casefold() if isinstance(value, str) else ""
 
 
+def _span(hours: int) -> str:
+    """A window's length in words: "hour", "6 hours", or "7 days"."""
+
+    if hours == 1:
+        return "hour"
+    if hours > 24 and hours % 24 == 0:
+        return f"{hours // 24} days"
+    return f"{hours} hours"
+
+
 def _latest(current: datetime | None, value: object) -> datetime | None:
     if not isinstance(value, datetime):
         return current
@@ -299,7 +309,7 @@ class PoolHealthService:
                 "so its policy writes them."
             )
         elif not traced:
-            message = f"The gateway logged no calls to this pool in the last {hours} hours."
+            message = f"The gateway logged no calls to this pool in the last {_span(hours)}."
         return result.model_copy(
             update={
                 "status": status,
