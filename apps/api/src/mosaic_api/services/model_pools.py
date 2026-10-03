@@ -31,6 +31,7 @@ from mosaic_api.domain import (
     AuditEvent,
     BindingSource,
     CapabilitySupport,
+    CatalogVisibility,
     DeclaredDeployment,
     EntitlementBinding,
     EntitlementSubjectKind,
@@ -99,6 +100,7 @@ from mosaic_api.model_pools import (
     ModelPoolSummary,
     ModelPoolType,
     ModelPoolUpdate,
+    ModelPoolVisibility,
     PoolAccessGrant,
     PoolAccessSnapshot,
     PoolCandidateDeployment,
@@ -142,6 +144,7 @@ from mosaic_api.services.model_access import (
     entitlement_intent_digest,
     environment_guard,
     local_mutation_active,
+    model_api_offered,
     publication_lock,
 )
 from mosaic_api.services.pool_access import (
@@ -614,6 +617,12 @@ def _is_governed(pool: ModelPool) -> bool:
     """Whether the pool's access is governed, or was by an apply that went through."""
 
     return pool.governed_access is not None or pool.applied_access is not None
+
+
+def _in_catalog(pool: ModelPool) -> bool:
+    """Whether the portal's catalog shows the pool's listed models once its gateway serves them."""
+
+    return pool.governed_access is not None and pool.visibility == ModelPoolVisibility.LISTED
 
 
 def unpublish_digest(pool: ModelPool) -> str:
@@ -1923,6 +1932,7 @@ class ModelPoolService:
                 "MOSAIC hasn't read this gateway's URL, so it can't show callers where to "
                 "connect. Re-run the gateway's access check."
             )
+        warnings.extend(await self._shown_twice(pool, gateway, members, others))
         vendor = next(iter(vendors.values())) if len(vendors) == 1 else pool.vendor
         return _Assessment(
             gateway=gateway,
@@ -1932,6 +1942,75 @@ class ModelPoolService:
             problems=list(dict.fromkeys(problems)),
             warnings=list(dict.fromkeys(warnings)),
         )
+
+    async def _shown_twice(
+        self, pool: ModelPool, gateway: Gateway, members: list[_Member], others: list[ModelPool]
+    ) -> list[str]:
+        """Where the portal would show people one of the pool's models twice (ADR 0024).
+
+        That's a member's deployment also published on its own, or another pool on the gateway
+        already offering a model under the same name. Only what the catalog shows counts: a listed
+        model of a listed, governed pool, and a publication whose API is in API Management and
+        whose model API the catalog lists. This pool needn't be applied yet, so the warning comes
+        before people see the model twice.
+        """
+
+        if not _in_catalog(pool):
+            return []
+        warnings: list[str] = []
+        published = await self._listed_publications(pool.tenant_id, pool.gateway_id)
+        for item in members:
+            if not item.model.listed:
+                continue
+            publication = published.get(
+                (item.member.model_endpoint_id, item.member.deployment_name.casefold())
+            )
+            if publication is not None:
+                endpoint = item.view.endpoint_name or item.member.model_endpoint_id
+                warnings.append(
+                    f"{item.member.deployment_name} on {endpoint} is also published on its own as "
+                    f"{publication.display_name}, so portal users would see "
+                    f"{item.model.display_name} twice. Make the publication private, or unlist "
+                    "the model in this pool."
+                )
+        for model in pool.models:
+            if not model.listed:
+                continue
+            name = model.public_name.casefold()
+            warnings.extend(
+                f"{other.display_name} also offers {model.public_name} on {gateway.name}, so "
+                "portal users would see the model twice. Unlist it in one of the pools."
+                for other in others
+                if _in_catalog(other)
+                and any(
+                    peer.public_name.casefold() == name
+                    and peer.listed
+                    and other.serves_model(peer.id)
+                    for peer in other.models
+                )
+            )
+        return warnings
+
+    async def _listed_publications(
+        self, tenant_id: str, gateway_id: str
+    ) -> dict[tuple[str, str], Publication]:
+        """The gateway's publications the catalog lists, by endpoint and casefolded deployment."""
+
+        publications = {
+            item.id: item
+            for item in await self._repository.list_publications(tenant_id, gateway_id=gateway_id)
+        }
+        listed: dict[tuple[str, str], Publication] = {}
+        if not publications:
+            return listed
+        for model_api in await self._repository.list_model_apis(tenant_id, gateway_id=gateway_id):
+            if model_api.visibility != CatalogVisibility.CATALOG:
+                continue
+            publication = publications.get(model_api.publication_id or "")
+            if publication is not None and model_api_offered(model_api, publication):
+                key = (publication.model_endpoint_id, publication.deployment_name.casefold())
+                listed[key] = publication
+        return listed
 
     @staticmethod
     def _check_model(

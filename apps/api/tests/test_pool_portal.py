@@ -13,17 +13,25 @@ import pytest
 from mosaic_api.domain import (
     AccessRequestCreate,
     AccessRequestState,
+    ApiShape,
     CatalogEntry,
+    CatalogVisibility,
     EntitlementResource,
     ModelAccessSettings,
+    ModelApi,
+    ModelProvider,
     Principal,
+    Publication,
+    PublicationStatus,
+    PublishedResource,
+    PublishedResourceKind,
     PublishRunStatus,
 )
 from mosaic_api.model_pools import ModelPool, ModelPoolType, ModelPoolVisibility
 from mosaic_api.services.directory import Actor
 from mosaic_api.services.entitlements import EntitlementService
 from mosaic_api.services.portal import PortalService
-from test_model_pools import TENANT, _gpt4o, _member, _model
+from test_model_pools import ACTOR, TENANT, _audit, _endpoint_id, _gpt4o, _member, _model
 from test_pool_governed import GENERAL, GovernedEstate
 
 # One model spread over two regions, under a name that's neither deployment's.
@@ -178,6 +186,156 @@ async def test_the_catalog_leaves_out_a_pool_model_no_one_could_use(
     _, ada = await catalog.reader("Ada")
 
     assert await catalog.entries(ada) == []
+
+
+# -- a model shown twice --------------------------------------------------------------------------
+
+
+async def _published_on_its_own(
+    catalog: Catalog,
+    deployment: str = "gpt-4o",
+    *,
+    applied: bool = True,
+    visibility: CatalogVisibility = CatalogVisibility.CATALOG,
+) -> Publication:
+    """A publication of one of aoai-east's deployments, offered in the catalog as its own model."""
+
+    api_name = f"mosaic-east-{deployment}"
+    publication = Publication(
+        id=f"publication-{deployment}",
+        tenant_id=TENANT,
+        gateway_id=catalog.gateway_id,
+        model_endpoint_id=_endpoint_id("aoai-east"),
+        deployment_name=deployment,
+        provider=ModelProvider.AZURE_OPENAI,
+        display_name="East chat",
+        api_name=api_name,
+        api_path=f"east/{deployment}",
+        backend_name=api_name,
+        fragment_name=api_name,
+        product_name=api_name,
+        subscription_name=api_name,
+        shape_version="v1",
+        api_shape=ApiShape.AZURE_OPENAI,
+        status=PublicationStatus.PUBLISHED if applied else PublicationStatus.DRAFT,
+        model_api_id=f"model-api-{deployment}",
+        resources=(
+            [
+                PublishedResource(
+                    kind=PublishedResourceKind.API,
+                    name=api_name,
+                    resource_id=f"apis/{api_name}",
+                    created_by_mosaic=True,
+                )
+            ]
+            if applied
+            else []
+        ),
+    )
+    await catalog.gateway_repository.save_publication(publication, _audit())
+    await catalog.gateway_repository.save_model_api(
+        ModelApi(
+            id=f"model-api-{deployment}",
+            tenant_id=TENANT,
+            gateway_id=catalog.gateway_id,
+            api_name=api_name,
+            display_name=publication.display_name,
+            path=publication.api_path,
+            publication_id=publication.id,
+            visibility=visibility,
+        ),
+        _audit(),
+    )
+    return publication
+
+
+async def _shown_twice(catalog: Catalog, pool: ModelPool) -> list[str]:
+    detail = await catalog.service.detail(ACTOR, pool.id)
+    return [warning for warning in detail.warnings if "twice" in warning]
+
+
+async def test_a_pool_warns_before_it_shows_a_published_deployment_twice(catalog: Catalog) -> None:
+    await _published_on_its_own(catalog)
+    pool = await catalog.draft()
+
+    warnings = await _shown_twice(catalog, pool)
+    plan = await catalog.service.plan(ACTOR, pool.id)
+
+    assert warnings == [
+        "gpt-4o on aoai-east is also published on its own as East chat, so portal users would "
+        "see Contoso Chat twice. Make the publication private, or unlist the model in this pool."
+    ]
+    assert warnings[0] in plan.warnings
+    # As they would, once the pool is applied.
+    run = await catalog.apply(pool.id, plan)
+    assert run.status == PublishRunStatus.SUCCEEDED, run.errors
+    _, ada = await catalog.reader("Ada")
+    shown = [entry.display_name for entry in await catalog.portal.catalog(ada)]
+    assert shown == ["Contoso Chat", "East chat"]
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "private-publication",
+        "publication-not-applied",
+        "another-deployment",
+        "unlisted-model",
+        "hidden-pool",
+        "ungoverned",
+    ],
+)
+async def test_no_warning_while_the_portal_would_show_the_model_once(
+    catalog: Catalog, case: str
+) -> None:
+    if case == "private-publication":
+        await _published_on_its_own(catalog, visibility=CatalogVisibility.PRIVATE)
+    elif case == "publication-not-applied":
+        await _published_on_its_own(catalog, applied=False)
+    elif case == "another-deployment":
+        await _published_on_its_own(catalog, "gpt-4o-mini")
+    else:
+        await _published_on_its_own(catalog)
+    if case == "unlisted-model":
+        pool = await catalog.draft({**CHAT, "listed": False})
+    elif case == "hidden-pool":
+        pool = await catalog.draft(visibility=ModelPoolVisibility.HIDDEN)
+    elif case == "ungoverned":
+        # The catalog never offers a pool that doesn't govern access.
+        pool = await catalog.create(POOL_NAME, CHAT)
+    else:
+        pool = await catalog.draft()
+
+    assert await _shown_twice(catalog, pool) == []
+
+
+async def test_pools_offering_one_model_name_on_a_gateway_warn_about_each_other(
+    catalog: Catalog,
+) -> None:
+    served = await catalog.published()
+    gateway = await catalog.gateway_repository.get_gateway(TENANT, catalog.gateway_id)
+    assert gateway is not None
+    other = await catalog.create(
+        "Provisioned GPT",
+        _model(_member("aoai-ptu", "gpt-4o"), public_name="Contoso-Chat", display_name="Chat"),
+    )
+    other = await catalog.update(other.id, governed_access=ModelAccessSettings())
+
+    assert await _shown_twice(catalog, other) == [
+        f"{POOL_NAME} also offers Contoso-Chat on {gateway.name}, so portal users would see the "
+        "model twice. Unlist it in one of the pools."
+    ]
+    # The other pool isn't in the catalog yet, so the served one has nothing to warn about.
+    assert await _shown_twice(catalog, served) == []
+
+    await catalog.publish(other.id)
+
+    assert await _shown_twice(catalog, served) == [
+        f"Provisioned GPT also offers contoso-chat on {gateway.name}, so portal users would see "
+        "the model twice. Unlist it in one of the pools."
+    ]
+    await catalog.update(other.id, visibility=ModelPoolVisibility.HIDDEN)
+    assert await _shown_twice(catalog, served) == []
 
 
 # -- capacity -------------------------------------------------------------------------------------
