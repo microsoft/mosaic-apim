@@ -1,4 +1,8 @@
-.surface {
+/*
+ * Fluent caps a dialog at 600px with a single-class rule it injects after this stylesheet, so the
+ * doubled class outranks it and the deployment tables get room for every column.
+ */
+.surface.surface {
   width: 100%;
   max-width: min(1040px, calc(100vw - 32px));
 }
