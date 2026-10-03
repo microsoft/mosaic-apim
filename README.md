@@ -1673,6 +1673,7 @@ records intent. Nothing changes in API Management until a reviewed plan is appli
 | --- | --- | --- |
 | GET | `/gateways/{gatewayId}/pool-candidates` | The deployments a pool on that gateway could use, grouped by model, and why others can't be used |
 | GET | `/model-pools`, `/model-pool-summaries` | Pools, optionally on one `gateway`. A summary counts active members by capacity type and readiness |
+| GET | `/model-endpoints/{id}/pools` | The pools with members on that endpoint, the deployments each one uses there, and a warning on any deployment portal users would also see published on its own |
 | POST | `/model-pools` | Creates a pool, `201` |
 | GET, PATCH, DELETE | `/model-pools/{id}` | Reads, changes, or removes a pool. `governedAccess` turns on governed access, and can't be cleared once set. Removal is refused while the pool owns API Management resources |
 | GET | `/model-pools/{id}/detail` | The pool with each member judged against today's inventory, environments, and gateway |

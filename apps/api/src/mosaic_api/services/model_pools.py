@@ -95,6 +95,8 @@ from mosaic_api.integrations.pool_policy import (
 from mosaic_api.model_pools import (
     MAX_ATTEMPTS,
     MAX_BACKEND_POOL_MEMBERS,
+    EndpointPoolDeployment,
+    EndpointPoolUse,
     ModelPool,
     ModelPoolCreate,
     ModelPoolDetail,
@@ -624,6 +626,18 @@ def _in_catalog(pool: ModelPool) -> bool:
     """Whether the portal's catalog shows the pool's listed models once its gateway serves them."""
 
     return pool.governed_access is not None and pool.visibility == ModelPoolVisibility.LISTED
+
+
+def _published_twice(
+    deployment: str, publication: Publication, model: PoolModel, pool: str
+) -> str:
+    """Why portal users would see a pool model twice: a member is also published on its own."""
+
+    return (
+        f"{deployment} is also published on its own as {publication.display_name}, so portal "
+        f"users would see {model.display_name} twice. Make the publication private, or unlist "
+        f"the model in {pool}."
+    )
 
 
 def unpublish_digest(pool: ModelPool) -> str:
@@ -1223,6 +1237,65 @@ class ModelPoolService:
                 )
             )
         return summaries
+
+    async def endpoint_pools(self, actor: Actor, endpoint_id: str) -> list[EndpointPoolUse]:
+        """The pools with members on the endpoint, and the deployments each one uses there."""
+
+        endpoint = await self._endpoints.get_endpoint(actor.tenant_id, endpoint_id)
+        if endpoint is None:
+            raise NotFoundError("Model endpoint was not found", details={"id": endpoint_id})
+        gateways: dict[str, Gateway | None] = {}
+        listed: dict[str, dict[tuple[str, str], Publication]] = {}
+        uses: list[EndpointPoolUse] = []
+        for pool in await self.list_pools(actor):
+            if not pool.uses(endpoint.id):
+                continue
+            if pool.gateway_id not in gateways:
+                gateways[pool.gateway_id] = await self._repository.get_gateway(
+                    actor.tenant_id, pool.gateway_id
+                )
+            gateway = gateways[pool.gateway_id]
+            published: dict[tuple[str, str], Publication] = {}
+            if _in_catalog(pool):
+                if pool.gateway_id not in listed:
+                    listed[pool.gateway_id] = await self._listed_publications(
+                        actor.tenant_id, pool.gateway_id
+                    )
+                published = listed[pool.gateway_id]
+            deployments: list[EndpointPoolDeployment] = []
+            for model in pool.models:
+                for member in model.members:
+                    if member.model_endpoint_id != endpoint.id:
+                        continue
+                    publication = (
+                        published.get((endpoint.id, member.deployment_name.casefold()))
+                        if model.listed
+                        else None
+                    )
+                    deployments.append(
+                        EndpointPoolDeployment(
+                            deployment_name=member.deployment_name,
+                            pool_model_id=model.id,
+                            public_name=model.public_name,
+                            model_display_name=model.display_name,
+                            drained=member.drained,
+                            warning=(
+                                _published_twice(
+                                    member.deployment_name, publication, model, pool.display_name
+                                )
+                                if publication is not None
+                                else None
+                            ),
+                        )
+                    )
+            uses.append(
+                EndpointPoolUse(
+                    pool=pool,
+                    gateway_name=gateway.name if gateway is not None else None,
+                    deployments=deployments,
+                )
+            )
+        return sorted(uses, key=lambda item: (item.pool.display_name.casefold(), item.pool.id))
 
     async def get_pool(self, actor: Actor, pool_id: str) -> ModelPool:
         pool = await self._repository.get_model_pool(actor.tenant_id, pool_id)
@@ -2012,10 +2085,12 @@ class ModelPoolService:
             if publication is not None:
                 endpoint = item.view.endpoint_name or item.member.model_endpoint_id
                 warnings.append(
-                    f"{item.member.deployment_name} on {endpoint} is also published on its own as "
-                    f"{publication.display_name}, so portal users would see "
-                    f"{item.model.display_name} twice. Make the publication private, or unlist "
-                    "the model in this pool."
+                    _published_twice(
+                        f"{item.member.deployment_name} on {endpoint}",
+                        publication,
+                        item.model,
+                        "this pool",
+                    )
                 )
         for model in pool.models:
             if not model.listed:

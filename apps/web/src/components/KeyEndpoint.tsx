@@ -22,9 +22,11 @@ import {
 } from '@fluentui/react-components'
 import { AddRegular, DismissRegular } from '@fluentui/react-icons'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { type FormEvent, useEffect, useRef, useState } from 'react'
+import { type FormEvent, useEffect, useMemo, useRef, useState } from 'react'
 import { ApiError, useMosaicApi } from '../api'
 import { EmptyState, ErrorState } from './AsyncState'
+import { DeploymentPoolsCell } from './EndpointPools'
+import { poolsByDeployment, useEndpointPools } from '../endpoint-pools'
 import {
   API_SHAPE_LABELS,
   API_SHAPE_SHORT_LABELS,
@@ -540,6 +542,12 @@ export function DeclaredDeploymentsCard({
   const [status, setStatus] = useState<string | null>(null)
   const declared = endpoint.declaredDeployments ?? []
   const bedrock = endpoint.provider === 'awsBedrock'
+  const endpointPools = useEndpointPools(endpoint.id)
+  const deploymentPools = useMemo(
+    () => (endpointPools.data ? poolsByDeployment(endpointPools.data) : undefined),
+    [endpointPools.data],
+  )
+  const showPools = Boolean(deploymentPools?.size)
 
   const remove = useMutation({
     mutationFn: (deploymentName: string) =>
@@ -623,6 +631,7 @@ export function DeclaredDeploymentsCard({
               <TableHeaderCell>Model</TableHeaderCell>
               <TableHeaderCell>API</TableHeaderCell>
               <TableHeaderCell>Source</TableHeaderCell>
+              {showPools && <TableHeaderCell>Pools</TableHeaderCell>}
               <TableHeaderCell>Actions</TableHeaderCell>
             </TableRow>
           </TableHeader>
@@ -638,6 +647,14 @@ export function DeclaredDeploymentsCard({
                   </TableCell>
                   <TableCell>{API_SHAPE_LABELS[deployment.apiShape]}</TableCell>
                   <TableCell>Declared, not discovered</TableCell>
+                  {showPools && (
+                    <TableCell>
+                      <DeploymentPoolsCell
+                        deploymentName={deployment.deploymentName}
+                        pools={deploymentPools}
+                      />
+                    </TableCell>
+                  )}
                   <TableCell>
                     <Button
                       appearance="subtle"

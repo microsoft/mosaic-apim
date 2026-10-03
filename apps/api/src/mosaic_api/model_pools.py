@@ -762,6 +762,27 @@ class ModelPoolSummary(MosaicModel):
     unapplied_changes: bool = False
 
 
+class EndpointPoolDeployment(MosaicModel):
+    """A deployment on an endpoint that a pool sends one of its models' calls to."""
+
+    deployment_name: str
+    pool_model_id: str
+    public_name: str
+    model_display_name: str
+    drained: bool = False
+    # Why portal users would see the model twice: the deployment is also published on its own,
+    # and the catalog lists both.
+    warning: str | None = None
+
+
+class EndpointPoolUse(MosaicModel):
+    """A pool that uses deployments on one endpoint, as the endpoint's page lists it."""
+
+    pool: ModelPool
+    gateway_name: str | None = None
+    deployments: list[EndpointPoolDeployment] = Field(default_factory=list)
+
+
 class PoolMemberHealth(MosaicModel):
     """How one member answered the attempts the gateway sent it over a window."""
 

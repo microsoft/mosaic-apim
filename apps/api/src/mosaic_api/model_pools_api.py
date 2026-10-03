@@ -12,6 +12,7 @@ from mosaic_api.domain import (
     PublishRun,
 )
 from mosaic_api.model_pools import (
+    EndpointPoolUse,
     ModelPool,
     ModelPoolCreate,
     ModelPoolDetail,
@@ -55,6 +56,17 @@ async def list_model_pool_summaries(
     """Every pool with its active members counted by capacity type and readiness."""
 
     return await _pools(request).summaries(_actor(auth), gateway)
+
+
+@model_pools_router.get(
+    "/model-endpoints/{endpoint_id}/pools", response_model=list[EndpointPoolUse]
+)
+async def list_endpoint_pools(
+    request: Request, auth: Admin, endpoint_id: str
+) -> list[EndpointPoolUse]:
+    """The pools with members on this endpoint, and the deployments each one uses there."""
+
+    return await _pools(request).endpoint_pools(_actor(auth), endpoint_id)
 
 
 @model_pools_router.post(

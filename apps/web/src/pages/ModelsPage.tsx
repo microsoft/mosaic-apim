@@ -40,6 +40,8 @@ import { EnvironmentBadge } from '../components/EnvironmentBadge'
 import { EnvironmentPicker } from '../components/EnvironmentPicker'
 import { ImportFromGatewayDialog } from '../components/ImportFromGatewayDialog'
 import { DeclarationFields, DeclaredDeploymentsCard, StoredKeyActions } from '../components/KeyEndpoint'
+import { DeploymentPoolsCell, EndpointPoolsCard } from '../components/EndpointPools'
+import { poolsByDeployment, useEndpointPools } from '../endpoint-pools'
 import {
   blankDeclaration,
   isBedrockHost,
@@ -922,6 +924,12 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
     queryFn: () => api.listModelDeployments(selected!.id),
     enabled: Boolean(selected) && !(selected && usesBackendKey(selected)),
   })
+  const endpointPools = useEndpointPools(selected?.id)
+  const deploymentPools = useMemo(
+    () => (endpointPools.data ? poolsByDeployment(endpointPools.data) : undefined),
+    [endpointPools.data],
+  )
+  const showPools = Boolean(deploymentPools?.size)
 
   async function refresh() {
     await queryClient.invalidateQueries({ queryKey: ['model-endpoints'] })
@@ -1442,6 +1450,7 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
                     <TableHeaderCell>Capacity</TableHeaderCell>
                     <TableHeaderCell>Processing</TableHeaderCell>
                     <TableHeaderCell>State</TableHeaderCell>
+                    {showPools && <TableHeaderCell>Pools</TableHeaderCell>}
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -1482,6 +1491,14 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
                         {PROCESSING_SCOPE_LABELS[deployment.processingScope ?? 'unknown']}
                       </TableCell>
                       <TableCell>{deployment.provisioningState ?? 'Unknown'}</TableCell>
+                      {showPools && (
+                        <TableCell>
+                          <DeploymentPoolsCell
+                            deploymentName={deployment.deploymentName}
+                            pools={deploymentPools}
+                          />
+                        </TableCell>
+                      )}
                     </TableRow>
                   ))}
                 </TableBody>
@@ -1490,6 +1507,8 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
           )}
         </Card>
       )}
+
+      {selected && <EndpointPoolsCard endpoint={selected} className={styles.panel} />}
 
       <Dialog open={dialogOpen} onOpenChange={(_, data) => (data.open ? setDialogOpen(true) : closeDialog())}>
         <DialogSurface>

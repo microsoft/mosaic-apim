@@ -5,6 +5,7 @@ import { MemoryRouter, useLocation } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ModelsPage } from './ModelsPage'
 import { accessPlan, modelPublication } from '../test/model-access'
+import { anthropicPool, draftPool, poolGateway } from '../test/pool-fixtures'
 import type {
   AccessRemediation,
   Gateway,
@@ -220,6 +221,7 @@ const api = {
   listModelDeployments: vi.fn(),
   declareModelDeployment: vi.fn(),
   removeDeclaredModelDeployment: vi.fn(),
+  listEndpointPools: vi.fn(),
 }
 
 const { TestApiError } = vi.hoisted(() => ({
@@ -297,6 +299,7 @@ describe('ModelsPage', () => {
     api.listModelEndpoints.mockResolvedValue([])
     api.listSuggestedModelEndpoints.mockResolvedValue(suggestionView())
     api.listModelDeployments.mockResolvedValue([])
+    api.listEndpointPools.mockResolvedValue([])
     api.listImportableApis.mockResolvedValue({
       gatewayId: gateway.id,
       snapshotId: 'snapshot_1',
@@ -1030,6 +1033,7 @@ describe('ModelsPage model endpoints', () => {
     api.listModelEndpoints.mockResolvedValue([])
     api.listSuggestedModelEndpoints.mockResolvedValue(suggestionView())
     api.listModelDeployments.mockResolvedValue([])
+    api.listEndpointPools.mockResolvedValue([])
   })
 
   it('states that MOSAIC reads endpoints without changing or calling them', async () => {
@@ -1676,6 +1680,166 @@ describe('ModelsPage model endpoints', () => {
     expect(within(unrecognized).queryByText(/Azure spillover/)).toBeNull()
   })
 
+  describe('the pools that use an endpoint', () => {
+    const WARNING =
+      'gpt-4o-ptu is also published on its own as Contoso GPT-4o, so portal users would see ' +
+      'GPT-4o twice. Make the publication private, or unlist the model in Contoso chat.'
+
+    function observed(deploymentName: string) {
+      return {
+        id: `obsdeployment_${deploymentName}`,
+        endpointId: 'endpoint_1',
+        deploymentName,
+        modelName: 'gpt-4o',
+        modelVersion: '2024-11-20',
+        skuName: 'GlobalStandard',
+        skuCapacity: 50,
+        capacityType: 'standard',
+        processingScope: 'global',
+        provisioningState: 'Succeeded',
+        capabilities: {},
+        requestPaths: [],
+        observedAt: '2026-09-01T12:05:00Z',
+      }
+    }
+
+    beforeEach(() => {
+      api.listModelEndpoints.mockResolvedValue([modelEndpoint()])
+      api.listModelDeployments.mockResolvedValue([observed('gpt-4o-ptu'), observed('gpt-4o-dev')])
+    })
+
+    it('links each deployment to the pools that use it', async () => {
+      api.listEndpointPools.mockResolvedValue([
+        {
+          pool: { ...anthropicPool, id: 'modelpool_chat', displayName: 'Contoso chat' },
+          gatewayName: 'Contoso AI gateway',
+          deployments: [
+            {
+              deploymentName: 'gpt-4o-ptu',
+              poolModelId: 'poolmodel_gpt4o',
+              publicName: 'gpt-4o',
+              modelDisplayName: 'GPT-4o',
+              drained: false,
+              warning: WARNING,
+            },
+          ],
+        },
+        {
+          pool: { ...draftPool, visibility: 'hidden' },
+          gatewayName: null,
+          deployments: [
+            {
+              // A pool names a deployment however its administrator typed it.
+              deploymentName: 'GPT-4o-PTU',
+              poolModelId: 'poolmodel_backup',
+              publicName: 'gpt-4o',
+              modelDisplayName: 'GPT-4o',
+              drained: true,
+              warning: null,
+            },
+          ],
+        },
+      ])
+
+      renderPage()
+
+      const table = await screen.findByRole('table', { name: 'Discovered model deployments' })
+      expect(await within(table).findByRole('columnheader', { name: 'Pools' })).toBeVisible()
+      const row = (name: string) => within(table).getByText(name).closest('tr') as HTMLElement
+      const pooled = row('gpt-4o-ptu')
+      const chat = within(pooled).getByRole('link', { name: 'Contoso chat' })
+      expect(chat).toHaveAttribute('href', '/pools/modelpool_chat')
+      expect(chat.parentElement).toHaveTextContent(/^Contoso chat$/)
+      const backup = within(pooled).getByRole('link', { name: 'OpenAI chat' })
+      expect(backup).toHaveAttribute('href', '/pools/modelpool_openai')
+      expect(backup.parentElement).toHaveTextContent('OpenAI chat · drained')
+      expect(within(row('gpt-4o-dev')).getByText('—')).toBeVisible()
+      expect(api.listEndpointPools).toHaveBeenCalledWith('endpoint_1')
+    })
+
+    it('lists the pools with their gateway, deployments, and status, and warns of a model shown twice', async () => {
+      api.listEndpointPools.mockResolvedValue([
+        {
+          pool: { ...anthropicPool, id: 'modelpool_chat', displayName: 'Contoso chat' },
+          gatewayName: 'Contoso AI gateway',
+          deployments: [
+            {
+              deploymentName: 'gpt-4o-ptu',
+              poolModelId: 'poolmodel_gpt4o',
+              publicName: 'gpt-4o',
+              modelDisplayName: 'GPT-4o',
+              drained: false,
+              warning: WARNING,
+            },
+          ],
+        },
+        {
+          pool: { ...draftPool, visibility: 'hidden' },
+          gatewayName: null,
+          deployments: [
+            {
+              deploymentName: 'gpt-4o-ptu',
+              poolModelId: 'poolmodel_backup',
+              publicName: 'gpt-4o',
+              modelDisplayName: 'GPT-4o',
+              drained: true,
+              warning: null,
+            },
+            {
+              deploymentName: 'gpt-4o-dev',
+              poolModelId: 'poolmodel_dev',
+              publicName: 'gpt-4o-dev',
+              modelDisplayName: 'GPT-4o (dev)',
+              drained: false,
+              warning: null,
+            },
+          ],
+        },
+      ])
+
+      renderPage()
+
+      expect(await screen.findByRole('heading', { name: 'Used by pools' })).toBeVisible()
+      const uses = screen.getByRole('table', { name: 'Pools that use Contoso models' })
+      const use = (name: string) =>
+        within(uses).getByRole('link', { name }).closest('tr') as HTMLElement
+      const chat = use('Contoso chat')
+      expect(within(chat).getByText('Contoso AI gateway')).toBeVisible()
+      expect(within(chat).getByText('gpt-4o-ptu for GPT-4o')).toBeVisible()
+      expect(within(chat).getByText('Published')).toBeVisible()
+      expect(within(chat).queryByText('Hidden from the portal catalog')).toBeNull()
+      const backup = use('OpenAI chat')
+      expect(within(backup).getByText('Hidden from the portal catalog')).toBeVisible()
+      // Without the gateway's name, the pool still says which gateway it's on.
+      expect(within(backup).getByText(poolGateway.id)).toBeVisible()
+      expect(backup).toHaveTextContent('gpt-4o-ptu for GPT-4o · drained')
+      expect(within(backup).getByText('gpt-4o-dev for GPT-4o (dev)')).toBeVisible()
+      expect(within(backup).getByText('Draft')).toBeVisible()
+      expect(screen.getByText('Portal users would see a model twice')).toBeVisible()
+      expect(screen.getByText(WARNING)).toBeVisible()
+    })
+
+    it('says nothing about pools when none uses the endpoint', async () => {
+      renderPage()
+
+      const table = await screen.findByRole('table', { name: 'Discovered model deployments' })
+      await waitFor(() => expect(api.listEndpointPools).toHaveBeenCalledWith('endpoint_1'))
+      expect(within(table).queryByRole('columnheader', { name: 'Pools' })).toBeNull()
+      expect(screen.queryByRole('heading', { name: 'Used by pools' })).toBeNull()
+    })
+
+    it('says when MOSAIC could not list the pools', async () => {
+      api.listEndpointPools.mockRejectedValue(new TestApiError('The pool store is unavailable.', 503))
+
+      renderPage()
+
+      expect(
+        await screen.findByText('MOSAIC couldn’t list the pools that use this endpoint'),
+      ).toBeVisible()
+      expect(screen.getByRole('heading', { name: 'Used by pools' })).toBeVisible()
+    })
+  })
+
   it('shows MOSAIC remediation when it cannot read the endpoint', async () => {
     api.listModelEndpoints.mockResolvedValue([
       modelEndpoint({
@@ -2313,6 +2477,38 @@ describe('ModelsPage model endpoints', () => {
         'Removed claude-sonnet-4-5 from Fabrikam partner Foundry. Nothing changed in Azure.',
       )
       await waitFor(() => expect(outcome).toHaveFocus())
+    })
+
+    it('links a declared deployment to the pools that use it', async () => {
+      api.listModelEndpoints.mockResolvedValue([keyEndpoint()])
+      api.listEndpointPools.mockResolvedValue([
+        {
+          pool: anthropicPool,
+          gatewayName: 'Contoso AI gateway',
+          deployments: [
+            {
+              deploymentName: 'claude-sonnet-4-5',
+              poolModelId: 'poolmodel_sonnet',
+              publicName: 'claude-sonnet-4-5',
+              modelDisplayName: 'Claude Sonnet 4.5',
+              drained: false,
+              warning: null,
+            },
+          ],
+        },
+      ])
+
+      renderPage()
+
+      const table = await screen.findByRole('table', { name: 'Declared model deployments' })
+      expect(await within(table).findByRole('columnheader', { name: 'Pools' })).toBeVisible()
+      expect(within(table).getByRole('link', { name: 'Anthropic Claude' })).toHaveAttribute(
+        'href',
+        '/pools/modelpool_anthropic',
+      )
+      const uses = screen.getByRole('table', { name: 'Pools that use Fabrikam partner Foundry' })
+      expect(within(uses).getByText('claude-sonnet-4-5 for Claude Sonnet 4.5')).toBeVisible()
+      expect(api.listEndpointPools).toHaveBeenCalledWith('endpoint_key')
     })
 
     describe('a key MOSAIC keeps', () => {

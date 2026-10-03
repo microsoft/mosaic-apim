@@ -309,6 +309,27 @@ async def test_no_warning_while_the_portal_would_show_the_model_once(
     assert await _shown_twice(catalog, pool) == []
 
 
+async def test_an_endpoint_warns_where_a_pool_would_show_its_deployment_twice(
+    catalog: Catalog,
+) -> None:
+    await _published_on_its_own(catalog)
+    pool = await catalog.draft()
+
+    [east] = await catalog.service.endpoint_pools(ACTOR, _endpoint_id("aoai-east"))
+    [sweden] = await catalog.service.endpoint_pools(ACTOR, _endpoint_id("aoai-sweden"))
+
+    assert [item.warning for item in east.deployments] == [
+        "gpt-4o is also published on its own as East chat, so portal users would see Contoso "
+        f"Chat twice. Make the publication private, or unlist the model in {POOL_NAME}."
+    ]
+    # Only aoai-east's deployment is published on its own.
+    assert [item.warning for item in sweden.deployments] == [None]
+
+    await catalog.update(pool.id, visibility=ModelPoolVisibility.HIDDEN)
+    [hidden] = await catalog.service.endpoint_pools(ACTOR, _endpoint_id("aoai-east"))
+    assert [item.warning for item in hidden.deployments] == [None]
+
+
 async def test_pools_offering_one_model_name_on_a_gateway_warn_about_each_other(
     catalog: Catalog,
 ) -> None:

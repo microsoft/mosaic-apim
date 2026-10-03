@@ -57,6 +57,7 @@ from mosaic_api.model_pools import (
     ModelPoolCreate,
     ModelPoolType,
     ModelPoolUpdate,
+    ModelPoolVisibility,
     PoolAccessGrant,
     PoolAccessSnapshot,
     PoolMember,
@@ -855,6 +856,52 @@ async def test_summaries_count_active_members_by_capacity_and_readiness(estate: 
     assert summary.problem_count == 0
     assert summary.warning_count >= 1
     assert await estate.service.summaries(ACTOR, "gateway-elsewhere") == []
+
+
+async def test_an_endpoint_lists_the_pools_that_use_it_and_the_deployments_they_use(
+    estate: Estate,
+) -> None:
+    openai = await estate.create(
+        "OpenAI",
+        _gpt4o("aoai-east", "aoai-sweden", display_name="GPT-4o"),
+        _model(_member("aoai-east", "gpt-4o-mini", drained=True), display_name="GPT-4o mini"),
+    )
+    backup = await estate.create("Backup", _gpt4o("aoai-east", "aoai-ptu"))
+    await estate.create("Sweden only", _gpt4o("aoai-sweden"))
+
+    uses = await estate.service.endpoint_pools(ACTOR, _endpoint_id("aoai-east"))
+
+    # By name, and only the pools with a member on the endpoint.
+    assert [use.pool.display_name for use in uses] == ["Backup", "OpenAI"]
+    first, second = uses
+    assert (first.pool.id, second.pool.id) == (backup.id, openai.id)
+    assert second.pool.gateway_id == estate.gateway_id
+    assert second.gateway_name == "apim-contoso-dev"
+    assert second.pool.status == PublicationStatus.DRAFT
+    assert second.pool.visibility == ModelPoolVisibility.LISTED
+    # One entry for each of the pool's deployments on the endpoint, drained ones included.
+    assert [
+        (item.deployment_name, item.pool_model_id, item.public_name, item.model_display_name)
+        for item in second.deployments
+    ] == [
+        ("gpt-4o", openai.models[0].id, "gpt-4o", "GPT-4o"),
+        ("gpt-4o-mini", openai.models[1].id, "gpt-4o-mini", "GPT-4o mini"),
+    ]
+    assert [item.drained for item in second.deployments] == [False, True]
+    # Nothing is published on its own here, so no one would see a model twice.
+    assert [item.warning for use in uses for item in use.deployments] == [None, None, None]
+
+    assert [
+        use.pool.display_name
+        for use in await estate.service.endpoint_pools(ACTOR, _endpoint_id("aoai-ptu"))
+    ] == ["Backup"]
+    assert await estate.service.endpoint_pools(ACTOR, _endpoint_id("foundry-east")) == []
+    with pytest.raises(NotFoundError):
+        await estate.service.endpoint_pools(ACTOR, "ep-missing")
+
+    estate.gateway_repository.gateways.pop(estate.gateway_id)
+    gone = await estate.service.endpoint_pools(ACTOR, _endpoint_id("aoai-ptu"))
+    assert [(use.pool.display_name, use.gateway_name) for use in gone] == [("Backup", None)]
 
 
 def _steps(plan: PublishPlan) -> list[tuple[str, str, str]]:
@@ -2186,6 +2233,20 @@ async def test_an_administrator_publishes_and_unpublishes_a_pool_over_http(
     assert summary["pool"]["id"] == pool_id
     assert summary["capacity"] == {"payAsYouGo": 2}
     assert summary["problemCount"] == 0
+    used = client.get(f"/api/v1/model-endpoints/{_endpoint_id('aoai-east')}/pools")
+    assert used.status_code == 200, used.text
+    [use] = used.json()
+    assert (
+        use["pool"]["id"],
+        use["gatewayName"],
+        use["pool"]["status"],
+        use["pool"]["visibility"],
+    ) == (pool_id, "apim-contoso-dev", "draft", "listed")
+    assert [
+        (item["deploymentName"], item["modelDisplayName"], item["drained"], item["warning"])
+        for item in use["deployments"]
+    ] == [("gpt-4o", "GPT-4o", False, None)]
+    assert client.get("/api/v1/model-endpoints/ep-missing/pools").status_code == 404
 
     unplanned = client.post(f"/api/v1/model-pools/{pool_id}/apply")
     assert unplanned.status_code == 409, unplanned.text

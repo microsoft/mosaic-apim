@@ -1866,6 +1866,24 @@ export interface ModelPoolSummary {
   unappliedChanges: boolean
 }
 
+/** One of a pool's deployments on a model endpoint. */
+export interface EndpointPoolDeployment {
+  deploymentName: string
+  poolModelId: string
+  publicName: string
+  modelDisplayName: string
+  drained: boolean
+  /** Why portal users would see the model twice, when the deployment is also published on its own. */
+  warning?: string | null
+}
+
+/** A pool with members on a model endpoint, and the deployments it uses there. */
+export interface EndpointPoolUse {
+  pool: ModelPool
+  gatewayName?: string | null
+  deployments: EndpointPoolDeployment[]
+}
+
 /** Another pool model a direct grant's key also serves. */
 export interface KeySharedModel {
   poolModelId: string

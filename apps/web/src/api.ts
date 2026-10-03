@@ -32,6 +32,7 @@ import type {
   EmailSettings,
   EmailSettingsUpdate,
   EmailTestResult,
+  EndpointPoolUse,
   EndpointPricingUpdate,
   EndpointPricingView,
   Entitlement,
@@ -335,6 +336,7 @@ export interface MosaicApi {
   getPoolCandidates(gatewayId: string): Promise<PoolCandidates>
   listModelPools(gatewayId?: string): Promise<ModelPool[]>
   listModelPoolSummaries(gatewayId?: string): Promise<ModelPoolSummary[]>
+  listEndpointPools(endpointId: string): Promise<EndpointPoolUse[]>
   createModelPool(payload: ModelPoolCreate): Promise<ModelPool>
   getModelPool(poolId: string): Promise<ModelPool>
   getModelPoolDetail(poolId: string): Promise<ModelPoolDetail>
@@ -882,6 +884,8 @@ export function useMosaicApi(): MosaicApi {
         request<ModelPoolSummary[]>(
           `/api/v1/model-pool-summaries${gatewayId ? `?gateway=${encodeURIComponent(gatewayId)}` : ''}`,
         ),
+      listEndpointPools: (endpointId) =>
+        request<EndpointPoolUse[]>(`/api/v1/model-endpoints/${encodeURIComponent(endpointId)}/pools`),
       createModelPool: (payload) =>
         request<ModelPool>('/api/v1/model-pools', { method: 'POST', body: payload }),
       getModelPool: (id) => request<ModelPool>(`/api/v1/model-pools/${encodeURIComponent(id)}`),
