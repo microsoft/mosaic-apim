@@ -25,6 +25,7 @@ import { DataSourceBadge, PageHeader } from '../components/PageHeader'
 import { formatCost, formatCostCompact, formatRate, formatShare } from '../cost-format'
 import { environmentLabel, useEnvironmentCatalog } from '../environments'
 import { BACKFILL_STATUS_LABELS, ENTITLEMENT_SUBJECT_KIND_LABELS, FRESHNESS_STATUS_LABELS, PRINCIPAL_KIND_LABELS, plural } from '../labels'
+import { holdsApi } from '../publication-state'
 import type {
   AnalyticsApiRow,
   AnalyticsConsumerRow,
@@ -56,6 +57,7 @@ import type {
   Gateway,
   McpServer,
   ModelApi,
+  ModelPool,
   PrincipalKind,
   UsageFreshness,
 } from '../types'
@@ -99,6 +101,7 @@ const exportLabels: Record<ExportView, string> = {
 const apiKindLabels: Record<NonNullable<AnalyticsApiRow['kind']>, string> = {
   model: 'Model API',
   mcp: 'MCP server',
+  pool: 'Model pool',
 }
 
 const subjectLabels: Record<EntitlementSubjectKind, string> = {
@@ -750,7 +753,7 @@ const untrackedReasons = {
 const unattributedReasons: Record<AnalyticsUnattributed['rows'][number]['reason'], string> = {
   noSubscription: 'No subscription key',
   unknownSubscription: 'Unknown key',
-  sharedKey: "Publication's shared key",
+  sharedKey: 'Shared key',
 }
 
 function HygieneTab({ report }: { report: AnalyticsHygiene }) {
@@ -784,7 +787,7 @@ function UnattributedTab({ report }: { report: AnalyticsUnattributed }) {
   return (
     <Card className={styles.panelCard}>
       <Title3 as="h2">Unattributed calls</Title3>
-      <Text size={200}>{formatCompact(report.requests)} calls ({formatPercent(report.share)}) could not be linked to a grant. A publication&apos;s shared key belongs to no one caller, so grant access per caller to see who uses it.{report.cost?.total != null ? ` They cost ${formatCost(report.cost.total)} at list prices.` : ''}</Text>
+      <Text size={200}>{formatCompact(report.requests)} calls ({formatPercent(report.share)}) could not be linked to a grant. A publication&apos;s or model pool&apos;s shared key belongs to no one caller, so grant access per caller to see who uses it.{report.cost?.total != null ? ` They cost ${formatCost(report.cost.total)} at list prices.` : ''}</Text>
       <div className="table-scroll">
         <table aria-label="Unattributed calls">
           <thead><tr><th>API</th><th>Gateway</th><th>Subscription</th><th>Reason</th><th>Requests</th><th>Tokens</th><th>Last seen</th>{priced && <th>Cost</th>}</tr></thead>
@@ -799,11 +802,20 @@ function UnattributedTab({ report }: { report: AnalyticsUnattributed }) {
   )
 }
 
-function ResourceOptions({ modelApis, mcpServers }: { modelApis?: ModelApi[]; mcpServers?: McpServer[] }) {
+function ResourceOptions({ modelApis, modelPools, mcpServers }: { modelApis?: ModelApi[]; modelPools?: ModelPool[]; mcpServers?: McpServer[] }) {
+  // A pool is reported once its API is in API Management, as the API resolves the filter.
+  const groups = [
+    { label: 'Model APIs', items: modelApis ?? [] },
+    { label: 'Model pools', items: (modelPools ?? []).filter(holdsApi) },
+    { label: 'MCP servers', items: mcpServers ?? [] },
+  ].filter((group) => group.items.length > 0)
   return (
     <>
-      {(modelApis ?? []).map((item) => <option key={`model-${item.id}`} value={item.id}>{item.displayName}</option>)}
-      {(mcpServers ?? []).map((item) => <option key={`mcp-${item.id}`} value={item.id}>{item.displayName}</option>)}
+      {groups.map((group) => (
+        <optgroup key={group.label} label={group.label}>
+          {group.items.map((item) => <option key={item.id} value={item.id}>{item.displayName}</option>)}
+        </optgroup>
+      ))}
     </>
   )
 }
@@ -832,6 +844,7 @@ export function AnalyticsPage() {
   const gateways = useQuery({ queryKey: ['gateways'], queryFn: api.listGateways })
   const modelApis = useQuery({ queryKey: ['model-apis'], queryFn: () => api.listModelApis() })
   const mcpServers = useQuery({ queryKey: ['mcp-servers'], queryFn: () => api.listMcpServers() })
+  const modelPools = useQuery({ queryKey: ['model-pools', 'list'], queryFn: () => api.listModelPools() })
   const costCenters = useQuery({ queryKey: ['cost-centers'], queryFn: api.listCostCenters })
 
   const reportQuery = useQuery<AnalyticsReport>({
@@ -903,7 +916,7 @@ export function AnalyticsPage() {
             {filters.range === 'custom' && <><label className={styles.filterControl}><span>Start</span><Input type="date" value={filters.start ?? ''} onChange={(event) => updateFilter('start', event.target.value)} /></label><label className={styles.filterControl}><span>End</span><Input type="date" value={filters.end ?? ''} onChange={(event) => updateFilter('end', event.target.value)} /></label></>}
             <label className={styles.filterControl}><span>Gateway</span><Select value={filters.gatewayId ?? ''} onChange={(event) => updateFilter('gatewayId', event.target.value)}><option value="">All gateways</option>{(gateways.data ?? []).map((gateway: Gateway) => <option key={gateway.id} value={gateway.id}>{gateway.name}</option>)}</Select></label>
             <label className={styles.filterControl}><span>Environment</span><Select value={filters.environment ?? ''} onChange={(event) => updateFilter('environment', event.target.value)}><option value="">All environments</option>{(catalog.data?.environments ?? []).map((environment) => <option key={environment.key} value={environment.key}>{environmentLabel(catalog.data, environment.key)}</option>)}</Select></label>
-            <label className={styles.filterControl}><span>Resource</span><Select value={filters.resourceId ?? ''} onChange={(event) => updateFilter('resourceId', event.target.value)}><option value="">All APIs and MCP servers</option><ResourceOptions modelApis={modelApis.data} mcpServers={mcpServers.data} /></Select></label>
+            <label className={`${styles.filterControl} ${styles.resourceControl}`}><span>Resource</span><Select value={filters.resourceId ?? ''} onChange={(event) => updateFilter('resourceId', event.target.value)}><option value="">All APIs and MCP servers</option><ResourceOptions modelApis={modelApis.data} modelPools={modelPools.data} mcpServers={mcpServers.data} /></Select></label>
             <label className={styles.filterControl}><span>Cost center</span><Select value={filters.costCenterId ?? ''} onChange={(event) => updateFilter('costCenterId', event.target.value)}><option value="">All cost centers</option>{(costCenters.data ?? []).map((costCenter) => <option key={costCenter.id} value={costCenter.id}>{costCenter.name} ({costCenter.code})</option>)}</Select></label>
             <label className={styles.filterControl}><span>Subject kind</span><Select value={filters.subjectKind ?? ''} onChange={(event) => updateFilter('subjectKind', event.target.value)}><option value="">All subjects</option>{Object.entries(subjectLabels).map(([key, label]) => <option key={key} value={key}>{label}</option>)}</Select></label>
             <label className={styles.filterControl}><span>Export</span><Select value={exportView} onChange={(event) => setExportChoice(event.target.value as ExportView)}>{activeExports.map((view) => <option key={view} value={view}>{exportLabels[view]}</option>)}</Select></label>

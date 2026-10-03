@@ -77,7 +77,8 @@ export interface PooledQuota {
 }
 
 export interface CostCenterLimit {
-  resource: { kind: 'modelApi' | 'mcpServer'; id: string; scopeId?: string | null }
+  /** A pool model's `scopeId` names its pool. */
+  resource: { kind: 'modelApi' | 'mcpServer' | 'poolModel'; id: string; scopeId?: string | null }
   person: PersonLimits | null
   pool: PooledQuota | null
 }
@@ -259,6 +260,10 @@ export interface GrantKey {
   exists: boolean
   costCenter: CostCenterRef | null
   rotated: KeySlot | null
+  /** A pool model grant's pool. */
+  poolId?: string | null
+  /** The other pool models the same key serves, so a change to it changes their access too. */
+  keySharedWith?: KeySharedModel[]
 }
 
 export interface GrantRevocation {
@@ -290,6 +295,7 @@ export type EntitlementResourceKind =
   | 'mcpServer'
   | 'modelDeployment'
   | 'product'
+  | 'poolModel'
 
 export interface EntitlementSubject {
   kind: EntitlementSubjectKind
@@ -299,6 +305,7 @@ export interface EntitlementSubject {
 export interface EntitlementResource {
   kind: EntitlementResourceKind
   id: string
+  /** The gateway or model endpoint an observed resource was read from, or a pool model's pool. */
   scopeId?: string | null
 }
 
@@ -411,7 +418,7 @@ export interface EnvironmentAssignmentResult {
 }
 
 export interface BlockedPublication {
-  kind?: 'model' | 'mcp'
+  kind?: 'model' | 'mcp' | 'pool'
   publicationId: string
   displayName?: string | null
   status: string
@@ -1035,7 +1042,7 @@ export interface GatewayPolicyView {
   mosaicManagedCount: number
 }
 
-export type ModelProvider = 'azureOpenAi' | 'azureAiFoundry' | 'openAiCompatible'
+export type ModelProvider = 'azureOpenAi' | 'azureAiFoundry' | 'openAiCompatible' | 'awsBedrock'
 export type EndpointAuthMode = 'managedIdentity' | 'apiKey'
 export type ModelEndpointStatus =
   | 'pending'
@@ -1192,7 +1199,7 @@ export interface ModelEndpoint {
    * gave MOSAIC the key. MOSAIC replaces it on request and deletes it with the endpoint.
    */
   keyStoredByMosaic?: boolean
-  /** Present only on an Azure endpoint registered with an API key. */
+  /** Present only on an endpoint registered with an API key: an Azure resource or AWS Bedrock. */
   declaredDeployments?: DeclaredDeployment[]
   status: ModelEndpointStatus
   access: EndpointAccess
@@ -1221,6 +1228,7 @@ export type PublishedResourceKind =
   | 'namedValue'
   | 'policyFragment'
   | 'backend'
+  | 'backendPool'
   | 'api'
   | 'apiOperation'
   | 'apiPolicy'
@@ -1444,11 +1452,12 @@ export interface PublishPlan {
   facets: PolicyFacet[]
   policyContentSha256: string | null
   warnings: string[]
-  target?: 'model' | 'mcp'
+  target?: 'model' | 'mcp' | 'pool'
   /** Publish plans are applied; unpublish plans delete what MOSAIC created. Older plans omit it. */
   operation?: 'publish' | 'unpublish'
   accessSnapshot?: ModelAccessSnapshot | null
   mcpAccessSnapshot?: McpAccessSnapshot | null
+  poolAccessSnapshot?: PoolAccessSnapshot | null
   previousAccessVersion?: number | null
   createdAt: string
   updatedAt: string
@@ -1481,19 +1490,469 @@ export interface PublishRun {
   rolledBack: boolean
   orphanedResources: PublishedResource[]
   errors: string[]
-  target?: 'model' | 'mcp'
+  target?: 'model' | 'mcp' | 'pool'
   accessSnapshot?: ModelAccessSnapshot | null
   mcpAccessSnapshot?: McpAccessSnapshot | null
+  poolAccessSnapshot?: PoolAccessSnapshot | null
   createdAt: string
   updatedAt: string
 }
 
+/**
+ * One grant a model pool's policy enforces: a subject's access to one pool model. A direct grant's
+ * key is shared: there's one per subject, pool, and cost center, serving every model the subject
+ * holds directly in the pool under that cost center.
+ */
+export interface PoolAccessGrant {
+  entitlementId: string
+  poolModelId: string
+  subject: EntitlementSubject
+  objectId: string
+  displayName: string
+  /** The subscription that is the grant's key. Null exactly for a security group, which uses Entra tokens. */
+  keyName?: string | null
+  enabled: boolean
+  enforcement?: EntitlementEnforcement | null
+  intentDigest: string
+  costCenterId?: string
+  costCenterCode?: string
+  /** A direct grant under its subject's default cost center, used when a call names none. */
+  defaultCostCenter?: boolean
+  grantedAt?: string | null
+  /** False when the grant's cost center turned keys off, so the key is refused for this model. */
+  keysAllowed?: boolean
+  /** True when the grant was revoked because its subject left the cost center. */
+  revoked?: boolean
+}
+
+/** A cost center's pooled monthly quota on one pool model, as an apply compiled it. */
+export interface PoolModelQuota {
+  poolModelId: string
+  costCenterId: string
+  costCenterCode: string
+  monthlyTokens?: number | null
+  monthlyCalls?: number | null
+}
+
+/** The grants a model pool's policy enforces, exactly as an apply compiled them. */
+export interface PoolAccessSnapshot {
+  version: number
+  settings: ModelAccessSettings
+  audience?: string | null
+  /** False when the gateway's tier can't count the pool's tokens, so no grant carries token limits. */
+  tokenMetering?: boolean
+  grants: PoolAccessGrant[]
+  quotas?: PoolModelQuota[]
+}
+
+/**
+ * How a pool model spreads requests over its members (ADR 0024). A breaker pool balances by weight
+ * and skips a member that throttles; a preferential pool sends everything to provisioned members
+ * first; a linear pool tries members in order.
+ */
+export type ModelPoolType = 'breaker' | 'preferential' | 'linear'
+
+/** Which failures move a request on to another member and trip that member's breaker. */
+export type BreakerPreset = 'throttling' | 'throttlingAndErrors'
+
+export type ModelPoolVisibility = 'listed' | 'hidden'
+
+/** Whether a pool member can serve requests, as far as MOSAIC can tell before it publishes. */
+export type PoolReadiness = 'ready' | 'notConfirmed' | 'cannotInvoke'
+
+/** What a pool model's members' capacity adds up to, as users are told it. */
+export type PoolCapacityBadge = 'provisioned' | 'payAsYouGo' | 'provisionedWithOverflow' | 'unknown'
+
+/** A token limit every caller of one pool model shares, counted per pool model. */
+export interface PoolSafeguard {
+  tokensPerMinute?: number | null
+  tokenQuota?: number | null
+  tokenQuotaPeriod?: QuotaPeriod | null
+}
+
+export interface PoolMember {
+  modelEndpointId: string
+  deploymentName: string
+  weight: number
+  drained: boolean
+  backendName: string
+}
+
+export interface PoolModel {
+  id: string
+  publicName: string
+  displayName: string
+  modelName?: string | null
+  modelFormat?: string | null
+  expectedVersion?: string | null
+  allowMixedVersions: boolean
+  listed: boolean
+  backendPoolName: string
+  members: PoolMember[]
+}
+
+/** One vendor's deployments, on many endpoints, served through one API on one gateway. */
+export interface ModelPool {
+  id: string
+  tenantId: string
+  entityType: 'modelPool'
+  gatewayId: string
+  displayName: string
+  description?: string | null
+  visibility: ModelPoolVisibility
+  showCapacity: boolean
+  poolType: ModelPoolType
+  breakerPreset: BreakerPreset
+  maxRetries: number
+  apiShape?: ApiShape | null
+  vendor?: string | null
+  apiName: string
+  apiPath: string
+  fragmentName: string
+  productName: string
+  subscriptionName: string
+  safeguard?: PoolSafeguard | null
+  models: PoolModel[]
+  status: PublicationStatus
+  resources: PublishedResource[]
+  lastPlanId: string | null
+  lastPlanDigest: string | null
+  lastRunId: string | null
+  lastAppliedAt: string | null
+  /** What the gateway was asked to run when an apply last succeeded. */
+  appliedIntentDigest?: string | null
+  unpublishedAt?: string | null
+  lastError: string | null
+  /**
+   * Governed access. Null until an administrator opts the pool in; then its policy authorizes every
+   * call against grants on its models and its bootstrap key is suspended. A pool can't go back.
+   */
+  governedAccess?: ModelAccessSettings | null
+  appliedAccess?: PoolAccessSnapshot | null
+  accessState?: 'pending' | 'applying' | 'applied' | 'failed' | 'unknown'
+  /** The models the gateway serves, as of the last successful apply. */
+  appliedModelIds?: string[]
+  createdAt: string
+  updatedAt: string
+}
+
+export interface PoolMemberSpec {
+  modelEndpointId: string
+  deploymentName: string
+  weight?: number
+  drained?: boolean
+}
+
+export interface PoolModelSpec {
+  /** Defaults to the members' shared deployment name. Required when they don't share one. */
+  publicName?: string | null
+  displayName?: string | null
+  listed?: boolean
+  allowMixedVersions?: boolean
+  members: PoolMemberSpec[]
+}
+
+export interface ModelPoolCreate {
+  gatewayId: string
+  displayName: string
+  description?: string | null
+  visibility?: ModelPoolVisibility
+  showCapacity?: boolean
+  poolType?: ModelPoolType
+  breakerPreset?: BreakerPreset
+  maxRetries?: number
+  apiName?: string
+  apiPath?: string
+  productName?: string
+  safeguard?: PoolSafeguard | null
+  models?: PoolModelSpec[]
+}
+
+/** A change to a pool's intent. `models` replaces the whole list when it's given. */
+export interface ModelPoolUpdate {
+  displayName?: string
+  description?: string | null
+  visibility?: ModelPoolVisibility
+  showCapacity?: boolean
+  poolType?: ModelPoolType
+  breakerPreset?: BreakerPreset
+  maxRetries?: number
+  safeguard?: PoolSafeguard | null
+  models?: PoolModelSpec[]
+  /** Opting in is one-way: once set, the methods can change but governed access can't be cleared. */
+  governedAccess?: ModelAccessSettings
+}
+
+export interface PoolMemberView {
+  modelEndpointId: string
+  endpointName?: string | null
+  deploymentName: string
+  backendName: string
+  weight: number
+  drained: boolean
+  /**
+   * Linear pools: the member's position, from 1. Breaker and preferential pools: for a member
+   * reached with an API key, which no backend pool can hold, its position among those the gateway
+   * tries after the backend pool.
+   */
+  order?: number | null
+  /** Breaker and preferential pools: the priority group, where 1 is tried first. */
+  priority?: number | null
+  region?: string | null
+  environment?: string | null
+  modelName?: string | null
+  modelVersion?: string | null
+  skuName?: string | null
+  skuCapacity?: number | null
+  capacityType: CapacityType
+  processingScope: ProcessingScope
+  spilloverDeploymentName?: string | null
+  provisioningState?: string | null
+  /** Whether MOSAIC saw the deployment in Azure. */
+  observed: boolean
+  /** Whether an administrator declared the deployment, on an endpoint an API key can't list. */
+  declared: boolean
+  /** Whether the gateway reaches the deployment with an API key rather than its managed identity. */
+  apiKey: boolean
+  /** Who serves the member, such as AWS Bedrock outside Azure. Null once its endpoint is gone. */
+  provider?: ModelProvider | null
+  readiness: PoolReadiness
+  readinessMessage?: string | null
+  environmentVerdict?: EnvironmentVerdict | null
+}
+
+export interface PoolModelView {
+  id: string
+  publicName: string
+  displayName: string
+  modelName?: string | null
+  modelFormat?: string | null
+  expectedVersion?: string | null
+  listed: boolean
+  backendPoolName?: string | null
+  capacity: PoolCapacityBadge
+  members: PoolMemberView[]
+}
+
+export interface ModelPoolDetail {
+  pool: ModelPool
+  gatewayName?: string | null
+  gatewayEnvironment?: string | null
+  baseUrl?: string | null
+  models: PoolModelView[]
+  /** What stops the pool being planned now, each a sentence an administrator can act on. */
+  problems: string[]
+  warnings: string[]
+  facets: PolicyFacet[]
+  /** Whether saved changes differ from what the pool's last successful apply wrote. */
+  unappliedChanges: boolean
+}
+
+export type PoolHealthStatus = 'ok' | 'noData' | 'notPublished' | 'notConfigured' | 'accessDenied' | 'error'
+
+/** How one member answered the attempts the gateway sent it over a window. */
+export interface PoolMemberHealth {
+  modelEndpointId: string
+  endpointName?: string | null
+  deploymentName: string
+  backendName: string
+  region?: string | null
+  drained: boolean
+  apiKey: boolean
+  /**
+   * Whether it takes requests only once others can't: a later member of a linear pool, a
+   * pay-as-you-go member of a preferential pool, or one reached with an API key.
+   */
+  overflow: boolean
+  attempts: number
+  succeeded: number
+  throttled: number
+  /** Server errors, and attempts that got no response. */
+  failed: number
+  clientErrors: number
+  /** Calls whose last attempt it answered, and how many of those it answered successfully. */
+  served: number
+  servedOk: number
+  /** Minutes in which its breaker would have tripped, an estimate. Null when it has no breaker. */
+  trippedMinutes?: number | null
+  lastSeen?: string | null
+}
+
+/** How the calls to one pool model ended, and how its members answered them. */
+export interface PoolModelHealth {
+  modelId: string
+  publicName: string
+  displayName: string
+  requests: number
+  succeeded: number
+  /** Calls that ended on a 429, a server error, or no response. */
+  unavailable: number
+  clientErrors: number
+  /** Calls that took more than one attempt. */
+  retried: number
+  /** Successful calls that an overflow member answered. */
+  overflowed: number
+  /** Attempts the backend pool answered itself, because none of its members was available. */
+  exhausted: number
+  /** Attempts MOSAIC couldn't place on a member. */
+  unplaced: number
+  members: PoolMemberHealth[]
+}
+
+/** A pool's health over a window of whole hours, read from its attempt traces. */
+export interface PoolHealth {
+  status: PoolHealthStatus
+  message?: string | null
+  /** A command that fixes what stops MOSAIC reading the logs, when there is one. */
+  command?: string | null
+  hours: number
+  start?: string | null
+  end?: string | null
+  /** Calls the gateway logged with no attempt trace, sent by a policy from before traces. */
+  untraced: number
+  models: PoolModelHealth[]
+}
+
+export interface PoolCandidateDeployment {
+  modelEndpointId: string
+  endpointName: string
+  region?: string | null
+  environment?: string | null
+  deploymentName: string
+  modelVersion?: string | null
+  skuName?: string | null
+  skuCapacity?: number | null
+  capacityType: CapacityType
+  processingScope: ProcessingScope
+  spilloverDeploymentName?: string | null
+  readiness: PoolReadiness
+  environmentVerdict: EnvironmentVerdict
+  eligible: boolean
+  reason?: string | null
+  /** The pools on this gateway that already use the deployment. */
+  poolIds: string[]
+  /** Whether an administrator declared the deployment, on an endpoint an API key can't list. */
+  declared: boolean
+  /** Whether the gateway would reach the deployment with an API key rather than its managed identity. */
+  apiKey: boolean
+  /** Who serves the deployment, such as AWS Bedrock outside Azure. */
+  provider?: ModelProvider | null
+}
+
+export interface PoolCandidateModel {
+  modelName: string
+  modelFormat?: string | null
+  apiShape?: ApiShape | null
+  deployments: PoolCandidateDeployment[]
+}
+
+export interface PoolCandidates {
+  gatewayId: string
+  gatewayEnvironment?: string | null
+  /** Each pool type, and why the gateway can't run it, or null when it can. */
+  poolTypes: Partial<Record<ModelPoolType, string | null>>
+  models: PoolCandidateModel[]
+}
+
+/** An active member with a problem, such as a gateway that can't call it. */
+export interface PoolMemberProblem {
+  poolModelId: string
+  modelDisplayName: string
+  modelEndpointId: string
+  endpointName?: string | null
+  deploymentName: string
+  region?: string | null
+  readiness: PoolReadiness
+  /** Each a sentence an administrator can act on, without the member's name. */
+  problems: string[]
+}
+
+/** A pool as the console's list shows it, with its active members counted. */
+export interface ModelPoolSummary {
+  pool: ModelPool
+  gatewayName?: string | null
+  gatewayEnvironment?: string | null
+  /** Active members by capacity type. */
+  capacity: Partial<Record<CapacityType, number>>
+  /** Active members by readiness. */
+  readiness: Partial<Record<PoolReadiness, number>>
+  problemCount: number
+  warningCount: number
+  unappliedChanges: boolean
+  /** The active members with a problem. A drained member takes no calls, so it's never one. */
+  memberProblems?: PoolMemberProblem[]
+}
+
+/** One of a pool's deployments on a model endpoint. */
+export interface EndpointPoolDeployment {
+  deploymentName: string
+  poolModelId: string
+  publicName: string
+  modelDisplayName: string
+  drained: boolean
+  /** Why portal users would see the model twice, when the deployment is also published on its own. */
+  warning?: string | null
+}
+
+/** A pool with members on a model endpoint, and the deployments it uses there. */
+export interface EndpointPoolUse {
+  pool: ModelPool
+  gatewayName?: string | null
+  deployments: EndpointPoolDeployment[]
+}
+
+/** A model a suggested pool would serve, and where it's deployed. */
+export interface PoolSuggestionModel {
+  modelName: string
+  modelFormat?: string | null
+  /** The deployments of the model the gateway can use. */
+  deploymentCount: number
+  endpointCount: number
+  regions: string[]
+}
+
+export interface PoolReference {
+  id: string
+  displayName: string
+}
+
+/** A pool worth creating on a gateway: one vendor's models deployed on two or more endpoints. */
+export interface PoolSuggestion {
+  gatewayId: string
+  gatewayName: string
+  gatewayEnvironment?: string | null
+  vendor?: string | null
+  apiShape: ApiShape
+  models: PoolSuggestionModel[]
+  endpointCount: number
+  regions: string[]
+  /** The gateway's pools that already serve this vendor's models through the same API. */
+  familyPools: PoolReference[]
+}
+
+/** Another pool model a direct grant's key also serves. */
+export interface KeySharedModel {
+  poolModelId: string
+  displayName: string
+  publicName: string
+}
+
 export interface ModelConnection {
   entitlementId: string
+  /** A pool model's pool ID. */
   publicationId: string
   gatewayId: string
   endpoint: string
+  /** A pool model's public name. */
   deploymentName: string
+  /** Set for a pool model. Users never see the pool's name; administrators do. */
+  poolId?: string | null
+  poolName?: string | null
+  poolModelId?: string | null
+  /** The subject's other pool models the same key serves, so rotating or deleting it affects them. */
+  keySharedWith?: KeySharedModel[]
+  /** False when the gateway's tier can't count this model's tokens. */
+  tokenMetering?: boolean
   tenantId: string
   costCenter?: CostCenterRef | null
   costCenterHeader?: 'x-mosaic-cost-center'
@@ -1621,6 +2080,12 @@ export interface ModelEndpointSyncRun {
   errors: string[]
 }
 
+/** How a deployment's capacity is bought, read from its SKU (ADR 0024). */
+export type CapacityType = 'provisioned' | 'payAsYouGo' | 'batch' | 'unknown'
+
+/** Where Azure may process a deployment's requests, read from its SKU (ADR 0024). */
+export type ProcessingScope = 'global' | 'dataZone' | 'regional' | 'unknown'
+
 export interface ObservedModelDeployment {
   id: string
   endpointId: string
@@ -1631,6 +2096,10 @@ export interface ObservedModelDeployment {
   modelPublisher?: string | null
   skuName?: string | null
   skuCapacity?: number | null
+  capacityType?: CapacityType
+  processingScope?: ProcessingScope
+  /** The standard deployment Azure overflows this provisioned deployment to, if any. */
+  spilloverDeploymentName?: string | null
   provisioningState?: string | null
   raiPolicyName?: string | null
   capabilities: Record<string, string>
@@ -2089,7 +2558,7 @@ export interface AnalyticsApiRow extends AnalyticsUsage {
   gatewayName: string
   apiName: string
   label: string
-  kind: 'model' | 'mcp' | null
+  kind: 'model' | 'mcp' | 'pool' | null
   resourceId: string | null
   removed: boolean
   meteredRequests: number
@@ -2320,7 +2789,7 @@ export type ApiDiagnosticGap = 'missing' | 'logger' | 'verbosity' | 'sampling' |
 export interface ApiTelemetry {
   apiName: string
   displayName: string
-  kind: 'model' | 'mcp'
+  kind: 'model' | 'mcp' | 'pool'
   published: boolean
   // The API has no diagnostic of its own and logs as the gateway's All APIs setting says.
   allApis: boolean

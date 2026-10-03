@@ -29,7 +29,9 @@ import { DataSourceBadge, PageHeader } from '../components/PageHeader'
 import { formatCostCompact } from '../cost-format'
 import { environmentFindingsQueryKey, useEnvironmentCatalog } from '../environments'
 import { FRESHNESS_STATUS_LABELS, plural, type PrincipalTab, principalTabForKind } from '../labels'
-import type { AnalyticsRankRow, AnalyticsSpend, BudgetOverview } from '../types'
+import { poolApplyFailed, poolsNeedingAttention } from '../pools'
+import { holdsApi } from '../publication-state'
+import type { AnalyticsRankRow, AnalyticsSpend, BudgetOverview, ModelPoolSummary } from '../types'
 import styles from './DashboardPage.module.css'
 
 function SparkMetric({
@@ -205,6 +207,126 @@ function BudgetsPanel({
   )
 }
 
+// The dashboard shows the pools most in need of attention, and a few members of each; each pool's page has the rest.
+const POOL_ROWS = 4
+const POOL_MEMBER_LINES = 3
+
+function memberProblemsLabel(count: number) {
+  return count === 1 ? '1 member has a problem' : `${count} members have problems`
+}
+
+/** One pool that needs attention, with the members the gateway can't use and why. */
+function PoolRow({ summary, onOpen }: { summary: ModelPoolSummary; onOpen: (poolId: string) => void }) {
+  const { pool } = summary
+  const members = summary.memberProblems ?? []
+  const shown = members.slice(0, POOL_MEMBER_LINES)
+  const failed = poolApplyFailed(pool)
+  return (
+    <li className={styles.poolRow}>
+      <div className={styles.poolRowHeader}>
+        <button type="button" className={styles.poolOpen} onClick={() => onOpen(pool.id)}>
+          <strong>{pool.displayName}</strong>
+          <small>{summary.gatewayName ?? 'Its gateway is no longer registered'}</small>
+        </button>
+        <Badge appearance="tint" color="danger">
+          {members.length > 0
+            ? memberProblemsLabel(members.length)
+            : failed
+              ? 'Apply failed'
+              : plural(summary.problemCount, 'problem')}
+        </Badge>
+      </div>
+      {failed && (
+        <small className={styles.poolLine}>
+          {pool.status === 'rolledBack' ? 'The last apply failed and was rolled back.' : 'The last apply failed.'}
+        </small>
+      )}
+      {!failed && members.length === 0 && (
+        <small className={styles.poolLine}>Open the pool to see what to fix.</small>
+      )}
+      {shown.length > 0 && (
+        <ul className={styles.poolMembers} aria-label={`${pool.displayName} members with problems`}>
+          {shown.map((member) => (
+            <li key={`${member.poolModelId}/${member.modelEndpointId}/${member.deploymentName}`}>
+              <span>
+                <strong>{member.deploymentName}</strong>
+                {member.endpointName && ` on ${member.endpointName}`}
+                {member.region && ` · ${member.region}`}
+              </span>
+              <small>
+                {member.problems[0]}
+                {member.problems.length > 1 && ` (+${member.problems.length - 1} more)`}
+              </small>
+            </li>
+          ))}
+        </ul>
+      )}
+      {members.length > shown.length && (
+        <small className={styles.poolLine}>{`${plural(members.length - shown.length, 'more member')} on the pool’s page.`}</small>
+      )}
+    </li>
+  )
+}
+
+/** Pools whose last apply failed, and published pools with a problem, worst first. */
+function PoolsPanel({
+  summaries,
+  loading,
+  error,
+  onOpen,
+}: {
+  summaries: ModelPoolSummary[] | undefined
+  loading: boolean
+  error: unknown
+  onOpen: (poolId: string | null) => void
+}) {
+  const attention = summaries ? poolsNeedingAttention(summaries) : []
+  const shown = attention.slice(0, POOL_ROWS)
+  const published = summaries?.filter((summary) => holdsApi(summary.pool)).length ?? 0
+  return (
+    <div className={`panel ${styles.poolsPanel}`}>
+      <div className="panel-header">
+        <div className={styles.panelHeading}>
+          <Title3 as="h2">Pools</Title3>
+          <Text size={200}>Published pools with a deployment the gateway can’t use, and applies that failed</Text>
+        </div>
+        <Button appearance="subtle" size="small" onClick={() => onOpen(null)}>
+          Open pools
+        </Button>
+      </div>
+      <div className={styles.panelBody}>
+        {loading && <Spinner size="tiny" label="Loading pools" />}
+        {Boolean(error) && <ErrorState error={error} />}
+        {summaries && summaries.length === 0 && (
+          <Text>
+            No pools yet. A pool serves one vendor’s models from several endpoints behind one API, and portal users
+            see only its models. Create one on the Pools page.
+          </Text>
+        )}
+        {summaries && summaries.length > 0 && attention.length === 0 && (
+          <Text>
+            {published > 0
+              ? `${plural(published, 'published pool')}, none with a problem.`
+              : 'No pool is published yet, so none serves calls.'}
+          </Text>
+        )}
+        {shown.length > 0 && (
+          <ul className={styles.poolRows} aria-label="Pools that need attention">
+            {shown.map((summary) => (
+              <PoolRow key={summary.pool.id} summary={summary} onOpen={onOpen} />
+            ))}
+          </ul>
+        )}
+        {attention.length > shown.length && (
+          <Text size={200} className={styles.budgetNote}>
+            {`${plural(attention.length - shown.length, 'more pool')} to look at on the Pools page.`}
+          </Text>
+        )}
+      </div>
+    </div>
+  )
+}
+
 function InventoryCard({
   icon,
   count,
@@ -254,6 +376,8 @@ export function DashboardPage() {
     queryFn: api.getAnalyticsStatus,
   })
   const budgets = useQuery({ queryKey: ['budgets'], queryFn: api.getBudgets })
+  // The same query as the Pools page, so opening it from here shows the list at once.
+  const pools = useQuery({ queryKey: ['model-pools', 'summaries'], queryFn: () => api.listModelPoolSummaries() })
   const trend = useMemo(
     () =>
       (analytics.data?.trend ?? []).map((point) => ({
@@ -465,6 +589,13 @@ export function DashboardPage() {
           loading={budgets.isLoading}
           error={budgets.error}
           onOpen={(costCenterId) => navigate(costCenterId ? `/cost-centers/${encodeURIComponent(costCenterId)}` : '/cost-centers')}
+        />
+
+        <PoolsPanel
+          summaries={pools.data}
+          loading={pools.isLoading}
+          error={pools.error}
+          onOpen={(poolId) => navigate(poolId ? `/pools/${encodeURIComponent(poolId)}` : '/pools')}
         />
 
         <RankingPanel title="Top models" caption="By tokens" items={(analytics.data?.topModels ?? []).slice(0, TOP).map(byTokens)} loading={analytics.isLoading} />

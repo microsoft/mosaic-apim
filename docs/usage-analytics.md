@@ -21,9 +21,9 @@ flowchart LR
     Rollups --> Console[Console Dashboard and Analytics]
 ```
 
-1. The policy MOSAIC applies to a model API or MCP server checks each call against the caller's
-   grants. When it lets a call through, it adds a trace that names the grant it matched, the member
-   for a security-group grant, and the calling client application:
+1. The policy MOSAIC applies to a model API, a model pool, or an MCP server checks each call
+   against the caller's grants. When it lets a call through, it adds a trace that names the grant
+   it matched, the member for a security-group grant, and the calling client application:
    `mosaic-attribution v=1 g=<grant> m=<object ID> a=<client ID>`. A model call's trace adds
    `r=`, the MCP call an MCP server's application made it for, and an MCP server that calls models
    as an application adds `r=` and `i=`; see
@@ -41,8 +41,21 @@ flowchart LR
    so they load quickly and keep history after the workspace deletes its logs.
 
 MOSAIC counts only the APIs it governs: the model APIs and MCP servers it has a record of, whether
-it published them or adopted them. It ignores other APIs on the same gateway, and doesn't read the
-logs of a gateway where it governs nothing.
+it published them or adopted them, and its model pools once a pool's API is in API Management. It
+ignores other APIs on the same gateway, and doesn't read the logs of a gateway where it governs
+nothing.
+
+API Management, not the caller, picks which of a [model pool](../README.md#model-pools)'s
+deployments serves a call, so MOSAIC finds the deployment in the gateway's log. It tries the
+backend that served the call, then the host and deployment that backend called, and then the host
+or the deployment alone, when only one of the pool's deployments has it. It reports the call under
+the deployment it finds. A call it can't place counts toward the pool and its model, on no
+deployment, and has no price.
+
+A pool's policy also writes a `mosaic-attempt v=1` trace after each attempt, naming the pool model,
+the backend, host, and path it called, and the status it got. The rollup job ignores these traces.
+A pool's **Health** card in the console queries the workspace for them when it opens, as a
+gateway's **Telemetry** check does, and needs the same Monitoring Reader role.
 
 ## Set up a gateway
 
@@ -359,9 +372,9 @@ MOSAIC links each admitted call to a grant in this order:
 2. Otherwise, the call used an APIM subscription that a grant's binding records.
 3. Otherwise, the call is unattributed. The **Unattributed** tab gives one of three reasons:
    **No subscription key**, when the call had neither a trace nor a key; **Unknown key**, when no
-   grant records the key's subscription; or **Publication's shared key**, when the call used the
-   model publication's own subscription, which belongs to no one caller. To see who uses a shared
-   key, grant access per caller instead.
+   grant records the key's subscription; or **Shared key**, when the call used a model
+   publication's or model pool's own subscription, which belongs to no one caller. To see who uses
+   a shared key, grant access per caller instead.
 
 The caller is the security-group member when the trace names one, and otherwise the grant's
 subject. **Consumers** sorts callers into people, who are users and agent users; applications, which
@@ -389,13 +402,14 @@ application's grant, with the reason:
 **Consumers** lists these calls under **Model use through MCP servers**, below the people,
 applications and groups that already count them. Each row is one person's model use through one
 MCP server, made by one application, with its requests, tokens, share of the linked calls and
-cost. The cost is priced as the application's grant's calls are. As everywhere, only calls the
-model served carry tokens and cost, so a call the application's limits refused counts as a request
-with neither. A line above the table counts the references MOSAIC couldn't use, by reason. The
-table adds to no total, and People, Applications, Grants and every other figure stay as they were.
-The filters treat these calls as the application's grant's: a cost center, a resource or a kind of
-subject keeps them when it keeps that grant. So the model API's resource filter keeps them, and the
-MCP server's doesn't.
+cost. The cost is priced as the application's grant's calls are, so a model pool's calls are priced
+at the member that served each one. As everywhere, only calls the model served carry tokens and
+cost, so a call the application's limits refused counts as a request with neither. A line above the
+table counts the references MOSAIC couldn't use, by reason. The table adds to no total, and People,
+Applications, Grants and every other figure stay as they were. The filters treat these calls as the
+application's grant's: a cost center, a resource or a kind of subject keeps them when it keeps that
+grant. So the filter for the model API or model pool the grant reaches keeps them, and the MCP
+server's doesn't.
 
 **Client applications** are the apps callers signed in with. MOSAIC names each from the applications
 it has a record of, and recognizes Azure CLI, Azure PowerShell, and Visual Studio Code. Any other
@@ -404,6 +418,9 @@ shows as **Unknown application**, with its client ID. Calls made with only a key
 
 The subject filter narrows people, applications, groups, and grants. Totals, models, and APIs still
 count every caller.
+
+The resource filter takes a model API, a model pool, or an MCP server. A model pool is listed once
+its API is in API Management.
 
 Environments are current, not historical. Analytics filters by each gateway's environment, and the
 portal groups by each resource's, so re-classifying one moves its history with it.

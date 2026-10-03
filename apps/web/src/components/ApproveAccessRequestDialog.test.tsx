@@ -4,6 +4,7 @@ import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { ComponentProps } from 'react'
 import { describe, expect, it, vi } from 'vitest'
+import { GOVERNED_COUNTER_KEY } from '../entitlement-limits'
 import { modelPublication } from '../test/model-access'
 import { ApiError } from '../api'
 import type { AccessRequest, AccessRequestApproval, CostCenter, EnvironmentCatalogView } from '../types'
@@ -676,5 +677,75 @@ describe('ApproveAccessRequestDialog', () => {
     await user.keyboard('{Escape}')
     expect(onCancel).toHaveBeenCalledTimes(2)
     expect(onApprove).not.toHaveBeenCalled()
+  })
+
+  describe('pool models', () => {
+    const poolRequest: AccessRequest = {
+      ...accessRequest,
+      resource: { kind: 'poolModel', id: 'poolmodel_opus', scopeId: 'modelpool_anthropic' },
+    }
+    const poolProps: Partial<DialogProps> = {
+      accessRequest: poolRequest,
+      resourceLabel: 'Claude Opus 4.5 in Anthropic Claude (pool model)',
+      publication: undefined,
+      pool: { displayName: 'Anthropic Claude', governedAccess: { keysEnabled: true, entraEnabled: true } },
+      governed: true,
+    }
+
+    it("says the pool's plan applies the grant, and limits it on the governed counter", async () => {
+      const user = userEvent.setup()
+      const { onApprove } = renderDialog(poolProps)
+
+      const dialog = await screen.findByRole('dialog')
+      expect(within(dialog).getByText(
+        'Approving creates grant intent only. API Management is unchanged until the Anthropic Claude plan is reviewed and applied.',
+      )).toBeVisible()
+      expect(within(dialog).getByText(/The pool's shared token limit still applies; this does not mean unrestricted gateway access\./)).toBeVisible()
+      expect(within(dialog).queryByText(/publication safeguards/)).not.toBeInTheDocument()
+      await user.type(within(dialog).getByRole('spinbutton', { name: 'Tokens per minute' }), '20000')
+      await user.click(within(dialog).getByRole('button', { name: 'Approve and create grant' }))
+
+      expect(onApprove).toHaveBeenCalledExactlyOnceWith({
+        note: null,
+        enforcement: {
+          tokens: { counterKeyExpression: GOVERNED_COUNTER_KEY, estimatePromptTokens: true, tokensPerMinute: 20000 },
+        },
+      })
+    })
+
+    it("says the grant waits while the pool doesn't govern access yet", async () => {
+      renderDialog({ ...poolProps, pool: { displayName: 'Anthropic Claude', governedAccess: null } })
+
+      expect(within(await screen.findByRole('dialog')).getByText(
+        "Approving creates grant intent only. Anthropic Claude doesn't use governed access yet, so the grant waits until it does and the pool's plan is applied.",
+      )).toBeVisible()
+    })
+
+    it("takes the cost center's defaults for this pool's model, not for the same model in another pool", async () => {
+      const person = (tokensPerMinute: number) => ({
+        tokensPerMinute, tokenQuota: null, tokenQuotaPeriod: null, callsPerMinute: null, callQuota: null, callQuotaPeriod: null,
+      })
+      const withDefaults: CostCenter = {
+        ...supportCostCenter,
+        limits: [
+          { resource: { kind: 'poolModel', id: 'poolmodel_opus', scopeId: 'modelpool_openai' }, person: person(9000), pool: null },
+          { resource: { kind: 'poolModel', id: 'poolmodel_opus', scopeId: 'modelpool_anthropic' }, person: person(5000), pool: null },
+        ],
+      }
+      renderDialog({
+        ...poolProps,
+        accessRequest: {
+          ...poolRequest,
+          costCenterId: withDefaults.id,
+          costCenter: { id: withDefaults.id, name: withDefaults.name, code: withDefaults.code },
+        },
+        costCenters: [withDefaults],
+      })
+
+      const dialog = await screen.findByRole('dialog')
+      expect(within(dialog).getByText(/Support sets per-person defaults here: 5,000 tokens per minute\./)).toBeVisible()
+      expect(within(dialog).getByText(/The pool's shared token limit still applies\./)).toBeVisible()
+      expect(within(dialog).getByRole('spinbutton', { name: 'Tokens per minute' })).toHaveValue(null)
+    })
   })
 })

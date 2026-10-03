@@ -25,6 +25,7 @@ from mosaic_api.domain import (
     PublishRun,
 )
 from mosaic_api.environments import EnvironmentCatalog, EnvironmentUsage
+from mosaic_api.model_pools import ModelPool
 from mosaic_api.observed import ObservedEndpointEntity, ObservedEntity
 from mosaic_api.pricing import EndpointPricing, PriceVersion
 from mosaic_api.usage_telemetry import (
@@ -242,6 +243,22 @@ class GatewayRepository(Protocol):
     async def delete_mcp_publication(
         self, publication: McpPublication, audit_event: AuditEvent
     ) -> None: ...
+
+    async def list_model_pools(
+        self, tenant_id: str, *, gateway_id: str | None = None
+    ) -> list[ModelPool]: ...
+
+    async def get_model_pool(self, tenant_id: str, pool_id: str) -> ModelPool | None: ...
+
+    async def save_model_pool(self, pool: ModelPool, audit_event: AuditEvent) -> ModelPool:
+        """Upsert, because a pool's ID is deterministic per gateway and API name."""
+        ...
+
+    async def record_model_pool_state(self, pool: ModelPool) -> ModelPool:
+        """Persist apply progress without emitting a second administrator audit event."""
+        ...
+
+    async def delete_model_pool(self, pool: ModelPool, audit_event: AuditEvent) -> None: ...
 
     async def save_publish_plan(self, plan: PublishPlan) -> PublishPlan: ...
 

@@ -40,8 +40,11 @@ import { EnvironmentBadge } from '../components/EnvironmentBadge'
 import { EnvironmentPicker } from '../components/EnvironmentPicker'
 import { ImportFromGatewayDialog } from '../components/ImportFromGatewayDialog'
 import { DeclarationFields, DeclaredDeploymentsCard, StoredKeyActions } from '../components/KeyEndpoint'
+import { DeploymentPoolsCell, EndpointPoolsCard } from '../components/EndpointPools'
+import { poolsByDeployment, useEndpointPools } from '../endpoint-pools'
 import {
   blankDeclaration,
+  isBedrockHost,
   keyedProvider,
   toDeclarations,
   usesBackendKey,
@@ -51,7 +54,7 @@ import { PublishModelDialog } from '../components/PublishModelDialog'
 import { PageHeader } from '../components/PageHeader'
 import { RemovalDialog } from '../components/RemovalDialog'
 import { UnpublishDialog } from '../components/UnpublishDialog'
-import { AI_KIND_LABELS } from '../labels'
+import { AI_KIND_LABELS, CAPACITY_TYPE_LABELS, PROCESSING_SCOPE_LABELS } from '../labels'
 import {
   PUBLICATION_STATUS_LABELS,
   formatTimestamp,
@@ -99,6 +102,7 @@ const providerLabels: Record<ModelProvider, string> = {
   azureOpenAi: 'Azure OpenAI',
   azureAiFoundry: 'Azure AI Foundry',
   openAiCompatible: 'OpenAI compatible',
+  awsBedrock: 'AWS Bedrock',
 }
 
 const sourceLabels: Record<SuggestionSource, string> = {
@@ -117,11 +121,15 @@ const REGISTRATION_REFUSED = "MOSAIC didn't register this endpoint"
 
 // Registering by resource ID is the default. The key path is the explicit alternative for a
 // resource MOSAIC's managed identity can't reach, such as one in another Microsoft Entra tenant.
-type RegistrationMode = 'azure' | 'key' | 'compatible'
+// AWS Bedrock is reached with a Bedrock API key the same way, and served only through model pools.
+type RegistrationMode = 'azure' | 'key' | 'bedrock' | 'compatible'
 
-// On the key path, the administrator either gives MOSAIC the key, which MOSAIC stores in its own
-// Key Vault, or the URI of a secret they stored themselves.
+// On the key and Bedrock paths, the administrator either gives MOSAIC the key, which MOSAIC stores
+// in its own Key Vault, or the URI of a secret they stored themselves.
 type KeySource = 'paste' | 'vault'
+
+const BEDROCK_HOSTS =
+  'https://bedrock-runtime.<region>.amazonaws.com or https://bedrock-mantle.<region>.api.aws'
 
 
 function PublicationStatusBadge({ publication }: { publication: Publication }) {
@@ -550,6 +558,7 @@ function AccessPanel({
   const api = useMosaicApi()
   const { access, runtimeAccess } = endpoint
   const keyed = usesBackendKey(endpoint)
+  const bedrock = endpoint.provider === 'awsBedrock'
   const keptByMosaic = keyed && endpoint.keyStoredByMosaic === true
   const catalog = useEnvironmentCatalog()
   const gateways = useQuery({ queryKey: ['gateways'], queryFn: () => api.listGateways() })
@@ -558,12 +567,29 @@ function AccessPanel({
     for (const gateway of gateways.data ?? []) map.set(gateway.id, gateway)
     return map
   }, [gateways.data])
+  // MOSAIC never sends a Bedrock key to AWS, so a key it read is as far as it can check.
+  const bedrockUnchecked = bedrock && endpoint.status === 'pending' && access.evaluation === 'notEvaluated'
   // A key check MOSAIC couldn't finish is not a denial, so it isn't shown as one.
   const accessIntent = access.canRead
     ? 'success'
-    : keyed && access.evaluation === 'notEvaluated'
-      ? 'warning'
-      : 'error'
+    : bedrockUnchecked
+      ? 'info'
+      : keyed && access.evaluation === 'notEvaluated'
+        ? 'warning'
+        : 'error'
+  const accessTitle = bedrock
+    ? bedrockUnchecked
+      ? "MOSAIC doesn't check Bedrock keys with AWS"
+      : access.evaluation === 'notEvaluated'
+        ? "MOSAIC couldn't read the key"
+        : "MOSAIC can't use the key"
+    : keyed
+      ? access.canRead
+        ? 'The endpoint accepts the key'
+        : "MOSAIC can't confirm the key"
+      : access.canRead
+        ? 'MOSAIC can read this endpoint'
+        : 'MOSAIC cannot read this endpoint'
 
   return (
     <Card className={styles.accessCard}>
@@ -572,27 +598,27 @@ function AccessPanel({
       <section className={styles.accessSection}>
         <MessageBar intent={accessIntent} layout="multiline">
           <MessageBarBody>
-            <MessageBarTitle>
-              {keyed
-                ? access.canRead
-                  ? 'The endpoint accepts the key'
-                  : "MOSAIC can't confirm the key"
-                : access.canRead
-                  ? 'MOSAIC can read this endpoint'
-                  : 'MOSAIC cannot read this endpoint'}
-            </MessageBarTitle>
+            <MessageBarTitle>{accessTitle}</MessageBarTitle>
             {access.message}
           </MessageBarBody>
         </MessageBar>
         <Text size={200} className={styles.muted}>
-          {keptByMosaic
-            ? 'Authentication: API key MOSAIC keeps in its own Key Vault. Nobody can read it back ' +
-              'from MOSAIC. MOSAIC reads it only to check it, and API Management reads it from Key ' +
-              'Vault itself.'
-            : keyed
-              ? 'Authentication: API key from Key Vault. MOSAIC reads the key only to check it and ' +
-                'never keeps it. API Management reads it from Key Vault itself.'
-              : 'This is what lets MOSAIC list the models deployed here. It grants no ability to call them.'}
+          {bedrock
+            ? keptByMosaic
+              ? 'Authentication: Bedrock API key MOSAIC keeps in its own Key Vault. Nobody can ' +
+                "read it back from MOSAIC. MOSAIC reads it only to confirm it's there and never " +
+                'sends it to AWS. API Management reads it from Key Vault and sends it to AWS.'
+              : 'Authentication: Bedrock API key from Key Vault. MOSAIC reads it only to confirm ' +
+                "it's there, never keeps it and never sends it to AWS. API Management reads it " +
+                'from Key Vault and sends it to AWS.'
+            : keptByMosaic
+              ? 'Authentication: API key MOSAIC keeps in its own Key Vault. Nobody can read it ' +
+                'back from MOSAIC. MOSAIC reads it only to check it, and API Management reads it ' +
+                'from Key Vault itself.'
+              : keyed
+                ? 'Authentication: API key from Key Vault. MOSAIC reads the key only to check it ' +
+                  'and never keeps it. API Management reads it from Key Vault itself.'
+                : 'This is what lets MOSAIC list the models deployed here. It grants no ability to call them.'}
         </Text>
         {keptByMosaic && <StoredKeyActions endpoint={endpoint} onReplaced={onMessage} />}
         {access.remediation && (
@@ -864,6 +890,12 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
   const [declarations, setDeclarations] = useState<DeclarationDraft[]>(() => [
     blankDeclaration(null),
   ])
+  // Kept apart from the Azure declarations: a Bedrock model ID is no Azure deployment name.
+  const [bedrockDeclarations, setBedrockDeclarations] = useState<DeclarationDraft[]>(() => [
+    blankDeclaration('awsBedrock'),
+  ])
+  // Set once Register was pressed, so a half-typed URL isn't called the wrong kind of endpoint.
+  const [endpointUrlChecked, setEndpointUrlChecked] = useState(false)
   const [name, setName] = useState('')
   const [environment, setEnvironment] = useState<string | null>(null)
   const [environmentTouched, setEnvironmentTouched] = useState(false)
@@ -892,11 +924,19 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
     queryFn: () => api.listModelDeployments(selected!.id),
     enabled: Boolean(selected) && !(selected && usesBackendKey(selected)),
   })
+  const endpointPools = useEndpointPools(selected?.id)
+  const deploymentPools = useMemo(
+    () => (endpointPools.data ? poolsByDeployment(endpointPools.data) : undefined),
+    [endpointPools.data],
+  )
+  const showPools = Boolean(deploymentPools?.size)
 
   async function refresh() {
     await queryClient.invalidateQueries({ queryKey: ['model-endpoints'] })
     await queryClient.invalidateQueries({ queryKey: ['model-endpoint-suggestions'] })
     await queryClient.invalidateQueries({ queryKey: ['model-deployments'] })
+    // A pool's candidates are the models on these endpoints.
+    await queryClient.invalidateQueries({ queryKey: ['model-pools'] })
   }
 
   const register = useMutation({
@@ -904,11 +944,13 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
     onSuccess: async (endpoint) => {
       setResourceId('')
       setEndpointUrl('')
+      setEndpointUrlChecked(false)
       setSecretUri('')
       setApiKey('')
       setApiKeyTouched(false)
       setKeySource('paste')
       setDeclarations([blankDeclaration(null)])
+      setBedrockDeclarations([blankDeclaration('awsBedrock')])
       setName('')
       setEnvironment(null)
       setEnvironmentTouched(false)
@@ -939,7 +981,10 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
     onSuccess: async (_, endpoint) => {
       setRemoving(null)
       setSelectedId(null)
-      onMessage(`Removed ${endpoint.name} from MOSAIC. Nothing changed in Azure.`)
+      onMessage(
+        `Removed ${endpoint.name} from MOSAIC. Nothing changed in ` +
+          `${endpoint.provider === 'awsBedrock' ? 'AWS' : 'Azure'}.`,
+      )
       await refresh()
       await queryClient.invalidateQueries({ queryKey: ['publications'] })
     },
@@ -988,6 +1033,8 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
       return
     }
     if (mode === 'key') {
+      // The API would take a Bedrock URL here as OpenAI compatible, so the Bedrock tab handles it.
+      if (isBedrockHost(endpointUrl)) return
       const pastedKey = apiKey.trim()
       if (keySource === 'paste' && !pastedKey) {
         setApiKeyTouched(true)
@@ -1001,6 +1048,26 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
         name: name.trim() || undefined,
         environment,
         deployments: toDeclarations(declarations, keyedProvider(endpointUrl)),
+      })
+      return
+    }
+    if (mode === 'bedrock') {
+      setEndpointUrlChecked(true)
+      if (!isBedrockHost(endpointUrl)) return
+      const pastedKey = apiKey.trim()
+      if (keySource === 'paste' && !pastedKey) {
+        setApiKeyTouched(true)
+        return
+      }
+      register.mutate({
+        endpoint: endpointUrl.trim(),
+        provider: 'awsBedrock',
+        ...(keySource === 'paste'
+          ? { apiKey: pastedKey }
+          : { credentialSecretUri: secretUri.trim() }),
+        name: name.trim() || undefined,
+        environment,
+        deployments: toDeclarations(bedrockDeclarations, 'awsBedrock'),
       })
       return
     }
@@ -1073,11 +1140,13 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
     setDialogOpen(false)
     setResourceId('')
     setEndpointUrl('')
+    setEndpointUrlChecked(false)
     setSecretUri('')
     setApiKey('')
     setApiKeyTouched(false)
     setKeySource('paste')
     setDeclarations([blankDeclaration(null)])
+    setBedrockDeclarations([blankDeclaration('awsBedrock')])
     setName('')
     setEnvironment(null)
     setEnvironmentTouched(false)
@@ -1105,8 +1174,9 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
           <div>
             <Title3 as="h2">Model endpoints</Title3>
             <Text>
-              Azure OpenAI and Azure AI Foundry resources your gateways front. MOSAIC reads the
-              models deployed on them; it never changes them and never calls a model.
+              Azure OpenAI and Azure AI Foundry resources, and AWS Bedrock regions, that your
+              gateways front. MOSAIC lists the models on them; it never changes them and never
+              calls a model.
             </Text>
           </div>
           <Button
@@ -1240,9 +1310,9 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
               </Table>
             </div>
             <Text size={200} className={styles.muted}>
-              Removing an endpoint deletes only what MOSAIC stored about it. The Azure resource and
-              its deployments are never modified. MOSAIC refuses while a model from it is still
-              published.
+              Removing an endpoint deletes only what MOSAIC stored about it. Nothing changes in
+              Azure or AWS. MOSAIC refuses while a model from it is still published, on its own or
+              in a model pool.
             </Text>
           </>
         )}
@@ -1378,7 +1448,9 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
                     <TableHeaderCell>Model</TableHeaderCell>
                     <TableHeaderCell>Version</TableHeaderCell>
                     <TableHeaderCell>Capacity</TableHeaderCell>
+                    <TableHeaderCell>Processing</TableHeaderCell>
                     <TableHeaderCell>State</TableHeaderCell>
+                    {showPools && <TableHeaderCell>Pools</TableHeaderCell>}
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -1399,11 +1471,34 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
                       <TableCell>{deployment.modelName ?? 'Unknown'}</TableCell>
                       <TableCell>{deployment.modelVersion ?? '—'}</TableCell>
                       <TableCell>
-                        {deployment.skuCapacity != null
-                          ? `${deployment.skuName ?? ''} ${deployment.skuCapacity}`.trim()
-                          : (deployment.skuName ?? '—')}
+                        <div className={styles.cellStack}>
+                          <span>{CAPACITY_TYPE_LABELS[deployment.capacityType ?? 'unknown']}</span>
+                          {deployment.skuName && (
+                            <span className={styles.secondaryCell}>
+                              {deployment.skuCapacity != null
+                                ? `${deployment.skuName} ${deployment.skuCapacity}`
+                                : deployment.skuName}
+                            </span>
+                          )}
+                          {deployment.spilloverDeploymentName && (
+                            <span className={styles.secondaryCell}>
+                              Azure spillover to {deployment.spilloverDeploymentName}
+                            </span>
+                          )}
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        {PROCESSING_SCOPE_LABELS[deployment.processingScope ?? 'unknown']}
                       </TableCell>
                       <TableCell>{deployment.provisioningState ?? 'Unknown'}</TableCell>
+                      {showPools && (
+                        <TableCell>
+                          <DeploymentPoolsCell
+                            deploymentName={deployment.deploymentName}
+                            pools={deploymentPools}
+                          />
+                        </TableCell>
+                      )}
                     </TableRow>
                   ))}
                 </TableBody>
@@ -1413,6 +1508,8 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
         </Card>
       )}
 
+      {selected && <EndpointPoolsCard endpoint={selected} className={styles.panel} />}
+
       <Dialog open={dialogOpen} onOpenChange={(_, data) => (data.open ? setDialogOpen(true) : closeDialog())}>
         <DialogSurface>
           <form onSubmit={submit}>
@@ -1421,10 +1518,17 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
               <DialogContent className={styles.dialogForm}>
                 <TabList
                   selectedValue={mode}
-                  onTabSelect={(_, data) => setMode(data.value as RegistrationMode)}
+                  onTabSelect={(_, data) => {
+                    setMode(data.value as RegistrationMode)
+                    // A key pasted for one kind of endpoint is never sent as another's.
+                    setApiKey('')
+                    setApiKeyTouched(false)
+                    setEndpointUrlChecked(false)
+                  }}
                 >
                   <Tab value="azure">Azure AI</Tab>
                   <Tab value="key">Azure AI with an API key</Tab>
+                  <Tab value="bedrock">AWS Bedrock</Tab>
                   <Tab value="compatible">OpenAI compatible</Tab>
                 </TabList>
 
@@ -1456,6 +1560,11 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
                       label="Endpoint URL"
                       required
                       hint="The resource endpoint, such as https://<resource>.services.ai.azure.com, or a Foundry project endpoint ending in /api/projects/<project>. MOSAIC publishes from the resource."
+                      validationMessage={
+                        isBedrockHost(endpointUrl)
+                          ? "That's an AWS Bedrock endpoint. Register it on the AWS Bedrock tab."
+                          : undefined
+                      }
                     >
                       <Input
                         value={endpointUrl}
@@ -1506,6 +1615,81 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
                       drafts={declarations}
                       provider={keyedProvider(endpointUrl)}
                       onChange={setDeclarations}
+                    />
+                  </>
+                )}
+                {mode === 'bedrock' && (
+                  <>
+                    <MessageBar intent="warning" layout="multiline">
+                      <MessageBarBody>
+                        <MessageBarTitle>Requests leave Azure</MessageBarTitle>
+                        Prompts and responses for these models go to AWS, which processes them.
+                        MOSAIC serves Bedrock models only through model pools, and reads the key
+                        only to confirm it&apos;s there: it never sends it to AWS.
+                      </MessageBarBody>
+                    </MessageBar>
+                    <Field
+                      label="Endpoint URL"
+                      required
+                      hint={`The Bedrock runtime for one AWS region: ${BEDROCK_HOSTS}. A host can be registered only once.`}
+                      validationMessage={
+                        keyedProvider(endpointUrl)
+                          ? "That's an Azure AI endpoint. Register it on the Azure AI with an API " +
+                            'key tab, or by resource ID.'
+                          : endpointUrlChecked && !isBedrockHost(endpointUrl)
+                            ? `MOSAIC reaches AWS Bedrock at ${BEDROCK_HOSTS}.`
+                            : undefined
+                      }
+                    >
+                      <Input
+                        value={endpointUrl}
+                        onChange={(_, data) => setEndpointUrl(data.value)}
+                        placeholder="https://bedrock-runtime.us-east-1.amazonaws.com"
+                      />
+                    </Field>
+                    <Field label="How MOSAIC gets the key">
+                      <RadioGroup
+                        value={keySource}
+                        onChange={(_, data) => setKeySource(data.value as KeySource)}
+                      >
+                        <Radio value="paste" label="Paste the Bedrock API key" />
+                        <Radio value="vault" label="Use a key already in Key Vault" />
+                      </RadioGroup>
+                    </Field>
+                    {keySource === 'paste' ? (
+                      <Field
+                        label="Bedrock API key"
+                        required
+                        hint="Use a long-term Bedrock API key: a short-term one expires within 12 hours. MOSAIC stores it as a secret in its own Key Vault, keeps only the secret's URI, and never shows the key again. API Management reads it from Key Vault."
+                        validationMessage={
+                          apiKeyTouched && !apiKey.trim() ? 'Paste the Bedrock API key.' : undefined
+                        }
+                      >
+                        <Input
+                          type="password"
+                          autoComplete="new-password"
+                          spellCheck={false}
+                          value={apiKey}
+                          onChange={(_, data) => setApiKey(data.value)}
+                        />
+                      </Field>
+                    ) : (
+                      <Field
+                        label="Key Vault secret URI"
+                        required
+                        hint="The secret you stored a long-term Bedrock API key in. MOSAIC keeps only this URI, and API Management reads the key from Key Vault. MOSAIC and each gateway need Key Vault Secrets User on the vault."
+                      >
+                        <Input
+                          value={secretUri}
+                          onChange={(_, data) => setSecretUri(data.value)}
+                          placeholder="https://my-vault.vault.azure.net/secrets/bedrock-key"
+                        />
+                      </Field>
+                    )}
+                    <DeclarationFields
+                      drafts={bedrockDeclarations}
+                      provider="awsBedrock"
+                      onChange={setBedrockDeclarations}
                     />
                   </>
                 )}
@@ -1577,16 +1761,36 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
         onConfirm={() => removing && remove.mutate(removing)}
         onCancel={() => setRemoving(null)}
       >
-        <Text block>
-          MOSAIC deletes its record of this endpoint, its{' '}
-          {removing ? plural(removing.inventory.deployments, 'synced model') : 'synced models'}{' '}
-          and its sync history. Nothing changes in Azure: the resource and its deployments stay as
-          they are.
-        </Text>
-        <Text block>
-          Publication records from this endpoint that own nothing in API Management, such as
-          drafts, are deleted with it. MOSAIC refuses while a model from it is still published.
-        </Text>
+        {removing?.provider === 'awsBedrock' ? (
+          <>
+            <Text block>
+              MOSAIC deletes its record of this endpoint and the{' '}
+              {plural(removing.declaredDeployments?.length ?? 0, 'model')} declared on it
+              {removing.keyStoredByMosaic
+                ? ', and the Key Vault secret it keeps the Bedrock API key in'
+                : ''}
+              . Nothing changes in AWS: the key keeps working there until you delete it.
+            </Text>
+            <Text block>
+              Model pools that are still drafts drop its models. MOSAIC refuses while a published
+              model pool uses one of them.
+            </Text>
+          </>
+        ) : (
+          <>
+            <Text block>
+              MOSAIC deletes its record of this endpoint, its{' '}
+              {removing ? plural(removing.inventory.deployments, 'synced model') : 'synced models'}{' '}
+              and its sync history. Nothing changes in Azure: the resource and its deployments stay
+              as they are.
+            </Text>
+            <Text block>
+              Publication records from this endpoint that own nothing in API Management, such as
+              drafts, are deleted with it. MOSAIC refuses while a model from it is still published,
+              on its own or in a model pool.
+            </Text>
+          </>
+        )}
       </RemovalDialog>
       {changingEndpoint && (
         <ChangeEnvironmentDialog

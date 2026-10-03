@@ -64,6 +64,23 @@ const costCenters: PortalCostCenter[] = [
   { id: 'cc-research', name: 'Research', code: 'RES', isDefault: false, keysAllowed: true },
 ]
 
+/** A model several endpoints serve behind one API. The catalog shows only the model. */
+const servedModelEntry: CatalogEntry = {
+  kind: 'poolModel',
+  id: 'pool_model_opus',
+  scopeId: 'pool_anthropic',
+  displayName: 'Claude Opus',
+  summary: null,
+  gatewayId: 'gateway-1',
+  gatewayName: 'production gateway',
+  environment: 'production',
+  entitled: false,
+  requestState: null,
+  enforced: null,
+  apiStyle: 'anthropicMessages',
+  capacity: 'provisionedWithOverflow',
+}
+
 function renderPage(entries: CatalogEntry[], requests: AccessRequest[], centers: PortalCostCenter[] | Error = costCenters) {
   const createAccessRequest = vi.fn(async (payload) => ({ ...pendingRequest, ...payload }))
   mocks.api = {
@@ -245,5 +262,72 @@ describe('CatalogPage', () => {
     await user.click(screen.getByRole('button', { name: 'Clear filters' }))
     expect(screen.getByText('Weather tools')).toBeVisible()
     expect(screen.getByText('Development chat')).toBeVisible()
+  })
+
+  it('offers a model served behind one API as a model, with its API style and capacity', async () => {
+    renderPage([servedModelEntry], [])
+
+    expect(await screen.findByRole('heading', { level: 2, name: 'Claude Opus' })).toBeVisible()
+    expect(screen.getByText('Model · Anthropic Messages API · production gateway')).toBeVisible()
+    expect(screen.getByText('Provisioned, with pay-as-you-go overflow')).toBeVisible()
+    expect(screen.queryByText('Enforced by the gateway')).not.toBeInTheDocument()
+    // Nothing on the page says how the model is served.
+    expect(document.body).not.toHaveTextContent(/\bpools?\b/i)
+    expect(document.body.innerHTML).not.toContain('pool_anthropic')
+  })
+
+  it.each([
+    ['provisioned', 'Provisioned'],
+    ['payAsYouGo', 'Pay-as-you-go'],
+  ] as const)('labels %s capacity', async (capacity, label) => {
+    renderPage([{ ...servedModelEntry, capacity }], [])
+
+    expect(await screen.findByText('Claude Opus')).toBeVisible()
+    expect(screen.getByText(label)).toBeVisible()
+  })
+
+  it('omits the capacity badge when capacity is unknown', async () => {
+    renderPage([{ ...servedModelEntry, capacity: null, apiStyle: null }], [])
+
+    expect(await screen.findByText('Claude Opus')).toBeVisible()
+    expect(screen.getByText('Model · production gateway')).toBeVisible()
+    expect(screen.queryByText(/Provisioned|Pay-as-you-go/)).not.toBeInTheDocument()
+  })
+
+  it('requests a model served behind one API under the scope the catalog gave it', async () => {
+    const user = userEvent.setup()
+    const { createAccessRequest } = renderPage([servedModelEntry], [])
+
+    const selector = await screen.findByRole('combobox', { name: 'Cost center for Claude Opus' })
+    expect(selector).toHaveValue('cc-general')
+    await user.click(screen.getByRole('button', { name: 'Request access' }))
+
+    await waitFor(() => expect(createAccessRequest).toHaveBeenCalledWith({
+      resource: { kind: 'poolModel', id: 'pool_model_opus', scopeId: 'pool_anthropic' },
+      costCenterId: 'cc-general',
+      justification: undefined,
+    }))
+  })
+
+  it('lists every kind of model under Models', async () => {
+    const user = userEvent.setup()
+    renderPage([
+      catalogEntry,
+      servedModelEntry,
+      { ...catalogEntry, id: 'chat', kind: 'modelApi', displayName: 'Chat model API', enforced: null },
+    ], [])
+
+    expect(await screen.findByText('Claude Opus')).toBeVisible()
+    expect(screen.getByText('Model API · production gateway')).toBeVisible()
+
+    await user.selectOptions(screen.getByLabelText('Resource type'), 'model')
+    expect(screen.getByText('Claude Opus')).toBeVisible()
+    expect(screen.getByText('Chat model API')).toBeVisible()
+    expect(screen.queryByText('Weather tools')).not.toBeInTheDocument()
+
+    await user.selectOptions(screen.getByLabelText('Resource type'), 'mcpServer')
+    expect(screen.getByText('Weather tools')).toBeVisible()
+    expect(screen.queryByText('Claude Opus')).not.toBeInTheDocument()
+    expect(screen.queryByText('Chat model API')).not.toBeInTheDocument()
   })
 })

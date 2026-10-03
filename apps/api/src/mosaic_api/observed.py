@@ -10,10 +10,11 @@ state MOSAIC stores in ``domain``. Two rules apply to every model here:
 """
 
 from datetime import datetime
-from typing import Any, Literal
+from typing import Any, Literal, Self
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
+from mosaic_api.deployment_capacity import CapacityType, ProcessingScope, classify_sku
 from mosaic_api.domain import (
     AiBackendKind,
     Entity,
@@ -220,6 +221,10 @@ class ObservedModelDeployment(ObservedEndpointEntity):
 
     This is the callable unit an entitlement will later grant access to, so its ID is deterministic
     and stable across syncs.
+
+    ``capacity_type`` and ``processing_scope`` are derived from ``sku_name`` (ADR 0024), and any
+    value supplied for them is replaced. ``spillover_deployment_name`` is the standard deployment
+    Azure itself overflows a provisioned deployment to, before a gateway ever sees a 429.
     """
 
     entity_type: Literal["observedModelDeployment"] = "observedModelDeployment"
@@ -233,10 +238,21 @@ class ObservedModelDeployment(ObservedEndpointEntity):
     # When Azure created the deployment. A provisioned deployment is billed from then, so its
     # reserved capacity is priced from then. Left out of stored documents while unknown.
     deployed_at: datetime | None = Field(default=None, exclude_if=lambda value: value is None)
+    capacity_type: CapacityType = CapacityType.UNKNOWN
+    processing_scope: ProcessingScope = ProcessingScope.UNKNOWN
+    spillover_deployment_name: str | None = None
     provisioning_state: str | None = None
     rai_policy_name: str | None = None
     capabilities: dict[str, str] = Field(default_factory=dict)
     request_paths: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def derive_capacity(self) -> Self:
+        # Derived whenever a deployment is read, not only when it's synced. A deployment stored
+        # before these fields existed then describes itself correctly without a re-sync, and its
+        # SKU and the attributes read from it can never disagree.
+        self.capacity_type, self.processing_scope = classify_sku(self.sku_name)
+        return self
 
 
 class ObservedAvailableModel(ObservedEndpointEntity):
@@ -345,6 +361,7 @@ __all__ = [
     "OBSERVED_ENTITY_TYPES",
     "AiBackendKind",
     "AnnotatedApi",
+    "CapacityType",
     "FacetConfidence",
     "GatewayPolicyView",
     "McpServerKind",
@@ -372,5 +389,6 @@ __all__ = [
     "PolicyFacetKind",
     "PolicyScope",
     "PolicySection",
+    "ProcessingScope",
     "ScopedPolicyView",
 ]

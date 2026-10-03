@@ -22,11 +22,17 @@ from mosaic_api.domain import (
     McpServerRoute,
     McpTool,
     McpTransportType,
+    PolicyFacet,
     deterministic_id,
     new_id,
 )
 from mosaic_api.errors import DomainError, UpstreamUnsupportedError
-from mosaic_api.integrations.apim.ai_detection import AI_POLICY_ELEMENTS, classify_api, classify_url
+from mosaic_api.integrations.apim.ai_detection import (
+    AI_POLICY_ELEMENTS,
+    classify_api,
+    classify_url,
+    strongest_kind,
+)
 from mosaic_api.integrations.apim.client import ApimClient, JsonObject
 from mosaic_api.integrations.apim.policy_semantics import (
     MOSAIC_FRAGMENT_PREFIX,
@@ -188,6 +194,26 @@ def _api_type(item: JsonObject) -> str | None:
     properties = _properties(item)
     value = _text(properties.get("type")) or _text(properties.get("apiType"))
     return value.casefold() if value else None
+
+
+def _pool_member_names(properties: JsonObject) -> list[str]:
+    """Name the backends a load-balanced pool routes to, or nothing for a single backend.
+
+    Each member is a full ARM resource id, so its name is the last segment of that id.
+    """
+
+    if (_text(properties.get("type")) or "").casefold() != "pool":
+        return []
+    pool = properties.get("pool")
+    services = pool.get("services") if isinstance(pool, dict) else None
+    if not isinstance(services, list):
+        return []
+    names: list[str] = []
+    for service in services:
+        member_id = _text(service.get("id")) if isinstance(service, dict) else None
+        if member_id and (name := member_id.rstrip("/").rsplit("/", 1)[-1]):
+            names.append(name)
+    return names
 
 
 def _mcp_transport(value: object) -> McpTransportType:
@@ -384,12 +410,19 @@ class InventoryCollector:
         return False
 
     def _collect_backends(self, items: list[JsonObject]) -> dict[str, AiBackendKind]:
-        kinds: dict[str, AiBackendKind] = {}
-        for name, item in _named(items):
+        entries = _named(items)
+        kinds = {name: classify_url(_text(_properties(item).get("url"))) for name, item in entries}
+        # A load-balanced pool has no URL of its own. It routes to whatever its members point at,
+        # so it takes the most specific kind among them. Pools cannot contain pools.
+        for name, item in entries:
+            members = _pool_member_names(_properties(item))
+            if members:
+                kinds[name] = strongest_kind(
+                    [kinds.get(member, AiBackendKind.NONE) for member in members]
+                )
+        for name, item in entries:
             properties = _properties(item)
             url = _text(properties.get("url"))
-            kind = classify_url(url)
-            kinds[name] = kind
             self._snapshot.backends.append(
                 ObservedBackend(
                     id=self._id("obsBackend", name),
@@ -400,7 +433,7 @@ class InventoryCollector:
                     title=_text(properties.get("title")),
                     url=sanitize_url(url),
                     protocol=_text(properties.get("protocol")),
-                    ai_kind=kind,
+                    ai_kind=kinds[name],
                 )
             )
         return kinds
@@ -533,7 +566,7 @@ class InventoryCollector:
 
     def _append_policy(
         self, scope: PolicyScope, scope_id: str, scope_label: str, xml: str
-    ) -> list[str]:
+    ) -> list[PolicyFacet]:
         analysis = analyze_policy(xml)
         self._snapshot.policy_documents.append(
             ObservedPolicyDocument(
@@ -550,7 +583,7 @@ class InventoryCollector:
                 unrecognized_elements=sorted(set(analysis.unrecognized_elements)),
             )
         )
-        return [facet.element for facet in analysis.facets]
+        return analysis.facets
 
     async def _collect_products(self, items: list[JsonObject]) -> dict[str, list[str]]:
         entries = _named(items)
@@ -645,23 +678,30 @@ class InventoryCollector:
             display_name = _text(properties.get("displayName")) or name
             templates = self._collect_operations(name, operation_items)
 
-            policy_elements: list[str] = []
+            facets: list[PolicyFacet] = []
             if policy_xml:
-                policy_elements = self._append_policy(
+                facets = self._append_policy(
                     PolicyScope.API, name, f"API: {display_name}", policy_xml
                 )
+            # The policy can route on its own, by backend id, as a pool's API does. Its service URL
+            # is then empty, so the backends it names are as much a signal as one in the URL.
+            routed = {
+                facet.attributes["backend-id"]
+                for facet in facets
+                if facet.element == "set-backend-service" and "backend-id" in facet.attributes
+            }
 
             service_url = _text(properties.get("serviceUrl"))
             referenced = [
                 kind
                 for backend_name, kind in backend_kinds.items()
-                if service_url and backend_name in service_url
+                if backend_name in routed or (service_url and backend_name in service_url)
             ]
             ai_kind, signals = classify_api(
                 service_url=service_url,
                 path=_text(properties.get("path")),
                 operation_templates=templates,
-                policy_elements=policy_elements,
+                policy_elements=[facet.element for facet in facets],
                 backend_kinds=referenced,
             )
             self._snapshot.apis.append(

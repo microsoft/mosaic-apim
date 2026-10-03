@@ -31,6 +31,8 @@ from mosaic_api.integrations.access_policy import (
 )
 from mosaic_api.integrations.loganalytics.kql import QueryWindow, calls_query
 from mosaic_api.integrations.mcp_access_policy import McpPolicyDocuments
+from mosaic_api.integrations.pool_policy import PoolRoute, PoolTarget
+from mosaic_api.model_pools import PoolSafeguard
 from test_access_policy import (
     _ATTRIBUTION_MESSAGE,
     AUDIENCE,
@@ -52,6 +54,17 @@ from test_mcp_access_policy import _group_grant as _mcp_group_grant
 from test_mcp_access_policy import _model_caller as _mcp_model_caller
 from test_mcp_access_policy import _render as _mcp_render
 from test_mcp_access_policy import _snapshot as _mcp_snapshot
+from test_pool_policy_governed import _SHAPES as _POOL_SHAPES
+from test_pool_policy_governed import GPT as POOL_GPT
+from test_pool_policy_governed import GPT_BACKEND_POOL, RESEARCH
+from test_pool_policy_governed import MINI as POOL_MINI
+from test_pool_policy_governed import _grant as _pool_grant
+from test_pool_policy_governed import _group_grant as _pool_group_grant
+from test_pool_policy_governed import _limited_grant as _pool_limited_grant
+from test_pool_policy_governed import _quota as _pool_quota
+from test_pool_policy_governed import _render as _pool_render
+from test_pool_policy_governed import _routes as _pool_routes
+from test_pool_policy_governed import _snapshot as _pool_snapshot
 
 # The value, or "-" when it's empty or blank. The backreference holds both reads to one value.
 _GUARDED = re.compile(r'@\(String\.IsNullOrWhiteSpace\((?P<value>.+)\) \? "-" : (?P=value)\)')
@@ -238,6 +251,22 @@ def _model_with_group_and_direct_grants() -> str:
     return render_governed_policy(_publication(), snapshot).fragment_xml
 
 
+def _pool_key_only_direct_grant() -> str:
+    return _pool_render(_pool_snapshot(_pool_grant(1), entra=False)).fragment_xml
+
+
+def _pool_with_group_and_direct_grants() -> str:
+    snapshot = _pool_snapshot(_pool_grant(1), _pool_group_grant(2, model=POOL_MINI))
+    return _pool_render(snapshot).fragment_xml
+
+
+def _keyed_pool_routes() -> list[PoolRoute]:
+    """The pool's routes, with gpt-4o's member reached with a key, so callers' keys are cut."""
+
+    target = PoolTarget(GPT_BACKEND_POOL, "gpt-4o", key_named_value="mosaic-pool-key")
+    return [PoolRoute(POOL_GPT, "gpt-4o", (target,), 1), *_pool_routes()[1:]]
+
+
 def _mcp_with_group_and_direct_grants() -> str:
     snapshot = _mcp_snapshot(grants=[_mcp_grant(), _mcp_group_grant(2)])
     documents: McpPolicyDocuments = _mcp_render(snapshot=snapshot)
@@ -288,6 +317,23 @@ def _expected_text(call: Mapping[str, str], keys: tuple[str, ...]) -> str:
             MODEL_KEYS,
             [*CALLS, REFERENCE_CALL],
             id="model-group-and-direct",
+        ),
+        # A pool's calls are recorded as a governed model API's are (ADR 0024).
+        pytest.param(
+            _pool_key_only_direct_grant,
+            MODEL_DIRECT,
+            _ATTRIBUTION_MESSAGE,
+            MODEL_KEYS,
+            [KEY_CALL],
+            id="pool-key-only-direct",
+        ),
+        pytest.param(
+            _pool_with_group_and_direct_grants,
+            MODEL_WITH_GROUPS,
+            _ATTRIBUTION_MESSAGE,
+            MODEL_KEYS,
+            [*CALLS, REFERENCE_CALL, MALFORMED_REFERENCE_CALL],
+            id="pool-group-and-direct",
         ),
         pytest.param(
             _mcp_with_group_and_direct_grants,
@@ -379,6 +425,41 @@ def _documents() -> Iterator[tuple[str, str]]:
     yield "unmetered", render_governed_policy(_anthropic(), _unmetered(grants=grants)).fragment_xml
     model = render_governed_policy(_publication(), _representative_model_snapshot())
     yield "representative model", model.fragment_xml
+    # A pool's API policy is left out: it only routes, and its one trace, each attempt's, records
+    # no metadata.
+    for keys, entra in ((True, True), (True, False), (False, True), (False, False)):
+        pool_grant_sets = [
+            [_pool_grant(1)],
+            [_pool_limited_grant(1), _pool_grant(2, model=POOL_MINI)],
+        ]
+        if entra:
+            pool_grant_sets += [
+                [_pool_grant(1), _pool_group_grant(2, model=POOL_MINI)],
+                [_pool_group_grant(2)],
+            ]
+        for pool_grants in pool_grant_sets:
+            for shape in _POOL_SHAPES:
+                for routes in (None, _keyed_pool_routes()):
+                    pool = _pool_render(
+                        _pool_snapshot(*pool_grants, keys=keys, entra=entra),
+                        shape=shape,
+                        routes=routes,
+                    )
+                    label = (
+                        f"pool {shape} keys={keys} entra={entra} grants={len(pool_grants)} "
+                        f"keyed={routes is not None}"
+                    )
+                    yield label, pool.fragment_xml
+    pool_snapshot = _pool_snapshot(
+        _pool_grant(1),
+        _pool_grant(2, cost_center=RESEARCH),
+        _pool_group_grant(3, model=POOL_MINI),
+        quotas=[_pool_quota(POOL_GPT, RESEARCH, monthly_tokens=1_000_000, monthly_calls=10)],
+    )
+    safeguard = PoolSafeguard(
+        tokens_per_minute=10_000, token_quota=5_000_000, token_quota_period="Monthly"
+    )
+    yield "representative pool", _pool_render(pool_snapshot, safeguard=safeguard).fragment_xml
     mcp_grant_sets = [
         [_mcp_grant()],
         [_mcp_grant(enforcement=_mcp_enforcement()), _mcp_group_grant(2)],
@@ -514,6 +595,7 @@ def test_the_attribution_facet_says_what_an_absent_value_records() -> None:
     for facets in (
         render_governed_policy(_publication(), _snapshot()).facets,
         _mcp_render().facets,
+        _pool_render(_pool_snapshot(_pool_grant(1))).facets,
     ):
         facet = next(
             facet

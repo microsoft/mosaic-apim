@@ -345,7 +345,7 @@ function TelemetrySection({ gatewayId }: { gatewayId: string }) {
             ) : data.apis.map((item) => (
               <tr key={item.apiName}>
                 <td>{item.displayName}<Text block size={200}>{item.apiName}</Text></td>
-                <td>{item.kind === 'mcp' ? 'MCP server' : 'Model API'}</td>
+                <td>{item.kind === 'mcp' ? 'MCP server' : item.kind === 'pool' ? 'Model pool' : 'Model API'}</td>
                 <td>{item.published ? 'Yes' : 'No'}</td>
                 <td>{diagnosticReadiness(item)}</td>
               </tr>

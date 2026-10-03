@@ -1337,20 +1337,39 @@ class McpPublishingService:
     async def _has_model_grant_here(
         self, publication: McpPublication, principal: Principal
     ) -> bool:
-        granted = {
-            entitlement.resource.id
+        """Whether the application holds an enabled grant on a model API or pool model here.
+
+        A pool model counts only while its pool is governed, because only then does the pool's
+        policy enforce grants and attribute calls (ADR 0024).
+        """
+
+        resources = [
+            entitlement.resource
             for entitlement in await self._entitlements.list_entitlements(
                 publication.tenant_id, subject_id=principal.id
             )
-            if entitlement.enabled and entitlement.resource.kind == "modelApi"
+            if entitlement.enabled
+        ]
+        models = {resource.id for resource in resources if resource.kind == "modelApi"}
+        pooled = {
+            (resource.scope_id, resource.id)
+            for resource in resources
+            if resource.kind == "poolModel"
         }
-        if not granted:
-            return False
-        return any(
-            model.id in granted
+        if models and any(
+            model.id in models
             for model in await self._repository.list_model_apis(
                 publication.tenant_id, gateway_id=publication.gateway_id
             )
+        ):
+            return True
+        return bool(pooled) and any(
+            (pool.id, model.id) in pooled
+            for pool in await self._repository.list_model_pools(
+                publication.tenant_id, gateway_id=publication.gateway_id
+            )
+            if pool.governed_access is not None
+            for model in pool.models
         )
 
     @staticmethod

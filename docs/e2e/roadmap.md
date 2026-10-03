@@ -11,6 +11,10 @@ deployed environment:
 Phase 11 extends the same path to MCP servers: published, granted, called and measured the same
 way, including an MCP server that itself calls a model through MOSAIC.
 
+Model pools ([ADR 0024](../adr/0024-model-pools.md)) add A19 and R15 to R18 to Phase 8: one model
+served by two Azure OpenAI accounts behind one API, built in the console, then called, failed
+over, governed and traced through the gateway.
+
 A person signs in (including MFA) and the Playwright harness in [`e2e/`](../../e2e) drives the
 browser. Every phase ends at a checkpoint, so the work can pause between phases and each tenant
 change can be approved on its own. How to run the harness is in the [runbook](runbook.md).
@@ -689,7 +693,7 @@ Progress:
     allows only chat completions on these publications, so their embeddings and model-info
     operations are denied by design.
 
-### Phase 8: Runtime verification (R1 to R14, A14, A17, A18) 🔄 R1 to R9, A14, A17 and A18 pass; R10 to R14 remain
+### Phase 8: Runtime verification (R1 to R18, A14, A17 to A19) 🔄 R1 to R9, A14, A17 and A18 pass; R10 to R18 and A19 remain
 
 `scripts/verify_model_access.py` now covers this phase, with unit tests against a fake gateway
 that applies the governed policy. It reads each grant's connection details from MOSAIC, calls the
@@ -713,6 +717,10 @@ described below.
 | R12 | Manual, with [ADR 0023](../adr/0023-budgets-and-notifications.md) deployed: time how long API Management takes to apply a changed named value. Re-apply a publication so its gateway has `mosaic-blocked-cost-centers`, and check that its ARM `GET` returns the value. Then, while calling a model under one cost center every few seconds, set that cost center a blocking budget below its spend and note when MOSAIC audits `gateway.blockedCostCentersUpdated` and when the first 403 arrives. Raise the budget and time the first call that works again. Record both on a classic tier and, if one is available, a v2 tier |
 | R13 | Manual, with ADR 0023: in an Azure Government subscription, deploy with `MOSAIC_DEPLOY_EMAIL=true`, or create Communication Services with an Azure-managed email domain by hand. Record whether the resource and domain deploy, then save the `.communication.azure.us` endpoint and sender in **Settings > Email** and send a test email. MOSAIC asks for a token for `https://communication.azure.us/.default`; the test must be accepted and arrive. In either cloud, send the same notification twice with one `Operation-Id`, for example by retrying a refused email, and confirm only one email arrives and what status the second send returns |
 | R14 | Manual, with ADR 0023 and email set up: the block and unblock round trip. Give the `user` persona's cost center a blocking budget a little above its spend, with an address you can read. Spend past it. Within about 30 minutes: one 80% email, one 100% email and one block email arrive; calls charged to the cost center get 403 naming it, with `mosaic-deny v=1 r=budget` in the gateway's trace and **Analytics > Reliability**; a call charged to another of the persona's cost centers still works; and the portal's **My access** shows the blocked banner. Raise the budget: calls work again within the time R12 measured, and one unblock email arrives. Checking again sends nothing more |
+| R15 | Manual, with [ADR 0024](../adr/0024-model-pools.md) deployed, on A19's pool: call `gpt-4o` with the pool's bootstrap key, once plainly and once streamed. `api-version` must reach the member intact, the stream must arrive in pieces, and no member header, such as `x-ms-region` or `x-ratelimit-remaining-tokens`, may come back. Lower AOAI A's `gpt-4o` capacity until it throttles. With **Throttling**, its first 429 must trip its breaker and send the call to AOAI C at once, and while the breaker is open, each call must go straight to AOAI C, as R18's traces show. Throttle AOAI C's `gpt-4o` too: the caller must get the `ModelUnavailable` body, and API Management's request trace must show the status reason of the 503 it answers once the backend pool has no member left, which the policy reads to stop retrying. Throttle `gpt-35-turbo`, which only AOAI A serves, and record whether its open breaker answers 503 without calling AOAI A. **Edit** the pool to **Linear**, with AOAI A's member first: while AOAI A throttles, each call must try it and then AOAI C, and with both throttled the caller must get 429 with `Retry-After` and the `ModelUnavailable` body. On a scratch API that MOSAIC doesn't own, record whether `retry` and `forward-request` work inside a policy fragment. Restore each capacity afterwards |
+| R16 | Manual, with ADR 0024, on A19's pool after R15: turn on governed access, which can't be turned off again, grant the `user` persona both of the pool's models under one cost center and the workload `gpt-4o`, and apply. The bootstrap key must then be refused. The portal must list each model by its display name only, never the pool, its endpoints or their regions. Each model's connection details show **Model** where a publication's show **Deployment**, and the key says it also works for the other model. Where AOAI A's or AOAI C's `gpt-4o` is also published and listed on its own, the pool's page and that endpoint's **Used by pools** must warn that portal users would see the model twice, and unlisting the model in the pool must clear the warning; list it again afterwards. Run the verifier with the pool grants' IDs: R1 to R4 and R7 must pass as they do for publications, and R5 and R6 need fresh pool grants. While AOAI A throttles, two calls that fail over must both succeed on R5's grants, because a call counts once however many members it tries. A call must also count against both the grant's token limit and its cost center's pooled quota, as R11 checks for publications. `x-mosaic-cost-center` must select the grant as in R10, and with ADR 0023, a blocking budget must refuse the cost center's pool calls with `r=budget`. **Analytics** must attribute the calls to their grant and cost center, priced at the member that served each. Record the applied fragment's size, and how much each grant adds to it, against API Management's limit on a policy's size |
+| R17 | Manual, with ADR 0024: build a pool from the Claude deployments on A18's endpoint, which MOSAIC reaches with a key, and give a model a public name other than its deployment's, so each attempt rewrites the body's `model`. Calls with the pool's bootstrap key must succeed, streamed and not, and API Management's request trace must show `x-api-key`, and no `Authorization` header, on the forwarded request. Record what `ApiManagementGatewayLlmLog`'s `ModelName` and `DeploymentName` carry for these calls and R15's. A pool that mixes key and identity members waits for a second endpoint serving Claude. On a scratch API and backend that MOSAIC doesn't own, record whether API Management refuses a policy that names a named value that doesn't exist, and whether a backend's `credentials.header` naming a Key Vault-backed named value, or its `credentials.managedIdentity`, authenticates the call. Record whether an Azure OpenAI account, such as AOAI A called directly, refuses a call that carries both a bearer token and a key. Bedrock members wait for Phase 10: that `llm-token-limit`, `llm-emit-token-metric` and `ApiManagementGatewayLlmLog` read a Bedrock response's usage, streamed and not, and that both Bedrock hosts accept the request the gateway forwards |
+| R18 | Manual, with ADR 0024, after R15, with the gateway's Azure Monitor diagnostic logs at Information: `TraceRecords` must hold one `mosaic-attempt` trace for each attempt, whose `n`, `b`, `s`, `e`, `h` and `p` give the attempt's number, its backend, the status, whether the backend pool had no member left, and the host and path it called. Record whether `context.Request.Url` names the member a backend pool chose and includes the backend URL's base path, whether `TraceRecords` escapes `/` as `\/`, and whether `ApiManagementGatewayLogs`' `BackendId` and `BackendUrl` name the member that answered a failed-over call's last attempt. The trace must compile on a classic tier and, if one is available, a v2 tier. If a member can be made unreachable, record whether `retry` moves on with `s=0` or the call ends in `on-error` with no trace. The pool's **Health** card must report R15's calls, throttling, retries, breaker trips and overflow |
 
 Since [ADR 0022](../adr/0022-cost-centers.md), applies don't create keys. When a grant the
 verifier reads has none, it creates the key through MOSAIC first, as its holder or the
@@ -929,6 +937,24 @@ approval.
 A call quota (O28) can't be set in the console, so these grants have none. A weekly one adds a
 policy expression that API Management hasn't compiled yet.
 
+A19 and R15 to R18 check model pools ([ADR 0024](../adr/0024-model-pools.md)). In A19,
+**Suggested pools** must offer `gpt-4o` on AOAI A and AOAI C. **Create pool** builds a breaker
+pool from it, and AOAI A's `gpt-35-turbo` is added as a second model with one member, for R15 and
+R16. The plan must judge each member's environment against the gateway's, applying must publish
+one API, and each endpoint's **Used by pools** must list the pool. Then:
+
+- **Review plan**, with nothing changed, must show no drift, which confirms that a policy read back
+  in `rawxml` returns the same text each time. Once the pool's API policy is edited in the Azure
+  portal, the next plan must warn that someone changed it.
+- Deleting a member's backend in the Azure portal shows whether API Management refuses while a
+  backend pool names it. If it doesn't, the next plan must show the backend as removed outside
+  MOSAIC, and applying must create it again.
+- Last, after R15 to R18, **Unpublish**, once its plan is reviewed, must remove only what MOSAIC
+  created for the pool.
+
+A19 and R15 to R18 need a new pool, grants, billed calls, and capacity changes on AOAI A and AOAI
+C, so they wait for the owner's approval too. Bedrock members wait for Phase 10.
+
 ### Phase 9: Codify, document, clean up 🔄 ordered specs and A15 done; deferred findings filed as issues
 
 - ✅ The live run is now ordered specs built on page objects
@@ -998,7 +1024,9 @@ discovery, a versioned shape, and backend credentials kept in Key Vault and read
 identity. Gemini would use its OpenAI-compatible endpoint or the Vertex AI API; Bedrock would use
 an API key or SigV4. The environment owner writes the secrets and shares only their Key Vault URIs.
 G18 has since built the backend-credential part for Azure AI endpoints, a Key Vault-backed named
-value that the gateway reads with its own identity, and Phase 10 would reuse it.
+value that the gateway reads with its own identity, and Phase 10 would reuse it. ADR 0024 already
+registers AWS Bedrock hosts with a Bedrock API key, but only as Claude members of a model pool,
+and R17 lists what a live Bedrock member needs to show.
 
 ### Phase 11 (next): MCP servers end to end ⬜ requested by the environment owner (2026-10-02)
 
@@ -1080,6 +1108,7 @@ has passed, and ❌ means the latest run failed on the product gap named.
 | A16 | Settings lists the built-in environments; an Unclassified pairing warns but isn't blocked, and classifying both sides clears the warning (#40) | 6 | ✅ |
 | A17 | **Pricing** lists the seeded price of each target deployment with its source, detects each endpoint's cloud from its host, and says why any deployment has no price; an override from a date prices only the days from then (ADR 0020) | 8 | ✅ |
 | A18 | An endpoint in another Entra tenant is registered by its URL and a pasted API key (G18, ADR 0021); its access card confirms the endpoint accepts the key and the gateway can read it; its Claude deployment is published and granted, the bootstrap key is refused once governed access applies, and the grant's key and token reach Claude | 8 | ✅ |
+| A19 | With ADR 0024, **Suggested pools** offers a model deployed on two Azure OpenAI accounts, and **Create pool** builds a breaker pool from it; the plan judges each member's environment, applying publishes one API, and each endpoint's **Used by pools** lists the pool; a re-plan shows no drift until the policy is changed outside MOSAIC, and **Unpublish** removes only what MOSAIC created | 8 | ⬜ |
 
 ### Portal
 
@@ -1114,6 +1143,10 @@ has passed, and ❌ means the latest run failed on the product gap named.
 | R12 | With ADR 0023, how long a changed `mosaic-blocked-cost-centers` named value takes to reach the gateway, blocking and unblocking | 8 | ⬜ |
 | R13 | With ADR 0023, Communication Services Email works in Azure Government with MOSAIC's managed identity, and a repeated `Operation-Id` sends one email | 8 | ⬜ |
 | R14 | With ADR 0023, a blocking budget's round trip: each email once, 403 with `r=budget` for that cost center only, the portal banner, and calls working again once the budget is raised | 8 | ⬜ |
+| R15 | With ADR 0024, a pool model is called plainly and streamed with no member's headers; a throttled member's breaker sends calls to the other member at once; a linear pool tries its members in order; and once no member is left, the caller gets the `ModelUnavailable` body | 8 | ⬜ |
+| R16 | With ADR 0024, a governed pool's models appear in the portal by display name only, warn when portal users would see one twice, and pass the verifier like publications; a failed-over call counts once against each limit and quota, a blocking budget refuses the pool's calls, and each call is priced at the member that served it | 8 | ⬜ |
+| R17 | With ADR 0024, a pool of key members reaches Claude with the member's key and no bearer token, rewriting the body's model for each attempt; how API Management handles backend credentials and missing named values; Bedrock members wait for Phase 10 | 8 | ⬜ |
+| R18 | With ADR 0024, each attempt writes one `mosaic-attempt` trace that names its backend, status, host and path; what the gateway logs name for a pool call; and the pool's **Health** card reports R15's calls | 8 | ⬜ |
 
 ### MCP servers (Phase 11)
 

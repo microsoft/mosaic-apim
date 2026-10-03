@@ -70,8 +70,8 @@ class CostCenterIntent:
     # The cost center's per-person limits, when the grant sets none of its own.
     inherited: EntitlementEnforcement | None
     pool: PooledQuota | None
-    # Whether the grant can have a key: a direct grant on a model API. Only then does turning
-    # keys on or off change what its policy compiles.
+    # Whether the grant can have a key: a direct grant on a model API or a pool model. Only then
+    # does turning keys on or off change what its policy compiles.
     keyed: bool = True
 
     def payload(self) -> dict[str, Any]:
@@ -113,7 +113,9 @@ def cost_center_intent(
             else None
         ),
         pool=limit.pool if limit is not None else None,
-        keyed=direct and entitlement.resource.kind == EntitlementResourceKind.MODEL_API,
+        keyed=direct
+        and entitlement.resource.kind
+        in {EntitlementResourceKind.MODEL_API, EntitlementResourceKind.POOL_MODEL},
     )
 
 

@@ -108,10 +108,19 @@ A model API's calls are priced by the deployment its publication fronts. A grant
 by the model API it grants. An API MOSAIC adopted rather than published doesn't say which deployment
 it calls, so its calls have no price. MCP servers carry no tokens and have no cost.
 
+A [model pool](../README.md#model-pools)'s API fronts many deployments, so MOSAIC prices each of its
+calls at the member that served it. It places a call on a member by the backend the gateway logged,
+or by the host and deployment that backend calls. A provisioned member's cost is shared among the
+pool's callers like any other's, from the day MOSAIC first saw it behind the pool, and a member
+since removed keeps its price for the days it served. A call MOSAIC can't place on a member has no
+price, and the chargeback bills it to **Unknown model**. Calls an MCP server's application makes
+through a pool for the people who called the server are priced the same way.
+
 ## Why a deployment has no price
 
-The **Unpriced deployments** tab lists every deployment MOSAIC knows that has no price today, and
-every adopted model API with calls in the last 30 days, busiest first. Each row says why:
+The **Unpriced deployments** tab lists every deployment MOSAIC knows that has no price today, every
+adopted model API with calls in the last 30 days, and every model pool with calls in that time that
+MOSAIC couldn't place on a member, busiest first. Each row says why:
 
 | Reason | What to do |
 | --- | --- |
@@ -121,7 +130,7 @@ every adopted model API with calls in the last 30 days, busiest first. Each row 
 | No price listed | Add a price for the model in its cloud, from a source you trust |
 | Price not yet in effect | Wait for the price's date, or add one that takes effect sooner |
 | Not yet deployed | Nothing. A provisioned deployment costs nothing before it existed |
-| Deployment unknown | Publish the model through MOSAIC, so it knows the deployment, or accept that the adopted API's calls are unpriced |
+| Deployment unknown | Publish the model through MOSAIC, so it knows the deployment, or accept that the adopted API's calls are unpriced. For a model pool, check that the gateway's logs name the backend each call reached |
 
 ## Adding and correcting prices
 
@@ -198,7 +207,7 @@ Utilization is blank for a model Learn has no figures for.
   part, says why the rest has none, and counts among the resources the total leaves out. Model
   calls an MCP server's application made for them are listed apart, priced the same way and named
   with the cost center of the application's grant, which paid for them. Their totals leave them
-  out.
+  out. A model in a model pool is named by its display name, never by its pool.
 
 ## Chargeback
 
@@ -221,7 +230,8 @@ calls an MCP server's application made for the people who called that MCP server
 ([MCP servers that call models](mcp-servers-that-call-models.md)):
 - Each person gets a row of their own, with their calls, tokens and cost. The row is still charged
   to the application, under its grant's cost center, because the application's grant paid for the
-  calls. The person is a reporting dimension only.
+  calls. The person is a reporting dimension only. On a model pool's grant, each person gets a row
+  for each member that served their calls.
 - The rest of the application's calls, its own use and any MOSAIC couldn't attribute to anyone,
   stay one row with both columns empty. A row that isn't an application's grant's leaves them
   empty too.

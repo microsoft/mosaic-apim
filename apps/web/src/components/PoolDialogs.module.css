@@ -1,0 +1,311 @@
+/*
+ * Fluent caps a dialog at 600px with a single-class rule it injects after this stylesheet, so the
+ * doubled class outranks it and the deployment tables get room for every column.
+ */
+.surface.surface {
+  width: 100%;
+  max-width: min(1040px, calc(100vw - 32px));
+}
+
+.content {
+  display: grid;
+  gap: 16px;
+}
+
+.intro {
+  display: grid;
+  gap: 4px;
+}
+
+/* One column that can shrink below its widest table, so long APIM names wrap or scroll inside it. */
+.section {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 10px;
+}
+
+.section:focus-visible {
+  outline: 2px solid var(--colorStrokeFocus2);
+  outline-offset: 2px;
+}
+
+/*
+ * The unpublish button deletes things, so it looks it. These outrank Fluent's single-class button
+ * rules, and step aside while the button is busy or unavailable so Fluent's disabled look shows.
+ */
+.destructive:not([aria-disabled='true']):not(:disabled) {
+  background-color: var(--colorStatusDangerBackground3);
+  border-color: transparent;
+  color: var(--colorNeutralForegroundOnBrand);
+}
+
+.destructive:not([aria-disabled='true']):not(:disabled):hover {
+  background-color: var(--colorStatusDangerBackground3Hover);
+  color: var(--colorNeutralForegroundOnBrand);
+}
+
+.destructive:not([aria-disabled='true']):not(:disabled):hover:active {
+  background-color: var(--colorStatusDangerBackground3Pressed);
+  color: var(--colorNeutralForegroundOnBrand);
+}
+
+.steps {
+  overflow-x: auto;
+  border-bottom: 1px solid var(--mosaic-border-soft);
+}
+
+.form {
+  display: grid;
+  gap: 16px;
+}
+
+.fieldRow {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 16px;
+}
+
+.narrowField {
+  max-width: 16rem;
+}
+
+.fieldset {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  display: grid;
+  gap: 10px;
+}
+
+.legend {
+  padding: 0;
+  font-weight: 600;
+}
+
+.typeOptions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+.typeOption {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-content: start;
+  gap: 6px 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--mosaic-border-soft);
+  border-radius: 8px;
+  background: var(--mosaic-surface);
+  cursor: pointer;
+}
+
+.typeOption input {
+  margin: 3px 0 0;
+  accent-color: var(--mosaic-primary);
+}
+
+.typeOption:hover {
+  border-color: var(--mosaic-primary);
+}
+
+.typeOption:has(input:focus-visible) {
+  outline: 2px solid var(--mosaic-primary);
+  outline-offset: 2px;
+}
+
+.typeOptionSelected {
+  border-color: var(--mosaic-primary);
+  background: var(--mosaic-primary-soft);
+}
+
+.typeOptionDisabled,
+.typeOptionDisabled:hover {
+  border-color: var(--mosaic-border-soft);
+  background: var(--mosaic-surface-subtle);
+  color: var(--mosaic-text-muted);
+  cursor: not-allowed;
+}
+
+.typeOptionBody {
+  display: grid;
+  gap: 6px;
+}
+
+.diagram {
+  width: 100%;
+  max-width: 180px;
+  height: 56px;
+  color: var(--mosaic-text-muted);
+}
+
+.typeOptionSelected .diagram {
+  color: var(--mosaic-primary);
+}
+
+.unavailable {
+  color: var(--mosaic-warning);
+}
+
+.addModel {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 10px;
+}
+
+.addModelField {
+  flex: 1 1 22rem;
+  max-width: 40rem;
+}
+
+.modelCard {
+  display: grid;
+  gap: 12px;
+  padding: 14px 16px;
+  border: 1px solid var(--mosaic-border-soft);
+  border-radius: 8px;
+  background: var(--mosaic-surface);
+}
+
+.modelHeader {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.modelHeading {
+  display: grid;
+  gap: 2px;
+}
+
+.modelHeading h3 {
+  margin: 0;
+}
+
+.modelOptions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 20px;
+}
+
+.tableScroll {
+  margin-top: 0;
+  box-shadow: none;
+}
+
+.modelFooter {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+}
+
+.cellStack {
+  display: grid;
+  gap: 2px;
+}
+
+.accessBadges {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.weightInput {
+  width: 5.5rem;
+}
+
+.orderCell {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.orderNumber {
+  min-width: 1.5rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.muted {
+  color: var(--mosaic-text-muted);
+}
+
+.caution {
+  color: var(--mosaic-warning);
+}
+
+.findings {
+  margin: 4px 0 0;
+  padding-left: 1.25rem;
+}
+
+/* PolicyFacetItem draws each facet as its own box, so the list drops its bullets and indent. */
+.facetList {
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 10px;
+  list-style: none;
+}
+
+.summaryList {
+  margin: 0;
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 6px 16px;
+}
+
+.summaryList dt {
+  color: var(--mosaic-text-muted);
+}
+
+.summaryList dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.code {
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
+}
+
+.readyBadge {
+  color: var(--mosaic-success);
+  background: var(--mosaic-success-soft);
+}
+
+.cautionBadge {
+  color: var(--mosaic-warning);
+  background: var(--mosaic-warning-soft);
+}
+
+.dangerBadge {
+  color: var(--mosaic-danger);
+  background: var(--mosaic-danger-soft);
+}
+
+.quietBadge {
+  color: var(--mosaic-text-muted);
+  background: var(--mosaic-surface-strong);
+}
+
+.primaryBadge {
+  color: var(--mosaic-primary);
+  background: var(--mosaic-primary-soft);
+}
+
+@media (max-width: 640px) {
+  .summaryList {
+    grid-template-columns: 1fr;
+  }
+
+  .summaryList dd {
+    margin-bottom: 6px;
+  }
+}

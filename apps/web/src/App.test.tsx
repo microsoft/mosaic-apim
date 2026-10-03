@@ -49,6 +49,7 @@ vi.mock('./api', async (importOriginal) => {
 const primaryLinks = [
   'Dashboard',
   'Models',
+  'Pools',
   'MCPs',
   'Identity',
   'Entitlements',

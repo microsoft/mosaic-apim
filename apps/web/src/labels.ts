@@ -1,5 +1,6 @@
 import type {
   AiBackendKind,
+  CapacityType,
   EntitlementSubjectKind,
   FreshnessStatus,
   GrantOverlapKind,
@@ -8,6 +9,7 @@ import type {
   EnvironmentAssignment,
   RollupStatus,
   TelemetryCheck,
+  ProcessingScope,
 } from './types'
 
 /** A count with its noun, so a single resource reads "1 gateway" rather than "1 gateways". */
@@ -77,6 +79,22 @@ export const BACKFILL_STATUS_LABELS: Record<RollupStatus['backfillStatus'], stri
   running: 'Running',
   done: 'Done',
   failed: 'Failed',
+}
+
+/** How a model deployment's capacity is bought. The API reads it from the deployment's SKU. */
+export const CAPACITY_TYPE_LABELS: Record<CapacityType, string> = {
+  provisioned: 'Provisioned',
+  payAsYouGo: 'Pay-as-you-go',
+  batch: 'Batch',
+  unknown: 'Unknown',
+}
+
+/** Where Azure may process a model deployment's requests. */
+export const PROCESSING_SCOPE_LABELS: Record<ProcessingScope, string> = {
+  global: 'Global',
+  dataZone: 'Data zone',
+  regional: 'Regional',
+  unknown: 'Unknown',
 }
 
 /** An Identity page tab that lists principals. The dashboard counts principals by the same tabs. */

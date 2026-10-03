@@ -19,6 +19,7 @@ import {
   isExpectedKey,
   keyAvailability,
   keyRevealProblem,
+  sharedKeyModels,
   type KeyAvailability,
 } from '../connection-format'
 import { useFocusHandoff, type FocusHandoff } from '../focus-handoff'
@@ -109,6 +110,8 @@ export function KeyReveal({
     },
   })
   const keyExists = connection.keyExists ?? connection.runtime?.keyExists ?? true
+  const sharedWith = sharedKeyModels(connection)
+  const alsoAffected = sharedWith ? `, including apps that call ${sharedWith} with it` : ''
   const costCenterLabel = connection.costCenter
     ? `${connection.costCenter.name} (${connection.costCenter.code})`
     : 'this grant'
@@ -283,6 +286,13 @@ export function KeyReveal({
         only when you ask, shows it for 60 seconds, and never saves it in this browser. Anyone with
         the key can use this grant, so do not share it.
       </Text>
+      {sharedWith && (
+        <Text as="p" size={200} className="connection-note">
+          {awaitingKey
+            ? `A key you create here also works for ${sharedWith}, which you hold under the same cost center.`
+            : `This key also works for ${sharedWith}, which you hold under the same cost center. Rotating or deleting it affects them too.`}
+        </Text>
+      )}
       {awaitingKey && (
         <>
           <Text as="p" size={200} className="connection-note">
@@ -368,7 +378,8 @@ export function KeyReveal({
       {confirming?.kind === 'rotate' && (
         <div className="inline-confirmation" role="group" aria-label={`Confirm rotate ${confirming.slot} key`}>
           <Text>
-            Apps using the old {confirming.slot} value stop working. The other slot keeps working.
+            Apps using the old {confirming.slot} value stop working{alsoAffected}. The other slot
+            keeps working.
           </Text>
           <div className="key-actions">
             <Button appearance="primary" onClick={() => rotateKey.mutate(confirming.slot)} disabled={rotateKey.isPending}>
@@ -381,7 +392,7 @@ export function KeyReveal({
       {confirming?.kind === 'delete' && (
         <div className="inline-confirmation" role="group" aria-label="Confirm delete key">
           <Text>
-            Every app using this key stops working. You can create a new one later.
+            Every app using this key stops working{alsoAffected}. You can create a new one later.
           </Text>
           <div className="key-actions">
             <Button appearance="primary" onClick={() => deleteKey.mutate()} disabled={deleteKey.isPending}>

@@ -1,0 +1,84 @@
+.page {
+  display: grid;
+  gap: 20px;
+}
+
+.listCard {
+  overflow: hidden;
+  border: 1px solid var(--mosaic-border-soft);
+  background: var(--mosaic-surface);
+  box-shadow: var(--mosaic-shadow);
+}
+
+.cardHeader {
+  padding: 16px 18px 12px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid var(--mosaic-border-soft);
+}
+
+.cardHeaderText {
+  display: grid;
+  gap: 4px;
+}
+
+.cellStack {
+  display: grid;
+  gap: 4px;
+  justify-items: start;
+}
+
+.poolLink {
+  color: var(--mosaic-primary);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.poolLink:hover,
+.poolLink:focus-visible {
+  text-decoration: underline;
+}
+
+.path {
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 12px;
+  color: var(--mosaic-text-muted);
+}
+
+.muted {
+  color: var(--mosaic-text-muted);
+}
+
+.problems {
+  color: var(--mosaic-danger);
+}
+
+.footnote {
+  display: block;
+  padding: 0 18px 16px;
+  color: var(--mosaic-text-muted);
+}
+
+.gatewayNote {
+  max-width: 72ch;
+}
+
+.suggestedModels {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 8px;
+}
+
+.familyNote {
+  margin: 8px 0 0;
+  max-width: 52ch;
+  color: var(--mosaic-text-muted);
+}
+
+.suggestionError {
+  margin: 12px 18px 0;
+}

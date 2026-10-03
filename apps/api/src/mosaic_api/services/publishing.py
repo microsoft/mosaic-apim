@@ -387,6 +387,7 @@ def unpublish_digest(publication: Publication) -> str:
 _KIND_NOUNS: dict[PublishedResourceKind, str] = {
     PublishedResourceKind.NAMED_VALUE: "named value",
     PublishedResourceKind.BACKEND: "backend",
+    PublishedResourceKind.BACKEND_POOL: "backend pool",
     PublishedResourceKind.POLICY_FRAGMENT: "policy fragment",
     PublishedResourceKind.API: "API",
     PublishedResourceKind.API_OPERATION: "operation",
@@ -412,6 +413,7 @@ _REMOVAL_REASONS: dict[PublishedResourceKind, str] = {
     PublishedResourceKind.API_POLICY: "Delete the API's policy.",
     PublishedResourceKind.POLICY_FRAGMENT: "Delete the MOSAIC enforcement fragment.",
     PublishedResourceKind.BACKEND: "Delete the backend that points at the model endpoint.",
+    PublishedResourceKind.BACKEND_POOL: "Delete the backend pool that balances the members.",
     PublishedResourceKind.PRODUCT: "Delete the product, and every subscription to it.",
     PublishedResourceKind.PRODUCT_API: "Delete the link between the product and the API.",
     PublishedResourceKind.NAMED_VALUE: (
@@ -564,6 +566,12 @@ class PublishingService:
             raise ValidationError(
                 "MOSAIC has no curated API shape for OpenAI-compatible endpoints, so it cannot "
                 "publish from them yet.",
+                details={"modelEndpointId": endpoint.id, "provider": str(endpoint.provider)},
+            )
+        if endpoint.is_bedrock():
+            raise ValidationError(
+                "MOSAIC serves AWS Bedrock models only through a model pool. Add this model to a "
+                "pool on the gateway instead.",
                 details={"modelEndpointId": endpoint.id, "provider": str(endpoint.provider)},
             )
         deployment = await self._require_known_deployment(
@@ -873,7 +881,8 @@ class PublishingService:
         catalog = await load_environment_catalog(self._environments, actor.tenant_id)
         candidates: list[PublishableModel] = []
         for endpoint in endpoints:
-            if endpoint.provider == ModelProvider.OPENAI_COMPATIBLE:
+            # A Bedrock model is served only through a pool, which is where it's offered.
+            if endpoint.provider == ModelProvider.OPENAI_COMPATIBLE or endpoint.is_bedrock():
                 continue
             deployments: list[ObservedModelDeployment | DeclaredDeployment]
             if endpoint.uses_backend_key():
@@ -1498,6 +1507,7 @@ class PublishingService:
             ),
             PublishedResourceKind.POLICY_FRAGMENT: "the MOSAIC enforcement fragment",
             PublishedResourceKind.BACKEND: "the backend pointing at the model endpoint",
+            PublishedResourceKind.BACKEND_POOL: "the backend pool that balances the members",
             PublishedResourceKind.API: "the API that fronts this model",
             PublishedResourceKind.API_OPERATION: f"the {item.name} operation",
             PublishedResourceKind.API_POLICY: "the API policy that includes the fragment",
@@ -1616,7 +1626,7 @@ class PublishingService:
                 return await client.get_named_value(item.name) is not None
             case PublishedResourceKind.POLICY_FRAGMENT:
                 return await client.get_policy_fragment_resource(item.name) is not None
-            case PublishedResourceKind.BACKEND:
+            case PublishedResourceKind.BACKEND | PublishedResourceKind.BACKEND_POOL:
                 return await client.get_backend(item.name) is not None
             case PublishedResourceKind.API:
                 return await client.get_api(item.name) is not None

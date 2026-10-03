@@ -270,6 +270,11 @@ class GrantOverlapService:
         labels = {key: resource.id for key, resource in keys.items()}
         model_ids = {resource.id for resource in keys.values() if resource.kind == "modelApi"}
         mcp_ids = {resource.id for resource in keys.values() if resource.kind == "mcpServer"}
+        pool_ids = {
+            resource.scope_id
+            for resource in keys.values()
+            if resource.kind == "poolModel" and resource.scope_id
+        }
         if model_ids:
             for model in await self._gateways.list_model_apis(actor.tenant_id):
                 key = ("modelApi", model.id, "")
@@ -280,4 +285,12 @@ class GrantOverlapService:
                 key = ("mcpServer", server.id, "")
                 if server.id in mcp_ids:
                     labels[key] = server.display_name
+        if pool_ids:
+            for model_pool in await self._gateways.list_model_pools(actor.tenant_id):
+                if model_pool.id not in pool_ids:
+                    continue
+                for pool_model in model_pool.models:
+                    key = ("poolModel", pool_model.id, model_pool.id)
+                    if key in labels:
+                        labels[key] = f"{pool_model.display_name} in {model_pool.display_name}"
         return labels

@@ -3,6 +3,7 @@ import type {
   EntitlementEnforcement,
   ModelAccessSettings,
   PersonLimits,
+  PoolSafeguard,
   QuotaPeriod,
   TokenEnforcement,
 } from './types'
@@ -128,6 +129,7 @@ export function callRateError(form: {
 export function describeLimits(
   entitlement: Pick<Entitlement, 'enforcement'>,
   publicationLimits?: TokenEnforcement | null,
+  inheritedLabel = 'Publication',
 ): string[] {
   const enforcement = entitlement.enforcement
   const sentences: string[] = []
@@ -161,7 +163,36 @@ export function describeLimits(
     sentences.push('No grant-specific limit is configured.')
   }
   if (publicationLimits !== undefined) {
-    sentences.push(...describePublicationLimits(publicationLimits).map((limit) => `Publication: ${limit}`))
+    sentences.push(
+      ...describePublicationLimits(publicationLimits).map((limit) => `${inheritedLabel}: ${limit}`),
+    )
+  }
+  return sentences
+}
+
+/**
+ * A pool model's shared token limit, which every caller of the model shares. A gateway tier that
+ * can't count the model's tokens enforces none, whatever the pool saved.
+ */
+export function describePoolSafeguard(
+  safeguard: PoolSafeguard | TokenEnforcement | null | undefined,
+  tokenMetering = true,
+): string[] {
+  if (!tokenMetering) return ["This gateway's tier can't count this model's tokens."]
+  if (!safeguard?.tokensPerMinute && !safeguard?.tokenQuota) {
+    return ['No shared token limit is set for this model.']
+  }
+  const sentences: string[] = []
+  if (safeguard.tokensPerMinute) {
+    sentences.push(
+      `Every caller shares ${safeguard.tokensPerMinute.toLocaleString()} tokens per minute.`,
+    )
+  }
+  if (safeguard.tokenQuota) {
+    sentences.push(
+      `Every caller shares ${safeguard.tokenQuota.toLocaleString()} tokens per ` +
+        `${periodPhrase(safeguard.tokenQuotaPeriod ?? 'Monthly')}.`,
+    )
   }
   return sentences
 }

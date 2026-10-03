@@ -119,6 +119,7 @@ class Harness:
             backfill_max_days=40,
             clock=lambda: self.now,
             cost_center_repository=self.state.cost_center_repository,
+            endpoint_repository=self.state.model_endpoint_repository,
         )
         self.pricing = PricingService(
             self.state.pricing_repository,

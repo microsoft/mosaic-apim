@@ -31,6 +31,7 @@ from mosaic_api.integrations.key_vault import KeyVaultSecretWriter
 from mosaic_api.integrations.loganalytics import LogAnalyticsClient
 from mosaic_api.integrations.mcp import EntraTokenProvider, KeyVaultSecretReader
 from mosaic_api.mcp_publishing_api import mcp_publishing_router
+from mosaic_api.model_pools_api import model_pools_router
 from mosaic_api.observability import configure_logging, configure_telemetry, instrument_requests
 from mosaic_api.pricing import load_seed
 from mosaic_api.pricing_api import pricing_router
@@ -84,6 +85,8 @@ from mosaic_api.services.budgets import BudgetService
 from mosaic_api.services.cost_centers import CostCenterService
 from mosaic_api.services.mcp_endpoints import build_mcp_client_factory
 from mosaic_api.services.mcp_publishing import McpPublishingService
+from mosaic_api.services.model_pools import ModelPoolService
+from mosaic_api.services.pool_health import PoolHealthService
 from mosaic_api.services.portal_access import PortalAccessService
 from mosaic_api.services.pricing import PricingService
 from mosaic_api.services.telemetry import TelemetryService
@@ -297,6 +300,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             cost_center_repository=cost_center_repository,
             blocked_list=blocked_list,
         )
+        model_pool_service = ModelPoolService(
+            gateway_repository,
+            endpoint_repository=endpoint_repository,
+            client_factory=lambda resource: ApimClient(arm_client, resource),
+            writer_factory=lambda resource: ApimWriter(arm_client, resource),
+            environment_repository=environment_repository,
+            directory_repository=repository,
+            entitlement_repository=entitlement_repository,
+            cost_center_repository=cost_center_repository,
+            model_runtime_client_id=app_settings.model_runtime_client_id,
+            security_group_claims=app_settings.entra_group_claims,
+            blocked_list=blocked_list,
+            pricing_repository=pricing_repository,
+        )
         # A dedicated client for outbound MCP calls: redirects are refused per request, and the
         # connection pool for operator-supplied hosts is kept away from the ARM one.
         mcp_http_client = httpx.AsyncClient(
@@ -343,6 +360,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.model_endpoint_service = model_endpoint_service
         app.state.publishing_service = publishing_service
         app.state.mcp_publishing_service = mcp_publishing_service
+        app.state.model_pool_service = model_pool_service
         app.state.mcp_endpoint_service = mcp_endpoint_service
         app.state.entitlement_service = entitlement_service
         app.state.cost_center_service = CostCenterService(
@@ -381,6 +399,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             entitlement_service,
             directory_repository=repository,
             gateway_repository=gateway_repository,
+            endpoint_repository=endpoint_repository,
         )
         uses_rollups = app_settings.uses_usage_rollups
         log_client = (
@@ -400,6 +419,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             principal_id=app_settings.managed_identity_principal_id,
             identity_resolver=arm_client.caller_object_id,
         )
+        pool_health_service = PoolHealthService(
+            model_pool_service,
+            gateway_repository=gateway_repository,
+            endpoint_repository=endpoint_repository,
+            logs=log_client,
+            principal_id=app_settings.managed_identity_principal_id,
+            identity_resolver=arm_client.caller_object_id,
+        )
         rollup_service = (
             UsageRollupService(
                 rollup_repository,
@@ -413,6 +440,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 retention_days=app_settings.usage_rollup_retention_days,
                 backfill_max_days=app_settings.usage_rollup_backfill_max_days,
                 cost_center_repository=cost_center_repository,
+                endpoint_repository=endpoint_repository,
             )
             if log_client is not None and app_settings.usage_rollup_enabled
             else None
@@ -435,6 +463,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.pricing_service = pricing_service
         app.state.usage_rollup_repository = rollup_repository
         app.state.telemetry_service = telemetry_service
+        app.state.pool_health_service = pool_health_service
         app.state.usage_rollup_service = rollup_service
         app.state.usage_service = UsageService(
             app.state.portal_service,
@@ -512,6 +541,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except Exception:
             logger.exception("mcp_publish_reap_failed")
         try:
+            reaped = await model_pool_service.reap_stale_publish_runs(app_settings.tenant_id)
+            if reaped:
+                logger.warning("pool_publish_runs_reaped", count=reaped)
+        except Exception:
+            logger.exception("pool_publish_reap_failed")
+        try:
             reaped = await mcp_endpoint_service.reap_stale_sync_runs(app_settings.tenant_id)
             if reaped:
                 logger.warning("mcp_endpoint_sync_runs_reaped", count=reaped)
@@ -539,6 +574,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             await model_endpoint_service.aclose()
             await publishing_service.aclose()
             await mcp_publishing_service.aclose()
+            await model_pool_service.aclose()
             await mcp_endpoint_service.aclose()
             if directory_lookup:
                 await directory_lookup.close()
@@ -646,6 +682,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app.include_router(router)
     app.include_router(mcp_publishing_router)
+    app.include_router(model_pools_router)
     app.include_router(directory_router)
     app.include_router(analytics_router)
     app.include_router(pricing_router)

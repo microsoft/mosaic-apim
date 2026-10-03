@@ -70,10 +70,48 @@ class ApimWriter:
     async def delete_policy_fragment(self, name: str) -> bool:
         return await self._delete(f"policyFragments/{name}")
 
-    async def put_backend(self, name: str, *, url: str, title: str) -> JsonObject | None:
+    async def put_backend(
+        self,
+        name: str,
+        *,
+        url: str,
+        title: str,
+        circuit_breaker: JsonObject | None = None,
+    ) -> JsonObject | None:
+        properties: JsonObject = {"title": title, "url": url, "protocol": "http"}
+        if circuit_breaker is not None:
+            properties["circuitBreaker"] = circuit_breaker
+        return await self._put(f"backends/{name}", {"properties": properties})
+
+    async def put_backend_pool(
+        self, name: str, *, title: str, services: list[tuple[str, int, int]]
+    ) -> JsonObject | None:
+        """Create or replace a load-balanced pool over member backends.
+
+        ``services`` holds ``(backend name, priority, weight)``. API Management routes to the
+        lowest priority with an available member, and between members of one priority by weight.
+        A member whose circuit breaker has tripped is unavailable until it closes again. Deleting
+        a pool is :meth:`delete_backend`, because a pool is a backend.
+        """
+
         return await self._put(
             f"backends/{name}",
-            {"properties": {"title": title, "url": url, "protocol": "http"}},
+            {
+                "properties": {
+                    "title": title,
+                    "type": "Pool",
+                    "pool": {
+                        "services": [
+                            {
+                                "id": self.resource_id(f"backends/{member}"),
+                                "priority": priority,
+                                "weight": weight,
+                            }
+                            for member, priority, weight in services
+                        ]
+                    },
+                }
+            },
         )
 
     async def delete_backend(self, name: str) -> bool:
@@ -180,7 +218,10 @@ class ApimWriter:
         method: str,
         url_template: str,
         description: str,
+        template_parameters: list[str] | None = None,
     ) -> JsonObject | None:
+        """Create or replace an operation. Every ``{name}`` in ``url_template`` must be listed."""
+
         return await self._put(
             f"apis/{api_name}/operations/{name}",
             {
@@ -189,7 +230,10 @@ class ApimWriter:
                     "method": method,
                     "urlTemplate": url_template,
                     "description": description,
-                    "templateParameters": [],
+                    "templateParameters": [
+                        {"name": parameter, "type": "string", "required": True}
+                        for parameter in template_parameters or []
+                    ],
                 }
             },
         )

@@ -31,6 +31,25 @@
   visibility: hidden;
 }
 
+.bedrockRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: end;
+}
+
+.bedrockHeader {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) 32px;
+  gap: 8px;
+  color: var(--colorNeutralForeground3);
+  font-size: var(--fontSizeBase200);
+}
+
+.bedrockHeader span:last-child {
+  visibility: hidden;
+}
+
 .muted {
   color: var(--colorNeutralForeground3);
 }
@@ -56,11 +75,14 @@
 
 @media (max-width: 640px) {
   .declarationRow,
-  .declarationHeader {
+  .declarationHeader,
+  .bedrockRow,
+  .bedrockHeader {
     grid-template-columns: 1fr;
   }
 
-  .declarationHeader {
+  .declarationHeader,
+  .bedrockHeader {
     display: none;
   }
 }

@@ -44,6 +44,7 @@ from mosaic_api.repositories import (
 )
 from mosaic_api.services.directory import Actor
 from mosaic_api.services.telemetry import governed_apis
+from mosaic_api.usage_telemetry import RolledUpApi
 
 # The unpriced list shows each deployment's use over this many days.
 UNPRICED_DAYS = 30
@@ -255,6 +256,18 @@ def _host(url: str) -> str | None:
     return urlsplit(url).hostname
 
 
+def _fronted_since(api: RolledUpApi) -> list[tuple[str, datetime]]:
+    """Each deployment an API's calls reach, and since when MOSAIC has seen it do so."""
+
+    if api.kind == "pool":
+        return [
+            (member.deployment_key, member.first_seen_at or api.first_seen_at)
+            for member in api.members
+        ]
+    key = api.deployment_key
+    return [(key, api.first_seen_at)] if key else []
+
+
 class PricingService:
     def __init__(
         self,
@@ -335,13 +348,11 @@ class PricingService:
         seen: dict[str, date] = {}
         for state in await self._rollups.list_rollup_states(tenant_id):
             for api in state.apis:
-                key = api.deployment_key
-                if not key:
-                    continue
-                day = api.first_seen_at.date()
-                folded = key.casefold()
-                if folded not in seen or day < seen[folded]:
-                    seen[folded] = day
+                for key, since in _fronted_since(api):
+                    day = since.date()
+                    folded = key.casefold()
+                    if folded not in seen or day < seen[folded]:
+                        seen[folded] = day
         return seen
 
     async def provisioned_tokens(
@@ -574,8 +585,9 @@ class PricingService:
     # -- what isn't priced ----------------------------------------------------------------------
 
     async def unpriced(self, actor: Actor) -> UnpricedReport:
-        """Every deployment MOSAIC knows that has no price today, and adopted model APIs whose
-        deployment MOSAIC can't tell, busiest first."""
+        """Every deployment MOSAIC knows that has no price today, adopted model APIs whose
+        deployment MOSAIC can't tell, and pools' calls MOSAIC couldn't place on a member, busiest
+        first."""
 
         tenant = actor.tenant_id
         today = self._today()
@@ -589,6 +601,8 @@ class PricingService:
         states = await self._rollups.list_rollup_states(tenant) if self._rollups else []
         usage: dict[str, tuple[int, int]] = defaultdict(lambda: (0, 0))
         api_usage: dict[tuple[str, str], tuple[int, int]] = defaultdict(lambda: (0, 0))
+        # A pool API's calls that no member is known to have served.
+        unplaced: dict[tuple[str, str], tuple[int, int]] = defaultdict(lambda: (0, 0))
         if self._rollups is not None:
             summaries = await self._rollups.list_summaries(
                 tenant,
@@ -612,6 +626,13 @@ class PricingService:
                         api_usage[api_key] = (
                             requests + metrics.requests,
                             tokens + metrics.total_tokens,
+                        )
+                        members = (metrics.members or {}).values()
+                        requests, tokens = unplaced[api_key]
+                        unplaced[api_key] = (
+                            requests + max(metrics.requests - sum(m.requests for m in members), 0),
+                            tokens
+                            + max(metrics.total_tokens - sum(m.total_tokens for m in members), 0),
                         )
         rows: list[UnpricedRow] = []
         priced = 0
@@ -647,6 +668,25 @@ class PricingService:
             for api in current:
                 apis[(gateway_id, api.api_name)] = api
         for (gateway_id, api_name), api in sorted(apis.items()):
+            if api.kind == "pool":
+                requests, tokens = unplaced.get((gateway_id, api_name), (0, 0))
+                if tokens > 0:
+                    rows.append(
+                        UnpricedRow(
+                            key=f"{gateway_id}/{api_name}",
+                            kind="api",
+                            label=api.display_name,
+                            gateway_name=names.get(gateway_id, "Removed gateway"),
+                            reason="unknownDeployment",
+                            message=(
+                                "MOSAIC couldn't tell which of this pool's deployments served "
+                                "some of its calls, so it can't price them."
+                            ),
+                            requests=requests,
+                            total_tokens=tokens,
+                        )
+                    )
+                continue
             if api.kind != "model" or api.deployment_key is not None:
                 continue
             requests, tokens = api_usage.get((gateway_id, api_name), (0, 0))

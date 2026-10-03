@@ -216,7 +216,7 @@ class PooledQuota(MosaicModel):
 
 
 class CostCenterLimit(MosaicModel):
-    """A cost center's limits on one model API or MCP server."""
+    """A cost center's limits on one model API, MCP server, or model pool model."""
 
     resource: EntitlementResource
     person: PersonLimits | None = None
@@ -227,8 +227,11 @@ class CostCenterLimit(MosaicModel):
         if self.resource.kind not in {
             EntitlementResourceKind.MODEL_API,
             EntitlementResourceKind.MCP_SERVER,
+            EntitlementResourceKind.POOL_MODEL,
         }:
-            raise ValueError("Cost center limits apply to model APIs and MCP servers")
+            raise ValueError(
+                "Cost center limits apply to model APIs, MCP servers, and model pool models"
+            )
         if self.person is None and self.pool is None:
             raise ValueError("Set per-person limits, a pooled quota, or both")
         if self.resource.kind == EntitlementResourceKind.MCP_SERVER and (

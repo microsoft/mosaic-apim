@@ -367,7 +367,9 @@ class CostCenterService:
         self, actor: Actor, cost_center_id: str, request: CostCenterLimitsUpdate
     ) -> CostCenterView:
         for limit in request.limits:
-            await self._require_resource(actor, limit.resource.kind, limit.resource.id)
+            await self._require_resource(
+                actor, limit.resource.kind, limit.resource.id, limit.resource.scope_id
+            )
         current = await self._stored(actor, cost_center_id)
         updated = current.model_copy(
             update={"limits": request.limits, "updated_at": utc_now()}, deep=True
@@ -381,10 +383,25 @@ class CostCenterService:
         return await self.get_cost_center(actor, cost_center_id)
 
     async def _require_resource(
-        self, actor: Actor, kind: EntitlementResourceKind, resource_id: str
+        self,
+        actor: Actor,
+        kind: EntitlementResourceKind,
+        resource_id: str,
+        scope_id: str | None = None,
     ) -> None:
         if kind == EntitlementResourceKind.MODEL_API:
             found: object = await self._gateways.get_model_api(actor.tenant_id, resource_id)
+        elif kind == EntitlementResourceKind.POOL_MODEL:
+            model_pool = (
+                await self._gateways.get_model_pool(actor.tenant_id, scope_id)
+                if scope_id
+                else None
+            )
+            found = (
+                next((item for item in model_pool.models if item.id == resource_id), None)
+                if model_pool is not None
+                else None
+            )
         else:
             found = await self._gateways.get_mcp_server(actor.tenant_id, resource_id)
         if found is None:

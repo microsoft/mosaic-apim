@@ -344,9 +344,10 @@ class KeyVaultSecretId(BaseModel):
         return f"{self.vault_uri}/secrets/{self.secret_name}"
 
 
-# An Azure AI resource's keys are 32 or 84 printable characters. MOSAIC trims what was pasted around
-# a key, then refuses anything else that isn't printable ASCII, so a key with a stray line break is
-# never stored or sent. No message here ever repeats the value.
+# An Azure AI resource's keys are 32 or 84 printable characters, and an Amazon Bedrock API key is a
+# longer printable string. MOSAIC trims what was pasted around a key, then refuses anything else
+# that isn't printable ASCII, so a key with a stray line break is never stored or sent. No message
+# here ever repeats the value.
 _API_KEY_PATTERN = re.compile(r"^[\x21-\x7e]{16,512}$")
 
 
@@ -355,11 +356,11 @@ def normalized_api_key(value: SecretStr) -> SecretStr:
 
     key = value.get_secret_value().strip()
     if not key:
-        raise ValueError("Paste the resource's API key")
+        raise ValueError("Paste the API key")
     if not _API_KEY_PATTERN.fullmatch(key):
         raise ValueError(
             "An API key is 16 to 512 letters, digits and symbols, with no spaces or line breaks. "
-            "Copy it again from the resource's Keys and Endpoint page"
+            "Copy it again"
         )
     return SecretStr(key)
 
@@ -473,6 +474,95 @@ class AzureAiEndpointUrl(BaseModel):
         if self.host.endswith(".openai.azure.com"):
             return ModelProvider.AZURE_OPENAI
         return ModelProvider.AZURE_AI_FOUNDRY
+
+
+# Amazon Bedrock serves the Anthropic Messages API, at /anthropic/v1/messages, on two regional
+# hosts: bedrock-runtime, which AWS recommends, and bedrock-mantle. Every AWS account in a region
+# shares its hosts, so the host and the key are all the identity a Bedrock endpoint has.
+_BEDROCK_HOST_PATTERN = re.compile(
+    r"^bedrock-(?:runtime\.(?P<runtime>[a-z]{2}(?:-gov)?-[a-z]+-\d{1,2})\.amazonaws\.com"
+    r"|mantle\.(?P<mantle>[a-z]{2}(?:-gov)?-[a-z]+-\d{1,2})\.api\.aws)$"
+)
+# The Anthropic base paths AWS documents beside the host. Each is served at the host, so pasting
+# one is the same as pasting the host.
+_BEDROCK_BASE_PATHS = frozenset({"", "/anthropic", "/anthropic/v1"})
+_BEDROCK_ENDPOINT_FORM = (
+    "https://bedrock-runtime.<region>.amazonaws.com or https://bedrock-mantle.<region>.api.aws"
+)
+
+
+def bedrock_region(host: str | None) -> str | None:
+    """The AWS region of an Amazon Bedrock host that serves the Anthropic API, or None."""
+
+    match = _BEDROCK_HOST_PATTERN.fullmatch((host or "").casefold().rstrip("."))
+    if match is None:
+        return None
+    return match.group("runtime") or match.group("mantle")
+
+
+def is_bedrock_host(host: str | None) -> bool:
+    """Whether a host is one of Amazon Bedrock's, including the ones MOSAIC can't reach.
+
+    A FIPS or control-plane host is one, so it's told which Bedrock host MOSAIC needs rather than
+    taken for an OpenAI-compatible endpoint.
+    """
+
+    folded = (host or "").casefold().rstrip(".")
+    return folded.startswith("bedrock") and folded.endswith(
+        (".amazonaws.com", ".amazonaws.com.cn", ".api.aws")
+    )
+
+
+class BedrockEndpointUrl(BaseModel):
+    """An Amazon Bedrock endpoint MOSAIC reaches with a Bedrock API key (ADR 0024)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    host: str
+    region: str
+
+    @classmethod
+    def parse(cls, value: str) -> "BedrockEndpointUrl":
+        candidate = value.strip()
+        try:
+            parts = urlsplit(candidate)
+            port = parts.port
+        except ValueError:
+            raise ValueError(f"Expected {_BEDROCK_ENDPOINT_FORM}") from None
+        host = (parts.hostname or "").casefold().rstrip(".")
+        if (
+            parts.scheme.casefold() != "https"
+            or parts.username is not None
+            or parts.password is not None
+            or port is not None
+            or parts.query
+            or parts.fragment
+        ):
+            raise ValueError(
+                f"Expected {_BEDROCK_ENDPOINT_FORM}, over https with no port, query or fragment"
+            )
+        region = bedrock_region(host)
+        if region is None:
+            raise ValueError(
+                "MOSAIC reaches AWS Bedrock through its regional runtime endpoint, which serves "
+                f"the Anthropic Messages API. Expected {_BEDROCK_ENDPOINT_FORM}"
+            )
+        if parts.path.rstrip("/").casefold() not in _BEDROCK_BASE_PATHS:
+            raise ValueError(
+                f"Paste the endpoint without an operation path. Expected {_BEDROCK_ENDPOINT_FORM}"
+            )
+        return cls(host=host, region=region)
+
+    @property
+    def origin(self) -> str:
+        return f"https://{self.host}"
+
+    @property
+    def slug(self) -> str:
+        """The host as one lowercase name, such as ``bedrock-runtime-us-east-1``."""
+
+        service = self.host.split(".", 1)[0]
+        return f"{service}-{self.region}"
 
 
 class MosaicModel(BaseModel):
@@ -761,6 +851,9 @@ class ModelProvider(StrEnum):
     AZURE_OPENAI = "azureOpenAi"
     AZURE_AI_FOUNDRY = "azureAiFoundry"
     OPENAI_COMPATIBLE = "openAiCompatible"
+    # Amazon Bedrock's Anthropic Messages API, reached with a Bedrock API key. MOSAIC serves it only
+    # as a member of a model pool (ADR 0024).
+    AWS_BEDROCK = "awsBedrock"
 
 
 class ApiShape(StrEnum):
@@ -966,8 +1059,12 @@ def _unset(value: object) -> bool:
 
 
 # Deployment names become literal operation paths and a pinned request model in the gateway policy,
-# so they are held to the characters Azure deployment names use.
+# so they are held to the characters Azure deployment names use. A Bedrock model ID, which is what
+# a Bedrock endpoint declares in a deployment's place, can also hold colons, as in ``...-v1:0``. It
+# never reaches an operation path: MOSAIC serves Bedrock only through a pool, whose policy writes
+# it into the request as a string literal.
 DEPLOYMENT_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+BEDROCK_MODEL_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$")
 _MODEL_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,119}$")
 _MODEL_VERSION_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 MAX_DECLARED_DEPLOYMENTS = 50
@@ -978,7 +1075,8 @@ class DeclaredDeployment(MosaicModel):
 
     Foundry lists a resource's deployments only to a Microsoft Entra token, and an API key can't
     read them (ADR 0018), so these are what the administrator says is deployed. MOSAIC publishes a
-    declared deployment with the shape declared for it, and never presents it as discovered.
+    declared deployment with the shape declared for it, and never presents it as discovered. On an
+    AWS Bedrock endpoint the deployment name is the Bedrock model ID requests are sent to.
     """
 
     deployment_name: str
@@ -999,10 +1097,10 @@ class DeclaredDeploymentCreate(MosaicModel):
     @classmethod
     def validate_deployment_name(cls, value: str) -> str:
         value = value.strip()
-        if not DEPLOYMENT_NAME_PATTERN.fullmatch(value):
+        if not BEDROCK_MODEL_ID_PATTERN.fullmatch(value):
             raise ValueError(
                 "A deployment name is up to 64 letters, digits, periods, hyphens and underscores, "
-                "starting with a letter or digit"
+                "starting with a letter or digit. A Bedrock model ID can also have colons"
             )
         return value
 
@@ -1034,9 +1132,12 @@ def shape_fits_provider(shape: str, provider: str) -> bool:
     """Whether a resource of this kind serves an API shape at all.
 
     Every Azure AI resource serves the Azure OpenAI routes. Only a Foundry (AI Services) resource
-    serves the Foundry Models routes and the Anthropic Messages API.
+    serves the Foundry Models routes and the Anthropic Messages API. MOSAIC reaches AWS Bedrock
+    only through its Anthropic Messages API.
     """
 
+    if provider == ModelProvider.AWS_BEDROCK:
+        return shape == ApiShape.ANTHROPIC_MESSAGES
     if shape == ApiShape.AZURE_OPENAI:
         return provider in {ModelProvider.AZURE_OPENAI, ModelProvider.AZURE_AI_FOUNDRY}
     return provider == ModelProvider.AZURE_AI_FOUNDRY
@@ -1051,16 +1152,27 @@ def validate_declarations(
         raise ValueError(f"Declare at most {MAX_DECLARED_DEPLOYMENTS} deployments per endpoint")
     seen: set[str] = set()
     for declaration in declarations:
-        key = declaration.deployment_name.casefold()
-        if key in seen:
-            raise ValueError(f"Deployment {declaration.deployment_name} is declared twice")
-        seen.add(key)
-        if not shape_fits_provider(declaration.api_shape, provider):
+        name = declaration.deployment_name
+        if name.casefold() in seen:
+            raise ValueError(f"Deployment {name} is declared twice")
+        seen.add(name.casefold())
+        if provider != ModelProvider.AWS_BEDROCK and not DEPLOYMENT_NAME_PATTERN.fullmatch(name):
             raise ValueError(
-                f"An Azure OpenAI resource serves only the Azure OpenAI API, so "
-                f"{declaration.deployment_name} can't use the Foundry Models or Anthropic Messages "
-                "API. Register the Foundry resource's services.ai.azure.com endpoint instead."
+                f"{name} isn't an Azure deployment name, which is up to 64 letters, digits, "
+                "periods, hyphens and underscores, starting with a letter or digit"
             )
+        if shape_fits_provider(declaration.api_shape, provider):
+            continue
+        if provider == ModelProvider.AWS_BEDROCK:
+            raise ValueError(
+                f"MOSAIC reaches AWS Bedrock only through its Anthropic Messages API, so {name} "
+                "has to be declared with the Anthropic Messages API"
+            )
+        raise ValueError(
+            f"An Azure OpenAI resource serves only the Azure OpenAI API, so {name} can't use the "
+            "Foundry Models or Anthropic Messages API. Register the Foundry resource's "
+            "services.ai.azure.com endpoint instead."
+        )
     return declarations
 
 
@@ -1070,8 +1182,10 @@ class ModelEndpoint(Entity):
     Azure endpoints are identified by resource ID and read with MOSAIC's managed identity. An Azure
     endpoint MOSAIC can't reach that way, such as one in another Microsoft Entra tenant, can be
     identified by URL instead and authenticated with an API key held in Key Vault; its deployments
-    are declared rather than read (ADR 0018). OpenAI-compatible endpoints are identified by URL and
-    read with a key MOSAIC resolves from Key Vault at call time; only the secret URI is ever stored.
+    are declared rather than read (ADR 0018). An AWS Bedrock endpoint is identified by its regional
+    host and reached the same way, with a Bedrock API key and declared model IDs (ADR 0024).
+    OpenAI-compatible endpoints are identified by URL and read with a key MOSAIC resolves from Key
+    Vault at call time; only the secret URI is ever stored.
     """
 
     entity_type: Literal["modelEndpoint"] = "modelEndpoint"
@@ -1095,7 +1209,7 @@ class ModelEndpoint(Entity):
     # Set when MOSAIC wrote the key into its own Key Vault because an administrator gave it the key
     # (ADR 0021). MOSAIC then replaces the key on request and deletes the secret with the endpoint.
     key_stored_by_mosaic: bool = Field(default=False, exclude_if=_unset)
-    # Authored by administrators, and only on an Azure endpoint registered with an API key.
+    # Authored by administrators, and only on an endpoint registered with an API key.
     declared_deployments: list[DeclaredDeployment] = Field(
         default_factory=list, exclude_if=_unset
     )
@@ -1108,12 +1222,19 @@ class ModelEndpoint(Entity):
     last_sync_error: str | None = None
 
     def uses_backend_key(self) -> bool:
-        """Whether this is an Azure endpoint MOSAIC and its gateways reach with an API key."""
+        """Whether MOSAIC and its gateways reach this endpoint with an API key from Key Vault.
+
+        An Azure endpoint registered by URL, or an AWS Bedrock endpoint. An OpenAI-compatible
+        endpoint has a key too, but MOSAIC never publishes it.
+        """
 
         return (
             self.auth_mode == EndpointAuthMode.API_KEY
             and self.provider != ModelProvider.OPENAI_COMPATIBLE
         )
+
+    def is_bedrock(self) -> bool:
+        return self.provider == ModelProvider.AWS_BEDROCK
 
     def declared(self, deployment_name: str) -> DeclaredDeployment | None:
         return next(
@@ -1577,6 +1698,8 @@ class EntitlementResourceKind(StrEnum):
     MCP_SERVER = "mcpServer"
     MODEL_DEPLOYMENT = "modelDeployment"
     PRODUCT = "product"
+    # One model a model pool offers. Its scope is the pool (ADR 0024).
+    POOL_MODEL = "poolModel"
 
 
 class EntitlementSubject(MosaicModel):
@@ -1597,7 +1720,8 @@ class EntitlementResource(MosaicModel):
 
     ``modelApi`` and ``mcpServer`` name desired-state records that carry their own gateway.
     ``product`` and ``modelDeployment`` name observed records, which are scoped to the gateway or
-    model endpoint MOSAIC read them from, so those require ``scope_id``.
+    model endpoint MOSAIC read them from, so those require ``scope_id``. ``poolModel`` names one
+    model in a model pool, and its ``scope_id`` names the pool.
     """
 
     kind: EntitlementResourceKind
@@ -1611,6 +1735,8 @@ class EntitlementResource(MosaicModel):
                 f"A {self.kind} entitlement needs scopeId naming the gateway or model endpoint "
                 "it was observed on"
             )
+        if self.kind == "poolModel" and not self.scope_id:
+            raise ValueError("A poolModel entitlement needs scopeId naming its model pool")
         return self
 
 
@@ -1959,6 +2085,8 @@ class AdminAccessRequestListItem(AccessRequest):
 class CatalogEntryKind(StrEnum):
     MODEL_API = "modelApi"
     MCP_SERVER = "mcpServer"
+    # One model a model pool offers (ADR 0024). The pool's endpoints and members aren't shown.
+    POOL_MODEL = "poolModel"
 
 
 class CatalogEntry(MosaicModel):
@@ -1966,11 +2094,14 @@ class CatalogEntry(MosaicModel):
 
     Deliberately narrower than the administrator's view of the same record: a portal user has no
     business seeing gateway internals, policy state, or how the resource was detected. A model API
-    or MCP server MOSAIC publishes is an entry only while its API is in API Management.
+    or MCP server MOSAIC publishes is an entry only while its API is in API Management. A pool
+    model is an entry only while its pool serves it.
     """
 
     kind: CatalogEntryKind
     id: str
+    # The pool, for a pool model: a request for it names the pool as its resource's scope.
+    scope_id: str | None = None
     display_name: str
     summary: str | None = None
     gateway_id: str
@@ -1986,6 +2117,11 @@ class CatalogEntry(MosaicModel):
     # when MOSAIC publishes the server and has applied its access, False for an adopted server or
     # a published one whose latest apply didn't finish. None for other kinds.
     enforced: bool | None = None
+    # Pool models only: the API the model is called with, such as ``anthropicMessages``, and its
+    # capacity, when the pool shows it and MOSAIC knows what every active deployment behind the
+    # model is. ``provisionedWithOverflow`` means some are provisioned and the rest pay-as-you-go.
+    api_style: ApiShape | None = None
+    capacity: Literal["provisioned", "payAsYouGo", "provisionedWithOverflow"] | None = None
 
 
 class PortalResolvedEntitlement(ResolvedEntitlement):
@@ -2093,6 +2229,8 @@ class PublishedResourceKind(StrEnum):
 
     NAMED_VALUE = "namedValue"
     BACKEND = "backend"
+    # A load-balanced pool over several member backends. Only model pools write them (ADR 0024).
+    BACKEND_POOL = "backendPool"
     POLICY_FRAGMENT = "policyFragment"
     API = "api"
     API_OPERATION = "apiOperation"
@@ -2273,6 +2411,92 @@ class McpAccessSnapshot(MosaicModel):
     # MCP servers carry no tokens, so their pools count calls only.
     pools: list[AppliedCostCenterPool] = Field(default_factory=list)
     model_caller: McpModelCaller | None = Field(default=None, exclude_if=_unset)
+
+
+class PoolAccessGrant(MosaicModel):
+    """One grant compiled into a model pool's policy: a subject's access to one pool model.
+
+    Like :class:`ModelAccessGrant`, except for its key. A direct grant's key is shared: there's one
+    per subject, pool, and cost center, and it serves every model the subject holds directly in
+    the pool under that cost center (ADR 0024).
+    """
+
+    entitlement_id: str
+    pool_model_id: str
+    subject: EntitlementSubject
+    # The caller's object ID for a direct grant; the group's object ID for a security-group grant,
+    # which the gateway matches against the caller token's ``groups`` claim.
+    object_id: str
+    display_name: str
+    # The subscription that is the grant's key, from ``model_pools.pool_key_name``. None exactly
+    # when the subject is a security group: a group grant authorizes Entra tokens only.
+    key_name: str | None = None
+    enabled: bool
+    enforcement: EntitlementEnforcement | None = None
+    intent_digest: str
+    cost_center_id: str = ""
+    cost_center_code: str = ""
+    # Whether this is a direct grant under its subject's default cost center. A call that names no
+    # cost center uses it before the subject's other grants for the model, which go oldest first.
+    default_cost_center: bool = False
+    granted_at: datetime | None = None
+    # False when the grant's cost center turned keys off. The gateway then refuses the key for
+    # this grant's model.
+    keys_allowed: bool = True
+    # True when the grant was revoked because its subject left the cost center.
+    revoked: bool = False
+
+    @model_validator(mode="after")
+    def enforceable_subject_only(self) -> Self:
+        if self.subject.kind == EntitlementSubjectKind.GROUP:
+            raise ValueError(
+                "MOSAIC groups are not enforced at runtime; grant an Entra security group instead"
+            )
+        if self.subject.kind == EntitlementSubjectKind.SECURITY_GROUP:
+            if self.key_name is not None:
+                raise ValueError("A security-group grant has no key")
+        elif not self.key_name:
+            raise ValueError("A direct grant needs its key's name")
+        return self
+
+    @property
+    def is_group_grant(self) -> bool:
+        return self.subject.kind == EntitlementSubjectKind.SECURITY_GROUP
+
+
+class PoolModelQuota(AppliedCostCenterPool):
+    """A cost center's pooled monthly quota on one pool model, exactly as an apply compiled it.
+
+    Every grant under the cost center on the model draws on it, counted per cost center and pool
+    model.
+    """
+
+    pool_model_id: str
+
+
+class PoolAccessSnapshot(MosaicModel):
+    """The grants a model pool's policy enforces, exactly as an apply compiled them."""
+
+    version: int = Field(ge=1)
+    settings: ModelAccessSettings
+    audience: str | None = None
+    # False when the pool's API shape can't be token-metered on its gateway's tier. Such a
+    # snapshot carries no token policies, so none of its grants carry token limits.
+    token_metering: bool = True
+    grants: list[PoolAccessGrant] = Field(default_factory=list)
+    quotas: list[PoolModelQuota] = Field(default_factory=list)
+
+    def grants_for(self, pool_model_id: str) -> list[PoolAccessGrant]:
+        return [grant for grant in self.grants if grant.pool_model_id == pool_model_id]
+
+    def key_grants(self) -> dict[str, list[PoolAccessGrant]]:
+        """The direct grants each key serves, by key name."""
+
+        keys: dict[str, list[PoolAccessGrant]] = {}
+        for grant in self.grants:
+            if grant.key_name is not None:
+                keys.setdefault(grant.key_name, []).append(grant)
+        return keys
 
 
 class Publication(Entity):
@@ -2667,7 +2891,9 @@ class ModelEndpointCreate(MosaicModel):
     URI. An Azure OpenAI or Foundry URL with one is registered as a key-authenticated Azure
     endpoint (ADR 0018): the alternative for a resource MOSAIC's managed identity can't reach, such
     as one in another Microsoft Entra tenant. Its ``deployments`` are declared, because an API key
-    can't list them. Any other URL is an OpenAI-compatible endpoint.
+    can't list them. An AWS Bedrock endpoint, chosen with ``provider``, is registered the same way,
+    with a Bedrock API key and the model IDs to pool (ADR 0024). Any other URL is an
+    OpenAI-compatible endpoint.
 
     ``api_key`` takes the key itself, instead of a secret URI, for an administrator who can't put it
     in Key Vault: MOSAIC writes it into its own Key Vault and keeps only the secret's identifier
@@ -2693,8 +2919,9 @@ class ModelEndpointCreate(MosaicModel):
         default=None,
         exclude=True,
         description=(
-            "An Azure OpenAI or Foundry resource's API key, which MOSAIC stores in its own Key "
-            "Vault. Give this or credentialSecretUri, not both. It is never returned."
+            "An Azure OpenAI or Foundry resource's API key, or an AWS Bedrock API key, which "
+            "MOSAIC stores in its own Key Vault. Give this or credentialSecretUri, not both. It "
+            "is never returned."
         ),
     )
     deployments: list[DeclaredDeploymentCreate] | None = Field(
@@ -2717,10 +2944,12 @@ class ModelEndpointCreate(MosaicModel):
     def validate_identification(self) -> Self:
         if not self.azure_resource_id and not self.endpoint:
             raise ValueError(
-                "Provide an Azure resource ID for an Azure AI endpoint, or a URL for an "
-                "OpenAI-compatible endpoint"
+                "Provide an Azure resource ID for an Azure AI endpoint, or a URL for an AWS "
+                "Bedrock or OpenAI-compatible endpoint"
             )
         if self.azure_resource_id:
+            if self.provider == ModelProvider.AWS_BEDROCK:
+                raise ValueError("Register an AWS Bedrock endpoint by its URL")
             if self.deployments:
                 raise ValueError(
                     "MOSAIC reads the deployments of an endpoint registered by resource ID, so "
@@ -2731,6 +2960,27 @@ class ModelEndpointCreate(MosaicModel):
                     "MOSAIC reaches an endpoint registered by resource ID with its managed "
                     "identity, so it takes no API key"
                 )
+            return self
+        # A Bedrock host also serves OpenAI-compatible routes, so the host alone doesn't choose
+        # Bedrock. A key or declared model IDs do: an OpenAI-compatible endpoint takes neither.
+        if self.provider is None and (
+            is_bedrock_host(urlsplit(str(self.endpoint)).hostname)
+            and (self.api_key is not None or bool(self.deployments))
+        ):
+            self.provider = ModelProvider.AWS_BEDROCK
+        if self.provider == ModelProvider.AWS_BEDROCK:
+            if self.credential_secret_uri is None and self.api_key is None:
+                raise ValueError(
+                    "Give the Bedrock API key, or the Key Vault secret URI that holds it"
+                )
+            if self.credential_secret_uri is not None and self.api_key is not None:
+                raise ValueError(
+                    "Give the API key, or the Key Vault secret URI that holds it, not both"
+                )
+            BedrockEndpointUrl.parse(str(self.endpoint))
+            if self.credential_secret_uri is not None:
+                KeyVaultSecretId.parse(str(self.credential_secret_uri))
+            validate_declarations(self.deployments or [], self.provider)
             return self
         azure_host = azure_ai_host_suffix(urlsplit(str(self.endpoint)).hostname) is not None
         azure_provider = self.provider in {
@@ -2763,13 +3013,14 @@ class ModelEndpointCreate(MosaicModel):
             return self
         if self.deployments:
             raise ValueError(
-                "Deployments can be declared only for an Azure OpenAI or Foundry endpoint "
-                "registered with an API key"
+                "Deployments can be declared only for an endpoint MOSAIC reaches with an API key: "
+                "an Azure OpenAI or Foundry resource, or AWS Bedrock"
             )
         if self.api_key is not None:
             raise ValueError(
-                "MOSAIC stores an API key itself only for an Azure OpenAI or Foundry resource. "
-                "Give an OpenAI-compatible endpoint the Key Vault secret URI that holds its key"
+                "MOSAIC stores an API key itself only for an Azure OpenAI or Foundry resource, or "
+                "for AWS Bedrock. Give an OpenAI-compatible endpoint the Key Vault secret URI that "
+                "holds its key"
             )
         self.provider = ModelProvider.OPENAI_COMPATIBLE
         if self.credential_secret_uri is None:
@@ -3166,9 +3417,10 @@ class PublishPlan(Entity):
 
     entity_type: Literal["publishPlan"] = "publishPlan"
     publication_id: str
-    # Which kind of publication ``publication_id`` names. Plans saved before MCP publishing
-    # existed are model plans.
-    target: Literal["model", "mcp"] = "model"
+    # Which kind of publication ``publication_id`` names: a model publication, an MCP
+    # publication, or a model pool (ADR 0024). Plans saved before MCP publishing existed are model
+    # plans.
+    target: Literal["model", "mcp", "pool"] = "model"
     # What running the plan does. A publish plan writes the publication's resources and is run by
     # apply; an unpublish plan deletes the ones MOSAIC created and is run by unpublish, and neither
     # route runs the other's. Plans saved before unpublishing was planned are publish plans.
@@ -3182,6 +3434,8 @@ class PublishPlan(Entity):
     actor_object_id: str | None = None
     access_snapshot: ModelAccessSnapshot | None = None
     mcp_access_snapshot: McpAccessSnapshot | None = None
+    # A governed model pool's reviewed grants (ADR 0024).
+    pool_access_snapshot: PoolAccessSnapshot | None = None
     previous_access_version: int | None = None
 
 
@@ -3203,7 +3457,7 @@ class PublishRun(Entity):
     publication_id: str
     # Which kind of publication ``publication_id`` names; runs saved before MCP publishing existed
     # are model runs. Each publishing service reaps and recovers only its own runs.
-    target: Literal["model", "mcp"] = "model"
+    target: Literal["model", "mcp", "pool"] = "model"
     gateway_id: str
     plan_id: str
     plan_digest: str
@@ -3218,6 +3472,7 @@ class PublishRun(Entity):
     actor_object_id: str | None = None
     access_snapshot: ModelAccessSnapshot | None = None
     mcp_access_snapshot: McpAccessSnapshot | None = None
+    pool_access_snapshot: PoolAccessSnapshot | None = None
 
 
 class PublicationCreate(MosaicModel):
@@ -3304,6 +3559,18 @@ class ConnectionOperation(MosaicModel):
     path: str
 
 
+class KeySharedModel(MosaicModel):
+    """Another model in a pool that a grant's key also unlocks (ADR 0024).
+
+    A pool key serves every model its subject holds directly in the pool under one cost center,
+    so rotating or deleting it affects each of them.
+    """
+
+    pool_model_id: str
+    display_name: str
+    public_name: str
+
+
 class ModelConnection(MosaicModel):
     entitlement_id: str
     publication_id: str
@@ -3345,6 +3612,18 @@ class ModelConnection(MosaicModel):
     # False when the cost center turned keys off. Keys work only when the publication accepts keys
     # and the cost center allows them.
     keys_allowed_by_cost_center: bool = True
+    # Set for a grant on a pool model (ADR 0024). ``publication_id`` is then the pool's ID,
+    # ``deployment_name`` is the model name callers send, and ``publication_limits`` is the
+    # pool's safeguard on the model, which every caller of the model shares.
+    pool_id: str | None = None
+    pool_name: str | None = None
+    pool_model_id: str | None = None
+    # The pool's other models this grant's key unlocks, as the pool's last apply enforces them.
+    key_shared_with: list[KeySharedModel] = Field(default_factory=list)
+    # False when the gateway's tier can't count this model's tokens, so no token limit applies.
+    # A pool model's ``publication_limits`` is also None when its pool has no safeguard, so this
+    # tells the two apart.
+    token_metering: bool = True
 
 
 class McpConnection(MosaicModel):
@@ -3416,6 +3695,10 @@ class GrantKey(MosaicModel):
     cost_center: CostCenterRef | None = None
     # The slot a rotation regenerated.
     rotated: Literal["primary", "secondary"] | None = None
+    # Set for a pool model grant, whose key is shared: the pool, and its other models the key
+    # unlocks (ADR 0024).
+    pool_id: str | None = None
+    key_shared_with: list[KeySharedModel] = Field(default_factory=list)
 
 
 class PublishRecoveryRequest(MosaicModel):

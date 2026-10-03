@@ -52,13 +52,15 @@ from key_vault_double import (  # noqa: E402
     FakeKeyVaultArm,
     vault_role_assignment,
 )
-from loganalytics_double import FakeLogs, GatewayCall  # noqa: E402
+from loganalytics_double import FakeLogs, GatewayCall, PoolAttempt  # noqa: E402
 from mcp_double import FakeMcpServer  # noqa: E402
 
 __all__ = [
     "AI_RESOURCE_ID",
     "DEV_GATEWAY_RESOURCE_ID",
+    "FOUNDRY_NORTH_CENTRAL_RESOURCE_ID",
     "FOUNDRY_RESOURCE_ID",
+    "FOUNDRY_WEST_RESOURCE_ID",
     "GATEWAY_RESOURCE_ID",
     "KEY_VAULT_ID",
     "LOG_WORKSPACE_ID",
@@ -68,6 +70,7 @@ __all__ = [
     "DemoLogs",
     "DemoMcpServer",
     "FakeCredential",
+    "PoolMemberTraffic",
     "TrafficStream",
     "build_cognitive_accounts",
     "build_key_store",
@@ -96,6 +99,16 @@ PARTNER_GATEWAY_RESOURCE_ID = (
 FOUNDRY_RESOURCE_ID = (
     f"/subscriptions/{AI_SUBSCRIPTION_ID}/resourceGroups/rg-contoso-ai"
     "/providers/Microsoft.CognitiveServices/accounts/contoso-foundry"
+)
+# Two more Foundry resources, in other regions, that also serve Claude. The same model deployed on
+# several endpoints is what a pool puts behind one API (ADR 0024).
+FOUNDRY_NORTH_CENTRAL_RESOURCE_ID = (
+    f"/subscriptions/{AI_SUBSCRIPTION_ID}/resourceGroups/rg-contoso-ai"
+    "/providers/Microsoft.CognitiveServices/accounts/contoso-foundry-ncus"
+)
+FOUNDRY_WEST_RESOURCE_ID = (
+    f"/subscriptions/{AI_SUBSCRIPTION_ID}/resourceGroups/rg-contoso-ai"
+    "/providers/Microsoft.CognitiveServices/accounts/contoso-foundry-west"
 )
 
 _POLICY_TAIL = """
@@ -810,6 +823,21 @@ def _available(
 CHAT = {"chatCompletion": "true"}
 EMBEDDINGS = {"embeddings": "true"}
 
+
+def _claude(name: str, version: str, *, capacity: int) -> dict[str, Any]:
+    """A Claude deployment on a Foundry resource, named after its model as Foundry suggests."""
+
+    return _deployment(
+        name,
+        name,
+        version,
+        CHAT,
+        model_format="Anthropic",
+        publisher="Anthropic",
+        capacity=capacity,
+    )
+
+
 AOAI_DEPLOYMENTS = [
     _deployment("gpt-4o", "gpt-4o", "2024-11-20", CHAT, capacity=450),
     _deployment("gpt-4o-mini", "gpt-4o-mini", "2024-07-18", CHAT, capacity=900),
@@ -873,7 +901,19 @@ FOUNDRY_DEPLOYMENTS = [
         publisher="Cohere",
         capacity=1,
     ),
+    _claude("claude-opus-4-5", "20251101", capacity=250),
+    _claude("claude-sonnet-4-5", "20250929", capacity=500),
+    _claude("claude-haiku-4-5", "20251001", capacity=400),
 ]
+
+# Contoso's other Foundry resources serve Claude only. Opus is on all three and Sonnet on two.
+# Haiku is on two as well, but no pool serves it yet, so the Pools page suggests one.
+FOUNDRY_NORTH_CENTRAL_DEPLOYMENTS = [
+    _claude("claude-opus-4-5", "20251101", capacity=150),
+    _claude("claude-sonnet-4-5", "20250929", capacity=300),
+    _claude("claude-haiku-4-5", "20251001", capacity=200),
+]
+FOUNDRY_WEST_DEPLOYMENTS = [_claude("claude-opus-4-5", "20251101", capacity=150)]
 
 FOUNDRY_MODELS = [
     _available("Phi-4", "7", CHAT, model_format="Microsoft", kind="AIServices"),
@@ -882,6 +922,32 @@ FOUNDRY_MODELS = [
     _available("Llama-3.3-70B-Instruct", "5", CHAT, model_format="Meta", kind="AIServices"),
     _available(
         "Cohere-embed-v3-multilingual", "1", EMBEDDINGS, model_format="Cohere", kind="AIServices"
+    ),
+    _available("claude-opus-4-5", "20251101", CHAT, model_format="Anthropic", kind="AIServices"),
+    _available("claude-sonnet-4-5", "20250929", CHAT, model_format="Anthropic", kind="AIServices"),
+    _available("claude-haiku-4-5", "20251001", CHAT, model_format="Anthropic", kind="AIServices"),
+]
+
+# Every Azure AI account in Contoso's AI subscription, as a subscription scan lists them.
+SUBSCRIPTION_ACCOUNTS: list[tuple[str, str, str, str]] = [
+    (AI_RESOURCE_ID, "OpenAI", "eastus2", "https://contoso-aoai.openai.azure.com/"),
+    (
+        FOUNDRY_RESOURCE_ID,
+        "AIServices",
+        "eastus2",
+        "https://contoso-foundry.cognitiveservices.azure.com/",
+    ),
+    (
+        FOUNDRY_NORTH_CENTRAL_RESOURCE_ID,
+        "AIServices",
+        "northcentralus",
+        "https://contoso-foundry-ncus.cognitiveservices.azure.com/",
+    ),
+    (
+        FOUNDRY_WEST_RESOURCE_ID,
+        "AIServices",
+        "westus3",
+        "https://contoso-foundry-west.cognitiveservices.azure.com/",
     ),
 ]
 
@@ -898,11 +964,13 @@ class DemoCognitiveAccount(FakeCognitiveServices):
         deployments: list[dict[str, Any]],
         models: list[dict[str, Any]],
         runtime_role_id: str,
+        location: str = "eastus2",
     ) -> None:
         super().__init__(kind=kind)
         self.resource_id = resource_id
         self.account_name = resource_id.rsplit("/", 1)[-1]
         self.endpoint = endpoint
+        self.location = location
         self.deployments = deployments
         self.models = models
         # The gateway's managed identity can call the account, so runtime access reads "ready".
@@ -910,27 +978,28 @@ class DemoCognitiveAccount(FakeCognitiveServices):
         self.accounts_by_subscription = {
             AI_SUBSCRIPTION_ID: [
                 {
-                    "id": AI_RESOURCE_ID,
-                    "name": "contoso-aoai",
-                    "kind": "OpenAI",
-                    "location": "eastus2",
-                    "properties": {"endpoint": "https://contoso-aoai.openai.azure.com/"},
-                },
-                {
-                    "id": FOUNDRY_RESOURCE_ID,
-                    "name": "contoso-foundry",
-                    "kind": "AIServices",
-                    "location": "eastus2",
-                    "properties": {
-                        "endpoint": "https://contoso-foundry.cognitiveservices.azure.com/"
-                    },
-                },
+                    "id": account_id,
+                    "name": account_id.rsplit("/", 1)[-1],
+                    "kind": account_kind,
+                    "location": account_location,
+                    "properties": {"endpoint": account_endpoint},
+                }
+                for account_id, account_kind, account_location, account_endpoint in (
+                    SUBSCRIPTION_ACCOUNTS
+                )
             ]
         }
 
+    def owns(self, path: str) -> bool:
+        """Whether a request path is this account or beneath it, and not a longer-named sibling."""
+
+        path = path.casefold()
+        resource_id = self.resource_id.casefold()
+        return path == resource_id or path.startswith(f"{resource_id}/")
+
     def handler(self, request: httpx.Request) -> httpx.Response:
         path = request.url.path
-        if path.casefold().startswith(self.resource_id.casefold()):
+        if self.owns(path):
             # The base fake serves one fixed resource ID; present every account under it.
             request = httpx.Request(
                 request.method,
@@ -944,6 +1013,7 @@ class DemoCognitiveAccount(FakeCognitiveServices):
         account = super()._account()
         account["id"] = self.resource_id
         account["name"] = self.account_name
+        account["location"] = self.location
         account["properties"]["endpoint"] = self.endpoint
         return account
 
@@ -959,6 +1029,25 @@ def build_cognitive_accounts() -> list[DemoCognitiveAccount]:
             runtime_role_id=COGNITIVE_SERVICES_USER_ROLE_ID,
         ),
         DemoCognitiveAccount(
+            resource_id=FOUNDRY_NORTH_CENTRAL_RESOURCE_ID,
+            kind="AIServices",
+            endpoint="https://contoso-foundry-ncus.cognitiveservices.azure.com/",
+            deployments=FOUNDRY_NORTH_CENTRAL_DEPLOYMENTS,
+            models=FOUNDRY_MODELS,
+            runtime_role_id=COGNITIVE_SERVICES_USER_ROLE_ID,
+            location="northcentralus",
+        ),
+        DemoCognitiveAccount(
+            resource_id=FOUNDRY_WEST_RESOURCE_ID,
+            kind="AIServices",
+            endpoint="https://contoso-foundry-west.cognitiveservices.azure.com/",
+            deployments=FOUNDRY_WEST_DEPLOYMENTS,
+            models=FOUNDRY_MODELS,
+            runtime_role_id=COGNITIVE_SERVICES_USER_ROLE_ID,
+            location="westus3",
+        ),
+        # Last: requests no account owns, such as a subscription scan, fall back to it.
+        DemoCognitiveAccount(
             resource_id=AI_RESOURCE_ID,
             kind="OpenAI",
             endpoint="https://contoso-aoai.openai.azure.com/",
@@ -973,9 +1062,8 @@ def cognitive_handler(accounts: list[DemoCognitiveAccount]) -> Any:
     fallback = accounts[-1]
 
     def handle(request: httpx.Request) -> httpx.Response:
-        path = request.url.path.casefold()
         for account in accounts:
-            if path.startswith(account.resource_id.casefold()):
+            if account.owns(request.url.path):
                 return account.handler(request)
         return fallback.handler(request)
 
@@ -1240,6 +1328,24 @@ def log_every_call(apim: DemoApim) -> None:
 
 
 @dataclass(frozen=True)
+class PoolMemberTraffic:
+    """A pool member a stream's calls can land on, and how the pool's attempt trace names it.
+
+    The gateway logs ``backend`` as the one that served a call. The attempt trace names
+    ``traced_backend``, the model's backend pool for a member reached with the managed identity,
+    with the ``host`` and ``path`` the attempt was sent to. ``throttle_rate`` is how often the
+    member answers 429 to a call the pool then sends to another member.
+    """
+
+    backend: str
+    weight: int = 1
+    traced_backend: str = ""
+    host: str = ""
+    path: str = ""
+    throttle_rate: float = 0.0
+
+
+@dataclass(frozen=True)
 class TrafficStream:
     """A steady flow of calls from one caller to one API, as the gateway would log them.
 
@@ -1275,12 +1381,18 @@ class TrafficStream:
     denial: str = ""
     error_rate: float = 0.004
     backend_throttle_rate: float = 0.0
+    # A pool's members. Each call that reaches a backend lands on one of them, as the pool's load
+    # balancer spreads calls by weight.
+    members: tuple[PoolMemberTraffic, ...] = ()
+    # The pool model the calls ask for. The pool's policy traces it with every attempt.
+    pool_model: str = ""
     # An MCP stream whose server calls models as an application (ADR 0025): ``model_caller`` is
     # the application's object ID, which the MCP call's trace names beside its own reference, and
-    # ``model_calls`` the shape of the model calls the server makes while serving a tool call,
-    # passing the reference on. ``model_call_share`` is how many tool calls use a model.
+    # ``model_calls`` the shapes of the model calls the server makes while serving a tool call,
+    # passing the reference on, each weighted by how often a tool picks it. A shape with
+    # ``members`` calls a pool model. ``model_call_share`` is how many tool calls use a model.
     model_caller: str = ""
-    model_calls: "TrafficStream | None" = None
+    model_calls: tuple[tuple["TrafficStream", int], ...] = ()
     model_call_share: float = 1.0
 
 
@@ -1304,12 +1416,40 @@ def _tokens(rng: random.Random, mean: int) -> int:
     return max(1, round(rng.gauss(mean, mean * 0.35))) if mean else 0
 
 
+def _attempts(
+    rng: random.Random, stream: TrafficStream, served: PoolMemberTraffic, status: int
+) -> list[PoolAttempt]:
+    """The attempts a pool's policy traced for one call, ending on the member that served it.
+
+    A member that throttles answers some calls 429 first, and the pool sends them on.
+    """
+
+    def attempt(member: PoolMemberTraffic, code: int) -> PoolAttempt:
+        return PoolAttempt(
+            model=stream.pool_model,
+            backend=member.traced_backend or member.backend,
+            status=code,
+            host=member.host,
+            path=member.path,
+        )
+
+    attempts = [
+        attempt(member, 429)
+        for member in stream.members
+        if member is not served and member.throttle_rate and rng.random() < member.throttle_rate
+    ]
+    attempts.append(attempt(served, status))
+    return attempts
+
+
 def stream_calls(stream: TrafficStream, day: date, today: date) -> list[GatewayCall]:
     """One day of a stream's calls: the same calls every time for the same stream and day."""
 
     if (stream.since and day < stream.since) or (stream.until and day > stream.until):
         return []
     rng = random.Random(f"{stream.name}|{day.isoformat()}")
+    # Attempts draw from a generator of their own, so tracing them leaves the calls the same.
+    attempt_rng = random.Random(f"{stream.name}|{day.isoformat()}|attempts")
     # Model calls an MCP server makes draw on their own generator, so every stream's own calls
     # stay the same whether or not its server calls models.
     tools = random.Random(f"{stream.name}|{day.isoformat()}|tools")
@@ -1380,6 +1520,15 @@ def stream_calls(stream: TrafficStream, day: date, today: date) -> list[GatewayC
         total = max(40, round(stream.latency_ms * rng.lognormvariate(0, 0.45)))
         if backend == 0:
             total = quick
+        backend_id = ""
+        attempts: list[PoolAttempt] = []
+        # Only a pool's calls draw a member, so every other stream's calls stay the same.
+        if stream.members and backend:
+            weights = [member.weight for member in stream.members]
+            served = rng.choices(stream.members, weights=weights)[0]
+            backend_id = served.backend
+            if stream.pool_model:
+                attempts = _attempts(attempt_rng, stream, served, backend)
         call = GatewayCall(
             time=time,
             api=stream.api,
@@ -1397,8 +1546,10 @@ def stream_calls(stream: TrafficStream, day: date, today: date) -> list[GatewayC
             completion_tokens=completion if metered and admitted else None,
             deployment=stream.deployment if metered and admitted else None,
             model=stream.model if metered and admitted else None,
+            backend_id=backend_id,
+            attempts=attempts,
         )
-        if admitted and stream.model_calls is not None and stream.model_caller:
+        if admitted and stream.model_calls and stream.model_caller:
             calls.extend(_served_model_calls(stream, call, tools))
         else:
             calls.append(call)
@@ -1413,15 +1564,23 @@ def _served_model_calls(
     The gateway gives every call to such a server its own reference. A tool that uses a model
     passes it on, as the server's application, so the model calls run while the MCP call does.
     Now and then one passes on a reference no MCP call has, or calls after its MCP call ended, so
-    the rollup has a reference it can't use to count. These draw on their own ``rng``, so the MCP
-    calls themselves stay as they were.
+    the rollup has a reference it can't use to count. A pool model's calls land on the members
+    the pool picks, as its other calls do. These draw on their own ``rng``, so the MCP calls
+    themselves stay as they were.
     """
 
-    shape = stream.model_calls
     reference = str(uuid.UUID(int=rng.getrandbits(128), version=4))
     mcp = replace(mcp_call, reference=reference, model_caller=stream.model_caller)
-    if shape is None or rng.random() >= stream.model_call_share:
+    # A tool only calls a model once the server's application holds a grant on it.
+    day = mcp.time.date()
+    shapes = [
+        (shape, weight)
+        for shape, weight in stream.model_calls
+        if not (shape.since and day < shape.since) and not (shape.until and day > shape.until)
+    ]
+    if not shapes or rng.random() >= stream.model_call_share:
         return [mcp]
+    shape = rng.choices([shape for shape, _ in shapes], weights=[weight for _, weight in shapes])[0]
     served: list[GatewayCall] = []
     offset = rng.randint(80, 400)
     for _ in range(rng.choice((1, 1, 1, 2))):
@@ -1433,6 +1592,14 @@ def _served_model_calls(
             passed = str(uuid.UUID(int=rng.getrandbits(128), version=4))
         elif roll < 0.025:
             start = mcp.time + timedelta(minutes=8)
+        backend_id = ""
+        attempts: list[PoolAttempt] = []
+        if shape.members:
+            weights = [member.weight for member in shape.members]
+            member = rng.choices(shape.members, weights=weights)[0]
+            backend_id = member.backend
+            if shape.pool_model:
+                attempts = _attempts(rng, shape, member, 200)
         served.append(
             GatewayCall(
                 time=start,
@@ -1446,6 +1613,8 @@ def _served_model_calls(
                 completion_tokens=_tokens(rng, shape.completion_tokens),
                 deployment=shape.deployment,
                 model=shape.model,
+                backend_id=backend_id,
+                attempts=attempts,
             )
         )
         offset += latency + rng.randint(40, 200)

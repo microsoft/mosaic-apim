@@ -391,6 +391,10 @@ class FakeApim:
         self.named_value_status: dict[str, str] = {}
         # Every call that would have returned a named value's secret. MOSAIC must never make one.
         self.list_value_calls: list[str] = []
+        # Resources a test adds to the estate a sync reads, beside the fixed ones. Each API is its
+        # definition, its operations, and its policy, or None when it has no policy.
+        self.extra_backends: list[dict[str, Any]] = []
+        self.extra_apis: list[tuple[dict[str, Any], list[dict[str, Any]], str | None]] = []
 
     def fail_once(self, path_suffix: str, status_code: int) -> None:
         self.failures[path_suffix] = status_code
@@ -667,6 +671,12 @@ class FakeApim:
         scope = properties.get("scope")
         if isinstance(scope, str) and scope.casefold().startswith(RESOURCE_ID.casefold()):
             named.append(scope[len(RESOURCE_ID) :].strip("/"))
+        pool = properties.get("pool")
+        services = pool.get("services") if isinstance(pool, dict) else None
+        for service in services if isinstance(services, list) else []:
+            member = service.get("id") if isinstance(service, dict) else None
+            if isinstance(member, str) and member.casefold().startswith(RESOURCE_ID.casefold()):
+                named.append(member[len(RESOURCE_ID) :].strip("/"))
         self.dangling_references.extend(
             (suffix, reference) for reference in named if not self._exists(reference)
         )
@@ -866,7 +876,7 @@ class FakeApim:
             "groups/developers/users": lambda: self._collection(
                 [{"name": "user-ada", "properties": {}}]
             ),
-            "backends": lambda: self._collection(self._backends()),
+            "backends": lambda: self._collection([*self._backends(), *self.extra_backends]),
             "namedValues": lambda: self._collection(self._named_values()),
             "policyFragments": lambda: self._collection(
                 [{"name": "mosaic-rate-standard", "properties": {"description": "MOSAIC"}}]
@@ -875,8 +885,24 @@ class FakeApim:
         }
         route = routes.get(suffix)
         if route is None:
+            extra = self._extra_api_route(suffix)
+            if extra is not None:
+                return extra
             return httpx.Response(404, json={"error": {"message": f"no route for {suffix}"}})
         return route()
+
+    def _extra_api_route(self, suffix: str) -> httpx.Response | None:
+        for definition, operations, policy in self.extra_apis:
+            prefix = f"apis/{definition['name']}"
+            if suffix == prefix:
+                return httpx.Response(200, json=definition)
+            if suffix == f"{prefix}/operations":
+                return self._collection(operations)
+            if suffix == f"{prefix}/policies/policy":
+                if policy is None:
+                    return httpx.Response(404, json={"error": {"message": "policy not found"}})
+                return self._policy(policy)
+        return None
 
     @staticmethod
     def _collection(values: list[dict[str, Any]]) -> httpx.Response:
@@ -924,7 +950,9 @@ class FakeApim:
                     ),
                 },
             )
-        return httpx.Response(200, json={"value": [echo, mcp]})
+        return httpx.Response(
+            200, json={"value": [echo, mcp, *(api for api, _, _ in self.extra_apis)]}
+        )
 
     @staticmethod
     def _api_definitions() -> list[dict[str, Any]]:

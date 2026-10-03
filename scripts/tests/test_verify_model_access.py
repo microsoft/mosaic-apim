@@ -115,7 +115,16 @@ PUBLICATIONS = {
         "/models/chat/completions",
     ),
     "claude": ("/claude", "claude-haiku-4-5", "messages", "/anthropic/v1/messages"),
+    # A model pool's API (ADR 0024). Callers send the model's name in the pool, whichever member
+    # serves the call.
+    "pool": (
+        "/mosaic/pool-openai",
+        "gpt-4o",
+        "chat-completions",
+        "/openai/deployments/gpt-4o/chat/completions",
+    ),
 }
+POOL_MODEL = "pool-model-gpt-4o"
 
 
 def without(*names: str) -> dict[str, str]:
@@ -319,10 +328,15 @@ class FakeWorld:
         return httpx.Response(404)
 
     def entitlement(self, grant: FakeGrant) -> dict[str, Any]:
+        resource = (
+            {"kind": "poolModel", "id": POOL_MODEL, "scopeId": grant.publication}
+            if grant.publication == "pool"
+            else {"kind": "modelApi", "id": grant.publication}
+        )
         return {
             "id": grant.id,
             "subject": {"kind": grant.kind, "id": f"principal-{grant.oid}"},
-            "resource": {"kind": "modelApi", "id": grant.publication},
+            "resource": resource,
         }
 
     def usage(self) -> dict[str, Any]:
@@ -382,7 +396,7 @@ class FakeWorld:
         keys_available = grant.keys_available
         if keys_available is None:
             keys_available = keys_enabled
-        return {
+        connection: dict[str, Any] = {
             "entitlementId": grant.id,
             "publicationId": grant.publication,
             "principalKind": principal_kind,
@@ -406,6 +420,16 @@ class FakeWorld:
             "publicationLimits": self.publication_limits,
             "grantLimits": grant.limits,
         }
+        if grant.publication == "pool":
+            # A pool model's grant also names its pool and model, but never the pool's members.
+            connection |= {
+                "poolId": grant.publication,
+                "poolModelId": POOL_MODEL,
+                "poolName": None,
+                "keySharedWith": [],
+                "tokenMetering": True,
+            }
+        return connection
 
     def gateway(self, request: httpx.Request) -> httpx.Response:
         name = next(
@@ -820,6 +844,30 @@ class ModelAccessVerifierTests(unittest.TestCase):
         self.assertIn("PASS: the end user can't retrieve an application grant's key", out)
         self.assertIn("Live checks passed for 4 grant(s)", out)
         self.assertNotIn("SKIP", out)
+        self.assert_nothing_secret(world, out + err)
+
+    def test_a_pool_model_grant_is_checked_like_any_other(self) -> None:
+        # A grant on a pool model (ADR 0024) uses the same routes, connection and key as any grant.
+        # Its calls go to the pool's API and name the model's name in the pool, never a member.
+        world = FakeWorld(
+            FakeGrant("user-pool", "user", "pool", USER_OID),
+            FakeGrant("app-pool", "application", "pool", APP_OID),
+        )
+        code, out, err = self.verify(
+            world,
+            ["--user-entitlement", "user-pool", "--application-entitlement", "app-pool"],
+        )
+        self.assertEqual(code, 0, err)
+        for label in ("User grant 1 (gpt-4o)", "Application grant 1 (gpt-4o)"):
+            self.assertIn(f"PASS: {label} reached the model with its key", out)
+            self.assertIn(f"PASS: {label} reached the model with its Entra token", out)
+        self.assertIn("Live checks passed for 2 grant(s)", out)
+        self.assertNotIn("SKIP", out)
+        pool_path, _, _, operation_path = PUBLICATIONS["pool"]
+        self.assertTrue(world.model_calls)
+        for call in world.model_calls:
+            self.assertEqual(call.url.path, pool_path + operation_path)
+            self.assertEqual(json.loads(call.content)["model"], "gpt-4o")
         self.assert_nothing_secret(world, out + err)
 
     def test_a_grant_without_a_key_gets_one_before_its_key_is_read(self) -> None:

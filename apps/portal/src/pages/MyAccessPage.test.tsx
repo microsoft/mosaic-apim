@@ -457,6 +457,37 @@ describe('MyAccessPage', () => {
     expect(api.revealMyEntitlementKey).not.toHaveBeenCalled()
   })
 
+  it('shows a grant on a model served behind one API as a model, with connection details', async () => {
+    const api = renderPage([
+      {
+        entitlement: {
+          ...baseEntitlement,
+          id: 'served-model-grant',
+          subject: { kind: 'user', id: 'user-1' },
+          resource: { kind: 'poolModel', id: 'pool_model_opus', scopeId: 'pool_anthropic' },
+        },
+        resourceSummary: {
+          ...baseSummary,
+          kind: 'poolModel',
+          id: 'pool_model_opus',
+          scopeId: 'pool_anthropic',
+          displayName: 'Claude Opus',
+        },
+        via: 'direct',
+        viaGroupId: null,
+        viaGroupName: null,
+        resourceDisplayName: 'Claude Opus',
+      },
+    ])
+
+    expect(await screen.findByRole('heading', { level: 2, name: 'Claude Opus' })).toBeVisible()
+    expect(screen.getByText('Model · Granted directly to you')).toBeVisible()
+    expect(screen.getByText(/^Model and gateway limits may also apply\./)).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Connection details' })).toHaveAttribute('aria-expanded', 'false')
+    expect(api.getMyEntitlementConnection).not.toHaveBeenCalled()
+    expect(document.body).not.toHaveTextContent(/\bpools?\b|pool_anthropic|pool_model_opus/i)
+  })
+
   it.each([
     ['pending', 'APIM changes pending'],
     ['applying', 'Applying to APIM'],

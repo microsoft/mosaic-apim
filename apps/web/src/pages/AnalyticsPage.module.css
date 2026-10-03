@@ -44,6 +44,12 @@
   font-weight: 600;
 }
 
+/* Chromium sizes a grouped option with an indent, which widened the resource filter enough to push
+   the header onto another row. The filter fits the chosen option instead. */
+.resourceControl select {
+  field-sizing: content;
+}
+
 .exportStatus {
   margin-bottom: 18px;
   color: var(--mosaic-text-muted);

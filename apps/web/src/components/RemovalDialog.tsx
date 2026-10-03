@@ -16,16 +16,16 @@ import type { ReactNode } from 'react'
 import { ApiError } from '../api'
 import styles from './RemovalDialog.module.css'
 
-interface BlockingPublication {
+interface BlockingRecord {
   id: string
   displayName: string
   status: string
 }
 
-/** The publications a server refusal names, when it names any. */
-function blockingPublications(error: unknown): BlockingPublication[] {
+/** The records of one kind a server refusal names, when it names any. */
+function blockingRecords(error: unknown, kind: 'publications' | 'modelPools'): BlockingRecord[] {
   if (!(error instanceof ApiError)) return []
-  const listed = error.body?.details?.publications
+  const listed = error.body?.details?.[kind]
   if (!Array.isArray(listed)) return []
   return listed.flatMap((item: unknown) => {
     if (typeof item !== 'object' || item === null) return []
@@ -65,7 +65,8 @@ export function RemovalDialog({
   onCancel: () => void
 }) {
   const textId = useId('removal-dialog-')
-  const blocking = blockingPublications(error)
+  const blocking = blockingRecords(error, 'publications')
+  const blockingPools = blockingRecords(error, 'modelPools')
 
   return (
     <Dialog
@@ -97,6 +98,18 @@ export function RemovalDialog({
                   {blocking.map((publication) => (
                     <li key={publication.id}>
                       {publication.displayName} ({statusLabel(publication.status)})
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {blockingPools.length > 0 && (
+              <div className={styles.content}>
+                <Text weight="semibold">Take it out of these model pools first</Text>
+                <ul className={styles.list} aria-label="Model pools blocking removal">
+                  {blockingPools.map((pool) => (
+                    <li key={pool.id}>
+                      {pool.displayName} ({statusLabel(pool.status)})
                     </li>
                   ))}
                 </ul>

@@ -6,13 +6,33 @@ import { EmptyState, ErrorState, Loading } from '../components/AsyncState'
 import { EnvironmentBadge } from '../components/EnvironmentBadge'
 import { PageHeader } from '../components/PageHeader'
 import {
+  apiStyleLabel,
+  capacityLabel,
+  isModelResource,
   requestStateLabel,
   resourceFromCatalog,
   resourceKindLabel,
   sameResource,
 } from '../entitlement-format'
 import { usePortalEnvironments } from '../environments'
-import type { CatalogEntry, PortalCostCenter, PortalEnvironment, PortalResourceKind } from '../types'
+import type { CatalogEntry, PortalCostCenter, PortalEnvironment } from '../types'
+
+type KindFilter = 'all' | 'model' | 'mcpServer'
+
+function matchesKind(entry: CatalogEntry, filter: KindFilter) {
+  if (filter === 'all') return true
+  return filter === 'model' ? isModelResource(entry.kind) : entry.kind === filter
+}
+
+function entryDescription(entry: CatalogEntry) {
+  return [
+    resourceKindLabel(entry.kind),
+    entry.apiStyle ? apiStyleLabel(entry.apiStyle) : null,
+    entry.gatewayName ?? 'Gateway not available',
+  ]
+    .filter((part): part is string => part !== null)
+    .join(' · ')
+}
 
 function environmentOptions(entries: CatalogEntry[], environments: PortalEnvironment[] | undefined) {
   const present = new Set(entries.map((entry) => entry.environment).filter((key): key is string => key !== null))
@@ -167,20 +187,24 @@ function CatalogEnforcementBadge({ entry }: { entry: CatalogEntry }) {
   )
 }
 
+function CatalogCapacityBadge({ entry }: { entry: CatalogEntry }) {
+  if (!entry.capacity) return null
+  return <Badge appearance="outline">{capacityLabel(entry.capacity)}</Badge>
+}
+
 export function CatalogPage() {
   const api = usePortalApi()
   const catalog = useQuery({ queryKey: ['portal', 'catalog'], queryFn: api.listCatalog })
   const environments = usePortalEnvironments()
   const [environmentFilter, setEnvironmentFilter] = useState('all')
-  const [kindFilter, setKindFilter] = useState<'all' | PortalResourceKind>('all')
+  const [kindFilter, setKindFilter] = useState<KindFilter>('all')
   const filteredCatalog = useMemo(() => {
     if (!catalog.data) return []
     return catalog.data.filter((entry) => {
       const matchesEnvironment =
         environmentFilter === 'all' ||
         (environmentFilter === 'unclassified' ? entry.environment === null : entry.environment === environmentFilter)
-      const matchesKind = kindFilter === 'all' || entry.kind === kindFilter
-      return matchesEnvironment && matchesKind
+      return matchesEnvironment && matchesKind(entry, kindFilter)
     })
   }, [catalog.data, environmentFilter, kindFilter])
   const filterOptions = useMemo(
@@ -196,7 +220,7 @@ export function CatalogPage() {
     <>
       <PageHeader
         title="Catalog"
-        description="Model APIs and MCP servers published for portal users. Request access when a resource is not already granted."
+        description="Models and MCP servers published for portal users. Request access when a resource is not already granted."
       />
       {catalog.isLoading && <Loading label="Loading catalog" />}
       {catalog.isError && <ErrorState error={catalog.error} />}
@@ -237,7 +261,7 @@ export function CatalogPage() {
                 onChange={(event) => setKindFilter(event.currentTarget.value as typeof kindFilter)}
               >
                 <option value="all">All types</option>
-                <option value="modelApi">Model APIs</option>
+                <option value="model">Models</option>
                 <option value="mcpServer">MCP servers</option>
               </select>
             </label>
@@ -253,7 +277,7 @@ export function CatalogPage() {
                 <Card key={`${entry.kind}:${entry.id}`} className="catalog-card">
                   <CardHeader
                     header={<h2>{entry.displayName}</h2>}
-                    description={`${resourceKindLabel(entry.kind)} · ${entry.gatewayName ?? 'Gateway not available'}`}
+                    description={entryDescription(entry)}
                     action={
                       entry.requestState && entry.requestState !== 'pending' ? (
                         <Badge appearance="tint">{requestStateLabel(entry.requestState)}</Badge>
@@ -266,6 +290,7 @@ export function CatalogPage() {
                       environments={environments.data}
                     />
                     <CatalogEnforcementBadge entry={entry} />
+                    <CatalogCapacityBadge entry={entry} />
                   </div>
                   <Text>{entry.summary ?? 'No summary provided.'}</Text>
                   <CatalogAction entry={entry} />

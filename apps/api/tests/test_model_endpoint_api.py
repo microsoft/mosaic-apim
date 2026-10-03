@@ -139,8 +139,12 @@ class TestModelEndpointApi:
             f"/api/v1/model-endpoints/{endpoint_id}/deployments"
         )
         assert deployments.status_code == 200
-        names = [item["deploymentName"] for item in deployments.json()]
-        assert "gpt-4o-prod" in names
+        by_name = {item["deploymentName"]: item for item in deployments.json()}
+        assert "gpt-4o-prod" in by_name
+        chat = by_name["gpt-4o-prod"]
+        assert chat["capacityType"] == "payAsYouGo"
+        assert chat["processingScope"] == "regional"
+        assert chat["spilloverDeploymentName"] is None
 
     def test_available_models_endpoint(self, endpoint_client: TestClient) -> None:
         created = _register(endpoint_client)

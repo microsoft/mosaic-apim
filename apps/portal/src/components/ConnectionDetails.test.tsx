@@ -27,6 +27,10 @@ import {
   messagesUrl,
   modelClientId,
   persistedText,
+  poolConnection,
+  poolEndpoint,
+  poolMessagesUrl,
+  poolResolved,
   responsesUrl,
   revealedPrimary,
   securityGroupConnection,
@@ -754,6 +758,87 @@ describe('ConnectionDetails', () => {
     expect(within(limits).getByText(/share this grant's limits/)).toHaveTextContent(
       /^Your primary key, secondary key, and Entra tokens share this grant's limits\.$/,
     )
+  })
+
+  describe('a model several endpoints serve behind one API', () => {
+    it('names the model to send, never how it is served', async () => {
+      const user = userEvent.setup()
+      renderDetails(poolResolved)
+      await openDetails(user, poolConnection)
+
+      const endpointSection = section('Endpoint')
+      expect(fact(endpointSection, 'Base URL')).toHaveTextContent(poolEndpoint)
+      expect(fact(endpointSection, 'Model')).toHaveTextContent(/^claude-opus-4-5$/)
+      expect(within(endpointSection).queryByText('Deployment', { selector: 'dt' })).not.toBeInTheDocument()
+      expect(within(endpointSection).getByRole('listitem')).toHaveTextContent(`POST${poolMessagesUrl}messages`)
+      const [curl] = samples()
+      expect(curl).toContain(`curl "${poolMessagesUrl}" \\`)
+      expect(curl).toContain('"model": "claude-opus-4-5"')
+      // Nothing a person reads says the model is pooled, or names the pool, its key, or its parts.
+      expect(document.body).not.toHaveTextContent(/\bpools?\b/i)
+      for (const internal of ['pool_anthropic', 'pool_model_opus', 'mosaic-pool-key']) {
+        expect(document.body.innerHTML).not.toContain(internal)
+      }
+    })
+
+    it("shows the model's shared limit as the model's, not a publication's", async () => {
+      const user = userEvent.setup()
+      renderDetails(poolResolved)
+      await openDetails(user, poolConnection)
+
+      const limits = section('Limits')
+      expect(fact(limits, 'Model limits')).toHaveTextContent(/^400,000 tokens per minute$/)
+      expect(within(limits).queryByText('Publication limits', { selector: 'dt' })).not.toBeInTheDocument()
+      expect(limits).toHaveTextContent(
+        'Model limits are shared by everyone who calls this model, and are counted separately.',
+      )
+      expect(limits).not.toHaveTextContent('Publication limits apply')
+    })
+
+    it('says when the model has no shared token limit', async () => {
+      const user = userEvent.setup()
+      renderDetails(poolResolved)
+      await openDetails(user, { ...poolConnection, publicationLimits: null })
+
+      const limits = section('Limits')
+      expect(fact(limits, 'Model limits')).toHaveTextContent(/^No model token limit configured$/)
+      expect(limits).not.toHaveTextContent('shared by everyone')
+    })
+
+    it("says when the gateway's tier can't count the model's tokens", async () => {
+      const user = userEvent.setup()
+      renderDetails(poolResolved)
+      await openDetails(user, { ...poolConnection, publicationLimits: null, tokenMetering: false })
+
+      expect(fact(section('Limits'), 'Model limits')).toHaveTextContent(
+        /^Token limits are unavailable for this model on this gateway's tier$/,
+      )
+    })
+
+    it('says which other models the key works for', async () => {
+      const user = userEvent.setup()
+      renderDetails(poolResolved)
+      await openDetails(user, poolConnection)
+
+      expect(screen.getByText(/This key also works for/)).toHaveTextContent(
+        'This key also works for Claude Sonnet, which you hold under the same cost center. Rotating or deleting it affects them too.',
+      )
+    })
+
+    it('asks for an API version the model supports', async () => {
+      const user = userEvent.setup()
+      renderDetails(poolResolved)
+      await openDetails(user, {
+        ...poolConnection,
+        endpoint,
+        deploymentName: 'gpt-4o',
+        apiShape: 'azureOpenAi',
+        operations: [connection.operations[0]],
+      })
+
+      expect(screen.getByText(/Samples use placeholders/)).toHaveTextContent('an API version the model supports')
+      expect(screen.getByText(/Samples use placeholders/)).not.toHaveTextContent('your deployment')
+    })
   })
 
   it.each([

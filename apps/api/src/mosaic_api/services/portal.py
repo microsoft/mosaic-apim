@@ -12,12 +12,19 @@ Management's error text for a failed apply stays on the administrator routes, fo
 :func:`~mosaic_api.services.model_access.portal_runtime` gives.
 
 Grants and requests are named the way the catalog names the resource, and the names are resolved
-here rather than joined against the catalog in the browser: the catalog lists only the model APIs
-and MCP servers currently published to it, while a grant or a request can be for one an
-administrator has since made private or unpublished, or for a product or model deployment, which it
-never lists.
+here rather than joined against the catalog in the browser: the catalog lists only the model APIs,
+MCP servers, and pool models currently published to it, while a grant or a request can be for one
+an administrator has since made private or unpublished, or for a product or model deployment, which
+it never lists.
+
+A pool model is shown as a model, never as part of a pool: users see its name, its gateway's
+environment, the API it's called with, and its capacity badge, but not the pool, its endpoints,
+their regions, or its deployments (ADR 0024).
 """
 
+from typing import Literal
+
+from mosaic_api.deployment_capacity import CapacityType
 from mosaic_api.domain import (
     AccessRequest,
     AccessRequestCreate,
@@ -31,10 +38,21 @@ from mosaic_api.domain import (
     PublicationStatus,
     ResolvedEntitlement,
 )
-from mosaic_api.repositories import DirectoryRepository, GatewayRepository
+from mosaic_api.model_pools import ModelPool, PoolModel, capacity_label
+from mosaic_api.observed import ObservedModelDeployment
+from mosaic_api.repositories import (
+    DirectoryRepository,
+    GatewayRepository,
+    ModelEndpointRepository,
+)
 from mosaic_api.services.directory import Actor
 from mosaic_api.services.entitlements import EntitlementService, GovernedRecords
 from mosaic_api.services.model_access import portal_entitlement
+from mosaic_api.services.pool_access import pool_model_listed, pool_model_offered
+
+# What inventory says about each endpoint's deployments, by endpoint ID and then by casefolded
+# deployment name, read once for one catalog. None for an endpoint that's no longer registered.
+_Inventory = dict[str, dict[str, ObservedModelDeployment] | None]
 
 
 class PortalService:
@@ -44,10 +62,13 @@ class PortalService:
         *,
         directory_repository: DirectoryRepository,
         gateway_repository: GatewayRepository,
+        endpoint_repository: ModelEndpointRepository | None = None,
     ) -> None:
         self._entitlements = entitlements
         self._directory = directory_repository
         self._gateways = gateway_repository
+        # Only a pool model's capacity badge reads inventory. Without it, the catalog shows none.
+        self._endpoints = endpoint_repository
 
     async def profile(self, actor: Actor, *, roles: list[str], is_admin: bool) -> PortalProfile:
         principal = await self._directory.find_principal_by_object_id(
@@ -181,6 +202,12 @@ class PortalService:
                 and mcp_server.gateway_id in gateways
             ):
                 visible[("mcpServer", mcp_server.id, "")] = True
+        for pool in (await records.model_pools()).values():
+            if pool.gateway_id not in gateways:
+                continue
+            for model in pool.models:
+                if pool_model_listed(pool, model.id):
+                    visible[("poolModel", model.id, pool.id)] = True
         return visible
 
     async def catalog(self, actor: Actor) -> list[CatalogEntry]:
@@ -196,6 +223,9 @@ class PortalService:
         resource whose gateway was removed is left out. A caller who already holds a grant, or has
         asked, still sees it on My access or My requests, marked as no longer available, and
         publishing it again brings it back under the same ID with its grants and catalog settings.
+
+        A pool model is an entry under the same rules: only while an administrator lists it and
+        its pool, the pool governs access, and its gateway serves the model.
         """
 
         records = self._entitlements.governed_records(actor.tenant_id)
@@ -278,5 +308,75 @@ class PortalService:
                     enforced=enforced,
                 )
             )
+        inventory: _Inventory = {}
+        for pool in (await records.model_pools()).values():
+            gateway = gateways.get(pool.gateway_id)
+            if gateway is None:
+                continue
+            for model in pool.models:
+                if not pool_model_listed(pool, model.id) or not pool_model_offered(
+                    pool, model.id
+                ):
+                    continue
+                key = ("poolModel", model.id)
+                entries.append(
+                    CatalogEntry(
+                        kind=CatalogEntryKind.POOL_MODEL,
+                        id=model.id,
+                        scope_id=pool.id,
+                        display_name=model.display_name,
+                        # Never the pool's description: it may name the regions or endpoints
+                        # behind the model, which users aren't shown.
+                        summary=None,
+                        gateway_id=pool.gateway_id,
+                        gateway_name=gateway.name,
+                        environment=gateway.environment,
+                        entitled=key in entitled,
+                        request_state=open_requests.get(key),
+                        entitled_cost_center_ids=sorted(entitled_under.get(key, set())),
+                        requested_cost_center_ids=sorted(requested_under.get(key, set())),
+                        api_style=pool.api_shape,
+                        capacity=await self._capacity(actor.tenant_id, pool, model, inventory),
+                    )
+                )
         entries.sort(key=lambda item: (item.display_name.casefold(), item.id))
         return entries
+
+    async def _capacity(
+        self, tenant_id: str, pool: ModelPool, model: PoolModel, inventory: _Inventory
+    ) -> Literal["provisioned", "payAsYouGo", "provisionedWithOverflow"] | None:
+        """The capacity badge a pool model carries, read from inventory as the console reads it.
+
+        None when the pool hides capacity, and when MOSAIC can't tell what one of the model's
+        active deployments is, such as one that's no longer observed: no badge rather than a wrong
+        one.
+        """
+
+        if not pool.show_capacity or self._endpoints is None:
+            return None
+        kinds: set[CapacityType] = set()
+        for member in model.active_members():
+            if member.model_endpoint_id not in inventory:
+                inventory[member.model_endpoint_id] = await self._deployments(
+                    tenant_id, member.model_endpoint_id
+                )
+            deployments = inventory[member.model_endpoint_id]
+            deployment = (
+                deployments.get(member.deployment_name.casefold())
+                if deployments is not None
+                else None
+            )
+            kinds.add(deployment.capacity_type if deployment is not None else CapacityType.UNKNOWN)
+        label = capacity_label(kinds)
+        return None if label == "unknown" else label
+
+    async def _deployments(
+        self, tenant_id: str, endpoint_id: str
+    ) -> dict[str, ObservedModelDeployment] | None:
+        assert self._endpoints is not None
+        if await self._endpoints.get_endpoint(tenant_id, endpoint_id) is None:
+            return None
+        observed = await self._endpoints.list_observed_for_endpoint(
+            ObservedModelDeployment, tenant_id, endpoint_id, "observedModelDeployment"
+        )
+        return {item.deployment_name.casefold(): item for item in observed}
