@@ -190,8 +190,9 @@ CLAIMS_TRIAGE = Person(
     "Claims triage function", "c2fbc41d-f6b8-4d9a-8f2a-3b4c5d6e7f80", "managedIdentity"
 )
 DOCS_INDEXER = Person("Docs indexer", "d3acd52e-a7c9-4eab-9a3b-4c5d6e7f8091", "managedIdentity")
-# The managed identity the Docs Search MCP server runs as. Its tools call GPT-4o mini as it, on its
-# own grant, for the people who called the server. See ADR 0025.
+# The managed identity the Docs Search MCP server runs as. Its tools call GPT-4o mini, and Claude
+# Sonnet through the Anthropic pool, as it, on its own grants, for the people who called the
+# server. See ADR 0025.
 DOCS_SEARCH_SERVICE = Person(
     "Docs Search service", "f6a7b8c9-d0e1-4f23-8a45-b6c7d8e9f0a1", "managedIdentity"
 )
@@ -1730,8 +1731,8 @@ async def seed_estate(services: DemoServices, tenant_id: str) -> Estate:
         {approved: timedelta(days=52), denied: timedelta(days=33), prototype: timedelta(days=16)},
     )
     # Contoso began granting Claude five weeks ago. Megan's two grants share one key under CI-204,
-    # the market research agent calls Opus with its own token, and every agent builder may call
-    # Sonnet with theirs.
+    # the market research agent calls Opus with its own token, every agent builder may call
+    # Sonnet with theirs, and the Docs Search server's tools draft longer answers with Sonnet.
     await grant(PORTAL_USER, "poolModel", sonnet, scope_id=claude_pool.id)
     await grant(
         PORTAL_USER,
@@ -1750,6 +1751,15 @@ async def seed_estate(services: DemoServices, tenant_id: str) -> Estate:
         scope_id=claude_pool.id,
     )
     await grant(AGENT_BUILDERS, "poolModel", sonnet, scope_id=claude_pool.id)
+    await grant(
+        DOCS_SEARCH_SERVICE,
+        "poolModel",
+        sonnet,
+        EntitlementEnforcement(tokens=_tokens(per_minute=40_000)),
+        "The Docs Search MCP server's answer tool drafts longer answers.",
+        cost_center="general",
+        scope_id=claude_pool.id,
+    )
     claude_granted_at = utc_now() - timedelta(days=35)
     repository = services.entitlement_repository
     for entitlement_id, entitlement in list(repository.entitlements.items()):
@@ -1948,16 +1958,36 @@ async def traffic_streams(
         return TrafficStream(name=name, api=api, subscription=subscription, **shape)
 
     # The model calls the Docs Search server's tools make as its managed identity, passing on each
-    # MCP call's reference, so MOSAIC counts them for the person who called. See ADR 0025.
+    # MCP call's reference, so MOSAIC counts them for the person who called. Most summarize with
+    # GPT-4o mini, and one in four drafts a longer answer with Claude Sonnet, through the pool. See
+    # ADR 0025.
     served = {
         "model_caller": DOCS_SEARCH_SERVICE.object_id,
-        "model_calls": granted(
-            "docs-search-model",
-            DOCS_SEARCH_SERVICE,
-            gpt4o_mini,
-            client_app=DOCS_SEARCH_SERVICE.object_id,
-            per_day=0,
-            **chat("gpt-4o-mini", 1700, 260, 1100),
+        "model_calls": (
+            (
+                granted(
+                    "docs-search-model",
+                    DOCS_SEARCH_SERVICE,
+                    gpt4o_mini,
+                    client_app=DOCS_SEARCH_SERVICE.object_id,
+                    per_day=0,
+                    **chat("gpt-4o-mini", 1700, 260, 1100),
+                ),
+                3,
+            ),
+            (
+                granted(
+                    "docs-search-claude",
+                    DOCS_SEARCH_SERVICE,
+                    sonnet,
+                    client_app=DOCS_SEARCH_SERVICE.object_id,
+                    per_day=0,
+                    members=members[sonnet],
+                    pool_model=sonnet,
+                    **chat("claude-sonnet-4-5", 2400, 700, 3600),
+                ),
+                1,
+            ),
         ),
     }
 

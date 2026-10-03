@@ -1388,10 +1388,11 @@ class TrafficStream:
     pool_model: str = ""
     # An MCP stream whose server calls models as an application (ADR 0025): ``model_caller`` is
     # the application's object ID, which the MCP call's trace names beside its own reference, and
-    # ``model_calls`` the shape of the model calls the server makes while serving a tool call,
-    # passing the reference on. ``model_call_share`` is how many tool calls use a model.
+    # ``model_calls`` the shapes of the model calls the server makes while serving a tool call,
+    # passing the reference on, each weighted by how often a tool picks it. A shape with
+    # ``members`` calls a pool model. ``model_call_share`` is how many tool calls use a model.
     model_caller: str = ""
-    model_calls: "TrafficStream | None" = None
+    model_calls: tuple[tuple["TrafficStream", int], ...] = ()
     model_call_share: float = 1.0
 
 
@@ -1548,7 +1549,7 @@ def stream_calls(stream: TrafficStream, day: date, today: date) -> list[GatewayC
             backend_id=backend_id,
             attempts=attempts,
         )
-        if admitted and stream.model_calls is not None and stream.model_caller:
+        if admitted and stream.model_calls and stream.model_caller:
             calls.extend(_served_model_calls(stream, call, tools))
         else:
             calls.append(call)
@@ -1563,15 +1564,23 @@ def _served_model_calls(
     The gateway gives every call to such a server its own reference. A tool that uses a model
     passes it on, as the server's application, so the model calls run while the MCP call does.
     Now and then one passes on a reference no MCP call has, or calls after its MCP call ended, so
-    the rollup has a reference it can't use to count. These draw on their own ``rng``, so the MCP
-    calls themselves stay as they were.
+    the rollup has a reference it can't use to count. A pool model's calls land on the members
+    the pool picks, as its other calls do. These draw on their own ``rng``, so the MCP calls
+    themselves stay as they were.
     """
 
-    shape = stream.model_calls
     reference = str(uuid.UUID(int=rng.getrandbits(128), version=4))
     mcp = replace(mcp_call, reference=reference, model_caller=stream.model_caller)
-    if shape is None or rng.random() >= stream.model_call_share:
+    # A tool only calls a model once the server's application holds a grant on it.
+    day = mcp.time.date()
+    shapes = [
+        (shape, weight)
+        for shape, weight in stream.model_calls
+        if not (shape.since and day < shape.since) and not (shape.until and day > shape.until)
+    ]
+    if not shapes or rng.random() >= stream.model_call_share:
         return [mcp]
+    shape = rng.choices([shape for shape, _ in shapes], weights=[weight for _, weight in shapes])[0]
     served: list[GatewayCall] = []
     offset = rng.randint(80, 400)
     for _ in range(rng.choice((1, 1, 1, 2))):
@@ -1583,6 +1592,14 @@ def _served_model_calls(
             passed = str(uuid.UUID(int=rng.getrandbits(128), version=4))
         elif roll < 0.025:
             start = mcp.time + timedelta(minutes=8)
+        backend_id = ""
+        attempts: list[PoolAttempt] = []
+        if shape.members:
+            weights = [member.weight for member in shape.members]
+            member = rng.choices(shape.members, weights=weights)[0]
+            backend_id = member.backend
+            if shape.pool_model:
+                attempts = _attempts(rng, shape, member, 200)
         served.append(
             GatewayCall(
                 time=start,
@@ -1596,6 +1613,8 @@ def _served_model_calls(
                 completion_tokens=_tokens(rng, shape.completion_tokens),
                 deployment=shape.deployment,
                 model=shape.model,
+                backend_id=backend_id,
+                attempts=attempts,
             )
         )
         offset += latency + rng.randint(40, 200)

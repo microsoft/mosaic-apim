@@ -138,7 +138,7 @@ one under **Settings > Appearance**.
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/console-pool-access.png" alt="A governed pool's Who can call it card, with key and Entra sign-in switches, four grants listing each model, subject, cost center, and limits, and a cost center's pooled quota">
+      <img src="docs/images/screenshots/console-pool-access.png" alt="A governed pool's Who can call it card, with key and Entra sign-in switches, five grants listing each model, subject, cost center, and limits, and a cost center's pooled quota">
       <p><b>Who can call a pool.</b> A governed pool admits only callers granted one of its models,
       each charging a cost center and signing in with their own key or a Microsoft Entra token. The
       card lists the grants in force, their limits, and each cost center's pooled quota.</p>
@@ -379,13 +379,13 @@ one under **Settings > Appearance**.
       show when they used it.</p>
     </td>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/portal-usage-resources.png" alt="Each of a person's cost centers with this month's total, and each pooled resource's total against its quota, then their model use through MCP servers with the cost center each was charged to, then usage by resource with each grant's requests, tokens, estimated cost, quota use, busiest minute, and usage tracking">
+      <img src="docs/images/screenshots/portal-usage-resources.png" alt="Each of a person's cost centers with this month's total, and each       pooled resource's total against its quota, then their model use through MCP servers by model, with the cost center each was charged to, then usage by resource with each grant's requests, tokens, estimated cost, quota use, busiest minute, and usage tracking">
       <p><b>Cost centers and usage by resource.</b> Each cost center the person charges, with this
       month's total from everyone who charges it, and each pooled resource they hold there against
       its quota: totals only, never who used them. Then the model calls MCP servers made for them,
-      charged to each server's application grant, not to them. Below, their own figures by granted
-      resource, with each one's estimated cost, or <b>No price</b> and why, each quota's use, the
-      busiest minute against each rate limit, and how its calls are linked.</p>
+            by model, charged to each server's application grant, not to them. Below, their own figures
+            by granted resource, with each one's estimated cost, or <b>No price</b> and why, each quota's
+            use, the busiest minute against each rate limit, and how its calls are linked.</p>
     </td>
   </tr>
   <tr>

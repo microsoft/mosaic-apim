@@ -505,7 +505,7 @@ SHOTS: list[Shot] = [
             scroll_to_text("Who can call it", margin=110),
         ),
         # Tall enough to end just below the card, after the pooled quotas.
-        height=806,
+        height=867,
     ),
     Shot(
         "console-pool-health",
@@ -689,7 +689,7 @@ SHOTS: list[Shot] = [
         "dark",
         "Contoso Support Copilot",
         # Tall enough for the trend, the three rankings, and the gateway health below them.
-        height=1568,
+        height=1500,
     ),
     Shot(
         "console-analytics-cost",
@@ -698,7 +698,7 @@ SHOTS: list[Shot] = [
         "light",
         "Month-end forecast",
         # Tall enough for this month's spend, the trend, and the cost of each model and deployment.
-        height=1768,
+        height=1700,
     ),
     Shot(
         "console-pricing",
