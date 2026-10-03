@@ -34,6 +34,7 @@ from mosaic_api.domain import (
     McpPublicationCreate,
     McpPublicationUpdate,
     McpServer,
+    ModelAccessSettings,
     ModelApi,
     ModelProvider,
     Principal,
@@ -52,6 +53,7 @@ from mosaic_api.domain import (
     new_id,
 )
 from mosaic_api.errors import ConflictError, NotFoundError, ValidationError
+from mosaic_api.model_pools import ModelPool, PoolModel
 from mosaic_api.observed import ObservedApi
 from mosaic_api.repositories import (
     InMemoryCostCenterRepository,
@@ -1506,6 +1508,83 @@ async def test_the_plan_warns_when_the_model_caller_has_no_grant_through_this_ga
         )
         for warning in plan.warnings
     )
+
+
+async def _pool_grant(
+    harness: Harness, principal: Principal, gateway_id: str, *, governed: bool
+) -> None:
+    pool = ModelPool(
+        id=f"pool-{gateway_id}",
+        tenant_id=TENANT_ID,
+        gateway_id=gateway_id,
+        display_name="Anthropic",
+        vendor="Anthropic",
+        api_name="mosaic-pool-anthropic",
+        api_path="mosaic/pool-anthropic",
+        fragment_name="mosaic-pool-anthropic",
+        product_name="mosaic-pool-anthropic",
+        subscription_name="mosaic-pool-anthropic",
+        models=[
+            PoolModel(
+                id="pool-model-opus",
+                public_name="claude-opus-4-5",
+                display_name="Claude Opus 4.5",
+                backend_pool_name="mosaic-pool-anthropic-opus",
+            )
+        ],
+        governed_access=ModelAccessSettings() if governed else None,
+    )
+    await harness.gateway_repository.save_model_pool(
+        pool,
+        AuditEvent(
+            id=new_id("audit"),
+            tenant_id=TENANT_ID,
+            action="modelPool.saved",
+            resource_type="modelPool",
+            resource_id=pool.id,
+            actor_object_id=ACTOR.object_id,
+        ),
+    )
+    entitlement = Entitlement(
+        id=f"entitlement-pool-{gateway_id}",
+        tenant_id=TENANT_ID,
+        subject=EntitlementSubject(kind=EntitlementSubjectKind.APPLICATION, id=principal.id),
+        resource=EntitlementResource(
+            kind=EntitlementResourceKind.POOL_MODEL, id="pool-model-opus", scope_id=pool.id
+        ),
+    )
+    await harness.entitlement_repository.save_entitlement(
+        entitlement,
+        AuditEvent(
+            id=new_id("audit"),
+            tenant_id=TENANT_ID,
+            action="entitlement.saved",
+            resource_type="entitlement",
+            resource_id=entitlement.id,
+            actor_object_id=ACTOR.object_id,
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    ("where", "governed", "warned"),
+    [("here", True, False), ("here", False, True), ("elsewhere", True, True)],
+)
+async def test_a_grant_on_a_governed_pools_model_here_lets_the_model_caller_in(
+    harness: Harness, where: str, governed: bool, warned: bool
+) -> None:
+    publication_id = await harness.create()
+    app = await _search_app(harness)
+    gateway_id = harness.gateway_id if where == "here" else "gateway-elsewhere"
+    await _pool_grant(harness, app, gateway_id, governed=governed)
+    await harness.service.set_model_caller(
+        ACTOR, publication_id, McpModelCallerUpdate(principal_id=app.id)
+    )
+
+    plan = await harness.service.plan(ACTOR, publication_id)
+
+    # Only a governed pool's policy enforces grants and attributes the calls it lets in.
+    assert any("no enabled direct grant" in warning for warning in plan.warnings) is warned
 
 
 @pytest.mark.parametrize("change", ["deleted", "now a person"])

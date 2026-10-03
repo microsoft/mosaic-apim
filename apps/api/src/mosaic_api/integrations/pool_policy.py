@@ -31,6 +31,7 @@ from dataclasses import dataclass, replace
 
 from mosaic_api.domain import (
     COST_CENTER_HEADER,
+    ON_BEHALF_HEADER,
     ApiShape,
     EntitlementSubjectKind,
     PolicyFacet,
@@ -54,6 +55,7 @@ from mosaic_api.integrations.access_policy import (
     COST_CENTER_KEYS_OFF_DENIED,
     COST_CENTER_MISMATCH_DENIED,
     MAX_FRAGMENT_BYTES,
+    MCP_CALL,
     _code,
     _cost_center_ids,
     _credential_prelude,
@@ -79,7 +81,9 @@ from mosaic_api.integrations.access_policy import (
     classify_traces,
     cost_center_details,
     describe_limit_facet,
+    describe_on_behalf_removal,
     grant_counter_identity,
+    mcp_call_reference,
 )
 from mosaic_api.integrations.access_policy import _literal as _safe_literal
 from mosaic_api.integrations.apim.model_apis import OperationSpec, shape_operations
@@ -1138,7 +1142,12 @@ def _governed_fragment(
         with_caller=True,
         message="This operation is not available through governed access.",
     )
-    append_grant_attribution_trace(fragment, grants)
+    _variable(
+        fragment,
+        "mosaic-mcp-call",
+        mcp_call_reference(application_role) if settings.entra_enabled else "",
+    )
+    append_grant_attribution_trace(fragment, grants, keys=[("r", MCP_CALL, "mosaic-mcp-call")])
     _grant_limits(fragment, pool, grants, prefix=_COUNTER_PREFIX)
     _grant_token_limits(fragment, pool, grants, prefix=_COUNTER_PREFIX)
     _model_limits(fragment, pool, snapshot, routes=routes, grants=grants, safeguard=safeguard)
@@ -1148,6 +1157,7 @@ def _governed_fragment(
         "api-key",
         "Authorization",
         COST_CENTER_HEADER,
+        ON_BEHALF_HEADER,
         # A caller must not steer Azure's own overflow to a deployment it was never told about.
         "x-ms-spillover-deployment",
     )
@@ -1308,6 +1318,11 @@ def _governed_facets(
         elif facet.element == "set-query-parameter":
             name = facet.attributes.get("name", "subscription-key")
             facet.summary = f"Removes the {name} query parameter before forwarding."
+        elif (
+            facet.element == "set-header"
+            and facet.attributes.get("name", "").casefold() == ON_BEHALF_HEADER
+        ):
+            describe_on_behalf_removal(facet, "model")
         facets.append(facet)
     return facets, sorted(
         set(fragment_analysis.unrecognized_elements) | set(api_analysis.unrecognized_elements)

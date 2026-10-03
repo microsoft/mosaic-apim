@@ -467,6 +467,7 @@ _SELECTION = [
     "refuse budget-list",
     "refuse budget",
     "refuse operation",
+    "set mosaic-mcp-call",
     "attribution",
 ]
 _FORWARDING = [
@@ -474,6 +475,7 @@ _FORWARDING = [
     "set-header api-key delete",
     "set-header Authorization delete",
     "set-header x-mosaic-cost-center delete",
+    "set-header x-mosaic-on-behalf-of delete",
     "set-header x-ms-spillover-deployment delete",
     "set-query-parameter subscription-key delete",
 ]
@@ -1526,6 +1528,102 @@ def test_a_governed_pool_records_each_attempt_apart_from_who_was_let_in() -> Non
     assert (retry.findtext("trace/message") or "").startswith(
         f'@("{pool_policy.ATTEMPT_TRACE_PREFIX} m=" + '
     )
+
+
+# The wire format a Log Analytics source parses from TraceRecords, as a governed model API's.
+_ATTRIBUTION_MESSAGE = (
+    '@("mosaic-attribution v=1 g=" + (string)context.Variables["mosaic-grant"]'
+    ' + " m=" + (string)context.Variables["mosaic-member"]'
+    ' + " a=" + (string)context.Variables["mosaic-client"]'
+    ' + " r=" + (string)context.Variables["mosaic-mcp-call"])'
+)
+_ON_BEHALF = "x-mosaic-on-behalf-of"
+
+
+def _attribution(fragment: ET.Element) -> ET.Element:
+    (trace,) = [
+        element
+        for element in fragment
+        if element.tag == "trace" and "mosaic-attribution" in (element.findtext("message") or "")
+    ]
+    return trace
+
+
+def _mcp_call(fragment: ET.Element) -> ET.Element:
+    (variable,) = [
+        element
+        for element in fragment
+        if element.tag == "set-variable" and element.get("name") == "mosaic-mcp-call"
+    ]
+    return variable
+
+
+def test_a_pool_records_the_mcp_call_an_applications_model_call_names() -> None:
+    fragment = _fragment(_snapshot(_grant(1), _group_grant(2, model=MINI)))
+    children = list(fragment)
+    token = next(
+        index
+        for index, element in enumerate(children)
+        if element.find("when/validate-azure-ad-token") is not None
+    )
+    variable = _mcp_call(fragment)
+    trace = _attribution(fragment)
+
+    # The reference a governed model API records (ADR 0025), so a model call an MCP server makes
+    # through a pool for a person is that person's too. It's read once the token has validated
+    # and matched a grant, and before the trace records it.
+    assert variable.get("value") == access_policy.mcp_call_reference()
+    assert token < children.index(variable) < children.index(trace)
+    assert trace.findtext("message") == _ATTRIBUTION_MESSAGE
+    assert [item.get("name") for item in trace.findall("metadata")] == [
+        "mosaic-grant",
+        "mosaic-member",
+        "mosaic-client",
+        "mosaic-mcp-call",
+    ]
+    # A reference is recorded, never acted on: no condition reads it.
+    assert not any(
+        "mosaic-mcp-call" in when.get("condition", "") for when in fragment.iter("when")
+    )
+
+
+def test_a_pool_with_keys_only_records_no_mcp_call() -> None:
+    fragment = _fragment(_snapshot(_grant(1), entra=False))
+
+    assert _mcp_call(fragment).get("value") == ""
+    # Every pool call's message has the same keys, so the logs parse them alike.
+    assert _attribution(fragment).findtext("message") == _ATTRIBUTION_MESSAGE
+
+
+@pytest.mark.parametrize("keyed", [False, True], ids=["identity", "keyed"])
+@pytest.mark.parametrize("shape", _SHAPES)
+def test_the_on_behalf_header_never_reaches_a_member(shape: str, keyed: bool) -> None:
+    key = PoolTarget(GPT_BACKEND_POOL, "gpt-4o", key_named_value="mosaic-pool-key")
+    routes = [PoolRoute(GPT, "gpt-4o", (key,), 1)] if keyed else None
+    result = _render(_snapshot(_grant(1)), shape=shape, routes=routes)
+    fragment = ET.fromstring(result.fragment_xml)
+    children = list(fragment)
+
+    (header,) = [
+        element
+        for element in fragment.iter("set-header")
+        if element.get("name", "").casefold() == _ON_BEHALF
+    ]
+    # Removed from every call the pool lets in, once the trace has recorded it.
+    assert header.attrib == {"name": _ON_BEHALF, "exists-action": "delete"}
+    assert children.index(_attribution(fragment)) < children.index(header)
+    (removal,) = [
+        facet
+        for facet in result.facets
+        if facet.element == "set-header" and facet.attributes.get("name") == _ON_BEHALF
+    ]
+    assert removal.summary == f"Removes {_ON_BEHALF} before the call reaches the model."
+    attribution = next(
+        facet
+        for facet in result.facets
+        if facet.element == "trace" and "MOSAIC grant" in facet.summary
+    )
+    assert any(_ON_BEHALF in detail for detail in attribution.details)
 
 
 @pytest.mark.parametrize(
