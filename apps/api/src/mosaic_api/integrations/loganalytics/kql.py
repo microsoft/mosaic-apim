@@ -337,6 +337,75 @@ def _member_placement(pools: Mapping[str, PoolMembers]) -> dict[str, dict[str, s
     }
 
 
+def pool_health_query(window: QueryWindow, api: str, *, trip_count: int, trip_errors: bool) -> str:
+    """One model pool's traced attempts, with the minutes they'd have tripped a breaker.
+
+    The pool's policy writes a ``mosaic-attempt`` trace after each attempt. Each row of the result
+    has a ``rowKind``:
+
+    - ``attempts``: attempts and how they were answered, by pool model (``m``), the backend the
+      attempt was sent to (``b``), the host and deployment it called (``h`` and ``d``), and
+      whether the backend pool had no member left (``exhausted``). A call's last attempt is the
+      one that answered it.
+    - ``trips``: the minutes in which those attempts would have tripped a member's breaker, which
+      takes ``trip_count`` 429s, or with ``trip_errors`` 429s and server errors, in a minute.
+    - ``untraced``: admitted calls that reached a backend without writing a trace, which a policy
+      from before the trace sends.
+    """
+
+    if isinstance(trip_count, bool) or not isinstance(trip_count, int) or trip_count < 1:
+        raise ValidationError("A breaker's trip count must be a positive whole number")
+    tripping = "throttled + failed" if trip_errors else "throttled"
+    # A trace message ends at the quote that closes it in TraceRecords. A serializer may write a
+    # path's slashes as \/, so they're unescaped before the path is read.
+    return (
+        _gateway_rows(window, [api])
+        + f"""let poolCalls = gatewayRows
+| where isempty(reason)
+| extend attemptTraces = extract_all(@"mosaic-attempt ([^""]*)", Traces);
+let poolAttempts = poolCalls
+| extend attemptCount = array_length(attemptTraces)
+| where attemptCount > 0
+| mv-expand with_itemindex = attemptIndex attemptTrace = attemptTraces to typeof(string)
+| extend attemptTrace = replace_string(attemptTrace, @"\\/", "/")
+| extend v = extract(@"(?:^| )v=([^ ]*)", 1, attemptTrace),
+    m = tolower(extract(@"(?:^| )m=([^ ]*)", 1, attemptTrace)),
+    b = tolower(extract(@"(?:^| )b=([^ ]*)", 1, attemptTrace)),
+    s = toint(extract(@"(?:^| )s=([^ ]*)", 1, attemptTrace)),
+    exhausted = extract(@"(?:^| )e=([^ ]*)", 1, attemptTrace) == "1",
+    h = tolower(extract(@"(?:^| )h=([^ ]*)", 1, attemptTrace)),
+    p = tolower(extract(@"(?:^| )p=([^ ]*)", 1, attemptTrace))
+| where v == "1"
+| extend d = extract(@"/openai/deployments/([^/?#]+)", 1, p),
+    lastAttempt = attemptIndex == attemptCount - 1;
+union
+    (poolAttempts
+    | summarize attempts = count(),
+        succeeded = countif(s >= 200 and s < 400),
+        throttled = countif(s == 429),
+        failed = countif(s >= 500 or s <= 0),
+        clientErrors = countif(s >= 400 and s < 500 and s != 429),
+        served = countif(lastAttempt),
+        servedOk = countif(lastAttempt and s >= 200 and s < 400),
+        servedUnavailable = countif(lastAttempt and (s == 429 or s >= 500 or s <= 0)),
+        retried = countif(lastAttempt and attemptIndex > 0),
+        lastSeen = max(TimeGenerated)
+        by m, b, h, d, exhausted
+    | extend rowKind = "attempts"),
+    (poolAttempts
+    | where not(exhausted)
+    | summarize throttled = countif(s == 429), failed = countif(s >= 500 and s < 600)
+        by m, b, h, d, minute = bin(TimeGenerated, 1m)
+    | summarize trippedMinutes = countif({tripping} >= {trip_count}) by m, b, h, d
+    | extend rowKind = "trips"),
+    (poolCalls
+    | where coalesce(array_length(attemptTraces), 0) == 0 and isnotempty(BackendUrl)
+    | summarize requests = count(), lastSeen = max(TimeGenerated)
+    | extend rowKind = "untraced")
+"""
+    )
+
+
 def denials_query(window: QueryWindow, apis: Iterable[str]) -> str:
     """Refused calls by hour, reason, validated caller and client app, and API."""
 

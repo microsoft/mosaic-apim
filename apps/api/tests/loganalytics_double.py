@@ -26,6 +26,22 @@ _DEPLOYMENTS = re.compile(r"let deploymentOf = dynamic\((\{.*?\})\);")
 _MEMBER_LOOKUP = re.compile(r"let (memberBy[A-Za-z]+) = dynamic\((\{.*?\})\);")
 _BACKEND_HOST = re.compile(r"^[a-z][a-z0-9+.-]*://([^/:?#]+)")
 _BACKEND_DEPLOYMENT = re.compile(r"/openai/deployments/([^/?#]+)")
+_TRIP_RULE = re.compile(r"countif\((throttled(?: \+ failed)?) >= ([0-9]+)\)")
+
+
+@dataclass
+class PoolAttempt:
+    """One attempt a pool's policy traced: the pool model, the backend, and how it answered."""
+
+    model: str
+    backend: str
+    status: int = 200
+    # The host and path the gateway sent the attempt to.
+    host: str = ""
+    path: str = ""
+    # Whether the backend pool answered itself, because none of its members was available.
+    exhausted: bool = False
+    version: str = "1"
 
 
 @dataclass
@@ -56,6 +72,8 @@ class GatewayCall:
     # The API Management backend that served the call, and the URL it forwarded to.
     backend_id: str = ""
     backend_url: str = ""
+    # The attempts a pool's policy traced, in the order it made them.
+    attempts: list[PoolAttempt] = field(default_factory=list)
 
     @property
     def total_tokens(self) -> int | None:
@@ -164,6 +182,8 @@ class FakeLogs:
         if kind == "denials":
             return self._denials([call for call in rows if call.reason])
         admitted = [call for call in rows if not call.reason]
+        if kind == "poolHealth":
+            return self._pool_health(admitted, query)
         if kind == "deploymentPeaks":
             mapping = json.loads(_DEPLOYMENTS.search(query).group(1))  # type: ignore[union-attr]
             lookups = {name: json.loads(value) for name, value in _MEMBER_LOOKUP.findall(query)}
@@ -175,6 +195,8 @@ class FakeLogs:
 
     @staticmethod
     def _kind(query: str) -> str:
+        if "mosaic-attempt" in query:
+            return "poolHealth"
         if "by source" in query:
             return "probe"
         if "deploymentOf" in query:
@@ -361,6 +383,86 @@ class FakeLogs:
             routed = lookups.get("memberByRoute", {}).get(f"{host_key}|{deployment}")
             return routed or by_host[host_key]
         return lookups.get("memberByDeployment", {}).get(f"{api}|{deployment}", "")
+
+    @staticmethod
+    def _pool_health(calls: list[GatewayCall], query: str) -> list[Row]:
+        """Attempt, trip, and untraced rows, as the pool health query returns them."""
+
+        rule = _TRIP_RULE.search(query)
+        assert rule is not None, "the pool health query names its trip rule"
+        with_errors = rule.group(1) != "throttled"
+        trip_count = int(rule.group(2))
+        groups: dict[tuple[str, str, str, str, bool], dict[str, Any]] = {}
+        minutes: dict[tuple[str, str, str, str, datetime], list[int]] = defaultdict(lambda: [0, 0])
+        for call in calls:
+            count = len(call.attempts)
+            for index, attempt in enumerate(call.attempts):
+                if attempt.version != "1":
+                    continue
+                deployment = _BACKEND_DEPLOYMENT.search(attempt.path.lower())
+                key = (
+                    attempt.model.lower(),
+                    attempt.backend.lower(),
+                    attempt.host.lower(),
+                    deployment.group(1) if deployment else "",
+                    attempt.exhausted,
+                )
+                code = attempt.status
+                ok = 200 <= code < 400
+                unavailable = code == 429 or code >= 500 or code <= 0
+                last = index == count - 1
+                row = groups.setdefault(
+                    key,
+                    dict.fromkeys(
+                        (
+                            "attempts",
+                            "succeeded",
+                            "throttled",
+                            "failed",
+                            "clientErrors",
+                            "served",
+                            "servedOk",
+                            "servedUnavailable",
+                            "retried",
+                        ),
+                        0,
+                    ),
+                )
+                row["attempts"] += 1
+                row["succeeded"] += ok
+                row["throttled"] += code == 429
+                row["failed"] += code >= 500 or code <= 0
+                row["clientErrors"] += 400 <= code < 500 and code != 429
+                row["served"] += last
+                row["servedOk"] += last and ok
+                row["servedUnavailable"] += last and unavailable
+                row["retried"] += last and index > 0
+                row["lastSeen"] = max(row.get("lastSeen") or call.time, call.time)
+                if not attempt.exhausted:
+                    counts = minutes[(*key[:4], call.time.replace(second=0, microsecond=0))]
+                    counts[0] += code == 429
+                    counts[1] += 500 <= code < 600
+        trips: dict[tuple[str, str, str, str], int] = defaultdict(int)
+        for (model, backend, host, deployment, _), (throttled, failed) in minutes.items():
+            tripping = throttled + failed if with_errors else throttled
+            trips[(model, backend, host, deployment)] += tripping >= trip_count
+        untraced = [call for call in calls if not call.attempts and call.backend_url]
+        rows: list[Row] = [
+            {"rowKind": "attempts", "m": m, "b": b, "h": h, "d": d, "exhausted": e, **counters}
+            for (m, b, h, d, e), counters in groups.items()
+        ]
+        rows.extend(
+            {"rowKind": "trips", "m": m, "b": b, "h": h, "d": d, "trippedMinutes": tripped}
+            for (m, b, h, d), tripped in trips.items()
+        )
+        rows.append(
+            {
+                "rowKind": "untraced",
+                "requests": len(untraced),
+                "lastSeen": max((call.time for call in untraced), default=None),
+            }
+        )
+        return rows
 
     @staticmethod
     def _denials(calls: list[GatewayCall]) -> list[Row]:

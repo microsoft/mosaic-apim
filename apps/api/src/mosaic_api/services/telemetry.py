@@ -152,7 +152,7 @@ class DiagnosticsOutcome:
     llm_unsupported: list[str]
 
 
-def _member_host(shape: str | None, endpoint: ModelEndpoint | None) -> str:
+def member_host(shape: str | None, endpoint: ModelEndpoint | None) -> str:
     """The host a pool member's backend calls, lowercased, or "" when MOSAIC can't tell."""
 
     if endpoint is None:
@@ -176,7 +176,7 @@ def _pool_api(
                     model_endpoint_id=member.model_endpoint_id,
                     deployment_name=member.deployment_name,
                     backend_name=member.backend_name.casefold(),
-                    host=_member_host(pool.api_shape, endpoints.get(member.model_endpoint_id)),
+                    host=member_host(pool.api_shape, endpoints.get(member.model_endpoint_id)),
                     first_seen_at=seen_at,
                 ),
             )

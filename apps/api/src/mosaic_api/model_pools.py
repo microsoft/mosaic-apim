@@ -133,6 +133,20 @@ def circuit_breaker(preset: BreakerPreset | str) -> dict[str, object]:
     return {"rules": [rule]}
 
 
+# What trips a member's breaker in a minute: how many failures, and whether server errors count
+# as well as 429. The same numbers as :func:`circuit_breaker`, for reading the gateway's logs.
+_TRIP_RULES: dict[BreakerPreset, tuple[int, bool]] = {
+    BreakerPreset.THROTTLING: (1, False),
+    BreakerPreset.THROTTLING_AND_ERRORS: (3, True),
+}
+
+
+def breaker_trip_rule(preset: BreakerPreset | str) -> tuple[int, bool]:
+    """How many failures in a minute trip a member's breaker, and whether 5xx count with 429."""
+
+    return _TRIP_RULES[BreakerPreset(preset)]
+
+
 def uses_backend_pools(pool_type: ModelPoolType | str) -> bool:
     """Whether a pool model's members sit behind one balancing backend pool."""
 
@@ -741,6 +755,71 @@ class ModelPoolSummary(MosaicModel):
     problem_count: int = 0
     warning_count: int = 0
     unapplied_changes: bool = False
+
+
+class PoolMemberHealth(MosaicModel):
+    """How one member answered the attempts the gateway sent it over a window."""
+
+    model_endpoint_id: str
+    endpoint_name: str | None = None
+    deployment_name: str
+    backend_name: str
+    region: str | None = None
+    drained: bool = False
+    api_key: bool = False
+    # Whether the member takes requests only once others can't: a later member of a linear pool,
+    # a pay-as-you-go member of a preferential pool, or one reached with an API key.
+    overflow: bool = False
+    attempts: int = 0
+    succeeded: int = 0
+    throttled: int = 0
+    # Server errors, and attempts that got no response.
+    failed: int = 0
+    client_errors: int = 0
+    # Calls whose last attempt it answered, and how many of those it answered successfully.
+    served: int = 0
+    served_ok: int = 0
+    # Minutes in which its breaker would have tripped: an estimate, because the breaker counts
+    # over a rolling minute. None when the member has no breaker.
+    tripped_minutes: int | None = None
+    last_seen: datetime | None = None
+
+
+class PoolModelHealth(MosaicModel):
+    """How the calls to one pool model ended, and how its members answered them."""
+
+    model_id: str
+    public_name: str
+    display_name: str
+    requests: int = 0
+    succeeded: int = 0
+    # Calls that ended on a 429, a server error, or no response.
+    unavailable: int = 0
+    client_errors: int = 0
+    # Calls that took more than one attempt.
+    retried: int = 0
+    # Successful calls that an overflow member answered.
+    overflowed: int = 0
+    # Attempts the backend pool answered itself, because none of its members was available.
+    exhausted: int = 0
+    # Attempts MOSAIC couldn't place on a member.
+    unplaced: int = 0
+    members: list[PoolMemberHealth] = Field(default_factory=list)
+
+
+class PoolHealth(MosaicModel):
+    """A pool's health over a window of whole hours, read from its attempt traces."""
+
+    status: Literal["ok", "noData", "notPublished", "notConfigured", "accessDenied", "error"]
+    message: str | None = None
+    # A command that fixes what stops MOSAIC reading the logs, when there is one.
+    command: str | None = None
+    hours: int
+    start: datetime | None = None
+    end: datetime | None = None
+    # Calls the gateway logged with no attempt trace, sent by a policy from before traces.
+    untraced: int = 0
+    models: list[PoolModelHealth] = Field(default_factory=list)
 
 
 def capacity_label(

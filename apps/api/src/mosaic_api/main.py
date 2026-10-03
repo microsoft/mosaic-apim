@@ -86,6 +86,7 @@ from mosaic_api.services.cost_centers import CostCenterService
 from mosaic_api.services.mcp_endpoints import build_mcp_client_factory
 from mosaic_api.services.mcp_publishing import McpPublishingService
 from mosaic_api.services.model_pools import ModelPoolService
+from mosaic_api.services.pool_health import PoolHealthService
 from mosaic_api.services.portal_access import PortalAccessService
 from mosaic_api.services.pricing import PricingService
 from mosaic_api.services.telemetry import TelemetryService
@@ -418,6 +419,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             principal_id=app_settings.managed_identity_principal_id,
             identity_resolver=arm_client.caller_object_id,
         )
+        pool_health_service = PoolHealthService(
+            model_pool_service,
+            gateway_repository=gateway_repository,
+            endpoint_repository=endpoint_repository,
+            logs=log_client,
+            principal_id=app_settings.managed_identity_principal_id,
+            identity_resolver=arm_client.caller_object_id,
+        )
         rollup_service = (
             UsageRollupService(
                 rollup_repository,
@@ -454,6 +463,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.pricing_service = pricing_service
         app.state.usage_rollup_repository = rollup_repository
         app.state.telemetry_service = telemetry_service
+        app.state.pool_health_service = pool_health_service
         app.state.usage_rollup_service = rollup_service
         app.state.usage_service = UsageService(
             app.state.portal_service,

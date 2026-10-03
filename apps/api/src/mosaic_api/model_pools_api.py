@@ -18,14 +18,20 @@ from mosaic_api.model_pools import (
     ModelPoolSummary,
     ModelPoolUpdate,
     PoolCandidates,
+    PoolHealth,
 )
 from mosaic_api.services.model_pools import ModelPoolService
+from mosaic_api.services.pool_health import HEALTH_HOURS, MAX_HEALTH_HOURS, PoolHealthService
 
 model_pools_router = APIRouter(prefix="/api/v1", tags=["admin"])
 
 
 def _pools(request: Request) -> ModelPoolService:
     return cast(ModelPoolService, request.app.state.model_pool_service)
+
+
+def _health(request: Request) -> PoolHealthService:
+    return cast(PoolHealthService, request.app.state.pool_health_service)
 
 
 @model_pools_router.get("/gateways/{gateway_id}/pool-candidates", response_model=PoolCandidates)
@@ -68,6 +74,18 @@ async def get_model_pool_detail(request: Request, auth: Admin, pool_id: str) -> 
     """The pool with each member judged against today's inventory, environments, and gateway."""
 
     return await _pools(request).detail(_actor(auth), pool_id)
+
+
+@model_pools_router.get("/model-pools/{pool_id}/health", response_model=PoolHealth)
+async def get_model_pool_health(
+    request: Request,
+    auth: Admin,
+    pool_id: str,
+    hours: Annotated[int, Query(ge=1, le=MAX_HEALTH_HOURS)] = HEALTH_HOURS,
+) -> PoolHealth:
+    """How the pool's calls ended over the last hours, read from the gateway's attempt traces."""
+
+    return await _health(request).health(_actor(auth), pool_id, hours)
 
 
 @model_pools_router.patch("/model-pools/{pool_id}", response_model=ModelPool)
