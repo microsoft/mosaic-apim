@@ -38,11 +38,16 @@ QUIET_LOGGERS = (
 )
 
 # App Service's health check, the container's HEALTHCHECK and the deployment's smoke checks call
-# the health probes often enough to bury the requests people make, so they aren't recorded. The
-# instrumentation searches each request's URL, which it builds without the query string, for these
-# patterns, so a probe's path matches, with or without a trailing slash, and no other path does.
+# the health probes often enough to bury the requests people make, and App Service's Always On
+# pings the root every five minutes, so none of them is recorded. The instrumentation searches each
+# request's URL, which it builds without the query string, for these patterns. Each matches its
+# path with or without a trailing slash, so the root's matches the host and an optional slash, and
+# no other path matches any of them.
 HEALTH_PROBES = ("/healthz", "/readyz")
-UNRECORDED_URLS = ",".join(rf"^https?://[^/]+{re.escape(path)}/?$" for path in HEALTH_PROBES)
+ROOT = "/"
+UNRECORDED_URLS = ",".join(
+    rf"^https?://[^/]+{re.escape(path.rstrip('/'))}/?$" for path in (ROOT, *HEALTH_PROBES)
+)
 
 # A recorded request keeps its query's parameter names, but each value is replaced with this. No
 # route takes a secret in its query, but the directory search's q is whatever an administrator
@@ -96,7 +101,7 @@ def configure_telemetry(settings: Settings) -> None:
 
 
 def instrument_requests(app: FastAPI, settings: Settings) -> None:
-    """Records each request the app serves in Application Insights, except the health probes.
+    """Records each request the app serves in Application Insights, except the probes and the root.
 
     The Azure Monitor distro instruments FastAPI by replacing ``fastapi.FastAPI`` with a subclass
     that instruments each app built from it. The API's app is built from the class main imported

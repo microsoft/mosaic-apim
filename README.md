@@ -682,10 +682,13 @@ query's parameter names, but each value is recorded as `REDACTED`, so the text s
 the directory search isn't kept, and a query that can't be read that way is left out. If redaction
 fails, the request is recorded without its URL and the API logs a `request_query_redaction_failed`
 warning. The health probes `/healthz` and `/readyz` aren't recorded, because App Service's health
-check and the deployment's smoke checks call them often enough to bury the rest. No header or body
-of a request or response is recorded, so no bearer token or API key reaches Application Insights;
-don't set OpenTelemetry's `OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_*` variables, which would
-record the headers they name. Without the connection string, nothing is instrumented.
+check and the deployment's smoke checks call them often enough to bury the rest. Nor is the root,
+`/`, which App Service's Always On pings every five minutes: it answers `GET` and `HEAD` with an
+empty `200` that needs no sign-in. A request to any other path is recorded, even one that gets
+`404`. No header or body of a request or response is recorded, so no bearer token or API key
+reaches Application Insights; don't set OpenTelemetry's
+`OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_*` variables, which would record the headers they name.
+Without the connection string, nothing is instrumented.
 
 In a second terminal:
 
@@ -901,7 +904,8 @@ measured scale, not speculation.
 
 ## Security model
 
-- Only health endpoints are anonymous.
+- The health endpoints are anonymous, and so is the root (`GET /` and `HEAD /`), which answers
+  App Service's Always On ping with an empty `200`. Every route under `/api/v1` requires a token.
 - Browser authentication uses authorization code + PKCE through MSAL.
 - The API accepts RS256 tokens from the configured tenant only, validates OIDC discovery/JWKS,
   issuer, client-ID audience, signature, time claims, and tenant. A token carrying none of
