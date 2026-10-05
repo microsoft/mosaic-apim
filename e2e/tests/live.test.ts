@@ -139,6 +139,53 @@ test('drive.ts does not forward MOSAIC API tokens from its own environment', asy
   assert.match(result.stderr, /--admin is only used with --application-entitlement/)
 })
 
+const mcpValid = ['--user-entitlement', '@target:mcp.grants.tools-user.id']
+
+test('the daemon refuses verify-mcp flags the harness does not allow', async () => {
+  const cases: [string[], RegExp][] = [
+    [['--on-behalf-entitlement', 'ent_agent'], /Add --send-model-requests/],
+    [['--api-base-url', 'https://evil.example', ...mcpValid], /comes from the targets manifest/],
+    [['--prove-shared-budget', ...mcpValid], /Unknown verifier flag "--prove-shared-budget"/],
+    [['--user-entitlement', 'https://evil.example/x'], /needs a grant ID/],
+    [['--user-entitlement', '@target:mcp.grants.missing.id'], /does not resolve to a manifest value/],
+    [[...mcpValid, '--prove-call-limit', 'ent_other'], /--prove-call-limit must name a --user-entitlement/],
+  ]
+  for (const [flags, message] of cases) {
+    const { status, stderr } = await drive('verify-mcp', '--', ...flags)
+    assert.equal(status, 2, flags.join(' '))
+    assert.match(stderr, message, flags.join(' '))
+  }
+})
+
+test('the daemon checks the people in a verify-mcp run before signing anyone in', async () => {
+  const cases: [string[], RegExp][] = [
+    [['--admin', 'admin', '--', ...mcpValid], /--admin is only used with --application-entitlement, --prove-pooled-quota or --on-behalf-entitlement/],
+    [['--user', 'nobody', '--', ...mcpValid], /Unknown persona "nobody"/],
+    [['--stranger', 'outsider', '--', ...mcpValid, '--check-ungranted-user'], /--stranger is only used with/],
+    [['--stranger', 'user-a', '--', ...mcpValid, '--check-ungranted-user', '--user-token-source', 'device-code'], /someone other than user-a/],
+  ]
+  for (const [args, message] of cases) {
+    const { status, stderr } = await drive('verify-mcp', ...args)
+    assert.equal(status, 2, args.join(' '))
+    assert.match(stderr, message, args.join(' '))
+  }
+})
+
+test('the daemon takes only the MCP verifier variables for verify-mcp', async () => {
+  for (const name of ['MOSAIC_SMOKE_AGENT_RUNTIME_TOKEN', 'MOSAIC_SMOKE_PAYLOAD', 'MOSAIC_SMOKE_USER_CONTROL_TOKEN', 'NODE_OPTIONS']) {
+    const reply = await rpc({ action: 'verify-mcp', args: { verifierArgs: mcpValid, env: { [name]: 'value' } } })
+    assert.equal(reply.ok, false, name)
+    assert.match(reply.error ?? '', /can't be passed to the verifier/, name)
+  }
+  // The model verifier doesn't take the MCP verifier's tokens either.
+  const model = await rpc({ action: 'verify', args: { verifierArgs: valid, env: { MOSAIC_SMOKE_MCP_USER_RUNTIME_TOKEN: 'value' } } })
+  assert.equal(model.ok, false)
+  assert.match(model.error ?? '', /can't be passed to the verifier/)
+  const reply = await rpc({ action: 'verify-mcp', args: { verifierArgs: 'not an array' } })
+  assert.equal(reply.ok, false)
+  assert.match(reply.error ?? '', /"verifierArgs" must be an array of strings/)
+})
+
 test('the daemon is still healthy after refusing runs', async () => {
   const { status, stdout } = await drive('status')
   assert.equal(status, 0)
