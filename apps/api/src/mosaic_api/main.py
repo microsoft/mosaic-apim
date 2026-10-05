@@ -9,7 +9,7 @@ from azure.identity.aio import DefaultAzureCredential, ManagedIdentityCredential
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 from mosaic_api.analytics_api import analytics_router
 from mosaic_api.api import portal_router, router
@@ -636,6 +636,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if correlation:
             response.headers["X-Correlation-ID"] = correlation
         return response
+
+    # App Service's Always On pings the root every five minutes to keep the API loaded. The API
+    # serves nothing there, so it answers with an empty 200 that needs no sign-in and says nothing
+    # about the API, rather than a 404 that would count as a failed request. It isn't recorded.
+    @app.api_route("/", methods=["GET", "HEAD"], include_in_schema=False)
+    async def root() -> Response:
+        return Response()
 
     @app.get("/healthz", tags=["health"])
     async def health() -> dict[str, str]:
