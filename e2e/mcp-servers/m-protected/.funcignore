@@ -1,0 +1,11 @@
+.venv/
+.funcignore
+.pytest_cache/
+__pycache__/
+tests/
+pytest.ini
+requirements.in
+requirements-dev.in
+requirements-dev.txt
+local.settings.json
+local.settings.example.json
