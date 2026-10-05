@@ -139,6 +139,61 @@ test('verify flags must follow --', () => {
   assert.match(stderr, /Unknown option '--user-entitlement'/)
 })
 
+test('verify-mcp sends everything after -- to the live driver, with only the MCP verifier variables', async () => {
+  const verifierArgs = ['--user-entitlement', '@target:mcp.grants.tools-user.id', '--check-missing-scope', '--prove-call-limit=ent_x']
+  const reply = { ok: true, result: { exitCode: 0, timedOut: false, lines: ['PASS: one', 'INFO: two'], personas: { user: 'member', admin: 'boss' } } }
+  const env = {
+    ...cleanEnv,
+    MOSAIC_SMOKE_MCP_USER_RUNTIME_TOKEN: 'mcp-user-token',
+    MOSAIC_SMOKE_USER_RUNTIME_TOKEN: 'model-token',
+    MOSAIC_SMOKE_MCP_UNGRANTED_USER_RUNTIME_TOKEN: ' ',
+    // The model verifier's own variables, and the MOSAIC API tokens, aren't passed on.
+    MOSAIC_SMOKE_AGENT_RUNTIME_TOKEN: 'agent-token',
+    MOSAIC_SMOKE_PAYLOAD: '{}',
+    MOSAIC_SMOKE_USER_CONTROL_TOKEN: 'stale-control-token',
+  }
+  const run = await driveStub(reply, env, 'verify-mcp', '--user', 'member', '--admin', 'boss', '--', ...verifierArgs)
+  assert.equal(run.status, 0, run.stderr)
+  assert.equal(run.stderr, '')
+  assert.equal(run.stdout, 'Personas: user member, admin boss\nPASS: one\nINFO: two\n')
+  assert.deepEqual(run.received, [
+    {
+      authorization: ['Bearer', 'stub-run-token'].join(' '),
+      body: {
+        action: 'verify-mcp',
+        args: {
+          verifierArgs,
+          user: 'member',
+          admin: 'boss',
+          env: { MOSAIC_SMOKE_MCP_USER_RUNTIME_TOKEN: 'mcp-user-token', MOSAIC_SMOKE_USER_RUNTIME_TOKEN: 'model-token' },
+        },
+      },
+    },
+  ])
+
+  const failed = await driveStub(
+    { ok: true, result: { exitCode: 1, timedOut: false, lines: ['FAIL: User grant 1 (M-tools) rejecting an anonymous call: unexpected HTTP 200'], personas: { user: 'member' } } },
+    cleanEnv,
+    'verify-mcp',
+    '--',
+    '--user-entitlement',
+    'ent_x',
+  )
+  assert.equal(failed.status, 1)
+  assert.equal(failed.stderr, 'The verifier exited with code 1.\n')
+})
+
+test('verify-mcp takes its people as options and its flags after --', () => {
+  assert.match(drive('member', 'verify-mcp', '--', '--user-entitlement', 'ent_x').stderr, /"verify-mcp" takes no persona before it/)
+  const flags = drive('verify-mcp', '--user-entitlement', 'ent_x')
+  assert.equal(flags.status, 2)
+  assert.match(flags.stderr, /Unknown option '--user-entitlement'/)
+  // The people options are accepted, so the run gets as far as looking for the live driver.
+  const people = drive('verify-mcp', '--user', 'member', '--admin', 'boss', '--stranger', 'nobody', '--', '--user-entitlement', 'ent_x')
+  assert.equal(people.status, 2)
+  assert.match(people.stderr, /live driver is not running/)
+})
+
 test('verify takes its people as options, not a persona', () => {
   assert.match(drive('member', 'verify', '--', '--send-model-requests').stderr, /"verify" takes no persona before it/)
   for (const option of ['--user', '--admin', '--stranger']) {

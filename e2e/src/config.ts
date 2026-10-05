@@ -115,6 +115,55 @@ export interface Targets {
   endpoints: Record<string, EndpointTarget>
   negatives?: Record<string, NegativeTarget>
   suite?: SuiteTargets
+  /** The MCP servers Phase 11 registers, publishes and calls, and the grants on them. */
+  mcp?: McpTargets
+}
+
+export type McpUpstreamAuth = 'none' | 'managed-identity'
+
+/** The application an MCP server's tools call governed models as (ADR 0025). */
+export interface McpModelCallerTarget {
+  /** The application's name, as MOSAIC's Identity page shows it. */
+  application: string
+  /** Its grant on the model its tools call, for verify-mcp's --model-caller-entitlement. */
+  modelGrant?: string
+}
+
+/** An MCP server the journeys register (M1), publish (M2) and call. */
+export interface McpServerTarget {
+  /** The server's own streamable HTTP URL, which the admin registers. */
+  url: string
+  /** The name MOSAIC publishes it under, which its connection details and the verifier's output show. */
+  displayName: string
+  upstreamAuth: McpUpstreamAuth
+  /** The audience the gateway's managed identity asks for, with upstreamAuth "managed-identity". */
+  audience?: string
+  /** The tools it declares, which M1's sync must show. */
+  tools: string[]
+  modelCaller?: McpModelCallerTarget
+  notes?: string
+}
+
+/** A grant on one of the manifest's MCP servers. verify-mcp takes its ID as @target:mcp.grants.<key>.id. */
+export interface McpGrantTarget {
+  server: string
+  id: string
+  /** The persona who holds a person's grant. */
+  persona?: string
+  /** The application that holds an application's grant, by its name in MOSAIC. */
+  application?: string
+  /** The code of the cost center it's under, which x-mosaic-cost-center names. */
+  costCenter?: string
+  /** A grant for --prove-call-limit: its call limit, within the verifier's bounds. */
+  callLimit?: { calls: number; perSeconds: number }
+  /** A grant for --prove-pooled-quota: the monthly calls of its cost center's pool on the server. */
+  pooledCalls?: number
+  notes?: string
+}
+
+export interface McpTargets {
+  servers: Record<string, McpServerTarget>
+  grants: Record<string, McpGrantTarget>
 }
 
 export class TargetsError extends Error {}
@@ -122,6 +171,10 @@ export class TargetsError extends Error {}
 const personaKeyPattern = /^[a-z][a-z0-9-]{0,31}$/
 const guidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const resourceIdPattern = /^\/subscriptions\/[0-9a-f-]{36}\/resourceGroups\/[^/]+\/providers\/Microsoft\.CognitiveServices\/accounts\/[^/]+(\/projects\/[^/]+)?$/i
+// MOSAIC grant IDs look like ent_<32 hex digits>. A leading letter or digit keeps a value from being read as a flag.
+export const grantIdPattern = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}$/
+const costCenterCodePattern = /^[A-Za-z0-9._-]{1,64}$/
+const toolNamePattern = /^[A-Za-z0-9_.-]{1,64}$/
 
 type Json = Record<string, unknown>
 
@@ -406,6 +459,125 @@ function parseSuite(value: unknown, context: SuiteContext): SuiteTargets {
   }
 }
 
+/** The bounds of the MCP verifier's call-limit proof: FLOW_CALLS + 1 to CALL_LIMIT_CEILING calls, per CALL_LIMIT_PERIODS. */
+export const mcpCallLimitCalls = [6, 30] as const
+export const mcpCallLimitSeconds = [60, 300] as const
+/** The MCP verifier's pooled-quota proof spends the pool, and refuses one bigger than this (POOL_CALL_CEILING). */
+export const mcpPoolCallCeiling = 50
+
+function within(value: unknown, path: string, [low, high]: readonly [number, number]): number {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < low || value > high) {
+    throw new TargetsError(`${path} must be a whole number from ${low} to ${high}, the MCP verifier's proof`)
+  }
+  return value
+}
+
+function parseMcpUrl(value: unknown, path: string): string {
+  const raw = requireString(value, path)
+  let url: URL
+  try {
+    url = new URL(raw)
+  } catch {
+    throw new TargetsError(`${path} must be an absolute URL`)
+  }
+  if (url.protocol !== 'https:') throw new TargetsError(`${path} must use https`)
+  // A key in a query string would put a secret in the manifest.
+  if (url.username || url.password || url.search || url.hash) {
+    throw new TargetsError(`${path} must not contain credentials, a query or a fragment`)
+  }
+  return raw
+}
+
+function parseMcpServer(value: unknown, path: string): McpServerTarget {
+  const server = requireObject(value, path)
+  const upstreamAuth = requireOneOf(server.upstreamAuth, ['none', 'managed-identity'] as const, `${path}.upstreamAuth`)
+  const audience = optionalString(server.audience, `${path}.audience`)
+  if ((upstreamAuth === 'managed-identity') !== (audience !== undefined)) {
+    throw new TargetsError(`${path}.audience goes with upstreamAuth "managed-identity", and only with it`)
+  }
+  const tools = server.tools
+  if (!Array.isArray(tools) || tools.length === 0 || tools.some((tool) => typeof tool !== 'string' || !toolNamePattern.test(tool))) {
+    throw new TargetsError(`${path}.tools must be a non-empty array of tool names`)
+  }
+  let modelCaller: McpModelCallerTarget | undefined
+  if (server.modelCaller !== undefined) {
+    const callerPath = `${path}.modelCaller`
+    const caller = requireObject(server.modelCaller, callerPath)
+    const modelGrant = optionalString(caller.modelGrant, `${callerPath}.modelGrant`)
+    if (modelGrant !== undefined && !grantIdPattern.test(modelGrant)) throw new TargetsError(`${callerPath}.modelGrant must be a grant ID`)
+    modelCaller = { application: requireString(caller.application, `${callerPath}.application`), modelGrant }
+  }
+  return {
+    url: parseMcpUrl(server.url, `${path}.url`),
+    displayName: requireString(server.displayName, `${path}.displayName`),
+    upstreamAuth,
+    audience,
+    tools: tools.map((tool: string) => tool),
+    modelCaller,
+    notes: optionalString(server.notes, `${path}.notes`),
+  }
+}
+
+function parseMcpGrant(value: unknown, path: string, servers: Record<string, McpServerTarget>, context: SuiteContext): McpGrantTarget {
+  const grant = requireObject(value, path)
+  const server = requireString(grant.server, `${path}.server`)
+  if (!Object.hasOwn(servers, server)) throw new TargetsError(`${path}.server references unknown MCP server "${server}"`)
+  const id = requireString(grant.id, `${path}.id`)
+  if (!grantIdPattern.test(id)) throw new TargetsError(`${path}.id must be a grant ID`)
+  const persona = optionalString(grant.persona, `${path}.persona`)
+  const application = optionalString(grant.application, `${path}.application`)
+  if ((persona === undefined) === (application === undefined)) {
+    throw new TargetsError(`${path} must name who holds it: a persona or an application, not both`)
+  }
+  if (persona !== undefined && !Object.hasOwn(context.personas, persona)) {
+    throw new TargetsError(`${path}.persona references unknown persona "${persona}"`)
+  }
+  const costCenter = optionalString(grant.costCenter, `${path}.costCenter`)
+  if (costCenter !== undefined && !costCenterCodePattern.test(costCenter)) {
+    throw new TargetsError(`${path}.costCenter must be a cost center code`)
+  }
+  let callLimit: McpGrantTarget['callLimit']
+  if (grant.callLimit !== undefined) {
+    const limit = requireObject(grant.callLimit, `${path}.callLimit`)
+    callLimit = {
+      calls: within(limit.calls, `${path}.callLimit.calls`, mcpCallLimitCalls),
+      perSeconds: within(limit.perSeconds, `${path}.callLimit.perSeconds`, mcpCallLimitSeconds),
+    }
+  }
+  const pooledCalls = grant.pooledCalls === undefined ? undefined : within(grant.pooledCalls, `${path}.pooledCalls`, [1, mcpPoolCallCeiling])
+  if (pooledCalls !== undefined && callLimit !== undefined) {
+    throw new TargetsError(`${path} can't have a callLimit and pooledCalls: the pooled-quota proof needs a grant without limits of its own`)
+  }
+  if (pooledCalls !== undefined && costCenter === undefined) {
+    throw new TargetsError(`${path}.pooledCalls needs ${path}.costCenter, the cost center whose pool it spends`)
+  }
+  return { server, id, persona, application, costCenter, callLimit, pooledCalls, notes: optionalString(grant.notes, `${path}.notes`) }
+}
+
+function parseMcp(value: unknown, context: SuiteContext): McpTargets {
+  const mcp = requireObject(value, 'targets.mcp')
+  const servers: Record<string, McpServerTarget> = {}
+  for (const [key, server] of Object.entries(requireObject(mcp.servers, 'targets.mcp.servers'))) {
+    if (!personaKeyPattern.test(key)) throw new TargetsError(`targets.mcp.servers key "${key}" must match ${personaKeyPattern}`)
+    servers[key] = parseMcpServer(server, `targets.mcp.servers.${key}`)
+  }
+  const grants: Record<string, McpGrantTarget> = {}
+  const owners = new Map<string, string>()
+  for (const [key, server] of Object.entries(servers)) {
+    if (server.modelCaller?.modelGrant !== undefined) owners.set(server.modelCaller.modelGrant, `targets.mcp.servers.${key}.modelCaller.modelGrant`)
+  }
+  for (const [key, grant] of Object.entries(requireObject(mcp.grants ?? {}, 'targets.mcp.grants'))) {
+    if (!personaKeyPattern.test(key)) throw new TargetsError(`targets.mcp.grants key "${key}" must match ${personaKeyPattern}`)
+    const path = `targets.mcp.grants.${key}`
+    const parsed = parseMcpGrant(grant, path, servers, context)
+    const owner = owners.get(parsed.id)
+    if (owner !== undefined) throw new TargetsError(`${path}.id is the same grant as ${owner}`)
+    owners.set(parsed.id, `${path}.id`)
+    grants[key] = parsed
+  }
+  return { servers, grants }
+}
+
 export function parseTargets(input: unknown): Targets {
   const root = requireObject(input, 'targets')
   const tenantId = requireString(root.tenantId, 'targets.tenantId')
@@ -481,6 +653,7 @@ export function parseTargets(input: unknown): Targets {
     endpoints,
     negatives,
     suite: root.suite === undefined ? undefined : parseSuite(root.suite, { endpoints, personas, roles, workload }),
+    mcp: root.mcp === undefined ? undefined : parseMcp(root.mcp, { endpoints, personas, roles, workload }),
   }
 }
 
