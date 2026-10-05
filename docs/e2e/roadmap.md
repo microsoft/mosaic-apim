@@ -864,6 +864,11 @@ Progress:
   subscriptions and the Claude key's named value changed. The five active grants' keys and Claude's
   reached their models, and R5's and R6's revoked grants got 401. A backfill of three days then
   recomputed the stored usage (O43).
+- ⏳ **Batch 3l**, approved 2026-10-05: the API, console and portal, from main with model pools
+  ([#80](https://github.com/microsoft/mosaic-apim/pull/80), for A19 and R15 to R18) and the fix
+  for O44 and O45. It waits for that fix to merge. No infrastructure or settings change. The
+  policy tests render 193 governed fragments, and #80's code renders every one exactly as Batch
+  3k's build does, so re-applying the eight governed models should change nothing.
 - ✅ **Claude**, 2026-10-01: from the endpoint the owner registered (Phase 2), `claude-opus-4-6`
   was published in the console in 11 steps, among them a Key Vault named value for the key, and
   all succeeded. A Messages call with the bootstrap key reached Claude. Its governed access, a
@@ -1014,7 +1019,8 @@ C, so they wait for the owner's approval too. Bedrock members wait for Phase 10.
   when, and the portal's catalog left the model out. A request from a catalog page loaded before
   the unpublish was refused, with the reason. **Re-plan** and **Apply plan** published it again.
 - Roll back test-only tenant changes from the ledger. Imported and published models stay, since
-  they're the goal.
+  they're the goal. The rollback waits until Phase 11 is done, because Phase 11 still needs the
+  test accounts and the `user` persona's role (decided 5 October 2026).
 
 ### Phase 10 (later): Gemini and AWS Bedrock ⬜ deferred by the environment owner (2026-09-30)
 
@@ -1029,38 +1035,44 @@ value that the gateway reads with its own identity, and Phase 10 would reuse it.
 registers AWS Bedrock hosts with a Bedrock API key, but only as Claude members of a model pool,
 and R17 lists what a live Bedrock member needs to show.
 
-### Phase 11 (next): MCP servers end to end ⬜ requested by the environment owner (2026-10-02)
+### Phase 11 (next): MCP servers end to end 🔄 Batch 5a applied; Batch 5b waits for the test servers
 
 MOSAIC publishes MCP servers through API Management and governs them with grants, as it does
 models, but no journey has exercised that yet. Phase 11 deploys a few generic MCP servers and
 takes them through the whole path: registration, publication, access requests and grants, calls
 from a real MCP client, and usage. One of the servers calls a model through MOSAIC, so the phase
 also shows how a model call made by an MCP server is attributed to the person who called the
-server (G19). It runs after Phase 9's cleanup, with the same environment, harness, personas and
-ledger.
+server (G19). It uses the same environment, harness, personas and ledger. It runs before Phase 9's
+cleanup, because it needs the test accounts that the cleanup removes.
 
-**Prerequisites**, each needing the environment owner's approval:
+**Prerequisites**, each approved by the environment owner on 5 October 2026:
 
-- **Batch 5a, Entra.** MCP runtime tokens use the `Mcp.Invoke` delegated scope and the
-  `Mcp.Invoke.Application` app role on MOSAIC's runtime registration
-  ([connect-to-mcp-servers.md](../connect-to-mcp-servers.md)). The registration has only
-  `Models.Invoke` and `Models.Invoke.Application` today, because #51's Entra changes haven't been
-  made. Add the MCP scope and role. Consent the MCP test client for the scope. Create an app
-  registration for the agent server's workload identity, and an audience for the server that
-  accepts only the gateway's managed identity.
-- **Batch 5b, Azure.** Deploy the servers, all with streamable HTTP, public network access, the
+- ✅ **Batch 5a, Entra**, applied 2026-10-05. MCP runtime tokens use the `Mcp.Invoke` delegated
+  scope and the `Mcp.Invoke.Application` app role on MOSAIC's runtime registration
+  ([connect-to-mcp-servers.md](../connect-to-mcp-servers.md)). The registration had only the model
+  scope and role, because #51's Entra changes haven't been made. Batch 5a added both, with the IDs
+  and texts MOSAIC's own Entra script uses, and left every existing entry as it was. The model
+  client, which the verifier signs people in with, is now consented for `Mcp.Invoke` too.
+  M-protected's audience is a new registration with no credentials. Its service principal requires
+  assignment, and only two identities hold its role: the gateway's, which calls the server, and
+  MOSAIC API's, which checks the connection and syncs the tools (O46). The agent server needs no
+  app registration. It calls models as its container app's managed identity, which gets
+  `Models.Invoke.Application` once Batch 5b creates it.
+- ⏳ **Batch 5b, Azure**, waiting for the test servers and their deployment kit, which a pull
+  request adds. Deploy the servers, all with streamable HTTP, public network access, the
   smallest scale, and logs to the environment's workspace:
   - **M-tools**, on Container Apps: a few deterministic tools, such as echo, the time and adding
     two numbers. Upstream authentication **None**.
   - **M-protected**, on Azure Functions with its MCP extension: the same kind of tools, accepting
-    only a token from the gateway's managed identity for its audience. Upstream authentication
-    **Managed identity**.
+    only a token for its audience from the gateway's managed identity or MOSAIC API's (O46).
+    Upstream authentication **Managed identity**.
   - **M-agent**, on Container Apps: a tool that answers by calling a governed model through
     MOSAIC with the agent's own application grant, so a call to it leads to a second, governed
     call (G19).
   - Optionally, an SSE-only server as a negative case, because MOSAIC doesn't publish one.
-- **The gateway's diagnostics** must log 0 bytes of response bodies for MCP APIs, or streaming
-  breaks. MOSAIC warns about this when it plans a publication.
+- ✅ **The gateway's diagnostics** must log 0 bytes of response bodies for MCP APIs, or streaming
+  breaks. MOSAIC warns about this when it plans a publication. Checked on 5 October: none of the
+  gateway's diagnostics logs a body, globally or on any API.
 
 **Journeys** (see the MCP table under the journey matrix): M1 registers each server and syncs its
 tools; M2 publishes it after a reviewed plan; M3 sets governed access for people and the agent's
@@ -1216,6 +1228,7 @@ be confirmed, or fixed, once the journeys that exercise them have run.
 | O44 | In **Analytics > Cost**, the cost shares of a breakdown can add up to more than 100%. After Batch 3k, both the cost by model and the cost by API added up to 103.1%. Each part's share divides its full-precision cost by a total that `cost_report.py` has already rounded to $0.0001. At this environment's sub-cent totals, about $0.0014, the rounding is about 3% of the total. At real spend it's negligible. Seen in Batch 3k's check of O43 | Divide by the unrounded total, and round only what's shown. A follow-up, not blocking |
 | O45 | Since the API records its requests (O41), App Service's ping of `/` every 5 minutes is recorded as a failed request: `GET /` gets 404, about 288 times a day. That inflates the API's failure rate in Application Insights. Seen in Batch 3k | Serve `/` with 200, or point App Service's health check at `/healthz`, or leave `/` out of the recorded requests as the probes are. A follow-up, not blocking |
 | O40 | For `grok-4.3`, **Usage & cost** and **Analytics** show 196 tokens for one call, broken down as "Prompt 8 · Completion 2". The gateway's LLM log recorded a total of 196, but only 8 prompt and 2 completion tokens. The other 186 are probably the model's reasoning tokens, which the breakdown doesn't name. The grant's tokens-per-minute limit counts all 196, so a person whose calls are refused sees parts that don't add up to what was counted. Seen in R8 after Batch 3i. The sitting's token metrics confirm they're reasoning tokens: its two grok calls' metrics read 16 prompt, 4 completion and 456 reasoning tokens, 476 in all | Show reasoning tokens as their own part wherever a total is broken down, as the gateway's metrics already do, and check whether the LLM log names them. A follow-up, not blocking |
+| O46 | **A managed-identity MCP server must also accept MOSAIC API's identity, and the docs don't say so.** MOSAIC's API checks the connection to a registered MCP server and syncs its tools with its own managed identity, while the gateway calls the server with the gateway's identity. The docs say only that a token is sent to the audience the administrator names. Suppose an administrator lets only the gateway's identity get tokens for the server, the safer setup. The server then registers as Degraded, with "MOSAIC could not acquire a token for this MCP server's audience", and **Sync tools** is refused. Publishing still works, but with no tools recorded. Found while designing M-protected (Phase 11) | Say in [publish-mcp-servers.md](../publish-mcp-servers.md) and on the **Register MCP server** dialog's **Managed identity** tab that the server must accept both identities, and name both in the Degraded message. Batch 5a gave both identities M-protected's role, so M1 can sync its tools. A follow-up, not blocking |
 The Phase 3 check on whether the gateway role recommendation narrows once the account kind is
 known led to G8: it does narrow, and the check then rejects the broader role it recommended
 before.
