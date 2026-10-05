@@ -2,11 +2,13 @@ import { existsSync, readFileSync } from 'node:fs'
 import { request } from 'node:http'
 import { parseArgs } from 'node:util'
 import { liveSessionFile } from '../src/paths.ts'
+import { mcpForwardedVariables } from '../src/verify-mcp.ts'
 import { forwardedEnvironment, forwardedVariables } from '../src/verify.ts'
 
 const usage = `Usage: node tools/drive.ts <persona> <action> [arguments] [options]
        node tools/drive.ts status | shutdown | dialogs <accept|dismiss>
        node tools/drive.ts verify [--user <persona>] [--admin <persona>] [--stranger <persona>] -- <verifier flags>
+       node tools/drive.ts verify-mcp [--user <persona>] [--admin <persona>] [--stranger <persona>] -- <verifier flags>
 
 Actions
   open <web|portal> [path]          Launch the persona's browser (if needed) and navigate
@@ -41,6 +43,19 @@ Verify
   --stranger <persona>              Holds no grant, for --check-ungranted-user with device-code sign-in
                                     (default: roles.outsider, then roles.noRole)
   Passes ${forwardedVariables.join(', ')}
+  from this shell to the verifier when they're set.
+
+Verify MCP access
+  verify-mcp -- <verifier flags>    Run scripts/verify_mcp_access.py, Phase 11's MCP client, the same way. A grant ID
+                                    can be a manifest reference, such as @target:mcp.grants.tools-user.id, for
+                                    example: verify-mcp -- --user-entitlement @target:mcp.grants.tools-user.id
+  --user <persona>                  Holds the user and on-behalf grants (default: roles.user)
+  --admin <persona>                 Reads application grants' connection details, what a server's last apply compiled
+                                    for --prove-pooled-quota, and the --on-behalf-entitlement server's model caller
+                                    (default: roles.admin)
+  --stranger <persona>              Holds no grant on these MCP servers, for --check-ungranted-user with device-code
+                                    sign-in (default: roles.outsider, then roles.noRole)
+  Passes ${mcpForwardedVariables.join(', ')}
   from this shell to the verifier when they're set.`
 
 function fail(message: string): never {
@@ -91,13 +106,14 @@ if (values.help || positionals.length === 0) {
   process.exit(values.help ? 0 : 2)
 }
 
-const globalActions = new Set(['status', 'shutdown', 'dialogs', 'verify'])
+const globalActions = new Set(['status', 'shutdown', 'dialogs', 'verify', 'verify-mcp'])
+const verifyActions = new Set(['verify', 'verify-mcp'])
 const [first, ...rest] = positionals
 const personaKey = globalActions.has(first) ? undefined : first
 const [rawAction, ...params] = personaKey ? rest : [first, ...rest]
 if (!rawAction) fail(usage)
-if (rawAction !== 'verify' && [values.user, values.admin, values.stranger].some((value) => value !== undefined)) {
-  fail('--user, --admin and --stranger only apply to "verify"')
+if (!verifyActions.has(rawAction) && [values.user, values.admin, values.stranger].some((value) => value !== undefined)) {
+  fail('--user, --admin and --stranger only apply to "verify" and "verify-mcp"')
 }
 
 const common = {
@@ -131,13 +147,14 @@ switch (rawAction) {
     args = { mode: need(0, 'accept|dismiss') }
     break
   case 'verify':
-    if (personaKey) fail(`"verify" takes no persona before it. Choose people with --user, --admin and --stranger.`)
+  case 'verify-mcp':
+    if (personaKey) fail(`"${rawAction}" takes no persona before it. Choose people with --user, --admin and --stranger.`)
     args = {
       verifierArgs: params,
       user: values.user,
       admin: values.admin,
       stranger: values.stranger,
-      env: forwardedEnvironment(process.env),
+      env: forwardedEnvironment(process.env, rawAction === 'verify' ? forwardedVariables : mcpForwardedVariables),
     }
     break
   case 'open':
@@ -228,7 +245,7 @@ function rpc(body: string, timeoutMs: number): Promise<{ status: number; text: s
 }
 
 const waitMs =
-  typeof args.timeout === 'number' ? args.timeout : action === 'verify' ? 3 * 3_600_000 : action === 'signin' ? 600_000 : 30_000
+  typeof args.timeout === 'number' ? args.timeout : verifyActions.has(action) ? 3 * 3_600_000 : action === 'signin' ? 600_000 : 30_000
 let reply: { status: number; text: string }
 try {
   reply = await rpc(JSON.stringify({ action, persona: personaKey, args }), waitMs + 60_000)
@@ -243,7 +260,7 @@ try {
   fail(`The live driver returned HTTP ${reply.status} without a JSON body`)
 }
 if (!payload.ok) fail(`Error: ${payload.error ?? `HTTP ${reply.status}`}`)
-if (action === 'verify') {
+if (verifyActions.has(action)) {
   const run = payload.result as { exitCode: number | null; timedOut: boolean; lines: string[]; personas: Record<string, string> }
   const people = Object.entries(run.personas).map(([part, key]) => `${part} ${key}`)
   process.stdout.write(`Personas: ${people.join(', ')}\n${run.lines.join('\n')}\n`)

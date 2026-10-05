@@ -1,0 +1,5 @@
+# The servers aren't in the uv workspace, but follow its lint rules. Each folder is its own root,
+# so their imports sort as first-party.
+extend = "../../pyproject.toml"
+src = ["m-tools", "m-tools/tests", "m-agent", "m-agent/tests", "m-protected", "deploy"]
+target-version = "py313"

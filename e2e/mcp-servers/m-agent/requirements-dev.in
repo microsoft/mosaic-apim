@@ -1,0 +1,4 @@
+# M-agent's dependencies plus its test runner, at the versions requirements.txt pins.
+-c requirements.txt
+-r requirements.in
+pytest==9.1.1

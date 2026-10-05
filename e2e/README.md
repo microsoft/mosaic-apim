@@ -16,6 +16,9 @@ npm test
 - [Roadmap](../docs/e2e/roadmap.md): the phases, the journey matrix, and the product gaps.
 
 Layout: `src/` holds the shared library, with the console and portal page objects in `src/pages/`,
-the journeys the specs share in `src/journeys.ts`, and the runtime verifier runner in
-`src/runtime.ts`. `tools/` holds the live driver, drive and login CLIs, `specs/` the ordered
+the journeys the specs share in `src/journeys.ts`, the runtime verifier runner in `src/runtime.ts`,
+and the live driver's plans for the model and MCP verifiers in `src/verify.ts` and
+`src/verify-mcp.ts`. `tools/` holds the live driver, drive and login CLIs, `specs/` the ordered
 Playwright journeys from `00-smoke` to `90-cleanup`, and `tests/` the harness unit tests.
+`mcp-servers/` holds the Phase 11 MCP test servers and the kit that deploys them, in Python and
+apart from the harness: see [its README](mcp-servers/README.md).
