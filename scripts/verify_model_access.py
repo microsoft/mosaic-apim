@@ -479,7 +479,9 @@ def oauth_error(response: httpx.Response) -> str | None:
     return error if isinstance(error, str) and OAUTH_ERROR.fullmatch(error) else None
 
 
-def sign_in_failure(response: httpx.Response, action: str) -> str:
+def sign_in_failure(
+    response: httpx.Response, action: str, *, troubleshooting: str = TROUBLESHOOTING
+) -> str:
     """Describe a failed sign-in by its codes only: descriptions can echo request details."""
     try:
         body = mapping(response.json())
@@ -496,7 +498,7 @@ def sign_in_failure(response: httpx.Response, action: str) -> str:
         codes = AADSTS.findall(description)
     error = oauth_error(response)
     details = [error or f"HTTP {response.status_code}", *dict.fromkeys(codes)]
-    return f"{action} failed: {', '.join(details)}. See {TROUBLESHOOTING}"
+    return f"{action} failed: {', '.join(details)}. See {troubleshooting}"
 
 
 def access_token(response: httpx.Response, action: str) -> str:
@@ -507,14 +509,24 @@ def access_token(response: httpx.Response, action: str) -> str:
 
 
 def device_code_token(
-    client: httpx.Client, *, tenant: str, client_id: str, scope: str, who: str
+    client: httpx.Client,
+    *,
+    tenant: str,
+    client_id: str,
+    scope: str,
+    who: str,
+    troubleshooting: str = TROUBLESHOOTING,
 ) -> str:
     """Sign a person in with the OAuth device authorization grant."""
     base = f"{LOGIN_ORIGIN}/{tenant}/oauth2/v2.0"
-    # Only the model scope: no OpenID Connect scopes, so they need no consent.
+    # Only the runtime scope asked for: no OpenID Connect scopes, so they need no consent.
     started = client.post(f"{base}/devicecode", data={"client_id": client_id, "scope": scope})
     if started.status_code != 200:
-        raise VerificationFailed(sign_in_failure(started, f"Starting a sign-in for {who}"))
+        raise VerificationFailed(
+            sign_in_failure(
+                started, f"Starting a sign-in for {who}", troubleshooting=troubleshooting
+            )
+        )
     flow = object_body(started, "Device sign-in")
     device_code = flow.get("device_code")
     user_code = flow.get("user_code")
@@ -553,11 +565,15 @@ def device_code_token(
         if error == "slow_down":
             interval = min(interval + 5, 60)
             continue
-        raise VerificationFailed(sign_in_failure(polled, f"Signing in {who}"))
+        raise VerificationFailed(
+            sign_in_failure(polled, f"Signing in {who}", troubleshooting=troubleshooting)
+        )
     raise VerificationFailed(f"Signing in {who} timed out")
 
 
-def client_credentials_token(client: httpx.Client, *, tenant: str, scope: str) -> str:
+def client_credentials_token(
+    client: httpx.Client, *, tenant: str, scope: str, troubleshooting: str = TROUBLESHOOTING
+) -> str:
     response = client.post(
         f"{LOGIN_ORIGIN}/{tenant}/oauth2/v2.0/token",
         data={
@@ -568,7 +584,9 @@ def client_credentials_token(client: httpx.Client, *, tenant: str, scope: str) -
         },
     )
     if response.status_code != 200:
-        raise VerificationFailed(sign_in_failure(response, "Signing in the application"))
+        raise VerificationFailed(
+            sign_in_failure(response, "Signing in the application", troubleshooting=troubleshooting)
+        )
     return access_token(response, "The application sign-in")
 
 
@@ -580,11 +598,20 @@ def seconds_left(token: str) -> int | None:
     return int(expires - time.time())
 
 
-def token_problem(token: str, *, kind: Kind, audience: str | None, valid_for: float) -> str | None:
+def token_problem(
+    token: str,
+    *,
+    kind: Kind,
+    audience: str | None,
+    valid_for: float,
+    scope: str = "Models.Invoke",
+    role: str = "Models.Invoke.Application",
+) -> str | None:
     """Why token validation would refuse this model token, or None if it wouldn't.
 
     Validation runs before any grant rule, so a check that sent such a token would pass whatever
-    the rule under test does.
+    the rule under test does. ``scope`` and ``role`` are the permissions the gateway requires,
+    which differ for MCP servers.
     """
     claims = token_claims(token)
     if not claims:
@@ -595,12 +622,12 @@ def token_problem(token: str, *, kind: Kind, audience: str | None, valid_for: fl
         return "isn't an Entra version 2.0 token, the only kind the gateway accepts"
     if kind == "user":
         scopes = claims.get("scp")
-        if not isinstance(scopes, str) or "Models.Invoke" not in scopes.split():
-            return "lacks the Models.Invoke scope"
+        if not isinstance(scopes, str) or scope not in scopes.split():
+            return f"lacks the {scope} scope"
     else:
         roles = claims.get("roles")
-        if not isinstance(roles, list) or "Models.Invoke.Application" not in roles:
-            return "lacks the Models.Invoke.Application role"
+        if not isinstance(roles, list) or role not in roles:
+            return f"lacks the {role} role"
     left = seconds_left(token)
     if left is None:
         return "has no expiry time"

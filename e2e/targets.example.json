@@ -98,5 +98,59 @@
       "sharedBudget": { "persona": "user-a", "endpoint": "aoai-east", "deployment": "gpt-4o", "calls": 2, "perSeconds": 300 },
       "tokenLimit": { "persona": "user-a", "endpoint": "foundry-partners", "deployment": "Llama-3.3-70B-Instruct", "tokensPerMinute": 100 }
     }
+  },
+  "mcp": {
+    "servers": {
+      "m-tools": {
+        "url": "https://m-tools-example.azurecontainerapps.io/mcp",
+        "displayName": "M-tools",
+        "upstreamAuth": "none",
+        "tools": ["echo", "utc_now", "add"]
+      },
+      "m-protected": {
+        "url": "https://m-protected-example.azurewebsites.net/runtime/webhooks/mcp",
+        "displayName": "M-protected",
+        "upstreamAuth": "managed-identity",
+        "audience": "api://00000000-0000-0000-0000-000000000000",
+        "tools": ["echo", "utc_now", "add"]
+      },
+      "m-agent": {
+        "url": "https://m-agent-example.azurecontainerapps.io/mcp",
+        "displayName": "M-agent",
+        "upstreamAuth": "none",
+        "tools": ["ask_model"],
+        "modelCaller": { "application": "mosaic-dev-mcp-agent", "modelGrant": "ent_00000000000000000000000000000009" },
+        "notes": "Its tool calls a governed model as the application it names, passing on x-mosaic-on-behalf-of."
+      }
+    },
+    "grants": {
+      "tools-user": { "server": "m-tools", "persona": "user-a", "id": "ent_00000000000000000000000000000001", "costCenter": "general" },
+      "protected-user": { "server": "m-protected", "persona": "user-a", "id": "ent_00000000000000000000000000000002", "costCenter": "general" },
+      "tools-agent": { "server": "m-tools", "application": "mosaic-dev-mcp-agent", "id": "ent_00000000000000000000000000000003", "costCenter": "general" },
+      "tools-limited": {
+        "server": "m-tools",
+        "persona": "user-a",
+        "id": "ent_00000000000000000000000000000004",
+        "costCenter": "e2e-limits",
+        "callLimit": { "calls": 10, "perSeconds": 60 },
+        "notes": "For --prove-call-limit: a fresh grant with no other callers."
+      },
+      "tools-pooled": {
+        "server": "m-tools",
+        "persona": "user-a",
+        "id": "ent_00000000000000000000000000000005",
+        "costCenter": "e2e-pool",
+        "pooledCalls": 10,
+        "notes": "For --prove-pooled-quota, which spends the cost center's pool on the server for the rest of the month."
+      },
+      "agent-user": { "server": "m-agent", "persona": "user-a", "id": "ent_00000000000000000000000000000006", "costCenter": "general" },
+      "tools-revocable": {
+        "server": "m-tools",
+        "persona": "user-a",
+        "id": "ent_00000000000000000000000000000007",
+        "costCenter": "e2e-revoke",
+        "notes": "For --watch-revocation: revoked, and its server's plan applied, during the run."
+      }
+    }
   }
 }
