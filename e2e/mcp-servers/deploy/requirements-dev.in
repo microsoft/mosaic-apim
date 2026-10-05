@@ -1,0 +1,2 @@
+# The deployment kit's test runner. deploy.py and smoke.py use only the standard library.
+pytest==9.1.1
