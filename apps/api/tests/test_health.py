@@ -22,7 +22,7 @@ def test_the_root_answers_200_with_nothing_and_needs_no_sign_in(method: str) -> 
     app = create_app(settings)
     with TestClient(app) as client:
         root = client.request(method, "/")
-        # Every route under it still needs a token.
+        # The API's own routes, under /api/v1, still need a token.
         assert client.get("/api/v1/groups").status_code == 401
 
     assert root.status_code == 200

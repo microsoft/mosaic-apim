@@ -904,7 +904,8 @@ measured scale, not speculation.
 
 ## Security model
 
-- Only health endpoints are anonymous.
+- The health endpoints are anonymous, and so is the root (`GET /` and `HEAD /`), which answers
+  App Service's Always On ping with an empty `200`. Every route under `/api/v1` requires a token.
 - Browser authentication uses authorization code + PKCE through MSAL.
 - The API accepts RS256 tokens from the configured tenant only, validates OIDC discovery/JWKS,
   issuer, client-ID audience, signature, time claims, and tenant. A token carrying none of

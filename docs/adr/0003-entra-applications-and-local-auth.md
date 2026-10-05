@@ -45,5 +45,5 @@ App Service's Always On sends `GET /` to the API every five minutes to keep it l
 served nothing there, so each ping got `404`, and Application Insights recorded it as a failed
 request once the API recorded its requests. The root is now anonymous too, beside the health
 endpoints. It answers `GET` and `HEAD` with an empty `200`: no name, version or configuration.
-It isn't in the OpenAPI document, and its requests aren't recorded. Every other route still
-requires a token.
+It isn't in the OpenAPI document, and its requests aren't recorded. Every route under `/api/v1`
+still requires a token.
