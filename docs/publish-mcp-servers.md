@@ -13,7 +13,8 @@ You need:
 - gateway MCP capability available from synchronization, with a gateway URL recorded;
 - `MOSAIC_MODEL_RUNTIME_CLIENT_ID` configured, because MCP runtime tokens use that registration's
   `Mcp.Invoke` delegated scope and `Mcp.Invoke.Application` app role;
-- a registered MCP server whose transport is streamable HTTP;
+- a registered MCP server whose transport is streamable HTTP, and whose URL ends in `/mcp` with no
+  query string, as [The backend URL](#the-backend-url) explains;
 - a gateway and MCP server whose environments the [environment rules](#environment-rules) allow
   together;
 - an upstream authentication mode of **None**, or **Managed identity** with a configured audience;
@@ -68,7 +69,7 @@ One MCP publication owns seven APIM resources:
 
 | Order | Resource | Purpose |
 | --- | --- | --- |
-| 1 | Backend | Points to the registered MCP server URL |
+| 1 | Backend | Points at the registered MCP server's URL without its final `/mcp`, as [The backend URL](#the-backend-url) explains |
 | 2 | Policy fragment | Validates Entra tokens, matches grants, tags each authorized call with its grant, applies call limits, strips caller credentials and attaches backend managed identity when configured. With a model caller, it also passes each call's reference to the server |
 | 3 | MCP API | Exposes the streamable MCP endpoint at `{gateway}/{api_path}/mcp` |
 | 4 | MCP API policy | Includes the enforcement fragment and adds the resource metadata challenge on validation failures |
@@ -78,6 +79,41 @@ One MCP publication owns seven APIM resources:
 
 MOSAIC never takes over an APIM resource it did not create or already record as its own. A name or
 path collision with customer-owned APIM state stops creation or planning.
+
+## The backend URL
+
+Clients call a published server at `{gateway}/{api_path}/mcp`. API Management forwards each call to
+the backend's URL with the part of the path after the API's path, `/mcp`, added. So MOSAIC sets the
+backend's URL to the registered server's URL without its final `/mcp`, and keeps the scheme, host,
+port and any path before it:
+
+| Registered MCP server URL | Backend URL | What API Management calls |
+| --- | --- | --- |
+| `https://tools.example.test/mcp` | `https://tools.example.test` | `https://tools.example.test/mcp` |
+| `https://func.example.test/runtime/webhooks/mcp` | `https://func.example.test/runtime/webhooks` | `https://func.example.test/runtime/webhooks/mcp` |
+| `https://tools.example.test:8443/api/mcp` | `https://tools.example.test:8443/api` | `https://tools.example.test:8443/api/mcp` |
+
+A trailing slash is ignored, as it is when you register the server, so
+`https://tools.example.test/mcp/` also gets the backend `https://tools.example.test`. MOSAIC won't
+create, plan or apply a publication for a server whose URL doesn't end in `/mcp`, or has a query
+string, and it says why. It doesn't guess another route for such a server: register the server by
+its streamable HTTP URL that ends in `/mcp`. Unpublishing doesn't use the backend URL, so it still
+works for a server MOSAIC can no longer publish.
+
+This is behavior observed live, not a documented contract. In Phase 11's M5 journey, a published
+server's backend pointed at its full registered URL, `https://<server-host>/mcp`. The gateway's own
+request log showed each call to `https://<gateway>/mosaic/mcp/<server>/mcp` forwarded to
+`https://<server-host>/mcp/mcp`, which answered `404`, while the registered URL worked when called
+directly. MOSAIC writes the MCP API without an `endpoints` map, so API Management serves its default
+`/mcp` route. Microsoft's guide to
+[expose an existing MCP server](https://learn.microsoft.com/en-us/azure/api-management/expose-existing-mcp-server)
+asks for a full endpoint, such as `https://learn.microsoft.com/api/mcp`, as the portal's **MCP
+server base URL**, so the portal evidently configures its MCP APIs differently.
+
+A publication applied before MOSAIC set the backend this way still points its backend at the full
+registered URL, so calls through it reach `.../mcp/mcp`. Its next plan replaces the backend, after
+the step that denies the MCP API first, as for any backend change. Plan, review and apply each
+published server again to correct it.
 
 ## Apply and fail-closed behavior
 

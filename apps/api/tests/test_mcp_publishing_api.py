@@ -67,12 +67,12 @@ def _onboard_gateway(client: TestClient) -> str:
     return str(gateway_id)
 
 
-def _seed_endpoint(client: TestClient) -> str:
+def _seed_endpoint(client: TestClient, url: str = "https://mcp.contoso.test/mcp") -> str:
     endpoint = McpEndpoint(
         id="mcp-endpoint-orders",
         tenant_id=TENANT_ID,
         name="Orders MCP",
-        endpoint="https://mcp.contoso.test/mcp",
+        endpoint=url,
         status=McpEndpointStatus.CONNECTED,
         inventory=McpInventorySummary(tools=2),
     )
@@ -161,6 +161,23 @@ def test_mcp_publication_http_round_trip(mcp_publishing_client: TestClient) -> N
 
     deleted = mcp_publishing_client.delete(f"/api/v1/mcp-publications/{publication_id}")
     assert deleted.status_code == 204
+
+
+def test_mcp_publication_refuses_a_server_not_registered_at_mcp(
+    mcp_publishing_client: TestClient,
+) -> None:
+    gateway_id = _onboard_gateway(mcp_publishing_client)
+    endpoint_id = _seed_endpoint(mcp_publishing_client, "https://mcp.contoso.test/api/stream")
+
+    refused = mcp_publishing_client.post(
+        "/api/v1/mcp-publications",
+        json={"gatewayId": gateway_id, "mcpEndpointId": endpoint_id},
+    )
+
+    assert refused.status_code == 422, refused.text
+    assert refused.json()["code"] == "validation_error"
+    assert "only if its registered URL ends in /mcp" in refused.json()["message"]
+    assert refused.json()["details"] == {"mcpEndpointId": endpoint_id}
 
 
 def test_mcp_model_caller_http_round_trip(mcp_publishing_client: TestClient) -> None:

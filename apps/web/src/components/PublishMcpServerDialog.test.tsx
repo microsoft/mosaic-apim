@@ -562,6 +562,30 @@ describe('PublishMcpServerDialog', () => {
     expect(within(table).getByRole('checkbox', { name: 'Publish Weather tools' })).toBeDisabled()
   })
 
+  it('blocks a server that API Management cannot reach through a backend URL', async () => {
+    api.listMcpEndpoints.mockResolvedValue([
+      endpoint({ id: 'stream', name: 'Stream tools', endpoint: 'https://mcp.example.test/api/stream' }),
+      endpoint({ id: 'query', name: 'Query tools', endpoint: 'https://mcp.example.test/mcp?tenant=contoso' }),
+      endpoint({ id: 'nested', name: 'Nested tools', endpoint: 'https://mcp.example.test/runtime/webhooks/mcp/' }),
+    ])
+    renderDialog()
+
+    const table = await screen.findByRole('table', { name: 'Publishable MCP servers' })
+    expect(
+      within(table).getByText(
+        'MOSAIC can publish an MCP server only if its URL ends in /mcp, because API Management adds /mcp when it forwards a call. Register its Streamable HTTP endpoint that ends in /mcp.',
+      ),
+    ).toBeVisible()
+    expect(
+      within(table).getByText(
+        "MOSAIC can't publish an MCP server registered with a query string or fragment. Register it by a URL without one.",
+      ),
+    ).toBeVisible()
+    expect(within(table).getByRole('checkbox', { name: 'Publish Stream tools' })).toBeDisabled()
+    expect(within(table).getByRole('checkbox', { name: 'Publish Query tools' })).toBeDisabled()
+    expect(within(table).getByRole('checkbox', { name: 'Publish Nested tools' })).toBeEnabled()
+  })
+
   it('shows environments and disables blocked pairings with the reason', async () => {
     api.listGateways.mockResolvedValue([gateway({ environment: 'production' })])
     api.listMcpEndpoints.mockResolvedValue([endpoint({ environment: 'development' })])

@@ -110,6 +110,24 @@ function defaultsFor(endpoint: McpEndpoint | null): FormState {
   }
 }
 
+// API Management adds /mcp to a backend's URL when it forwards a call, so the API points the backend
+// at the server's URL without its final /mcp, and refuses a server it couldn't reach that way.
+function backendUrlBlocker(url: string): string | null {
+  let parsed: URL
+  try {
+    parsed = new URL(url)
+  } catch {
+    return null
+  }
+  if (parsed.search || parsed.hash) {
+    return "MOSAIC can't publish an MCP server registered with a query string or fragment. Register it by a URL without one."
+  }
+  if (parsed.pathname.replace(/\/+$/, '').split('/').pop() !== 'mcp') {
+    return 'MOSAIC can publish an MCP server only if its URL ends in /mcp, because API Management adds /mcp when it forwards a call. Register its Streamable HTTP endpoint that ends in /mcp.'
+  }
+  return null
+}
+
 function endpointBlockers(endpoint: McpEndpoint | null): string[] {
   if (!endpoint) return []
   const reasons: string[] = []
@@ -128,6 +146,8 @@ function endpointBlockers(endpoint: McpEndpoint | null): string[] {
   if (endpoint.status === 'unsupportedProtocol') {
     reasons.push('This server speaks an MCP protocol version MOSAIC cannot publish.')
   }
+  const backendUrl = backendUrlBlocker(endpoint.endpoint)
+  if (backendUrl) reasons.push(backendUrl)
   return reasons
 }
 

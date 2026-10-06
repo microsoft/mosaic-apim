@@ -51,6 +51,7 @@ from mosaic_api.domain import (
     apim_slug,
     gateway_tier,
     grant_precedence_key,
+    mcp_backend_url,
     mcp_metadata_api_path,
     mcp_publication_id,
     mcp_server_id,
@@ -166,6 +167,15 @@ def _resource_key(resource: PublishedResource | PublishStepResult) -> tuple[str,
     return str(resource.kind), resource.name
 
 
+def _backend_url(endpoint: McpEndpoint) -> str:
+    """The URL of the backend a publication of ``endpoint`` writes. See :func:`mcp_backend_url`."""
+
+    try:
+        return mcp_backend_url(str(endpoint.endpoint))
+    except ValueError as error:
+        raise ValidationError(str(error), details={"mcpEndpointId": endpoint.id}) from None
+
+
 def _disabled_snapshot(snapshot: McpAccessSnapshot) -> McpAccessSnapshot:
     return snapshot.model_copy(
         update={
@@ -206,7 +216,7 @@ def mcp_publication_digest(
             "apiName": publication.api_name,
             "apiPath": publication.api_path,
             "backendName": publication.backend_name,
-            "backendUrl": str(endpoint.endpoint),
+            "backendUrl": _backend_url(endpoint),
             "backendAuth": str(endpoint.auth_mode),
             "backendAudience": endpoint.resource_audience,
             "fragmentName": publication.fragment_name,
@@ -1037,6 +1047,8 @@ class McpPublishingService:
             raise ValidationError("MOSAIC can publish only streamable MCP servers.")
         if endpoint.status == McpEndpointStatus.UNSUPPORTED_TRANSPORT:
             raise ValidationError("This MCP server uses an unsupported transport.")
+        # Refuse a URL that no backend URL serves through API Management.
+        _backend_url(endpoint)
 
     async def _materialize_mcp_server(self, actor: Actor, publication: McpPublication) -> McpServer:
         existing = await self._repository.get_mcp_server(actor.tenant_id, publication.mcp_server_id)
@@ -1511,7 +1523,7 @@ class McpPublishingService:
         if backend is None:
             return True
         properties = backend.get("properties") if isinstance(backend, dict) else None
-        return not isinstance(properties, dict) or properties.get("url") != str(endpoint.endpoint)
+        return not isinstance(properties, dict) or properties.get("url") != _backend_url(endpoint)
 
     @staticmethod
     def _owns(publication: McpPublication, kind: PublishedResourceKind, name: str) -> bool:
@@ -1755,7 +1767,7 @@ class McpPublishingService:
         elif step.kind == PublishedResourceKind.BACKEND:
             await writer.put_backend(
                 publication.backend_name,
-                url=str(endpoint.endpoint),
+                url=_backend_url(endpoint),
                 title=f"MOSAIC backend for {publication.display_name}",
             )
         elif step.kind == PublishedResourceKind.POLICY_FRAGMENT:
