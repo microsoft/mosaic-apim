@@ -24,7 +24,7 @@ import {
   Title3,
 } from '@fluentui/react-components'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useMosaicApi } from '../api'
 import { describeLimits } from '../entitlement-limits'
 import { environmentBlockedVerdict, lookupCompatibility, useEnvironmentCatalog } from '../environments'
@@ -409,6 +409,15 @@ function PublishMcpServerSession({ open, onClose, onPublished, initialReview }: 
     },
   })
 
+  const refreshedRunRef = useRef('')
+  const refreshTerminalRun = useCallback((completedRun: PublishRun) => {
+    if (!terminalRunStatuses.includes(completedRun.status) || refreshedRunRef.current === completedRun.id) return
+    refreshedRunRef.current = completedRun.id
+    for (const key of ['mcp-publications', 'mcp-servers', 'entitlements', 'entitlement-connection']) {
+      void queryClient.invalidateQueries({ queryKey: [key] })
+    }
+  }, [queryClient])
+
   const apply = useMutation({
     mutationFn: async () => {
       if (!publication || !plan) throw new Error('Review the plan before applying it.')
@@ -418,7 +427,9 @@ function PublishMcpServerSession({ open, onClose, onPublished, initialReview }: 
       setRunId(run.id)
       setReviewMessage('')
       setStep('apply')
-      void queryClient.invalidateQueries({ queryKey: ['mcp-publications'] })
+      // Mutation callbacks survive a keyed-session unmount; a terminal apply must still refresh caches.
+      if (terminalRunStatuses.includes(run.status)) refreshTerminalRun(run)
+      else void queryClient.invalidateQueries({ queryKey: ['mcp-publications'] })
     },
     onError: async (error) => {
       if (!publication || (error as { status?: number }).status !== 409) return
@@ -449,21 +460,17 @@ function PublishMcpServerSession({ open, onClose, onPublished, initialReview }: 
   const currentRun = run.data ?? apply.data ?? null
 
   useEffect(() => {
-    // Closed sessions stay mounted until the next opening; late completions must not announce success.
-    if (!open) return
     if (currentRun && terminalRunStatuses.includes(currentRun.status) && notifiedRunRef.current !== currentRun.id) {
       notifiedRunRef.current = currentRun.id
-      void queryClient.invalidateQueries({ queryKey: ['mcp-publications'] })
-      void queryClient.invalidateQueries({ queryKey: ['mcp-servers'] })
-      void queryClient.invalidateQueries({ queryKey: ['entitlements'] })
-      void queryClient.invalidateQueries({ queryKey: ['entitlement-connection'] })
-      if (currentRun.status === 'succeeded') {
+      refreshTerminalRun(currentRun)
+      // Closed sessions still refresh terminal results, but must not announce completion.
+      if (open && currentRun.status === 'succeeded') {
         onPublished(runtimeConfig.authMode === 'local'
           ? 'Local development service reported completion. Live APIM apply is not verified.'
           : 'The service reports the MCP plan applied. Allow for APIM propagation; live invocation is not verified.')
       }
     }
-  }, [currentRun, onPublished, open, queryClient])
+  }, [currentRun, onPublished, open, refreshTerminalRun])
 
   // Step changes remove the focused control. Move to the new step or outcome so focus and Escape
   // stay inside the modal, but leave initial focus to Fluent and don't interrupt an edited field.

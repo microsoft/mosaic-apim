@@ -194,10 +194,14 @@ function DialogParent({ reviews, frames, onPublished }: {
   )
 }
 
-function renderDialogParent(reviews: Review[] = [], onPublished = vi.fn()) {
+function renderDialogParent(
+  reviews: Review[] = [],
+  onPublished = vi.fn(),
+  queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } }),
+) {
   const frames: Frame[] = []
   render(
-    <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+    <QueryClientProvider client={queryClient}>
       <DialogParent reviews={reviews} frames={frames} onPublished={onPublished} />
     </QueryClientProvider>,
   )
@@ -378,14 +382,20 @@ describe('PublishMcpServerDialog', () => {
     await waitFor(() => expect(opener).toHaveFocus())
   })
 
-  it.each(['plan', 'apply'] as const)('ignores a delayed %s completion after closing and reopening', async (operation) => {
+  it.each(['plan', 'apply'] as const)('refreshes caches without changing the new dialog after a delayed %s completion', async (operation) => {
     const user = userEvent.setup()
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const keys = operation === 'apply'
+      ? ['mcp-publications', 'mcp-servers', 'entitlements', 'entitlement-connection']
+      : ['mcp-publications']
+    keys.forEach((key) => queryClient.setQueryData([key], []))
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
     let finish!: () => void
     const pending = new Promise<PublishPlan | PublishRun>((resolve) => {
       finish = () => resolve(operation === 'plan' ? plan : run())
     })
     const onPublished = vi.fn()
-    renderDialogParent([{ publication, plan }], onPublished)
+    renderDialogParent([{ publication, plan }], onPublished, queryClient)
     if (operation === 'plan') {
       api.planMcpPublication.mockReturnValueOnce(pending)
       await user.click(screen.getByRole('button', { name: 'Start publishing' }))
@@ -400,41 +410,64 @@ describe('PublishMcpServerDialog', () => {
     }
     await user.click(screen.getByRole('button', { name: 'Close' }))
     await user.click(await screen.findByRole('button', { name: 'Start publishing' }))
+    invalidate.mockClear()
     await act(async () => { finish() })
     await settle()
     expect(screen.getByText('Step 1 of 4')).toBeVisible()
     expect(focused()).toBe(screen.getByRole('combobox', { name: 'Gateway' }))
     expect(onPublished).not.toHaveBeenCalled()
+    for (const key of keys) {
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: [key] })
+      expect(queryClient.getQueryState([key])?.isInvalidated).toBe(true)
+    }
   })
 
-  it('does not announce a delayed apply while the closed session is still mounted', async () => {
+  it('refreshes caches without announcing or focusing a delayed apply while the closed session is mounted', async () => {
     const user = userEvent.setup()
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const keys = ['mcp-publications', 'mcp-servers', 'entitlements', 'entitlement-connection']
+    keys.forEach((key) => queryClient.setQueryData([key], []))
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
     let finish!: (value: PublishRun) => void
     api.applyMcpPublication.mockReturnValueOnce(new Promise<PublishRun>((resolve) => { finish = resolve }))
     const onPublished = vi.fn()
-    renderDialogParent([{ publication, plan }], onPublished)
-    await user.click(screen.getByRole('button', { name: 'Open review 1' }))
+    renderDialogParent([{ publication, plan }], onPublished, queryClient)
+    const opener = screen.getByRole('button', { name: 'Open review 1' })
+    await user.click(opener)
     await user.click(screen.getByRole('button', { name: 'Apply plan' }))
     await screen.findByRole('button', { name: 'Applying…' })
-    await user.click(screen.getByRole('button', { name: 'Close' }))
-    await screen.findByRole('button', { name: 'Open review 1' })
+    await user.keyboard('{Escape}')
+    await waitFor(() => expect(opener).toHaveFocus())
+    invalidate.mockClear()
     await act(async () => { finish(run()) })
     await settle()
     expect(onPublished).not.toHaveBeenCalled()
     expect(document.querySelector('[role="dialog"]')).toBeNull()
+    expect(opener).toHaveFocus()
+    for (const key of keys) {
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: [key] })
+      expect(queryClient.getQueryState([key])?.isInvalidated).toBe(true)
+    }
   })
 
-  it('focuses a polled terminal outcome after showing the running apply step', async () => {
+  it('focuses and refreshes caches for a polled terminal outcome after showing the running apply step', async () => {
     const user = userEvent.setup()
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
     const running = run({ status: 'running', completedAt: null })
     api.applyMcpPublication.mockResolvedValueOnce(running)
     api.getMcpPublishRun.mockResolvedValueOnce(running).mockResolvedValue(run())
-    renderDialogParent([{ publication, plan }])
+    renderDialogParent([{ publication, plan }], vi.fn(), queryClient)
     await user.click(screen.getByRole('button', { name: 'Open review 1' }))
     await user.click(screen.getByRole('button', { name: 'Apply plan' }))
     await waitFor(() => expect(focused()).toBe(screen.getByText('Step 4 of 4')))
+    invalidate.mockClear()
     await waitFor(() => expect(focused()).toHaveTextContent('Local development service reported completion'), { timeout: 3000 })
     expect(api.getMcpPublishRun).toHaveBeenCalledTimes(2)
+    expect(invalidate).toHaveBeenCalledTimes(4)
+    for (const key of ['mcp-publications', 'mcp-servers', 'entitlements', 'entitlement-connection']) {
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: [key] })
+    }
   })
 
   it.each(['failed', 'interrupted', 'rolledBack', 'rollbackFailed'] as const)('focuses the %s run outcome', async (status) => {
