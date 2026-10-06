@@ -1,5 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
+import { Profiler, useState } from 'react'
+import { useRestoreFocusTarget } from '@fluentui/react-components'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { PublishMcpServerDialog } from './PublishMcpServerDialog'
@@ -162,6 +164,65 @@ function renderDialog(onPublished = vi.fn()) {
   )
 }
 
+type Review = { publication: McpPublication; plan: PublishPlan; message?: string }
+type Frame = { step?: string; text: string }
+
+// Record committed frames before effects can replace the opening controls or closing content.
+function recordFrame(frames: Frame[]) {
+  const dialog = document.querySelector('[role="dialog"]')
+  if (!dialog) return
+  const text = dialog.textContent ?? ''
+  frames.push({ step: text.match(/Step \d of 4/)?.[0], text })
+}
+
+function DialogParent({ reviews, frames, onPublished }: {
+  reviews: Review[]; frames: Frame[]; onPublished: (message: string) => void
+}) {
+  const [opened, setOpened] = useState<{ review: Review | null } | null>(null)
+  const restoreFocus = useRestoreFocusTarget()
+  return (
+    <>
+      <button {...restoreFocus} onClick={() => setOpened({ review: null })}>Start publishing</button>
+      {reviews.map((review, index) => (
+        <button {...restoreFocus} key={index} onClick={() => setOpened({ review })}>Open review {index + 1}</button>
+      ))}
+      <Profiler id="mcp-dialog" onRender={() => recordFrame(frames)}>
+        <PublishMcpServerDialog open={opened !== null} initialReview={opened?.review}
+          onClose={() => setOpened(null)} onPublished={onPublished} />
+      </Profiler>
+    </>
+  )
+}
+
+function renderDialogParent(reviews: Review[] = [], onPublished = vi.fn()) {
+  const frames: Frame[] = []
+  render(
+    <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+      <DialogParent reviews={reviews} frames={frames} onPublished={onPublished} />
+    </QueryClientProvider>,
+  )
+  return frames
+}
+
+function focused() {
+  const element = document.activeElement as HTMLElement
+  const dialog = screen.getByRole('dialog')
+  expect(dialog.closest('[aria-hidden="true"]')).toBeNull()
+  expect(element).not.toBe(dialog)
+  expect(dialog).toContainElement(element)
+  return element
+}
+
+async function settle() {
+  // Include Tabster's delayed aria-hidden pass, not just React's immediate render.
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 300)) })
+}
+
+async function configure(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(await screen.findByRole('checkbox', { name: 'Publish Weather tools' }))
+  await user.click(screen.getByRole('button', { name: 'Configure' }))
+}
+
 describe('PublishMcpServerDialog', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -189,6 +250,257 @@ describe('PublishMcpServerDialog', () => {
     api.planMcpPublication.mockResolvedValue(plan)
     api.applyMcpPublication.mockResolvedValue(run())
     api.getMcpPublishRun.mockResolvedValue(run())
+  })
+
+  it('opens an existing review on its first frame with focus inside the accessible dialog', async () => {
+    const user = userEvent.setup()
+    const frames = renderDialogParent([{ publication, plan }])
+    await user.click(screen.getByRole('button', { name: 'Open review 1' }))
+    await settle()
+
+    expect(focused()).toBe(screen.getByRole('button', { name: 'Close' }))
+    expect(new Set(frames.map((frame) => frame.step))).toEqual(new Set(['Step 3 of 4']))
+    expect(api.applyMcpPublication).not.toHaveBeenCalled()
+  })
+
+  it('moves focus to each new step instead of leaving it on a removed control', async () => {
+    const user = userEvent.setup()
+    renderDialog()
+    await configure(user)
+    await settle()
+    expect(focused()).toBe(screen.getByText('Step 2 of 4'))
+    await user.click(screen.getByRole('button', { name: 'Back' }))
+    expect(focused()).toBe(screen.getByText('Step 1 of 4'))
+    await user.click(screen.getByRole('button', { name: 'Configure' }))
+    await user.click(screen.getByRole('button', { name: 'Review plan' }))
+    await screen.findByText('Security readers')
+    await settle()
+    expect(focused()).toBe(screen.getByText('Step 3 of 4'))
+    await user.click(screen.getByRole('button', { name: 'Back' }))
+    expect(focused()).toBe(screen.getByText('Step 2 of 4'))
+  })
+
+  it.each(['Escape', 'Close'])('dismisses an existing review with %s and restores the publication opener', async (action) => {
+    const user = userEvent.setup()
+    const frames = renderDialogParent([{ publication, plan }])
+    const opener = screen.getByRole('button', { name: 'Open review 1' })
+    await user.click(opener)
+    await settle()
+    focused()
+    frames.length = 0
+    if (action === 'Escape') await user.keyboard('{Escape}')
+    else await user.keyboard('{Enter}')
+    await waitFor(() => expect(document.querySelector('[role="dialog"]')).toBeNull())
+    await waitFor(() => expect(opener).toHaveFocus())
+    expect(frames.length).toBeGreaterThan(0)
+    expect(new Set(frames.map((frame) => frame.step))).toEqual(new Set(['Step 3 of 4']))
+    expect(frames.every((frame) => frame.text.includes('Review MCP access'))).toBe(true)
+  })
+
+  it('starts each reopening with the requested plan and forgets the previous apply error', async () => {
+    const user = userEvent.setup()
+    const second: Review = {
+      publication: { ...publication, id: 'mcp_pub_2' },
+      plan: { ...plan, id: 'plan_2', publicationId: 'mcp_pub_2', warnings: ['Second publication review'] },
+    }
+    api.applyMcpPublication.mockRejectedValueOnce(new Error('First apply refused.'))
+    const frames = renderDialogParent([{ publication, plan }, second])
+    await user.click(screen.getByRole('button', { name: 'Open review 1' }))
+    await user.click(screen.getByRole('button', { name: 'Apply plan' }))
+    await screen.findByText('First apply refused.')
+    await user.click(screen.getByRole('button', { name: 'Close' }))
+    const opener = await screen.findByRole('button', { name: 'Open review 2' })
+    frames.length = 0
+    await user.click(opener)
+    await settle()
+    expect(frames.every((frame) => frame.step === 'Step 3 of 4' && frame.text.includes('Second publication review'))).toBe(true)
+    expect(screen.queryByText('First apply refused.')).not.toBeInTheDocument()
+    expect(focused()).toBe(screen.getByRole('button', { name: 'Close' }))
+    expect(api.applyMcpPublication).toHaveBeenCalledTimes(1)
+    await user.click(screen.getByRole('button', { name: 'Apply plan' }))
+    await waitFor(() => expect(api.applyMcpPublication).toHaveBeenLastCalledWith('mcp_pub_2', 'plan_2'))
+    await screen.findByText('Step 4 of 4')
+    await user.click(screen.getByRole('button', { name: 'Close' }))
+    await user.click(await screen.findByRole('button', { name: 'Open review 2' }))
+    await settle()
+    expect(screen.getByText('Step 3 of 4')).toBeVisible()
+    expect(focused()).toBe(screen.getByRole('button', { name: 'Close' }))
+  })
+
+  it('retains the publish step during closing and starts fresh when reopened', async () => {
+    const user = userEvent.setup()
+    const frames = renderDialogParent()
+    await user.click(screen.getByRole('button', { name: 'Start publishing' }))
+    await configure(user)
+    frames.length = 0
+    await user.click(screen.getByRole('button', { name: 'Close' }))
+    const opener = await screen.findByRole('button', { name: 'Start publishing' })
+    expect(new Set(frames.map((frame) => frame.step))).toEqual(new Set(['Step 2 of 4']))
+    await user.click(opener)
+    expect(screen.getByText('Step 1 of 4')).toBeVisible()
+    expect(await screen.findByRole('checkbox', { name: 'Publish Weather tools' })).not.toBeChecked()
+    focused()
+  })
+
+  it('keeps pending buttons focusable without duplicate plan or apply, then focuses the result', async () => {
+    const user = userEvent.setup()
+    let finishPlan!: (value: PublishPlan) => void
+    let finishApply!: (value: PublishRun) => void
+    api.planMcpPublication.mockReturnValueOnce(new Promise<PublishPlan>((resolve) => { finishPlan = resolve }))
+    api.applyMcpPublication.mockReturnValueOnce(new Promise<PublishRun>((resolve) => { finishApply = resolve }))
+    renderDialogParent()
+    const opener = screen.getByRole('button', { name: 'Start publishing' })
+    await user.click(opener)
+    await configure(user)
+    await user.click(screen.getByRole('button', { name: 'Review plan' }))
+    const creating = await screen.findByRole('button', { name: 'Creating plan…' })
+    expect(creating).toHaveFocus()
+    expect(creating).toHaveAttribute('aria-disabled', 'true')
+    expect(creating).not.toBeDisabled()
+    await user.click(creating)
+    await user.keyboard('{Enter} ')
+    expect(api.planMcpPublication).toHaveBeenCalledTimes(1)
+    await act(async () => { finishPlan(plan) })
+    await user.click(await screen.findByRole('button', { name: 'Apply plan' }))
+    const applying = await screen.findByRole('button', { name: 'Applying…' })
+    expect(applying).toHaveFocus()
+    expect(applying).toHaveAttribute('aria-disabled', 'true')
+    expect(applying).not.toBeDisabled()
+    await user.click(applying)
+    await user.keyboard('{Enter} ')
+    expect(api.applyMcpPublication).toHaveBeenCalledTimes(1)
+    await act(async () => { finishApply(run()) })
+    await screen.findByText('Step 4 of 4')
+    await settle()
+    expect(focused()).toContainElement(screen.getByRole('table', { name: 'MCP publish run steps' }))
+    await user.keyboard('{Escape}')
+    await waitFor(() => expect(document.querySelector('[role="dialog"]')).toBeNull())
+    await waitFor(() => expect(opener).toHaveFocus())
+  })
+
+  it.each(['plan', 'apply'] as const)('ignores a delayed %s completion after closing and reopening', async (operation) => {
+    const user = userEvent.setup()
+    let finish!: () => void
+    const pending = new Promise<PublishPlan | PublishRun>((resolve) => {
+      finish = () => resolve(operation === 'plan' ? plan : run())
+    })
+    const onPublished = vi.fn()
+    renderDialogParent([{ publication, plan }], onPublished)
+    if (operation === 'plan') {
+      api.planMcpPublication.mockReturnValueOnce(pending)
+      await user.click(screen.getByRole('button', { name: 'Start publishing' }))
+      await configure(user)
+      await user.click(screen.getByRole('button', { name: 'Review plan' }))
+      await screen.findByRole('button', { name: 'Creating plan…' })
+    } else {
+      api.applyMcpPublication.mockReturnValueOnce(pending)
+      await user.click(screen.getByRole('button', { name: 'Open review 1' }))
+      await user.click(screen.getByRole('button', { name: 'Apply plan' }))
+      await screen.findByRole('button', { name: 'Applying…' })
+    }
+    await user.click(screen.getByRole('button', { name: 'Close' }))
+    await user.click(await screen.findByRole('button', { name: 'Start publishing' }))
+    await act(async () => { finish() })
+    await settle()
+    expect(screen.getByText('Step 1 of 4')).toBeVisible()
+    expect(focused()).toBe(screen.getByRole('combobox', { name: 'Gateway' }))
+    expect(onPublished).not.toHaveBeenCalled()
+  })
+
+  it('does not announce a delayed apply while the closed session is still mounted', async () => {
+    const user = userEvent.setup()
+    let finish!: (value: PublishRun) => void
+    api.applyMcpPublication.mockReturnValueOnce(new Promise<PublishRun>((resolve) => { finish = resolve }))
+    const onPublished = vi.fn()
+    renderDialogParent([{ publication, plan }], onPublished)
+    await user.click(screen.getByRole('button', { name: 'Open review 1' }))
+    await user.click(screen.getByRole('button', { name: 'Apply plan' }))
+    await screen.findByRole('button', { name: 'Applying…' })
+    await user.click(screen.getByRole('button', { name: 'Close' }))
+    await screen.findByRole('button', { name: 'Open review 1' })
+    await act(async () => { finish(run()) })
+    await settle()
+    expect(onPublished).not.toHaveBeenCalled()
+    expect(document.querySelector('[role="dialog"]')).toBeNull()
+  })
+
+  it('focuses a polled terminal outcome after showing the running apply step', async () => {
+    const user = userEvent.setup()
+    const running = run({ status: 'running', completedAt: null })
+    api.applyMcpPublication.mockResolvedValueOnce(running)
+    api.getMcpPublishRun.mockResolvedValueOnce(running).mockResolvedValue(run())
+    renderDialogParent([{ publication, plan }])
+    await user.click(screen.getByRole('button', { name: 'Open review 1' }))
+    await user.click(screen.getByRole('button', { name: 'Apply plan' }))
+    await waitFor(() => expect(focused()).toBe(screen.getByText('Step 4 of 4')))
+    await waitFor(() => expect(focused()).toHaveTextContent('Local development service reported completion'), { timeout: 3000 })
+    expect(api.getMcpPublishRun).toHaveBeenCalledTimes(2)
+  })
+
+  it.each(['failed', 'interrupted', 'rolledBack', 'rollbackFailed'] as const)('focuses the %s run outcome', async (status) => {
+    const user = userEvent.setup()
+    const result = run({ status, errors: ['The backend could not be created.'] })
+    api.applyMcpPublication.mockResolvedValueOnce(result)
+    api.getMcpPublishRun.mockResolvedValue(result)
+    renderDialogParent([{ publication, plan }])
+    await user.click(screen.getByRole('button', { name: 'Open review 1' }))
+    await user.click(screen.getByRole('button', { name: 'Apply plan' }))
+    await waitFor(() => expect(focused()).toHaveTextContent('The backend could not be created.'))
+    expect(focused()).toContainElement(screen.getByRole('table', { name: 'MCP publish run steps' }))
+  })
+
+  it.each([false, true])('focuses a stale-plan refusal and requires explicit reapply (refresh fails: %s)', async (refreshFails) => {
+    const user = userEvent.setup()
+    api.applyMcpPublication.mockRejectedValueOnce(Object.assign(new Error('Plan is stale.'), { status: 409 }))
+    if (refreshFails) api.planMcpPublication.mockRejectedValueOnce(new Error('Cannot refresh this plan.'))
+    else api.planMcpPublication.mockResolvedValueOnce({ ...plan, id: 'fresh_plan', warnings: ['Fresh plan'] })
+    renderDialogParent([{ publication, plan }])
+    await user.click(screen.getByRole('button', { name: 'Open review 1' }))
+    await user.click(screen.getByRole('button', { name: 'Apply plan' }))
+    await waitFor(() => expect(focused()).toHaveTextContent('Plan is stale.'))
+    expect(api.applyMcpPublication).toHaveBeenCalledTimes(1)
+    if (refreshFails) {
+      expect(screen.getByText('Cannot refresh this plan.')).toBeVisible()
+      expect(screen.getByRole('button', { name: 'Apply plan' })).toBeDisabled()
+    } else {
+      expect(screen.getByText('Fresh plan')).toBeVisible()
+      await user.click(screen.getByRole('button', { name: 'Apply plan' }))
+      await waitFor(() => expect(api.applyMcpPublication).toHaveBeenLastCalledWith('mcp_pub_1', 'fresh_plan'))
+    }
+  })
+
+  it('focuses an apply error and keeps retry focus until the next outcome', async () => {
+    const user = userEvent.setup()
+    let finish!: (value: PublishRun) => void
+    api.applyMcpPublication.mockRejectedValueOnce(new Error('Apply refused.'))
+      .mockReturnValueOnce(new Promise<PublishRun>((resolve) => { finish = resolve }))
+    renderDialogParent([{ publication, plan }])
+    await user.click(screen.getByRole('button', { name: 'Open review 1' }))
+    await user.click(screen.getByRole('button', { name: 'Apply plan' }))
+    await waitFor(() => expect(focused()).toHaveTextContent('Apply refused.'))
+    await user.click(screen.getByRole('button', { name: 'Apply plan' }))
+    await settle()
+    expect(focused()).toBe(screen.getByRole('button', { name: 'Applying…' }))
+    await act(async () => { finish(run()) })
+    await waitFor(() => expect(focused()).toHaveTextContent('Local development service reported completion'))
+  })
+
+  it.each([false, true])('handles a delayed plan error without stealing an edited field (editing: %s)', async (editing) => {
+    const user = userEvent.setup()
+    let refuse!: (error: Error) => void
+    api.planMcpPublication.mockReturnValueOnce(new Promise<PublishPlan>((_, reject) => { refuse = reject }))
+    renderDialog()
+    await configure(user)
+    await user.click(screen.getByRole('button', { name: 'Review plan' }))
+    const field = screen.getByRole('textbox', { name: 'Display name' })
+    if (editing) await user.type(field, ' EU')
+    await act(async () => { refuse(new Error('Plan could not be created.')) })
+    await screen.findByText('Plan could not be created.')
+    await settle()
+    if (editing) {
+      expect(focused()).toBe(field)
+      expect(field).toHaveValue('Weather tools EU')
+    } else expect(focused()).toHaveTextContent('Plan could not be created.')
   })
 
   it('blocks publishing when gateway capability returns reasons', async () => {
@@ -267,6 +579,7 @@ describe('PublishMcpServerDialog', () => {
 
     expect(await screen.findByText('Environment rules block this publication')).toBeVisible()
     expect(screen.getByText('Production gateways cannot publish development MCP servers.')).toBeVisible()
+    expect(focused()).toHaveTextContent('Environment rules block this publication')
   })
 
   it('creates, plans, reviews MCP grants, applies, and polls the run', async () => {
@@ -322,6 +635,7 @@ describe('PublishMcpServerDialog', () => {
 
     expect(await screen.findByText('Environment rules block this publication')).toBeVisible()
     expect(screen.getByText('Environment rules changed. Reclassify before applying.')).toBeVisible()
+    expect(focused()).toHaveTextContent('Environment rules changed. Reclassify before applying.')
     expect(api.planMcpPublication).toHaveBeenCalledTimes(1)
   })
 
