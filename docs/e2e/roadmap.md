@@ -1041,7 +1041,7 @@ value that the gateway reads with its own identity, and Phase 10 would reuse it.
 registers AWS Bedrock hosts with a Bedrock API key, but only as Claude members of a model pool,
 and R17 lists what a live Bedrock member needs to show.
 
-### Phase 11: MCP servers end to end 🔄 Batch 5a applied; Batch 5b deployed, verification in progress
+### Phase 11: MCP servers end to end 🔄 M2 passes for two servers; M-protected is unreachable; M3 to M10 remain
 
 MOSAIC publishes MCP servers through API Management and governs them with grants, as it does
 models. The first live registration and publication journeys began on 6 October 2026. Phase 11
@@ -1102,11 +1102,15 @@ cleanup, because it needs the test accounts that the cleanup removes.
   **Batch 5c**, approved and run on 6 October, restarted M-protected once without changing its
   settings. The alternation persisted: of eight requests afterwards, four were answered and four
   hung. The smoke failed the same way, and the console's connection check still reports
-  Unreachable. **Proposed Batch 5d, not approved:** stop and start M-protected, so its instance
-  is released, and repeat the same checks. Only if it still alternates, raise its instance memory
-  from 512 MB to 2,048 MB. No authentication, memory or scaling settings have been changed.
-  M-agent uses `2025-03-01-preview`, interpreting the owner's version input as its
-  model-inference API version.
+  Unreachable. **Batch 5d**, approved and run on 6 October, then stopped and started
+  M-protected, which didn't help: three of eight requests still hung. Its instance memory was then
+  raised from 512 MB to 2,048 MB, the only setting changed, and the strict alternation returned.
+  The smoke and the console's connection check failed as before. Answered 401s mostly take about
+  20 seconds, where a healthy refusal takes under one, which also points to the platform's
+  request routing, not the app's memory. M-protected stays unpublished; next is an Azure support
+  case, or hosting M-protected another way, each needing its own decision. Authentication and
+  scaling settings are unchanged. M-agent uses `2025-03-01-preview`, interpreting the owner's
+  version input as its model-inference API version.
 - ✅ **The MCP verifier**, [#97](https://github.com/microsoft/mosaic-apim/pull/97) and
   [#99](https://github.com/microsoft/mosaic-apim/pull/99), is merged. The follow-up binds an
   application token to the selected applied grant and refuses to call session cleanup complete
@@ -1154,10 +1158,26 @@ grants and gateway-wide policy were untouched.
 - M-agent was not re-applied, because the same policy wouldn't fix it. It keeps its earlier
   policy as a control, so M2 still fails for both servers.
 
-**Proposed Batch 3n, not approved:** once the follow-up fix is reviewed and merged with passing
-CI, deploy it to the API only, then review and apply fresh plans for M-tools and M-agent. Verify
-the anonymous, malformed and invalid-token challenges, the advertised metadata GET and the
-verifier's strict discovery on both servers. Check the preserved-resource hashes again.
+**Batch 3n**, approved and run on 6 October: the follow-up fix,
+[#105](https://github.com/microsoft/mosaic-apim/pull/105) (`dee8222`), sets every 401 challenge
+with `set-header` on the token validator's error response. Its review also corrected the plan
+display, which had called those error-response headers request headers. CI passed on main, and
+independent validation of the reviewed head passed the full API suite. It was deployed to the API
+only, and the new container's startup was confirmed. Fresh plans for M-tools and then M-agent had
+the same eight rows as before, with no grants, and each was applied once; every step succeeded.
+
+- **O47 is fixed live on both servers.** The anonymous, malformed-header, invalid-bearer and
+  invalid-JWT 401s all advertise the canonical metadata URL: the anonymous one without `error`,
+  the others with `invalid_token`. Both the canonical and the advertised metadata GETs return 200
+  with the right resource, authorization server and scope, and the verifier's strict discovery
+  passes. Between the two applies, M-tools passed while M-agent still failed, so the change
+  followed each server's re-apply.
+- Only the two API policies and M-agent's fragment changed. Every other APIM content hash is
+  unchanged, apart from a Key Vault-backed named value's routine refresh, as are the global
+  policy and all models'.
+- **M2 passes for M-tools and M-agent.** The publish wizard shows the gateway's diagnostics
+  warning and both servers' environment verdict (Development to Development, ready to plan), and
+  the user's portal catalog lists both. M-protected isn't published.
 
 **Journeys** (see the MCP table under the journey matrix): M1 registers each server and syncs its
 tools; M2 publishes it after a reviewed plan; M3 sets governed access for people and the agent's
@@ -1257,7 +1277,7 @@ has passed, and ❌ means the latest run failed on the product gap named.
 | ID | Journey | Phase | Status |
 | --- | --- | --- | --- |
 | M1 | The admin registers each MCP server by its URL, and MOSAIC syncs its tools; an SSE-only server is refused | 11 | 🔄 M-tools and M-agent synced; SSE-only sync and publication refused; M-protected remains Unreachable |
-| M2 | Publishing a server through the gateway shows a reviewed plan, including the diagnostics warning and the environment verdict; every step succeeds; its anonymous 401 advertises working protected resource metadata, and the portal's catalog lists it | 11 | ❌ M-tools and M-agent applied and appear in the catalog, but anonymous discovery fails (O47); still failing after Batch 3m, which re-applied M-tools with #100 |
+| M2 | Publishing a server through the gateway shows a reviewed plan, including the diagnostics warning and the environment verdict; every step succeeds; its anonymous 401 advertises working protected resource metadata, and the portal's catalog lists it | 11 | ✅ M-tools and M-agent, after Batch 3n: every step succeeds, their anonymous 401s advertise working metadata, the verifier's strict discovery passes, and the catalog lists both. M-protected isn't published |
 | M3 | Governed access for an MCP server: a direct grant for the `user` persona and an application grant for the agent's identity are reviewed and applied | 11 | ⬜ |
 | M4 | In the portal, a person requests access to an MCP server, an admin approves it, and the person's connection details give the server URL, the metadata URL and the scope, but never a token | 11 | ⬜ |
 | M5 | A real MCP client, signed in with the `Mcp.Invoke` scope, lists and calls tools through the gateway; an anonymous call gets 401 with the metadata URL, and an ungranted person's token gets 403 | 11 | ⬜ |
@@ -1320,7 +1340,7 @@ be confirmed, or fixed, once the journeys that exercise them have run.
 | O45 | Since the API records its requests (O41), App Service's ping of `/` every 5 minutes is recorded as a failed request: `GET /` gets 404, about 288 times a day. That inflates the API's failure rate in Application Insights. Seen in Batch 3k | Fixed in [#95](https://github.com/microsoft/mosaic-apim/pull/95), deployed in Batch 3l. Root GET and HEAD return empty 200s and are excluded from request telemetry. Live verification found no root or health requests after the new API started, while an ordinary positive-control request arrived with its query value redacted and its trace ID intact |
 | O40 | For `grok-4.3`, **Usage & cost** and **Analytics** show 196 tokens for one call, broken down as "Prompt 8 · Completion 2". The gateway's LLM log recorded a total of 196, but only 8 prompt and 2 completion tokens. The other 186 are probably the model's reasoning tokens, which the breakdown doesn't name. The grant's tokens-per-minute limit counts all 196, so a person whose calls are refused sees parts that don't add up to what was counted. Seen in R8 after Batch 3i. The sitting's token metrics confirm they're reasoning tokens: its two grok calls' metrics read 16 prompt, 4 completion and 456 reasoning tokens, 476 in all | Show reasoning tokens as their own part wherever a total is broken down, as the gateway's metrics already do, and check whether the LLM log names them. A follow-up, not blocking |
 | O46 | **A managed-identity MCP server must also accept MOSAIC API's identity, and the docs don't say so.** MOSAIC's API checks the connection to a registered MCP server and syncs its tools with its own managed identity, while the gateway calls the server with the gateway's identity. The docs say only that a token is sent to the audience the administrator names. Suppose an administrator lets only the gateway's identity get tokens for the server, the safer setup. The server then registers as Degraded, with "MOSAIC could not acquire a token for this MCP server's audience", and **Sync tools** is refused. Publishing still works, but with no tools recorded. Found while designing M-protected (Phase 11) | Say in [publish-mcp-servers.md](../publish-mcp-servers.md) and on the **Register MCP server** dialog's **Managed identity** tab that the server must accept both identities, and name both in the Degraded message. Batch 5a gave both identities M-protected's role and the kit permits both clients, removing that prerequisite. Live M1 still reports Unreachable for a separately investigated connection failure; its tools have not synced. This documentation clarification is a follow-up |
-| O47 | **An anonymous MCP request gets a 401 with the wrong OAuth metadata URL.** Both initial MCP publications applied successfully, but the challenge inserts the main API path before the canonical `/.well-known/oauth-protected-resource/…` path. That advertised route returns 401; the canonical route returns 200 with the correct document. On M-tools, an invalid-token request advertises the correct canonical URL. Saved fragment and API policy expressions construct origin-root URLs in both branches, and the global policy is unchanged. Seen live in M2; the verifier correctly fails | Fixed in [#100](https://github.com/microsoft/mosaic-apim/pull/100), merged 6 October as `e2f3483`: classified refusals reach the JWT-error path, with supported complete `return-response` branches preserving status, challenge and plain-text media/body. The reviewed head independently passed 177 tests and 129 subtests, and CI passes on main. **Deployed in Batch 3m but not fixed live:** on M-tools, re-applied, the anonymous and malformed refusals now come from the new branches, yet their challenges still insert the API path. The invalid-token branch, which sets its challenge with `set-header` on the error response rather than inside `return-response`, stays canonical. A follow-up fix sets every challenge that way; Batch 3n would deploy it. M2/M5 are not passed |
+| O47 | **An anonymous MCP request gets a 401 with the wrong OAuth metadata URL.** Both initial MCP publications applied successfully, but the challenge inserts the main API path before the canonical `/.well-known/oauth-protected-resource/…` path. That advertised route returns 401; the canonical route returns 200 with the correct document. On M-tools, an invalid-token request advertises the correct canonical URL. Saved fragment and API policy expressions construct origin-root URLs in both branches, and the global policy is unchanged. Seen live in M2; the verifier correctly fails | Fixed in [#100](https://github.com/microsoft/mosaic-apim/pull/100), merged 6 October as `e2f3483`: classified refusals reach the JWT-error path, with supported complete `return-response` branches preserving status, challenge and plain-text media/body. The reviewed head independently passed 177 tests and 129 subtests, and CI passes on main. **Deployed in Batch 3m but not fixed live:** on M-tools, re-applied, the anonymous and malformed refusals now come from the new branches, yet their challenges still insert the API path. The invalid-token branch, which sets its challenge with `set-header` on the error response rather than inside `return-response`, stays canonical. **Fixed live by [#105](https://github.com/microsoft/mosaic-apim/pull/105) in Batch 3n:** every 401 challenge is set that way, and on both servers all four refusals advertise the canonical URL, the advertised metadata returns 200 and the verifier's strict discovery passes. The inbound 403 `insufficient_scope` challenge is still set inside `return-response`, so its URL may be rewritten; the verifier doesn't check that URL yet, and M5 sends that 403 live |
 | O48 | **An MCP access review is visible but hidden from accessibility.** Reopening a review leaves its dialog under `aria-hidden`, absent from role locators; Escape fails and the backdrop blocks the page. Ordinary Close works, and the same-persona reproduction made no apply | Fixed in [#101](https://github.com/microsoft/mosaic-apim/pull/101), merged 6 October as `b9d3e30`: follow the model dialog's opening/focus lifecycle and restore the opener. Isolated Chromium reproduced the failure and verified accessible review and Escape/Close with the lifecycle fix. Review also caught missing cache refreshes after closing; the corrected code independently passes 65 tests, including delayed completion after close and reopen, and CI passes on main. **Verified live after Batch 3m:** M-tools' review opened visible to assistive technology with no hidden dialog, Escape closed it and returned focus to its opener, and it reopened. No layout or wording change |
 
 The Phase 3 check on whether the gateway role recommendation narrows once the account kind is
