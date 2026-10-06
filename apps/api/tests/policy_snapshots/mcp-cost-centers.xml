@@ -1,50 +1,26 @@
 <fragment>
   <set-variable name="mosaic-caller" value="" />
   <set-variable name="mosaic-client" value="" />
+  <set-variable name="mosaic-mcp-auth-failure" value="" />
   <choose>
     <when condition="@(!context.Request.Headers.ContainsKey(&quot;Authorization&quot;))">
+      <set-variable name="mosaic-mcp-auth-failure" value="no-credential" />
       <trace source="mosaic" severity="information">
         <message>mosaic-deny v=1 r=no-credential</message>
       </trace>
-      <return-response>
-        <set-status code="401" reason="Unauthorized" />
-        <set-header name="WWW-Authenticate" exists-action="override">
-          <value>@{
-var url = context.Request.OriginalUrl;
-var port = url.Port == 80 || url.Port == 443 ? "" : ":" + url.Port.ToString();
-var origin = url.Scheme + "://" + url.Host + port;
-var metadata = origin + "/.well-known/oauth-protected-resource/mosaic/mcp/weather/mcp";
-return "Bearer resource_metadata=\"" + metadata + "\"";
-}</value>
-        </set-header>
-        <set-body>MCP access denied.</set-body>
-      </return-response>
     </when>
-  </choose>
-  <choose>
     <when condition="@{&#10;var values = context.Request.Headers[&quot;Authorization&quot;];&#10;if (values == null || values.Length != 1) { return true; }&#10;var authorization = values[0];&#10;return String.IsNullOrWhiteSpace(authorization) || !authorization.StartsWith(&quot;Bearer &quot;, StringComparison.OrdinalIgnoreCase) || String.IsNullOrWhiteSpace(authorization.Substring(7));&#10;}">
+      <set-variable name="mosaic-mcp-auth-failure" value="token-malformed" />
       <trace source="mosaic" severity="information">
         <message>mosaic-deny v=1 r=token-malformed</message>
       </trace>
-      <return-response>
-        <set-status code="401" reason="Unauthorized" />
-        <set-header name="WWW-Authenticate" exists-action="override">
-          <value>@{
-var url = context.Request.OriginalUrl;
-var port = url.Port == 80 || url.Port == 443 ? "" : ":" + url.Port.ToString();
-var origin = url.Scheme + "://" + url.Host + port;
-var metadata = origin + "/.well-known/oauth-protected-resource/mosaic/mcp/weather/mcp";
-return "Bearer error=\"invalid_token\", resource_metadata=\"" + metadata + "\"";
-}</value>
-        </set-header>
-        <set-body>MCP access denied.</set-body>
-      </return-response>
+      <set-header name="Authorization" exists-action="delete" />
     </when>
   </choose>
   <set-variable name="mosaic-cost-center-header" value="@{&#10;if (!context.Request.Headers.ContainsKey(&quot;x-mosaic-cost-center&quot;)) { return &quot;&quot;; }&#10;var values = context.Request.Headers[&quot;x-mosaic-cost-center&quot;];&#10;if (values == null || values.Length != 1 || values[0] == null) { return &quot;!&quot;; }&#10;var code = values[0].Trim();&#10;if (!System.Text.RegularExpressions.Regex.IsMatch(code, &quot;^[A-Za-z0-9._-]\u007b1,64\u007d$&quot;)) { return &quot;!&quot;; }&#10;return code.ToLowerInvariant();&#10;}" />
   <set-variable name="mosaic-cc" value="@((string)context.Variables[&quot;mosaic-cost-center-header&quot;])" />
   <choose>
-    <when condition="@((string)context.Variables[&quot;mosaic-cost-center-header&quot;] == &quot;!&quot;)">
+    <when condition="@((string)context.Variables[&quot;mosaic-mcp-auth-failure&quot;] == &quot;&quot; &amp;&amp; (string)context.Variables[&quot;mosaic-cost-center-header&quot;] == &quot;!&quot;)">
       <trace source="mosaic" severity="information">
         <message>mosaic-deny v=1 r=cost-center</message>
       </trace>

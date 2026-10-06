@@ -123,6 +123,45 @@ is stopped and every ARM operation it submitted is complete. Confirmed recovery 
 denial, records the publication as failed, and releases the lock. Then plan again and apply the
 desired state.
 
+## Verify OAuth discovery after applying
+
+A completed apply confirms the resource writes, not the gateway's OAuth discovery behavior. Use
+[the MCP access verifier](../scripts/verify_mcp_access.py) before accepting a publication. For the
+fictional endpoint `https://gateway.example.test/mosaic/mcp/weather/mcp`, an anonymous request must
+receive `401` with `WWW-Authenticate: Bearer resource_metadata="https://gateway.example.test/.well-known/oauth-protected-resource/mosaic/mcp/weather/mcp"`.
+That advertised URL must return `200` without credentials, and its JSON `resource` must match the
+MCP endpoint. A deliberately invalid bearer token must receive `401` with `error="invalid_token"`
+and the same metadata URL. Do not accept a canonical document that works only when fetched at a
+different URL from the challenge.
+
+On a Developer/classic native MCP API, an early inbound `return-response` was observed to emit an
+extra API-path prefix in the anonymous challenge even though the saved policy constructed the
+canonical URL. The same endpoint's JWT-validation error path emitted the correct URL; the global
+policy was stock. This isolates a difference between the two response paths, not a missing metadata
+API, but does not establish the platform's internal rewriting mechanism.
+
+MOSAIC therefore sends missing and malformed credentials through the existing
+[`validate-azure-ad-token`](https://learn.microsoft.com/en-us/azure/api-management/validate-azure-ad-token-policy)
+failure path and sets the challenge in
+[`on-error`](https://learn.microsoft.com/en-us/azure/api-management/api-management-error-handling-policies).
+It records the original refusal reason before validation and removes malformed Authorization
+headers so a valid value inside a duplicate header cannot be accepted. Anonymous challenges still
+omit `error`; malformed credentials still report `invalid_token`. Both retain the plain
+`MCP access denied.` body with `Content-Type: text/plain; charset=utf-8`; ordinary invalid JWTs
+retain the validator's JSON response. Each classified refusal uses a complete
+[`return-response`](https://learn.microsoft.com/en-us/azure/api-management/return-response-policy)
+inside `on-error`, with its own explicit 401 status, canonical challenge, content type and body.
+The challenge is set inside that response rather than relying on a previously set header surviving
+response replacement. `set-body` is not used directly in `on-error`. Token audience, permissions,
+grants, backend credential stripping and streaming are unchanged. No alternate anonymous route or additional APIM resource
+is created.
+
+Existing publications need a fresh plan and reviewed apply after updating MOSAIC to receive the
+changed fragment and API policy. Verify anonymous, malformed and invalid-token challenges again,
+then authorized initialization, tools and streaming. Local policy tests do not prove live gateway
+acceptance of the change. Keep the publication blocked if discovery still fails; do not relax the
+verifier or expose the MCP endpoint anonymously to work around it.
+
 ## Diagnostics warning
 
 MCP streaming can break when API Management diagnostics buffer response bodies. Configure
