@@ -310,7 +310,8 @@ def az_command() -> list[str]:
     if os.name == "nt" and Path(executable).name.lower() == "az.cmd":
         python = Path(executable).parent.parent / "python.exe"
         if python.exists():
-            return [str(python), "-IBm", "azure.cli"]
+            # -I ignores PYTHONUTF8/PYTHONIOENCODING; set UTF-8 explicitly for Unicode build logs.
+            return [str(python), "-I", "-B", "-X", "utf8", "-m", "azure.cli"]
     return [executable]
 
 
@@ -320,7 +321,9 @@ def run_az(args: Sequence[str], capture: bool) -> Any:
         if subprocess.run(command, check=False).returncode != 0:
             raise KitError(f"az {args[0]} {args[1]} failed; its output is above.")
         return None
-    result = subprocess.run(command, capture_output=True, text=True, check=False)
+    result = subprocess.run(
+        command, capture_output=True, text=True, encoding="utf-8", errors="replace", check=False
+    )
     if result.returncode != 0:
         detail = (result.stderr or result.stdout or "").strip().splitlines()
         raise KitError(f"az {' '.join(args[:3])} failed: {detail[-1] if detail else 'no output'}")

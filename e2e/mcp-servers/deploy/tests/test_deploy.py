@@ -167,6 +167,28 @@ def test_deploy_grants_pull_builds_the_images_then_deploys_the_servers_and_code(
     assert OUTPUTS["protectedUrl"] in text
 
 
+def test_a_build_failure_stops_deploy_and_returns_a_failure_exit(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    class FailedBuild(FakeAz):
+        def __call__(self, args: Any, capture: bool) -> Any:
+            result = super().__call__(args, capture)
+            if list(args[:2]) == ["acr", "build"]:
+                raise deploy.KitError("az acr build failed; its output is above.")
+            return result
+
+    parameters = tmp_path / "parameters.json"
+    parameters.write_text(json.dumps(values()), encoding="utf-8")
+    fake = FailedBuild()
+    monkeypatch.setattr(deploy, "run_az", fake)
+    assert deploy.main(["deploy", "--parameters", str(parameters)]) == 2
+    assert [call[:3] for call in fake.changes] == [
+        ["deployment", "sub", "create"],
+        ["acr", "build", "--subscription"],
+    ]
+    assert "az acr build failed; its output is above." in capsys.readouterr().err
+
+
 def test_deploy_tries_the_servers_again_once_when_the_first_attempt_fails() -> None:
     fake = FakeAz(failures=1)
     lines = run("deploy", fake)

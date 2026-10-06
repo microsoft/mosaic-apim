@@ -259,6 +259,11 @@ fill it in. The kit refuses a file that still holds a `<placeholder>`.
 
 `deploy.py` needs Python 3.12 or later and the Azure CLI, signed in to the tenant. It uses only
 the standard library, and prints every command that changes anything before it runs it.
+On Windows, when the Azure CLI's bundled Python is available beside its `az.cmd` launcher, the
+kit runs it in isolated mode with explicit UTF-8 enabled (`-I -B -X utf8 -m azure.cli`). Environment
+variables alone cannot enable UTF-8 under `-I`. Captured CLI output is decoded as UTF-8, replacing
+invalid bytes. Build logs still stream to the console, and a failed CLI command still stops the
+kit; it does not suppress logs or assume a remote build succeeded after a local failure.
 
 ```powershell
 Set-Location e2e/mcp-servers/deploy
