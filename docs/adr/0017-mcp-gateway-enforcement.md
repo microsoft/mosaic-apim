@@ -171,3 +171,17 @@ Live verification should also confirm that the trace's message reaches
   out of the catalog, refuses requests for it with `409`, and gives no connection details. Before,
   a draft's server was listed as "Recorded, not enforced", which describes an adopted server whose
   own policy decides, not one with no API at all.
+
+## Amendment 2026-10-06: The backend URL
+
+- **The backend points at the registered URL without its final `/mcp`.** API Management serves the
+  MCP API at its default `/mcp` route and forwards each call to the backend URL with `/mcp` added.
+  Phase 11's M5 journey saw it live: with the backend at the full registered URL, the gateway
+  forwarded calls to `.../mcp/mcp`, which answered `404`. MOSAIC now keeps the scheme, host, port
+  and any path before the final `/mcp` segment. No public documentation describes this, so it's
+  recorded as observed behavior.
+- **A server whose URL doesn't end in `/mcp`, or has a query string, isn't publishable.** Create,
+  plan and apply refuse it rather than guess an `endpoints` map. Unpublish and recovery don't need
+  the backend URL.
+- **Existing publications are corrected by their next reviewed apply.** The plan shows the backend
+  as an update, after the deny that guards every backend change.

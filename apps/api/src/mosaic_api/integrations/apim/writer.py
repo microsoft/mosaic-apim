@@ -265,6 +265,9 @@ class ApimWriter:
         Written on the preview contract, the only one that knows the ``mcp`` API type. The
         ``endpoints`` map is left out so API Management serves the streamable message endpoint at
         its default, ``/mcp``: the published schema and the live service disagree about its shape.
+        API Management then forwards each call to the backend's URL with ``/mcp`` added, as
+        observed live, so the backend must point at the server's endpoint without its final
+        ``/mcp``. :func:`~mosaic_api.domain.mcp_backend_url` derives that URL.
         """
 
         return await self._arm.put(
