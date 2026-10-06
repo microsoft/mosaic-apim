@@ -1191,9 +1191,10 @@ passes on both servers.
 
 **M5's first run**, on 6 October, made no changes. The verifier signed the user persona and an
 ungranted outsider in with device codes, which the live driver entered with no MFA prompt.
-Discovery passed, and every refusal passed: the anonymous call, a MOSAIC control-plane token, a
-malformed or unknown cost-center header and the outsider's token. The user's authorized
-`initialize` got 404 instead of a session (O49), so no tool was called.
+Discovery passed, and every attempted refusal passed: the anonymous call, a MOSAIC control-plane token,
+a malformed or unknown cost-center header and the outsider's token. The missing-scope check could not
+run because the model client is consented for `Mcp.Invoke`. The user's authorized `initialize` got 404
+instead of a session (O49), so no tool was called.
 
 **Journeys** (see the MCP table under the journey matrix): M1 registers each server and syncs its
 tools; M2 publishes it after a reviewed plan; M3 sets governed access for people and for an
