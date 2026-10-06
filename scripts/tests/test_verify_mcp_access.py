@@ -79,7 +79,7 @@ def person_token(oid: str | None = USER_OID, **claims: Any) -> str:
     return jwt(**{**defaults, **claims})
 
 
-def app_token(oid: str = APP_OID, **claims: Any) -> str:
+def app_token(oid: str | None = APP_OID, **claims: Any) -> str:
     defaults = {
         "aud": AUDIENCE,
         "oid": oid,
@@ -449,6 +449,8 @@ class FakeWorld:
             "grants": [
                 {
                     "entitlementId": grant.id,
+                    "subject": {"kind": grant.kind, "id": f"principal-{grant.id}"},
+                    "objectId": grant.oid,
                     "enabled": self.phase(grant) != "revoked",
                     "enforcement": {"requests": grant.limits} if grant.limits else None,
                     "costCenterId": grant.cost_center_id,
@@ -1067,6 +1069,108 @@ class McpAccessVerifierTests(unittest.TestCase):
         self.assertEqual(deletes[0].headers["Mcp-Session-Id"], "session-1")
         self.assertEqual(deletes[0].headers["MCP-Protocol-Version"], "2025-11-25")
 
+    def test_cleanup_retains_identity_on_denial_or_transport_failure(self) -> None:
+        for status in (403, 429, 404, 500, None):
+            with self.subTest(status=status):
+                world = standard_world()
+                gateway = world.gateway
+                state = {"fail_cleanup": True}
+
+                def failing_delete(
+                    request: httpx.Request, status: int | None = status,
+                    state: dict[str, bool] = state, gateway: Any = gateway,
+                ) -> httpx.Response:
+                    if request.method == "DELETE" and state["fail_cleanup"]:
+                        if status is None:
+                            raise httpx.ReadTimeout(f"{APP_SECRET} {USER_CONTROL}")
+                        return httpx.Response(status, text=APP_SECRET)
+                    return gateway(request)
+
+                world.gateway = failing_delete  # type: ignore[method-assign]
+                with httpx.Client(transport=world.transport()) as client:
+                    session = verifier.Session(
+                        client, world.servers["tools"].url, auth=verifier.bearer(person_token()),
+                        cost_center="general", label="Fixture",
+                    )
+                    with patch.object(model_verifier, "time", world.clock):
+                        session.initialize()
+                    with self.assertRaisesRegex(
+                        verifier.VerificationFailed, "unresolved"
+                    ) as raised:
+                        session.close()
+                    self.assertNotIn(APP_SECRET, str(raised.exception))
+                    self.assertNotIn(USER_CONTROL, str(raised.exception))
+                    self.assertEqual(session.session_id, "session-1")
+                    self.assertIn("session-1", world.sessions)
+                    # A later legitimate attempt uses the retained identity, not a new session.
+                    state["fail_cleanup"] = False
+                    session.close()
+                    self.assertIsNone(session.session_id)
+                    self.assertEqual(world.sessions, {})
+
+    def test_cleanup_retry_is_bounded_and_only_for_gateway_rate_refusals(self) -> None:
+        for retry in (None, "invalid", "0", "-1", "301", "60"):
+            with self.subTest(retry=retry):
+                requests: list[httpx.Request] = []
+
+                def denied(
+                    request: httpx.Request, retry: str | None = retry,
+                    requests: list[httpx.Request] = requests,
+                ) -> httpx.Response:
+                    requests.append(request)
+                    return httpx.Response(
+                        429, headers={"Retry-After": retry} if retry is not None else {},
+                        json={"message": "Rate limit is exceeded. Try again."},
+                    )
+
+                clock = FakeClock()
+                with httpx.Client(transport=httpx.MockTransport(denied)) as client:
+                    session = verifier.Session(
+                        client, f"{ORIGIN}/mcp", auth=verifier.bearer(person_token()),
+                        cost_center="general", label="Fixture",
+                    )
+                    session.session_id = "fixture-session"
+                    with (
+                        patch.object(verifier, "time", clock),
+                        contextlib.redirect_stdout(io.StringIO()),
+                        self.assertRaisesRegex(verifier.VerificationFailed, "incomplete"),
+                    ):
+                        session.close()
+                    self.assertEqual(session.session_id, "fixture-session")
+                self.assertEqual(clock.sleeps, [60] if retry == "60" else [])
+                self.assertEqual(len(requests), 2 if retry == "60" else 1)
+                self.assertTrue(all(request.method == "DELETE" for request in requests))
+                self.assertTrue(all(request.headers == requests[0].headers for request in requests))
+
+    def test_server_can_explicitly_decline_session_deletion(self) -> None:
+        world = standard_world()
+        gateway = world.gateway
+
+        def unsupported(request: httpx.Request) -> httpx.Response:
+            if request.method == "DELETE":
+                return httpx.Response(405)
+            return gateway(request)
+
+        world.gateway = unsupported  # type: ignore[method-assign]
+        code, lines, errors = self.verify(world, TOOLS_ONLY)
+        self.assertEqual(code, 0, errors)
+        self.assertTrue(any("does not support session DELETE (405)" in line for line in lines))
+
+    def test_cleanup_transport_failure_prevents_pass(self) -> None:
+        world = standard_world()
+        gateway = world.gateway
+
+        def broken(request: httpx.Request) -> httpx.Response:
+            if request.method == "DELETE":
+                raise httpx.ConnectError(f"{APP_SECRET} {USER_CONTROL}")
+            return gateway(request)
+
+        world.gateway = broken  # type: ignore[method-assign]
+        lines = self.fails(world, TOOLS_ONLY, "unresolved session cleanup (HTTP transport failure)")
+        self.assertEqual(list(world.sessions), ["session-1"])
+        self.assertFalse(any("listed 3 tool(s)" in line for line in lines))
+        self.assertFalse(any("Live MCP checks passed" in line for line in lines))
+
     def test_an_older_revision_gets_no_protocol_header(self) -> None:
         world = standard_world()
         world.servers["tools"].revision = "2025-03-26"
@@ -1459,6 +1563,68 @@ class McpAccessVerifierTests(unittest.TestCase):
         )
         self.assertEqual(world.gateway_calls, [])
 
+    def test_application_token_is_bound_to_selected_applied_grant(self) -> None:
+        arguments = ["--application-entitlement", "app-tools"]
+        for oid in (AGENT_OID, None, "not-an-object-id", APP_OID.upper()):
+            with self.subTest(oid=oid):
+                world = standard_world()
+                world.grants["other-app-tools"] = FakeGrant(
+                    "other-app-tools", "application", "tools", AGENT_OID
+                )
+                token = app_token(oid=oid)
+                env = {**ENV, verifier.APPLICATION_RUNTIME_TOKEN: token}
+                code, lines, errors = self.verify(world, arguments, env)
+                if oid == APP_OID.upper():
+                    self.assertEqual(code, 0, errors)
+                    self.assertTrue(any("selecting its grant" in line for line in lines))
+                    self.assertTrue(world.passed)
+                    for request in world.passed:
+                        claims = claims_of(request.headers["Authorization"].removeprefix("Bearer "))
+                        self.assertEqual(claims["oid"].lower(), APP_OID)
+                    self.assertEqual(world.sessions, {})
+                else:
+                    self.assertEqual(code, 1, lines)
+                    self.assertIn("selected applied application's object ID", errors)
+                    self.assertFalse(any("PASS" in line for line in lines))
+                    self.assertEqual(world.gateway_calls, [])
+                self.assertNotIn(token, "\n".join(lines) + errors)
+
+    def test_supplied_application_identity_needs_no_client_credentials(self) -> None:
+        world = standard_world()
+        env = {**ENV, verifier.APPLICATION_RUNTIME_TOKEN: app_token(azp=None)}
+        code, _, errors = self.verify(world, ["--application-entitlement", "app-tools"], env)
+        self.assertEqual(code, 0, errors)
+        self.assertEqual(world.login_forms, [])
+        self.assertEqual(world.sessions, {})
+
+    def test_application_requires_an_applied_direct_identity(self) -> None:
+        for change, message in (
+            ({"objectId": None}, "lacks a usable application identity"),
+            ({"objectId": "invalid"}, "lacks a usable application identity"),
+            ({"subject": {}}, "lacks a usable application identity"),
+            ({"subject": {"kind": "user"}}, "lacks a usable application identity"),
+            ({"subject": {"kind": "securityGroup"}}, "security-group grant"),
+            ({"enabled": False}, "last apply doesn't include this grant"),
+            ({"entitlementId": "different"}, "last apply doesn't include this grant"),
+        ):
+            with self.subTest(change=change):
+                world = standard_world()
+                publication = world.publication
+
+                def changed(
+                    server: FakeServer, publication: Any = publication,
+                    change: dict[str, Any] = change,
+                ) -> dict[str, Any]:
+                    document = publication(server)
+                    for grant in document["appliedAccess"]["grants"]:
+                        if grant["entitlementId"] == "app-tools":
+                            grant.update(change)
+                    return document
+
+                world.publication = changed  # type: ignore[method-assign]
+                self.fails(world, ["--application-entitlement", "app-tools"], message)
+                self.assertEqual(world.gateway_calls, [])
+
     def test_client_credentials_sign_in_the_application(self) -> None:
         env = {
             **without(verifier.APPLICATION_RUNTIME_TOKEN),
@@ -1720,7 +1886,14 @@ class McpAccessVerifierTests(unittest.TestCase):
             lines,
         )
         # The refusals before it don't count against the limit: the gateway refuses them first.
-        self.assertEqual(len(world.rate_calls["user-limited"]), 8)
+        # The proof spent eight calls; cleanup waits for renewal and consumes the first new one.
+        self.assertEqual(len(world.rate_calls["user-limited"]), 1)
+        self.assertEqual(world.clock.sleeps, [60])
+        deletes = [call for call in world.gateway_calls if call.method == "DELETE"]
+        self.assertEqual(len(deletes), 2)
+        self.assertEqual(dict(deletes[0].headers), dict(deletes[1].headers))
+        self.assertEqual(world.deletes, ["session-1"])
+        self.assertEqual(world.sessions, {})
         self.assertEqual(self.tool_calls(world), ["echo", "add", "echo", "echo", "echo"])
 
         # Calls from before the window no longer count.
@@ -1830,8 +2003,25 @@ class McpAccessVerifierTests(unittest.TestCase):
         *("--prove-pooled-quota", "user-pooled"),
     )
 
+    def test_pooled_quota_cleanup_cannot_silently_pass(self) -> None:
+        world = self.pooled_world()
+        lines = self.fails(world, list(self.POOLED), "unresolved session cleanup (HTTP 403")
+        self.assertEqual(list(world.sessions), ["session-2"])
+        self.assertEqual(world.pool_spent[("tools", "pooled")], 8)
+        self.assertEqual(world.clock.sleeps, [])
+        self.assertFalse(any("pool of 8 calls a month refused" in line for line in lines))
+        self.assertFalse(any("Live MCP checks passed" in line for line in lines))
+        denied = [
+            call for call in world.gateway_calls
+            if call.method == "DELETE" and call.headers.get("Mcp-Session-Id") == "session-2"
+        ]
+        self.assertEqual(len(denied), 1)
+        self.assertEqual(denied[0].headers["x-mosaic-cost-center"].lower(), "pooled")
+
     def test_pooled_quota_proof(self) -> None:
         world = self.pooled_world()
+        # A stateless server needs no DELETE through an exhausted monthly pool.
+        world.servers["tools"].sessions = False
         code, lines, errors = self.verify(world, list(self.POOLED))
         self.assertEqual(code, 0, errors)
         self.assertIn(
@@ -2050,7 +2240,7 @@ class McpAccessVerifierTests(unittest.TestCase):
         for setting, value, last in (
             ("revocation_reaches_gateway", False, "HTTP 200"),
             # One of two gateway units still serves the grant, so refusals alternate.
-            ("revocation_flaps", True, "HTTP 200"),
+            ("revocation_flaps", True, "HTTP 403"),
             # Token validation's 401 says nothing about the grant.
             ("revoked_status", 401, "HTTP 401"),
             # Nor does a budget's 403, while the gateway still finds the grant.
@@ -2060,6 +2250,8 @@ class McpAccessVerifierTests(unittest.TestCase):
                 world = standard_world()
                 world.grants["user-tools"].revoke_at = START + 45
                 setattr(world, setting, value)
+                # Isolate grant-lookup convergence from a flapping gateway denying DELETE.
+                world.servers["tools"].sessions = False
                 if setting == "budget_blocked_from":
                     world.revocation_reaches_gateway = False
                 code, lines, errors = self.watch(world)
@@ -2079,6 +2271,7 @@ class McpAccessVerifierTests(unittest.TestCase):
         arguments = [*self.POOLED, "--watch-revocation", "user-pooled"]
         arguments += ["--revocation-timeout", "300", "--revocation-interval", "30"]
         world = self.pooled_world()
+        world.servers["tools"].sessions = False
         world.grants["user-pooled"].revoke_at = START + 45
         world.revocation_reaches_gateway = False
         code, lines, errors = self.verify(world, arguments)
@@ -2091,6 +2284,7 @@ class McpAccessVerifierTests(unittest.TestCase):
         )
         # Once the revocation reaches the gateway, its lookup refuses before the quota.
         world = self.pooled_world()
+        world.servers["tools"].sessions = False
         world.grants["user-pooled"].revoke_at = START + 45
         code, lines, errors = self.verify(world, arguments)
         self.assertEqual(code, 0, errors)

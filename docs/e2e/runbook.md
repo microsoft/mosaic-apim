@@ -360,7 +360,8 @@ calls the gateway as a real client over streamable HTTP:
 - `initialize`, offering protocol revision 2025-11-25, then the `notifications/initialized`
   notification, `tools/list` and `tools/call`.
 - `MCP-Protocol-Version` on every later request, from revision 2025-06-18 on, and `Mcp-Session-Id`
-  when the server returns one. Each session the server opens ends with `DELETE`.
+  when the server returns one. Each session the server opens requires confirmed `DELETE` cleanup,
+  or an explicit 405 indicating unsupported deletion, before the proof passes.
 - JSON and event-stream responses alike. It refuses redirects, and any server or metadata URL off
   the manifest's gateway origin.
 
@@ -376,14 +377,19 @@ tokens, enters the verifier's device codes in the right persona's browser, and r
   calls.
 - **Grants**, applied (M3):
   - `roles.user` holds a grant on each tools server, and on M-agent for M9.
-  - An application holds a grant on a tools server, and has the `Mcp.Invoke.Application` app role.
+  - An application holds a direct grant on a tools server, and has the `Mcp.Invoke.Application`
+    app role. The administrator reads the publication's applied grant so its application object
+    ID can be matched to the runtime token's `oid` before any MCP probe. Missing identity data,
+    another application's token, and security-group entitlements fail closed. A group's object
+    ID is not an application identity; selecting a group cannot prove which grant wins.
   - For M6's call limit: a fresh grant limited to 6 to 30 calls per 60 to 300 seconds, with no call
     quota and no other callers. Nothing may call it in the window before the proof, so after a
     run, wait out the window before the next.
   - For M6's pooled quota: a grant with no limits of its own, under a cost center whose pool on the
     server allows at most 50 calls a month, and another grant on the same server under a different
     cost center. **The proof spends the pool for the rest of the month**, so use a cost center made
-    for it.
+    for it. Use a stateless server for a proof that can finish: on a stateful server the spent
+    pool also denies session DELETE, making the run incomplete even if the quota check worked.
   - For M7: a grant you can revoke. A person holds one grant on a server under each cost center, so
     put it under a cost center of its own.
 - **Consent:** MOSAIC's model client, which connection details name as `clientId`, is consented for
@@ -440,10 +446,20 @@ Everything after `--` goes to the verifier. The driver adds the manifest's origi
 `@target:` references, and checks the flags as the verifier does, before anyone signs in. Each
 run can make one proof, and wait for one thing: a revocation or an attribution.
 
+Session cleanup uses the session's original credentials and cost center, with no quota bypass.
+A gateway call-limit 429 on DELETE permits one retry after a numeric `Retry-After` of 1–300 seconds;
+each DELETE has a 30-second HTTP timeout. Cleanup waiting is excluded from the rate-proof timing.
+A second refusal, a quota/budget/auth denial, other unexpected status, or transport failure retains
+the session identity in memory and fails the run as **unresolved session cleanup**. It is not a
+PASS, and the script does not save session IDs or retry after exit. The server must eventually
+expire an unresolved session or an operator must arrange legitimate cleanup separately. A 405 is
+reported as unsupported deletion, not as a confirmed server-side termination.
+
 - **People:** as for `verify`, with these differences.
   - `--user` holds the user grants and the on-behalf grant. It defaults to `roles.user`.
-  - `--admin` reads an application grant's connection details, what a server's last apply compiled
-    for `--prove-pooled-quota`, and whether the on-behalf server passes references on. It's only
+  - `--admin` reads an application grant's connection details and applied application identity,
+    what a server's last apply compiled for `--prove-pooled-quota`, and whether the on-behalf
+    server passes references on. It's only
     used with `--application-entitlement`, `--prove-pooled-quota` and `--on-behalf-entitlement`,
     and may be the same person as `--user`.
   - `--stranger` holds no grant on these MCP servers. It's only used with `--check-ungranted-user`
