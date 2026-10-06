@@ -1041,7 +1041,7 @@ value that the gateway reads with its own identity, and Phase 10 would reuse it.
 registers AWS Bedrock hosts with a Bedrock API key, but only as Claude members of a model pool,
 and R17 lists what a live Bedrock member needs to show.
 
-### Phase 11: MCP servers end to end 🔄 M2 passes for two servers; M-protected is unreachable; M3 to M10 remain
+### Phase 11: MCP servers end to end 🔄 M2 and M4 pass, M3 is partial; M-protected is unreachable; M5 to M10 remain
 
 MOSAIC publishes MCP servers through API Management and governs them with grants, as it does
 models. The first live registration and publication journeys began on 6 October 2026. Phase 11
@@ -1179,12 +1179,22 @@ the same eight rows as before, with no grants, and each was applied once; every 
   warning and both servers' environment verdict (Development to Development, ready to plan), and
   the user's portal catalog lists both. M-protected isn't published.
 
+**M3 and M4**, approved and run on 6 October: the user persona received a direct grant on M-tools
+(30 calls a minute) from the console. Through a portal request that the admin approved, they
+received the same limit on M-agent. Both of the user persona's grants were reviewed and applied, and
+every step succeeded. M3's application grant on a tools server hasn't been created: the
+client-credentials workload's secret has expired, with no new one approved, and M-agent's managed
+identity holds only the model invocation role, not `Mcp.Invoke.Application`. M-agent's managed
+identity is registered and applied as its model caller, still without a model grant until M9. Only
+the two servers' policy fragments changed in APIM, no subscription was created, and discovery still
+passes on both servers.
+
 **Journeys** (see the MCP table under the journey matrix): M1 registers each server and syncs its
-tools; M2 publishes it after a reviewed plan; M3 sets governed access for people and the agent's
-identity; M4 is a person's request and its approval in the portal; M5 is calls from a real MCP
-client; M6 is call limits and pooled quotas; M7 is revocation; M8 is usage; M9 is the agent
-server's governed model call; and M10 is unpublishing. The MCP verifier signs in with a device
-code, as the model verifier does, and the live driver enters the codes.
+tools; M2 publishes it after a reviewed plan; M3 sets governed access for people and for an
+application that can invoke an MCP server; M4 is a person's request and its approval in the portal;
+M5 is calls from a real MCP client; M6 is call limits and pooled quotas; M7 is revocation; M8 is
+usage; M9 is the agent server's governed model call; and M10 is unpublishing. The MCP verifier
+signs in with a device code, as the model verifier does, and the live driver enters the codes.
 
 **Product decisions before M9:**
 
@@ -1278,8 +1288,8 @@ has passed, and ❌ means the latest run failed on the product gap named.
 | --- | --- | --- | --- |
 | M1 | The admin registers each MCP server by its URL, and MOSAIC syncs its tools; an SSE-only server is refused | 11 | 🔄 M-tools and M-agent synced; SSE-only sync and publication refused; M-protected remains Unreachable |
 | M2 | Publishing a server through the gateway shows a reviewed plan, including the diagnostics warning and the environment verdict; every step succeeds; its anonymous 401 advertises working protected resource metadata, and the portal's catalog lists it | 11 | ✅ M-tools and M-agent, after Batch 3n: every step succeeds, their anonymous 401s advertise working metadata, the verifier's strict discovery passes, and the catalog lists both. M-protected isn't published |
-| M3 | Governed access for an MCP server: a direct grant for the `user` persona and an application grant for the agent's identity are reviewed and applied | 11 | ⬜ |
-| M4 | In the portal, a person requests access to an MCP server, an admin approves it, and the person's connection details give the server URL, the metadata URL and the scope, but never a token | 11 | ⬜ |
+| M3 | Governed access for an MCP server: a direct grant for the `user` persona and an application grant on a tools server are reviewed and applied | 11 | 🔄 The user persona's direct grant on M-tools, 30 calls a minute, was reviewed and applied. The application grant on a tools server isn't created yet: the client-credentials workload's secret expired, with no new one approved, and M-agent's managed identity holds only the model invocation role. M-agent's model-caller link is applied; its application model grant comes immediately before M9, as decided |
+| M4 | In the portal, a person requests access to an MCP server, an admin approves it, and the person's connection details give the server URL, the metadata URL and the scope, but never a token | 11 | ✅ The user persona requested M-agent; the admin approved it with a call limit, reviewed and applied it. Connection details give the server URL, the canonical metadata URL and the `Mcp.Invoke` scope, and no token |
 | M5 | A real MCP client, signed in with the `Mcp.Invoke` scope, lists and calls tools through the gateway; an anonymous call gets 401 with the metadata URL, and an ungranted person's token gets 403 | 11 | ⬜ |
 | M6 | An MCP grant's call limit, and a cost center's pooled call quota on the server, refuse calls once spent | 11 | ⬜ |
 | M7 | After an MCP grant is revoked and its plan applied, its calls are refused | 11 | ⬜ |
