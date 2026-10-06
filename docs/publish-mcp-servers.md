@@ -147,8 +147,10 @@ failure path and sets the challenge in
 It records the original refusal reason before validation and removes malformed Authorization
 headers so a valid value inside a duplicate header cannot be accepted. Anonymous challenges still
 omit `error`; malformed credentials still report `invalid_token`. Both retain the plain
-`MCP access denied.` body. Token audience, permissions, grants, backend credential stripping and
-streaming are unchanged. No alternate anonymous route or additional APIM resource is created.
+`MCP access denied.` body with `Content-Type: text/plain; charset=utf-8`; ordinary invalid JWTs
+retain the validator's JSON response. Token audience, permissions, grants, backend credential
+stripping and streaming are unchanged. No alternate anonymous route or additional APIM resource
+is created.
 
 Existing publications need a fresh plan and reviewed apply after updating MOSAIC to receive the
 changed fragment and API policy. Verify anonymous, malformed and invalid-token challenges again,

@@ -660,6 +660,15 @@ def test_on_error_preserves_missing_malformed_and_invalid_token_challenges() -> 
     assert 'return "Bearer error=\\"invalid_token\\", resource_metadata=\\""' in invalid_header
     assert body.find("when").attrib["condition"] == f'@({failure} != "")'  # type: ignore[union-attr]
     assert body.findtext("when/set-body") == "MCP access denied."
+    plain = body.find("when")
+    assert plain is not None
+    assert [element.tag for element in plain] == ["set-header", "set-body"]
+    content_type = plain.find("set-header")
+    assert content_type is not None
+    assert content_type.attrib == {"name": "Content-Type", "exists-action": "override"}
+    assert content_type.findtext("value") == "text/plain; charset=utf-8"
+    assert api.findall(".//set-header[@name='Content-Type']") == [content_type]
+    assert body.find("otherwise") is None  # Ordinary invalid JWTs retain the validator JSON.
     assert len(list(api.iter("set-body"))) == 1
     assert not list(api.iter("trace"))  # The existing classification traces remain inbound only.
 

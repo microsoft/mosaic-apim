@@ -439,6 +439,10 @@ def _api_policy(publication: McpPublication) -> ET.Element:
     early_refusal = ET.SubElement(
         ET.SubElement(when, "choose"), "when", {"condition": f'@({failure} != "")'}
     )
+    content_type = ET.SubElement(
+        early_refusal, "set-header", {"name": "Content-Type", "exists-action": "override"}
+    )
+    ET.SubElement(content_type, "value").text = "text/plain; charset=utf-8"
     ET.SubElement(early_refusal, "set-body").text = _DENIED
     return policies
 
