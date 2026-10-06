@@ -647,29 +647,45 @@ def test_on_error_preserves_missing_malformed_and_invalid_token_challenges() -> 
     assert unauthorized.attrib["condition"] == (
         "@(context.Response != null && context.Response.StatusCode == 401)"
     )
-    assert unauthorized.find(".//return-response") is None
-    challenge, body = unauthorized.findall("choose")
-    missing = challenge.find("when")
+    [challenge] = unauthorized.findall("choose")
+    missing, malformed = challenge.findall("when")
     invalid = challenge.find("otherwise")
-    assert missing is not None and invalid is not None
+    assert invalid is not None
     failure = 'context.Variables.GetValueOrDefault<string>("mosaic-mcp-auth-failure", "")'
-    assert missing.attrib["condition"] == f'@({failure} == "no-credential")'
+    for branch, reason in ((missing, "no-credential"), (malformed, "token-malformed")):
+        assert branch.attrib["condition"] == f'@({failure} == "{reason}")'
+        assert [element.tag for element in branch] == ["return-response"]
+        response = branch.find("return-response")
+        assert response is not None
+        assert [element.tag for element in response] == [
+            "set-status",
+            "set-header",
+            "set-header",
+            "set-body",
+        ]
+        assert response.find("set-status").attrib == {  # type: ignore[union-attr]
+            "code": "401",
+            "reason": "Unauthorized",
+        }
+        assert response.findtext("set-body") == "MCP access denied."
+        assert _header_values(response, "Content-Type") == ["text/plain; charset=utf-8"]
+        assert all(
+            header.attrib["exists-action"] == "override"
+            for header in response.findall("set-header")
+        )
+        assert len(_header_values(response, "WWW-Authenticate")) == 1
     [anonymous_header] = _header_values(missing, "WWW-Authenticate")
     [invalid_header] = _header_values(invalid, "WWW-Authenticate")
     assert 'return "Bearer resource_metadata=\\"" + metadata + "\\"";' in anonymous_header
     assert 'return "Bearer error=\\"invalid_token\\", resource_metadata=\\""' in invalid_header
-    assert body.find("when").attrib["condition"] == f'@({failure} != "")'  # type: ignore[union-attr]
-    assert body.findtext("when/set-body") == "MCP access denied."
-    plain = body.find("when")
-    assert plain is not None
-    assert [element.tag for element in plain] == ["set-header", "set-body"]
-    content_type = plain.find("set-header")
-    assert content_type is not None
-    assert content_type.attrib == {"name": "Content-Type", "exists-action": "override"}
-    assert content_type.findtext("value") == "text/plain; charset=utf-8"
-    assert api.findall(".//set-header[@name='Content-Type']") == [content_type]
-    assert body.find("otherwise") is None  # Ordinary invalid JWTs retain the validator JSON.
-    assert len(list(api.iter("set-body"))) == 1
+    assert _header_values(malformed, "WWW-Authenticate") == [invalid_header]
+    # Ordinary invalid JWTs retain the validator's status, body and JSON media type.
+    assert [element.tag for element in invalid] == ["set-header"]
+    assert invalid[0].attrib == {"name": "WWW-Authenticate", "exists-action": "override"}
+    parents = {child: parent for parent in api.iter() for child in parent}
+    bodies = list(api.iter("set-body"))
+    assert len(bodies) == 2
+    assert all(parents[body].tag == "return-response" for body in bodies)
     assert not list(api.iter("trace"))  # The existing classification traces remain inbound only.
 
 
@@ -683,7 +699,7 @@ def test_challenges_and_server_metadata_use_the_same_origin_and_nested_path(
     api = ET.fromstring(result.api_policy_xml)
     metadata = ET.fromstring(result.metadata_policy_xml)
     headers = _header_values(fragment, "WWW-Authenticate") + _header_values(api, "WWW-Authenticate")
-    assert len(headers) == 3  # insufficient_scope, anonymous, invalid_token
+    assert len(headers) == 4  # insufficient_scope, anonymous, malformed, invalid JWT
     body = metadata.findtext("inbound/return-response/set-body")
     assert body is not None
     origin = (

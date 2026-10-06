@@ -148,8 +148,12 @@ It records the original refusal reason before validation and removes malformed A
 headers so a valid value inside a duplicate header cannot be accepted. Anonymous challenges still
 omit `error`; malformed credentials still report `invalid_token`. Both retain the plain
 `MCP access denied.` body with `Content-Type: text/plain; charset=utf-8`; ordinary invalid JWTs
-retain the validator's JSON response. Token audience, permissions, grants, backend credential
-stripping and streaming are unchanged. No alternate anonymous route or additional APIM resource
+retain the validator's JSON response. Each classified refusal uses a complete
+[`return-response`](https://learn.microsoft.com/en-us/azure/api-management/return-response-policy)
+inside `on-error`, with its own explicit 401 status, canonical challenge, content type and body.
+The challenge is set inside that response rather than relying on a previously set header surviving
+response replacement. `set-body` is not used directly in `on-error`. Token audience, permissions,
+grants, backend credential stripping and streaming are unchanged. No alternate anonymous route or additional APIM resource
 is created.
 
 Existing publications need a fresh plan and reviewed apply after updating MOSAIC to receive the

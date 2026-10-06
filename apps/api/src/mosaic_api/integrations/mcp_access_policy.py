@@ -426,24 +426,27 @@ def _api_policy(publication: McpPublication) -> ET.Element:
     metadata_path = f"{mcp_metadata_api_path(publication.api_path)}/{MCP_MESSAGE_PATH}"
     failure = 'context.Variables.GetValueOrDefault<string>("mosaic-mcp-auth-failure", "")'
     challenge = ET.SubElement(when, "choose")
-    missing = ET.SubElement(challenge, "when", {"condition": f'@({failure} == "no-credential")'})
-    _set_www_authenticate(
-        missing, _auth_header_value(metadata_path, 'Bearer resource_metadata="', suffix='"')
+    invalid = _auth_header_value(
+        metadata_path, 'Bearer error="invalid_token", resource_metadata="', suffix='"'
     )
-    _set_www_authenticate(
-        ET.SubElement(challenge, "otherwise"),
-        _auth_header_value(
-            metadata_path, 'Bearer error="invalid_token", resource_metadata="', suffix='"'
+    for reason, header in (
+        (
+            "no-credential",
+            _auth_header_value(metadata_path, 'Bearer resource_metadata="', suffix='"'),
         ),
-    )
-    early_refusal = ET.SubElement(
-        ET.SubElement(when, "choose"), "when", {"condition": f'@({failure} != "")'}
-    )
-    content_type = ET.SubElement(
-        early_refusal, "set-header", {"name": "Content-Type", "exists-action": "override"}
-    )
-    ET.SubElement(content_type, "value").text = "text/plain; charset=utf-8"
-    ET.SubElement(early_refusal, "set-body").text = _DENIED
+        ("token-malformed", invalid),
+    ):
+        classified = ET.SubElement(challenge, "when", {"condition": f'@({failure} == "{reason}")'})
+        # set-body is supported in on-error only inside a complete return-response.
+        response = ET.SubElement(classified, "return-response")
+        ET.SubElement(response, "set-status", {"code": "401", "reason": "Unauthorized"})
+        _set_www_authenticate(response, header)
+        content_type = ET.SubElement(
+            response, "set-header", {"name": "Content-Type", "exists-action": "override"}
+        )
+        ET.SubElement(content_type, "value").text = "text/plain; charset=utf-8"
+        ET.SubElement(response, "set-body").text = _DENIED
+    _set_www_authenticate(ET.SubElement(challenge, "otherwise"), invalid)
     return policies
 
 
