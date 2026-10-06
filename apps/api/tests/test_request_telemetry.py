@@ -16,6 +16,7 @@ from opentelemetry.sdk.trace import ReadableSpan, TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from opentelemetry.trace import SpanKind
+from opentelemetry.util.http import parse_excluded_urls
 from structlog.testing import capture_logs
 
 CONNECTION_STRING = "InstrumentationKey=test"
@@ -145,6 +146,74 @@ def test_the_health_probes_are_not_recorded(telemetry: Telemetry, probe: str) ->
         client.get("/api/v1/principals")
 
     assert [span.name for span in telemetry.spans()] == ["GET /api/v1/principals"]
+
+
+# App Service's Always On pings the root every five minutes.
+@pytest.mark.parametrize(
+    ("method", "path"), [("GET", "/"), ("HEAD", "/"), ("GET", "/?from=always-on")]
+)
+def test_the_root_is_not_recorded(telemetry: Telemetry, method: str, path: str) -> None:
+    with TestClient(telemetry.start()) as client:
+        assert client.request(method, path).status_code == 200
+        assert telemetry.spans() == ()
+        client.get("/api/v1/principals")
+
+    assert [span.name for span in telemetry.spans()] == ["GET /api/v1/principals"]
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/index.html",
+        "/api",
+        "/api/v1/",
+        # App Service asks for this one when a container starts.
+        "/robots933456.txt",
+        # Both reach the API as "//".
+        "http://testserver//",
+        "/%2F",
+    ],
+)
+def test_a_404_on_any_other_path_is_recorded(telemetry: Telemetry, path: str) -> None:
+    with TestClient(telemetry.start()) as client:
+        assert client.get(path).status_code == 404
+
+    (span,) = telemetry.spans()
+    assert span.kind == SpanKind.SERVER
+    assert (span.attributes or {})["http.status_code"] == 404
+
+
+@pytest.mark.parametrize(
+    ("path", "query_string", "recorded"),
+    [
+        ("/", b"", False),
+        ("/", b"from=always-on", False),
+        ("/healthz", b"", False),
+        ("/readyz/", b"probe=1", False),
+        ("//", b"", True),
+        ("/api", b"", True),
+        ("/api/v1/principals", b"", True),
+        ("/api/v1/directory/search", b"q=someone", True),
+        ("/healthz/now", b"", True),
+        ("/index.html", b"", True),
+    ],
+)
+def test_only_the_root_and_the_health_probes_are_left_out(
+    path: str, query_string: bytes, recorded: bool
+) -> None:
+    scope = {
+        "type": "http",
+        "scheme": "https",
+        "server": ("127.0.0.1", 8000),
+        "headers": [(b"host", b"api.example")],
+        "path": path,
+        "query_string": query_string,
+    }
+    # As the instrumentation reads the exclusions, and builds the URL it checks against them.
+    unrecorded = parse_excluded_urls(observability.UNRECORDED_URLS)
+    _, _, url = observability.request_url(scope)
+
+    assert unrecorded.url_disabled(url) is not recorded
 
 
 def test_no_header_or_body_is_recorded(telemetry: Telemetry) -> None:

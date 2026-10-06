@@ -1,0 +1,7 @@
+.venv/
+tests/
+**/__pycache__/
+.pytest_cache/
+requirements*.in
+requirements-dev.txt
+pytest.ini

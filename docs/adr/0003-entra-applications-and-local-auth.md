@@ -38,3 +38,12 @@ The model-runtime registration now exposes the `Mcp.Invoke` delegated scope and
 `Mcp.Invoke.Application` application role. MCP grants can be recorded for users, agents and
 security groups, and [ADR 0017](0017-mcp-gateway-enforcement.md) uses those permissions for
 gateway enforcement on MCP servers MOSAIC publishes.
+
+## Amendment 2026-10-05: The root answers App Service's Always On ping
+
+App Service's Always On sends `GET /` to the API every five minutes to keep it loaded. The API
+served nothing there, so each ping got `404`, and Application Insights recorded it as a failed
+request once the API recorded its requests. The root is now anonymous too, beside the health
+endpoints. It answers `GET` and `HEAD` with an empty `200`: no name, version or configuration.
+It isn't in the OpenAPI document, and its requests aren't recorded. Every route under `/api/v1`
+still requires a token.

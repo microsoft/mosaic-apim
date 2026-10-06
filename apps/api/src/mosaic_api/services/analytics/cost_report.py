@@ -9,7 +9,11 @@ from typing import Any
 
 from mosaic_api.domain import CostCenterRef
 from mosaic_api.pricing import cloud_label, days_in_month, month_first, month_last, round_cost
-from mosaic_api.services.analytics.consumers import consumers_report, on_behalf_key
+from mosaic_api.services.analytics.consumers import (
+    UnroundedCosts,
+    consumers_report,
+    on_behalf_key,
+)
 from mosaic_api.services.analytics.cost import (
     HOURS_NOTE,
     CostBook,
@@ -86,9 +90,20 @@ def spend_report(
     )
 
 
+def _share(cost: float | None, total: float | None) -> float | None:
+    """A part's share of the report's total, from both before either is rounded.
+
+    Costs are rounded to the ten-thousandth of a dollar to show them. Rounding the total that way
+    can move it by half of one, about 3% of a total of $0.0014, and every share divided by it would
+    move as much. So only the share itself is rounded, to show it.
+    """
+
+    return round(cost / total, 4) if cost is not None and total else None
+
+
 def _cost_rows(
     rows: dict[str, tuple[str, str | None, str | None, UsageMetrics, float | None]],
-    total_cost: float | None,
+    total: float | None,
 ) -> list[AnalyticsCostRow]:
     found = [
         AnalyticsCostRow(
@@ -99,9 +114,7 @@ def _cost_rows(
             requests=metrics.requests,
             total_tokens=metrics.total_tokens,
             cost=round_cost(cost),
-            cost_share=(
-                round(cost / total_cost, 4) if cost is not None and total_cost else None
-            ),
+            cost_share=_share(cost, total),
         )
         for key, (label, detail, kind, metrics, cost) in rows.items()
     ]
@@ -194,21 +207,26 @@ def cost_report(
             costs_by_api.get((gateway_id, api_name)),
         )
 
-    consumer_report = consumers_report(context, callers=callers, clients=[], costs=costs)
+    # Each caller's and cost center's row rounds its cost, so their shares come from these instead.
+    unrounded = UnroundedCosts()
+    consumer_report = consumers_report(
+        context, callers=callers, clients=[], costs=costs, unrounded=unrounded
+    )
     by_consumer: dict[str, tuple[str, str | None, str | None, UsageMetrics, float | None]] = {}
     # Callers only: a security group's row repeats its members' calls, so ranking it beside them
     # would count those calls twice.
     for row in [*consumer_report.people, *consumer_report.applications]:
         metrics = UsageMetrics(requests=row.requests, total_tokens=row.total_tokens)
-        by_consumer[f"{row.kind}:{row.key}"] = (row.label, row.detail, row.kind, metrics, row.cost)
+        cost = unrounded.callers.get(row.key)
+        by_consumer[f"{row.kind}:{row.key}"] = (row.label, row.detail, row.kind, metrics, cost)
 
     by_cost_center: dict[str, tuple[str, str | None, str | None, UsageMetrics, float | None]] = {}
     for center in consumer_report.cost_centers:
         metrics = UsageMetrics(requests=center.requests, total_tokens=center.total_tokens)
-        by_cost_center[center.key] = (center.label, center.code, "costCenter", metrics, center.cost)
+        cost = unrounded.cost_centers.get(center.key)
+        by_cost_center[center.key] = (center.label, center.code, "costCenter", metrics, cost)
 
-    total_cost = None if tally.total is None else round(tally.total, 4)
-    deployment_rows = _deployment_rows(context, deployments, costs, now, total_cost)
+    deployment_rows = _deployment_rows(context, deployments, costs, now, tally.total)
     notes = [HOURS_NOTE] if hourly else []
     summary = tally.summary([*notes, *costs.notes, CHARGEBACK_NOTE])
     return AnalyticsCost(
@@ -216,11 +234,11 @@ def cost_report(
         spend=spend,
         cost=summary,
         trend=trend,
-        models=_cost_rows(by_model, summary.total),
+        models=_cost_rows(by_model, tally.total),
         deployments=deployment_rows,
-        consumers=_cost_rows(by_consumer, summary.total)[:TOP_CONSUMERS],
-        apis=_cost_rows(by_api, summary.total),
-        cost_centers=_cost_rows(by_cost_center, summary.total),
+        consumers=_cost_rows(by_consumer, tally.total)[:TOP_CONSUMERS],
+        apis=_cost_rows(by_api, tally.total),
+        cost_centers=_cost_rows(by_cost_center, tally.total),
     )
 
 
@@ -229,7 +247,7 @@ def _deployment_rows(
     deployments: Sequence[UsageSummary],
     costs: CostBook,
     now: datetime,
-    total_cost: float | None,
+    total: float | None,
 ) -> list[AnalyticsCostDeploymentRow]:
     scope, window = context.scope, context.window
     metrics_by_key: dict[str, UsageMetrics] = defaultdict(UsageMetrics)
@@ -298,9 +316,7 @@ def _deployment_rows(
                 completion_tokens=metrics.completion_tokens,
                 total_tokens=metrics.total_tokens,
                 cost=round_cost(cost),
-                cost_share=(
-                    round(cost / total_cost, 4) if cost is not None and total_cost else None
-                ),
+                cost_share=_share(cost, total),
                 gateways=len(reached.get(folded, set())),
             )
         )

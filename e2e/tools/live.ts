@@ -22,20 +22,32 @@ import {
 import { maskedSelectors, pageSecrets, redact, redactUrl, rpcErrorText, truncate } from '../src/redact.ts'
 import {
   type SignInPrompt,
+  type TokenNeeds,
   type VerifyPersonas,
-  type VerifyPlan,
   bearerToken,
   checkForwarded,
+  controlTokenNeeds,
   controlTokenProblem,
   parseSignInPrompt,
   planVerification,
   publicLine,
   repoRoot,
+  signInSubjects,
   verifierLaunch,
   verifierScript,
   verifierTimeoutMs,
   verifyPersonas,
 } from '../src/verify.ts'
+import {
+  mcpControlTokenNeeds,
+  mcpForwardedVariables,
+  mcpSecretVariables,
+  mcpSignInSubjects,
+  mcpVerifierScript,
+  mcpVerifierTimeoutMs,
+  mcpVerifyPersonas,
+  planMcpVerification,
+} from '../src/verify-mcp.ts'
 
 /**
  * Local control daemon for human-in-the-loop UI journeys. It owns one persistent browser profile per
@@ -43,8 +55,9 @@ import {
  * There is deliberately no arbitrary script evaluation and no way to read tokens or revealed keys.
  * Navigation stays on the MOSAIC origins. Snapshots and text reads run only on MOSAIC pages, because
  * accessibility snapshots include input values, such as a password typed on a Microsoft sign-in page.
- * The one exception to "no tokens" is "verify": it hands the personas' MOSAIC API tokens straight to
- * scripts/verify_model_access.py in its environment, and never returns or prints them.
+ * The one exception to "no tokens" is "verify" and "verify-mcp": they hand the personas' MOSAIC API tokens
+ * straight to scripts/verify_model_access.py or scripts/verify_mcp_access.py in its environment, and never
+ * return or print them.
  */
 
 interface LogEntry {
@@ -237,10 +250,10 @@ async function within<T>(promise: Promise<T>, ms: number, message: string): Prom
  * makes. A new tab starts with empty session storage, where MSAL keeps its cache, so the app signs in again
  * and the token has its full lifetime. The token goes only to the verifier.
  */
-async function captureApiToken(personaKey: string, plan: VerifyPlan, signal: AbortSignal): Promise<string> {
+async function captureApiToken(personaKey: string, needs: TokenNeeds, signal: AbortSignal): Promise<string> {
   const { upn, objectId, expectedRole } = persona(targets, personaKey)
   if (signingIn.has(personaKey)) {
-    throw new RpcError(`${personaKey} is already signing in. Wait for that to finish, then run "verify" again.`)
+    throw new RpcError(`${personaKey} is already signing in. Wait for that to finish, then run the verification again.`)
   }
   signingIn.add(personaKey)
   let session: PersonaSession | undefined
@@ -263,7 +276,7 @@ async function captureApiToken(personaKey: string, plan: VerifyPlan, signal: Abo
     const apiToken = bearerToken(await request.headerValue('authorization'))
     if (!apiToken) throw new RpcError(`${personaKey}'s browser sent no MOSAIC API token.`)
     const holder = { personaKey, upn, objectId, tenantId: targets.tenantId }
-    const problem = controlTokenProblem(apiToken, holder, Date.now() / 1_000, plan)
+    const problem = controlTokenProblem(apiToken, holder, Date.now() / 1_000, needs)
     if (problem) throw new RpcError(problem)
     return apiToken
   } finally {
@@ -353,12 +366,20 @@ interface VerifierOutcome {
   lines: string[]
 }
 
+/** One verifier run: its script and arguments, how long it may take, and how it names who signs in. */
+interface VerifierRun {
+  script: string
+  argv: readonly string[]
+  limitMs: number
+  subjects: Readonly<Record<string, 'user' | 'stranger'>>
+}
+
 /**
- * Runs the verifier and collects its redacted output. Device-code prompts are entered in the persona's
+ * Runs a verifier and collects its redacted output. Device-code prompts are entered in the persona's
  * browser; the next line of output means that sign-in ended, so its tab closes.
  */
 function runVerifier(
-  plan: VerifyPlan,
+  run: VerifierRun,
   people: VerifyPersonas,
   env: Record<string, string>,
   secrets: string[],
@@ -367,7 +388,7 @@ function runVerifier(
 ): Promise<VerifierOutcome> {
   return new Promise((resolve) => {
     const lines: string[] = []
-    const limitMs = verifierTimeoutMs(plan)
+    const limitMs = run.limitMs
     const python = process.env.MOSAIC_E2E_PYTHON || 'python'
     let dropped = 0
     let timedOut = false
@@ -384,7 +405,7 @@ function runVerifier(
       signIn?.finish()
       signIn = undefined
     }
-    const child = spawn(python, [verifierScript, ...plan.argv], {
+    const child = spawn(python, [run.script, ...run.argv], {
       cwd: repoRoot,
       env,
       shell: false,
@@ -408,7 +429,7 @@ function runVerifier(
     const onLine = (raw: string) => {
       if (signIn && Date.now() - signIn.startedAt >= deviceSignInGraceMs) endSignIn()
       emit(publicLine(raw, secrets))
-      const prompt = parseSignInPrompt(raw)
+      const prompt = parseSignInPrompt(raw, run.subjects)
       if (prompt) {
         endSignIn()
         signIn = startDeviceSignIn(prompt, people, emit)
@@ -428,6 +449,49 @@ function runVerifier(
     })
     child.on('close', (code) => finish(code))
   })
+}
+
+interface Verify {
+  people: VerifyPersonas
+  needs: TokenNeeds
+  run: VerifierRun
+  forwarded: Record<string, string>
+  secretNames?: ReadonlySet<string>
+}
+
+/**
+ * The part "verify" and "verify-mcp" share once the run is planned: sign the personas in to MOSAIC for their API
+ * tokens, start the verifier with them, and enter its device codes. One verification runs at a time.
+ */
+async function verifyWith(plan: Verify, signal: AbortSignal) {
+  const { people } = plan
+  const busy = [people.user, people.admin, people.stranger].find((key) => key !== undefined && signingIn.has(key))
+  if (busy) throw new RpcError(`${busy} is signing in. Wait for that to finish, then run the verification again.`)
+  const verification: Verification = {}
+  activeVerification = verification
+  try {
+    const user = await captureApiToken(people.user, plan.needs, signal)
+    // A run may name the user as the admin too. One sign-in serves both.
+    const admin =
+      people.admin === undefined ? undefined : people.admin === people.user ? user : await captureApiToken(people.admin, plan.needs, signal)
+    signal.throwIfAborted()
+    const { env, secrets } = verifierLaunch(process.env, plan.forwarded, { user, admin }, plan.secretNames)
+    const outcome = await runVerifier(plan.run, people, env, secrets, signal, verification)
+    return { ...outcome, personas: people }
+  } catch (error) {
+    if (signal.aborted) process.stdout.write('[verify] drive.ts disconnected before the verifier started, so the driver stopped the run.\n')
+    throw error
+  } finally {
+    if (activeVerification === verification) activeVerification = undefined
+  }
+}
+
+function verifierArguments(args: Args): string[] {
+  const verifierArgs = args.verifierArgs
+  if (!Array.isArray(verifierArgs) || !verifierArgs.every((item): item is string => typeof item === 'string')) {
+    throw new RpcError('"verifierArgs" must be an array of strings')
+  }
+  return verifierArgs
 }
 
 const handlers: Record<string, Handler> = {
@@ -650,10 +714,7 @@ const handlers: Record<string, Handler> = {
 
   async verify(_personaKey, args, signal) {
     if (activeVerification) throw new RpcError('A verification is already running. Wait for it to finish, or stop its drive.ts.')
-    const verifierArgs = args.verifierArgs
-    if (!Array.isArray(verifierArgs) || !verifierArgs.every((item): item is string => typeof item === 'string')) {
-      throw new RpcError('"verifierArgs" must be an array of strings')
-    }
+    const verifierArgs = verifierArguments(args)
     const forwarded = checkForwarded(args.env)
     const plan = planVerification(targets, verifierArgs)
     const people = verifyPersonas(targets, plan, {
@@ -661,25 +722,22 @@ const handlers: Record<string, Handler> = {
       user: str(args, 'user', false),
       stranger: str(args, 'stranger', false),
     })
-    const busy = [people.user, people.admin, people.stranger].find((key) => key !== undefined && signingIn.has(key))
-    if (busy) throw new RpcError(`${busy} is signing in. Wait for that to finish, then run "verify" again.`)
-    const verification: Verification = {}
-    activeVerification = verification
-    try {
-      const user = await captureApiToken(people.user, plan, signal)
-      // Checking grants held by someone else may name the user as the admin too. One sign-in serves both.
-      const admin =
-        people.admin === undefined ? undefined : people.admin === people.user ? user : await captureApiToken(people.admin, plan, signal)
-      signal.throwIfAborted()
-      const { env, secrets } = verifierLaunch(process.env, forwarded, { user, admin })
-      const outcome = await runVerifier(plan, people, env, secrets, signal, verification)
-      return { ...outcome, personas: people }
-    } catch (error) {
-      if (signal.aborted) process.stdout.write('[verify] drive.ts disconnected before the verifier started, so the driver stopped the run.\n')
-      throw error
-    } finally {
-      if (activeVerification === verification) activeVerification = undefined
-    }
+    const run = { script: verifierScript, argv: plan.argv, limitMs: verifierTimeoutMs(plan), subjects: signInSubjects }
+    return verifyWith({ people, needs: controlTokenNeeds(plan), run, forwarded }, signal)
+  },
+
+  async 'verify-mcp'(_personaKey, args, signal) {
+    if (activeVerification) throw new RpcError('A verification is already running. Wait for it to finish, or stop its drive.ts.')
+    const verifierArgs = verifierArguments(args)
+    const forwarded = checkForwarded(args.env, mcpForwardedVariables)
+    const plan = planMcpVerification(targets, verifierArgs)
+    const people = mcpVerifyPersonas(targets, plan, {
+      admin: str(args, 'admin', false),
+      user: str(args, 'user', false),
+      stranger: str(args, 'stranger', false),
+    })
+    const run = { script: mcpVerifierScript, argv: plan.argv, limitMs: mcpVerifierTimeoutMs(plan), subjects: mcpSignInSubjects }
+    return verifyWith({ people, needs: mcpControlTokenNeeds(plan), run, forwarded, secretNames: mcpSecretVariables }, signal)
   },
 
   async close(personaKey) {
@@ -696,7 +754,7 @@ const handlers: Record<string, Handler> = {
   },
 }
 
-const globalActions = new Set(['status', 'shutdown', 'dialogs', 'verify'])
+const globalActions = new Set(['status', 'shutdown', 'dialogs', 'verify', 'verify-mcp'])
 
 function authorized(request: IncomingMessage, port: number): boolean {
   if (request.headers.host !== `127.0.0.1:${port}`) return false

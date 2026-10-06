@@ -30,7 +30,7 @@ jobs:
       - name: Install dependencies
         run: uv sync --all-packages --group dev --locked
       - name: Lint
-        run: uv run --no-sync ruff check apps/api
+        run: uv run --no-sync ruff check apps/api e2e/mcp-servers
       - name: Type-check
         run: uv run --no-sync mypy apps/api/src
       - name: Test the API
@@ -85,6 +85,37 @@ jobs:
       - run: npm run typecheck
       - run: npm run lint
 
+  # The Phase 11 MCP test servers and their deployment kit sit outside the uv workspace. Each
+  # installs its own pinned, hashed requirements into its own environment.
+  mcp-servers:
+    name: MCP test servers (${{ matrix.server }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        server: [m-tools, m-agent, m-protected, deploy]
+    defaults:
+      run:
+        working-directory: e2e/mcp-servers/${{ matrix.server }}
+    env:
+      # The deployment kit's tests compile its Bicep. Here they must run, not skip.
+      MCP_SERVERS_REQUIRE_BICEP: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: "0.12.17"
+      - name: Install the pinned requirements
+        # --no-config keeps the workspace's settings, such as its exclude-newer cutoff, out.
+        run: |
+          uv venv --no-config --python 3.13 .venv
+          uv pip install --no-config --python .venv --require-hashes -r requirements-dev.txt
+      - name: Test
+        run: .venv/bin/python -m pytest
+
   infra:
     name: Infrastructure (Bicep)
     runs-on: ubuntu-latest
@@ -94,7 +125,9 @@ jobs:
         with:
           persist-credentials: false
       - name: Build the Bicep templates
-        run: az bicep build --file infra/main.bicep --stdout > /dev/null
+        run: |
+          az bicep build --file infra/main.bicep --stdout > /dev/null
+          az bicep build --file e2e/mcp-servers/deploy/main.bicep --stdout > /dev/null
 
   # The main branch ruleset requires only this check, so jobs can be added or renamed without
   # changing the ruleset. It runs even when a job fails or is cancelled, and fails unless every job
@@ -102,7 +135,7 @@ jobs:
   result:
     name: CI result
     if: always()
-    needs: [python, frontend, e2e, infra]
+    needs: [python, frontend, e2e, mcp-servers, infra]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

@@ -45,6 +45,18 @@ class _Tally:
     cost: float | None = None
 
 
+@dataclass
+class UnroundedCosts:
+    """What each caller and cost center cost before their rows rounded it, keyed as the rows are.
+
+    A row's cost is rounded to the ten-thousandth of a dollar to show it. A share of the total
+    taken from that could be off by several percent when the total is under a cent.
+    """
+
+    callers: dict[str, float | None] = field(default_factory=dict)
+    cost_centers: dict[str, float | None] = field(default_factory=dict)
+
+
 def _grant_key(grant_key: str, grant: GrantInfo | None) -> str:
     return grant.entitlement_id if grant and grant.entitlement_id else f"link:{grant_key}"
 
@@ -168,7 +180,13 @@ def consumers_report(
     clients: Sequence[UsageSummary],
     costs: CostBook | None = None,
     on_behalf: Sequence[UsageSummary] = (),
+    unrounded: UnroundedCosts | None = None,
 ) -> AnalyticsConsumers:
+    """Who used what, by caller, security group, grant, client application and cost center.
+
+    ``unrounded``, if given, gets each caller's and cost center's cost before rounding.
+    """
+
     scope = context.scope
     people: dict[str, _Tally] = defaultdict(_Tally)
     groups: dict[str, _Tally] = defaultdict(_Tally)
@@ -361,6 +379,9 @@ def consumers_report(
 
     lists = [person_rows, app_rows, group_rows]
     behalf_rows = _on_behalf_rows(context, on_behalf, costs, requests, tokens)
+    if unrounded is not None:
+        unrounded.callers.update((key, value.cost) for key, value in people.items())
+        unrounded.cost_centers.update((key, value.cost) for key, value in cost_centers.items())
     limit = context.limit
     truncated = (
         any(len(rows) > limit for rows in lists)

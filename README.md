@@ -682,10 +682,13 @@ query's parameter names, but each value is recorded as `REDACTED`, so the text s
 the directory search isn't kept, and a query that can't be read that way is left out. If redaction
 fails, the request is recorded without its URL and the API logs a `request_query_redaction_failed`
 warning. The health probes `/healthz` and `/readyz` aren't recorded, because App Service's health
-check and the deployment's smoke checks call them often enough to bury the rest. No header or body
-of a request or response is recorded, so no bearer token or API key reaches Application Insights;
-don't set OpenTelemetry's `OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_*` variables, which would
-record the headers they name. Without the connection string, nothing is instrumented.
+check and the deployment's smoke checks call them often enough to bury the rest. Nor is the root,
+`/`, which App Service's Always On pings every five minutes: it answers `GET` and `HEAD` with an
+empty `200` that needs no sign-in. A request to any other path is recorded, even one that gets
+`404`. No header or body of a request or response is recorded, so no bearer token or API key
+reaches Application Insights; don't set OpenTelemetry's
+`OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_*` variables, which would record the headers they name.
+Without the connection string, nothing is instrumented.
 
 In a second terminal:
 
@@ -901,7 +904,8 @@ measured scale, not speculation.
 
 ## Security model
 
-- Only health endpoints are anonymous.
+- The health endpoints are anonymous, and so is the root (`GET /` and `HEAD /`), which answers
+  App Service's Always On ping with an empty `200`. Every route under `/api/v1` requires a token.
 - Browser authentication uses authorization code + PKCE through MSAL.
 - The API accepts RS256 tokens from the configured tenant only, validates OIDC discovery/JWKS,
   issuer, client-ID audience, signature, time claims, and tenant. A token carrying none of
@@ -2063,30 +2067,48 @@ before rerunning the script. Verify rotation by changing a test subscription key
 and revealing it again: no MOSAIC synchronization should be needed. Do not report these live
 scenarios as passed when deployment, consent, credentials, or a test gateway are unavailable.
 
-For published MCP servers, `scripts\verify_mcp_access.py` checks the gateway's protected resource
-metadata flow and, when supplied, denied and granted runtime tokens. It never calls an MCP tool.
-Prepare a non-production published MCP server, then provide any optional tokens through environment
-variables:
-
-- `MOSAIC_SMOKE_MCP_DENIED_RUNTIME_TOKEN`: optional, a runtime token that has `Mcp.Invoke` or
-  `Mcp.Invoke.Application` but no applied MCP grant.
-- `MOSAIC_SMOKE_MCP_GRANTED_RUNTIME_TOKEN`: optional, a runtime token with an applied MCP grant.
+For published MCP servers, `scripts\verify_mcp_access.py` is the same kind of opt-in client, and
+needs only `httpx`. It reads each MCP grant's connection details from MOSAIC, then speaks
+streamable HTTP to the gateway as a real MCP client: `initialize`, `notifications/initialized`,
+`tools/list` and `tools/call`, with `MCP-Protocol-Version` and `Mcp-Session-Id`, JSON or
+event-stream responses, and `DELETE` to end each session. Prepare a non-production published
+server whose tools include `echo` and `add`, then apply grants on it:
 
 ```powershell
 python scripts\verify_mcp_access.py `
-  --server-url https://<approved-apim-host>/<api-path>/mcp `
-  --tenant-id <tenant-id> `
-  --runtime-client-id <model-runtime-client-id> `
-  --check-denied-token `
-  --check-granted-token
+  --api-base-url https://<mosaic-api-host> `
+  --gateway-origin https://<approved-apim-host> `
+  --user-entitlement <mcp-grant-id> `
+  --application-entitlement <application-mcp-grant-id> `
+  --user-token-source device-code `
+  --application-token-source client-credentials `
+  --check-ungranted-user `
+  --check-missing-scope
 ```
 
-The verifier confirms that an unauthenticated request receives a `401` with `resource_metadata`,
-that the metadata JSON names the server URL, tenant authorization server and
-`api://<runtime-client-id>/Mcp.Invoke`, that an ungranted token is denied with
-`insufficient_scope`, and that a granted token completes MCP `initialize` over streamable HTTP. Do
-not report live MCP interoperability as passed when the APIM preview contract, consent, credentials
-or a test server are unavailable.
+For each grant, an anonymous call must get `401` naming the protected resource metadata, which
+must name the server URL, the tenant's authorization server and
+`api://<runtime-client-id>/Mcp.Invoke`. MOSAIC's control-plane token must get `401`, and an
+`x-mosaic-cost-center` that isn't a code, or names a cost center the caller holds no grant under,
+must get the cost-center rule's `403`. With the checks requested, an ungranted user's token and the
+user's own token without `Mcp.Invoke`, from `MOSAIC_SMOKE_USER_RUNTIME_TOKEN`, must get `403` with
+`insufficient_scope`. Then the grant's own token must list the tools, and `echo` and `add` must
+return the text and the sum, with the grant's cost center named in either case.
+
+People sign in through the model client that connection details name, which needs consent for
+`Mcp.Invoke`, or supply `MOSAIC_SMOKE_MCP_USER_RUNTIME_TOKEN` and, for the ungranted user,
+`MOSAIC_SMOKE_MCP_UNGRANTED_USER_RUNTIME_TOKEN`. An application signs in with
+`MOSAIC_SMOKE_APPLICATION_CLIENT_ID` and `MOSAIC_SMOKE_APPLICATION_CLIENT_SECRET`, or supplies
+`MOSAIC_SMOKE_MCP_APPLICATION_RUNTIME_TOKEN`. The control-plane tokens are the model verifier's.
+Optional flags prove a grant's call limit (`--prove-call-limit`) or a cost center's pooled call
+quota (`--prove-pooled-quota`, which spends the pool for the month), watch a revocation take effect
+(`--watch-revocation`), and call a server whose `ask_model` tool calls a governed model on the
+person's behalf (`--on-behalf-entitlement` with `--send-model-requests`, and `--await-attribution`
+to wait for the person's usage report to attribute it). The
+[end-to-end runbook](docs/e2e/runbook.md#verify-mcp-access) covers each one, what it proves, and
+its prerequisites. The script prints neither tokens nor any tool's output. Do not report live MCP
+interoperability as passed when the APIM preview contract, consent, credentials or a test server
+are unavailable.
 
 ### End-to-end UI testing
 
@@ -2099,7 +2121,8 @@ accounts, and the harness drives the web console and portal to:
 The [roadmap](docs/e2e/roadmap.md) tracks the phases and the journey matrix. The
 [runbook](docs/e2e/runbook.md) covers setup, personas, flags and secret hygiene. Its `verify`
 command runs `scripts\verify_model_access.py` with the personas' own MOSAIC API tokens, and
-enters its device codes in their browsers.
+enters its device codes in their browsers. Its `verify-mcp` command runs
+`scripts\verify_mcp_access.py` the same way.
 
 ## Environments
 

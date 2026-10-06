@@ -1,0 +1,26 @@
+{
+  "subscriptionId": "<subscription-id>",
+  "location": "eastus2",
+  "resourceGroup": "<new-dedicated-resource-group>",
+  "namePrefix": "mosaic-mcp",
+  "logAnalyticsWorkspaceId": "/subscriptions/<subscription-id>/resourceGroups/<mosaic-resource-group>/providers/Microsoft.OperationalInsights/workspaces/<workspace-name>",
+  "containerRegistryId": "/subscriptions/<subscription-id>/resourceGroups/<mosaic-resource-group>/providers/Microsoft.ContainerRegistry/registries/<registry-name>",
+  "imageTag": "",
+  "minReplicas": 1,
+  "protected": {
+    "tenantId": "<tenant-id>",
+    "audienceClientId": "<audience-app-id>",
+    "audienceAppIdUri": "api://<audience-app-id>",
+    "gatewayClientId": "<gateway-mi-client-id>",
+    "mosaicApiClientId": "<mosaic-api-mi-client-id>"
+  },
+  "agent": {
+    "modelEndpoint": "https://<gateway-host>/<model-api-path>",
+    "modelDeployment": "<deployment-name>",
+    "modelApiVersion": "2024-10-21",
+    "modelRuntimeClientId": "<model-runtime-client-id>",
+    "costCenter": "",
+    "tokenParameter": "max_tokens",
+    "maxTokens": 16
+  }
+}
