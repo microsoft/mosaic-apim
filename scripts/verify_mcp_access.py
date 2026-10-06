@@ -26,7 +26,9 @@ import re
 import secrets
 import sys
 import time
-from dataclasses import dataclass, field
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from itertools import pairwise
 from pathlib import Path
@@ -75,6 +77,9 @@ ASK_MODEL_TIMEOUT_SECONDS = 120
 FLOW_CALLS = 5
 CALL_LIMIT_CEILING = 30
 CALL_LIMIT_PERIODS = (60, 300)
+# DELETE is governed too: retry one rate refusal, never wait out a monthly pool.
+CLEANUP_MAX_WAIT_SECONDS = 300
+CLEANUP_REQUEST_TIMEOUT_SECONDS = 30
 # A pooled-quota proof spends the whole pool, so the pool must be small.
 POOL_CALL_CEILING = 50
 # How API Management words the 403 a spent quota-by-key returns. A rate limit's 429 says
@@ -162,6 +167,7 @@ class McpGrant:
     via_group: bool
     limits: dict[str, Any]
     control_token: str = field(repr=False)
+    application_object_id: str | None = None
 
     @property
     def mcp_scope(self) -> str:
@@ -192,7 +198,7 @@ def load_grant(
     if isinstance(name, str) and SAFE_NAME.fullmatch(name):
         label = f"{label} ({name})"
     try:
-        return grant_from(
+        grant = grant_from(
             connection,
             kind=kind,
             label=label,
@@ -200,6 +206,23 @@ def load_grant(
             control_token=control_token,
             origin=origin,
         )
+        if kind == "application":
+            snapshot = read_publication(client, base, control_token, grant)
+            compiled = applied_grant(snapshot, grant)
+            if compiled is None:
+                raise VerificationFailed("The server's last apply doesn't include this grant")
+            subject = model.mapping(compiled.get("subject"))
+            if subject.get("kind") == "securityGroup":
+                raise VerificationFailed(
+                    "The selected grant is a security-group grant, not a direct application "
+                    "grant. This verifier cannot prove which group grant the gateway selects; "
+                    "select a direct application entitlement"
+                )
+            object_id = model.guid(compiled.get("objectId"))
+            if subject.get("kind") != "application" or object_id is None:
+                raise VerificationFailed("The applied grant lacks a usable application identity")
+            grant = replace(grant, application_object_id=object_id)
+        return grant
     except VerificationFailed as error:
         raise VerificationFailed(f"{label}: {error}") from None
 
@@ -572,16 +595,69 @@ class Session:
         return self.send("notifications/initialized", notification=True)
 
     def close(self) -> None:
-        """End the session, when the server opened one. The server may refuse with 405."""
+        """End a session, retaining its identity unless DELETE succeeds or is unsupported.
+
+        Gateway limits also govern DELETE. Only a recognizable rate-limit refusal with a
+        bounded Retry-After permits one retry, using the same credentials and cost center.
+        """
 
         if self.session_id is None:
             return
-        try:
-            response = self.client.request("DELETE", self.url, headers=self.headers())
-            self.closed_with = response.status_code
-        except httpx.HTTPError:
+        for attempt in range(2):
             self.closed_with = None
-        self.session_id = None
+            try:
+                with self.client.stream(
+                    "DELETE",
+                    self.url,
+                    headers=self.headers(),
+                    timeout=CLEANUP_REQUEST_TIMEOUT_SECONDS,
+                ) as response:
+                    self.closed_with = response.status_code
+                    exchange = Exchange("DELETE", response.status_code, response.headers)
+                    read_into(exchange, response)
+            except httpx.HTTPError:
+                raise VerificationFailed(
+                    f"{self.label}: unresolved session cleanup (HTTP transport failure). "
+                    "DELETE was not confirmed; verification is incomplete"
+                ) from None
+            if exchange.ok or exchange.status == 405:
+                self.session_id = None
+                if exchange.status == 405:
+                    say(f"INFO: {self.label}: the server does not support session DELETE (405)")
+                return
+            retry = exchange.header_int("Retry-After")
+            if (
+                attempt == 0
+                and exchange.refused_by() == "rate"
+                and retry is not None
+                and 0 < retry <= CLEANUP_MAX_WAIT_SECONDS
+            ):
+                say(
+                    f"INFO: {self.label}: session DELETE reached the call limit; waiting "
+                    f"{retry} seconds before one cleanup retry"
+                )
+                time.sleep(retry)
+                continue
+            raise VerificationFailed(
+                f"{self.label}: unresolved session cleanup ({status_text(exchange)}). "
+                "DELETE was not confirmed; verification is incomplete"
+            )
+
+
+@contextmanager
+def closing_session(session: Session) -> Iterator[None]:
+    """Always attempt cleanup, preserving both a failed check and a failed cleanup."""
+
+    try:
+        yield
+    finally:
+        problem = sys.exception()
+        try:
+            session.close()
+        except VerificationFailed as cleanup:
+            if isinstance(problem, VerificationFailed):
+                raise VerificationFailed(f"{problem}; {cleanup}") from None
+            raise
 
 
 def open_session(session: Session) -> None:
@@ -822,6 +898,11 @@ class Tokens:
         )
         if problem is None and delegated_scopes(token):
             problem = "carries a delegated scope, so the gateway reads it as a person's token"
+        if problem is None:
+            if grant.application_object_id is None:
+                problem = "cannot be bound to the selected applied application's identity"
+            elif model.object_id(token) != grant.application_object_id:
+                problem = "does not name the selected applied application's object ID"
         if problem is not None:
             raise VerificationFailed(
                 model.token_failure(f"{grant.label}: the application's MCP token", problem)
@@ -1076,10 +1157,8 @@ def check_tools(client: httpx.Client, grant: McpGrant, token: str) -> None:
     """M5: list and call tools, selecting the grant with its cost center's code in either case."""
 
     session = new_session(client, grant, token)
-    try:
+    with closing_session(session):
         spent = use_tools(session, grant.cost_center)
-    finally:
-        session.close()
     code = grant.cost_center
     selected = (
         ""
@@ -1124,71 +1203,73 @@ def prove_call_limit(client: httpx.Client, grant: McpGrant, token: str) -> None:
     period = int(grant.limits["renewalPeriodSeconds"])
     session = new_session(client, grant, token)
     started = time.monotonic()
-    try:
+    with closing_session(session):
         spent = use_tools(session, grant.cost_center, until_refused=True, max_calls=calls + 1)
-    finally:
-        session.close()
-    # A window that slid during the run would hand calls back, so the run must be quick.
-    if time.monotonic() - started >= period / 2:
-        raise VerificationFailed(
-            f"{grant.label}: the calls took too long to prove a limit per {period} seconds. Retry"
-        )
-    through = [exchange for exchange in session.exchanges if exchange.ok]
-    refusal = spent.refusal
-    if refusal is None:
-        raise VerificationFailed(
-            f"{grant.label}: {len(through)} calls went through, more than its limit of {calls} "
-            f"calls per {period} seconds allows"
-        )
-    refused_by = refusal.refused_by()
-    if refused_by == "quota":
-        raise VerificationFailed(
-            f"{grant.label}: a call quota refused a call before its call limit did, so this run "
-            "can't prove the call limit"
-        )
-    if refused_by is None:
-        raise VerificationFailed(
-            f"{grant.label}: a call was refused with HTTP {refusal.status}, not the gateway's "
-            "call-limit 429, so this run can't prove the call limit"
-        )
-    if refusal.header_int("Retry-After") is None:
-        raise VerificationFailed(f"{grant.label}: its call-limit 429 had no Retry-After in seconds")
-    remaining: list[int] = []
-    for exchange in through:
-        value = exchange.header_int(REMAINING_CALLS_HEADER)
-        if value is None:
-            # A notification's 202 has no body, and may carry no header. A request's must.
-            if exchange.request_id is not None:
-                raise VerificationFailed(
-                    f"{grant.label}: a successful {exchange.method} carried no "
-                    f"{REMAINING_CALLS_HEADER}"
-                )
-            continue
-        remaining.append(value)
-    if not remaining or remaining[0] >= calls:
-        raise VerificationFailed(
-            f"{grant.label}: {REMAINING_CALLS_HEADER} didn't start below its limit of {calls}"
-        )
-    # This session is the grant's first use in the run that its limit counts: every call before
-    # it was refused first. So in a fresh window the first call leaves one fewer than the limit,
-    # which ties the limit the gateway enforces to the one MOSAIC applied.
-    if remaining[0] != calls - 1:
-        raise VerificationFailed(
-            f"{grant.label}: its first call left {remaining[0]} of its {calls} calls, not "
-            f"{calls - 1}. Either the gateway enforces a smaller limit than MOSAIC applied, or "
-            f"calls from the last {period} seconds still count. Wait {period} seconds without "
-            "calling it, then retry"
-        )
-    if any(later >= earlier for earlier, later in pairwise(remaining)):
-        shown = ", ".join(str(value) for value in remaining)
-        raise VerificationFailed(
-            f"{grant.label}: {REMAINING_CALLS_HEADER} didn't fall on each response ({shown})"
-        )
-    if remaining[-1] != 0:
-        raise VerificationFailed(
-            f"{grant.label}: the gateway refused a call while {REMAINING_CALLS_HEADER} still said "
-            f"{remaining[-1]} were left"
-        )
+        elapsed = time.monotonic() - started
+        # Measure only proof calls: cleanup may legitimately wait for the next rate window.
+        if elapsed >= period / 2:
+            raise VerificationFailed(
+                f"{grant.label}: the calls took too long to prove a limit per {period} seconds. "
+                "Retry"
+            )
+        through = [exchange for exchange in session.exchanges if exchange.ok]
+        refusal = spent.refusal
+        if refusal is None:
+            raise VerificationFailed(
+                f"{grant.label}: {len(through)} calls went through, more than its limit of {calls} "
+                f"calls per {period} seconds allows"
+            )
+        refused_by = refusal.refused_by()
+        if refused_by == "quota":
+            raise VerificationFailed(
+                f"{grant.label}: a call quota refused a call before its call limit did, so this "
+                "run can't prove the call limit"
+            )
+        if refused_by is None:
+            raise VerificationFailed(
+                f"{grant.label}: a call was refused with HTTP {refusal.status}, not the gateway's "
+                "call-limit 429, so this run can't prove the call limit"
+            )
+        if refusal.header_int("Retry-After") is None:
+            raise VerificationFailed(
+                f"{grant.label}: its call-limit 429 had no Retry-After in seconds"
+            )
+        remaining: list[int] = []
+        for exchange in through:
+            value = exchange.header_int(REMAINING_CALLS_HEADER)
+            if value is None:
+                # A notification's 202 has no body, and may carry no header. A request's must.
+                if exchange.request_id is not None:
+                    raise VerificationFailed(
+                        f"{grant.label}: a successful {exchange.method} carried no "
+                        f"{REMAINING_CALLS_HEADER}"
+                    )
+                continue
+            remaining.append(value)
+        if not remaining or remaining[0] >= calls:
+            raise VerificationFailed(
+                f"{grant.label}: {REMAINING_CALLS_HEADER} didn't start below its limit of {calls}"
+            )
+        # This session is the grant's first use in the run that its limit counts: every call before
+        # it was refused first. So in a fresh window the first call leaves one fewer than the limit,
+        # which ties the limit the gateway enforces to the one MOSAIC applied.
+        if remaining[0] != calls - 1:
+            raise VerificationFailed(
+                f"{grant.label}: its first call left {remaining[0]} of its {calls} calls, not "
+                f"{calls - 1}. Either the gateway enforces a smaller limit than MOSAIC applied, or "
+                f"calls from the last {period} seconds still count. Wait {period} seconds without "
+                "calling it, then retry"
+            )
+        if any(later >= earlier for earlier, later in pairwise(remaining)):
+            shown = ", ".join(str(value) for value in remaining)
+            raise VerificationFailed(
+                f"{grant.label}: {REMAINING_CALLS_HEADER} didn't fall on each response ({shown})"
+            )
+        if remaining[-1] != 0:
+            raise VerificationFailed(
+                f"{grant.label}: the gateway refused a call while {REMAINING_CALLS_HEADER} still "
+                f"said {remaining[-1]} were left"
+            )
     say(
         f"PASS: {grant.label} spent {REMAINING_CALLS_HEADER} from {remaining[0]} to 0, one call "
         f"at a time, then got the gateway's 429 with Retry-After: its limit of {calls} calls per "
@@ -1294,47 +1375,43 @@ def prove_pooled_quota(
     """M6: a cost center's pool refuses once spent, and another cost center's grant still works."""
 
     session = new_session(client, grant, token)
-    try:
+    with closing_session(session):
         # Earlier calls this month count, so the pool can refuse before this run spends it all.
         spent = use_tools(session, grant.cost_center, until_refused=True, max_calls=plan.calls + 1)
-    finally:
-        session.close()
-    through = succeeded(session)
-    refusal = spent.refusal
-    if refusal is None:
-        raise VerificationFailed(
-            f"{grant.label}: {through} calls went through, more than its cost center's pool of "
-            f"{plan.calls} calls allows"
-        )
-    refused_by = refusal.refused_by()
-    if refused_by == "rate":
-        raise VerificationFailed(
-            f"{grant.label}: a call limit refused a call before the pool did, so this run can't "
-            "prove the pooled quota"
-        )
-    if refused_by is None:
-        raise VerificationFailed(
-            f"{grant.label}: a call was refused with HTTP {refusal.status}, not the gateway's "
-            "quota 403, so this run can't prove the pooled quota"
-        )
-    other = plan.other
-    control = new_session(client, other, other_token)
-    control.cost_center = other.cost_center
-    try:
-        exchange = control.initialize()
-        if not exchange.ok:
+        through = succeeded(session)
+        refusal = spent.refusal
+        if refusal is None:
             raise VerificationFailed(
-                f"{other.label}, under another cost center, after the pool was spent: "
-                f"{describe(exchange)}"
+                f"{grant.label}: {through} calls went through, more than its cost center's pool of "
+                f"{plan.calls} calls allows"
             )
-        text = echo_text()
-        check_echo(
-            control,
-            control.send("tools/call", {"name": ECHO_TOOL, "arguments": {"text": text}}),
-            text,
-        )
-    finally:
-        control.close()
+        refused_by = refusal.refused_by()
+        if refused_by == "rate":
+            raise VerificationFailed(
+                f"{grant.label}: a call limit refused a call before the pool did, so this run "
+                "can't prove the pooled quota"
+            )
+        if refused_by is None:
+            raise VerificationFailed(
+                f"{grant.label}: a call was refused with HTTP {refusal.status}, not the gateway's "
+                "quota 403, so this run can't prove the pooled quota"
+            )
+        other = plan.other
+        control = new_session(client, other, other_token)
+        control.cost_center = other.cost_center
+        with closing_session(control):
+            exchange = control.initialize()
+            if not exchange.ok:
+                raise VerificationFailed(
+                    f"{other.label}, under another cost center, after the pool was spent: "
+                    f"{describe(exchange)}"
+                )
+            text = echo_text()
+            check_echo(
+                control,
+                control.send("tools/call", {"name": ECHO_TOOL, "arguments": {"text": text}}),
+                text,
+            )
     say(
         f"PASS: {grant.label}'s cost center's pool of {plan.calls} calls a month refused a call "
         f"with the gateway's quota 403 after {through} more call(s), while {other.label}, under "
@@ -1549,7 +1626,7 @@ def ask_model(client: httpx.Client, grant: McpGrant, token: str) -> tuple[float,
     session = new_session(client, grant, token)
     session.cost_center = grant.cost_center
     started = time.time()
-    try:
+    with closing_session(session):
         open_session(session)
         if ASK_MODEL_TOOL not in list_tools(session):
             raise VerificationFailed(f"{grant.label}: the server doesn't list {ASK_MODEL_TOOL}")
@@ -1561,8 +1638,6 @@ def ask_model(client: httpx.Client, grant: McpGrant, token: str) -> tuple[float,
         result = tool_result(exchange, session, ASK_MODEL_TOOL)
         if not any(item.strip() for item in texts(result)):
             raise VerificationFailed(f"{grant.label}: {ASK_MODEL_TOOL} returned no answer")
-    finally:
-        session.close()
     return started, time.time()
 
 

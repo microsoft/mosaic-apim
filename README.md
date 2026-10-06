@@ -2099,14 +2099,24 @@ People sign in through the model client that connection details name, which need
 `Mcp.Invoke`, or supply `MOSAIC_SMOKE_MCP_USER_RUNTIME_TOKEN` and, for the ungranted user,
 `MOSAIC_SMOKE_MCP_UNGRANTED_USER_RUNTIME_TOKEN`. An application signs in with
 `MOSAIC_SMOKE_APPLICATION_CLIENT_ID` and `MOSAIC_SMOKE_APPLICATION_CLIENT_SECRET`, or supplies
-`MOSAIC_SMOKE_MCP_APPLICATION_RUNTIME_TOKEN`. The control-plane tokens are the model verifier's.
+`MOSAIC_SMOKE_MCP_APPLICATION_RUNTIME_TOKEN` (including a supplied managed-identity token). Before
+any MCP probe, the verifier reads the selected application's applied publication grant and requires
+its object ID to match the token's `oid`; another application's valid token cannot prove that grant.
+Application checks require a direct application entitlement, not a security-group entitlement.
+The control-plane tokens are the model verifier's.
 Optional flags prove a grant's call limit (`--prove-call-limit`) or a cost center's pooled call
 quota (`--prove-pooled-quota`, which spends the pool for the month), watch a revocation take effect
 (`--watch-revocation`), and call a server whose `ask_model` tool calls a governed model on the
 person's behalf (`--on-behalf-entitlement` with `--send-model-requests`, and `--await-attribution`
 to wait for the person's usage report to attribute it). The
 [end-to-end runbook](docs/e2e/runbook.md#verify-mcp-access) covers each one, what it proves, and
-its prerequisites. The script prints neither tokens nor any tool's output. Do not report live MCP
+its prerequisites. Session cleanup is required before a tool or limit proof passes: DELETE uses
+the same credentials and cost center, with at most one gateway rate-limit retry after a
+`Retry-After` of 1–300 seconds. A denied or failed cleanup makes the run incomplete, not passed;
+only successful DELETE or explicit unsupported deletion (405) releases the session identity.
+A stateful server behind a spent monthly pool normally cannot clean up, so use a stateless server
+for a pooled-quota proof that can finish without leaving a session unresolved.
+The script prints neither tokens nor any tool's output. Do not report live MCP
 interoperability as passed when the APIM preview contract, consent, credentials or a test server
 are unavailable.
 
