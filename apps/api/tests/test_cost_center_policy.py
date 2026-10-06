@@ -554,9 +554,17 @@ def _mcp_fragment() -> str:
     return _mcp_render(_mcp_publication(), _representative_mcp_snapshot()).fragment_xml
 
 
+def _mcp_api_policy() -> str:
+    return _mcp_render(_mcp_publication(), _representative_mcp_snapshot()).api_policy_xml
+
+
 @pytest.mark.parametrize(
     ("name", "render"),
-    [("model-cost-centers.xml", _model_fragment), ("mcp-cost-centers.xml", _mcp_fragment)],
+    [
+        ("model-cost-centers.xml", _model_fragment),
+        ("mcp-cost-centers.xml", _mcp_fragment),
+        ("mcp-api-policy.xml", _mcp_api_policy),
+    ],
 )
 def test_rendered_fragments_match_their_reviewed_snapshots(
     name: str, render: Callable[[], str]

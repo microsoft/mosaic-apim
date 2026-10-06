@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, useLocation } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -463,6 +463,54 @@ describe('McpsPage', () => {
     expect(await screen.findByRole('dialog')).toBeVisible()
     expect(api.planMcpPublication).toHaveBeenCalledWith('mcp_pub_1')
     expect(await screen.findByRole('table', { name: 'MCP publish plan steps' })).toBeVisible()
+    // Wait through Tabster's delayed modal accessibility update, not just the initial render.
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 300)) })
+    const dialog = screen.getByRole('dialog', { name: 'Review MCP access' })
+    expect(dialog.closest('[aria-hidden="true"]')).toBeNull()
+    expect(dialog).toContainElement(document.activeElement as HTMLElement)
+    await user.keyboard('{Escape}')
+    await waitFor(() => expect(document.querySelector('[role="dialog"]')).toBeNull())
+    const opener = screen.getByRole('button', { name: 'Plan and apply' })
+    await waitFor(() => expect(opener).toHaveFocus())
+    await user.click(opener)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Close' })).toHaveFocus())
+    await user.keyboard('{Enter}')
+    await waitFor(() => expect(document.querySelector('[role="dialog"]')).toBeNull())
+    await waitFor(() => expect(opener).toHaveFocus())
+    expect(api.applyMcpPublication).not.toHaveBeenCalled()
+  })
+
+  it('keeps the publication opener focused during planning without requesting a duplicate plan', async () => {
+    const user = userEvent.setup()
+    let finish!: (value: PublishPlan) => void
+    api.listMcpPublications.mockResolvedValue([mcpPublication])
+    api.planMcpPublication.mockReturnValueOnce(new Promise<PublishPlan>((resolve) => { finish = resolve }))
+    renderPage()
+    await user.click(await screen.findByRole('button', { name: 'Plan and apply' }))
+    const planning = await screen.findByRole('button', { name: 'Planning…' })
+    expect(planning).toHaveFocus()
+    expect(planning).toHaveAttribute('aria-disabled', 'true')
+    expect(planning).not.toBeDisabled()
+    await user.click(planning)
+    await user.keyboard('{Enter}')
+    expect(api.planMcpPublication).toHaveBeenCalledTimes(1)
+    await act(async () => { finish(mcpPlan) })
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Close' })).toHaveFocus())
+    await user.keyboard('{Escape}')
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Plan and apply' })).toHaveFocus())
+    expect(api.applyMcpPublication).not.toHaveBeenCalled()
+  })
+
+  it.each(['Publish an MCP server', 'Publish through a gateway'])('restores the %s opener after publishing is dismissed', async (name) => {
+    const user = userEvent.setup()
+    api.listMcpEndpoints.mockResolvedValue([buildMcpEndpoint()])
+    renderPage()
+    const opener = await screen.findByRole('button', { name })
+    await user.click(opener)
+    await waitFor(() => expect(screen.getByRole('dialog')).toContainElement(document.activeElement as HTMLElement))
+    await user.keyboard('{Escape}')
+    await waitFor(() => expect(document.querySelector('[role="dialog"]')).toBeNull())
+    await waitFor(() => expect(opener).toHaveFocus())
   })
 
   it('shows the applied model caller for a published MCP server', async () => {
