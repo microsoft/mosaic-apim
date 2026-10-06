@@ -307,6 +307,7 @@ function RegisteredMcpServers({
   onBanner: (message: string) => void
   onPublish: (endpointId?: string) => void
 }) {
+  const restoreFocus = useRestoreFocusTarget()
   const api = useMosaicApi()
   const queryClient = useQueryClient()
   const [dialogOpen, setDialogOpen] = useState(false)
@@ -532,6 +533,7 @@ function RegisteredMcpServers({
                         <Button
                           appearance="secondary"
                           onClick={() => onPublish(endpoint.id)}
+                          {...restoreFocus}
                         >
                           Publish through a gateway
                         </Button>
@@ -919,8 +921,10 @@ function PublishedMcpServers({ onBanner }: { onBanner: (message: string) => void
                       <div className={styles.actionRow}>
                         <Button
                           appearance="secondary"
-                          disabled={reviewPlan.isPending || publication.status === 'applying' || publication.accessState === 'applying' || publication.accessState === 'unknown'}
+                          disabled={publication.status === 'applying' || publication.accessState === 'applying' || publication.accessState === 'unknown'}
+                          disabledFocusable={reviewPlan.isPending}
                           onClick={() => reviewPlan.mutate(publication)}
+                          {...restoreFocus}
                         >
                           {reviewPlan.isPending && reviewPlan.variables?.id === publication.id ? 'Planning…' : 'Plan and apply'}
                         </Button>
@@ -1271,6 +1275,7 @@ function ImportedMcpServers({ onBanner }: { onBanner: (message: string) => void 
 }
 
 export function McpsPage() {
+  const restoreFocus = useRestoreFocusTarget()
   const [banner, setBanner] = useState<string | null>(null)
   const [publishOpen, setPublishOpen] = useState(false)
 
@@ -1281,7 +1286,7 @@ export function McpsPage() {
         description="Model Context Protocol servers MOSAIC governs, whether you registered them directly or imported them from a gateway."
         source="live"
         actions={
-          <Button appearance="primary" icon={<AddRegular />} onClick={() => setPublishOpen(true)}>
+          <Button {...restoreFocus} appearance="primary" icon={<AddRegular />} onClick={() => setPublishOpen(true)}>
             Publish an MCP server
           </Button>
         }

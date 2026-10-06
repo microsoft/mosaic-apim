@@ -24,7 +24,7 @@ import {
   Title3,
 } from '@fluentui/react-components'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useMosaicApi } from '../api'
 import { describeLimits } from '../entitlement-limits'
 import { environmentBlockedVerdict, lookupCompatibility, useEnvironmentCatalog } from '../environments'
@@ -273,12 +273,7 @@ function McpAccessReview({ plan }: { plan: PublishPlan }) {
   )
 }
 
-export function PublishMcpServerDialog({
-  open,
-  onClose,
-  onPublished,
-  initialReview,
-}: {
+type PublishMcpServerDialogProps = {
   open: boolean
   onClose: () => void
   onPublished: (message: string) => void
@@ -287,16 +282,34 @@ export function PublishMcpServerDialog({
     plan: PublishPlan
     message?: string
   } | null
-}) {
+}
+
+// Commit the opening step before Fluent focuses it. Retain that session during the close animation;
+// the next opening gets fresh state, including when it reviews the same publication again.
+export function PublishMcpServerDialog({ open, onClose, onPublished, initialReview }: PublishMcpServerDialogProps) {
+  const review = initialReview ?? null
+  const [session, setSession] = useState({ open, review, key: 0 })
+  if (open && (!session.open || review !== session.review)) {
+    setSession({ open, review, key: session.key + 1 })
+  } else if (!open && session.open) {
+    setSession({ ...session, open })
+  }
+  return (
+    <PublishMcpServerSession key={session.key} open={open} initialReview={session.review}
+      onClose={onClose} onPublished={onPublished} />
+  )
+}
+
+function PublishMcpServerSession({ open, onClose, onPublished, initialReview }: PublishMcpServerDialogProps) {
   const api = useMosaicApi()
   const queryClient = useQueryClient()
-  const [step, setStep] = useState<Step>('choose')
-  const [gatewayId, setGatewayId] = useState('')
+  const [step, setStep] = useState<Step>(initialReview ? 'review' : 'choose')
+  const [gatewayId, setGatewayId] = useState(initialReview?.publication.gatewayId ?? '')
   const [endpointId, setEndpointId] = useState('')
   const [form, setForm] = useState<FormState>(() => defaultsFor(null))
-  const [publication, setPublication] = useState<McpPublication | null>(null)
-  const [plan, setPlan] = useState<PublishPlan | null>(null)
-  const [reviewMessage, setReviewMessage] = useState('')
+  const [publication, setPublication] = useState<McpPublication | null>(initialReview?.publication ?? null)
+  const [plan, setPlan] = useState<PublishPlan | null>(initialReview?.plan ?? null)
+  const [reviewMessage, setReviewMessage] = useState(initialReview?.message ?? '')
   const [runId, setRunId] = useState('')
   const [refreshError, setRefreshError] = useState<Error | null>(null)
   const [invalidPlan, setInvalidPlan] = useState(false)
@@ -343,18 +356,6 @@ export function PublishMcpServerDialog({
     if (!endpoint) return
     setForm(defaultsFor(endpoint))
   }, [endpoint])
-
-  useEffect(() => {
-    if (!open || !initialReview) return
-    setPublication(initialReview.publication)
-    setPlan(initialReview.plan)
-    setReviewMessage(initialReview.message ?? '')
-    setRunId('')
-    setInvalidPlan(false)
-    setRefreshError(null)
-    setGatewayId(initialReview.publication.gatewayId)
-    setStep('review')
-  }, [initialReview, open])
 
   const createAndPlan = useMutation({
     mutationFn: async () => {
@@ -408,6 +409,15 @@ export function PublishMcpServerDialog({
     },
   })
 
+  const refreshedRunRef = useRef('')
+  const refreshTerminalRun = useCallback((completedRun: PublishRun) => {
+    if (!terminalRunStatuses.includes(completedRun.status) || refreshedRunRef.current === completedRun.id) return
+    refreshedRunRef.current = completedRun.id
+    for (const key of ['mcp-publications', 'mcp-servers', 'entitlements', 'entitlement-connection']) {
+      void queryClient.invalidateQueries({ queryKey: [key] })
+    }
+  }, [queryClient])
+
   const apply = useMutation({
     mutationFn: async () => {
       if (!publication || !plan) throw new Error('Review the plan before applying it.')
@@ -417,7 +427,9 @@ export function PublishMcpServerDialog({
       setRunId(run.id)
       setReviewMessage('')
       setStep('apply')
-      void queryClient.invalidateQueries({ queryKey: ['mcp-publications'] })
+      // Mutation callbacks survive a keyed-session unmount; a terminal apply must still refresh caches.
+      if (terminalRunStatuses.includes(run.status)) refreshTerminalRun(run)
+      else void queryClient.invalidateQueries({ queryKey: ['mcp-publications'] })
     },
     onError: async (error) => {
       if (!publication || (error as { status?: number }).status !== 409) return
@@ -450,34 +462,38 @@ export function PublishMcpServerDialog({
   useEffect(() => {
     if (currentRun && terminalRunStatuses.includes(currentRun.status) && notifiedRunRef.current !== currentRun.id) {
       notifiedRunRef.current = currentRun.id
-      void queryClient.invalidateQueries({ queryKey: ['mcp-publications'] })
-      void queryClient.invalidateQueries({ queryKey: ['mcp-servers'] })
-      void queryClient.invalidateQueries({ queryKey: ['entitlements'] })
-      void queryClient.invalidateQueries({ queryKey: ['entitlement-connection'] })
-      if (currentRun.status === 'succeeded') {
+      refreshTerminalRun(currentRun)
+      // Closed sessions still refresh terminal results, but must not announce completion.
+      if (open && currentRun.status === 'succeeded') {
         onPublished(runtimeConfig.authMode === 'local'
           ? 'Local development service reported completion. Live APIM apply is not verified.'
           : 'The service reports the MCP plan applied. Allow for APIM propagation; live invocation is not verified.')
       }
     }
-  }, [currentRun, onPublished, queryClient])
+  }, [currentRun, onPublished, open, refreshTerminalRun])
 
-  function resetAndClose() {
-    setStep('choose')
-    setGatewayId('')
-    setEndpointId('')
-    setForm(defaultsFor(null))
-    setPublication(null)
-    setPlan(null)
-    setReviewMessage('')
-    setRunId('')
-    setRefreshError(null)
-    setInvalidPlan(false)
-    notifiedRunRef.current = ''
-    apply.reset()
-    createAndPlan.reset()
-    onClose()
-  }
+  // Step changes remove the focused control. Move to the new step or outcome so focus and Escape
+  // stay inside the modal, but leave initial focus to Fluent and don't interrupt an edited field.
+  const stepRef = useRef<HTMLElement>(null)
+  const outcomeRef = useRef<HTMLDivElement>(null)
+  const finishedRun = currentRun && terminalRunStatuses.includes(currentRun.status) ? currentRun : null
+  const outcome = {
+    choose: null,
+    configure: createAndPlan.error,
+    review: apply.error,
+    apply: finishedRun?.id ?? null,
+  }[step]
+  const shownRef = useRef({ step, outcome })
+  useEffect(() => {
+    if (!open) return
+    const shown = shownRef.current
+    shownRef.current = { step, outcome }
+    // Retrying clears the outcome; the busy button keeps focus until there is a new result.
+    if (step === shown.step && (outcome === null || Object.is(outcome, shown.outcome))) return
+    if (document.activeElement?.matches('input, select, textarea')) return
+    const target = outcomeRef.current ?? stepRef.current
+    target?.focus()
+  }, [open, step, outcome])
 
   const canConfigure = Boolean(
     gatewayId &&
@@ -495,14 +511,14 @@ export function PublishMcpServerDialog({
   )
 
   return (
-    <Dialog open={open} onOpenChange={(_, data) => !data.open && resetAndClose()}>
+    <Dialog open={open} onOpenChange={(_, data) => !data.open && onClose()}>
       <DialogSurface>
         <DialogBody>
           <DialogTitle>{initialReview ? 'Review MCP access' : 'Publish an MCP server'}</DialogTitle>
           <DialogContent>
             <div className={styles.intro}>
               <Text>Plan the API Management resources first, then explicitly apply the plan.</Text>
-              <Text size={200}>Step {['choose', 'configure', 'review', 'apply'].indexOf(step) + 1} of 4</Text>
+              <Text ref={stepRef} tabIndex={-1} size={200}>Step {['choose', 'configure', 'review', 'apply'].indexOf(step) + 1} of 4</Text>
             </div>
 
             {step === 'choose' && (
@@ -627,16 +643,18 @@ export function PublishMcpServerDialog({
                   <Input value={form.apiPath} onChange={(_, data) => setForm({ ...form, apiPath: data.value })} />
                 </Field>
                 {createAndPlan.isError && (
-                  createEnvironmentBlocked ? (
-                    <MessageBar intent="error">
-                      <MessageBarBody>
-                        <MessageBarTitle>Environment rules block this publication</MessageBarTitle>
-                        {createEnvironmentBlocked.reason}
-                      </MessageBarBody>
-                    </MessageBar>
-                  ) : (
-                    <ErrorState error={createAndPlan.error} />
-                  )
+                  <div ref={outcomeRef} tabIndex={-1}>
+                    {createEnvironmentBlocked ? (
+                      <MessageBar intent="error">
+                        <MessageBarBody>
+                          <MessageBarTitle>Environment rules block this publication</MessageBarTitle>
+                          {createEnvironmentBlocked.reason}
+                        </MessageBarBody>
+                      </MessageBar>
+                    ) : (
+                      <ErrorState error={createAndPlan.error} />
+                    )}
+                  </div>
                 )}
               </div>
             )}
@@ -644,15 +662,17 @@ export function PublishMcpServerDialog({
             {step === 'review' && plan && (
               <div className={styles.nameCell}>
                 {reviewMessage && (
-                  <MessageBar intent="warning">
-                    <MessageBarBody>
-                      <MessageBarTitle>MOSAIC didn't apply the plan you reviewed</MessageBarTitle>
-                      {reviewMessage}
-                      {!invalidPlan && (
-                        <Text block>MOSAIC has already re-planned. Review the fresh plan below before you apply it.</Text>
-                      )}
-                    </MessageBarBody>
-                  </MessageBar>
+                  <div ref={applyError ? undefined : outcomeRef} tabIndex={-1}>
+                    <MessageBar intent="warning">
+                      <MessageBarBody>
+                        <MessageBarTitle>MOSAIC didn't apply the plan you reviewed</MessageBarTitle>
+                        {reviewMessage}
+                        {!invalidPlan && (
+                          <Text block>MOSAIC has already re-planned. Review the fresh plan below before you apply it.</Text>
+                        )}
+                      </MessageBarBody>
+                    </MessageBar>
+                  </div>
                 )}
                 {nothingToApply && (
                   <MessageBar intent="info">
@@ -704,15 +724,18 @@ export function PublishMcpServerDialog({
                     </ul>
                   </>
                 )}
-                {applyEnvironmentBlocked && (
-                  <MessageBar intent="error">
-                    <MessageBarBody>
-                      <MessageBarTitle>Environment rules block this publication</MessageBarTitle>
-                      {applyEnvironmentBlocked.reason}
-                    </MessageBarBody>
-                  </MessageBar>
+                {applyError && (
+                  <div ref={outcomeRef} tabIndex={-1}>
+                    {applyEnvironmentBlocked ? (
+                      <MessageBar intent="error">
+                        <MessageBarBody>
+                          <MessageBarTitle>Environment rules block this publication</MessageBarTitle>
+                          {applyEnvironmentBlocked.reason}
+                        </MessageBarBody>
+                      </MessageBar>
+                    ) : <ErrorState error={applyError} />}
+                  </div>
                 )}
-                {applyError && !applyEnvironmentBlocked && <ErrorState error={applyError} />}
                 {refreshError && <ErrorState error={refreshError} />}
               </div>
             )}
@@ -721,12 +744,16 @@ export function PublishMcpServerDialog({
               <div className={styles.nameCell}>
                 {!currentRun || currentRun.status === 'running' ? <Loading label="Applying MCP publish plan" /> : null}
                 {run.isError && <ErrorState error={run.error} />}
-                {currentRun && <RunResult run={currentRun} />}
+                {currentRun && (
+                  <div ref={finishedRun ? outcomeRef : undefined} tabIndex={-1}>
+                    <RunResult run={currentRun} />
+                  </div>
+                )}
               </div>
             )}
           </DialogContent>
           <DialogActions>
-            <Button appearance="secondary" onClick={resetAndClose}>Close</Button>
+            <Button appearance="secondary" onClick={onClose}>Close</Button>
             {step === 'configure' && <Button appearance="secondary" onClick={() => setStep('choose')}>Back</Button>}
             {step === 'review' && !reviewingExistingPlan && <Button appearance="secondary" onClick={() => setStep('configure')}>Back</Button>}
             {step === 'choose' && (
@@ -735,7 +762,8 @@ export function PublishMcpServerDialog({
             {step === 'configure' && (
               <Button
                 appearance="primary"
-                disabled={!canReview || createAndPlan.isPending}
+                disabled={!canReview}
+                disabledFocusable={createAndPlan.isPending}
                 onClick={() => {
                   apply.reset()
                   createAndPlan.mutate()
@@ -745,7 +773,8 @@ export function PublishMcpServerDialog({
               </Button>
             )}
             {step === 'review' && (
-              <Button appearance="primary" disabled={apply.isPending || invalidPlan || missingAccessReview || nothingToApply} onClick={() => apply.mutate()}>
+              <Button appearance="primary" disabled={invalidPlan || missingAccessReview || nothingToApply}
+                disabledFocusable={apply.isPending} onClick={() => apply.mutate()}>
                 {apply.isPending ? 'Applying…' : 'Apply plan'}
               </Button>
             )}
