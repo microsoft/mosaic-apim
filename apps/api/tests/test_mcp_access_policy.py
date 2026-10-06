@@ -200,6 +200,20 @@ def _header_values(root: ET.Element, name: str) -> list[str]:
     ]
 
 
+def _on_error_challenge(prefix: str) -> str:
+    """``prefix``, then the canonical RFC 9728 metadata URL at the request's own origin."""
+
+    return (
+        "@{\n"
+        "var url = context.Request.OriginalUrl;\n"
+        'var port = url.Port == 80 || url.Port == 443 ? "" : ":" + url.Port.ToString();\n'
+        'var origin = url.Scheme + "://" + url.Host + port;\n'
+        'var metadata = origin + "/.well-known/oauth-protected-resource/mosaic/mcp/weather/mcp";\n'
+        f'return "{prefix}" + metadata + "\\"";\n'
+        "}"
+    )
+
+
 def _counters(fragment: ET.Element) -> list[str]:
     return [
         element.attrib["counter-key"]
@@ -640,7 +654,7 @@ def test_api_policy_includes_fragment_and_on_error_www_authenticate() -> None:
     assert any("invalid_token" in value for value in _header_values(api, "WWW-Authenticate"))
 
 
-def test_on_error_preserves_missing_malformed_and_invalid_token_challenges() -> None:
+def test_on_error_sets_missing_malformed_and_invalid_token_challenges_on_the_401() -> None:
     api = ET.fromstring(_render().api_policy_xml)
     unauthorized = api.find("on-error/choose/when")
     assert unauthorized is not None
@@ -652,41 +666,40 @@ def test_on_error_preserves_missing_malformed_and_invalid_token_challenges() -> 
     invalid = challenge.find("otherwise")
     assert invalid is not None
     failure = 'context.Variables.GetValueOrDefault<string>("mosaic-mcp-auth-failure", "")'
-    for branch, reason in ((missing, "no-credential"), (malformed, "token-malformed")):
-        assert branch.attrib["condition"] == f'@({failure} == "{reason}")'
-        assert [element.tag for element in branch] == ["return-response"]
-        response = branch.find("return-response")
-        assert response is not None
-        assert [element.tag for element in response] == [
-            "set-status",
-            "set-header",
-            "set-header",
-            "set-body",
-        ]
-        assert response.find("set-status").attrib == {  # type: ignore[union-attr]
-            "code": "401",
-            "reason": "Unauthorized",
-        }
-        assert response.findtext("set-body") == "MCP access denied."
-        assert _header_values(response, "Content-Type") == ["text/plain; charset=utf-8"]
-        assert all(
-            header.attrib["exists-action"] == "override"
-            for header in response.findall("set-header")
-        )
-        assert len(_header_values(response, "WWW-Authenticate")) == 1
-    [anonymous_header] = _header_values(missing, "WWW-Authenticate")
-    [invalid_header] = _header_values(invalid, "WWW-Authenticate")
-    assert 'return "Bearer resource_metadata=\\"" + metadata + "\\"";' in anonymous_header
-    assert 'return "Bearer error=\\"invalid_token\\", resource_metadata=\\""' in invalid_header
-    assert _header_values(malformed, "WWW-Authenticate") == [invalid_header]
-    # Ordinary invalid JWTs retain the validator's status, body and JSON media type.
-    assert [element.tag for element in invalid] == ["set-header"]
-    assert invalid[0].attrib == {"name": "WWW-Authenticate", "exists-action": "override"}
-    parents = {child: parent for parent in api.iter() for child in parent}
-    bodies = list(api.iter("set-body"))
-    assert len(bodies) == 2
-    assert all(parents[body].tag == "return-response" for body in bodies)
+    assert missing.attrib["condition"] == f'@({failure} == "no-credential")'
+    assert malformed.attrib["condition"] == f'@({failure} == "token-malformed")'
+    anonymous = _on_error_challenge('Bearer resource_metadata=\\"')
+    invalid_token = _on_error_challenge('Bearer error=\\"invalid_token\\", resource_metadata=\\"')
+    for branch, expected in (
+        (missing, anonymous),
+        (malformed, invalid_token),
+        (invalid, invalid_token),
+    ):
+        # Each branch only sets the challenge on the error response, as the otherwise branch did.
+        assert [element.tag for element in branch] == ["set-header"]
+        assert branch[0].attrib == {"name": "WWW-Authenticate", "exists-action": "override"}
+        assert [value.text for value in branch[0]] == [expected]
+    # Nothing replaces the validator's 401: its status, JSON body and media type stand.
+    for tag in ("return-response", "set-status", "set-body"):
+        assert not list(api.iter(tag))
+    assert _header_values(api, "Content-Type") == []
     assert not list(api.iter("trace"))  # The existing classification traces remain inbound only.
+
+
+def test_on_error_never_sets_a_challenge_inside_return_response() -> None:
+    # O47: on native MCP APIs, the gateway was seen live to insert the API path into the metadata
+    # URL of a challenge set inside return-response, but not of one set on the error response.
+    on_error = ET.fromstring(_render().api_policy_xml).find("on-error")
+    assert on_error is not None
+
+    challenged = [
+        header.findtext("value")
+        for response in on_error.iter("return-response")
+        for header in response.iter("set-header")
+        if header.attrib.get("name", "").casefold() == "www-authenticate"
+    ]
+    assert challenged == [], "Set the challenge on the error response, not in return-response."
+    assert len(_header_values(on_error, "WWW-Authenticate")) == 3
 
 
 @pytest.mark.parametrize("api_path", ["weather", "mosaic/mcp/weather", "teams/tools/weather"])
