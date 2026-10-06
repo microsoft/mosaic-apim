@@ -1093,7 +1093,16 @@ cleanup, because it needs the test accounts that the cleanup removes.
   and overall-health failures. Neither those records nor memory measurements prove the timeout's
   cause. A generic Easy Auth detector reports no authentication activity, contradicting the enabled,
   required and client-restricted ARM configuration; that detector is not proof that authentication
-  is disabled. No authentication, memory or scaling settings were changed. M-agent uses
+  is disabled. Read-only probes on 6 October found that the timeout isn't about the token: the
+  server alternates strictly between answering and hanging. Fourteen requests in two runs, each
+  on a fresh connection, alternated whatever they were (anonymous, a non-JWT or JWT-shaped
+  bearer, Easy Auth's own login and metadata routes), including when pinned to the host's single
+  address. Each run logged one host, which loaded all three functions without errors. So a path
+  that never reaches a working host is in rotation; no documented platform issue explains it.
+  **Proposed Batch 5c, not approved:** restart M-protected once without changing its settings,
+  then repeat the probe, the sequential smoke and the console's connection check. If the
+  alternation persists, a hosting change for M-protected needs its own proposal. No
+  authentication, memory or scaling settings were changed. M-agent uses
   `2025-03-01-preview`, interpreting the owner's version input as its model-inference API version.
 - ✅ **The MCP verifier**, [#97](https://github.com/microsoft/mosaic-apim/pull/97) and
   [#99](https://github.com/microsoft/mosaic-apim/pull/99), is merged. The follow-up binds an
