@@ -343,6 +343,8 @@ def _mcp_authentication(
     _record_validated_caller(fragment)
 
     def no_grant(parent: ET.Element) -> None:
+        # This challenge is still set inside return-response, so native MCP APIs may rewrite its
+        # metadata URL as they did the 401s' (see _api_policy). That isn't checked live yet.
         _reject_with_auth(
             parent,
             f"@(String.IsNullOrEmpty({_TOKEN_GRANT}))",
@@ -429,6 +431,10 @@ def _api_policy(publication: McpPublication) -> ET.Element:
     invalid = _auth_header_value(
         metadata_path, 'Bearer error="invalid_token", resource_metadata="', suffix='"'
     )
+    # Observed live on native MCP APIs, and not publicly documented: the gateway inserts the API
+    # path into the metadata URL of a challenge set inside return-response, inbound or here, but
+    # not of one set on the error response itself. So every branch only sets the challenge, and
+    # the validator's 401 status, JSON body and media type stand.
     for reason, header in (
         (
             "no-credential",
@@ -437,15 +443,7 @@ def _api_policy(publication: McpPublication) -> ET.Element:
         ("token-malformed", invalid),
     ):
         classified = ET.SubElement(challenge, "when", {"condition": f'@({failure} == "{reason}")'})
-        # set-body is supported in on-error only inside a complete return-response.
-        response = ET.SubElement(classified, "return-response")
-        ET.SubElement(response, "set-status", {"code": "401", "reason": "Unauthorized"})
-        _set_www_authenticate(response, header)
-        content_type = ET.SubElement(
-            response, "set-header", {"name": "Content-Type", "exists-action": "override"}
-        )
-        ET.SubElement(content_type, "value").text = "text/plain; charset=utf-8"
-        ET.SubElement(response, "set-body").text = _DENIED
+        _set_www_authenticate(classified, header)
     _set_www_authenticate(ET.SubElement(challenge, "otherwise"), invalid)
     return policies
 

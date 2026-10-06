@@ -134,27 +134,36 @@ MCP endpoint. A deliberately invalid bearer token must receive `401` with `error
 and the same metadata URL. Do not accept a canonical document that works only when fetched at a
 different URL from the challenge.
 
-On a Developer/classic native MCP API, an early inbound `return-response` was observed to emit an
-extra API-path prefix in the anonymous challenge even though the saved policy constructed the
-canonical URL. The same endpoint's JWT-validation error path emitted the correct URL; the global
-policy was stock. This isolates a difference between the two response paths, not a missing metadata
-API, but does not establish the platform's internal rewriting mechanism.
+On native MCP APIs, API Management rewrites a `WWW-Authenticate` challenge set inside a
+[`return-response`](https://learn.microsoft.com/en-us/azure/api-management/return-response-policy),
+in `inbound` or `on-error`. It inserts the API path before the well-known path, so the challenge
+names
+`https://gateway.example.test/mosaic/mcp/weather/.well-known/oauth-protected-resource/mosaic/mcp/weather/mcp`,
+which returns `401`. The saved policy builds the same canonical URL either way, but only a
+challenge set with `set-header` directly on the error response in `on-error` keeps it. This was
+observed live on a Developer/classic gateway whose global policy was stock. No public
+documentation describes it, so treat it as observed platform behavior, not a documented contract.
 
-MOSAIC therefore sends missing and malformed credentials through the existing
+MOSAIC therefore sends missing and malformed credentials through the
 [`validate-azure-ad-token`](https://learn.microsoft.com/en-us/azure/api-management/validate-azure-ad-token-policy)
-failure path and sets the challenge in
-[`on-error`](https://learn.microsoft.com/en-us/azure/api-management/api-management-error-handling-policies).
-It records the original refusal reason before validation and removes malformed Authorization
-headers so a valid value inside a duplicate header cannot be accepted. Anonymous challenges still
-omit `error`; malformed credentials still report `invalid_token`. Both retain the plain
-`MCP access denied.` body with `Content-Type: text/plain; charset=utf-8`; ordinary invalid JWTs
-retain the validator's JSON response. Each classified refusal uses a complete
-[`return-response`](https://learn.microsoft.com/en-us/azure/api-management/return-response-policy)
-inside `on-error`, with its own explicit 401 status, canonical challenge, content type and body.
-The challenge is set inside that response rather than relying on a previously set header surviving
-response replacement. `set-body` is not used directly in `on-error`. Token audience, permissions,
-grants, backend credential stripping and streaming are unchanged. No alternate anonymous route or additional APIM resource
-is created.
+failure path, and
+[`on-error`](https://learn.microsoft.com/en-us/azure/api-management/api-management-error-handling-policies)
+sets each 401's challenge with `set-header` on the validator's error response, never inside
+`return-response`. It records the original refusal reason before validation and removes malformed
+Authorization headers so a valid value inside a duplicate header cannot be accepted. An anonymous
+call's challenge omits `error`; malformed credentials and invalid tokens report
+`error="invalid_token"`. Every 401 keeps the validator's status and its JSON body, with the
+`MCP access denied.` message; `on-error` doesn't replace the body. Token audience, permissions,
+grants, backend credential stripping and streaming are unchanged. No alternate anonymous route or
+additional APIM resource is created.
+
+One challenge is still set inside `return-response`: the inbound `403` with
+`error="insufficient_scope"` that a valid token matching no grant receives. Its `resource_metadata`
+URL may be rewritten the same way on native MCP APIs, and MOSAIC leaves it unchanged for now.
+Phase 11's M5 journey sends that 403 live, with an ungranted person's token and a token without
+`Mcp.Invoke`. The verifier requires `insufficient_scope` there, but doesn't yet compare the
+challenge's `resource_metadata` with the connection details. MOSAIC's other refusals, such as the
+cost-center 403s, carry no challenge.
 
 Existing publications need a fresh plan and reviewed apply after updating MOSAIC to receive the
 changed fragment and API policy. Verify anonymous, malformed and invalid-token challenges again,

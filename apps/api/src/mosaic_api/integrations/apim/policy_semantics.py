@@ -680,8 +680,11 @@ def _walk(
         else:
             facet = recognizer(child)
         facet.section = section
-        if tag == "set-header" and section == PolicySection.OUTBOUND:
-            facet.summary = facet.summary.replace(" request header", " response header")
+        if tag == "set-header" and section in {PolicySection.OUTBOUND, PolicySection.ON_ERROR}:
+            facet.summary = facet.summary.replace(" request header", " response header").replace(
+                "when the request doesn't already carry it",
+                "when the response doesn't already carry it",
+            )
         if conditional:
             facet.details = [*facet.details, "Applied only when a condition matches."]
         if facet.managed_by_mosaic:
