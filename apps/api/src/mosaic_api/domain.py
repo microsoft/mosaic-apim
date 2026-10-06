@@ -1419,7 +1419,8 @@ def mcp_publication_id(tenant_id: str, gateway_id: str, mcp_endpoint_id: str) ->
 # model.
 MCP_DELEGATED_SCOPE = "Mcp.Invoke"
 MCP_APPLICATION_ROLE = "Mcp.Invoke.Application"
-# API Management serves a streamable MCP server's message endpoint at ``/{api_path}/mcp``.
+# API Management serves a streamable MCP server's message endpoint at ``/{api_path}/mcp``, and
+# forwards each call to the backend URL with ``/mcp`` added. See :func:`mcp_backend_url`.
 MCP_MESSAGE_PATH = "mcp"
 # RFC 9728 path insertion: the metadata for a resource at ``https://host/{path}`` is served at
 # ``https://host/.well-known/oauth-protected-resource/{path}``.
@@ -1432,6 +1433,43 @@ def mcp_server_url(gateway_url: str, api_path: str) -> str:
     """The URL MCP clients connect to for a server MOSAIC publishes at ``api_path``."""
 
     return f"{gateway_url.rstrip('/')}/{api_path.strip('/')}/{MCP_MESSAGE_PATH}"
+
+
+def mcp_backend_url(endpoint: str) -> str:
+    """The backend URL through which API Management reaches the MCP server at ``endpoint``.
+
+    API Management serves a published server at ``/{api_path}/mcp``. When it forwards a call, it
+    adds the part of the path after the API's own path, ``/mcp``, to the backend URL. So the backend
+    is the registered streamable endpoint without its final ``/mcp`` segment, with its scheme, host,
+    port and any path before that segment kept: ``https://host/runtime/webhooks/mcp`` is reached
+    through the backend ``https://host/runtime/webhooks``. This was observed live, on an MCP API
+    MOSAIC wrote over ARM without an ``endpoints`` map. No public documentation describes it.
+
+    A trailing slash is ignored, as it is when a server is registered (see
+    :func:`canonical_mcp_url`), so ``https://host/mcp/`` is reached through ``https://host`` too.
+    Any other endpoint raises :class:`ValueError` rather than MOSAIC guessing an ``endpoints`` map:
+    one whose path doesn't end in ``/mcp``, and one with a query string or fragment, which the
+    backend URL would drop.
+    """
+
+    parts = urlsplit(endpoint.strip())
+    if not parts.hostname:
+        raise ValueError("An MCP server URL must include a host")
+    if parts.query or parts.fragment:
+        raise ValueError(
+            "MOSAIC can't publish an MCP server whose registered URL has a query string or "
+            "fragment, because the backend URL it writes keeps only the scheme, host, port and "
+            "path. Register the server by a URL without one."
+        )
+    prefix, separator, segment = parts.path.rstrip("/").rpartition("/")
+    if not separator or segment != MCP_MESSAGE_PATH:
+        raise ValueError(
+            "MOSAIC can publish an MCP server only if its registered URL ends in /mcp, such as "
+            "https://<host>/mcp. API Management adds /mcp to the backend URL when it forwards a "
+            "call, so MOSAIC points the backend at the registered URL without it. Register the "
+            "server by its streamable HTTP URL that ends in /mcp."
+        )
+    return urlunsplit((parts.scheme, parts.netloc, prefix, "", ""))
 
 
 def mcp_metadata_api_path(api_path: str) -> str:

@@ -10,6 +10,7 @@ from conftest import (
 from mcp_double import FakeMcpServer
 from mosaic_api.cost_centers import CostCenterBook, PendingRecheck, general_cost_center
 from mosaic_api.domain import (
+    MCP_MESSAGE_PATH,
     AuditEvent,
     CapabilitySupport,
     Entitlement,
@@ -49,6 +50,8 @@ from mosaic_api.domain import (
     PublishRunStatus,
     RequestEnforcement,
     TokenEnforcement,
+    canonical_mcp_url,
+    mcp_backend_url,
     mcp_server_id,
     new_id,
 )
@@ -799,6 +802,197 @@ async def test_plan_backend_change_denies_first(harness: Harness) -> None:
     assert changed.steps[1].kind == PublishedResourceKind.API_POLICY
     assert changed.steps[1].name == "mosaic-mcp-orders-mcp"
     assert changed.steps[1].stage == "prepare"
+
+
+# -- the backend URL: API Management adds /mcp when it forwards a call --------------------------
+
+BACKEND = "backends/mosaic-mcp-orders-mcp"
+REACHABLE = [
+    ("https://mcp.contoso.test/mcp", "https://mcp.contoso.test"),
+    ("https://mcp.contoso.test/runtime/webhooks/mcp", "https://mcp.contoso.test/runtime/webhooks"),
+    ("https://mcp.contoso.test:8443/api/mcp", "https://mcp.contoso.test:8443/api"),
+]
+
+
+@pytest.mark.parametrize(
+    ("endpoint", "backend"),
+    [
+        *REACHABLE,
+        # A trailing slash is ignored, as it is when a server is registered.
+        ("https://mcp.contoso.test/mcp/", "https://mcp.contoso.test"),
+        # Only the final segment goes.
+        ("https://mcp.contoso.test/mcp/mcp", "https://mcp.contoso.test/mcp"),
+    ],
+)
+def test_the_backend_url_is_the_endpoint_without_its_final_mcp_segment(
+    endpoint: str, backend: str
+) -> None:
+    assert mcp_backend_url(endpoint) == backend
+    # API Management calls the backend URL with /mcp added: the server MOSAIC registered.
+    assert f"{backend}/{MCP_MESSAGE_PATH}" == canonical_mcp_url(endpoint)
+
+
+@pytest.mark.parametrize(
+    ("endpoint", "message"),
+    [
+        ("https://mcp.contoso.test/api/stream", "ends in /mcp"),
+        ("https://mcp.contoso.test/sse", "ends in /mcp"),
+        ("https://mcp.contoso.test/", "ends in /mcp"),
+        ("https://mcp.contoso.test", "ends in /mcp"),
+        ("https://mcp.contoso.test/toolsmcp", "ends in /mcp"),
+        ("https://mcp.contoso.test/MCP", "ends in /mcp"),
+        ("https://mcp.contoso.test/mcp/tools", "ends in /mcp"),
+        ("https://mcp.contoso.test/mcp?tenant=contoso", "query string"),
+        ("https://mcp.contoso.test/mcp#tools", "query string or fragment"),
+    ],
+)
+def test_no_backend_url_is_derived_for_an_endpoint_api_management_cant_reach(
+    endpoint: str, message: str
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        mcp_backend_url(endpoint)
+
+
+@pytest.mark.parametrize(("endpoint", "backend"), REACHABLE)
+async def test_apply_points_the_backend_at_the_endpoint_without_its_final_mcp(
+    harness: Harness, endpoint: str, backend: str
+) -> None:
+    """API Management forwards a call to ``/{api_path}/mcp`` to the backend URL with ``/mcp``
+    added. A backend at the full endpoint sent every call to ``.../mcp/mcp``, which answered 404
+    in Phase 11's M5 journey."""
+
+    await harness.set_endpoint(endpoint=endpoint)
+    publication_id = await harness.create()
+    plan = await harness.service.plan(ACTOR, publication_id)
+
+    run = await harness.service.apply(ACTOR, publication_id, plan.id)
+    await harness.service.wait_for_idle()
+
+    assert (await harness.service.get_run(ACTOR, publication_id, run.id)).status == (
+        PublishRunStatus.SUCCEEDED
+    )
+    [written] = [
+        call["body"]
+        for call in harness.apim.http_calls
+        if call["method"] == "PUT" and call["path"] == BACKEND
+    ]
+    assert written == {
+        "properties": {
+            "title": "MOSAIC backend for Orders MCP",
+            "url": backend,
+            "protocol": "http",
+        }
+    }
+    assert f"{written['properties']['url']}/{MCP_MESSAGE_PATH}" == endpoint
+
+
+async def test_a_backend_at_the_full_endpoint_is_denied_then_corrected(harness: Harness) -> None:
+    """A publication applied before MOSAIC derived the backend URL points it at the registered
+    endpoint itself. Its next plan replaces the backend, behind the deny that guards every
+    backend change."""
+
+    publication_id = await harness.create()
+    plan = await harness.service.plan(ACTOR, publication_id)
+    await harness.service.apply(ACTOR, publication_id, plan.id)
+    await harness.service.wait_for_idle()
+    harness.apim.seed(
+        BACKEND,
+        {
+            "properties": {
+                "title": "MOSAIC backend for Orders MCP",
+                "url": "https://mcp.contoso.test/mcp",
+                "protocol": "http",
+            }
+        },
+    )
+
+    replanned = await harness.service.plan(ACTOR, publication_id)
+
+    deny, backend = replanned.steps[1:3]
+    assert (deny.kind, deny.name, deny.stage) == (
+        PublishedResourceKind.API_POLICY,
+        "mosaic-mcp-orders-mcp",
+        "prepare",
+    )
+    assert deny.reason == "Deny calls before changing the MCP backend."
+    assert (backend.kind, backend.name, backend.action) == (
+        PublishedResourceKind.BACKEND,
+        "mosaic-mcp-orders-mcp",
+        PublishAction.UPDATE,
+    )
+    harness.apim.http_calls.clear()
+
+    run = await harness.service.apply(ACTOR, publication_id, replanned.id)
+    await harness.service.wait_for_idle()
+
+    assert (await harness.service.get_run(ACTOR, publication_id, run.id)).status == (
+        PublishRunStatus.SUCCEEDED
+    )
+    puts = [call for call in harness.apim.http_calls if call["method"] == "PUT"]
+    paths = [call["path"] for call in puts]
+    policy = paths.index("apis/mosaic-mcp-orders-mcp/policies/policy")
+    assert puts[policy]["body"]["properties"]["value"] == DENY_ALL_POLICY
+    assert policy < paths.index(BACKEND)
+    assert harness.apim.written[BACKEND]["properties"]["url"] == "https://mcp.contoso.test"
+    # Once the backend is right, a plan has nothing to deny first.
+    settled = await harness.service.plan(ACTOR, publication_id)
+    assert settled.steps[1].kind == PublishedResourceKind.BACKEND
+
+
+@pytest.mark.parametrize(
+    ("endpoint", "message"),
+    [
+        ("https://mcp.contoso.test/api/stream", "ends in /mcp"),
+        ("https://mcp.contoso.test/mcp?tenant=contoso", "query string"),
+    ],
+)
+async def test_create_refuses_an_endpoint_no_backend_url_reaches(
+    harness: Harness, endpoint: str, message: str
+) -> None:
+    await harness.set_endpoint(endpoint=endpoint)
+
+    with pytest.raises(ValidationError, match=message) as refused:
+        await harness.create()
+
+    assert refused.value.details == {"mcpEndpointId": harness.endpoint_id}
+    assert await harness.service.list_publications(ACTOR, harness.gateway_id) == []
+
+
+async def test_plan_and_apply_refuse_an_endpoint_no_backend_url_reaches(harness: Harness) -> None:
+    """A publication created, or a plan reviewed, before MOSAIC refused such a URL goes no
+    further, and nothing is written to API Management."""
+
+    publication_id = await harness.create()
+    plan = await harness.service.plan(ACTOR, publication_id)
+    await harness.set_endpoint(endpoint="https://mcp.contoso.test/api/stream")
+    writes = len(harness.apim.writes)
+
+    with pytest.raises(ValidationError, match="ends in /mcp"):
+        await harness.service.plan(ACTOR, publication_id)
+    with pytest.raises(ValidationError, match="ends in /mcp"):
+        await harness.service.apply(ACTOR, publication_id, plan.id)
+
+    assert len(harness.apim.writes) == writes
+    assert await harness.gateway_repository.get_publication_lock(TENANT_ID, publication_id) is None
+
+
+async def test_unpublish_needs_no_backend_url(harness: Harness) -> None:
+    """Unpublishing deletes what the publication owns by name, so a server MOSAIC can no longer
+    publish can still be taken down."""
+
+    publication_id = await harness.create()
+    plan = await harness.service.plan(ACTOR, publication_id)
+    await harness.service.apply(ACTOR, publication_id, plan.id)
+    await harness.service.wait_for_idle()
+    await harness.set_endpoint(endpoint="https://mcp.contoso.test/api/stream")
+
+    unpublished = await reviewed_unpublish(harness.service, ACTOR, publication_id)
+    await harness.service.wait_for_idle()
+
+    assert (await harness.service.get_run(ACTOR, publication_id, unpublished.id)).status == (
+        PublishRunStatus.SUCCEEDED
+    )
+    assert BACKEND not in harness.apim.written
 
 
 async def test_apply_writes_mcp_api_policy_and_records_publication(harness: Harness) -> None:
