@@ -13,6 +13,7 @@ from mosaic_api.domain import (
     McpAuthMode,
     McpModelCaller,
     McpPublication,
+    PolicySection,
     PublicationStatus,
     QuotaPeriod,
     RequestEnforcement,
@@ -652,6 +653,20 @@ def test_api_policy_includes_fragment_and_on_error_www_authenticate() -> None:
     assert [element.tag for element in on_error] == ["base", "choose"]
     assert any("context.Response.StatusCode == 401" in condition for condition in _conditions(api))
     assert any("invalid_token" in value for value in _header_values(api, "WWW-Authenticate"))
+
+
+def test_api_policy_www_authenticate_facets_describe_the_error_response_header() -> None:
+    result = _render()
+
+    summaries = [
+        facet.summary
+        for facet in result.facets
+        if facet.element == "set-header"
+        and facet.section == PolicySection.ON_ERROR
+        and facet.attributes.get("name") == "WWW-Authenticate"
+    ]
+
+    assert summaries == ["Sets the WWW-Authenticate response header."] * 3
 
 
 def test_on_error_sets_missing_malformed_and_invalid_token_challenges_on_the_401() -> None:

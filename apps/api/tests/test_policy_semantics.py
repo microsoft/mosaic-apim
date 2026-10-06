@@ -153,6 +153,30 @@ def test_recognized_rate_limit_is_summarized() -> None:
     assert rate_limit.summary == "Allows 120 calls per minute, counted per subscription."
 
 
+def test_on_error_set_headers_are_described_as_response_headers() -> None:
+    analysis = analyze_policy(
+        """
+        <policies>
+          <on-error>
+            <set-header name="WWW-Authenticate" exists-action="override">
+              <value>Bearer</value>
+            </set-header>
+            <set-header name="Retry-After" exists-action="skip">
+              <value>30</value>
+            </set-header>
+          </on-error>
+        </policies>
+        """
+    )
+
+    summaries = [facet.summary for facet in analysis.facets if facet.element == "set-header"]
+    assert summaries == [
+        "Sets the WWW-Authenticate response header.",
+        "Sets the Retry-After response header when the response doesn't already carry it.",
+    ]
+    assert all(facet.section == PolicySection.ON_ERROR for facet in analysis.facets)
+
+
 def test_nested_conditional_policies_are_found_and_labelled() -> None:
     analysis = analyze_policy(CONDITIONAL_POLICY)
     limits = [facet for facet in analysis.facets if facet.element == "llm-token-limit"]
