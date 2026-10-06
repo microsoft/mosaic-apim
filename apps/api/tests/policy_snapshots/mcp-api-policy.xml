@@ -1,0 +1,68 @@
+<policies>
+  <inbound>
+    <base />
+    <include-fragment fragment-id="mosaic-mcp-weather" />
+  </inbound>
+  <backend>
+    <base />
+  </backend>
+  <outbound>
+    <base />
+  </outbound>
+  <on-error>
+    <base />
+    <choose>
+      <when condition="@(context.Response != null &amp;&amp; context.Response.StatusCode == 401)">
+        <choose>
+          <when condition="@(context.Variables.GetValueOrDefault&lt;string&gt;(&quot;mosaic-mcp-auth-failure&quot;, &quot;&quot;) == &quot;no-credential&quot;)">
+            <return-response>
+              <set-status code="401" reason="Unauthorized" />
+              <set-header name="WWW-Authenticate" exists-action="override">
+                <value>@{
+var url = context.Request.OriginalUrl;
+var port = url.Port == 80 || url.Port == 443 ? "" : ":" + url.Port.ToString();
+var origin = url.Scheme + "://" + url.Host + port;
+var metadata = origin + "/.well-known/oauth-protected-resource/mosaic/mcp/weather/mcp";
+return "Bearer resource_metadata=\"" + metadata + "\"";
+}</value>
+              </set-header>
+              <set-header name="Content-Type" exists-action="override">
+                <value>text/plain; charset=utf-8</value>
+              </set-header>
+              <set-body>MCP access denied.</set-body>
+            </return-response>
+          </when>
+          <when condition="@(context.Variables.GetValueOrDefault&lt;string&gt;(&quot;mosaic-mcp-auth-failure&quot;, &quot;&quot;) == &quot;token-malformed&quot;)">
+            <return-response>
+              <set-status code="401" reason="Unauthorized" />
+              <set-header name="WWW-Authenticate" exists-action="override">
+                <value>@{
+var url = context.Request.OriginalUrl;
+var port = url.Port == 80 || url.Port == 443 ? "" : ":" + url.Port.ToString();
+var origin = url.Scheme + "://" + url.Host + port;
+var metadata = origin + "/.well-known/oauth-protected-resource/mosaic/mcp/weather/mcp";
+return "Bearer error=\"invalid_token\", resource_metadata=\"" + metadata + "\"";
+}</value>
+              </set-header>
+              <set-header name="Content-Type" exists-action="override">
+                <value>text/plain; charset=utf-8</value>
+              </set-header>
+              <set-body>MCP access denied.</set-body>
+            </return-response>
+          </when>
+          <otherwise>
+            <set-header name="WWW-Authenticate" exists-action="override">
+              <value>@{
+var url = context.Request.OriginalUrl;
+var port = url.Port == 80 || url.Port == 443 ? "" : ":" + url.Port.ToString();
+var origin = url.Scheme + "://" + url.Host + port;
+var metadata = origin + "/.well-known/oauth-protected-resource/mosaic/mcp/weather/mcp";
+return "Bearer error=\"invalid_token\", resource_metadata=\"" + metadata + "\"";
+}</value>
+            </set-header>
+          </otherwise>
+        </choose>
+      </when>
+    </choose>
+  </on-error>
+</policies>
