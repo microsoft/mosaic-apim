@@ -864,11 +864,17 @@ Progress:
   subscriptions and the Claude key's named value changed. The five active grants' keys and Claude's
   reached their models, and R5's and R6's revoked grants got 401. A backfill of three days then
   recomputed the stored usage (O43).
-- ⏳ **Batch 3l**, approved 2026-10-05: the API, console and portal, from main with model pools
-  ([#80](https://github.com/microsoft/mosaic-apim/pull/80), for A19 and R15 to R18) and the fix
-  for O44 and O45. It waits for that fix to merge. No infrastructure or settings change. The
-  policy tests render 193 governed fragments, and #80's code renders every one exactly as Batch
-  3k's build does, so re-applying the eight governed models should change nothing.
+- ✅ **Batch 3l**, approved 2026-10-05 and deployed 2026-10-06: the API, console and portal,
+  from main with model pools ([#80](https://github.com/microsoft/mosaic-apim/pull/80), for A19
+  and R15 to R18) and O44/O45's fix ([#95](https://github.com/microsoft/mosaic-apim/pull/95)).
+  No infrastructure or settings changed. The API's actual startup was checked before deploying
+  the frontends, whose startups were also confirmed. Every cost breakdown totals 100.0%; root
+  GET and HEAD return empty 200s, and telemetry records an ordinary request with its query value
+  redacted while leaving out root and health probes. All six active grant keys reach their models,
+  and two retired grant keys get 401. Eight governed publication plans passed scope checks but
+  were **not applied**: all 143 API Management content hashes match the pre-deploy inventory.
+  The portal still shows the same six grants and 13 catalog entries. **Pools** loads with no pools
+  and populated suggestions; A19 and R15 to R18 have not run.
 - ✅ **Claude**, 2026-10-01: from the endpoint the owner registered (Phase 2), `claude-opus-4-6`
   was published in the console in 11 steps, among them a Key Vault named value for the key, and
   all succeeded. A Messages call with the bootstrap key reached Claude. Its governed access, a
@@ -1035,11 +1041,12 @@ value that the gateway reads with its own identity, and Phase 10 would reuse it.
 registers AWS Bedrock hosts with a Bedrock API key, but only as Claude members of a model pool,
 and R17 lists what a live Bedrock member needs to show.
 
-### Phase 11 (next): MCP servers end to end 🔄 Batch 5a applied; Batch 5b waits for the test servers
+### Phase 11: MCP servers end to end 🔄 Batch 5a applied; Batch 5b deployed, verification in progress
 
 MOSAIC publishes MCP servers through API Management and governs them with grants, as it does
-models, but no journey has exercised that yet. Phase 11 deploys a few generic MCP servers and
-takes them through the whole path: registration, publication, access requests and grants, calls
+models. The first live registration and publication journeys began on 6 October 2026. Phase 11
+deploys a few generic MCP servers and takes them through the whole path: registration, publication,
+access requests and grants, calls
 from a real MCP client, and usage. One of the servers calls a model through MOSAIC, so the phase
 also shows how a model call made by an MCP server is attributed to the person who called the
 server (G19). It uses the same environment, harness, personas and ledger. It runs before Phase 9's
@@ -1056,11 +1063,13 @@ cleanup, because it needs the test accounts that the cleanup removes.
   M-protected's audience is a new registration with no credentials. Its service principal requires
   assignment, and only two identities hold its role: the gateway's, which calls the server, and
   MOSAIC API's, which checks the connection and syncs the tools (O46). The agent server needs no
-  app registration. It calls models as its container app's managed identity, which gets
-  `Models.Invoke.Application` once Batch 5b creates it.
-- ⏳ **Batch 5b, Azure**, waiting for the test servers and their deployment kit, which a pull
-  request adds. Deploy the servers, all with streamable HTTP, public network access, the
-  smallest scale, and logs to the environment's workspace:
+  app registration. It calls models as its container app's system-assigned identity. Batch 5a-2
+  assigned and verified `Models.Invoke.Application` after deployment, leaving the registry-pull
+  identity unchanged. No credential or MOSAIC model grant was created by that assignment.
+- 🔄 **Batch 5b, Azure**, deployed 2026-10-06 with the reviewed kit
+  ([#96](https://github.com/microsoft/mosaic-apim/pull/96)), after a successful what-if.
+  The servers use streamable HTTP, public network access, small warm replicas, and the
+  environment's log workspace:
   - **M-tools**, on Container Apps: a few deterministic tools, such as echo, the time and adding
     two numbers. Upstream authentication **None**.
   - **M-protected**, on Azure Functions with its MCP extension: the same kind of tools, accepting
@@ -1069,19 +1078,73 @@ cleanup, because it needs the test accounts that the cleanup removes.
   - **M-agent**, on Container Apps: a tool that answers by calling a governed model through
     MOSAIC with the agent's own application grant, so a call to it leads to a second, governed
     call (G19).
-  - Optionally, an SSE-only server as a negative case, because MOSAIC doesn't publish one.
+  - An SSE-only server supplies the negative case, because MOSAIC doesn't publish one.
+  The first local deploy stopped while Azure CLI streamed Unicode build logs on Windows, although
+  the remote build succeeded. A bounded recovery verified that image before reusing it and
+  completed the deployment. The permanent CLI fix is
+  [#98](https://github.com/microsoft/mosaic-apim/pull/98), merged with all CI checks passing.
+  Tools, SSE and agent discovery smoke passed, as did M-protected's anonymous 401. Its
+  invalid-token check repeatedly timed out and is still being investigated; the deployment is not
+  fully verified. The same synthetic credential returned 401 when tested alone, but that does not
+  make the sequential smoke pass. Read-only checks confirmed that Easy Auth requires authentication
+  for the expected audience and permits exactly the API and gateway clients, both holding the
+  required role. FunctionAppLogs records show host restarts and three functions loaded. The host
+  detector reports two earlier incidents with no ScriptHost available, each recorded as readiness
+  and overall-health failures. Neither those records nor memory measurements prove the timeout's
+  cause. A generic Easy Auth detector reports no authentication activity, contradicting the enabled,
+  required and client-restricted ARM configuration; that detector is not proof that authentication
+  is disabled. No authentication, memory or scaling settings were changed. M-agent uses
+  `2025-03-01-preview`, interpreting the owner's version input as its model-inference API version.
+- ✅ **The MCP verifier**, [#97](https://github.com/microsoft/mosaic-apim/pull/97) and
+  [#99](https://github.com/microsoft/mosaic-apim/pull/99), is merged. The follow-up binds an
+  application token to the selected applied grant and refuses to call session cleanup complete
+  after a failed DELETE. Independent validation of its reviewed head passed 95 verifier tests,
+  with none skipped. This validates the verifier, not the live MCP journeys.
 - ✅ **The gateway's diagnostics** must log 0 bytes of response bodies for MCP APIs, or streaming
   breaks. MOSAIC warns about this when it plans a publication. Checked on 5 October: none of the
   gateway's diagnostics logs a body, globally or on any API.
+
+**First live results, 6 October:** M-tools and M-agent persisted three tools and one tool,
+respectively. Both publications completed all nine displayed apply steps and appear in the user's
+catalog, without grants or a model-caller link. All 143 pre-existing APIM content hashes and the
+global policy stayed unchanged. A supplemental content baseline covers both native MCP APIs,
+their policies and their operations-list responses, which the older inventory API omits.
+M-protected remains Unreachable, with Sync disabled; the SSE-only negative server refuses both
+sync and publication. Neither published server passes anonymous OAuth discovery: its 401
+advertises the wrong metadata path (O47). On M-tools, the canonical metadata route returns 200,
+and an invalid-token 401 advertises that correct route. Successful resource creation therefore
+does **not** make M2 pass.
+
+A read-only access replan exposed O48: the review is visible but hidden from accessibility, Escape
+does not dismiss it, and the backdrop blocks the page. Closing its visible **Close** button works;
+reopening from the same persona reproduces the failure. No second apply was made. The plan proposes
+access version 1 to 2 and owned-resource updates, so this is not no-op or idempotence acceptance.
+
+**Proposed Batch 3m, awaiting approval:** O47's and O48's fixes merged on 6 October, as
+[#100](https://github.com/microsoft/mosaic-apim/pull/100) (`e2f3483`) and
+[#101](https://github.com/microsoft/mosaic-apim/pull/101) (`b9d3e30`), and main's CI passes on
+both. Deploy main at `b9d3e30` to the API and console only, then review and apply fresh plans for
+M-tools and M-agent. Preserve the portal,
+all model publications and grants, gateway-wide policy, and unrelated resources. Verify both dialog
+openings and keyboard recovery, all three credential-failure challenges (anonymous, malformed and
+invalid token), the advertised metadata GET and the strict verifier. Check the preserved-resource
+hashes again. M-protected's connection failure remains a separate gate; this proposal does not
+authorize changing its authentication, size or scaling.
 
 **Journeys** (see the MCP table under the journey matrix): M1 registers each server and syncs its
 tools; M2 publishes it after a reviewed plan; M3 sets governed access for people and the agent's
 identity; M4 is a person's request and its approval in the portal; M5 is calls from a real MCP
 client; M6 is call limits and pooled quotas; M7 is revocation; M8 is usage; M9 is the agent
-server's governed model call; and M10 is unpublishing. A scripted MCP client, built on the MCP
-Python SDK, signs in with a device code as the verifier does, and the live driver enters the codes.
+server's governed model call; and M10 is unpublishing. The MCP verifier signs in with a device
+code, as the model verifier does, and the live driver enters the codes.
 
 **Product decisions before M9:**
+
+M-agent's public upstream has no authentication. Keep it without a model entitlement until M9:
+per-call token and input caps do not bound aggregate spending. Create a small application model
+grant with an aggregate quota and rate limit immediately before that test, then promptly revoke
+and apply the revocation afterward, including if the test fails. Its Entra runtime role and audited
+model-caller link alone do not authorize a model call.
 
 - **G19**: how a model call made by an MCP server, on a person's behalf, is attributed to that
   person. The environment owner decided on 2 October 2026: the server calls with its own
@@ -1165,8 +1228,8 @@ has passed, and ❌ means the latest run failed on the product gap named.
 
 | ID | Journey | Phase | Status |
 | --- | --- | --- | --- |
-| M1 | The admin registers each MCP server by its URL, and MOSAIC syncs its tools; an SSE-only server is refused | 11 | ⬜ |
-| M2 | Publishing a server through the gateway shows a reviewed plan, including the diagnostics warning and the environment verdict; every step succeeds; the server serves its protected resource metadata, and the portal's catalog lists it | 11 | ⬜ |
+| M1 | The admin registers each MCP server by its URL, and MOSAIC syncs its tools; an SSE-only server is refused | 11 | 🔄 M-tools and M-agent synced; SSE-only sync and publication refused; M-protected remains Unreachable |
+| M2 | Publishing a server through the gateway shows a reviewed plan, including the diagnostics warning and the environment verdict; every step succeeds; its anonymous 401 advertises working protected resource metadata, and the portal's catalog lists it | 11 | ❌ M-tools and M-agent applied and appear in the catalog, but anonymous discovery fails (O47) |
 | M3 | Governed access for an MCP server: a direct grant for the `user` persona and an application grant for the agent's identity are reviewed and applied | 11 | ⬜ |
 | M4 | In the portal, a person requests access to an MCP server, an admin approves it, and the person's connection details give the server URL, the metadata URL and the scope, but never a token | 11 | ⬜ |
 | M5 | A real MCP client, signed in with the `Mcp.Invoke` scope, lists and calls tools through the gateway; an anonymous call gets 401 with the metadata URL, and an ungranted person's token gets 403 | 11 | ⬜ |
@@ -1225,10 +1288,13 @@ be confirmed, or fixed, once the journeys that exercise them have run.
 | O41 | MOSAIC's API has never recorded its incoming requests in Application Insights: there were none in 48 hours, while its traces and Cosmos DB dependencies arrive. Reproduced locally. The Azure Monitor distro instruments FastAPI by replacing `fastapi.FastAPI` with an instrumented subclass, but `main.py` imports the class before that, so the app it builds isn't instrumented. Operators can't see the API's request rates, failures or latency there. MOSAIC's outbound calls through httpx, to Azure Resource Manager, Log Analytics and API Management, aren't recorded as dependencies either, because nothing instruments httpx. Found while verifying Batch 3j | Fixed in [#86](https://github.com/microsoft/mosaic-apim/pull/86), merged: the API instruments its app explicitly once it's created, leaves out the health probes, and never records headers or bodies. Its review found that the recorded URL keeps query values, and the directory search's `q` holds names and email addresses, so [#87](https://github.com/microsoft/mosaic-apim/pull/87) redacts them. Both deployed in Batch 3k and verified live: in the first half hour the API recorded 142 requests, none of them a health probe, and every query value read REDACTED. Tracing httpx calls would add a dependency, so it's a separate decision |
 | O42 | MOSAIC's price list has no price for most models this environment runs, though the Azure Retail Prices API lists some of them. Its seed is a curated list of models, each mapped to its meters, which covers GPT-4o, GPT-4.1, GPT-5 and the o-series, Llama 3.3, DeepSeek-R1, Phi-4 and embeddings. In eastus2 the API has global prices for `Llama-4-Maverick-17B-128E-Instruct-FP8`, as "Llama 4 Maverick 17B" ($0.25 in, $1.00 out per million tokens), and for GPT-5.1 chat. The seed has neither. Azure reports the `gpt-5.1-chat` deployment's model by its alias, `gpt-chat-latest`, so no curated name would match it anyway. DeepSeek-V4-Pro has only Data Zone prices, under Fireworks, and Grok 4.3 has none yet, so those are correctly unpriced. Seen in R9 | Add the models with retail meters to the seed: Llama 4, GPT-5.1 and its chat model, GPT-5.4 and GPT-5.4-nano. Decide how an alias such as `gpt-chat-latest` maps to a price, for example by its version date. **Add price** covers the rest. A follow-up, not blocking |
 | O43 | Usage and cost count tokens for calls the gateway refused before they reached the model. When a grant's token limit refused two calls with 429 (`TokenLimitExceededAfterPrompt`), the gateway's LLM log still recorded its prompt estimate for them, 22 tokens with no model name. MOSAIC counted and priced those tokens, though Azure doesn't bill a call that never reached it. Because the rows have no model name, **Cost by model** left them out: its shares summed to 96.2%, and it gave the model 473 tokens where **Cost by API** gave its two APIs 495. Seen in R9 after the sitting's R6 run | Count and price tokens only for calls that reached the model, and attribute a counted row with no model name to its deployment's model, so every breakdown adds up to the total. Fixed in [#89](https://github.com/microsoft/mosaic-apim/pull/89), deployed in Batch 3k and verified live after a three-day backfill: the training account's gpt-4o API went from 445 tokens to 423, and the tokens by model and by API both came to 1,667 |
-| O44 | In **Analytics > Cost**, the cost shares of a breakdown can add up to more than 100%. After Batch 3k, both the cost by model and the cost by API added up to 103.1%. Each part's share divides its full-precision cost by a total that `cost_report.py` has already rounded to $0.0001. At this environment's sub-cent totals, about $0.0014, the rounding is about 3% of the total. At real spend it's negligible. Seen in Batch 3k's check of O43 | Divide by the unrounded total, and round only what's shown. A follow-up, not blocking |
-| O45 | Since the API records its requests (O41), App Service's ping of `/` every 5 minutes is recorded as a failed request: `GET /` gets 404, about 288 times a day. That inflates the API's failure rate in Application Insights. Seen in Batch 3k | Serve `/` with 200, or point App Service's health check at `/healthz`, or leave `/` out of the recorded requests as the probes are. A follow-up, not blocking |
+| O44 | In **Analytics > Cost**, the cost shares of a breakdown can add up to more than 100%. After Batch 3k, both the cost by model and the cost by API added up to 103.1%. Each part's share divides its full-precision cost by a total that `cost_report.py` has already rounded to $0.0001. At this environment's sub-cent totals, about $0.0014, the rounding is about 3% of the total. At real spend it's negligible. Seen in Batch 3k's check of O43 | Fixed in [#95](https://github.com/microsoft/mosaic-apim/pull/95): divide by the unrounded total, and round only what is shown. Deployed in Batch 3l and verified live: each of the five cost breakdowns totals 100.0%. This does not fill the price gaps in O42 |
+| O45 | Since the API records its requests (O41), App Service's ping of `/` every 5 minutes is recorded as a failed request: `GET /` gets 404, about 288 times a day. That inflates the API's failure rate in Application Insights. Seen in Batch 3k | Fixed in [#95](https://github.com/microsoft/mosaic-apim/pull/95), deployed in Batch 3l. Root GET and HEAD return empty 200s and are excluded from request telemetry. Live verification found no root or health requests after the new API started, while an ordinary positive-control request arrived with its query value redacted and its trace ID intact |
 | O40 | For `grok-4.3`, **Usage & cost** and **Analytics** show 196 tokens for one call, broken down as "Prompt 8 · Completion 2". The gateway's LLM log recorded a total of 196, but only 8 prompt and 2 completion tokens. The other 186 are probably the model's reasoning tokens, which the breakdown doesn't name. The grant's tokens-per-minute limit counts all 196, so a person whose calls are refused sees parts that don't add up to what was counted. Seen in R8 after Batch 3i. The sitting's token metrics confirm they're reasoning tokens: its two grok calls' metrics read 16 prompt, 4 completion and 456 reasoning tokens, 476 in all | Show reasoning tokens as their own part wherever a total is broken down, as the gateway's metrics already do, and check whether the LLM log names them. A follow-up, not blocking |
-| O46 | **A managed-identity MCP server must also accept MOSAIC API's identity, and the docs don't say so.** MOSAIC's API checks the connection to a registered MCP server and syncs its tools with its own managed identity, while the gateway calls the server with the gateway's identity. The docs say only that a token is sent to the audience the administrator names. Suppose an administrator lets only the gateway's identity get tokens for the server, the safer setup. The server then registers as Degraded, with "MOSAIC could not acquire a token for this MCP server's audience", and **Sync tools** is refused. Publishing still works, but with no tools recorded. Found while designing M-protected (Phase 11) | Say in [publish-mcp-servers.md](../publish-mcp-servers.md) and on the **Register MCP server** dialog's **Managed identity** tab that the server must accept both identities, and name both in the Degraded message. Batch 5a gave both identities M-protected's role, so M1 can sync its tools. A follow-up, not blocking |
+| O46 | **A managed-identity MCP server must also accept MOSAIC API's identity, and the docs don't say so.** MOSAIC's API checks the connection to a registered MCP server and syncs its tools with its own managed identity, while the gateway calls the server with the gateway's identity. The docs say only that a token is sent to the audience the administrator names. Suppose an administrator lets only the gateway's identity get tokens for the server, the safer setup. The server then registers as Degraded, with "MOSAIC could not acquire a token for this MCP server's audience", and **Sync tools** is refused. Publishing still works, but with no tools recorded. Found while designing M-protected (Phase 11) | Say in [publish-mcp-servers.md](../publish-mcp-servers.md) and on the **Register MCP server** dialog's **Managed identity** tab that the server must accept both identities, and name both in the Degraded message. Batch 5a gave both identities M-protected's role and the kit permits both clients, removing that prerequisite. Live M1 still reports Unreachable for a separately investigated connection failure; its tools have not synced. This documentation clarification is a follow-up |
+| O47 | **An anonymous MCP request gets a 401 with the wrong OAuth metadata URL.** Both initial MCP publications applied successfully, but the challenge inserts the main API path before the canonical `/.well-known/oauth-protected-resource/…` path. That advertised route returns 401; the canonical route returns 200 with the correct document. On M-tools, an invalid-token request advertises the correct canonical URL. Saved fragment and API policy expressions construct origin-root URLs in both branches, and the global policy is unchanged. Seen live in M2; the verifier correctly fails | Fixed in [#100](https://github.com/microsoft/mosaic-apim/pull/100), merged 6 October as `e2f3483`, not yet deployed: classified refusals reach the JWT-error path, with supported complete `return-response` branches preserving status, challenge and plain-text media/body. The reviewed head independently passed 177 tests and 129 subtests, and CI passes on main. Batch 3m must deploy it and re-apply the affected publications before the strict live checks; M2/M5 are not passed |
+| O48 | **An MCP access review is visible but hidden from accessibility.** Reopening a review leaves its dialog under `aria-hidden`, absent from role locators; Escape fails and the backdrop blocks the page. Ordinary Close works, and the same-persona reproduction made no apply | Fixed in [#101](https://github.com/microsoft/mosaic-apim/pull/101), merged 6 October as `b9d3e30`, not yet deployed: follow the model dialog's opening/focus lifecycle and restore the opener. Isolated Chromium reproduced the failure and verified accessible review and Escape/Close with the lifecycle fix. Review also caught missing cache refreshes after closing; the corrected code independently passes 65 tests, including delayed completion after close and reopen, and CI passes on main. A live retest follows Batch 3m. No layout or wording change |
+
 The Phase 3 check on whether the gateway role recommendation narrows once the account kind is
 known led to G8: it does narrow, and the check then rejects the broader role it recommended
 before.
