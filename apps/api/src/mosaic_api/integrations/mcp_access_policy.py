@@ -285,10 +285,6 @@ def _mcp_authentication(
     grants: list[McpAccessGrant],
 ) -> None:
     metadata_path = f"{mcp_metadata_api_path(publication.api_path)}/{MCP_MESSAGE_PATH}"
-    no_auth = _auth_header_value(metadata_path, 'Bearer resource_metadata="', suffix='"')
-    invalid = _auth_header_value(
-        metadata_path, 'Bearer error="invalid_token", resource_metadata="', suffix='"'
-    )
     insufficient = _auth_header_value(
         metadata_path,
         (
@@ -299,26 +295,27 @@ def _mcp_authentication(
         suffix='"',
     )
     _initialize_caller(fragment)
-    _reject_with_auth(
-        fragment,
-        '@(!context.Request.Headers.ContainsKey("Authorization"))',
-        reason="no-credential",
-        code=401,
-        message=_DENIED,
-        www_authenticate=no_auth,
+    _variable(fragment, "mosaic-mcp-auth-failure", "")
+    # Classic native MCP was observed to prefix the metadata URL on early inbound 401s,
+    # but not JWT errors. Route missing/malformed credentials through token validation too.
+    credentials = ET.SubElement(fragment, "choose")
+    missing = ET.SubElement(
+        credentials,
+        "when",
+        {"condition": '@(!context.Request.Headers.ContainsKey("Authorization"))'},
     )
-    _reject_with_auth(
-        fragment,
-        _authorization_shape_invalid(),
-        reason="token-malformed",
-        code=401,
-        message=_DENIED,
-        www_authenticate=invalid,
-    )
+    _variable(missing, "mosaic-mcp-auth-failure", "no-credential")
+    append_denial_trace(missing, "no-credential")
+    malformed = ET.SubElement(credentials, "when", {"condition": _authorization_shape_invalid()})
+    _variable(malformed, "mosaic-mcp-auth-failure", "token-malformed")
+    append_denial_trace(malformed, "token-malformed")
+    # Never let the validator select one valid token from a malformed multi-value header.
+    ET.SubElement(malformed, "set-header", {"name": "Authorization", "exists-action": "delete"})
     _read_cost_center_header(fragment)
     _reject(
         fragment,
-        f'@({_COST_CENTER_HEADER} == "!")',
+        '@((string)context.Variables["mosaic-mcp-auth-failure"] == ""'
+        f' && {_COST_CENTER_HEADER} == "!")',
         reason="cost-center",
         message=COST_CENTER_DENIED,
     )
@@ -426,14 +423,23 @@ def _api_policy(publication: McpPublication) -> ET.Element:
         "when",
         {"condition": "@(context.Response != null && context.Response.StatusCode == 401)"},
     )
+    metadata_path = f"{mcp_metadata_api_path(publication.api_path)}/{MCP_MESSAGE_PATH}"
+    failure = 'context.Variables.GetValueOrDefault<string>("mosaic-mcp-auth-failure", "")'
+    challenge = ET.SubElement(when, "choose")
+    missing = ET.SubElement(challenge, "when", {"condition": f'@({failure} == "no-credential")'})
     _set_www_authenticate(
-        when,
+        missing, _auth_header_value(metadata_path, 'Bearer resource_metadata="', suffix='"')
+    )
+    _set_www_authenticate(
+        ET.SubElement(challenge, "otherwise"),
         _auth_header_value(
-            f"{mcp_metadata_api_path(publication.api_path)}/{MCP_MESSAGE_PATH}",
-            'Bearer error="invalid_token", resource_metadata="',
-            suffix='"',
+            metadata_path, 'Bearer error="invalid_token", resource_metadata="', suffix='"'
         ),
     )
+    early_refusal = ET.SubElement(
+        ET.SubElement(when, "choose"), "when", {"condition": f'@({failure} != "")'}
+    )
+    ET.SubElement(early_refusal, "set-body").text = _DENIED
     return policies
 
 

@@ -17,6 +17,8 @@ from mosaic_api.domain import (
     QuotaPeriod,
     RequestEnforcement,
     TokenEnforcement,
+    mcp_resource_metadata_url,
+    mcp_server_url,
 )
 from mosaic_api.errors import ValidationError
 from mosaic_api.integrations import mcp_access_policy
@@ -239,8 +241,7 @@ def test_grant_trace_is_after_authentication_before_limits_and_members_only_for_
     assert trace.findtext("message") == _ATTRIBUTION_MESSAGE
     metadata = {item.attrib["name"]: item.attrib["value"] for item in trace.findall("metadata")}
     assert metadata == {
-        name: _guarded_metadata(name)
-        for name in ("mosaic-grant", "mosaic-member", "mosaic-client")
+        name: _guarded_metadata(name) for name in ("mosaic-grant", "mosaic-member", "mosaic-client")
     }
     assert any(
         facet.element == "trace"
@@ -331,14 +332,16 @@ def test_fragment_order_and_authenticate_challenges_match_contract() -> None:
     assert [child.tag for child in children[:5]] == [
         "set-variable",
         "set-variable",
-        "choose",
+        "set-variable",
         "choose",
         "set-variable",
     ]
     assert [child.attrib["name"] for child in children[:2]] == ["mosaic-caller", "mosaic-client"]
     assert '@(!context.Request.Headers.ContainsKey("Authorization"))' in _conditions(fragment)
     assert any("values.Length != 1" in condition for condition in _conditions(fragment))
-    values = _header_values(fragment, "WWW-Authenticate")
+    values = _header_values(fragment, "WWW-Authenticate") + _header_values(
+        ET.fromstring(_render().api_policy_xml), "WWW-Authenticate"
+    )
     assert any("resource_metadata" in value for value in values)
     assert any("invalid_token" in value for value in values)
     assert any("insufficient_scope" in value for value in values)
@@ -348,6 +351,47 @@ def test_fragment_order_and_authenticate_challenges_match_contract() -> None:
     )
     assert all("context.Request.OriginalUrl" in value for value in values)
     assert all("url.Port == 80 || url.Port == 443" in value for value in values)
+
+
+def test_missing_and_malformed_credentials_reach_the_token_validator_not_return_response() -> None:
+    fragment = _fragment()
+    classification = fragment.find("choose")
+    assert classification is not None
+    missing, malformed = classification.findall("when")
+    assert missing.attrib["condition"] == '@(!context.Request.Headers.ContainsKey("Authorization"))'
+    assert "values.Length != 1" in malformed.attrib["condition"]
+    assert (
+        'StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)' in malformed.attrib["condition"]
+    )
+    assert "String.IsNullOrWhiteSpace(authorization.Substring(7))" in malformed.attrib["condition"]
+    for branch, reason in ((missing, "no-credential"), (malformed, "token-malformed")):
+        assert branch.find("return-response") is None
+        failure = branch.find("set-variable[@name='mosaic-mcp-auth-failure']")
+        assert failure is not None and failure.attrib["value"] == reason
+        assert branch.findtext("trace/message") == f"mosaic-deny v=1 r={reason}"
+    # A malformed multi-value header must not let APIM choose a valid token from one value.
+    assert malformed.find("set-header").attrib == {  # type: ignore[union-attr]
+        "name": "Authorization",
+        "exists-action": "delete",
+    }
+    validator = fragment.find("validate-azure-ad-token")
+    assert validator is not None
+    assert validator.attrib["header-name"] == "Authorization"
+    assert list(fragment).index(classification) < list(fragment).index(validator)
+    before_validation = list(fragment)[: list(fragment).index(validator)]
+    responses = [
+        response for node in before_validation for response in node.iter("return-response")
+    ]
+    assert len(responses) == 1  # Only the existing, credential-shaped cost-center refusal.
+    cost_center = next(
+        when for when in fragment.iter("when") if when.find("return-response") is responses[0]
+    )
+    assert (
+        '(string)context.Variables["mosaic-mcp-auth-failure"] == ""'
+        in cost_center.attrib["condition"]
+    )
+    assert validator.attrib["failed-validation-httpcode"] == "401"
+    assert validator.attrib["failed-validation-error-message"] == "MCP access denied."
 
 
 def test_validate_entra_token_and_mcp_permission_lookup_are_rendered() -> None:
@@ -596,6 +640,65 @@ def test_api_policy_includes_fragment_and_on_error_www_authenticate() -> None:
     assert any("invalid_token" in value for value in _header_values(api, "WWW-Authenticate"))
 
 
+def test_on_error_preserves_missing_malformed_and_invalid_token_challenges() -> None:
+    api = ET.fromstring(_render().api_policy_xml)
+    unauthorized = api.find("on-error/choose/when")
+    assert unauthorized is not None
+    assert unauthorized.attrib["condition"] == (
+        "@(context.Response != null && context.Response.StatusCode == 401)"
+    )
+    assert unauthorized.find(".//return-response") is None
+    challenge, body = unauthorized.findall("choose")
+    missing = challenge.find("when")
+    invalid = challenge.find("otherwise")
+    assert missing is not None and invalid is not None
+    failure = 'context.Variables.GetValueOrDefault<string>("mosaic-mcp-auth-failure", "")'
+    assert missing.attrib["condition"] == f'@({failure} == "no-credential")'
+    [anonymous_header] = _header_values(missing, "WWW-Authenticate")
+    [invalid_header] = _header_values(invalid, "WWW-Authenticate")
+    assert 'return "Bearer resource_metadata=\\"" + metadata + "\\"";' in anonymous_header
+    assert 'return "Bearer error=\\"invalid_token\\", resource_metadata=\\""' in invalid_header
+    assert body.find("when").attrib["condition"] == f'@({failure} != "")'  # type: ignore[union-attr]
+    assert body.findtext("when/set-body") == "MCP access denied."
+    assert len(list(api.iter("set-body"))) == 1
+    assert not list(api.iter("trace"))  # The existing classification traces remain inbound only.
+
+
+@pytest.mark.parametrize("api_path", ["weather", "mosaic/mcp/weather", "teams/tools/weather"])
+@pytest.mark.parametrize("grants", [[], [_grant()]])
+def test_challenges_and_server_metadata_use_the_same_origin_and_nested_path(
+    api_path: str, grants: list[McpAccessGrant]
+) -> None:
+    result = _render(_publication(api_path=api_path), _snapshot(grants=grants))
+    fragment = ET.fromstring(result.fragment_xml)
+    api = ET.fromstring(result.api_policy_xml)
+    metadata = ET.fromstring(result.metadata_policy_xml)
+    headers = _header_values(fragment, "WWW-Authenticate") + _header_values(api, "WWW-Authenticate")
+    assert len(headers) == 3  # insufficient_scope, anonymous, invalid_token
+    body = metadata.findtext("inbound/return-response/set-body")
+    assert body is not None
+    origin = (
+        "var url = context.Request.OriginalUrl;\n"
+        'var port = url.Port == 80 || url.Port == 443 ? "" : ":" + url.Port.ToString();\n'
+        'var origin = url.Scheme + "://" + url.Host + port;'
+    )
+    metadata_path = f"/.well-known/oauth-protected-resource/{api_path}/mcp"
+    for expression in [*headers, body]:
+        assert origin in expression
+        assert "url.Path" not in expression and "context.Api.Path" not in expression
+    for header in headers:
+        assert f'var metadata = origin + "{metadata_path}";' in header
+        assert f"/{api_path}/.well-known/" not in header
+    assert f'var resource = origin + "/{api_path}/mcp";' in body
+    for gateway in (
+        "https://gateway.example.test",
+        "http://localhost",
+        "https://gateway.example.test:8443",
+    ):
+        assert mcp_resource_metadata_url(gateway, api_path) == gateway + metadata_path
+        assert mcp_server_url(gateway, api_path) == f"{gateway}/{api_path}/mcp"
+
+
 def test_metadata_policy_returns_runtime_jobject_document() -> None:
     metadata = ET.fromstring(_render().metadata_policy_xml)
     response = metadata.find("inbound/return-response")
@@ -694,9 +797,7 @@ def test_literals_are_escaped_and_cannot_inject_xml_or_named_values() -> None:
 
 
 @pytest.mark.parametrize("linked", [False, True], ids=["no-model-caller", "model-caller"])
-def test_fragment_size_boundary_is_enforced(
-    monkeypatch: pytest.MonkeyPatch, linked: bool
-) -> None:
+def test_fragment_size_boundary_is_enforced(monkeypatch: pytest.MonkeyPatch, linked: bool) -> None:
     snapshot = _snapshot(model_caller=_model_caller() if linked else None)
     fragment_xml = _render(snapshot=snapshot).fragment_xml
     # A linked fragment is measured with ADR 0025's reference passing in it.
