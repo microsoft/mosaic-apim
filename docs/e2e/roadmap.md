@@ -1102,11 +1102,15 @@ cleanup, because it needs the test accounts that the cleanup removes.
   **Batch 5c**, approved and run on 6 October, restarted M-protected once without changing its
   settings. The alternation persisted: of eight requests afterwards, four were answered and four
   hung. The smoke failed the same way, and the console's connection check still reports
-  Unreachable. **Proposed Batch 5d, not approved:** stop and start M-protected, so its instance
-  is released, and repeat the same checks. Only if it still alternates, raise its instance memory
-  from 512 MB to 2,048 MB. No authentication, memory or scaling settings have been changed.
-  M-agent uses `2025-03-01-preview`, interpreting the owner's version input as its
-  model-inference API version.
+  Unreachable. **Batch 5d**, approved and run on 6 October, then stopped and started
+  M-protected, which didn't help: three of eight requests still hung. Its instance memory was then
+  raised from 512 MB to 2,048 MB, the only setting changed, and the strict alternation returned.
+  The smoke and the console's connection check failed as before. Answered 401s mostly take about
+  20 seconds, where a healthy refusal takes under one, which also points to the platform's
+  request routing, not the app's memory. M-protected stays unpublished; next is an Azure support
+  case, or hosting M-protected another way, each needing its own decision. Authentication and
+  scaling settings are unchanged. M-agent uses `2025-03-01-preview`, interpreting the owner's
+  version input as its model-inference API version.
 - ✅ **The MCP verifier**, [#97](https://github.com/microsoft/mosaic-apim/pull/97) and
   [#99](https://github.com/microsoft/mosaic-apim/pull/99), is merged. The follow-up binds an
   application token to the selected applied grant and refuses to call session cleanup complete
