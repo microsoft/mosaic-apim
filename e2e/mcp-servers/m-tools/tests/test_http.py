@@ -107,12 +107,13 @@ def test_a_request_without_a_session_is_refused_and_leaves_none(origin: str) -> 
     ping = {"jsonrpc": "2.0", "id": 1, "method": "ping"}
     with httpx.Client(follow_redirects=False) as client:
         refused = client.post(f"{origin}/mcp", headers=MOSAIC_HEADERS, json=ping)
+        assert refused.status_code == 400
         # The SDK names the session it opened for the request, which it has already discarded.
-        named = refused.headers.get("mcp-session-id", "none")
+        named = refused.headers.get("mcp-session-id")
+        assert named
         headers = {**MOSAIC_HEADERS, "Mcp-Session-Id": named, "MCP-Protocol-Version": "2025-11-25"}
         gone = client.post(f"{origin}/mcp", headers=headers, json=ping)
 
-    assert refused.status_code == 400
     assert gone.status_code == 404
 
 
