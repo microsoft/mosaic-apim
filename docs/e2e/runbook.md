@@ -373,8 +373,9 @@ tokens, enters the verifier's device codes in the right persona's browser, and r
 
 - **Servers:** M-tools and M-protected, with the `echo`, `utc_now` and `add` tools, and M-agent,
   with `ask_model`, are registered, published and applied (M1 and M2). M-agent's application is
-  named under **Calls models as** and applied, and holds an applied grant on the model its tool
-  calls.
+  named under **Calls models as** and applied, and holds a grant on the model its tool calls.
+  M-agent's upstream is public, so keep that grant revoked except for M9's call (see
+  [Open M-agent's model grant only for M9's call](#open-m-agents-model-grant-only-for-m9s-call)).
 - **Grants**, applied (M3):
   - `roles.user` holds a grant on each tools server, and on M-agent for M9.
   - An application holds a direct grant on a tools server, and has the `Mcp.Invoke.Application`
@@ -439,12 +440,14 @@ node tools/drive.ts verify-mcp -- --user-token-source device-code `
 # M9: a model call made on the person's behalf, and its attribution
 node tools/drive.ts verify-mcp -- --user-token-source device-code `
   --on-behalf-entitlement @target:mcp.grants.agent-user.id --send-model-requests `
-  --await-attribution --model-caller-entitlement @target:mcp.servers.m-agent.modelCaller.modelGrant
+  --await-attribution --model-caller-entitlement @target:mcp.servers.m-agent.modelCaller.modelGrant `
+  --await-model-grant
 ```
 
 Everything after `--` goes to the verifier. The driver adds the manifest's origins, resolves
 `@target:` references, and checks the flags as the verifier does, before anyone signs in. Each
-run can make one proof, and wait for one thing: a revocation or an attribution.
+run can make one proof, and either watch a revocation or wait around M9's call: for the model
+caller's grant before it, with `--await-model-grant`, and for its attribution after it.
 
 Session cleanup uses the session's original credentials and cost center, with no quota bypass.
 A gateway call-limit 429 on DELETE permits one retry after a numeric `Retry-After` of 1–300 seconds;
@@ -458,8 +461,9 @@ reported as unsupported deletion, not as a confirmed server-side termination.
 - **People:** as for `verify`, with these differences.
   - `--user` holds the user grants and the on-behalf grant. It defaults to `roles.user`.
   - `--admin` reads an application grant's connection details and applied application identity,
-    what a server's last apply compiled for `--prove-pooled-quota`, and whether the on-behalf
-    server passes references on. It's only
+    what a server's last apply compiled for `--prove-pooled-quota`, whether the on-behalf
+    server passes references on, and the `--model-caller-entitlement` grant, which
+    `--await-model-grant` reads until it's applied. It's only
     used with `--application-entitlement`, `--prove-pooled-quota` and `--on-behalf-entitlement`,
     and may be the same person as `--user`.
   - `--stranger` holds no grant on these MCP servers. It's only used with `--check-ungranted-user`
@@ -474,11 +478,56 @@ reported as unsupported deletion, not as a confirmed server-side termination.
     client is consented for `Mcp.Invoke`, its model tokens carry that too, and the verifier refuses
     to use them. Take this token from a client that isn't consented for `Mcp.Invoke`.
 - **Bills:** only `ask_model` calls a model, so only `--on-behalf-entitlement` needs
-  `--send-model-requests`.
-- **Time:** the driver stops the verifier after 45 minutes, plus the watch's or the wait's timeout
-  and interval. The MOSAIC API tokens must last 20 minutes, plus that timeout and interval and a
-  minute. For `--watch-revocation`, drive the admin from another terminal, as for `verify`: revoke
-  the grant, then plan and apply its MCP server's access.
+  `--send-model-requests`. The call is charged to M-agent's model grant. M-agent's upstream is
+  public, so while that grant is open, anyone who reaches M-agent can spend it.
+  `--await-model-grant` keeps it open only for M9's call.
+- **Time:** the driver stops the verifier after 45 minutes, plus the timeout and interval of each
+  wait: the revocation watch, or M9's waits for the model caller's grant and for the attribution.
+  The MOSAIC API tokens must last 20 minutes, plus those timeouts and intervals and a minute. With
+  M9's defaults that's about 62 minutes, longer than a token issued for an hour lasts, so if the
+  driver says a token won't last, lower `--attribution-timeout`. For `--watch-revocation`, drive
+  the admin from another terminal, as for `verify`: revoke the grant, then plan and apply its MCP
+  server's access. For `--await-model-grant`, see the next section.
+
+### Open M-agent's model grant only for M9's call
+
+Keep M-agent's model grant, which the manifest names as
+`mcp.servers.m-agent.modelCaller.modelGrant`, revoked except while M9 makes its call. With
+`--await-model-grant`, the verifier waits for the grant after the person's sign-in, so it isn't
+open while the person signs in, which can take most of a device code's 15 minutes. Drive the admin
+from another terminal:
+
+1. Start the run with the grant revoked and its model's access plan applied.
+2. The person confirms the device-code sign-in. After the sign-in and the other checks, the
+   verifier asks for the grant:
+
+   ```text
+   WAIT: re-enable the model caller's grant in MOSAIC's console and apply its model's access plan. Checking every 15 seconds for up to 600 seconds
+   ```
+
+3. Re-enable the grant on the Entitlements page, then review and apply its model's access plan.
+   The verifier reads the grant every `--model-grant-interval` seconds (15 by default, 10 to 120)
+   for up to `--model-grant-timeout` seconds (600 by default, 60 to 1800), and prints a `WAIT` line
+   whenever its status changes. It calls `ask_model` as soon as MOSAIC reports the grant enabled
+   and applied.
+4. Straight after the call, it asks you to close the grant again. Revoke it and apply its model's
+   access plan while the attribution wait goes on:
+
+   ```text
+   INFO: On-behalf grant (M-agent) made its model call. Revoke the model caller's grant now and apply its model's access plan; the attribution wait goes on
+   ```
+
+   A run that stops after the grant was applied asks the same, in a line that starts
+   `INFO: On-behalf grant (M-agent) stopped after the model caller's grant was applied`. One that
+   stops while waiting for the grant says to revoke it if you re-enabled it.
+
+If the grant isn't enabled and applied in time, the run fails before any model call. If it's
+already enabled and applied when the checks finish, the run says so and calls `ask_model` straight
+away. The admin's MOSAIC API token reads the grant, so it must last the wait, and the user's must
+last both waits. The person's MCP token makes the call, so it must last the wait and the longest the
+call can take with every request at its timeout: about 30 minutes with the defaults. Each is checked
+before the verifier asks for the grant. Whenever a run ends with the grant re-enabled, however it
+ends, revoke the grant and apply its model's access plan.
 
 ### What each check proves
 
@@ -495,7 +544,7 @@ reported as unsupported deletion, not as a confirmed server-side termination.
 | M6 | `--prove-call-limit`: the first call leaves one fewer than the grant's limit in `x-mosaic-remaining-calls`, which falls on each successful call to 0, then the gateway's own 429 comes, with `Retry-After` in seconds | The gateway enforces the grant's own call limit, not a smaller or larger one, and reports it as it's spent. A 429 from the server, a quota's 403, or a refusal while calls are left fails the proof |
 | M6 | `--prove-pooled-quota`: calls under the pooled cost center reach the gateway's quota 403 ("Out of call volume quota"), then the other grant on the server, under another cost center, still reaches its tools | The cost center's pool is counted across its grants and refuses once spent, while other cost centers are unaffected. A call limit's 429 fails the proof |
 | M7 | `--watch-revocation`: once MOSAIC reports the grant revoked, two calls in a row that name its cost center get the grant lookup's 403, from the cost-center rule | The revocation reached the gateway. Refusals while the plan applies, a 401, or a quota's or budget's 403, which means the gateway still found the grant, don't count |
-| M9 | M-agent's last apply names its model caller, and `ask_model` answers the person | The server receives each call's reference, and its tool called a governed model as its application |
+| M9 | M-agent's last apply names its model caller, and `ask_model` answers the person. With `--await-model-grant`, the call comes only after the sign-in and the other checks, once MOSAIC reports the model caller's grant enabled and applied | The server receives each call's reference, and its tool called a governed model as its application. The model caller's grant, which anyone reaching M-agent could spend, was open for the call, not for the sign-in |
 | M9 | `--await-attribution`: the person's usage report, which the portal's **Usage & cost** shows, gains model use through M-agent. With `--model-caller-entitlement`, on that grant's model and under its cost center | MOSAIC attributed the model call to the person and charged the agent's grant (ADR 0025) |
 
 ### Find M9's attribution
@@ -553,9 +602,10 @@ simulated or it has no usage report.
 | `Signing in … failed:` HTTP 500, 502, 503 or 504, `server_error` or `temporarily_unavailable` | The Microsoft sign-in service failed for a moment. While the code is still valid, the verifier keeps polling through a few of these in a row, with an `INFO` line for each, and the sign-in page stays open. It fails only when they keep coming, so rerun |
 | `MOSAIC_SMOKE_USER_RUNTIME_TOKEN carries Mcp.Invoke` | That model token came from a client consented for both scopes, so the gateway would accept it. Take it from a client that isn't consented for `Mcp.Invoke`, or leave out `--check-missing-scope` |
 | `its server's last apply names no model caller` | Name M-agent's application under **Calls models as** on the MCP servers page, then plan and apply the server, before M9 |
+| `The model caller's grant: after N seconds, MOSAIC reports it as <status>, not applied` | Nobody re-enabled M-agent's model grant and applied its model's access plan within `--model-grant-timeout`, or the apply failed or hadn't finished. The run made no model call. If you re-enabled the grant, revoke it and apply the plan again, then rerun with it revoked. If applies take longer, raise `--model-grant-timeout`, up to 1800 |
 | `its first call left N of its M calls, not M-1` | Calls from the last window still count, or the gateway enforces a smaller limit than MOSAIC applied. Wait out the window with nothing calling the grant, then rerun; if it repeats, plan and apply the server's access |
 | `The MOSAIC API token <persona>'s browser sent is for a different account` | That profile is signed in as someone else. Delete its profile and sign in again as the right account |
-| `The MOSAIC API token … expires in N seconds` | Entra issues the token when the driver signs the persona in again, so this comes from a short token lifetime policy or a long revocation watch. Lower `--revocation-timeout` |
+| `The MOSAIC API token … expires in N seconds` | Entra issues the token when the driver signs the persona in again, so this comes from a short token lifetime policy or a long wait. Lower the timeout the message names: `--revocation-timeout`, or for M9 `--attribution-timeout` or `--model-grant-timeout` |
 | `Stopped before Apply on …` or `Stopped before Unpublish model on …` | The plan, or the review dialog, reached beyond the model and grant the test was changing, so the suite closed it without running the plan. Before Apply, something else is saved on that model and not yet applied. Review it on the Entitlements page, and apply or undo it by hand before running the test again. Before Unpublish model, the unpublish review didn't match what MOSAIC created for the disposable model. Open Unpublish on its row on the Models page, read the review and cancel it, and don't run `90-cleanup` again until the review lists only that model's resources |
 
 ## Quality checks
