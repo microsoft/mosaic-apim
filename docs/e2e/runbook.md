@@ -386,11 +386,12 @@ tokens, enters the verifier's device codes in the right persona's browser, and r
   - For M6's call limit: a fresh grant limited to 6 to 30 calls per 60 to 300 seconds, with no call
     quota and no other callers. Nothing may call it in the window before the proof, so after a
     run, wait out the window before the next.
-  - For M6's pooled quota: a grant with no limits of its own, under a cost center whose pool on the
-    server allows at most 50 calls a month, and another grant on the same server under a different
-    cost center. **The proof spends the pool for the rest of the month**, so use a cost center made
-    for it. Use a stateless server for a proof that can finish: on a stateful server the spent
-    pool also denies session DELETE, making the run incomplete even if the quota check worked.
+  - For M6's pooled quota: a grant with no limits of its own, under a cost center made for the
+    proof, and another grant on the same server under a different cost center. The cost center's
+    pool on the server must allow 5 to 50 calls a month, and be fresh: nothing has called it this
+    month. **The proof spends the pool for the rest of the month**, so each run needs a fresh one,
+    under a new cost center or in the next month (UTC). A stateful server such as M-tools works:
+    the proof plans its calls so that the session's `DELETE` is the last one the pool allows.
   - For M7: a grant you can revoke. A person holds one grant on a server under each cost center, so
     put it under a cost center of its own.
 - **Consent:** MOSAIC's model client, which connection details name as `clientId`, is consented for
@@ -457,6 +458,9 @@ the session identity in memory and fails the run as **unresolved session cleanup
 PASS, and the script does not save session IDs or retry after exit. The server must eventually
 expire an unresolved session or an operator must arrange legitimate cleanup separately. A 405 is
 reported as unsupported deletion, not as a confirmed server-side termination.
+`--prove-pooled-quota` spends its pool so that the session's `DELETE` is the last call the pool
+allows, which a fresh pool never refuses. A pool that something else had spent part of refuses it,
+and the run fails this way.
 
 - **People:** as for `verify`, with these differences.
   - `--user` holds the user grants and the on-behalf grant. It defaults to `roles.user`.
@@ -546,7 +550,7 @@ ends, revoke the grant and apply its model's access plan.
 | M5 | The person's token, and the application's `.default` token with `Mcp.Invoke.Application`, list the tools, and `echo` and `add` return the text and the sum | The gateway admits each kind of holder, and passes the streamable HTTP conversation through to the server |
 | M5 | Those calls name the grant's cost center in `x-mosaic-cost-center`: as MOSAIC gives the code when the session opens, then in the other case | The header selects the grant, compared without case |
 | M6 | `--prove-call-limit`: the first call leaves one fewer than the grant's limit in `x-mosaic-remaining-calls`, which falls on each successful call to 0, then the gateway's own 429 comes, with `Retry-After` in seconds | The gateway enforces the grant's own call limit, not a smaller or larger one, and reports it as it's spent. A 429 from the server, a quota's 403, or a refusal while calls are left fails the proof |
-| M6 | `--prove-pooled-quota`: calls under the pooled cost center reach the gateway's quota 403 ("Out of call volume quota"), then the other grant on the server, under another cost center, still reaches its tools | The cost center's pool is counted across its grants and refuses once spent, while other cost centers are unaffected. A call limit's 429 fails the proof |
+| M6 | `--prove-pooled-quota`: a probe, a `ping` that names no session and so can't create server state, gets through to the server. On a stateful server, the session then spends all but one of the pool's calls, counting every call the run makes under the grant, the probe, the `initialized` notification and the `DELETE` among them, so that its `DELETE` is the last call the pool allows. A probe after it must get the gateway's quota 403 ("Out of call volume quota"). On a stateless server, tool calls go on until that 403. Then the other grant on the server, under another cost center, still reaches its tools | The cost center's pool is counted across its grants, refuses at its limit, and allows the session's `DELETE`, while other cost centers are unaffected. A pool already spent fails the proof before a session opens, and on a stateful server, a pool partly spent fails it as unresolved session cleanup. A call limit's 429 fails it, and so do more than two calls past the limit. One or two, which API Management's distributed counters allow, are reported as `INFO` |
 | M7 | `--watch-revocation`: once MOSAIC reports the grant revoked, two calls in a row that name its cost center get the grant lookup's 403, from the cost-center rule | The revocation reached the gateway. Refusals while the plan applies, a 401, or a quota's or budget's 403, which means the gateway still found the grant, don't count |
 | M9 | M-agent's last apply names its model caller, and `ask_model` answers the person. With `--await-model-grant`, the call comes only after the sign-in and the other checks, once MOSAIC reports the model caller's grant enabled and applied | The server receives each call's reference, and its tool called a governed model as its application. The model caller's grant, which anyone reaching M-agent could spend, was open for the call, not for the sign-in |
 | M9 | `--await-attribution`: the person's usage report, which the portal's **Usage & cost** shows, gains model use through M-agent. With `--model-caller-entitlement`, on that grant's model and under its cost center | MOSAIC attributed the model call to the person and charged the agent's grant (ADR 0025) |
@@ -608,6 +612,8 @@ simulated or it has no usage report.
 | `its server's last apply names no model caller` | Name M-agent's application under **Calls models as** on the MCP servers page, then plan and apply the server, before M9 |
 | `The model caller's grant: after N seconds, MOSAIC reports it as <status>, not applied` | Nobody re-enabled M-agent's model grant and applied its model's access plan within `--model-grant-timeout`, or the apply failed or hadn't finished. The run made no model call. If you re-enabled the grant, revoke it and apply the plan again, then rerun with it revoked. If applies take longer, raise `--model-grant-timeout`, up to 1800 |
 | `its first call left N of its M calls, not M-1` | Calls from the last window still count, or the gateway enforces a smaller limit than MOSAIC applied. Wait out the window with nothing calling the grant, then rerun; if it repeats, plan and apply the server's access |
+| `pool of N calls a month refused the first probe with the gateway's quota 403, before any session opened` | The cost center's pool on the server was already spent this month, so the proof can't show where its limit is. Nothing was left open. Use a cost center made for the proof, whose pool nothing has called this month, or wait for the next month (UTC). Each run spends its pool for the rest of the month |
+| `its cost center's pool refused …, call N of the M it allows a month`, usually followed by `unresolved session cleanup (HTTP 403, a call quota at the gateway)` | Something had spent part of the pool this month, before the run or during it, so the pool refused a call the proof planned within it. The cost center wasn't fresh. Once a session is open, the quota refuses its `DELETE` too, and the session is left for the server to expire. Rerun under a cost center made for the proof, whose pool nothing has called this month |
 | `The MOSAIC API token <persona>'s browser sent is for a different account` | That profile is signed in as someone else. Delete its profile and sign in again as the right account |
 | `The MOSAIC API token … expires in N seconds` | Entra issues the token when the driver signs the persona in again, so this comes from a short token lifetime policy or a long wait. Lower the timeout the message names: `--revocation-timeout`, or for M9 `--attribution-timeout` or `--model-grant-timeout` |
 | `Stopped before Apply on …` or `Stopped before Unpublish model on …` | The plan, or the review dialog, reached beyond the model and grant the test was changing, so the suite closed it without running the plan. Before Apply, something else is saved on that model and not yet applied. Review it on the Entitlements page, and apply or undo it by hand before running the test again. Before Unpublish model, the unpublish review didn't match what MOSAIC created for the disposable model. Open Unpublish on its row on the Models page, read the review and cancel it, and don't run `90-cleanup` again until the review lists only that model's resources |

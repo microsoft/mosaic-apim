@@ -101,6 +101,22 @@ def test_mosaic_s_handshake_negotiates_the_revision_it_offers(origin: str) -> No
     assert ended.status_code == 200
 
 
+def test_a_request_without_a_session_is_refused_and_leaves_none(origin: str) -> None:
+    # The MCP verifier's pooled-quota proof probes the gateway with this request, because it can't
+    # leave anything on the server (scripts/verify_mcp_access.py).
+    ping = {"jsonrpc": "2.0", "id": 1, "method": "ping"}
+    with httpx.Client(follow_redirects=False) as client:
+        refused = client.post(f"{origin}/mcp", headers=MOSAIC_HEADERS, json=ping)
+        assert refused.status_code == 400
+        # The SDK names the session it opened for the request, which it has already discarded.
+        named = refused.headers.get("mcp-session-id")
+        assert named
+        headers = {**MOSAIC_HEADERS, "Mcp-Session-Id": named, "MCP-Protocol-Version": "2025-11-25"}
+        gone = client.post(f"{origin}/mcp", headers=headers, json=ping)
+
+    assert gone.status_code == 404
+
+
 @pytest.mark.parametrize("version", ["2025-06-18", "2025-03-26", "2024-11-05"])
 def test_an_earlier_revision_mosaic_accepts_is_negotiated_as_offered(
     origin: str, version: str
