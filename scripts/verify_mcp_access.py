@@ -82,15 +82,22 @@ CALL_LIMIT_PERIODS = (60, 300)
 # DELETE is governed too: retry one rate refusal, never wait out a monthly pool.
 CLEANUP_MAX_WAIT_SECONDS = 300
 CLEANUP_REQUEST_TIMEOUT_SECONDS = 30
-# The longest ask_model can use the person's token, each request within its timeout: initialize,
-# the initialized notification and every tools/list page, then the call, then cleanup, which may
-# wait once for a rate limit.
+# With the model caller's grant open, ask_model gives up on its call this long after it starts: no
+# request starts, and no response is read, after that, and a read already waiting ends within its
+# own timeout, at most the call's. It's as long as the requests before the call could take, at the
+# client's timeout each: initialize, the initialized notification and every tools/list page.
+ASK_MODEL_DEADLINE_SECONDS = (2 + MAX_TOOL_PAGES) * CLIENT_TIMEOUT_SECONDS
+# Its cleanup then gets a deadline of its own, as long as one DELETE and the rate-limit wait: the
+# retry starts before it, and a read already waiting ends within the DELETE's timeout.
+CLEANUP_DEADLINE_SECONDS = CLEANUP_REQUEST_TIMEOUT_SECONDS + CLEANUP_MAX_WAIT_SECONDS
+# The longest ask_model can then use the person's token: each deadline and the read after it.
 ASK_MODEL_LONGEST_SECONDS = (
-    (2 + MAX_TOOL_PAGES) * CLIENT_TIMEOUT_SECONDS
+    ASK_MODEL_DEADLINE_SECONDS
     + ASK_MODEL_TIMEOUT_SECONDS
-    + 2 * CLEANUP_REQUEST_TIMEOUT_SECONDS
-    + CLEANUP_MAX_WAIT_SECONDS
+    + CLEANUP_DEADLINE_SECONDS
+    + CLEANUP_REQUEST_TIMEOUT_SECONDS
 )
+LATE = "the server took longer than the verifier waits"
 # A pooled-quota proof spends the whole pool, so the pool must be small.
 POOL_CALL_CEILING = 50
 # On a stateful server the session's DELETE must be the last call the pool allows, so the pool must
@@ -399,6 +406,43 @@ def describe(exchange: Exchange) -> str:
     return f"unexpected {status_text(exchange)}"
 
 
+def late(deadline: float | None) -> bool:
+    return deadline is not None and time.monotonic() >= deadline
+
+
+class DeadlineStream(httpx.SyncByteStream):
+    """A response's body, abandoned at the first chunk that arrives after a deadline.
+
+    It's checked for each chunk from the network, so a server trickling bytes, with or without
+    line breaks, is cut off within one read of the deadline.
+    """
+
+    def __init__(self, stream: httpx.SyncByteStream, deadline: float) -> None:
+        self._stream = stream
+        self._deadline = deadline
+
+    def __iter__(self) -> Iterator[bytes]:
+        for chunk in self._stream:
+            if late(self._deadline):
+                raise VerificationFailed(LATE)
+            yield chunk
+
+    def close(self) -> None:
+        self._stream.close()
+
+
+def bound(response: httpx.Response, deadline: float | None) -> None:
+    """Abandon the response's body at the first chunk that arrives after ``deadline``.
+
+    Its headers have arrived by now. They come from the gateway, which passes a response on only
+    once it has the server's headers, so they took one read within the request's timeout. Only a
+    gateway trickling headers of its own could take longer.
+    """
+
+    if deadline is not None and isinstance(response.stream, httpx.SyncByteStream):
+        response.stream = DeadlineStream(response.stream, deadline)
+
+
 def read_bounded(response: httpx.Response, limit: int, *, strict: bool) -> bytes:
     chunks: list[bytes] = []
     size = 0
@@ -483,7 +527,9 @@ class Session:
     """One MCP conversation with a published server, through the gateway.
 
     ``auth`` is sent on every request. ``cost_center``, when set, is sent as the cost-center header,
-    and may change between requests: the gateway authorizes each request on its own.
+    and may change between requests: the gateway authorizes each request on its own. ``deadline``,
+    when set, is the ``time.monotonic()`` time after which no request starts and no response is
+    read. Cleanup then gets a deadline of its own.
     """
 
     def __init__(
@@ -505,6 +551,7 @@ class Session:
         self.exchanges: list[Exchange] = []
         # The answer to the last DELETE, once one came back.
         self.closed_by: Exchange | None = None
+        self.deadline: float | None = None
         self._next_id = 0
 
     def headers(self, *, initializing: bool = False) -> dict[str, str]:
@@ -531,6 +578,8 @@ class Session:
     ) -> Exchange:
         """Send one JSON-RPC message. A refusal is returned, not raised."""
 
+        if late(self.deadline):
+            raise VerificationFailed(f"{self.label} {method}: {LATE}")
         payload: dict[str, Any] = {"jsonrpc": "2.0", "method": method}
         if params is not None:
             payload["params"] = params
@@ -548,6 +597,7 @@ class Session:
             timeout=httpx.USE_CLIENT_DEFAULT if timeout is None else timeout,
         ) as response:
             exchange = Exchange(method, response.status_code, response.headers, request_id)
+            bound(response, self.deadline)
             try:
                 read_into(exchange, response)
             except VerificationFailed as error:
@@ -623,11 +673,16 @@ class Session:
         """End a session, retaining its identity unless DELETE succeeds or is unsupported.
 
         Gateway limits also govern DELETE. Only a recognizable rate-limit refusal with a
-        bounded Retry-After permits one retry, using the same credentials and cost center.
+        bounded Retry-After permits one retry, using the same credentials and cost center. A
+        session with a deadline gives its cleanup one of its own, CLEANUP_DEADLINE_SECONDS away:
+        no response is read after it, and the retry waits only if it can start before it.
         """
 
         if self.session_id is None:
             return
+        deadline = (
+            time.monotonic() + CLEANUP_DEADLINE_SECONDS if self.deadline is not None else None
+        )
         for attempt in range(2):
             self.closed_by = None
             try:
@@ -639,10 +694,16 @@ class Session:
                 ) as response:
                     exchange = Exchange("DELETE", response.status_code, response.headers)
                     self.closed_by = exchange
+                    bound(response, deadline)
                     read_into(exchange, response)
             except httpx.HTTPError:
                 raise VerificationFailed(
                     f"{self.label}: unresolved session cleanup (HTTP transport failure). "
+                    "DELETE was not confirmed; verification is incomplete"
+                ) from None
+            except VerificationFailed as error:
+                raise VerificationFailed(
+                    f"{self.label}: unresolved session cleanup ({error}). "
                     "DELETE was not confirmed; verification is incomplete"
                 ) from None
             if exchange.ok or exchange.status == 405:
@@ -656,6 +717,7 @@ class Session:
                 and exchange.refused_by() == "rate"
                 and retry is not None
                 and 0 < retry <= CLEANUP_MAX_WAIT_SECONDS
+                and (deadline is None or time.monotonic() + retry < deadline)
             ):
                 say(
                     f"INFO: {self.label}: session DELETE reached the call limit; waiting "
@@ -1879,15 +1941,20 @@ def check_model_caller(
     return caller
 
 
-def ask_model(client: httpx.Client, grant: McpGrant, token: str) -> tuple[float, float]:
+def ask_model(
+    client: httpx.Client, grant: McpGrant, token: str, *, limit: int | None = None
+) -> tuple[float, float]:
     """Call the server's ask_model tool as the person, and return when the call started and ended.
 
-    The answer is model output, so it's never printed: it only has to exist.
+    The answer is model output, so it's never printed: it only has to exist. With ``limit``, the
+    call gives up that many seconds after it starts.
     """
 
     session = new_session(client, grant, token)
     session.cost_center = grant.cost_center
     started = time.time()
+    if limit is not None:
+        session.deadline = time.monotonic() + limit
     with closing_session(session):
         open_session(session)
         if ASK_MODEL_TOOL not in list_tools(session):
@@ -2051,7 +2118,10 @@ def call_on_behalf(
                 say(f"SKIP: {grant.label} waiting for its attribution: {found}")
             else:
                 baseline = found
-        window = ask_model(client, grant, token)
+        # With the grant open, the call must end in time: the person's token was checked against
+        # that, and the grant stays open until the run says to revoke it.
+        limit = ASK_MODEL_DEADLINE_SECONDS if grant_wait is not None else None
+        window = ask_model(client, grant, token, limit=limit)
     except BaseException:
         if grant_wait is not None:
             say(
