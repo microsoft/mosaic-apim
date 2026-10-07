@@ -51,6 +51,10 @@ export interface McpVerifyPlan {
   awaitAttribution: boolean
   attributionTimeoutSeconds: number
   attributionIntervalSeconds: number
+  /** M9: after every sign-in and check, wait for the model caller's grant to be applied before the call. */
+  awaitModelGrant: boolean
+  modelGrantTimeoutSeconds: number
+  modelGrantIntervalSeconds: number
 }
 
 const grant: ValueFlag = { pattern: grantIdPattern, expects: 'a grant ID' }
@@ -70,8 +74,10 @@ const valueFlags: Readonly<Record<string, ValueFlag>> = {
   '--revocation-interval': { range: [10, 300], expects: 'a whole number of seconds from 10 to 300' },
   '--attribution-timeout': { range: [60, 3600], expects: 'a whole number of seconds from 60 to 3600' },
   '--attribution-interval': { range: [30, 600], expects: 'a whole number of seconds from 30 to 600' },
+  '--model-grant-timeout': { range: [60, 1800], expects: 'a whole number of seconds from 60 to 1800' },
+  '--model-grant-interval': { range: [10, 120], expects: 'a whole number of seconds from 10 to 120' },
 }
-const switchFlags = new Set(['--send-model-requests', '--check-ungranted-user', '--check-missing-scope', '--await-attribution'])
+const switchFlags = new Set(['--send-model-requests', '--check-ungranted-user', '--check-missing-scope', '--await-attribution', '--await-model-grant'])
 const mcpFlags: FlagSpec = { valueFlags, switchFlags, manifestFlags }
 
 /** Every MCP verifier flag the harness knows, including the two it always sets from the manifest. */
@@ -82,6 +88,8 @@ export const mcpDefaults = {
   revocationIntervalSeconds: 30,
   attributionTimeoutSeconds: 1800,
   attributionIntervalSeconds: 60,
+  modelGrantTimeoutSeconds: 600,
+  modelGrantIntervalSeconds: 15,
 } as const
 
 /**
@@ -100,6 +108,7 @@ export function planMcpVerification(targets: Targets, args: readonly string[]): 
   const provePooledQuota = single('--prove-pooled-quota')
   const watchRevocation = single('--watch-revocation')
   const awaitAttribution = switches.has('--await-attribution')
+  const awaitModelGrant = switches.has('--await-model-grant')
   const checkUngrantedUser = switches.has('--check-ungranted-user')
   const checkMissingScope = switches.has('--check-missing-scope')
   // The grants the run calls the echo and add tools with, which proofs and the revocation watch run on.
@@ -118,6 +127,9 @@ export function planMcpVerification(targets: Targets, args: readonly string[]): 
   }
   if (modelCallerEntitlement !== undefined && !awaitAttribution) {
     throw new VerifyError('--model-caller-entitlement is only used with --await-attribution.')
+  }
+  if (awaitModelGrant && modelCallerEntitlement === undefined) {
+    throw new VerifyError('--await-model-grant needs a --model-caller-entitlement.')
   }
   if ((checkUngrantedUser || checkMissingScope) && userEntitlements.length === 0) {
     throw new VerifyError('--check-ungranted-user and --check-missing-scope need a --user-entitlement.')
@@ -163,13 +175,17 @@ export function planMcpVerification(targets: Targets, args: readonly string[]): 
     awaitAttribution,
     attributionTimeoutSeconds: seconds('--attribution-timeout', mcpDefaults.attributionTimeoutSeconds),
     attributionIntervalSeconds: seconds('--attribution-interval', mcpDefaults.attributionIntervalSeconds),
+    awaitModelGrant,
+    modelGrantTimeoutSeconds: seconds('--model-grant-timeout', mcpDefaults.modelGrantTimeoutSeconds),
+    modelGrantIntervalSeconds: seconds('--model-grant-interval', mcpDefaults.modelGrantIntervalSeconds),
   }
 }
 
 /**
  * Picks the personas a run needs: the choices given, or else the manifest's journey roles. The user's MOSAIC API
  * token reads their grants' connection details. The admin's reads an application's, what the server's last
- * apply compiled for a pooled-quota proof, and whether the on-behalf server passes references on.
+ * apply compiled for a pooled-quota proof, whether the on-behalf server passes references on, and the model
+ * caller's grant, which --await-model-grant reads until it's applied.
  */
 export function mcpVerifyPersonas(targets: Targets, plan: McpVerifyPlan, choice: PersonaChoice = {}): VerifyPersonas {
   const user = choice.user ?? targets.roles.user
@@ -202,8 +218,9 @@ export function mcpVerifyPersonas(targets: Targets, plan: McpVerifyPlan, choice:
 }
 
 /**
- * How long each MOSAIC API token must stay valid: time for sign-ins and checks, plus a revocation watch or the
- * wait for an attribution, which read MOSAIC with it until the end.
+ * How long each MOSAIC API token must stay valid: time for sign-ins and checks, plus a revocation watch or M9's
+ * waits, which read MOSAIC with them until the end: for the model caller's grant before the call, and for the
+ * call's attribution after it.
  */
 export function mcpControlTokenNeeds(plan: McpVerifyPlan): TokenNeeds {
   const signInsAndChecks = 20 * 60
@@ -213,25 +230,39 @@ export function mcpControlTokenNeeds(plan: McpVerifyPlan): TokenNeeds {
       shorten: 'Lower --revocation-timeout and run it again.',
     }
   }
-  if (plan.awaitAttribution) {
+  const waits = onBehalfWaits(plan)
+  if (waits.flags.length > 0) {
     return {
-      seconds: signInsAndChecks + plan.attributionTimeoutSeconds + plan.attributionIntervalSeconds + 60,
-      shorten: 'Lower --attribution-timeout and run it again.',
+      seconds: signInsAndChecks + waits.seconds + 60,
+      shorten: `Lower ${waits.flags.join(' or ')} and run it again.`,
     }
   }
   return { seconds: signInsAndChecks }
 }
 
+/** M9's waits, each up to its timeout and one interval, and the flags that shorten them. */
+function onBehalfWaits(plan: McpVerifyPlan): { seconds: number; flags: string[] } {
+  let seconds = 0
+  const flags: string[] = []
+  if (plan.awaitModelGrant) {
+    seconds += plan.modelGrantTimeoutSeconds + plan.modelGrantIntervalSeconds
+    flags.push('--model-grant-timeout')
+  }
+  if (plan.awaitAttribution) {
+    seconds += plan.attributionTimeoutSeconds + plan.attributionIntervalSeconds
+    flags.push('--attribution-timeout')
+  }
+  return { seconds, flags }
+}
+
 /**
  * How long the driver lets the verifier run: two device sign-ins, whose codes last up to 15 minutes each, the
- * checks, and a revocation watch or the wait for an attribution.
+ * checks, and a revocation watch or M9's waits.
  */
 export function mcpVerifierTimeoutMs(plan: McpVerifyPlan): number {
   const wait = plan.watchRevocation !== undefined
     ? plan.revocationTimeoutSeconds + plan.revocationIntervalSeconds
-    : plan.awaitAttribution
-      ? plan.attributionTimeoutSeconds + plan.attributionIntervalSeconds
-      : 0
+    : onBehalfWaits(plan).seconds
   return (45 * 60 + wait) * 1_000
 }
 
