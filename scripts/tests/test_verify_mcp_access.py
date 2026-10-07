@@ -16,6 +16,7 @@ import json
 import os
 import re
 import unittest
+from collections.abc import Iterator
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any, get_args
@@ -292,6 +293,9 @@ class FakeWorld:
         self.leading_events = True
         self.answer_text = MODEL_OUTPUT
         self.tool_pages = 1
+        # Pauses, in seconds of the fake clock, each followed by a keep-alive, before an event
+        # stream's answer to tools/call: a server keeping a slow call's stream open.
+        self.call_keepalives: list[float] = []
         # The agent server's model calls, and what the person's usage report makes of them.
         self.model_caller_applied = True
         self.model_calls: list[dict[str, Any]] = []
@@ -899,11 +903,20 @@ class FakeWorld:
         events.append(
             f"data: {json.dumps({'jsonrpc': '2.0', 'method': 'notifications/progress'})}\n\n"
         )
+        body = "".join(events).encode()
+        pauses = self.call_keepalives if message.get("method") == "tools/call" else []
         return httpx.Response(
             200,
             headers={**(headers or {}), "Content-Type": "text/event-stream"},
-            content="".join(events).encode(),
+            content=self.kept_alive(pauses, body) if pauses else body,
         )
+
+    def kept_alive(self, pauses: list[float], body: bytes) -> Iterator[bytes]:
+        """An event stream sending a keep-alive after each pause, and then its events."""
+        for seconds in pauses:
+            self.clock.now += seconds
+            yield b": keep-alive\n\n"
+        yield body
 
     def login(self, request: httpx.Request) -> httpx.Response:
         segments = request.url.path.split("/")
@@ -2820,6 +2833,39 @@ class McpAccessVerifierTests(unittest.TestCase):
                 self.assertEqual(reminder in lines, asked)
                 self.assertEqual(self.tool_calls(world), [])
 
+    def test_with_the_grant_open_the_call_ends_by_its_deadline(self) -> None:
+        # A server that keeps a slow call's stream alive can't keep the grant open past the time
+        # the person's token was checked for.
+        world = standard_world()
+        world.servers["agent"].event_stream = True
+        world.call_keepalives = [20.0] * 60
+        lines = self.fails(
+            world,
+            list(self.GRANT_WAIT),
+            "On-behalf grant (M-agent) tools/call: the server took longer than the verifier waits",
+        )
+        self.assertIn(
+            "INFO: On-behalf grant (M-agent) stopped after the model caller's grant was applied. "
+            f"{self.REVOKE_NOW}",
+            lines,
+        )
+        # It gave up at the first keep-alive past its deadline, and still ended the session.
+        self.assertEqual(world.clock.now, START + verifier.ASK_MODEL_DEADLINE_SECONDS)
+        self.assertEqual(world.deletes, ["session-1"])
+        # Without the switch, the call runs as long as the server keeps it going, as before.
+        world = standard_world()
+        world.servers["agent"].event_stream = True
+        world.call_keepalives = [20.0] * 60
+        code, lines, errors = self.verify(
+            world, [*self.AWAIT, "--model-caller-entitlement", MODEL_GRANT]
+        )
+        self.assertEqual(code, 0, errors)
+        self.assertIn(
+            "PASS: On-behalf grant (M-agent) answered through ask_model, which calls a governed "
+            "model",
+            lines,
+        )
+
     def test_the_wait_for_the_model_caller_s_grant_needs_tokens_that_outlast_it(self) -> None:
         # The administrator's token reads the grant until it's applied.
         world = standard_world()
@@ -2876,8 +2922,9 @@ class McpAccessVerifierTests(unittest.TestCase):
         )
         self.assertFalse(any("re-enable" in line for line in lines))
         self.assertEqual(world.journal, ["model grant disabled, revoked"])
-        # The call's part is every request ask_model can make, each within its timeout: 22 before
-        # the call (initialize, initialized and 20 tools/list pages), the call, and cleanup.
+        # The call's part is its deadline (time for initialize, initialized and 20 tools/list
+        # pages), one last read at the call's timeout, and cleanup.
+        self.assertEqual(verifier.ASK_MODEL_DEADLINE_SECONDS, 22 * 30)
         self.assertEqual(verifier.ASK_MODEL_LONGEST_SECONDS, 22 * 30 + 120 + 2 * 30 + 300)
         for lifetime, code_expected in ((1814, 1), (1815, 0)):
             with self.subTest(lifetime=lifetime):

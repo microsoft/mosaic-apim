@@ -82,15 +82,20 @@ CALL_LIMIT_PERIODS = (60, 300)
 # DELETE is governed too: retry one rate refusal, never wait out a monthly pool.
 CLEANUP_MAX_WAIT_SECONDS = 300
 CLEANUP_REQUEST_TIMEOUT_SECONDS = 30
-# The longest ask_model can use the person's token, each request within its timeout: initialize,
-# the initialized notification and every tools/list page, then the call, then cleanup, which may
-# wait once for a rate limit.
+# With the model caller's grant open, ask_model gives up on its call this long after it starts: no
+# request starts, and no response is read, after that, and a read already waiting ends within its
+# own timeout, at most the call's. It's as long as the requests before the call could take, at the
+# client's timeout each: initialize, the initialized notification and every tools/list page.
+ASK_MODEL_DEADLINE_SECONDS = (2 + MAX_TOOL_PAGES) * CLIENT_TIMEOUT_SECONDS
+# The longest ask_model can then use the person's token: its deadline and one last read, then
+# cleanup, which may wait once for a rate limit.
 ASK_MODEL_LONGEST_SECONDS = (
-    (2 + MAX_TOOL_PAGES) * CLIENT_TIMEOUT_SECONDS
+    ASK_MODEL_DEADLINE_SECONDS
     + ASK_MODEL_TIMEOUT_SECONDS
     + 2 * CLEANUP_REQUEST_TIMEOUT_SECONDS
     + CLEANUP_MAX_WAIT_SECONDS
 )
+LATE = "the server took longer than the verifier waits"
 # A pooled-quota proof spends the whole pool, so the pool must be small.
 POOL_CALL_CEILING = 50
 # How API Management words the 403 a spent quota-by-key returns. A rate limit's 429 says
@@ -389,10 +394,18 @@ def describe(exchange: Exchange) -> str:
     return f"unexpected {status_text(exchange)}"
 
 
-def read_bounded(response: httpx.Response, limit: int, *, strict: bool) -> bytes:
+def late(deadline: float | None) -> bool:
+    return deadline is not None and time.monotonic() >= deadline
+
+
+def read_bounded(
+    response: httpx.Response, limit: int, *, strict: bool, deadline: float | None = None
+) -> bytes:
     chunks: list[bytes] = []
     size = 0
     for chunk in response.iter_bytes():
+        if late(deadline):
+            raise VerificationFailed(LATE)
         size += len(chunk)
         if size > limit:
             if strict:
@@ -402,20 +415,20 @@ def read_bounded(response: httpx.Response, limit: int, *, strict: bool) -> bytes
     return b"".join(chunks)
 
 
-def read_into(exchange: Exchange, response: httpx.Response) -> None:
+def read_into(exchange: Exchange, response: httpx.Response, deadline: float | None = None) -> None:
     """Read what the verifier needs of a response: a refusal's body, or a request's answer."""
 
     if not exchange.ok:
-        exchange.body = read_bounded(response, MAX_ERROR_BYTES, strict=False)
+        exchange.body = read_bounded(response, MAX_ERROR_BYTES, strict=False, deadline=deadline)
         return
     if exchange.request_id is None:
         return
     content_type = response.headers.get("content-type", "")
     if content_type.split(";")[0].strip().casefold() == "text/event-stream":
         exchange.event_stream = True
-        exchange.message = read_event_stream(response, exchange.request_id)
+        exchange.message = read_event_stream(response, exchange.request_id, deadline)
         return
-    body = read_bounded(response, MAX_RESPONSE_BYTES, strict=True)
+    body = read_bounded(response, MAX_RESPONSE_BYTES, strict=True, deadline=deadline)
     try:
         value = json.loads(body)
     except ValueError:
@@ -423,7 +436,9 @@ def read_into(exchange: Exchange, response: httpx.Response) -> None:
     exchange.message = value if isinstance(value, dict) else None
 
 
-def read_event_stream(response: httpx.Response, request_id: int) -> dict[str, Any]:
+def read_event_stream(
+    response: httpx.Response, request_id: int, deadline: float | None = None
+) -> dict[str, Any]:
     """The first event carrying the response to ``request_id``.
 
     The server may send notifications or requests of its own first, so other events are skipped.
@@ -450,6 +465,8 @@ def read_event_stream(response: httpx.Response, request_id: int) -> dict[str, An
         return None
 
     for line in response.iter_lines():
+        if late(deadline):
+            raise VerificationFailed(LATE)
         budget -= len(line) + 1
         if budget < 0:
             raise VerificationFailed("the event stream was longer than the verifier reads")
@@ -473,7 +490,9 @@ class Session:
     """One MCP conversation with a published server, through the gateway.
 
     ``auth`` is sent on every request. ``cost_center``, when set, is sent as the cost-center header,
-    and may change between requests: the gateway authorizes each request on its own.
+    and may change between requests: the gateway authorizes each request on its own. ``deadline``,
+    when set, is the ``time.monotonic()`` time after which no request starts and no response is
+    read. Cleanup isn't bound by it.
     """
 
     def __init__(
@@ -494,6 +513,7 @@ class Session:
         self.protocol: str | None = None
         self.exchanges: list[Exchange] = []
         self.closed_with: int | None = None
+        self.deadline: float | None = None
         self._next_id = 0
 
     def headers(self, *, initializing: bool = False) -> dict[str, str]:
@@ -520,6 +540,8 @@ class Session:
     ) -> Exchange:
         """Send one JSON-RPC message. A refusal is returned, not raised."""
 
+        if late(self.deadline):
+            raise VerificationFailed(f"{self.label} {method}: {LATE}")
         payload: dict[str, Any] = {"jsonrpc": "2.0", "method": method}
         if params is not None:
             payload["params"] = params
@@ -538,7 +560,7 @@ class Session:
         ) as response:
             exchange = Exchange(method, response.status_code, response.headers, request_id)
             try:
-                read_into(exchange, response)
+                read_into(exchange, response, self.deadline)
             except VerificationFailed as error:
                 raise VerificationFailed(f"{self.label} {method}: {error}") from None
         if initializing and exchange.ok:
@@ -1714,15 +1736,20 @@ def check_model_caller(
     return caller
 
 
-def ask_model(client: httpx.Client, grant: McpGrant, token: str) -> tuple[float, float]:
+def ask_model(
+    client: httpx.Client, grant: McpGrant, token: str, *, limit: int | None = None
+) -> tuple[float, float]:
     """Call the server's ask_model tool as the person, and return when the call started and ended.
 
-    The answer is model output, so it's never printed: it only has to exist.
+    The answer is model output, so it's never printed: it only has to exist. With ``limit``, the
+    call gives up that many seconds after it starts.
     """
 
     session = new_session(client, grant, token)
     session.cost_center = grant.cost_center
     started = time.time()
+    if limit is not None:
+        session.deadline = time.monotonic() + limit
     with closing_session(session):
         open_session(session)
         if ASK_MODEL_TOOL not in list_tools(session):
@@ -1886,7 +1913,10 @@ def call_on_behalf(
                 say(f"SKIP: {grant.label} waiting for its attribution: {found}")
             else:
                 baseline = found
-        window = ask_model(client, grant, token)
+        # With the grant open, the call must end in time: the person's token was checked against
+        # that, and the grant stays open until the run says to revoke it.
+        limit = ASK_MODEL_DEADLINE_SECONDS if grant_wait is not None else None
+        window = ask_model(client, grant, token, limit=limit)
     except BaseException:
         if grant_wait is not None:
             say(
