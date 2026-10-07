@@ -1554,11 +1554,18 @@ def prove_pooled_quota(
     check_control(client, other, other_token)
     if stateful:
         where = "at its limit" if through == plan.calls else "once spent"
+        ended = "so the session was closed within the pool"
+        if session.closed_by is None or not session.closed_by.ok:
+            # A 405: the server doesn't support DELETE, so nothing confirms the session ended.
+            ended = (
+                "within the pool, but the server doesn't support it, so the session is left for "
+                "the server to expire"
+            )
         say(
             f"PASS: {grant.label}'s cost center's pool of {plan.calls} calls a month refused "
             f"{where} with the gateway's quota 403, after {through} calls in this run. The "
-            f"session's DELETE was call {plan.calls}, so the session was closed within the pool, "
-            f"and {other.label}, under another cost center, still reached its tools"
+            f"session's DELETE was call {plan.calls}, {ended}, and {other.label}, under another "
+            "cost center, still reached its tools"
         )
         if through > plan.calls:
             say(

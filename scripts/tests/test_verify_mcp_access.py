@@ -293,6 +293,8 @@ class FakeWorld:
         # The MCP servers' behavior.
         self.echo_works = True
         self.add_works = True
+        # False answers DELETE with 405, as a stateful server that can't end a session does.
+        self.session_delete = True
         self.tool_error: str | None = None
         self.rpc_error: str | None = None
         self.wrong_id = False
@@ -754,7 +756,7 @@ class FakeWorld:
         session_id = headers.get("mcp-session-id")
         if method == "DELETE":
             self.deletes.append(session_id or "")
-            if not server.sessions:
+            if not server.sessions or not self.session_delete:
                 return httpx.Response(405)
             return httpx.Response(200 if self.sessions.pop(session_id or "", None) else 404)
         if method != "POST":
@@ -2138,6 +2140,28 @@ class McpAccessVerifierTests(unittest.TestCase):
             ],
         )
         self.assertEqual(world.sessions, {})
+
+    def test_pooled_quota_proof_says_when_the_server_cannot_delete_its_session(self) -> None:
+        # A 405 resolves cleanup, as it does elsewhere, but nothing confirms the session ended.
+        world = self.pooled_world()
+        world.session_delete = False
+        code, lines, errors = self.verify(world, list(self.POOLED))
+        self.assertEqual(code, 0, errors)
+        self.assertIn(
+            "INFO: User grant 2 (M-tools): the server does not support session DELETE (405)", lines
+        )
+        self.assertIn(
+            "PASS: User grant 2 (M-tools)'s cost center's pool of 8 calls a month refused at its "
+            "limit with the gateway's quota 403, after 8 calls in this run. The session's DELETE "
+            "was call 8, within the pool, but the server doesn't support it, so the session is "
+            "left for the server to expire, and User grant 1 (M-tools), under another cost "
+            "center, still reached its tools",
+            lines,
+        )
+        self.assertFalse(any("so the session was closed" in line for line in lines))
+        # The DELETE reached the server, so the pool counted it.
+        self.assertEqual(world.cost_center_calls["pooled"][-2:], [("DELETE", None), ("ping", 403)])
+        self.assertIn("session-2", world.sessions)
 
     def test_a_spent_pool_fails_the_proof_before_a_session_opens(self) -> None:
         for sessions in (True, False):
