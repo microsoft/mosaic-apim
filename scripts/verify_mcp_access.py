@@ -82,6 +82,16 @@ CLEANUP_MAX_WAIT_SECONDS = 300
 CLEANUP_REQUEST_TIMEOUT_SECONDS = 30
 # A pooled-quota proof spends the whole pool, so the pool must be small.
 POOL_CALL_CEILING = 50
+# On a stateful server the session's DELETE must be the last call the pool allows, so the pool must
+# fit the shortest run that ends with it: a probe, initialize, the initialized notification, one
+# tool call and the DELETE.
+POOL_CALL_FLOOR = 5
+# What a pooled-quota proof probes the pool with: a request without a session, which can't create
+# server state. A stateful server refuses it with 400, and a stateless one answers it.
+POOL_PROBE = "ping"
+# API Management's counters are distributed, so a spent pool can let a call or two more through
+# before it refuses. A proof sends at most this many more probes for the refusal.
+POOL_OVERSHOOT_PROBES = 2
 # How API Management words the 403 a spent quota-by-key returns. A rate limit's 429 says
 # "Rate limit is exceeded" (verify_model_access.GATEWAY_LIMIT_MESSAGES).
 QUOTA_MESSAGE = "Out of call volume quota"
@@ -479,7 +489,8 @@ class Session:
         self.session_id: str | None = None
         self.protocol: str | None = None
         self.exchanges: list[Exchange] = []
-        self.closed_with: int | None = None
+        # The answer to the last DELETE, once one came back.
+        self.closed_by: Exchange | None = None
         self._next_id = 0
 
     def headers(self, *, initializing: bool = False) -> dict[str, str]:
@@ -604,7 +615,7 @@ class Session:
         if self.session_id is None:
             return
         for attempt in range(2):
-            self.closed_with = None
+            self.closed_by = None
             try:
                 with self.client.stream(
                     "DELETE",
@@ -612,8 +623,8 @@ class Session:
                     headers=self.headers(),
                     timeout=CLEANUP_REQUEST_TIMEOUT_SECONDS,
                 ) as response:
-                    self.closed_with = response.status_code
                     exchange = Exchange("DELETE", response.status_code, response.headers)
+                    self.closed_by = exchange
                     read_into(exchange, response)
             except httpx.HTTPError:
                 raise VerificationFailed(
@@ -1340,6 +1351,12 @@ def plan_pooled_quota(
             f"{grant.label}: proving the pooled quota spends it, so it needs a pool of at most "
             f"{POOL_CALL_CEILING} calls a month, not {calls}"
         )
+    if calls < POOL_CALL_FLOOR:
+        raise VerificationFailed(
+            f"{grant.label}: proving the pooled quota needs a pool of at least {POOL_CALL_FLOOR} "
+            "calls a month, for a probe, initialize, the initialized notification, a tool call "
+            f"and the session's DELETE, not {calls}"
+        )
     compiled = applied_grant(snapshot, grant)
     if compiled is None:
         raise VerificationFailed(
@@ -1369,56 +1386,197 @@ def plan_pooled_quota(
     return PoolPlan(calls=calls, other=other)
 
 
+def pool_probe(client: httpx.Client, grant: McpGrant, token: str, protocol: str | None) -> Exchange:
+    """A ping under the pooled grant and its cost center, naming no session.
+
+    The pool counts it like any call, but it can't create server state: a stateful server refuses
+    a request other than initialize that names no session, and a stateless one answers it. The MCP
+    Python SDK's refusal is a 400 naming a session it has already discarded, which isn't used.
+    ``protocol`` is the revision a session negotiated, once one has.
+    """
+
+    session = new_session(client, grant, token)
+    session.cost_center = grant.cost_center
+    session.protocol = protocol
+    return session.send(POOL_PROBE)
+
+
+def require_quota(grant: McpGrant, refusal: Exchange) -> None:
+    """Fail unless the gateway's quota made the refusal: anything else refused before the pool."""
+
+    refused_by = refusal.refused_by()
+    if refused_by == "rate":
+        raise VerificationFailed(
+            f"{grant.label}: a call limit refused a call before the pool did, so this run can't "
+            "prove the pooled quota"
+        )
+    if refused_by is None:
+        raise VerificationFailed(
+            f"{grant.label}: a call was refused with HTTP {refusal.status}, not the gateway's "
+            "quota 403, so this run can't prove the pooled quota"
+        )
+
+
+def probe_through(grant: McpGrant, exchange: Exchange) -> bool:
+    """Whether a probe got through to the server, or the pool refused it. Nothing else may.
+
+    MOSAIC's policy and the gateway's limits never answer 400, so a 400 is the server's.
+    """
+
+    if exchange.ok or exchange.status == 400:
+        return True
+    require_quota(grant, exchange)
+    return False
+
+
+def not_fresh(grant: McpGrant, plan: PoolPlan, call: int, what: str) -> VerificationFailed:
+    """The failure for a pool that refused a call this run planned within it."""
+
+    return VerificationFailed(
+        f"{grant.label}: its cost center's pool refused {what}, call {call} of the {plan.calls} "
+        "it allows a month, with the gateway's quota 403, so something had already spent part "
+        "of it this month. The cost center wasn't fresh: use one made for this proof, whose pool "
+        "nothing has called this month"
+    )
+
+
+def spend_pool(session: Session, cost_center: str | None, calls: int, *, before: int) -> Spent:
+    """Open the session and spend the pool on echo calls, until it refuses one or must stop.
+
+    ``before`` calls went through before the session, and the pool allows ``calls``. On a stateful
+    server, which names a session, the calls stop with one left for the session's DELETE. On a
+    stateless one, they stop once one more call than the pool allows has gone through. There's no
+    tools/list: the pool counts each page, and how many there are isn't known until they're read.
+    """
+
+    spent = Spent()
+    session.cost_center = cost_center
+    opened = session.initialize()
+    if not opened.ok:
+        spent.refusal = opened
+        return spent
+    if cost_center is not None:
+        session.cost_center = cost_center.swapcase()
+    last = calls - 1 if session.session_id is not None else calls + 1
+    while before + succeeded(session) < last:
+        text = echo_text()
+        echoed = session.send("tools/call", {"name": ECHO_TOOL, "arguments": {"text": text}})
+        if not echoed.ok:
+            spent.refusal = echoed
+            break
+        check_echo(session, echoed, text)
+    return spent
+
+
+def check_control(client: httpx.Client, other: McpGrant, token: str) -> None:
+    """The other grant, under another cost center, still opens a session and calls echo."""
+
+    control = new_session(client, other, token)
+    control.cost_center = other.cost_center
+    with closing_session(control):
+        exchange = control.initialize()
+        if not exchange.ok:
+            raise VerificationFailed(
+                f"{other.label}, under another cost center, after the pool was spent: "
+                f"{describe(exchange)}"
+            )
+        text = echo_text()
+        check_echo(
+            control,
+            control.send("tools/call", {"name": ECHO_TOOL, "arguments": {"text": text}}),
+            text,
+        )
+
+
 def prove_pooled_quota(
     client: httpx.Client, grant: McpGrant, token: str, plan: PoolPlan, other_token: str
 ) -> None:
-    """M6: a cost center's pool refuses once spent, and another cost center's grant still works."""
+    """M6: a cost center's pool refuses once spent, and another cost center's grant still works.
 
+    The pool counts every call that gets past the grant lookup, whatever the server answers: the
+    probes, the initialized notification and the session's DELETE among them. So the run counts
+    each call it makes under the grant. The first is a probe, which finds a spent pool before any
+    session opens. On a stateful server, the session then spends all but one of the pool's calls,
+    so that its DELETE is the last call the pool allows, and a probe after it must get the quota's
+    403. On a stateless server there's no session to close, so echo is called until the pool
+    refuses.
+    """
+
+    if not probe_through(grant, pool_probe(client, grant, token, None)):
+        raise VerificationFailed(
+            f"{grant.label}: its cost center's pool of {plan.calls} calls a month refused the "
+            "first probe with the gateway's quota 403, before any session opened, so something "
+            "had already spent it this month. Use a cost center made for this proof, whose pool "
+            "nothing has called this month"
+        )
+    through = 1
     session = new_session(client, grant, token)
-    with closing_session(session):
-        # Earlier calls this month count, so the pool can refuse before this run spends it all.
-        spent = use_tools(session, grant.cost_center, until_refused=True, max_calls=plan.calls + 1)
-        through = succeeded(session)
-        refusal = spent.refusal
-        if refusal is None:
-            raise VerificationFailed(
-                f"{grant.label}: {through} calls went through, more than its cost center's pool of "
-                f"{plan.calls} calls allows"
+    planned = False
+    try:
+        with closing_session(session):
+            spent = spend_pool(session, grant.cost_center, plan.calls, before=through)
+            through += succeeded(session)
+            stateful = session.session_id is not None
+            if spent.refusal is not None:
+                require_quota(grant, spent.refusal)
+                # A stateful server's pool must allow every call planned. Without the session, a
+                # refused initialize can't tell which kind of server this is.
+                if stateful or session.protocol is None:
+                    raise not_fresh(grant, plan, through + 1, spent.refusal.method)
+            planned = True
+    except VerificationFailed as error:
+        deleted = session.closed_by
+        if planned and deleted is not None and deleted.refused_by() == "quota":
+            problem = not_fresh(grant, plan, through + 1, "the session's DELETE")
+            raise VerificationFailed(f"{problem}; {error}") from None
+        raise
+    refusal = spent.refusal
+    if stateful:
+        # The session's DELETE went through as the pool's last call, so the pool must refuse now.
+        through += 1
+        for _ in range(1 + POOL_OVERSHOOT_PROBES):
+            probed = pool_probe(client, grant, token, session.protocol)
+            if not probe_through(grant, probed):
+                refusal = probed
+                break
+            through += 1
+    if refusal is None:
+        allowance = (
+            f", even with {POOL_OVERSHOOT_PROBES} more for API Management's distributed counters"
+            if stateful
+            else ""
+        )
+        raise VerificationFailed(
+            f"{grant.label}: {through} calls went through, more than its cost center's pool of "
+            f"{plan.calls} calls allows{allowance}"
+        )
+    other = plan.other
+    check_control(client, other, other_token)
+    if stateful:
+        where = "at its limit" if through == plan.calls else "once spent"
+        say(
+            f"PASS: {grant.label}'s cost center's pool of {plan.calls} calls a month refused "
+            f"{where} with the gateway's quota 403, after {through} calls in this run. The "
+            f"session's DELETE was call {plan.calls}, so the session was closed within the pool, "
+            f"and {other.label}, under another cost center, still reached its tools"
+        )
+        if through > plan.calls:
+            say(
+                f"INFO: {grant.label}'s pool allowed {through - plan.calls} call(s) more than its "
+                f"{plan.calls} before it refused: API Management's counters are distributed, so "
+                "a spent quota can let a call or two through"
             )
-        refused_by = refusal.refused_by()
-        if refused_by == "rate":
-            raise VerificationFailed(
-                f"{grant.label}: a call limit refused a call before the pool did, so this run "
-                "can't prove the pooled quota"
+    else:
+        say(
+            f"PASS: {grant.label}'s cost center's pool of {plan.calls} calls a month refused a "
+            f"call with the gateway's quota 403 after {through} more call(s), while "
+            f"{other.label}, under another cost center, still reached its tools"
+        )
+        if through < plan.calls:
+            say(
+                f"INFO: {grant.label}'s pool allowed {through} of its {plan.calls} calls in this "
+                "run: something had spent the rest this month"
             )
-        if refused_by is None:
-            raise VerificationFailed(
-                f"{grant.label}: a call was refused with HTTP {refusal.status}, not the gateway's "
-                "quota 403, so this run can't prove the pooled quota"
-            )
-        other = plan.other
-        control = new_session(client, other, other_token)
-        control.cost_center = other.cost_center
-        with closing_session(control):
-            exchange = control.initialize()
-            if not exchange.ok:
-                raise VerificationFailed(
-                    f"{other.label}, under another cost center, after the pool was spent: "
-                    f"{describe(exchange)}"
-                )
-            text = echo_text()
-            check_echo(
-                control,
-                control.send("tools/call", {"name": ECHO_TOOL, "arguments": {"text": text}}),
-                text,
-            )
-    say(
-        f"PASS: {grant.label}'s cost center's pool of {plan.calls} calls a month refused a call "
-        f"with the gateway's quota 403 after {through} more call(s), while {other.label}, under "
-        "another cost center, still reached its tools"
-    )
-    if through == 0:
-        say(f"INFO: {grant.label}'s pool was already spent before this run")
     retry = refusal.header_int("Retry-After")
     say(
         f"INFO: {grant.label}'s quota 403 "

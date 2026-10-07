@@ -2114,8 +2114,10 @@ its prerequisites. Session cleanup is required before a tool or limit proof pass
 the same credentials and cost center, with at most one gateway rate-limit retry after a
 `Retry-After` of 1–300 seconds. A denied or failed cleanup makes the run incomplete, not passed;
 only successful DELETE or explicit unsupported deletion (405) releases the session identity.
-A stateful server behind a spent monthly pool normally cannot clean up, so use a stateless server
-for a pooled-quota proof that can finish without leaving a session unresolved.
+On a stateful server, a pooled-quota proof spends the pool so that the session's DELETE is the last
+call it allows, then checks the refusal with requests that open no session. So it needs a cost
+center made for it, with a fresh pool: one that something else had spent part of refuses the
+DELETE too, and the run is incomplete.
 The script prints neither tokens nor any tool's output. Do not report live MCP
 interoperability as passed when the APIM preview contract, consent, credentials or a test server
 are unavailable.
