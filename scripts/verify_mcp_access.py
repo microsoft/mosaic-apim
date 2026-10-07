@@ -87,13 +87,15 @@ CLEANUP_REQUEST_TIMEOUT_SECONDS = 30
 # own timeout, at most the call's. It's as long as the requests before the call could take, at the
 # client's timeout each: initialize, the initialized notification and every tools/list page.
 ASK_MODEL_DEADLINE_SECONDS = (2 + MAX_TOOL_PAGES) * CLIENT_TIMEOUT_SECONDS
-# The longest ask_model can then use the person's token: its deadline and one last read, then
-# cleanup, which may wait once for a rate limit.
+# Its cleanup then gets a deadline of its own, as long as one DELETE and the rate-limit wait: the
+# retry starts before it, and a read already waiting ends within the DELETE's timeout.
+CLEANUP_DEADLINE_SECONDS = CLEANUP_REQUEST_TIMEOUT_SECONDS + CLEANUP_MAX_WAIT_SECONDS
+# The longest ask_model can then use the person's token: each deadline and the read after it.
 ASK_MODEL_LONGEST_SECONDS = (
     ASK_MODEL_DEADLINE_SECONDS
     + ASK_MODEL_TIMEOUT_SECONDS
-    + 2 * CLEANUP_REQUEST_TIMEOUT_SECONDS
-    + CLEANUP_MAX_WAIT_SECONDS
+    + CLEANUP_DEADLINE_SECONDS
+    + CLEANUP_REQUEST_TIMEOUT_SECONDS
 )
 LATE = "the server took longer than the verifier waits"
 # A pooled-quota proof spends the whole pool, so the pool must be small.
@@ -398,14 +400,36 @@ def late(deadline: float | None) -> bool:
     return deadline is not None and time.monotonic() >= deadline
 
 
-def read_bounded(
-    response: httpx.Response, limit: int, *, strict: bool, deadline: float | None = None
-) -> bytes:
+class DeadlineStream(httpx.SyncByteStream):
+    """A response's body, abandoned at the first chunk that arrives after a deadline.
+
+    It's checked for each chunk from the network, so a server trickling bytes, with or without
+    line breaks, is cut off within one read of the deadline.
+    """
+
+    def __init__(self, stream: httpx.SyncByteStream, deadline: float) -> None:
+        self._stream = stream
+        self._deadline = deadline
+
+    def __iter__(self) -> Iterator[bytes]:
+        for chunk in self._stream:
+            if late(self._deadline):
+                raise VerificationFailed(LATE)
+            yield chunk
+
+    def close(self) -> None:
+        self._stream.close()
+
+
+def bound(response: httpx.Response, deadline: float | None) -> None:
+    if deadline is not None and isinstance(response.stream, httpx.SyncByteStream):
+        response.stream = DeadlineStream(response.stream, deadline)
+
+
+def read_bounded(response: httpx.Response, limit: int, *, strict: bool) -> bytes:
     chunks: list[bytes] = []
     size = 0
     for chunk in response.iter_bytes():
-        if late(deadline):
-            raise VerificationFailed(LATE)
         size += len(chunk)
         if size > limit:
             if strict:
@@ -415,20 +439,20 @@ def read_bounded(
     return b"".join(chunks)
 
 
-def read_into(exchange: Exchange, response: httpx.Response, deadline: float | None = None) -> None:
+def read_into(exchange: Exchange, response: httpx.Response) -> None:
     """Read what the verifier needs of a response: a refusal's body, or a request's answer."""
 
     if not exchange.ok:
-        exchange.body = read_bounded(response, MAX_ERROR_BYTES, strict=False, deadline=deadline)
+        exchange.body = read_bounded(response, MAX_ERROR_BYTES, strict=False)
         return
     if exchange.request_id is None:
         return
     content_type = response.headers.get("content-type", "")
     if content_type.split(";")[0].strip().casefold() == "text/event-stream":
         exchange.event_stream = True
-        exchange.message = read_event_stream(response, exchange.request_id, deadline)
+        exchange.message = read_event_stream(response, exchange.request_id)
         return
-    body = read_bounded(response, MAX_RESPONSE_BYTES, strict=True, deadline=deadline)
+    body = read_bounded(response, MAX_RESPONSE_BYTES, strict=True)
     try:
         value = json.loads(body)
     except ValueError:
@@ -436,9 +460,7 @@ def read_into(exchange: Exchange, response: httpx.Response, deadline: float | No
     exchange.message = value if isinstance(value, dict) else None
 
 
-def read_event_stream(
-    response: httpx.Response, request_id: int, deadline: float | None = None
-) -> dict[str, Any]:
+def read_event_stream(response: httpx.Response, request_id: int) -> dict[str, Any]:
     """The first event carrying the response to ``request_id``.
 
     The server may send notifications or requests of its own first, so other events are skipped.
@@ -465,8 +487,6 @@ def read_event_stream(
         return None
 
     for line in response.iter_lines():
-        if late(deadline):
-            raise VerificationFailed(LATE)
         budget -= len(line) + 1
         if budget < 0:
             raise VerificationFailed("the event stream was longer than the verifier reads")
@@ -492,7 +512,7 @@ class Session:
     ``auth`` is sent on every request. ``cost_center``, when set, is sent as the cost-center header,
     and may change between requests: the gateway authorizes each request on its own. ``deadline``,
     when set, is the ``time.monotonic()`` time after which no request starts and no response is
-    read. Cleanup isn't bound by it.
+    read. Cleanup then gets a deadline of its own.
     """
 
     def __init__(
@@ -559,8 +579,9 @@ class Session:
             timeout=httpx.USE_CLIENT_DEFAULT if timeout is None else timeout,
         ) as response:
             exchange = Exchange(method, response.status_code, response.headers, request_id)
+            bound(response, self.deadline)
             try:
-                read_into(exchange, response, self.deadline)
+                read_into(exchange, response)
             except VerificationFailed as error:
                 raise VerificationFailed(f"{self.label} {method}: {error}") from None
         if initializing and exchange.ok:
@@ -634,11 +655,16 @@ class Session:
         """End a session, retaining its identity unless DELETE succeeds or is unsupported.
 
         Gateway limits also govern DELETE. Only a recognizable rate-limit refusal with a
-        bounded Retry-After permits one retry, using the same credentials and cost center.
+        bounded Retry-After permits one retry, using the same credentials and cost center. A
+        session with a deadline gives its cleanup one of its own, CLEANUP_DEADLINE_SECONDS away:
+        no response is read after it, and the retry waits only if it can start before it.
         """
 
         if self.session_id is None:
             return
+        deadline = (
+            time.monotonic() + CLEANUP_DEADLINE_SECONDS if self.deadline is not None else None
+        )
         for attempt in range(2):
             self.closed_with = None
             try:
@@ -650,10 +676,16 @@ class Session:
                 ) as response:
                     self.closed_with = response.status_code
                     exchange = Exchange("DELETE", response.status_code, response.headers)
+                    bound(response, deadline)
                     read_into(exchange, response)
             except httpx.HTTPError:
                 raise VerificationFailed(
                     f"{self.label}: unresolved session cleanup (HTTP transport failure). "
+                    "DELETE was not confirmed; verification is incomplete"
+                ) from None
+            except VerificationFailed as error:
+                raise VerificationFailed(
+                    f"{self.label}: unresolved session cleanup ({error}). "
                     "DELETE was not confirmed; verification is incomplete"
                 ) from None
             if exchange.ok or exchange.status == 405:
@@ -667,6 +699,7 @@ class Session:
                 and exchange.refused_by() == "rate"
                 and retry is not None
                 and 0 < retry <= CLEANUP_MAX_WAIT_SECONDS
+                and (deadline is None or time.monotonic() + retry < deadline)
             ):
                 say(
                     f"INFO: {self.label}: session DELETE reached the call limit; waiting "

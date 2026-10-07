@@ -296,6 +296,10 @@ class FakeWorld:
         # Pauses, in seconds of the fake clock, each followed by a keep-alive, before an event
         # stream's answer to tools/call: a server keeping a slow call's stream open.
         self.call_keepalives: list[float] = []
+        # What each keep-alive sends. Without a line break, it holds back the line it's part of.
+        self.keepalive = b": keep-alive\n\n"
+        # Pauses, each followed by a keep-alive, in a 503 that every DELETE trickles back.
+        self.delete_keepalives: list[float] = []
         # The agent server's model calls, and what the person's usage report makes of them.
         self.model_caller_applied = True
         self.model_calls: list[dict[str, Any]] = []
@@ -760,6 +764,8 @@ class FakeWorld:
         session_id = headers.get("mcp-session-id")
         if method == "DELETE":
             self.deletes.append(session_id or "")
+            if self.delete_keepalives:
+                return httpx.Response(503, content=self.kept_alive(self.delete_keepalives, b"{}"))
             if not server.sessions:
                 return httpx.Response(405)
             return httpx.Response(200 if self.sessions.pop(session_id or "", None) else 404)
@@ -912,10 +918,10 @@ class FakeWorld:
         )
 
     def kept_alive(self, pauses: list[float], body: bytes) -> Iterator[bytes]:
-        """An event stream sending a keep-alive after each pause, and then its events."""
+        """A body sending a keep-alive after each pause, and then the rest."""
         for seconds in pauses:
             self.clock.now += seconds
-            yield b": keep-alive\n\n"
+            yield self.keepalive
         yield body
 
     def login(self, request: httpx.Request) -> httpx.Response:
@@ -2835,23 +2841,27 @@ class McpAccessVerifierTests(unittest.TestCase):
 
     def test_with_the_grant_open_the_call_ends_by_its_deadline(self) -> None:
         # A server that keeps a slow call's stream alive can't keep the grant open past the time
-        # the person's token was checked for.
-        world = standard_world()
-        world.servers["agent"].event_stream = True
-        world.call_keepalives = [20.0] * 60
-        lines = self.fails(
-            world,
-            list(self.GRANT_WAIT),
-            "On-behalf grant (M-agent) tools/call: the server took longer than the verifier waits",
-        )
-        self.assertIn(
-            "INFO: On-behalf grant (M-agent) stopped after the model caller's grant was applied. "
-            f"{self.REVOKE_NOW}",
-            lines,
-        )
-        # It gave up at the first keep-alive past its deadline, and still ended the session.
-        self.assertEqual(world.clock.now, START + verifier.ASK_MODEL_DEADLINE_SECONDS)
-        self.assertEqual(world.deletes, ["session-1"])
+        # the person's token was checked for, whether or not what it trickles ends lines.
+        for keepalive in (b": keep-alive\n\n", b":"):
+            with self.subTest(keepalive=keepalive):
+                world = standard_world()
+                world.servers["agent"].event_stream = True
+                world.call_keepalives = [20.0] * 60
+                world.keepalive = keepalive
+                lines = self.fails(
+                    world,
+                    list(self.GRANT_WAIT),
+                    "On-behalf grant (M-agent) tools/call: the server took longer than the "
+                    "verifier waits",
+                )
+                self.assertIn(
+                    "INFO: On-behalf grant (M-agent) stopped after the model caller's grant was "
+                    f"applied. {self.REVOKE_NOW}",
+                    lines,
+                )
+                # It gave up at the first chunk past its deadline, and still ended the session.
+                self.assertEqual(world.clock.now, START + verifier.ASK_MODEL_DEADLINE_SECONDS)
+                self.assertEqual(world.deletes, ["session-1"])
         # Without the switch, the call runs as long as the server keeps it going, as before.
         world = standard_world()
         world.servers["agent"].event_stream = True
@@ -2865,6 +2875,34 @@ class McpAccessVerifierTests(unittest.TestCase):
             "model",
             lines,
         )
+
+    def test_with_the_grant_open_cleanup_ends_by_its_own_deadline(self) -> None:
+        # Cleanup reads a refusal's body to recognize a rate limit, so a server trickling one back
+        # meets cleanup's own deadline.
+        world = standard_world()
+        world.delete_keepalives = [30.0] * 20
+        lines = self.fails(
+            world,
+            list(self.GRANT_WAIT),
+            "On-behalf grant (M-agent): unresolved session cleanup (the server took longer than "
+            "the verifier waits). DELETE was not confirmed; verification is incomplete",
+        )
+        self.assertIn(
+            "INFO: On-behalf grant (M-agent) stopped after the model caller's grant was applied. "
+            f"{self.REVOKE_NOW}",
+            lines,
+        )
+        self.assertEqual(world.clock.now, START + verifier.CLEANUP_DEADLINE_SECONDS)
+        # Without the switch, cleanup reads the whole refusal, as before.
+        world = standard_world()
+        world.delete_keepalives = [30.0] * 20
+        self.fails(
+            world,
+            [*self.AWAIT, "--model-caller-entitlement", MODEL_GRANT],
+            "On-behalf grant (M-agent): unresolved session cleanup (HTTP 503). DELETE was not "
+            "confirmed; verification is incomplete",
+        )
+        self.assertEqual(world.clock.now, START + 600)
 
     def test_the_wait_for_the_model_caller_s_grant_needs_tokens_that_outlast_it(self) -> None:
         # The administrator's token reads the grant until it's applied.
@@ -2923,9 +2961,11 @@ class McpAccessVerifierTests(unittest.TestCase):
         self.assertFalse(any("re-enable" in line for line in lines))
         self.assertEqual(world.journal, ["model grant disabled, revoked"])
         # The call's part is its deadline (time for initialize, initialized and 20 tools/list
-        # pages), one last read at the call's timeout, and cleanup.
+        # pages) and one read at the call's timeout, then cleanup's deadline (one DELETE and the
+        # rate-limit wait) and one read at the DELETE's timeout.
         self.assertEqual(verifier.ASK_MODEL_DEADLINE_SECONDS, 22 * 30)
-        self.assertEqual(verifier.ASK_MODEL_LONGEST_SECONDS, 22 * 30 + 120 + 2 * 30 + 300)
+        self.assertEqual(verifier.CLEANUP_DEADLINE_SECONDS, 30 + 300)
+        self.assertEqual(verifier.ASK_MODEL_LONGEST_SECONDS, 22 * 30 + 120 + (30 + 300) + 30)
         for lifetime, code_expected in ((1814, 1), (1815, 0)):
             with self.subTest(lifetime=lifetime):
                 world = standard_world()
