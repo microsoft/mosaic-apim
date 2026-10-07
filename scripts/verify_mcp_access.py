@@ -422,6 +422,13 @@ class DeadlineStream(httpx.SyncByteStream):
 
 
 def bound(response: httpx.Response, deadline: float | None) -> None:
+    """Abandon the response's body at the first chunk that arrives after ``deadline``.
+
+    Its headers have arrived by now. They come from the gateway, which passes a response on only
+    once it has the server's headers, so they took one read within the request's timeout. Only a
+    gateway trickling headers of its own could take longer.
+    """
+
     if deadline is not None and isinstance(response.stream, httpx.SyncByteStream):
         response.stream = DeadlineStream(response.stream, deadline)
 
