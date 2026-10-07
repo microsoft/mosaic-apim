@@ -46,6 +46,12 @@ BUDGET_PERIOD_SECONDS = 300
 TOKEN_MARGIN_SECONDS = 60
 # Rejections in a row, after MOSAIC reports a grant revoked, that show the revocation took effect.
 REVOCATION_CONFIRMATIONS = 2
+# How the sign-in service fails a poll for a moment: one of these statuses, with no OAuth error or
+# one of these. A device-code sign-in keeps polling through them, since the person can still finish
+# signing in, but fails at TRANSIENT_SIGN_IN_ERRORS in a row.
+TRANSIENT_STATUSES = frozenset({500, 502, 503, 504})
+TRANSIENT_OAUTH_ERRORS = frozenset({None, "server_error", "temporarily_unavailable"})
+TRANSIENT_SIGN_IN_ERRORS = 3
 # How API Management's own limit policies word their 429s. A model deployment's 429 passes through
 # the gateway unchanged, with an {"error": ...} body instead. A token limit says "is exceeded" once
 # its window is spent, and "will exceed" when it refuses a prompt that would spend more than is left
@@ -547,6 +553,8 @@ def device_code_token(
         file=sys.stderr,
         flush=True,
     )
+    # Polls in a row that the sign-in service failed for a moment.
+    transient = 0
     while time.monotonic() < deadline:
         time.sleep(interval)
         polled = client.post(
@@ -560,10 +568,22 @@ def device_code_token(
         if polled.status_code == 200:
             return access_token(polled, "The sign-in")
         error = oauth_error(polled)
+        if polled.status_code in TRANSIENT_STATUSES and error in TRANSIENT_OAUTH_ERRORS:
+            transient += 1
+        else:
+            transient = 0
         if error == "authorization_pending":
             continue
         if error == "slow_down":
             interval = min(interval + 5, 60)
+            continue
+        if 0 < transient < TRANSIENT_SIGN_IN_ERRORS:
+            print(
+                f"INFO: The sign-in service answered HTTP {polled.status_code}; still waiting for "
+                f"{who} to sign in",
+                file=sys.stderr,
+                flush=True,
+            )
             continue
         raise VerificationFailed(
             sign_in_failure(polled, f"Signing in {who}", troubleshooting=troubleshooting)
