@@ -72,6 +72,7 @@ PROMPT = model.PROMPT
 MAX_RESPONSE_BYTES = 1024 * 1024
 MAX_ERROR_BYTES = 16 * 1024
 MAX_TOOL_PAGES = 20
+CLIENT_TIMEOUT_SECONDS = 30
 ASK_MODEL_TIMEOUT_SECONDS = 120
 # The calls a grant's tool checks make: initialize, the initialized notification, tools/list, echo
 # and add. A call-limit proof needs a limit above them, and few enough calls to spend quickly.
@@ -81,6 +82,15 @@ CALL_LIMIT_PERIODS = (60, 300)
 # DELETE is governed too: retry one rate refusal, never wait out a monthly pool.
 CLEANUP_MAX_WAIT_SECONDS = 300
 CLEANUP_REQUEST_TIMEOUT_SECONDS = 30
+# The longest ask_model can use the person's token, each request within its timeout: initialize,
+# the initialized notification and every tools/list page, then the call, then cleanup, which may
+# wait once for a rate limit.
+ASK_MODEL_LONGEST_SECONDS = (
+    (2 + MAX_TOOL_PAGES) * CLIENT_TIMEOUT_SECONDS
+    + ASK_MODEL_TIMEOUT_SECONDS
+    + 2 * CLEANUP_REQUEST_TIMEOUT_SECONDS
+    + CLEANUP_MAX_WAIT_SECONDS
+)
 # A pooled-quota proof spends the whole pool, so the pool must be small.
 POOL_CALL_CEILING = 50
 # How API Management words the 403 a spent quota-by-key returns. A rate limit's 429 says
@@ -1445,13 +1455,15 @@ def runtime_status(client: httpx.Client, base: str, grant: McpGrant) -> str:
     return status if status in model.RUNTIME_STATUSES else "not set up"
 
 
-def require_lifetime(label: str, held: list[tuple[str, str]], needed: int, flag: str) -> None:
+def require_lifetime(
+    label: str, held: list[tuple[str, str]], needed: int, flag: str, what: str = "the wait"
+) -> None:
     for name, token in held:
         left = model.seconds_left(token)
         if left is not None and left < needed:
             when = "has expired" if left <= 0 else f"expires in {left} seconds"
             raise VerificationFailed(
-                f"{label}: the {name} {when}, and the wait can take {needed} seconds. Get a new "
+                f"{label}: the {name} {when}, and {what} can take {needed} seconds. Get a new "
                 f"one, or lower {flag}"
             )
 
@@ -1656,15 +1668,23 @@ def await_model_grant(client: httpx.Client, base: str, wait: ModelGrantWait) -> 
         f"access plan. Checking every {wait.interval} seconds for up to {wait.timeout} seconds"
     )
     deadline = time.monotonic() + wait.timeout
-    while time.monotonic() < deadline:
-        time.sleep(wait.interval)
-        current = read()
-        if current == "applied":
-            say(applied)
-            return
-        if current != status:
-            status = current
-            say(f"WAIT: MOSAIC reports the model caller's grant as {status}")
+    try:
+        while time.monotonic() < deadline:
+            time.sleep(wait.interval)
+            current = read()
+            if current == "applied":
+                say(applied)
+                return
+            if current != status:
+                status = current
+                say(f"WAIT: MOSAIC reports the model caller's grant as {status}")
+    except BaseException:
+        # Whoever was asked to open the grant may have done so: tell them to close it again.
+        say(
+            "INFO: The run stopped while waiting for the model caller's grant. If you re-enabled "
+            "it, revoke it again and apply its model's access plan"
+        )
+        raise
     raise VerificationFailed(
         f"The model caller's grant: after {wait.timeout} seconds, MOSAIC reports it as {status}, "
         f"not applied, so {ASK_MODEL_TOOL} wasn't called. If you re-enabled it, revoke it again "
@@ -1852,9 +1872,10 @@ def call_on_behalf(
             [("user's MCP token", token)],
             grant_wait.timeout
             + grant_wait.interval
-            + ASK_MODEL_TIMEOUT_SECONDS
+            + ASK_MODEL_LONGEST_SECONDS
             + model.TOKEN_MARGIN_SECONDS,
             "--model-grant-timeout",
+            "the wait and the call",
         )
         await_model_grant(client, base, grant_wait)
     baseline: OnBehalfUse | None = None
@@ -2223,7 +2244,9 @@ def main(argv: list[str] | None = None, *, transport: httpx.BaseTransport | None
     args = parse_arguments(argv)
     try:
         setup = validate(args)
-        with httpx.Client(timeout=30, follow_redirects=False, transport=transport) as client:
+        with httpx.Client(
+            timeout=CLIENT_TIMEOUT_SECONDS, follow_redirects=False, transport=transport
+        ) as client:
             count = run(client, args, setup)
     except KeyboardInterrupt:
         print("STOPPED: interrupted before the checks finished", file=sys.stderr)

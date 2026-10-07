@@ -518,14 +518,16 @@ from another terminal:
    ```
 
    A run that stops after the grant was applied asks the same, in a line that starts
-   `INFO: On-behalf grant (M-agent) stopped after the model caller's grant was applied`.
+   `INFO: On-behalf grant (M-agent) stopped after the model caller's grant was applied`. One that
+   stops while waiting for the grant says to revoke it if you re-enabled it.
 
 If the grant isn't enabled and applied in time, the run fails before any model call. If it's
 already enabled and applied when the checks finish, the run says so and calls `ask_model` straight
 away. The admin's MOSAIC API token reads the grant, so it must last the wait, and the user's must
-last both waits. The person's MCP token makes the call, so it must last the wait and the call. Each
-is checked before the verifier asks for the grant. Whenever a run ends with the grant re-enabled,
-however it ends, revoke the grant and apply its model's access plan.
+last both waits. The person's MCP token makes the call, so it must last the wait and the longest the
+call can take with every request at its timeout: about 30 minutes with the defaults. Each is checked
+before the verifier asks for the grant. Whenever a run ends with the grant re-enabled, however it
+ends, revoke the grant and apply its model's access plan.
 
 ### What each check proves
 

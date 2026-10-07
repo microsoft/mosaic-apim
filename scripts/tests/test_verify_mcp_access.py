@@ -2655,6 +2655,7 @@ class McpAccessVerifierTests(unittest.TestCase):
     GRANT_WAIT = (*AWAIT, "--model-caller-entitlement", MODEL_GRANT, "--await-model-grant")
     GRANT_LINE = "the model caller's grant as"
     REVOKE_NOW = "Revoke the model caller's grant now and apply its model's access plan"
+    STOPPED_WAITING = "The run stopped while waiting for the model caller's grant"
 
     def test_the_call_waits_for_the_model_caller_s_grant_after_the_sign_in(self) -> None:
         # O51: M-agent's upstream is public, so its model grant opens only for the call. The person
@@ -2773,6 +2774,51 @@ class McpAccessVerifierTests(unittest.TestCase):
                 self.assertEqual(world.model_calls, [])
                 self.assertEqual(world.clock.sleeps, [10] * 6)
                 self.assertFalse(any(self.REVOKE_NOW in line for line in lines))
+                # The timeout's own message says to revoke the grant, so no reminder repeats it.
+                self.assertFalse(any(self.STOPPED_WAITING in line for line in lines))
+
+    def test_a_run_that_stops_while_waiting_for_the_grant_says_to_close_it(self) -> None:
+        reminder = (
+            f"INFO: {self.STOPPED_WAITING}. If you re-enabled it, revoke it again and apply its "
+            "model's access plan"
+        )
+        # The model grant's first read checks it before sign-in, the second before the wait.
+        cases = ((4, False, True), (4, True, True), (2, False, False))
+        for failing_read, interrupt, asked in cases:
+            with self.subTest(failing_read=failing_read, interrupt=interrupt):
+                world = standard_world()
+                world.model_grant_timeline = [(0.0, False, "revoked")]
+                reads = [0]
+
+                def failing(
+                    request: httpx.Request,
+                    control: Any = world.control,
+                    reads: list[int] = reads,
+                    failing_read: int = failing_read,
+                    interrupt: bool = interrupt,
+                ) -> httpx.Response:
+                    if request.url.path.endswith(f"/entitlements/{MODEL_GRANT}"):
+                        reads[0] += 1
+                        if reads[0] == failing_read:
+                            if interrupt:
+                                raise KeyboardInterrupt
+                            return httpx.Response(503)
+                    response: httpx.Response = control(request)
+                    return response
+
+                world.control = failing  # type: ignore[method-assign]
+                code, lines, errors = self.verify(world, list(self.GRANT_WAIT))
+                if interrupt:
+                    self.assertEqual(code, 130, errors)
+                    self.assertIn("STOPPED: interrupted before the checks finished", errors)
+                else:
+                    self.assertEqual(code, 1, errors)
+                    self.assertIn(
+                        "FAIL: The model caller's model grant: unexpected HTTP 503", errors
+                    )
+                self.assertEqual(any(line.startswith("WAIT: re-enable") for line in lines), asked)
+                self.assertEqual(reminder in lines, asked)
+                self.assertEqual(self.tool_calls(world), [])
 
     def test_the_wait_for_the_model_caller_s_grant_needs_tokens_that_outlast_it(self) -> None:
         # The administrator's token reads the grant until it's applied.
@@ -2825,11 +2871,22 @@ class McpAccessVerifierTests(unittest.TestCase):
             world,
             list(self.GRANT_WAIT),
             "On-behalf grant (M-agent): the user's MCP token expires in 600 seconds, and the wait "
-            "can take 795 seconds. Get a new one, or lower --model-grant-timeout",
+            "and the call can take 1815 seconds. Get a new one, or lower --model-grant-timeout",
             short,
         )
         self.assertFalse(any("re-enable" in line for line in lines))
         self.assertEqual(world.journal, ["model grant disabled, revoked"])
+        # The call's part is every request ask_model can make, each within its timeout: 22 before
+        # the call (initialize, initialized and 20 tools/list pages), the call, and cleanup.
+        self.assertEqual(verifier.ASK_MODEL_LONGEST_SECONDS, 22 * 30 + 120 + 2 * 30 + 300)
+        for lifetime, code_expected in ((1814, 1), (1815, 0)):
+            with self.subTest(lifetime=lifetime):
+                world = standard_world()
+                token = person_token(exp=WALL_CLOCK + lifetime)
+                code, _, errors = self.verify(
+                    world, list(self.GRANT_WAIT), {**ENV, verifier.USER_RUNTIME_TOKEN: token}
+                )
+                self.assertEqual(code, code_expected, errors)
         # Without the wait for the grant, the same MCP token makes the call straight away.
         world = standard_world()
         code, _, errors = self.verify(
