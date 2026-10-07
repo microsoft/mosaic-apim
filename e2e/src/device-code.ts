@@ -13,6 +13,17 @@ import { type SignInPrompt, type VerifyPersonas, bearerToken, isDeviceLoginUrl }
 // written before it, on the other stream, and doesn't mean the sign-in is over.
 export const deviceSignInGraceMs = 750
 
+// What the verifier prints when the sign-in service fails a poll for a moment, and it keeps waiting.
+const stillWaiting = /^INFO: The sign-in service answered HTTP \d{3}; still waiting for .{1,200} to sign in$/
+
+/**
+ * Whether a line of verifier output, this long after a device-code prompt, means that sign-in is over. Any line
+ * after the grace window does, except the verifier's note that it's still waiting.
+ */
+export function endsDeviceSignIn(line: string, sincePromptMs: number): boolean {
+  return sincePromptMs >= deviceSignInGraceMs && !stillWaiting.test(line.trim())
+}
+
 /** True for a MOSAIC API call that carries a bearer token: where a persona's MOSAIC API token is taken from. */
 export async function carriesApiToken(request: Request, apiOrigin: string): Promise<boolean> {
   return (

@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process'
 import { createInterface } from 'node:readline'
 import type { Page, TestInfo } from '@playwright/test'
 import { type SuiteRuntime, type Targets, persona } from './config.ts'
-import { deviceCodePersona, deviceSignInGraceMs, typeDeviceCode } from './device-code.ts'
+import { deviceCodePersona, endsDeviceSignIn, typeDeviceCode } from './device-code.ts'
 import type { PersonaPool } from './fixtures.ts'
 import { personaApiToken } from './mosaic-api.ts'
 import { redact } from './redact.ts'
@@ -466,7 +466,7 @@ export async function startVerifier(options: StartVerifierOptions): Promise<Runn
       resolve({ exitCode, timedOut, lines: [...lines] })
     }
     const onLine = (raw: string) => {
-      if (signIn && Date.now() - signIn.startedAt >= deviceSignInGraceMs) endSignIn()
+      if (signIn && endsDeviceSignIn(raw, Date.now() - signIn.startedAt)) endSignIn()
       record(maskDeviceCode(publicLine(raw, secrets)))
       const prompt = parseSignInPrompt(raw)
       if (prompt) {

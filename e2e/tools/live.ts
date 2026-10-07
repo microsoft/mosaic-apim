@@ -6,7 +6,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { join } from 'node:path'
 import { createInterface } from 'node:readline'
 import { type AppName, type Targets, flags, loadTargets, persona, resolveTargetRef } from '../src/config.ts'
-import { carriesApiToken, deviceCodePersona, deviceSignInGraceMs, typeDeviceCode } from '../src/device-code.ts'
+import { carriesApiToken, deviceCodePersona, endsDeviceSignIn, typeDeviceCode } from '../src/device-code.ts'
 import { type LocatorOptions, describeLocator, locate } from '../src/locators.ts'
 import { ensureDir, artifactsDir, liveSessionFile, stateDir } from '../src/paths.ts'
 import {
@@ -376,7 +376,8 @@ interface VerifierRun {
 
 /**
  * Runs a verifier and collects its redacted output. Device-code prompts are entered in the persona's
- * browser; the next line of output means that sign-in ended, so its tab closes.
+ * browser; the next line of output means that sign-in ended, so its tab closes. The verifier's note that
+ * it's still waiting through a transient sign-in error is the exception.
  */
 function runVerifier(
   run: VerifierRun,
@@ -427,7 +428,7 @@ function runVerifier(
       resolve({ exitCode, timedOut, lines })
     }
     const onLine = (raw: string) => {
-      if (signIn && Date.now() - signIn.startedAt >= deviceSignInGraceMs) endSignIn()
+      if (signIn && endsDeviceSignIn(raw, Date.now() - signIn.startedAt)) endSignIn()
       emit(publicLine(raw, secrets))
       const prompt = parseSignInPrompt(raw, run.subjects)
       if (prompt) {

@@ -231,8 +231,10 @@ class FakeWorld:
         self.revoked_token_status = 403
         self.drop_entra_on_revoke = False
         self.call_times: list[float] = []
-        # For each device sign-in in turn: who signs in, and the poll errors before they finish.
-        self.device_logins: list[tuple[str, list[str]]] = []
+        # For each device sign-in in turn: who signs in, and how each poll before they finish is
+        # answered: an OAuth error with HTTP 400, a status with an HTML page and no OAuth error, or
+        # a status with an OAuth error.
+        self.device_logins: list[tuple[str, list[str | int | tuple[int, str]]]] = []
         self.device_error: dict[str, Any] | None = None
         self.requests: list[httpx.Request] = []
         self.model_calls: list[httpx.Request] = []
@@ -600,9 +602,11 @@ class FakeWorld:
                 return httpx.Response(400, json=self.device_error)
             oid, outcomes = self.device_logins[int(form["device_code"].rsplit("-", 1)[1]) - 1]
             if outcomes:
-                return httpx.Response(
-                    400, json={"error": outcomes.pop(0), "error_description": ECHO}
-                )
+                outcome = outcomes.pop(0)
+                if isinstance(outcome, int):
+                    return httpx.Response(outcome, text=f"<html><body>{ECHO}</body></html>")
+                status, error = (400, outcome) if isinstance(outcome, str) else outcome
+                return httpx.Response(status, json={"error": error, "error_description": ECHO})
             return httpx.Response(
                 200, json={"access_token": user_token(oid), "token_type": "Bearer"}
             )
@@ -1190,6 +1194,109 @@ class ModelAccessVerifierTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("failed: invalid_grant, AADSTS50105. See docs/call-models-with-entra", err)
         self.assert_nothing_secret(world, out + err)
+
+    def sign_in_with_device_code(self, world: FakeWorld) -> tuple[int, str, str]:
+        """Check the user's first grant, signing the user in with a device code."""
+        return self.verify(
+            world,
+            ["--user-entitlement", "user-aoai", "--user-token-source", "device-code"],
+            without(verifier.USER_RUNTIME_TOKEN),
+        )
+
+    def test_device_code_sign_in_waits_through_transient_sign_in_errors(self) -> None:
+        # O50: a poll got HTTP 502 with no OAuth error while the person was still signing in.
+        world = standard_world()
+        world.device_logins = [
+            (USER_OID, ["authorization_pending", 502, (503, "temporarily_unavailable")])
+        ]
+        code, out, err = self.sign_in_with_device_code(world)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(world.clock.sleeps, [5, 5, 5, 5])
+        self.assertEqual(
+            [line for line in err.splitlines() if line.startswith("INFO: ")],
+            [
+                f"INFO: The sign-in service answered HTTP {status}; still waiting for the user "
+                "who holds these grants to sign in"
+                for status in (502, 503)
+            ],
+        )
+        self.assertIn(
+            "PASS: User grant 1 (gpt-4o-mini) reached the model with its Entra token", out
+        )
+        self.assertNotIn("device-code-1", out + err)
+        self.assert_nothing_secret(world, out + err)
+
+    def test_device_code_sign_in_fails_after_transient_sign_in_errors_in_a_row(self) -> None:
+        limit = verifier.TRANSIENT_SIGN_IN_ERRORS
+        world = standard_world()
+        # The next poll would succeed.
+        world.device_logins = [(USER_OID, ["authorization_pending", *[502] * limit])]
+        code, out, err = self.sign_in_with_device_code(world)
+        self.assertEqual(code, 1)
+        self.assertIn(
+            "FAIL: Signing in the user who holds these grants failed: HTTP 502. See "
+            "docs/call-models-with-entra-tokens.md#troubleshooting",
+            err,
+        )
+        self.assertEqual(err.count("INFO: The sign-in service answered HTTP 502"), limit - 1)
+        self.assertEqual(world.clock.sleeps, [5] * (limit + 1))
+        self.assertEqual(world.model_calls, [])
+        self.assert_nothing_secret(world, out + err)
+
+    def test_any_other_poll_restarts_the_count_of_transient_sign_in_errors(self) -> None:
+        errors = [(500, "server_error")] * (verifier.TRANSIENT_SIGN_IN_ERRORS - 1)
+        world = standard_world()
+        world.device_logins = [
+            (USER_OID, [*errors, "authorization_pending", *errors, "slow_down", *errors])
+        ]
+        code, out, err = self.sign_in_with_device_code(world)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(err.count("INFO: The sign-in service answered HTTP 500"), 3 * len(errors))
+        # Transient errors don't change the interval, and slow_down still does.
+        self.assertEqual(world.clock.sleeps, [5] * (2 * len(errors) + 2) + [10] * (len(errors) + 1))
+        self.assert_nothing_secret(world, out + err)
+
+    def test_device_code_sign_in_fails_at_once_on_a_5xx_with_another_oauth_error(self) -> None:
+        for status, error in (
+            (500, "expired_token"),
+            (502, "access_denied"),
+            (503, "authorization_declined"),
+            (504, "bad_verification_code"),
+            (500, "invalid_grant"),
+            (503, "invalid_client"),
+        ):
+            with self.subTest(status=status, error=error):
+                world = standard_world()
+                world.device_logins = [(USER_OID, ["authorization_pending", (status, error)])]
+                code, out, err = self.sign_in_with_device_code(world)
+                self.assertEqual(code, 1)
+                self.assertIn(
+                    f"FAIL: Signing in the user who holds these grants failed: {error}. See ", err
+                )
+                self.assertNotIn("INFO: ", err)
+                self.assertEqual(world.clock.sleeps, [5, 5])
+                self.assertEqual(world.model_calls, [])
+                self.assert_nothing_secret(world, out + err)
+
+    def test_device_code_sign_in_fails_at_once_on_any_other_status(self) -> None:
+        # Only 500, 502, 503 and 504 can be transient, even with a transient OAuth error.
+        for outcome, failure in (
+            (401, "HTTP 401"),
+            (501, "HTTP 501"),
+            ((400, "temporarily_unavailable"), "temporarily_unavailable"),
+        ):
+            with self.subTest(outcome=outcome):
+                world = standard_world()
+                world.device_logins = [(USER_OID, ["authorization_pending", outcome])]
+                code, out, err = self.sign_in_with_device_code(world)
+                self.assertEqual(code, 1)
+                self.assertIn(
+                    f"FAIL: Signing in the user who holds these grants failed: {failure}. See ", err
+                )
+                self.assertNotIn("INFO: ", err)
+                self.assertEqual(world.clock.sleeps, [5, 5])
+                self.assertEqual(world.model_calls, [])
+                self.assert_nothing_secret(world, out + err)
 
     def test_ungranted_user_signs_in_separately_and_is_rejected(self) -> None:
         world = standard_world()

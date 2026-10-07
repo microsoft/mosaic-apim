@@ -430,6 +430,9 @@ test('verifier output is redacted and bounded before anyone sees it', () => {
 test('the harness matches the verifier it drives', () => {
   const source = readFileSync(verifierScript, 'utf8')
   assert.ok(source.includes('f"SIGN IN as {who}: open {verification_uri} and enter the code {user_code}"'), 'device sign-in prompt')
+  // The note that a device sign-in is still waiting, which doesn't end it (endsDeviceSignIn).
+  assert.ok(source.includes('f"INFO: The sign-in service answered HTTP {polled.status_code}; still waiting for "'), 'still waiting')
+  assert.ok(source.includes('f"{who} to sign in"'), 'still waiting')
   for (const who of Object.keys(signInSubjects)) assert.ok(source.includes(`"${who}"`), who)
   assert.ok(source.includes('USER_CODE = re.compile(r"[A-Za-z0-9-]{4,32}")'), 'user code pattern')
   for (const flag of verifierFlags) assert.ok(source.includes(`"${flag}"`), flag)
