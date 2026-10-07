@@ -54,6 +54,8 @@ BUDGET_DENIED = (
 )
 WALL_CLOCK = 1_700_000_000
 START = 1_000.0
+# The session a stateful server names when it refuses a request without one. It's already gone.
+DISCARDED_SESSION = "discarded-session"
 
 
 def jwt(**claims: Any) -> str:
@@ -97,6 +99,13 @@ def claims_of(token: str) -> dict[str, Any] | None:
         return None
     decoded: dict[str, Any] = json.loads(base64.urlsafe_b64decode(parts[1] + "=="))
     return decoded
+
+
+def call_name(request: httpx.Request) -> str:
+    """What a call to the MCP endpoint was: its JSON-RPC method, or DELETE."""
+    if request.method == "POST":
+        return str(json.loads(request.content).get("method"))
+    return request.method
 
 
 USER_CONTROL = jwt(aud="api://mosaic-api", oid=USER_OID, tid=TENANT)
@@ -266,6 +275,8 @@ class FakeWorld:
         # False applies a cost center's pool to every grant on the server.
         self.pools_by_cost_center = True
         self.enforce_pools = True
+        # Calls a spent pool still lets through, as API Management's distributed counters can.
+        self.pool_overshoot = 0
         # Calls the MCP servers serve before throttling with a 429 of their own.
         self.backend_capacity: int | None = None
         # Seconds each gateway call takes.
@@ -283,6 +294,8 @@ class FakeWorld:
         # The MCP servers' behavior.
         self.echo_works = True
         self.add_works = True
+        # False answers DELETE with 405, as a stateful server that can't end a session does.
+        self.session_delete = True
         self.tool_error: str | None = None
         self.rpc_error: str | None = None
         self.wrong_id = False
@@ -336,6 +349,9 @@ class FakeWorld:
         self.messages: list[dict[str, Any]] = []
         self.deletes: list[str] = []
         self.call_times: list[float] = []
+        # By cost center, each call past the grant lookup and the budget, and the status a limit
+        # refused it with, or None. Notifications and DELETE count like any other call.
+        self.cost_center_calls: dict[str, list[tuple[str, int | None]]] = {}
         # Reads of the model caller's grant, people's sign-ins and tool calls, in order.
         self.journal: list[str] = []
 
@@ -631,8 +647,12 @@ class FakeWorld:
             # The budget check follows the grant lookup and comes before the limits.
             return self.refuse(403, message=BUDGET_DENIED.format(code=grant.cost_center))
         limited = self.limit(server, grant)
-        if isinstance(limited, httpx.Response):
-            return limited
+        refused = limited if isinstance(limited, httpx.Response) else None
+        self.cost_center_calls.setdefault(grant.cost_center.lower(), []).append(
+            (call_name(request), refused.status_code if refused is not None else None)
+        )
+        if refused is not None:
+            return refused
         if self.backend_capacity is not None:
             if self.backend_capacity <= 0:
                 # The server's own 429 passes through the gateway unchanged.
@@ -713,7 +733,7 @@ class FakeWorld:
             key = next((item for item in self.pools if item[0] == server.key), ("", ""))
         pool = self.pools.get(key)
         if pool is not None and self.enforce_pools:
-            if self.pool_spent.get(key, 0) >= pool:
+            if self.pool_spent.get(key, 0) >= pool + self.pool_overshoot:
                 return self.quota_refusal()
             self.pool_spent[key] = self.pool_spent.get(key, 0) + 1
         return remaining
@@ -756,7 +776,7 @@ class FakeWorld:
         session_id = headers.get("mcp-session-id")
         if method == "DELETE":
             self.deletes.append(session_id or "")
-            if not server.sessions:
+            if not server.sessions or not self.session_delete:
                 return httpx.Response(405)
             return httpx.Response(200 if self.sessions.pop(session_id or "", None) else 404)
         if method != "POST":
@@ -792,7 +812,9 @@ class FakeWorld:
         if server.sessions:
             if session_id is None:
                 if self.require_session:
-                    return httpx.Response(400)
+                    # As the MCP Python SDK does, it names the session it opened for the request,
+                    # which it has already discarded.
+                    return httpx.Response(400, headers={"Mcp-Session-Id": DISCARDED_SESSION})
             else:
                 state = self.sessions.get(session_id)
                 if state is None:
@@ -810,6 +832,8 @@ class FakeWorld:
             if state is not None:
                 state["initialized"] = True
             return httpx.Response(202)
+        if name == "ping":
+            return self.answer(server, message, result={})
         if state is not None and self.require_initialized and not state["initialized"]:
             return httpx.Response(400)
         if name == self.rpc_error:
@@ -2111,20 +2135,213 @@ class McpAccessVerifierTests(unittest.TestCase):
         *("--prove-pooled-quota", "user-pooled"),
     )
 
-    def test_pooled_quota_cleanup_cannot_silently_pass(self) -> None:
-        world = self.pooled_world()
-        lines = self.fails(world, list(self.POOLED), "unresolved session cleanup (HTTP 403")
-        self.assertEqual(list(world.sessions), ["session-2"])
-        self.assertEqual(world.pool_spent[("tools", "pooled")], 8)
-        self.assertEqual(world.clock.sleeps, [])
-        self.assertFalse(any("pool of 8 calls a month refused" in line for line in lines))
-        self.assertFalse(any("Live MCP checks passed" in line for line in lines))
-        denied = [
-            call for call in world.gateway_calls
+    def pooled_session_deletes(self, world: FakeWorld) -> list[httpx.Request]:
+        return [
+            call
+            for call in world.gateway_calls
             if call.method == "DELETE" and call.headers.get("Mcp-Session-Id") == "session-2"
         ]
-        self.assertEqual(len(denied), 1)
-        self.assertEqual(denied[0].headers["x-mosaic-cost-center"].lower(), "pooled")
+
+    def test_pooled_quota_proof_closes_a_stateful_session_within_the_pool(self) -> None:
+        world = self.pooled_world()
+        code, lines, errors = self.verify(world, list(self.POOLED))
+        self.assertEqual(code, 0, errors)
+        self.assertIn(
+            "PASS: User grant 2 (M-tools)'s cost center's pool of 8 calls a month refused at its "
+            "limit with the gateway's quota 403, after 8 calls in this run. The session's DELETE "
+            "was call 8, so the session was closed within the pool, and User grant 1 (M-tools), "
+            "under another cost center, still reached its tools",
+            lines,
+        )
+        self.assertIn("INFO: User grant 2 (M-tools)'s quota 403 had a Retry-After", lines)
+        # The pool counted every call, the probe, the notification and the DELETE among them, so
+        # the DELETE was the last call it allowed. Then a probe got its 403.
+        self.assertEqual(
+            world.cost_center_calls["pooled"],
+            [
+                ("ping", None),
+                ("initialize", None),
+                ("notifications/initialized", None),
+                *[("tools/call", None)] * 4,
+                ("DELETE", None),
+                ("ping", 403),
+            ],
+        )
+        self.assertEqual(world.pool_spent[("tools", "pooled")], 8)
+        self.assertEqual(world.sessions, {})
+        self.assertEqual(world.deletes, ["session-1", "session-2", "session-3"])
+        # The DELETE used the session's own credentials and cost center, once.
+        deletes = self.pooled_session_deletes(world)
+        self.assertEqual(len(deletes), 1)
+        self.assertEqual(deletes[0].headers["x-mosaic-cost-center"].lower(), "pooled")
+        # The probes named no session, not even the one a refusal named, and the one after the
+        # session the revision it negotiated.
+        probes = [call for call in world.gateway_calls if call_name(call) == "ping"]
+        self.assertEqual(len(probes), 2)
+        for probe in probes:
+            self.assertNotIn("Mcp-Session-Id", probe.headers)
+            self.assertEqual(probe.headers["x-mosaic-cost-center"], "pooled")
+        self.assertNotIn("MCP-Protocol-Version", probes[0].headers)
+        self.assertEqual(probes[1].headers["MCP-Protocol-Version"], "2025-11-25")
+        self.assertFalse(
+            any(
+                call.headers.get("Mcp-Session-Id") == DISCARDED_SESSION
+                for call in world.gateway_calls
+            )
+        )
+        # The other grant's calls named its own cost center, after the pool was spent.
+        control = world.passed[-4:]
+        self.assertEqual(
+            [call_name(call) for call in control],
+            ["initialize", "notifications/initialized", "tools/call", "DELETE"],
+        )
+        self.assertEqual(
+            {call.headers.get("x-mosaic-cost-center") for call in control}, {"general"}
+        )
+
+        # The smallest pool that fits the run: a probe, the handshake, one tool call and DELETE.
+        world = self.pooled_world(calls=5)
+        code, lines, errors = self.verify(world, list(self.POOLED))
+        self.assertEqual(code, 0, errors)
+        self.assertEqual(
+            world.cost_center_calls["pooled"],
+            [
+                ("ping", None),
+                ("initialize", None),
+                ("notifications/initialized", None),
+                ("tools/call", None),
+                ("DELETE", None),
+                ("ping", 403),
+            ],
+        )
+        self.assertEqual(world.sessions, {})
+
+    def test_pooled_quota_proof_says_when_the_server_cannot_delete_its_session(self) -> None:
+        # A 405 resolves cleanup, as it does elsewhere, but nothing confirms the session ended.
+        world = self.pooled_world()
+        world.session_delete = False
+        code, lines, errors = self.verify(world, list(self.POOLED))
+        self.assertEqual(code, 0, errors)
+        self.assertIn(
+            "INFO: User grant 2 (M-tools): the server does not support session DELETE (405)", lines
+        )
+        self.assertIn(
+            "PASS: User grant 2 (M-tools)'s cost center's pool of 8 calls a month refused at its "
+            "limit with the gateway's quota 403, after 8 calls in this run. The session's DELETE "
+            "was call 8, within the pool, but the server doesn't support it, so the session is "
+            "left for the server to expire, and User grant 1 (M-tools), under another cost "
+            "center, still reached its tools",
+            lines,
+        )
+        self.assertFalse(any("so the session was closed" in line for line in lines))
+        # The DELETE reached the server, so the pool counted it.
+        self.assertEqual(world.cost_center_calls["pooled"][-2:], [("DELETE", None), ("ping", 403)])
+        self.assertIn("session-2", world.sessions)
+
+    def test_a_spent_pool_fails_the_proof_before_a_session_opens(self) -> None:
+        for sessions in (True, False):
+            with self.subTest(sessions=sessions):
+                world = self.pooled_world()
+                world.servers["tools"].sessions = sessions
+                world.pool_spent[("tools", "pooled")] = 8
+                lines = self.fails(
+                    world,
+                    list(self.POOLED),
+                    "User grant 2 (M-tools): its cost center's pool of 8 calls a month refused the "
+                    "first probe with the gateway's quota 403, before any session opened, so "
+                    "something had already spent it this month. Use a cost center made for this "
+                    "proof, whose pool nothing has called this month",
+                )
+                self.assertEqual(world.cost_center_calls["pooled"], [("ping", 403)])
+                # Only the other grant's checks opened a session, and closed it.
+                self.assertEqual(world.session_count, 1 if sessions else 0)
+                self.assertEqual(world.sessions, {})
+                self.assertFalse(any("Live MCP checks passed" in line for line in lines))
+
+    def test_a_partly_spent_pool_fails_the_proof_with_unresolved_cleanup(self) -> None:
+        # Earlier calls this month spent part of the pool, so it refuses a call this run planned,
+        # and the session's DELETE with it. Cleanup has no way around the quota.
+        for spent, refused, call in ((3, "tools/call", 6), (1, "the session's DELETE", 8)):
+            with self.subTest(spent=spent):
+                world = self.pooled_world()
+                world.pool_spent[("tools", "pooled")] = spent
+                lines = self.fails(
+                    world,
+                    list(self.POOLED),
+                    f"User grant 2 (M-tools): its cost center's pool refused {refused}, call "
+                    f"{call} of the 8 it allows a month, with the gateway's quota 403, so "
+                    "something had already spent part of it this month. The cost center wasn't "
+                    "fresh: use one made for this proof, whose pool nothing has called this "
+                    "month; User grant 2 (M-tools): unresolved session cleanup (HTTP 403, a call "
+                    "quota at the gateway). DELETE was not confirmed; verification is incomplete",
+                )
+                self.assertEqual(list(world.sessions), ["session-2"])
+                self.assertEqual(world.pool_spent[("tools", "pooled")], 8)
+                self.assertEqual(world.clock.sleeps, [])
+                self.assertFalse(any("pool of 8 calls a month refused" in line for line in lines))
+                self.assertFalse(any("Live MCP checks passed" in line for line in lines))
+                deletes = self.pooled_session_deletes(world)
+                self.assertEqual(len(deletes), 1)
+                self.assertEqual(deletes[0].headers["x-mosaic-cost-center"].lower(), "pooled")
+                self.assertEqual(world.cost_center_calls["pooled"][-1], ("DELETE", 403))
+        # A pool with only the probe's call left refuses initialize, so no session opens.
+        world = self.pooled_world()
+        world.pool_spent[("tools", "pooled")] = 7
+        self.fails(
+            world,
+            list(self.POOLED),
+            "User grant 2 (M-tools): its cost center's pool refused initialize, call 2 of the 8 "
+            "it allows a month, with the gateway's quota 403, so something had already spent "
+            "part of it this month. The cost center wasn't fresh",
+        )
+        self.assertEqual(world.session_count, 1)
+        self.assertEqual(world.sessions, {})
+
+    def test_pooled_quota_proof_allows_the_gateway_a_call_or_two_past_the_limit(self) -> None:
+        for overshoot in (1, 2):
+            with self.subTest(overshoot=overshoot):
+                world = self.pooled_world()
+                world.pool_overshoot = overshoot
+                code, lines, errors = self.verify(world, list(self.POOLED))
+                self.assertEqual(code, 0, errors)
+                self.assertIn(
+                    "PASS: User grant 2 (M-tools)'s cost center's pool of 8 calls a month "
+                    f"refused once spent with the gateway's quota 403, after {8 + overshoot} "
+                    "calls in this run. The session's DELETE was call 8, so the session was "
+                    "closed within the pool, and User grant 1 (M-tools), under another cost "
+                    "center, still reached its tools",
+                    lines,
+                )
+                self.assertIn(
+                    f"INFO: User grant 2 (M-tools)'s pool allowed {overshoot} call(s) more than "
+                    "its 8 before it refused: API Management's counters are distributed, so a "
+                    "spent quota can let a call or two through",
+                    lines,
+                )
+                # Only probes, which can't create server state, went past the limit.
+                self.assertEqual(
+                    world.cost_center_calls["pooled"][7:],
+                    [("DELETE", None), *[("ping", None)] * overshoot, ("ping", 403)],
+                )
+                self.assertEqual(world.sessions, {})
+
+    def test_pooled_quota_proof_fails_when_the_pool_keeps_letting_calls_through(self) -> None:
+        for setting, value in (("pool_overshoot", 3), ("enforce_pools", False)):
+            with self.subTest(setting):
+                world = self.pooled_world()
+                setattr(world, setting, value)
+                lines = self.fails(
+                    world,
+                    list(self.POOLED),
+                    "User grant 2 (M-tools): 11 calls went through, more than its cost center's "
+                    "pool of 8 calls allows, even with 2 more for API Management's distributed "
+                    "counters",
+                )
+                self.assertEqual(
+                    world.cost_center_calls["pooled"][7:], [("DELETE", None), *[("ping", None)] * 3]
+                )
+                self.assertEqual(world.sessions, {})
+                self.assertFalse(any("Live MCP checks passed" in line for line in lines))
 
     def test_pooled_quota_proof(self) -> None:
         world = self.pooled_world()
@@ -2146,50 +2363,76 @@ class McpAccessVerifierTests(unittest.TestCase):
             [call.headers.get("x-mosaic-cost-center") for call in last],
             ["general", "general", "general"],
         )
+        # With no session to close, tool calls after the probe spend the pool until it refuses.
+        self.assertEqual(
+            world.cost_center_calls["pooled"],
+            [
+                ("ping", None),
+                ("initialize", None),
+                ("notifications/initialized", None),
+                *[("tools/call", None)] * 5,
+                ("tools/call", 403),
+            ],
+        )
 
+        # A stateless server answers the probe. Earlier calls this month spent part of this pool,
+        # which a stateless proof reports rather than fails.
         world = self.pooled_world()
-        world.pool_spent[("tools", "pooled")] = 8
+        world.servers["tools"].sessions = False
+        world.require_protocol_header = False
+        world.pool_spent[("tools", "pooled")] = 3
         world.retry_after = False
         code, lines, errors = self.verify(world, list(self.POOLED))
         self.assertEqual(code, 0, errors)
-        self.assertIn("after 0 more call(s)", lines[-4])
         self.assertIn(
-            "INFO: User grant 2 (M-tools)'s pool was already spent before this run", lines
+            "PASS: User grant 2 (M-tools)'s cost center's pool of 8 calls a month refused a call "
+            "with the gateway's quota 403 after 5 more call(s), while User grant 1 (M-tools), "
+            "under another cost center, still reached its tools",
+            lines,
+        )
+        self.assertIn(
+            "INFO: User grant 2 (M-tools)'s pool allowed 5 of its 8 calls in this run: something "
+            "had spent the rest this month",
+            lines,
         )
         self.assertIn(
             "INFO: User grant 2 (M-tools)'s quota 403 had no Retry-After in seconds", lines
         )
 
     def test_pooled_quota_proof_needs_the_pool_to_refuse_only_its_cost_center(self) -> None:
-        for setting, value, message in (
-            (
-                "enforce_pools",
-                False,
-                "User grant 2 (M-tools): 9 calls went through, more than its cost center's pool "
-                "of 8 calls allows",
-            ),
-            (
-                "pools_by_cost_center",
-                False,
-                "User grant 1 (M-tools), under another cost center, after the pool was spent: "
-                "unexpected HTTP 403, a call quota at the gateway",
-            ),
-            # Grant 1's checks and DELETE take 6 calls, then the proof gets 3 before a 429.
-            (
-                "backend_capacity",
-                9,
-                "User grant 2 (M-tools): a call was refused with HTTP 429, not the gateway's "
-                "quota 403",
-            ),
-        ):
-            with self.subTest(setting):
-                world = self.pooled_world()
-                setattr(world, setting, value)
-                if setting == "pools_by_cost_center":
-                    # The other grant's own checks run first, and must leave the pool to the proof.
-                    world.pools[("tools", "pooled")] = 13
-                    world.pool_spent[("tools", "pooled")] = 5
-                self.fails(world, list(self.POOLED), message)
+        # On a stateless server, calls go on until the pool refuses, so a pool that never does
+        # fails once one more call than it allows goes through.
+        world = self.pooled_world()
+        world.servers["tools"].sessions = False
+        world.enforce_pools = False
+        self.fails(
+            world,
+            list(self.POOLED),
+            "User grant 2 (M-tools): 9 calls went through, more than its cost center's pool of 8 "
+            "calls allows",
+        )
+        # A pool that refuses every cost center on the server fails the other grant's check. The
+        # proof runs first here, so the other grant's own checks don't spend the pool before it.
+        world = self.pooled_world()
+        world.pools_by_cost_center = False
+        self.fails(
+            world,
+            [
+                *("--user-entitlement", "user-pooled", "--user-entitlement", "user-tools"),
+                *("--prove-pooled-quota", "user-pooled"),
+            ],
+            "User grant 2 (M-tools), under another cost center, after the pool was spent: "
+            "unexpected HTTP 403, a call quota at the gateway",
+        )
+        # The server's own 429 isn't the pool's. Grant 1's checks and DELETE take 6 of the calls
+        # the server serves, and the proof's probe, initialize and notification take the last 3.
+        world = self.pooled_world()
+        world.backend_capacity = 9
+        self.fails(
+            world,
+            list(self.POOLED),
+            "User grant 2 (M-tools): a call was refused with HTTP 429, not the gateway's quota 403",
+        )
         world = self.pooled_world()
         world.grants["user-pooled"].limits = {"calls": 3, "renewalPeriodSeconds": 60}
         world.connection_patch = {"limits": None}
@@ -2228,6 +2471,15 @@ class McpAccessVerifierTests(unittest.TestCase):
         )
         world = self.pooled_world(calls=51)
         self.fails(world, list(self.POOLED), "needs a pool of at most 50 calls a month, not 51")
+        world = self.pooled_world(calls=4)
+        self.fails(
+            world,
+            list(self.POOLED),
+            "User grant 2 (M-tools): proving the pooled quota needs a pool of at least 5 calls a "
+            "month, for a probe, initialize, the initialized notification, a tool call and the "
+            "session's DELETE, not 4",
+        )
+        self.assertEqual(world.gateway_calls, [])
         world = self.pooled_world()
         world.grants["user-tools"].cost_center = "pooled"
         world.pools[("tools", "pooled")] = 8
