@@ -1041,7 +1041,7 @@ value that the gateway reads with its own identity, and Phase 10 would reuse it.
 registers AWS Bedrock hosts with a Bedrock API key, but only as Claude members of a model pool,
 and R17 lists what a live Bedrock member needs to show.
 
-### Phase 11: MCP servers end to end 🔄 M2 and M4 pass, M3 and M5 are partial; M-protected is unreachable; M6 to M10 remain
+### Phase 11: MCP servers end to end 🔄 M2, M4, M7 and M8 pass; M3, M5 and M6 are partial; M-protected is unreachable; M9 and M10 remain
 
 MOSAIC publishes MCP servers through API Management and governs them with grants, as it does
 models. The first live registration and publication journeys began on 6 October 2026. Phase 11
@@ -1210,6 +1210,36 @@ the runbook's run also covers a user grant on M-protected, which isn't published
 grant, which waits for an approved credential, and the missing-scope check, which can't run while
 the model client is consented for `Mcp.Invoke`.
 
+**M6's call-limit leg**, on 6 October: through the console, the admin created two test cost
+centers, added the user persona to each and saved separate M-tools grants for the rate-limit and
+revocation journeys. A reviewed plan applied the new grants while preserving the existing
+general grant. The rate-limit grant permits eight calls per 60 seconds. The verifier observed
+`x-mosaic-remaining-calls` fall from seven to zero, then the gateway's own 429 with `Retry-After`.
+Session deletion also hit that limit; its one permitted retry after 60 seconds succeeded.
+**M6 remains partial:** the pooled-quota leg was not run, because exhausting a pool on this
+stateful server would also block session deletion and leave the proof incomplete.
+
+**M7 passes on 7 October.** The first attempt expired during device-code sign-in without
+revoking anything. On the retry, the verifier first listed and called M-tools' tools and closed
+its session. Only after it began watching did the admin disable the disposable grant in the
+console, review the publication-wide plan and apply it once. All eight steps succeeded; the
+general and rate-limit grants stayed enabled. The verifier observed `revocationPending`, then
+`revoked`, and two consecutive grant-lookup 403s with the same token and the revoked grant's
+cost-center header. The disposable grant remains disabled and revoked in the last apply.
+
+**M8 passes for the exercised M-tools grants.** After a normal gateway telemetry refresh,
+the console's **Analytics** and the user's **Usage & cost** agree with gateway attribution:
+11 requests under the rate-limit grant (eight 200s, one 202 and two gateway 429s), and six
+under the revocation grant before revocation (five 200s and one 202). The two rate refusals
+include the initial session-delete attempt; the later successful deletion is also counted.
+These are HTTP requests, including MCP session lifecycle traffic, not tool-call counts.
+Analytics shows the rate-limit grant as reached, with two throttled requests. The portal
+retains the revoked grant's historical usage. MCP tokens are not metered and the upstream's
+bill is not calculated by MOSAIC; both views say so rather than treating it as free.
+The known per-tool breakdown gap remains. No `ask_model` call or model grant was made:
+M9 still needs the owner's go-ahead for a temporary aggregate-capped application model grant
+on the public M-agent upstream, followed promptly by revocation and apply.
+
 **Journeys** (see the MCP table under the journey matrix): M1 registers each server and syncs its
 tools; M2 publishes it after a reviewed plan; M3 sets governed access for people and for an
 application that can invoke an MCP server; M4 is a person's request and its approval in the portal;
@@ -1312,9 +1342,9 @@ has passed, and ❌ means the latest run failed on the product gap named.
 | M3 | Governed access for an MCP server: a direct grant for the `user` persona and an application grant on a tools server are reviewed and applied | 11 | 🔄 The user persona's direct grant on M-tools, 30 calls a minute, was reviewed and applied. The application grant on a tools server isn't created yet: the client-credentials workload's secret expired, with no new one approved, and M-agent's managed identity holds only the model invocation role. M-agent's model-caller link is applied; its application model grant comes immediately before M9, as decided |
 | M4 | In the portal, a person requests access to an MCP server, an admin approves it, and the person's connection details give the server URL, the metadata URL and the scope, but never a token | 11 | ✅ The user persona requested M-agent; the admin approved it with a call limit, reviewed and applied it. Connection details give the server URL, the canonical metadata URL and the `Mcp.Invoke` scope, and no token |
 | M5 | A real MCP client, signed in with the `Mcp.Invoke` scope, lists and calls tools through the gateway; an anonymous call gets 401 with the metadata URL, and an ungranted person's token gets 403 | 11 | 🔄 After Batch 3o, the user leg passes: discovery and every attempted refusal (the anonymous call, a MOSAIC control-plane token, a malformed or unknown cost center and an ungranted person's token), and the user's grant lists M-tools' tools and calls `echo` and `add`, with and without the cost-center header, in a session that's closed afterwards. The first run's 404 was O49. Not yet run: a user grant on M-protected, which isn't published; the application leg, which waits for an approved credential; and the missing-scope check, which can't run while the model client is consented for `Mcp.Invoke` |
-| M6 | An MCP grant's call limit, and a cost center's pooled call quota on the server, refuse calls once spent | 11 | ⬜ |
-| M7 | After an MCP grant is revoked and its plan applied, its calls are refused | 11 | ⬜ |
-| M8 | **Analytics** and **Usage & cost** count each person's calls to each MCP server under their grant and cost center; the gap: which tool was called | 11 | ⬜ |
+| M6 | An MCP grant's call limit, and a cost center's pooled call quota on the server, refuse calls once spent | 11 | 🔄 The eight-per-minute grant's remaining calls fell from seven to zero, then the gateway returned 429 with `Retry-After`. Session deletion succeeded after its one permitted 60-second retry. The pooled-quota leg was not run: exhaustion on the stateful server also blocks session deletion |
+| M7 | After an MCP grant is revoked and its plan applied, its calls are refused | 11 | ✅ The disposable grant worked before revocation, with its session closed. After the admin disabled it and reviewed/applied M-tools' plan, the verifier observed revoked state and two consecutive grant-lookup 403s with the same token and cost-center header. Other grants stayed enabled |
+| M8 | **Analytics** and **Usage & cost** count each person's calls to each MCP server under their grant and cost center; the gap: which tool was called | 11 | ✅ For the exercised M-tools grants, both UI views match gateway attribution: 11 requests under the rate-limit grant, including two gateway 429s, and six under the now-revoked grant. Session lifecycle requests are included; tool-level counts are unavailable. MCP tokens and the upstream bill are not metered |
 | M9 | A call to the agent server's tool leads to a governed model call, which usage attributes to the agent's grant and, by G19's design, to the person who called the tool | 11 | ⬜ |
 | M10 | Unpublishing an MCP server removes only what MOSAIC created | 11 | ⬜ |
 
