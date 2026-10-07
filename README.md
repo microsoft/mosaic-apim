@@ -2108,7 +2108,9 @@ Optional flags prove a grant's call limit (`--prove-call-limit`) or a cost cente
 quota (`--prove-pooled-quota`, which spends the pool for the month), watch a revocation take effect
 (`--watch-revocation`), and call a server whose `ask_model` tool calls a governed model on the
 person's behalf (`--on-behalf-entitlement` with `--send-model-requests`, and `--await-attribution`
-to wait for the person's usage report to attribute it). The
+to wait for the person's usage report to attribute it). With `--model-caller-entitlement`,
+`--await-model-grant` makes that call wait until the server's model grant is enabled and applied,
+so a grant on a public server is open only for the call. The
 [end-to-end runbook](docs/e2e/runbook.md#verify-mcp-access) covers each one, what it proves, and
 its prerequisites. Session cleanup is required before a tool or limit proof passes: DELETE uses
 the same credentials and cost center, with at most one gateway rate-limit retry after a

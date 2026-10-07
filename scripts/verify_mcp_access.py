@@ -8,7 +8,8 @@ that granted people and applications reach their tools, and that anonymous, ungr
 wrong-audience and wrong-scope calls are refused. Optional checks prove a grant's call limit and a
 cost center's pooled call quota, wait for a revocation to take effect, and call a server whose tool
 calls a governed model on the person's behalf, printing what's needed to find that call's
-attribution in the gateway's logs.
+attribution in the gateway's logs. That call can wait until the model caller's grant is applied,
+so the grant is open only for the call.
 
 Credentials come from environment variables, or from sign-ins the script starts: the device code
 flow for people and client credentials for an application. They stay in memory and are never
@@ -71,6 +72,7 @@ PROMPT = model.PROMPT
 MAX_RESPONSE_BYTES = 1024 * 1024
 MAX_ERROR_BYTES = 16 * 1024
 MAX_TOOL_PAGES = 20
+CLIENT_TIMEOUT_SECONDS = 30
 ASK_MODEL_TIMEOUT_SECONDS = 120
 # The calls a grant's tool checks make: initialize, the initialized notification, tools/list, echo
 # and add. A call-limit proof needs a limit above them, and few enough calls to spend quickly.
@@ -80,6 +82,15 @@ CALL_LIMIT_PERIODS = (60, 300)
 # DELETE is governed too: retry one rate refusal, never wait out a monthly pool.
 CLEANUP_MAX_WAIT_SECONDS = 300
 CLEANUP_REQUEST_TIMEOUT_SECONDS = 30
+# The longest ask_model can use the person's token, each request within its timeout: initialize,
+# the initialized notification and every tools/list page, then the call, then cleanup, which may
+# wait once for a rate limit.
+ASK_MODEL_LONGEST_SECONDS = (
+    (2 + MAX_TOOL_PAGES) * CLIENT_TIMEOUT_SECONDS
+    + ASK_MODEL_TIMEOUT_SECONDS
+    + 2 * CLEANUP_REQUEST_TIMEOUT_SECONDS
+    + CLEANUP_MAX_WAIT_SECONDS
+)
 # A pooled-quota proof spends the whole pool, so the pool must be small.
 POOL_CALL_CEILING = 50
 # On a stateful server the session's DELETE must be the last call the pool allows, so the pool must
@@ -99,7 +110,10 @@ DEFAULT_REVOCATION_TIMEOUT = 900
 DEFAULT_REVOCATION_INTERVAL = 30
 DEFAULT_ATTRIBUTION_TIMEOUT = 1800
 DEFAULT_ATTRIBUTION_INTERVAL = 60
+DEFAULT_MODEL_GRANT_TIMEOUT = 600
+DEFAULT_MODEL_GRANT_INTERVAL = 15
 USAGE_PERIOD = "7d"
+REVOKE_MODEL_GRANT = "Revoke the model caller's grant now and apply its model's access plan"
 
 USER_CONTROL_TOKEN = "MOSAIC_SMOKE_USER_CONTROL_TOKEN"
 ADMIN_CONTROL_TOKEN = "MOSAIC_SMOKE_ADMIN_CONTROL_TOKEN"
@@ -1606,13 +1620,15 @@ def runtime_status(client: httpx.Client, base: str, grant: McpGrant) -> str:
     return status if status in model.RUNTIME_STATUSES else "not set up"
 
 
-def require_lifetime(label: str, held: list[tuple[str, str]], needed: int, flag: str) -> None:
+def require_lifetime(
+    label: str, held: list[tuple[str, str]], needed: int, flag: str, what: str = "the wait"
+) -> None:
     for name, token in held:
         left = model.seconds_left(token)
         if left is not None and left < needed:
             when = "has expired" if left <= 0 else f"expires in {left} seconds"
             raise VerificationFailed(
-                f"{label}: the {name} {when}, and the wait can take {needed} seconds. Get a new "
+                f"{label}: the {name} {when}, and {what} can take {needed} seconds. Get a new "
                 f"one, or lower {flag}"
             )
 
@@ -1737,13 +1753,22 @@ class ModelGrant:
     subject_id: str | None
 
 
+def model_grant_body(
+    client: httpx.Client, base: str, admin_control: str, entitlement_id: str
+) -> dict[str, Any]:
+    """The model caller's model grant, as MOSAIC's administrator routes return it."""
+
+    label = "The model caller's model grant"
+    response = client.get(f"{base}/entitlements/{entitlement_id}", headers=bearer(admin_control))
+    model.expect(response, {200}, label)
+    return model.object_body(response, label)
+
+
 def read_model_grant(
     client: httpx.Client, base: str, admin_control: str, entitlement_id: str
 ) -> ModelGrant:
     label = "The model caller's model grant"
-    response = client.get(f"{base}/entitlements/{entitlement_id}", headers=bearer(admin_control))
-    model.expect(response, {200}, label)
-    entitlement = model.object_body(response, label)
+    entitlement = model_grant_body(client, base, admin_control, entitlement_id)
     resource = model.mapping(entitlement.get("resource"))
     kind, identifier = resource.get("kind"), resource.get("id")
     if kind not in {"modelApi", "poolModel"} or not isinstance(identifier, str):
@@ -1757,6 +1782,78 @@ def read_model_grant(
         resource_id=identifier,
         cost_center_id=cost_center if isinstance(cost_center, str) else "",
         subject_id=subject.get("id") if isinstance(subject.get("id"), str) else None,
+    )
+
+
+def model_grant_status(entitlement: dict[str, Any]) -> str:
+    """How far MOSAIC has applied the model caller's grant, or "disabled" if it isn't enabled."""
+
+    if entitlement.get("enabled") is not True:
+        return "disabled"
+    status = model.mapping(entitlement.get("runtime")).get("status")
+    return status if status in model.RUNTIME_STATUSES else "not set up"
+
+
+@dataclass(frozen=True)
+class ModelGrantWait:
+    """--await-model-grant: the model caller's grant to wait for before the call, and how long."""
+
+    entitlement_id: str
+    admin_control: str = field(repr=False)
+    timeout: int
+    interval: int
+
+
+def await_model_grant(client: httpx.Client, base: str, wait: ModelGrantWait) -> None:
+    """Wait until MOSAIC reports the model caller's grant enabled and applied.
+
+    A server open to anyone lets anyone reach a model through its model caller's grant, so the
+    grant is opened only for the call: the run waits for it here, after every sign-in and check,
+    rather than holding it open while the person signs in.
+    """
+
+    def read() -> str:
+        return model_grant_status(
+            model_grant_body(client, base, wait.admin_control, wait.entitlement_id)
+        )
+
+    applied = "INFO: MOSAIC reports the model caller's grant as enabled and applied"
+    status = read()
+    if status == "applied":
+        say(applied)
+        return
+    require_lifetime(
+        "The model caller's grant",
+        [("administrator's MOSAIC control-plane token", wait.admin_control)],
+        wait.timeout + wait.interval + model.TOKEN_MARGIN_SECONDS,
+        "--model-grant-timeout",
+    )
+    say(
+        "WAIT: re-enable the model caller's grant in MOSAIC's console and apply its model's "
+        f"access plan. Checking every {wait.interval} seconds for up to {wait.timeout} seconds"
+    )
+    deadline = time.monotonic() + wait.timeout
+    try:
+        while time.monotonic() < deadline:
+            time.sleep(wait.interval)
+            current = read()
+            if current == "applied":
+                say(applied)
+                return
+            if current != status:
+                status = current
+                say(f"WAIT: MOSAIC reports the model caller's grant as {status}")
+    except BaseException:
+        # Whoever was asked to open the grant may have done so: tell them to close it again.
+        say(
+            "INFO: The run stopped while waiting for the model caller's grant. If you re-enabled "
+            "it, revoke it again and apply its model's access plan"
+        )
+        raise
+    raise VerificationFailed(
+        f"The model caller's grant: after {wait.timeout} seconds, MOSAIC reports it as {status}, "
+        f"not applied, so {ASK_MODEL_TOOL} wasn't called. If you re-enabled it, revoke it again "
+        "and apply its model's access plan before you rerun"
     )
 
 
@@ -1913,26 +2010,60 @@ def call_on_behalf(
     caller: dict[str, Any] | None,
     model_grant: ModelGrant | None,
     attribution: tuple[int, int] | None,
+    grant_wait: ModelGrantWait | None = None,
 ) -> None:
-    """M9: a person's call to a tool that calls a governed model as the server's application."""
+    """M9: a person's call to a tool that calls a governed model as the server's application.
 
-    baseline: OnBehalfUse | None = None
+    With ``grant_wait``, the call waits until the model caller's grant is applied. Once it is, the
+    run says to revoke the grant again as soon as the call is made, or the run stops.
+    """
+
     if attribution is not None:
         timeout, interval = attribution
+        needed = timeout + interval + model.TOKEN_MARGIN_SECONDS
+        flag = "--attribution-timeout"
+        if grant_wait is not None:
+            # The usage report is read after the wait for the grant, so the token must last both.
+            needed += grant_wait.timeout + grant_wait.interval
+            flag = "--model-grant-timeout or --attribution-timeout"
+        require_lifetime(
+            grant.label, [("MOSAIC control-plane token", grant.control_token)], needed, flag
+        )
+    if grant_wait is not None:
+        # The person's token makes the call once the grant is applied: it must last the wait and
+        # the call, or the grant would be opened for nothing.
         require_lifetime(
             grant.label,
-            [("MOSAIC control-plane token", grant.control_token)],
-            timeout + interval + model.TOKEN_MARGIN_SECONDS,
-            "--attribution-timeout",
+            [("user's MCP token", token)],
+            grant_wait.timeout
+            + grant_wait.interval
+            + ASK_MODEL_LONGEST_SECONDS
+            + model.TOKEN_MARGIN_SECONDS,
+            "--model-grant-timeout",
+            "the wait and the call",
         )
-        found = on_behalf_use(client, base, grant.control_token, grant)
-        if isinstance(found, str):
-            say(f"SKIP: {grant.label} waiting for its attribution: {found}")
-        else:
-            baseline = found
-    window = ask_model(client, grant, token)
+        await_model_grant(client, base, grant_wait)
+    baseline: OnBehalfUse | None = None
+    try:
+        if attribution is not None:
+            found = on_behalf_use(client, base, grant.control_token, grant)
+            if isinstance(found, str):
+                say(f"SKIP: {grant.label} waiting for its attribution: {found}")
+            else:
+                baseline = found
+        window = ask_model(client, grant, token)
+    except BaseException:
+        if grant_wait is not None:
+            say(
+                f"INFO: {grant.label} stopped after the model caller's grant was applied. "
+                f"{REVOKE_MODEL_GRANT}"
+            )
+        raise
     say(f"PASS: {grant.label} answered through {ASK_MODEL_TOOL}, which calls a governed model")
     report_facts(grant, token, window, caller)
+    if grant_wait is not None:
+        goes_on = "; the attribution wait goes on" if baseline is not None else ""
+        say(f"INFO: {grant.label} made its model call. {REVOKE_MODEL_GRANT}{goes_on}")
     if attribution is not None and baseline is not None:
         timeout, interval = attribution
         await_attribution(
@@ -2030,6 +2161,18 @@ def parse_arguments(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument(
         "--attribution-interval", type=int, default=DEFAULT_ATTRIBUTION_INTERVAL, metavar="SECONDS"
     )
+    parser.add_argument(
+        "--await-model-grant",
+        action="store_true",
+        help="After every sign-in and check, wait until the --model-caller-entitlement grant is "
+        "enabled and applied before calling ask_model, so it's open only for the call",
+    )
+    parser.add_argument(
+        "--model-grant-timeout", type=int, default=DEFAULT_MODEL_GRANT_TIMEOUT, metavar="SECONDS"
+    )
+    parser.add_argument(
+        "--model-grant-interval", type=int, default=DEFAULT_MODEL_GRANT_INTERVAL, metavar="SECONDS"
+    )
     return parser.parse_args(argv)
 
 
@@ -2072,6 +2215,8 @@ def validate(args: argparse.Namespace) -> Setup:
         )
     if args.model_caller_entitlement and not args.await_attribution:
         raise VerificationFailed("--model-caller-entitlement is only used with --await-attribution")
+    if args.await_model_grant and not args.model_caller_entitlement:
+        raise VerificationFailed("--await-model-grant needs a --model-caller-entitlement")
     if (args.check_ungranted_user or args.check_missing_scope) and not args.user_entitlement:
         raise VerificationFailed(
             "--check-ungranted-user and --check-missing-scope need a --user-entitlement"
@@ -2097,6 +2242,10 @@ def validate(args: argparse.Namespace) -> Setup:
         raise VerificationFailed("--attribution-timeout must be from 60 to 3600 seconds")
     if not 30 <= args.attribution_interval <= 600:
         raise VerificationFailed("--attribution-interval must be from 30 to 600 seconds")
+    if not 60 <= args.model_grant_timeout <= 1800:
+        raise VerificationFailed("--model-grant-timeout must be from 60 to 1800 seconds")
+    if not 10 <= args.model_grant_interval <= 120:
+        raise VerificationFailed("--model-grant-interval must be from 10 to 120 seconds")
     people = bool(args.user_entitlement or args.on_behalf_entitlement)
     user_control = (
         credential(USER_CONTROL_TOKEN) if people else model.optional_credential(USER_CONTROL_TOKEN)
@@ -2234,6 +2383,14 @@ def run(client: httpx.Client, args: argparse.Namespace, setup: Setup) -> int:
             attribution=(args.attribution_timeout, args.attribution_interval)
             if args.await_attribution
             else None,
+            grant_wait=ModelGrantWait(
+                entitlement_id=args.model_caller_entitlement,
+                admin_control=setup.admin_control or "",
+                timeout=args.model_grant_timeout,
+                interval=args.model_grant_interval,
+            )
+            if args.await_model_grant
+            else None,
         )
     if args.watch_revocation is not None:
         watched = by_id[args.watch_revocation]
@@ -2252,7 +2409,9 @@ def main(argv: list[str] | None = None, *, transport: httpx.BaseTransport | None
     args = parse_arguments(argv)
     try:
         setup = validate(args)
-        with httpx.Client(timeout=30, follow_redirects=False, transport=transport) as client:
+        with httpx.Client(
+            timeout=CLIENT_TIMEOUT_SECONDS, follow_redirects=False, transport=transport
+        ) as client:
             count = run(client, args, setup)
     except KeyboardInterrupt:
         print("STOPPED: interrupted before the checks finished", file=sys.stderr)
