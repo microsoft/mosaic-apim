@@ -464,6 +464,8 @@ export const mcpCallLimitCalls = [6, 30] as const
 export const mcpCallLimitSeconds = [60, 300] as const
 /** The MCP verifier's pooled-quota proof spends the pool, and refuses one bigger than this (POOL_CALL_CEILING). */
 export const mcpPoolCallCeiling = 50
+/** Or smaller than this (POOL_CALL_FLOOR): a probe, initialize, the initialized notification, a tool call and the session's DELETE. */
+export const mcpPoolCallFloor = 5
 
 function within(value: unknown, path: string, [low, high]: readonly [number, number]): number {
   if (typeof value !== 'number' || !Number.isInteger(value) || value < low || value > high) {
@@ -544,7 +546,7 @@ function parseMcpGrant(value: unknown, path: string, servers: Record<string, Mcp
       perSeconds: within(limit.perSeconds, `${path}.callLimit.perSeconds`, mcpCallLimitSeconds),
     }
   }
-  const pooledCalls = grant.pooledCalls === undefined ? undefined : within(grant.pooledCalls, `${path}.pooledCalls`, [1, mcpPoolCallCeiling])
+  const pooledCalls = grant.pooledCalls === undefined ? undefined : within(grant.pooledCalls, `${path}.pooledCalls`, [mcpPoolCallFloor, mcpPoolCallCeiling])
   if (pooledCalls !== undefined && callLimit !== undefined) {
     throw new TargetsError(`${path} can't have a callLimit and pooledCalls: the pooled-quota proof needs a grant without limits of its own`)
   }

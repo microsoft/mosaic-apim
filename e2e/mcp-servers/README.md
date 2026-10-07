@@ -52,7 +52,9 @@ the server as an unsupported transport rather than registering it. This variant 
 
 By default each POST is answered with a server-sent event stream and the session is held in
 memory, as most SDK servers behave, so the run exercises streaming and session headers through
-the gateway. The two flags change that without a rebuild, if the gateway needs it.
+the gateway. The two flags change that without a rebuild, if the gateway needs it. A request other
+than `initialize` that names no session gets 400 and leaves no session behind, so the MCP
+verifier's pooled-quota proof can probe the gateway with one.
 
 ### M-protected
 

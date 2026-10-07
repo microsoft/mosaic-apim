@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { test } from 'node:test'
-import { TargetsError, mcpCallLimitCalls, mcpCallLimitSeconds, mcpPoolCallCeiling, parseTargets } from '../src/config.ts'
+import { TargetsError, mcpCallLimitCalls, mcpCallLimitSeconds, mcpPoolCallCeiling, mcpPoolCallFloor, parseTargets } from '../src/config.ts'
 import { e2eRoot } from '../src/paths.ts'
 import {
   checkForwarded,
@@ -351,6 +351,7 @@ test('the harness matches the MCP verifier it drives', () => {
     `CALL_LIMIT_CEILING = ${mcpCallLimitCalls[1]}`,
     `CALL_LIMIT_PERIODS = (${mcpCallLimitSeconds[0]}, ${mcpCallLimitSeconds[1]})`,
     `POOL_CALL_CEILING = ${mcpPoolCallCeiling}`,
+    `POOL_CALL_FLOOR = ${mcpPoolCallFloor}`,
   ]) {
     assert.ok(source.includes(constant), constant)
   }
