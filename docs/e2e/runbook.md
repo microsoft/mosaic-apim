@@ -527,9 +527,13 @@ from another terminal:
 
 If the grant isn't enabled and applied in time, the run fails before any model call. If it's
 already enabled and applied when the checks finish, the run says so and calls `ask_model` straight
-away. The admin's MOSAIC API token reads the grant, so it must last the wait, and the user's must
-last both waits. The person's MCP token makes the call, so it must last the wait and the longest the
-call can take with every request at its timeout: about 30 minutes with the defaults. Each is checked
+away. With the grant open, the verifier gives up on the call 11 minutes after it starts. A read
+already waiting can take 2 more minutes, and ending the session up to 6 more, so the run says to
+revoke the grant at most 19 minutes after the call starts. That holds for any server behind the
+gateway, which passes a response on only once it has the server's headers; only a gateway trickling
+headers of its own could hold the call longer. The admin's MOSAIC API token reads the grant, so it
+must last the wait, and the user's must last both waits. The person's MCP token makes the call, so
+it must last the wait and those 19 minutes: about 30 minutes with the defaults. Each is checked
 before the verifier asks for the grant. Whenever a run ends with the grant re-enabled, however it
 ends, revoke the grant and apply its model's access plan.
 
