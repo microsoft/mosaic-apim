@@ -1244,8 +1244,8 @@ M-agent's managed identity a temporary grant on the `gpt-4o-mini` model it calls
 200 tokens a month and two calls a minute. Model grants take a token quota, not a monthly call
 count, so that quota is the aggregate cap, enough for about five of `ask_model`'s minimal calls.
 The reviewed plan added only that grant, left the model's other grants as they were and created
-no key. It was applied once, and every step succeeded. The verifier then signed the user persona
-in with a device code, which waits for the person to confirm the sign-in in the browser. While
+no key. It was applied once, and every step succeeded. The verifier then started the user
+persona's device-code sign-in, which waits for the person to confirm it in the browser. While
 that confirmation was still pending, one of the verifier's polls of the sign-in service got a
 transient HTTP 502, and the verifier stopped before calling the tool (O50). The grant was revoked
 and the revocation applied ten minutes after the grant took effect. The gateway's log shows no
