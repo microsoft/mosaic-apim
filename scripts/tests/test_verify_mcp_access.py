@@ -18,7 +18,7 @@ import re
 import unittest
 from dataclasses import dataclass
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, get_args
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlsplit
 
@@ -227,6 +227,7 @@ class FakeWorld:
         self.grants = {grant.id: grant for grant in grants}
         self.model_client: str | None = MODEL_CLIENT
         self.user_control = USER_CONTROL
+        self.admin_control = ADMIN_CONTROL
         # Overrides for every grant's connection details, to break one field at a time.
         self.connection_patch: dict[str, Any] = {}
         # Pooled monthly call quotas, by server and cost center code, and what's spent of them.
@@ -316,6 +317,9 @@ class FakeWorld:
             "resource": {"kind": "modelApi", "id": "model-api-gpt"},
             "costCenterId": "cc-agents",
         }
+        # The model caller's grant over time: from each moment on the fake clock, whether it's
+        # enabled and the runtime status MOSAIC reports for it. M9 opens it only for its call.
+        self.model_grant_timeline: list[tuple[float, bool, str | None]] = [(0.0, True, "applied")]
         # For each device sign-in in turn: who signs in, and how each poll before they finish is
         # answered: an OAuth error with HTTP 400, a status with an HTML page and no OAuth error, or
         # a status with an OAuth error.
@@ -332,6 +336,8 @@ class FakeWorld:
         self.messages: list[dict[str, Any]] = []
         self.deletes: list[str] = []
         self.call_times: list[float] = []
+        # Reads of the model caller's grant, people's sign-ins and tool calls, in order.
+        self.journal: list[str] = []
 
     def transport(self) -> httpx.MockTransport:
         return httpx.MockTransport(self.handle)
@@ -348,6 +354,14 @@ class FakeWorld:
 
     def deleted(self, grant: FakeGrant) -> bool:
         return grant.deleted_at is not None and self.clock.now >= grant.deleted_at
+
+    def model_grant_state(self) -> tuple[bool, str | None]:
+        """Whether the model caller's grant is enabled now, and the status MOSAIC reports for it."""
+        state: tuple[bool, str | None] = (True, "applied")
+        for at, enabled, status in self.model_grant_timeline:
+            if self.clock.now >= at:
+                state = (enabled, status)
+        return state
 
     def phase(self, grant: FakeGrant) -> str:
         """The runtime status MOSAIC reports for the grant now."""
@@ -378,7 +392,7 @@ class FakeWorld:
                 return httpx.Response(self.usage_status)
             return httpx.Response(200, json=self.usage(USER_OID))
         if path.startswith("mcp-publications/"):
-            if token != ADMIN_CONTROL:
+            if token != self.admin_control:
                 return httpx.Response(401)
             identifier = path.removeprefix("mcp-publications/")
             server = next(
@@ -389,9 +403,14 @@ class FakeWorld:
                 return httpx.Response(404)
             return httpx.Response(200, json=self.publication(server))
         if path == f"entitlements/{MODEL_GRANT}":
-            if token != ADMIN_CONTROL:
+            if token != self.admin_control:
                 return httpx.Response(401)
-            return httpx.Response(200, json=self.model_grant)
+            enabled, status = self.model_grant_state()
+            self.journal.append(f"model grant {'enabled' if enabled else 'disabled'}, {status}")
+            runtime = {"publicationId": "pub-gpt", "status": status} if status else None
+            return httpx.Response(
+                200, json={**self.model_grant, "enabled": enabled, "runtime": runtime}
+            )
         parts = path.split("/")
         mine = parts[0] == "me"
         parts = parts[1:] if mine else parts
@@ -405,7 +424,7 @@ class FakeWorld:
                 return httpx.Response(401)
             if grant.kind != "user" or grant.oid != USER_OID:
                 return httpx.Response(404)
-        elif token != ADMIN_CONTROL:
+        elif token != self.admin_control:
             return httpx.Response(401)
         return httpx.Response(200, json=self.connection(grant))
 
@@ -481,6 +500,7 @@ class FakeWorld:
             call
             for call in self.model_calls
             if self.attribute
+            and call["granted"]
             and call["person"] == oid
             and call["reference"]
             and call["application"] == AGENT_OID
@@ -814,6 +834,7 @@ class FakeWorld:
     ) -> httpx.Response:
         name = message["params"]["name"]
         arguments = message["params"].get("arguments", {})
+        self.journal.append(f"tools/call {name}")
         if name not in server.tools:
             return self.answer(server, message, error={"code": -32602, "message": ECHO})
         if name == self.tool_error:
@@ -832,15 +853,22 @@ class FakeWorld:
             }
         elif name == "ask_model":
             # The agent calls a governed model as its own application, passing the reference on.
+            # The gateway refuses that call unless the application's model grant is applied.
+            enabled, status = self.model_grant_state()
+            granted = enabled and status == "applied"
             self.model_calls.append(
                 {
                     "reference": headers.get("x-mosaic-on-behalf-of"),
                     "application": server.model_caller,
                     "person": caller,
                     "at": self.clock.now,
+                    "granted": granted,
                 }
             )
-            result = {"content": [{"type": "text", "text": self.answer_text}]}
+            if granted:
+                result = {"content": [{"type": "text", "text": self.answer_text}]}
+            else:
+                result = {"content": [{"type": "text", "text": ECHO}], "isError": True}
         else:
             result = {"content": [{"type": "text", "text": "2026-10-05T12:00:00Z"}]}
         return self.answer(server, message, result=result)
@@ -908,6 +936,7 @@ class FakeWorld:
             # Entra puts every scope the client is consented for in the token.
             token = person_token(oid, scp="Mcp.Invoke Models.Invoke")
             self.issued.append(token)
+            self.journal.append("signed in")
             return httpx.Response(200, json={"access_token": token, "token_type": "Bearer"})
         if form["grant_type"] == "client_credentials":
             if form.get("client_id") != APP_CLIENT or form.get("client_secret") != APP_SECRET:
@@ -1734,6 +1763,21 @@ class McpAccessVerifierTests(unittest.TestCase):
                 "--model-caller-entitlement is only used with --await-attribution",
             ),
             (
+                [*TOOLS_ONLY, "--await-model-grant"],
+                ENV,
+                "--await-model-grant needs a --model-caller-entitlement",
+            ),
+            (
+                [*on_behalf, "--await-attribution", "--await-model-grant"],
+                ENV,
+                "--await-model-grant needs a --model-caller-entitlement",
+            ),
+            (
+                [*on_behalf, "--model-caller-entitlement", MODEL_GRANT, "--await-model-grant"],
+                ENV,
+                "--model-caller-entitlement is only used with --await-attribution",
+            ),
+            (
                 ["--application-entitlement", "app-tools", "--check-ungranted-user"],
                 ENV,
                 "need a --user-entitlement",
@@ -1769,10 +1813,32 @@ class McpAccessVerifierTests(unittest.TestCase):
                 ENV,
                 "Wait for one thing per run",
             ),
+            (
+                [
+                    *TOOLS_ONLY,
+                    *on_behalf,
+                    *("--watch-revocation", "user-tools", "--await-attribution"),
+                    *("--model-caller-entitlement", MODEL_GRANT, "--await-model-grant"),
+                ],
+                ENV,
+                "Wait for one thing per run",
+            ),
             ([*TOOLS_ONLY, "--revocation-timeout", "59"], ENV, "from 60 to 3600 seconds"),
             ([*TOOLS_ONLY, "--revocation-interval", "301"], ENV, "from 10 to 300 seconds"),
             ([*TOOLS_ONLY, "--attribution-timeout", "3601"], ENV, "from 60 to 3600 seconds"),
             ([*TOOLS_ONLY, "--attribution-interval", "29"], ENV, "from 30 to 600 seconds"),
+            (
+                [*TOOLS_ONLY, "--model-grant-timeout", "59"],
+                ENV,
+                "--model-grant-timeout must be from 60 to 1800 seconds",
+            ),
+            ([*TOOLS_ONLY, "--model-grant-timeout", "1801"], ENV, "from 60 to 1800 seconds"),
+            (
+                [*TOOLS_ONLY, "--model-grant-interval", "9"],
+                ENV,
+                "--model-grant-interval must be from 10 to 120 seconds",
+            ),
+            ([*TOOLS_ONLY, "--model-grant-interval", "121"], ENV, "from 10 to 120 seconds"),
             (TOOLS_ONLY, without(verifier.USER_CONTROL_TOKEN), verifier.USER_CONTROL_TOKEN),
             (TOOLS_ONLY, without(verifier.USER_RUNTIME_TOKEN), verifier.USER_RUNTIME_TOKEN),
             (on_behalf, without(verifier.USER_RUNTIME_TOKEN), verifier.USER_RUNTIME_TOKEN),
@@ -1814,6 +1880,15 @@ class McpAccessVerifierTests(unittest.TestCase):
             ),
             (
                 [*TOOLS_ONLY, "--prove-pooled-quota", "user-tools"],
+                without(verifier.ADMIN_CONTROL_TOKEN),
+                verifier.ADMIN_CONTROL_TOKEN,
+            ),
+            (
+                [
+                    *on_behalf,
+                    *("--await-attribution", "--model-caller-entitlement", MODEL_GRANT),
+                    "--await-model-grant",
+                ],
                 without(verifier.ADMIN_CONTROL_TOKEN),
                 verifier.ADMIN_CONTROL_TOKEN,
             ),
@@ -2577,6 +2652,225 @@ class McpAccessVerifierTests(unittest.TestCase):
         )
         self.assertEqual(world.model_calls, [])
 
+    GRANT_WAIT = (*AWAIT, "--model-caller-entitlement", MODEL_GRANT, "--await-model-grant")
+    GRANT_LINE = "the model caller's grant as"
+    REVOKE_NOW = "Revoke the model caller's grant now and apply its model's access plan"
+
+    def test_the_call_waits_for_the_model_caller_s_grant_after_the_sign_in(self) -> None:
+        # O51: M-agent's upstream is public, so its model grant opens only for the call. The person
+        # signs in while it's revoked, and then it's re-enabled and its model's plan applied.
+        world = standard_world()
+        world.device_logins = [(USER_OID, ["authorization_pending"] * 3)]
+        world.model_grant_timeline = [
+            (0.0, False, "revoked"),
+            (START + 40, True, "pending"),
+            (START + 70, True, "applying"),
+            (START + 100, True, "applied"),
+        ]
+        code, lines, errors = self.verify(
+            world,
+            [*self.GRANT_WAIT, "--user-token-source", "device-code"],
+            without(verifier.USER_RUNTIME_TOKEN),
+        )
+        self.assertEqual(code, 0, errors)
+        # After the sign-in, the grant was read until MOSAIC reported it applied, and no tool was
+        # called before then.
+        self.assertEqual(
+            world.journal,
+            [
+                "model grant disabled, revoked",
+                "signed in",
+                *["model grant disabled, revoked"] * 2,
+                *["model grant enabled, pending"] * 2,
+                *["model grant enabled, applying"] * 2,
+                "model grant enabled, applied",
+                "tools/call ask_model",
+            ],
+        )
+        self.assertEqual([call["granted"] for call in world.model_calls], [True])
+        self.assertEqual(world.clock.sleeps, [5] * 4 + [15] * 6 + [60] * 10)
+        wait = (
+            "WAIT: re-enable the model caller's grant in MOSAIC's console and apply its model's "
+            "access plan. Checking every 15 seconds for up to 600 seconds"
+        )
+        applied = "INFO: MOSAIC reports the model caller's grant as enabled and applied"
+        self.assertEqual(
+            [line for line in lines if line == wait or self.GRANT_LINE in line],
+            [
+                wait,
+                "WAIT: MOSAIC reports the model caller's grant as pending",
+                "WAIT: MOSAIC reports the model caller's grant as applying",
+                applied,
+            ],
+        )
+        # The prompt to close the grant follows the call's facts, before the attribution wait.
+        revoke = (
+            f"INFO: On-behalf grant (M-agent) made its model call. {self.REVOKE_NOW}; the "
+            "attribution wait goes on"
+        )
+        order = [
+            wait,
+            applied,
+            "PASS: On-behalf grant (M-agent) answered through ask_model, which calls a governed "
+            "model",
+            revoke,
+            "WAIT: On-behalf grant (M-agent) waiting for MOSAIC to attribute the model call to the "
+            "person. Checking every 60 seconds for up to 1800 seconds",
+            "PASS: On-behalf grant (M-agent): the attributed calls were charged to the model "
+            "caller's grant, on its model and under its cost center",
+        ]
+        for line in order:
+            self.assertIn(line, lines)
+        positions = [lines.index(line) for line in order]
+        self.assertEqual(positions, sorted(positions))
+        trace = next(index for index, line in enumerate(lines) if "MCP call trace" in line)
+        self.assertEqual(lines[trace + 1], revoke)
+
+    def test_a_model_caller_s_grant_already_applied_is_not_waited_for(self) -> None:
+        world = standard_world()
+        code, lines, errors = self.verify(world, list(self.GRANT_WAIT))
+        self.assertEqual(code, 0, errors)
+        self.assertEqual(
+            [line for line in lines if self.GRANT_LINE in line or "re-enable" in line],
+            ["INFO: MOSAIC reports the model caller's grant as enabled and applied"],
+        )
+        self.assertEqual(
+            world.journal, [*["model grant enabled, applied"] * 2, "tools/call ask_model"]
+        )
+        # Only the attribution wait sleeps.
+        self.assertEqual(world.clock.sleeps, [60] * 10)
+        self.assertIn(
+            f"INFO: On-behalf grant (M-agent) made its model call. {self.REVOKE_NOW}; the "
+            "attribution wait goes on",
+            lines,
+        )
+
+    def test_no_model_call_is_made_unless_the_grant_is_applied_in_time(self) -> None:
+        arguments = [*self.GRANT_WAIT, "--model-grant-timeout", "60"]
+        arguments += ["--model-grant-interval", "10"]
+        for timeline, shown in (
+            ([(0.0, False, "revoked")], "disabled"),
+            # A disabled grant isn't open, whatever its runtime status says.
+            ([(0.0, False, "applied")], "disabled"),
+            # Re-enabled, but its model's plan wasn't applied, or the apply didn't finish or failed.
+            ([(0.0, False, "revoked"), (START + 25, True, "pending")], "pending"),
+            ([(0.0, False, "revoked"), (START + 25, True, "applying")], "applying"),
+            ([(0.0, True, "failed")], "failed"),
+            # The model's access isn't set up, so MOSAIC reports no runtime for the grant.
+            ([(0.0, True, None)], "not set up"),
+        ):
+            with self.subTest(shown=shown, timeline=timeline):
+                world = standard_world()
+                world.model_grant_timeline = timeline
+                lines = self.fails(
+                    world,
+                    arguments,
+                    "The model caller's grant: after 60 seconds, MOSAIC reports it as "
+                    f"{shown}, not applied, so ask_model wasn't called. If you re-enabled it, "
+                    "revoke it again and apply its model's access plan before you rerun",
+                )
+                self.assertEqual(self.tool_calls(world), [])
+                self.assertEqual(world.model_calls, [])
+                self.assertEqual(world.clock.sleeps, [10] * 6)
+                self.assertFalse(any(self.REVOKE_NOW in line for line in lines))
+
+    def test_the_wait_for_the_model_caller_s_grant_needs_tokens_that_outlast_it(self) -> None:
+        # The administrator's token reads the grant until it's applied.
+        world = standard_world()
+        world.model_grant_timeline = [(0.0, False, "revoked")]
+        world.admin_control = jwt(
+            aud="api://mosaic-api", oid=ADMIN_OID, tid=TENANT, exp=WALL_CLOCK + 1800
+        )
+        lines = self.fails(
+            world,
+            [*self.GRANT_WAIT, "--model-grant-timeout", "1800", "--model-grant-interval", "120"],
+            "The model caller's grant: the administrator's MOSAIC control-plane token expires in "
+            "1800 seconds, and the wait can take 1980 seconds. Get a new one, or lower "
+            "--model-grant-timeout",
+            {**ENV, verifier.ADMIN_CONTROL_TOKEN: world.admin_control},
+        )
+        self.assertFalse(any("re-enable" in line for line in lines))
+        self.assertEqual(world.journal, ["model grant disabled, revoked"] * 2)
+        self.assertEqual(world.clock.sleeps, [])
+
+        # The user's token reads their usage report after both waits, so it must outlast both.
+        user_control = jwt(aud="api://mosaic-api", oid=USER_OID, tid=TENANT, exp=WALL_CLOCK + 2400)
+        env = {**ENV, verifier.USER_CONTROL_TOKEN: user_control}
+        world = standard_world()
+        world.model_grant_timeline = [(0.0, False, "revoked")]
+        world.user_control = user_control
+        lines = self.fails(
+            world,
+            list(self.GRANT_WAIT),
+            "On-behalf grant (M-agent): the MOSAIC control-plane token expires in 2400 seconds, "
+            "and the wait can take 2535 seconds. Get a new one, or lower --model-grant-timeout or "
+            "--attribution-timeout",
+            env,
+        )
+        self.assertFalse(any("re-enable" in line for line in lines))
+        self.assertEqual(world.journal, ["model grant disabled, revoked"])
+        # Without the wait for the grant, the same control token lasts the attribution wait.
+        world = standard_world()
+        world.user_control = user_control
+        code, _, errors = self.verify(
+            world, [*self.AWAIT, "--model-caller-entitlement", MODEL_GRANT], env
+        )
+        self.assertEqual(code, 0, errors)
+
+        # The person's MCP token makes the call after the wait, so it must last both.
+        short = {**ENV, verifier.USER_RUNTIME_TOKEN: person_token(exp=WALL_CLOCK + 600)}
+        world = standard_world()
+        world.model_grant_timeline = [(0.0, False, "revoked")]
+        lines = self.fails(
+            world,
+            list(self.GRANT_WAIT),
+            "On-behalf grant (M-agent): the user's MCP token expires in 600 seconds, and the wait "
+            "can take 795 seconds. Get a new one, or lower --model-grant-timeout",
+            short,
+        )
+        self.assertFalse(any("re-enable" in line for line in lines))
+        self.assertEqual(world.journal, ["model grant disabled, revoked"])
+        # Without the wait for the grant, the same MCP token makes the call straight away.
+        world = standard_world()
+        code, _, errors = self.verify(
+            world, [*self.AWAIT, "--model-caller-entitlement", MODEL_GRANT], short
+        )
+        self.assertEqual(code, 0, errors)
+
+    def test_only_a_run_that_waited_for_the_grant_says_to_revoke_it(self) -> None:
+        with_grant = [*self.AWAIT, "--model-caller-entitlement", MODEL_GRANT]
+        world = standard_world()
+        code, lines, errors = self.verify(world, with_grant)
+        self.assertEqual(code, 0, errors)
+        self.assertFalse(any(self.GRANT_LINE in line or self.REVOKE_NOW in line for line in lines))
+        self.assertEqual(world.journal, ["model grant enabled, applied", "tools/call ask_model"])
+
+        # Where the usage report can't show the attribution, the run ends after the call.
+        world = standard_world()
+        world.data_source = "simulated"
+        code, lines, errors = self.verify(world, list(self.GRANT_WAIT))
+        self.assertEqual(code, 0, errors)
+        self.assertIn(
+            f"INFO: On-behalf grant (M-agent) made its model call. {self.REVOKE_NOW}", lines
+        )
+
+        # A run that stops once the grant is applied says to revoke it, too.
+        stopped = (
+            "INFO: On-behalf grant (M-agent) stopped after the model caller's grant was applied. "
+            f"{self.REVOKE_NOW}"
+        )
+        for arguments, said in ((list(self.GRANT_WAIT), True), (with_grant, False)):
+            with self.subTest(said=said):
+                world = standard_world()
+                world.tool_error = "ask_model"
+                lines = self.fails(
+                    world,
+                    arguments,
+                    "On-behalf grant (M-agent): the ask_model tool returned an error",
+                )
+                self.assertEqual(stopped in lines, said)
+                self.assertFalse(any("made its model call" in line for line in lines))
+
     def test_the_verifier_matches_mosaic(self) -> None:
         try:
             from mosaic_api import domain
@@ -2605,6 +2899,29 @@ class McpAccessVerifierTests(unittest.TestCase):
             verifier.grant_trace_key(TENANT, "mcppub-agent", "user-agent"),
             access_policy.grant_counter_identity(publication, grant),
         )
+        # The wait for the model caller's grant reads it as the administrator's route returns it.
+        statuses = get_args(domain.EntitlementRuntime.model_fields["status"].annotation)
+        self.assertEqual(set(statuses), model_verifier.RUNTIME_STATUSES)
+        entitlement = domain.Entitlement.model_validate(
+            {
+                "id": MODEL_GRANT,
+                "tenantId": TENANT,
+                "subject": {"kind": "application", "id": "principal-agent"},
+                "resource": {"kind": "modelApi", "id": "model-api-gpt"},
+            }
+        )
+        body = entitlement.model_dump(mode="json")
+        self.assertEqual(verifier.model_grant_status(body), "not set up")
+        for enabled, status, shown in (
+            (False, "revoked", "disabled"),
+            (True, "pending", "pending"),
+            (True, "applied", "applied"),
+        ):
+            runtime = domain.EntitlementRuntime(publication_id="pub-gpt", status=status)
+            body = entitlement.model_copy(
+                update={"enabled": enabled, "runtime": runtime}
+            ).model_dump(mode="json")
+            self.assertEqual(verifier.model_grant_status(body), shown)
 
     def test_names_shared_with_the_model_verifier(self) -> None:
         for name in (

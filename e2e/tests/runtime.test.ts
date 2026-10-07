@@ -278,6 +278,14 @@ test("the revocation prompt names the grant to revoke, and device codes stay out
     'User grant 1 (gpt-4.1-mini)',
   )
   assert.equal(revocationPromptLabel('WAIT: MOSAIC reports User grant 1 as revoked'), undefined)
+  // M9's lines about opening and closing the model caller's grant around its call aren't revocation prompts.
+  for (const line of [
+    "WAIT: re-enable the model caller's grant in MOSAIC's console and apply its model's access plan. Checking every 15 seconds for up to 600 seconds",
+    "WAIT: MOSAIC reports the model caller's grant as pending",
+    "INFO: On-behalf grant (M-agent) made its model call. Revoke the model caller's grant now and apply its model's access plan; the attribution wait goes on",
+  ]) {
+    assert.equal(revocationPromptLabel(line), undefined, line)
+  }
   assert.equal(
     maskDeviceCode('SIGN IN as the user who holds these grants: open https://microsoft.com/devicelogin and enter the code ABCD-1234'),
     'SIGN IN as the user who holds these grants: open https://microsoft.com/devicelogin and enter the code [device code]',

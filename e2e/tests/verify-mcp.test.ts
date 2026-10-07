@@ -49,12 +49,15 @@ test('a minimal run gets the manifest origins and the verifier defaults', () => 
   assert.equal(result.checkUngrantedUser, false)
   assert.equal(result.checkMissingScope, false)
   assert.equal(result.awaitAttribution, false)
+  assert.equal(result.awaitModelGrant, false)
   assert.deepEqual(
     {
       revocationTimeoutSeconds: result.revocationTimeoutSeconds,
       revocationIntervalSeconds: result.revocationIntervalSeconds,
       attributionTimeoutSeconds: result.attributionTimeoutSeconds,
       attributionIntervalSeconds: result.attributionIntervalSeconds,
+      modelGrantTimeoutSeconds: result.modelGrantTimeoutSeconds,
+      modelGrantIntervalSeconds: result.modelGrantIntervalSeconds,
     },
     mcpDefaults,
   )
@@ -78,9 +81,13 @@ test('every flag passes through, in either --flag value or --flag=value form', (
     '--prove-call-limit',
     'ent_b',
     '--await-attribution',
+    '--await-model-grant',
     '--attribution-timeout',
     '900',
     '--attribution-interval=45',
+    '--model-grant-timeout',
+    '300',
+    '--model-grant-interval=20',
     '--send-model-requests',
   )
   assert.deepEqual(result.argv, [
@@ -94,7 +101,9 @@ test('every flag passes through, in either --flag value or --flag=value form', (
     '--prove-call-limit', 'ent_b',
     '--attribution-timeout', '900',
     '--attribution-interval', '45',
-    '--check-ungranted-user', '--check-missing-scope', '--await-attribution', '--send-model-requests',
+    '--model-grant-timeout', '300',
+    '--model-grant-interval', '20',
+    '--check-ungranted-user', '--check-missing-scope', '--await-attribution', '--await-model-grant', '--send-model-requests',
   ])
   assert.equal(result.onBehalfEntitlement, 'ent_agent')
   assert.equal(result.modelCallerEntitlement, 'ent_model')
@@ -103,6 +112,9 @@ test('every flag passes through, in either --flag value or --flag=value form', (
   assert.equal(result.applicationTokenSource, 'client-credentials')
   assert.equal(result.attributionTimeoutSeconds, 900)
   assert.equal(result.attributionIntervalSeconds, 45)
+  assert.equal(result.awaitModelGrant, true)
+  assert.equal(result.modelGrantTimeoutSeconds, 300)
+  assert.equal(result.modelGrantIntervalSeconds, 20)
   const pooled = plan(...user, '--prove-pooled-quota', 'ent_user', '--watch-revocation', 'ent_user', '--revocation-timeout=600', '--revocation-interval', '15')
   assert.equal(pooled.provePooledQuota, 'ent_user')
   assert.equal(pooled.watchRevocation, 'ent_user')
@@ -123,13 +135,15 @@ test('grant IDs can come from the manifest, and are checked like any other', () 
   // A reference must still resolve to a grant ID.
   assert.throws(() => plan('--user-entitlement', '@target:mcp.servers.m-tools.url'), /--user-entitlement needs a grant ID/)
   assert.throws(() => plan('--user-entitlement', '@target:mcp.grants.tools-user'), TargetsError)
-  // The runbook's M9 command names the agent's model grant from its server.
+  // The runbook's M9 command names the agent's model grant from its server, and waits for it to be applied.
   const agent = plan(
     '--on-behalf-entitlement', '@target:mcp.grants.agent-user.id', '--send-model-requests',
     '--await-attribution', '--model-caller-entitlement', '@target:mcp.servers.m-agent.modelCaller.modelGrant',
+    '--await-model-grant',
   )
   assert.equal(agent.onBehalfEntitlement, 'ent_00000000000000000000000000000006')
   assert.equal(agent.modelCallerEntitlement, 'ent_00000000000000000000000000000009')
+  assert.equal(agent.awaitModelGrant, true)
 })
 
 test('only known, full flag names reach the verifier, with checked values', () => {
@@ -149,6 +163,11 @@ test('only known, full flag names reach the verifier, with checked values', () =
     [[...user, '--attribution-timeout', '3601'], /from 60 to 3600/],
     [[...user, '--attribution-interval', '29'], /from 30 to 600/],
     [[...user, '--attribution-interval', '6e1'], /from 30 to 600/],
+    [[...user, '--model-grant-timeout', '59'], /--model-grant-timeout needs a whole number of seconds from 60 to 1800/],
+    [[...user, '--model-grant-timeout', '1801'], /from 60 to 1800/],
+    [[...user, '--model-grant-interval', '9'], /--model-grant-interval needs a whole number of seconds from 10 to 120/],
+    [[...user, '--model-grant-interval=121'], /from 10 to 120/],
+    [[...user, '--await-model-grant=yes'], /--await-model-grant takes no value/],
   ]
   for (const [args, message] of cases) assert.throws(() => plan(...args), message, args.join(' '))
 })
@@ -164,6 +183,9 @@ test('a run mirrors the verifier: acknowledged, with distinct grants, one proof 
     [[...user, '--await-attribution'], /need an --on-behalf-entitlement/],
     [[...user, '--model-caller-entitlement', 'ent_model'], /need an --on-behalf-entitlement/],
     [[...onBehalf, '--model-caller-entitlement', 'ent_model'], /--model-caller-entitlement is only used with --await-attribution/],
+    [[...user, '--await-model-grant'], /--await-model-grant needs a --model-caller-entitlement/],
+    [[...onBehalf, '--await-attribution', '--await-model-grant'], /--await-model-grant needs a --model-caller-entitlement/],
+    [[...onBehalf, '--model-caller-entitlement', 'ent_model', '--await-model-grant'], /--model-caller-entitlement is only used with --await-attribution/],
     [['--application-entitlement', 'ent_app', '--check-ungranted-user'], /need a --user-entitlement/],
     [[...onBehalf, '--check-missing-scope'], /need a --user-entitlement/],
     [[...user, '--prove-call-limit', 'ent_user', '--prove-pooled-quota', 'ent_user'], /Choose one proof per run/],
@@ -171,6 +193,10 @@ test('a run mirrors the verifier: acknowledged, with distinct grants, one proof 
     [[...user, ...onBehalf, '--prove-pooled-quota', 'ent_agent'], /--prove-pooled-quota must name a --user-entitlement/],
     [[...user, ...onBehalf, '--watch-revocation', 'ent_agent'], /--watch-revocation must name a --user-entitlement/],
     [[...user, ...onBehalf, '--watch-revocation', 'ent_user', '--await-attribution'], /Wait for one thing per run/],
+    [
+      [...user, ...onBehalf, '--watch-revocation', 'ent_user', '--await-attribution', '--model-caller-entitlement', 'ent_model', '--await-model-grant'],
+      /Wait for one thing per run/,
+    ],
   ]
   for (const [args, message] of cases) assert.throws(() => plan(...args), message, args.join(' '))
 })
@@ -205,7 +231,7 @@ test('the people in a run: the user, the admin where MOSAIC needs one, and a str
   assert.throws(() => mcpVerifyPersonas(targets, fromEnv, { stranger: 'outsider' }), /--stranger is only used with/)
 })
 
-test('tokens and the verifier get time for sign-ins, checks, and the one wait', () => {
+test('tokens and the verifier get time for sign-ins, checks, and the waits', () => {
   assert.deepEqual(mcpControlTokenNeeds(plan(...user)), { seconds: 1_200 })
   const watch = plan(...user, '--watch-revocation', 'ent_user')
   assert.deepEqual(mcpControlTokenNeeds(watch), { seconds: 1_200 + 900 + 30 + 60, shorten: 'Lower --revocation-timeout and run it again.' })
@@ -214,9 +240,16 @@ test('tokens and the verifier get time for sign-ins, checks, and the one wait', 
     seconds: 1_200 + 1_200 + 120 + 60,
     shorten: 'Lower --attribution-timeout and run it again.',
   })
+  // M9 can wait for the model caller's grant before its call, then for the call's attribution.
+  const grantWait = [...onBehalf, '--await-attribution', '--model-caller-entitlement', 'ent_model', '--await-model-grant']
+  const both = plan(...grantWait, '--model-grant-timeout', '300', '--model-grant-interval', '20')
+  const shortenBoth = 'Lower --model-grant-timeout or --attribution-timeout and run it again.'
+  assert.deepEqual(mcpControlTokenNeeds(both), { seconds: 1_200 + 300 + 20 + 1_800 + 60 + 60, shorten: shortenBoth })
+  assert.deepEqual(mcpControlTokenNeeds(plan(...grantWait)), { seconds: 1_200 + 600 + 15 + 1_800 + 60 + 60, shorten: shortenBoth })
   assert.equal(mcpVerifierTimeoutMs(plan(...user)), 45 * 60_000)
   assert.equal(mcpVerifierTimeoutMs(watch), (45 * 60 + 930) * 1_000)
   assert.equal(mcpVerifierTimeoutMs(attribution), (45 * 60 + 1_320) * 1_000)
+  assert.equal(mcpVerifierTimeoutMs(both), (45 * 60 + 320 + 1_860) * 1_000)
 
   // The MOSAIC API token check takes the MCP run's needs, and says what would shorten them.
   const now = 1_800_000_000
@@ -226,6 +259,12 @@ test('tokens and the verifier get time for sign-ins, checks, and the one wait', 
   assert.match(
     controlTokenProblem(token, holder, now, mcpControlTokenNeeds(attribution)) ?? '',
     /expires in 2000 seconds, and this run needs it for 2580\. Lower --attribution-timeout and run it again\.$/,
+  )
+  const longer = jwt({ tid: targets.tenantId, preferred_username: holder.upn, exp: now + 3_000 })
+  assert.equal(controlTokenProblem(longer, holder, now, mcpControlTokenNeeds(attribution)), undefined)
+  assert.match(
+    controlTokenProblem(longer, holder, now, mcpControlTokenNeeds(both)) ?? '',
+    /expires in 3000 seconds, and this run needs it for 3440\. Lower --model-grant-timeout or --attribution-timeout and run it again\.$/,
   )
 })
 
@@ -292,14 +331,21 @@ test('the harness matches the MCP verifier it drives', () => {
     'if not 10 <= args.revocation_interval <= 300:',
     'if not 60 <= args.attribution_timeout <= 3600:',
     'if not 30 <= args.attribution_interval <= 600:',
+    'if not 60 <= args.model_grant_timeout <= 1800:',
+    'if not 10 <= args.model_grant_interval <= 120:',
   ]) {
     assert.ok(source.includes(range), range)
   }
+  // The harness refuses a run as the verifier would, in the verifier's words.
+  assert.throws(() => plan(...user, '--await-model-grant'), /: --await-model-grant needs a --model-caller-entitlement\.$/)
+  assert.ok(source.includes('"--await-model-grant needs a --model-caller-entitlement"'), 'the switch needs a model caller')
   for (const constant of [
     `DEFAULT_REVOCATION_TIMEOUT = ${mcpDefaults.revocationTimeoutSeconds}`,
     `DEFAULT_REVOCATION_INTERVAL = ${mcpDefaults.revocationIntervalSeconds}`,
     `DEFAULT_ATTRIBUTION_TIMEOUT = ${mcpDefaults.attributionTimeoutSeconds}`,
     `DEFAULT_ATTRIBUTION_INTERVAL = ${mcpDefaults.attributionIntervalSeconds}`,
+    `DEFAULT_MODEL_GRANT_TIMEOUT = ${mcpDefaults.modelGrantTimeoutSeconds}`,
+    `DEFAULT_MODEL_GRANT_INTERVAL = ${mcpDefaults.modelGrantIntervalSeconds}`,
     // The manifest checks a call-limit or pooled grant against the proofs' bounds.
     `FLOW_CALLS = ${mcpCallLimitCalls[0] - 1}`,
     `CALL_LIMIT_CEILING = ${mcpCallLimitCalls[1]}`,
