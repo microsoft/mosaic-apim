@@ -316,8 +316,10 @@ class FakeWorld:
             "resource": {"kind": "modelApi", "id": "model-api-gpt"},
             "costCenterId": "cc-agents",
         }
-        # For each device sign-in in turn: who signs in, and the poll errors before they finish.
-        self.device_logins: list[tuple[str, list[str]]] = []
+        # For each device sign-in in turn: who signs in, and how each poll before they finish is
+        # answered: an OAuth error with HTTP 400, a status with an HTML page and no OAuth error, or
+        # a status with an OAuth error.
+        self.device_logins: list[tuple[str, list[str | int | tuple[int, str]]]] = []
         self.device_error: dict[str, Any] | None = None
         self.issued: list[str] = []
         self.login_forms: list[tuple[str, dict[str, str]]] = []
@@ -898,9 +900,11 @@ class FakeWorld:
                 return httpx.Response(400, json=self.device_error)
             oid, outcomes = self.device_logins[int(form["device_code"].rsplit("-", 1)[1]) - 1]
             if outcomes:
-                return httpx.Response(
-                    400, json={"error": outcomes.pop(0), "error_description": ECHO}
-                )
+                outcome = outcomes.pop(0)
+                if isinstance(outcome, int):
+                    return httpx.Response(outcome, text=f"<html><body>{ECHO}</body></html>")
+                status, error = (400, outcome) if isinstance(outcome, str) else outcome
+                return httpx.Response(status, json={"error": error, "error_description": ECHO})
             # Entra puts every scope the client is consented for in the token.
             token = person_token(oid, scp="Mcp.Invoke Models.Invoke")
             self.issued.append(token)
@@ -1543,6 +1547,35 @@ class McpAccessVerifierTests(unittest.TestCase):
             "docs/connect-to-mcp-servers.md#troubleshooting",
             env,
         )
+
+    def test_device_code_sign_in_waits_through_a_transient_sign_in_error(self) -> None:
+        # O50: a poll got HTTP 502 with no OAuth error while the person was still signing in.
+        world = standard_world()
+        world.device_logins = [(USER_OID, ["authorization_pending", 502, "authorization_pending"])]
+        code, _, errors = self.verify(
+            world,
+            [*TOOLS_ONLY, "--user-token-source", "device-code"],
+            without(verifier.USER_RUNTIME_TOKEN),
+        )
+        self.assertEqual(code, 0, errors)
+        self.assertIn(
+            "INFO: The sign-in service answered HTTP 502; still waiting for the user who holds "
+            "these grants to sign in",
+            errors.splitlines(),
+        )
+        self.assertEqual(world.clock.sleeps, [5, 5, 5, 5])
+        self.assertTrue(world.gateway_calls)
+
+        world = standard_world()
+        world.device_logins = [(USER_OID, [502] * model_verifier.TRANSIENT_SIGN_IN_ERRORS)]
+        self.fails(
+            world,
+            [*TOOLS_ONLY, "--user-token-source", "device-code"],
+            "Signing in the user who holds these grants failed: HTTP 502. See "
+            "docs/connect-to-mcp-servers.md#troubleshooting",
+            without(verifier.USER_RUNTIME_TOKEN),
+        )
+        self.assertEqual(world.gateway_calls, [])
 
     def test_the_ungranted_user_must_be_someone_else(self) -> None:
         world = standard_world()
