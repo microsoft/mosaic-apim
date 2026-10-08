@@ -1,5 +1,5 @@
 import { join } from 'node:path'
-import { type Targets, grantIdPattern, persona, resolveTargetRef } from './config.ts'
+import { type Targets, grantIdPattern, guidPattern, persona, resolveTargetRef } from './config.ts'
 import {
   type FlagSpec,
   type PersonaChoice,
@@ -39,6 +39,8 @@ export interface McpVerifyPlan {
   applicationTokenSource: McpApplicationTokenSource
   checkUngrantedUser: boolean
   checkMissingScope: boolean
+  /** M5: the public client, consented only for Models.Invoke, that the user signs in through again for that check. */
+  missingScopeClientId?: string
   /** M6: the grant whose call limit the run spends. */
   proveCallLimit?: string
   /** M6: the grant whose cost center's pooled quota on its server the run spends. */
@@ -70,6 +72,7 @@ const valueFlags: Readonly<Record<string, ValueFlag>> = {
   '--watch-revocation': grant,
   '--user-token-source': { choices: ['env', 'device-code'], expects: 'env or device-code' },
   '--application-token-source': { choices: ['env', 'client-credentials'], expects: 'env or client-credentials' },
+  '--missing-scope-client-id': { pattern: guidPattern, expects: 'a client ID GUID' },
   '--revocation-timeout': { range: [60, 3600], expects: 'a whole number of seconds from 60 to 3600' },
   '--revocation-interval': { range: [10, 300], expects: 'a whole number of seconds from 10 to 300' },
   '--attribution-timeout': { range: [60, 3600], expects: 'a whole number of seconds from 60 to 3600' },
@@ -111,6 +114,8 @@ export function planMcpVerification(targets: Targets, args: readonly string[]): 
   const awaitModelGrant = switches.has('--await-model-grant')
   const checkUngrantedUser = switches.has('--check-ungranted-user')
   const checkMissingScope = switches.has('--check-missing-scope')
+  const userTokenSource = (single('--user-token-source') ?? 'env') as McpUserTokenSource
+  const missingScopeClientId = single('--missing-scope-client-id')
   // The grants the run calls the echo and add tools with, which proofs and the revocation watch run on.
   const own = [...userEntitlements, ...applicationEntitlements]
   const listed = [...own, ...(onBehalfEntitlement === undefined ? [] : [onBehalfEntitlement])]
@@ -133,6 +138,9 @@ export function planMcpVerification(targets: Targets, args: readonly string[]): 
   }
   if ((checkUngrantedUser || checkMissingScope) && userEntitlements.length === 0) {
     throw new VerifyError('--check-ungranted-user and --check-missing-scope need a --user-entitlement.')
+  }
+  if (missingScopeClientId !== undefined && (!checkMissingScope || userTokenSource !== 'device-code')) {
+    throw new VerifyError('--missing-scope-client-id is only used with --check-missing-scope and --user-token-source device-code.')
   }
   if (proveCallLimit !== undefined && provePooledQuota !== undefined) {
     throw new VerifyError('Choose one proof per run: --prove-call-limit or --prove-pooled-quota.')
@@ -163,10 +171,11 @@ export function planMcpVerification(targets: Targets, args: readonly string[]): 
     applicationEntitlements,
     onBehalfEntitlement,
     modelCallerEntitlement,
-    userTokenSource: (single('--user-token-source') ?? 'env') as McpUserTokenSource,
+    userTokenSource,
     applicationTokenSource: (single('--application-token-source') ?? 'env') as McpApplicationTokenSource,
     checkUngrantedUser,
     checkMissingScope,
+    missingScopeClientId,
     proveCallLimit,
     provePooledQuota,
     watchRevocation,
@@ -256,20 +265,22 @@ function onBehalfWaits(plan: McpVerifyPlan): { seconds: number; flags: string[] 
 }
 
 /**
- * How long the driver lets the verifier run: two device sign-ins, whose codes last up to 15 minutes each, the
- * checks, and a revocation watch or M9's waits.
+ * How long the driver lets the verifier run: two device sign-ins, whose codes last up to 15 minutes each, another
+ * with --missing-scope-client-id, the checks, and a revocation watch or M9's waits.
  */
 export function mcpVerifierTimeoutMs(plan: McpVerifyPlan): number {
   const wait = plan.watchRevocation !== undefined
     ? plan.revocationTimeoutSeconds + plan.revocationIntervalSeconds
     : onBehalfWaits(plan).seconds
-  return (45 * 60 + wait) * 1_000
+  const signIn = plan.missingScopeClientId === undefined ? 0 : 15 * 60
+  return (45 * 60 + signIn + wait) * 1_000
 }
 
 /**
  * Variables drive.ts may pass from its own environment to one MCP verifier run. MOSAIC_SMOKE_USER_RUNTIME_TOKEN is
- * the user's model token, which --check-missing-scope sends to show a token without Mcp.Invoke is refused. The
- * MOSAIC API tokens are never among them: they always come from the personas' browsers.
+ * the user's model token, which --check-missing-scope sends to show a token without Mcp.Invoke is refused, unless
+ * --missing-scope-client-id signs the user in for one. The MOSAIC API tokens are never among them: they always come
+ * from the personas' browsers.
  */
 export const mcpForwardedVariables = [
   'MOSAIC_SMOKE_MCP_USER_RUNTIME_TOKEN',

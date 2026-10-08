@@ -6,7 +6,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { join } from 'node:path'
 import { createInterface } from 'node:readline'
 import { type AppName, type Targets, flags, loadTargets, persona, resolveTargetRef } from '../src/config.ts'
-import { carriesApiToken, deviceCodePersona, endsDeviceSignIn, typeDeviceCode } from '../src/device-code.ts'
+import { type DeviceSignIn, carriesApiToken, deviceCodePersona, followDeviceSignIns, typeDeviceCode } from '../src/device-code.ts'
 import { type LocatorOptions, describeLocator, locate } from '../src/locators.ts'
 import { ensureDir, artifactsDir, liveSessionFile, stateDir } from '../src/paths.ts'
 import {
@@ -294,11 +294,6 @@ interface DeviceSignInState {
   page?: Page
 }
 
-interface DeviceSignIn {
-  startedAt: number
-  finish(): void
-}
-
 /**
  * Enters a device code in the right persona's browser and picks the persona's account if Entra asks. The
  * person at the keyboard confirms the sign-in and completes MFA, as with every other sign-in.
@@ -394,7 +389,6 @@ function runVerifier(
     let dropped = 0
     let timedOut = false
     let settled = false
-    let signIn: DeviceSignIn | undefined
     let timer: ReturnType<typeof setTimeout> | undefined
 
     const emit = (line: string) => {
@@ -402,10 +396,10 @@ function runVerifier(
       if (lines.length > maxVerifyLines) dropped += lines.splice(0, lines.length - maxVerifyLines).length
       process.stdout.write(`[verify] ${line}\n`)
     }
-    const endSignIn = () => {
-      signIn?.finish()
-      signIn = undefined
-    }
+    const signIns = followDeviceSignIns(
+      (line) => parseSignInPrompt(line, run.subjects),
+      (prompt) => startDeviceSignIn(prompt, people, emit),
+    )
     const child = spawn(python, [run.script, ...run.argv], {
       cwd: repoRoot,
       env,
@@ -423,19 +417,11 @@ function runVerifier(
       settled = true
       clearTimeout(timer)
       signal.removeEventListener('abort', onAbort)
-      endSignIn()
+      signIns.end()
       if (dropped > 0) lines.unshift(`… ${dropped} earlier lines are in the live driver's terminal.`)
       resolve({ exitCode, timedOut, lines })
     }
-    const onLine = (raw: string) => {
-      if (signIn && endsDeviceSignIn(raw, Date.now() - signIn.startedAt)) endSignIn()
-      emit(publicLine(raw, secrets))
-      const prompt = parseSignInPrompt(raw, run.subjects)
-      if (prompt) {
-        endSignIn()
-        signIn = startDeviceSignIn(prompt, people, emit)
-      }
-    }
+    const onLine = (raw: string) => signIns.line(raw, () => emit(publicLine(raw, secrets)))
     createInterface({ input: child.stdout, crlfDelay: Infinity }).on('line', onLine)
     createInterface({ input: child.stderr, crlfDelay: Infinity }).on('line', onLine)
     signal.addEventListener('abort', onAbort, { once: true })

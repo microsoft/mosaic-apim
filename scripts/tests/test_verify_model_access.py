@@ -16,6 +16,9 @@ from scripts import verify_model_access as verifier
 TENANT = "11111111-1111-4111-8111-111111111111"
 AUDIENCE = "22222222-2222-4222-8222-222222222222"
 MODEL_CLIENT = "33333333-3333-4333-8333-333333333333"
+# A second public client, consented only for Models.Invoke, as the MCP verifier's
+# --missing-scope-client-id names.
+MODEL_ONLY_CLIENT = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
 APP_CLIENT = "44444444-4444-4444-8444-444444444444"
 USER_OID = "55555555-5555-4555-8555-555555555555"
 STRANGER_OID = "66666666-6666-4666-8666-666666666666"
@@ -236,6 +239,12 @@ class FakeWorld:
         # a status with an OAuth error.
         self.device_logins: list[tuple[str, list[str | int | tuple[int, str]]]] = []
         self.device_error: dict[str, Any] | None = None
+        # The scopes each public client is consented for. A sign-in for any other fails, and Entra
+        # puts every scope the client is consented for in its token, whatever the sign-in asked.
+        self.consents: dict[str, str] = {
+            MODEL_CLIENT: "Models.Invoke",
+            MODEL_ONLY_CLIENT: "Models.Invoke",
+        }
         self.requests: list[httpx.Request] = []
         self.model_calls: list[httpx.Request] = []
         self.login_forms: list[tuple[str, dict[str, str]]] = []
@@ -600,16 +609,31 @@ class FakeWorld:
         if form["grant_type"] == verifier.DEVICE_CODE_GRANT:
             if self.device_error is not None:
                 return httpx.Response(400, json=self.device_error)
-            oid, outcomes = self.device_logins[int(form["device_code"].rsplit("-", 1)[1]) - 1]
+            index = int(form["device_code"].rsplit("-", 1)[1]) - 1
+            started = [start for endpoint, start in self.login_forms if endpoint == "devicecode"]
+            client_id, scope = started[index]["client_id"], started[index]["scope"]
+            # A device code is redeemed by the client it was issued to.
+            assert form["client_id"] == client_id
+            oid, outcomes = self.device_logins[index]
             if outcomes:
                 outcome = outcomes.pop(0)
                 if isinstance(outcome, int):
                     return httpx.Response(outcome, text=f"<html><body>{ECHO}</body></html>")
                 status, error = (400, outcome) if isinstance(outcome, str) else outcome
                 return httpx.Response(status, json={"error": error, "error_description": ECHO})
-            return httpx.Response(
-                200, json={"access_token": user_token(oid), "token_type": "Bearer"}
-            )
+            resource, permission = scope.removeprefix("api://").rsplit("/", 1)
+            consented = self.consents.get(client_id, "")
+            if permission not in consented.split():
+                return httpx.Response(
+                    400,
+                    json={
+                        "error": "invalid_grant",
+                        "error_description": f"AADSTS65001: Consent is needed. {ECHO}",
+                        "error_codes": [65001],
+                    },
+                )
+            token = user_token(oid, resource, scp=consented, azp=client_id)
+            return httpx.Response(200, json={"access_token": token, "token_type": "Bearer"})
         if form["grant_type"] == "client_credentials":
             if form.get("client_id") != APP_CLIENT or form.get("client_secret") != APP_SECRET:
                 return httpx.Response(
@@ -1179,6 +1203,63 @@ class ModelAccessVerifierTests(unittest.TestCase):
         self.assertEqual(world.login_forms, [])
         self.assertEqual(world.model_calls, [])
 
+    def test_a_device_code_sign_in_uses_the_client_and_scope_it_is_given(self) -> None:
+        # The MCP verifier signs a person in through a second client too, for this scope.
+        scope = f"api://{AUDIENCE}/Models.Invoke"
+        who = "the user who holds these grants"
+
+        def sign_in(world: FakeWorld) -> tuple[str, str]:
+            stderr = io.StringIO()
+            with (
+                patch.object(verifier, "time", world.clock),
+                contextlib.redirect_stderr(stderr),
+                httpx.Client(transport=world.transport()) as client,
+            ):
+                token = verifier.device_code_token(
+                    client, tenant=TENANT, client_id=MODEL_ONLY_CLIENT, scope=scope, who=who
+                )
+            return token, stderr.getvalue()
+
+        world = standard_world()
+        world.device_logins = [(USER_OID, ["authorization_pending"])]
+        token, errors = sign_in(world)
+        # The device code is started and redeemed by the client it's given, for its scope.
+        poll = {
+            "grant_type": verifier.DEVICE_CODE_GRANT,
+            "client_id": MODEL_ONLY_CLIENT,
+            "device_code": "device-code-1",
+        }
+        self.assertEqual(
+            world.login_forms,
+            [
+                ("devicecode", {"client_id": MODEL_ONLY_CLIENT, "scope": scope}),
+                ("token", poll),
+                ("token", poll),
+            ],
+        )
+        claims = claims_of(token) or {}
+        self.assertEqual(
+            (claims["oid"], claims["aud"], claims["scp"], claims["azp"]),
+            (USER_OID, AUDIENCE, "Models.Invoke", MODEL_ONLY_CLIENT),
+        )
+        self.assertEqual(
+            errors,
+            f"SIGN IN as {who}: open https://microsoft.com/devicelogin and enter the code "
+            "CODE0001\n",
+        )
+
+        # A client that isn't consented for the scope can't sign anyone in for it.
+        world = standard_world()
+        world.consents[MODEL_ONLY_CLIENT] = "User.Read"
+        world.device_logins = [(USER_OID, [])]
+        with self.assertRaises(verifier.VerificationFailed) as raised:
+            sign_in(world)
+        self.assertEqual(
+            str(raised.exception),
+            f"Signing in {who} failed: invalid_grant, AADSTS65001. See "
+            "docs/call-models-with-entra-tokens.md#troubleshooting",
+        )
+
     def test_sign_in_failures_report_codes_only(self) -> None:
         world = standard_world()
         world.device_error = {
@@ -1315,7 +1396,8 @@ class ModelAccessVerifierTests(unittest.TestCase):
         rejected = [
             call
             for call in world.model_calls
-            if call.headers.get("Authorization") == f"Bearer {user_token(STRANGER_OID)}"
+            if call.headers.get("Authorization")
+            == f"Bearer {user_token(STRANGER_OID, azp=MODEL_CLIENT)}"
         ]
         self.assertEqual(len(rejected), 1)
 

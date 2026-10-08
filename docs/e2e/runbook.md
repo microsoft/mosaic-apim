@@ -396,9 +396,19 @@ tokens, enters the verifier's device codes in the right persona's browser, and r
     put it under a cost center of its own.
 - **Consent:** MOSAIC's model client, which connection details name as `clientId`, is consented for
   `api://<runtime-client-id>/Mcp.Invoke`, so people sign in to it with a device code.
-- **The manifest's `mcp` section** names each server and grant. A grant's ID can then be passed as
-  `@target:mcp.grants.<key>.id`. `targets.example.json` shows every field. The manifest is checked
-  on load, and a call-limit or pooled grant must be within the proofs' bounds.
+- **A second test client**, for M5's `--check-missing-scope`. Entra puts every scope a client is
+  consented for into each token it issues, and MOSAIC's model client is consented for both
+  `Models.Invoke` and `Mcp.Invoke`, so none of its tokens lacks `Mcp.Invoke`. The second client is
+  a public client registration that allows public client flows, so people sign in to it with a
+  device code and no secret, and it's consented only for `api://<runtime-client-id>/Models.Invoke`,
+  either for the grant holder alone or tenant-wide. With `--missing-scope-client-id`, the verifier
+  signs the grant holder in a second time, through this client for `Models.Invoke`, and sends that
+  token. The driver enters the code in the same persona's browser, so the person confirms a second
+  sign-in in the same run.
+- **The manifest's `mcp` section** names each server and grant, and the second test client. A
+  grant's ID can then be passed as `@target:mcp.grants.<key>.id`, and the client's as
+  `@target:mcp.missingScopeClientId`. `targets.example.json` shows every field. The manifest is
+  checked on load, and a call-limit or pooled grant must be within the proofs' bounds.
 
 | Field | What it names |
 | --- | --- |
@@ -412,6 +422,7 @@ tokens, enters the verifier's device codes in the right persona's browser, and r
 | `grants.<key>.costCenter` | The code of its cost center |
 | `grants.<key>.callLimit` | For M6: `calls` per `perSeconds`, the limit `--prove-call-limit` spends |
 | `grants.<key>.pooledCalls` | For M6: the monthly calls of its cost center's pool on the server, which `--prove-pooled-quota` spends |
+| `missingScopeClientId` | Optional. For M5's `--missing-scope-client-id`: the client ID of the second test client, a GUID |
 
 ### Run it
 
@@ -422,7 +433,8 @@ node tools/drive.ts verify-mcp -- `
   --user-entitlement @target:mcp.grants.protected-user.id `
   --application-entitlement @target:mcp.grants.tools-agent.id `
   --user-token-source device-code --application-token-source client-credentials `
-  --check-ungranted-user --check-missing-scope
+  --check-ungranted-user --check-missing-scope `
+  --missing-scope-client-id @target:mcp.missingScopeClientId
 
 # M6: a grant's call limit, then a cost center's pooled quota
 node tools/drive.ts verify-mcp -- --user-token-source device-code `
@@ -477,16 +489,19 @@ and the run fails this way.
     `MOSAIC_SMOKE_MCP_UNGRANTED_USER_RUNTIME_TOKEN`: MCP tokens to use instead of signing in.
   - `MOSAIC_SMOKE_APPLICATION_CLIENT_ID` and `MOSAIC_SMOKE_APPLICATION_CLIENT_SECRET`, for
     `--application-token-source client-credentials`.
-  - `MOSAIC_SMOKE_USER_RUNTIME_TOKEN`, the user's model token, which `--check-missing-scope` sends.
+  - `MOSAIC_SMOKE_USER_RUNTIME_TOKEN`, the user's model token. It's the alternative to
+    `--missing-scope-client-id`: without that flag, `--check-missing-scope` sends this token.
     Entra puts every scope a client is consented for into each token it issues, so once the model
     client is consented for `Mcp.Invoke`, its model tokens carry that too, and the verifier refuses
-    to use them. Take this token from a client that isn't consented for `Mcp.Invoke`.
+    to use them. Take this token from a client that isn't consented for `Mcp.Invoke`, such as the
+    second test client.
 - **Bills:** only `ask_model` calls a model, so only `--on-behalf-entitlement` needs
   `--send-model-requests`. The call is charged to M-agent's model grant. M-agent's upstream is
   public, so while that grant is open, anyone who reaches M-agent can spend it.
   `--await-model-grant` keeps it open only for M9's call.
-- **Time:** the driver stops the verifier after 45 minutes, plus the timeout and interval of each
-  wait: the revocation watch, or M9's waits for the model caller's grant and for the attribution.
+- **Time:** the driver stops the verifier after 45 minutes, or 60 with `--missing-scope-client-id`
+  for its second sign-in, plus the timeout and interval of each wait: the revocation watch, or
+  M9's waits for the model caller's grant and for the attribution.
   The MOSAIC API tokens must last 20 minutes, plus those timeouts and intervals and a minute. With
   M9's defaults that's about 62 minutes, longer than a token issued for an hour lasts, so if the
   driver says a token won't last, lower `--attribution-timeout`. For `--watch-revocation`, drive
@@ -546,7 +561,7 @@ ends, revoke the grant and apply its model's access plan.
 | M5 | MOSAIC's control-plane token gets 401 | Token validation checks the audience, so a MOSAIC API token never reaches the grant lookup. An `INFO` line says whether that 401 names the metadata, which ADR 0017 leaves to live verification |
 | M5 | An `x-mosaic-cost-center` that isn't a code, and a code the caller holds no grant under, get the cost-center rule's 403 | The header can't select a grant the caller doesn't hold |
 | M5 | An ungranted person's token gets 403 with `insufficient_scope` | A valid token isn't enough: the caller needs a grant |
-| M5 | The user's own token without `Mcp.Invoke`, such as a model token, gets 403 with `insufficient_scope` | Model and MCP permissions never open each other |
+| M5 | The user's own token without `Mcp.Invoke`, from the second test client's sign-in or a model token, gets 403 with `insufficient_scope` | Model and MCP permissions never open each other |
 | M5 | The person's token, and the application's `.default` token with `Mcp.Invoke.Application`, list the tools, and `echo` and `add` return the text and the sum | The gateway admits each kind of holder, and passes the streamable HTTP conversation through to the server |
 | M5 | Those calls name the grant's cost center in `x-mosaic-cost-center`: as MOSAIC gives the code when the session opens, then in the other case | The header selects the grant, compared without case |
 | M6 | `--prove-call-limit`: the first call leaves one fewer than the grant's limit in `x-mosaic-remaining-calls`, which falls on each successful call to 0, then the gateway's own 429 comes, with `Retry-After` in seconds | The gateway enforces the grant's own call limit, not a smaller or larger one, and reports it as it's spent. A 429 from the server, a quota's 403, or a refusal while calls are left fails the proof |
@@ -606,9 +621,12 @@ simulated or it has no usage report.
 | `Failed to open a new tab`, or `Target page, context or browser has been closed`, before a test opens its first page | That persona's browser has quit. A headed Chromium quits once its last tab closes, so the harness keeps one blank tab open in each persona's browser between tests. Don't close that tab or the browser window while a run is going. If it happens anyway, rerun |
 | `Worker teardown timeout of 180000ms exceeded` after the tests finished | Playwright waits for every browser it launched to exit before a worker stops, and on a busy machine that can outlast the timeout. The test results reported before it still stand. Rerun when the machine is less loaded if you need a clean exit code |
 | `Could not run the verifier with "python"` | Install `httpx` for that Python, or set `MOSAIC_E2E_PYTHON` to one that has it |
-| `AADSTS65001` when `verify-mcp` signs someone in | The model client isn't consented for `api://<runtime-client-id>/Mcp.Invoke`. An administrator consents it; see [Connect to MCP servers](../connect-to-mcp-servers.md#troubleshooting) |
+| `AADSTS65001` when `verify-mcp` signs someone in | The model client isn't consented for `api://<runtime-client-id>/Mcp.Invoke`. An administrator consents it; see [Connect to MCP servers](../connect-to-mcp-servers.md#troubleshooting). On the user's second sign-in, for `--missing-scope-client-id`, it's the second test client that isn't consented for `api://<runtime-client-id>/Models.Invoke` |
 | `Signing in … failed:` HTTP 500, 502, 503 or 504, `server_error` or `temporarily_unavailable` | The Microsoft sign-in service failed for a moment. While the code is still valid, the verifier keeps polling through a few of these in a row, with an `INFO` line for each, and the sign-in page stays open. It fails only when they keep coming, so rerun |
-| `MOSAIC_SMOKE_USER_RUNTIME_TOKEN carries Mcp.Invoke` | That model token came from a client consented for both scopes, so the gateway would accept it. Take it from a client that isn't consented for `Mcp.Invoke`, or leave out `--check-missing-scope` |
+| `MOSAIC_SMOKE_USER_RUNTIME_TOKEN carries Mcp.Invoke` | That model token came from a client consented for both scopes, so the gateway would accept it. Use `--missing-scope-client-id` with the second test client instead, take the token from a client that isn't consented for `Mcp.Invoke`, or leave out `--check-missing-scope` |
+| `The user's token from --missing-scope-client-id carries Mcp.Invoke` | The second test client is consented for `Mcp.Invoke` too, so its tokens carry it, and the gateway would accept them. Remove that consent, leaving it only `Models.Invoke`, and rerun |
+| `--missing-scope-client-id names MOSAIC's model client` | The flag, usually from `mcp.missingScopeClientId`, names the model client, which connection details name as `clientId`. Name the second test client instead. The run stopped before anyone signed in |
+| `its scope doesn't end in /Mcp.Invoke` | The second sign-in asks for the grant's scope with `Models.Invoke` in place of `Mcp.Invoke`, so it needs the grant's scope to end in `/Mcp.Invoke`, as `api://<runtime-client-id>/Mcp.Invoke` does. The run stopped before anyone signed in. Check the grant's connection details, or leave out `--missing-scope-client-id` and set `MOSAIC_SMOKE_USER_RUNTIME_TOKEN` instead |
 | `its server's last apply names no model caller` | Name M-agent's application under **Calls models as** on the MCP servers page, then plan and apply the server, before M9 |
 | `The model caller's grant: after N seconds, MOSAIC reports it as <status>, not applied` | Nobody re-enabled M-agent's model grant and applied its model's access plan within `--model-grant-timeout`, or the apply failed or hadn't finished. The run made no model call. If you re-enabled the grant, revoke it and apply the plan again, then rerun with it revoked. If applies take longer, raise `--model-grant-timeout`, up to 1800 |
 | `its first call left N of its M calls, not M-1` | Calls from the last window still count, or the gateway enforces a smaller limit than MOSAIC applied. Wait out the window with nothing calling the grant, then rerun; if it repeats, plan and apply the server's access |

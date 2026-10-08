@@ -17,7 +17,7 @@ import os
 import re
 import unittest
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from types import SimpleNamespace
 from typing import Any, get_args
 from unittest.mock import patch
@@ -32,6 +32,8 @@ TENANT = "11111111-1111-4111-8111-111111111111"
 # The model-runtime registration's client ID: the audience of MCP and model tokens alike.
 AUDIENCE = "22222222-2222-4222-8222-222222222222"
 MODEL_CLIENT = "33333333-3333-4333-8333-333333333333"
+# A second public client, consented only for Models.Invoke, for --missing-scope-client-id.
+MODEL_ONLY_CLIENT = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
 APP_CLIENT = "44444444-4444-4444-8444-444444444444"
 USER_OID = "55555555-5555-4555-8555-555555555555"
 STRANGER_OID = "66666666-6666-4666-8666-666666666666"
@@ -346,6 +348,12 @@ class FakeWorld:
         # a status with an OAuth error.
         self.device_logins: list[tuple[str, list[str | int | tuple[int, str]]]] = []
         self.device_error: dict[str, Any] | None = None
+        # The scopes each public client is consented for. A sign-in for any other fails, and Entra
+        # puts every scope the client is consented for in its token, whatever the sign-in asked.
+        self.consents: dict[str, str] = {
+            MODEL_CLIENT: "Mcp.Invoke Models.Invoke",
+            MODEL_ONLY_CLIENT: "Models.Invoke",
+        }
         self.issued: list[str] = []
         self.login_forms: list[tuple[str, dict[str, str]]] = []
         # What happened.
@@ -969,15 +977,30 @@ class FakeWorld:
         if form["grant_type"] == model_verifier.DEVICE_CODE_GRANT:
             if self.device_error is not None:
                 return httpx.Response(400, json=self.device_error)
-            oid, outcomes = self.device_logins[int(form["device_code"].rsplit("-", 1)[1]) - 1]
+            index = int(form["device_code"].rsplit("-", 1)[1]) - 1
+            started = [start for endpoint, start in self.login_forms if endpoint == "devicecode"]
+            client_id, scope = started[index]["client_id"], started[index]["scope"]
+            # A device code is redeemed by the client it was issued to.
+            assert form["client_id"] == client_id
+            oid, outcomes = self.device_logins[index]
             if outcomes:
                 outcome = outcomes.pop(0)
                 if isinstance(outcome, int):
                     return httpx.Response(outcome, text=f"<html><body>{ECHO}</body></html>")
                 status, error = (400, outcome) if isinstance(outcome, str) else outcome
                 return httpx.Response(status, json={"error": error, "error_description": ECHO})
-            # Entra puts every scope the client is consented for in the token.
-            token = person_token(oid, scp="Mcp.Invoke Models.Invoke")
+            resource, permission = scope.removeprefix("api://").rsplit("/", 1)
+            consented = self.consents.get(client_id, "")
+            if permission not in consented.split():
+                return httpx.Response(
+                    400,
+                    json={
+                        "error": "invalid_grant",
+                        "error_description": f"AADSTS65001: Consent is needed. {ECHO}",
+                        "error_codes": [65001],
+                    },
+                )
+            token = person_token(oid, aud=resource, scp=consented, azp=client_id)
             self.issued.append(token)
             self.journal.append("signed in")
             return httpx.Response(200, json={"access_token": token, "token_type": "Bearer"})
@@ -1011,6 +1034,13 @@ FULL = [
     *("--application-entitlement", "app-tools"),
 ]
 TOOLS_ONLY = ["--user-entitlement", "user-tools"]
+# The user signs in twice: through MOSAIC's model client for Mcp.Invoke, then through a client
+# consented only for Models.Invoke, for the token the missing-scope check sends.
+SECOND_SIGN_IN = [
+    *TOOLS_ONLY,
+    *("--user-token-source", "device-code", "--check-missing-scope"),
+    *("--missing-scope-client-id", MODEL_ONLY_CLIENT),
+]
 
 
 class McpAccessVerifierTests(unittest.TestCase):
@@ -1537,6 +1567,221 @@ class McpAccessVerifierTests(unittest.TestCase):
                 )
                 self.assertEqual(world.gateway_calls, [])
 
+    def test_without_a_second_client_the_token_still_comes_from_the_environment(self) -> None:
+        world = standard_world()
+        world.device_logins = [(USER_OID, [])]
+        code, lines, errors = self.verify(
+            world,
+            [*TOOLS_ONLY, "--user-token-source", "device-code", "--check-missing-scope"],
+            without(verifier.USER_RUNTIME_TOKEN),
+        )
+        self.assertEqual(code, 0, errors)
+        # One sign-in, for the MCP token. The token without Mcp.Invoke is the model token.
+        starts = [form for endpoint, form in world.login_forms if endpoint == "devicecode"]
+        self.assertEqual(
+            starts, [{"client_id": MODEL_CLIENT, "scope": f"api://{AUDIENCE}/Mcp.Invoke"}]
+        )
+        model_token = ENV[verifier.MODEL_RUNTIME_TOKEN]
+        sent = [
+            call
+            for call in world.gateway_calls
+            if call.headers.get("Authorization") == f"Bearer {model_token}"
+        ]
+        self.assertEqual(len(sent), 1)
+        self.assertTrue(
+            any(
+                line.startswith("PASS: User grant 1 (M-tools) rejected an anonymous call")
+                and line.endswith(", the user's token without Mcp.Invoke")
+                for line in lines
+            ),
+            lines,
+        )
+
+    def test_the_token_without_mcp_invoke_can_come_from_a_second_client(self) -> None:
+        world = standard_world()
+        world.device_logins = [
+            (USER_OID, []),
+            (STRANGER_OID, []),
+            (USER_OID, ["authorization_pending"]),
+        ]
+        # No person's token comes from the environment, not even the model token.
+        env = without(
+            verifier.USER_RUNTIME_TOKEN,
+            verifier.UNGRANTED_USER_RUNTIME_TOKEN,
+            verifier.MODEL_RUNTIME_TOKEN,
+        )
+        code, lines, errors = self.verify(
+            world,
+            [
+                *("--user-entitlement", "user-tools", "--user-entitlement", "user-protected"),
+                *("--user-token-source", "device-code", "--check-ungranted-user"),
+                # The client ID is compared without case.
+                *("--check-missing-scope", "--missing-scope-client-id", MODEL_ONLY_CLIENT.upper()),
+            ],
+            env,
+        )
+        self.assertEqual(code, 0, errors)
+        mcp = {"client_id": MODEL_CLIENT, "scope": f"api://{AUDIENCE}/Mcp.Invoke"}
+        models = {"client_id": MODEL_ONLY_CLIENT, "scope": f"api://{AUDIENCE}/Models.Invoke"}
+        starts = [form for endpoint, form in world.login_forms if endpoint == "devicecode"]
+        # The user signs in twice, through two clients for two scopes, and the stranger once.
+        self.assertEqual(starts, [mcp, mcp, models])
+        polls = [form["client_id"] for endpoint, form in world.login_forms if endpoint == "token"]
+        self.assertEqual(polls, [MODEL_CLIENT, MODEL_CLIENT, MODEL_ONLY_CLIENT, MODEL_ONLY_CLIENT])
+        # The user's two prompts name them alike, so the live driver enters both codes in their
+        # browser.
+        user = "SIGN IN as the user who holds these grants"
+        stranger = "SIGN IN as a different user, one with no grant for these MCP servers"
+        self.assertEqual(
+            [line for line in errors.splitlines() if line.startswith("SIGN IN")],
+            [
+                f"{who}: open https://microsoft.com/devicelogin and enter the code CODE000{number}"
+                for number, who in enumerate((user, stranger, user), start=1)
+            ],
+        )
+        # Every sign-in happens before the first call to the gateway.
+        hosts = [request.url.host for request in world.requests]
+        self.assertLess(
+            max(index for index, host in enumerate(hosts) if host == "login.microsoftonline.com"),
+            hosts.index("gateway.example"),
+        )
+        # The second client's token is the user's, for the same API, with only Models.Invoke.
+        model_only = world.issued[2]
+        claims = claims_of(model_only) or {}
+        self.assertEqual(
+            (claims["oid"], claims["aud"], claims["scp"], claims["azp"]),
+            (USER_OID, AUDIENCE, "Models.Invoke", MODEL_ONLY_CLIENT),
+        )
+        sent = [
+            call
+            for call in world.gateway_calls
+            if call.headers.get("Authorization") == f"Bearer {model_only}"
+        ]
+        self.assertEqual(len(sent), 2)
+        rejected = (
+            "rejected an anonymous call, a MOSAIC control-plane token, an x-mosaic-cost-center "
+            "header that isn't a code, a cost center it holds no grant under, the ungranted "
+            "user's token, the user's token without Mcp.Invoke"
+        )
+        for label in ("User grant 1 (M-tools)", "User grant 2 (M-protected)"):
+            self.assertIn(f"PASS: {label} {rejected}", lines)
+
+    def test_the_second_client_s_token_must_be_refused_for_its_scope(self) -> None:
+        env = without(verifier.USER_RUNTIME_TOKEN, verifier.MODEL_RUNTIME_TOKEN)
+        for setting, message in (
+            ("require_mcp_scope", "unexpected HTTP 200"),
+            ("scope_challenge", "the 403 didn't ask for Mcp.Invoke (insufficient_scope)"),
+        ):
+            with self.subTest(setting):
+                world = standard_world()
+                world.device_logins = [(USER_OID, []), (USER_OID, [])]
+                setattr(world, setting, False)
+                self.fails(
+                    world,
+                    SECOND_SIGN_IN,
+                    f"User grant 1 (M-tools) rejecting the user's token without Mcp.Invoke: "
+                    f"{message}",
+                    env,
+                )
+                self.assertEqual(self.tool_calls(world), [])
+
+    def test_the_second_client_s_token_must_be_the_user_s_and_lack_mcp_invoke(self) -> None:
+        env = without(verifier.USER_RUNTIME_TOKEN, verifier.MODEL_RUNTIME_TOKEN)
+        subject = "The user's token from --missing-scope-client-id"
+        for consents, second, message in (
+            # Consented for Mcp.Invoke too, the client's tokens carry it.
+            (
+                "Models.Invoke Mcp.Invoke",
+                USER_OID,
+                f"{subject} carries Mcp.Invoke, so the gateway would accept it. Entra puts every "
+                "scope a client is consented for in its tokens: use a client that isn't "
+                "consented for Mcp.Invoke",
+            ),
+            # Someone else confirmed the second sign-in.
+            (
+                "Models.Invoke",
+                STRANGER_OID,
+                f"{subject} belongs to someone other than the user who holds these grants",
+            ),
+            # Not consented for Models.Invoke, the client can't sign anyone in for it.
+            (
+                "User.Read",
+                USER_OID,
+                "Signing in the user who holds these grants failed: invalid_grant, AADSTS65001. "
+                "See docs/connect-to-mcp-servers.md#troubleshooting",
+            ),
+        ):
+            with self.subTest(message):
+                world = standard_world()
+                world.consents[MODEL_ONLY_CLIENT] = consents
+                world.device_logins = [(USER_OID, []), (second, [])]
+                self.fails(world, SECOND_SIGN_IN, message, env)
+                self.assertEqual(world.gateway_calls, [])
+
+    def test_mosaic_s_model_client_is_refused_before_anyone_signs_in(self) -> None:
+        world = standard_world()
+        self.fails(
+            world,
+            [
+                *TOOLS_ONLY,
+                *("--user-token-source", "device-code", "--check-missing-scope"),
+                *("--missing-scope-client-id", MODEL_CLIENT.upper()),
+            ],
+            "--missing-scope-client-id names MOSAIC's model client, which is consented for "
+            "Mcp.Invoke too. Name a client consented only for Models.Invoke",
+            without(verifier.USER_RUNTIME_TOKEN, verifier.MODEL_RUNTIME_TOKEN),
+        )
+        self.assertEqual(world.login_forms, [])
+        self.assertEqual(world.gateway_calls, [])
+
+    def test_the_model_scope_is_the_grant_s_with_models_invoke_for_mcp_invoke(self) -> None:
+        grant = verifier.McpGrant(
+            kind="user",
+            entitlement_id="user-tools",
+            label="User grant 1 (M-tools)",
+            server_id="mcpsrv-tools",
+            publication_id="mcppub-tools",
+            tenant_id=TENANT,
+            audience=AUDIENCE,
+            server_url=f"{ORIGIN}/mcp/m-tools/mcp",
+            metadata_url=f"{ORIGIN}/.well-known/oauth-protected-resource/mcp/m-tools/mcp",
+            scope=f"api://{AUDIENCE}/Mcp.Invoke",
+            client_id=MODEL_CLIENT,
+            cost_center="general",
+            via_group=False,
+            limits={},
+            control_token=USER_CONTROL,
+        )
+        self.assertEqual(
+            verifier.plan_missing_scope_sign_in(grant, MODEL_ONLY_CLIENT),
+            verifier.MissingScopeSignIn(MODEL_ONLY_CLIENT, f"api://{AUDIENCE}/Models.Invoke"),
+        )
+        # Only the last segment changes.
+        named = replace(grant, scope="api://Mcp.Invoke/Mcp.Invoke")
+        self.assertEqual(
+            verifier.plan_missing_scope_sign_in(named, MODEL_ONLY_CLIENT).scope,
+            "api://Mcp.Invoke/Models.Invoke",
+        )
+        for scope in (
+            f"api://{AUDIENCE}/.default",
+            f"api://{AUDIENCE}/Mcp.Invoke.Application",
+            f"api://{AUDIENCE}/mcp.invoke",
+            f"api://{AUDIENCE}/Mcp.Invoke/",
+            f"api://{AUDIENCE}/NotMcp.Invoke",
+            "Mcp.Invoke",
+        ):
+            with self.subTest(scope):
+                with self.assertRaises(verifier.VerificationFailed) as raised:
+                    verifier.plan_missing_scope_sign_in(
+                        replace(grant, scope=scope), MODEL_ONLY_CLIENT
+                    )
+                self.assertEqual(
+                    str(raised.exception),
+                    "User grant 1 (M-tools): its scope doesn't end in /Mcp.Invoke, so the verifier "
+                    "can't derive the Models.Invoke scope for --missing-scope-client-id to sign in "
+                    "for",
+                )
+
     def test_device_code_sign_ins_use_mosaic_s_client_and_mcp_s_scope(self) -> None:
         world = standard_world()
         world.device_logins = [
@@ -1779,6 +2024,12 @@ class McpAccessVerifierTests(unittest.TestCase):
 
     def test_arguments_and_credentials_are_checked_before_network(self) -> None:
         on_behalf = ["--on-behalf-entitlement", "user-agent", "--send-model-requests"]
+        second = ["--missing-scope-client-id", MODEL_ONLY_CLIENT]
+        signs_in = ["--user-token-source", "device-code"]
+        second_only = (
+            "--missing-scope-client-id is only used with --check-missing-scope and "
+            "--user-token-source device-code"
+        )
         for arguments, env, message in (
             (
                 [],
@@ -1829,6 +2080,19 @@ class McpAccessVerifierTests(unittest.TestCase):
                 [*on_behalf, "--check-missing-scope"],
                 ENV,
                 "need a --user-entitlement",
+            ),
+            (
+                [*on_behalf, *signs_in, "--check-missing-scope", *second],
+                ENV,
+                "need a --user-entitlement",
+            ),
+            ([*TOOLS_ONLY, *second], ENV, second_only),
+            ([*TOOLS_ONLY, "--check-missing-scope", *second], ENV, second_only),
+            ([*TOOLS_ONLY, *signs_in, *second], ENV, second_only),
+            (
+                [*TOOLS_ONLY, *signs_in, "--check-missing-scope", second[0], "not-a-guid"],
+                ENV,
+                "--missing-scope-client-id needs a client ID GUID",
             ),
             (
                 [*TOOLS_ONLY, "--prove-call-limit", "user-other"],

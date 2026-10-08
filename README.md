@@ -2091,9 +2091,11 @@ must name the server URL, the tenant's authorization server and
 `api://<runtime-client-id>/Mcp.Invoke`. MOSAIC's control-plane token must get `401`, and an
 `x-mosaic-cost-center` that isn't a code, or names a cost center the caller holds no grant under,
 must get the cost-center rule's `403`. With the checks requested, an ungranted user's token and the
-user's own token without `Mcp.Invoke`, from `MOSAIC_SMOKE_USER_RUNTIME_TOKEN`, must get `403` with
-`insufficient_scope`. Then the grant's own token must list the tools, and `echo` and `add` must
-return the text and the sum, with the grant's cost center named in either case.
+user's own token without `Mcp.Invoke` must get `403` with `insufficient_scope`. That token is
+`MOSAIC_SMOKE_USER_RUNTIME_TOKEN`, unless `--missing-scope-client-id <client-id>` names a public
+client consented only for `Models.Invoke`: then the verifier signs the user in again through it.
+Then the grant's own token must list the tools, and `echo` and `add` must return the text and the
+sum, with the grant's cost center named in either case.
 
 People sign in through the model client that connection details name, which needs consent for
 `Mcp.Invoke`, or supply `MOSAIC_SMOKE_MCP_USER_RUNTIME_TOKEN` and, for the ungranted user,

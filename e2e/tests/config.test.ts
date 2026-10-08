@@ -186,6 +186,25 @@ test('the mcp section is optional and parses the example', () => {
     resolveTargetRef(parseTargets(example()), '@target:mcp.grants.tools-user.id'),
     'ent_00000000000000000000000000000001',
   )
+  assert.equal(mcp?.missingScopeClientId, '33333333-3333-3333-3333-333333333333')
+  assert.equal(resolveTargetRef(parseTargets(example()), '@target:mcp.missingScopeClientId'), mcp?.missingScopeClientId)
+})
+
+test("mcp's second test client: optional, and a GUID when given", () => {
+  const input = example()
+  delete input.mcp.missingScopeClientId
+  assert.equal(parseTargets(input).mcp?.missingScopeClientId, undefined)
+  assert.throws(() => resolveTargetRef(parseTargets(input), '@target:mcp.missingScopeClientId'), /does not resolve to a manifest value/)
+  for (const value of ['mosaic-missing-scope-client', 'api://33333333-3333-3333-3333-333333333333', '33333333333333333333333333333333']) {
+    const changed = example()
+    changed.mcp.missingScopeClientId = value
+    assert.throws(() => parseTargets(changed), /targets\.mcp\.missingScopeClientId must be a GUID/, value)
+  }
+  for (const value of ['', 42]) {
+    const changed = example()
+    changed.mcp.missingScopeClientId = value
+    assert.throws(() => parseTargets(changed), /targets\.mcp\.missingScopeClientId must be a non-empty string/, String(value))
+  }
 })
 
 test('mcp servers: https URLs without keys, an audience for the managed identity, and their tools', () => {
