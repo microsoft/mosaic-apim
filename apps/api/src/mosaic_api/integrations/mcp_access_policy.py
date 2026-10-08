@@ -21,7 +21,7 @@ from mosaic_api.domain import (
     PolicySection,
     QuotaPeriod,
     grant_precedence_key,
-    mcp_metadata_api_path,
+    mcp_metadata_path,
 )
 from mosaic_api.errors import ValidationError
 from mosaic_api.integrations.access_policy import (
@@ -284,7 +284,7 @@ def _mcp_authentication(
     snapshot: McpAccessSnapshot,
     grants: list[McpAccessGrant],
 ) -> None:
-    metadata_path = f"{mcp_metadata_api_path(publication.api_path)}/{MCP_MESSAGE_PATH}"
+    metadata_path = mcp_metadata_path(publication.api_path)
     insufficient = _auth_header_value(
         metadata_path,
         (
@@ -425,7 +425,7 @@ def _api_policy(publication: McpPublication) -> ET.Element:
         "when",
         {"condition": "@(context.Response != null && context.Response.StatusCode == 401)"},
     )
-    metadata_path = f"{mcp_metadata_api_path(publication.api_path)}/{MCP_MESSAGE_PATH}"
+    metadata_path = mcp_metadata_path(publication.api_path)
     failure = 'context.Variables.GetValueOrDefault<string>("mosaic-mcp-auth-failure", "")'
     challenge = ET.SubElement(when, "choose")
     invalid = _auth_header_value(
@@ -552,7 +552,7 @@ def _facets(
                 "and MCP scope."
             ],
             attributes={
-                "metadata-path": f"{mcp_metadata_api_path(publication.api_path)}/{MCP_MESSAGE_PATH}"
+                "metadata-path": mcp_metadata_path(publication.api_path)
             },
             managed_by_mosaic=True,
         ),

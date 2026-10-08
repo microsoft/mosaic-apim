@@ -87,6 +87,7 @@ export const POOL_RESOURCE_KIND_LABELS: Record<PublishedResourceKind, string> = 
   api: 'API',
   apiOperation: 'Operation',
   apiPolicy: 'API policy',
+  apiOperationPolicy: 'Operation policy',
   product: 'Product',
   productApi: 'Product link',
   subscription: 'Subscription',

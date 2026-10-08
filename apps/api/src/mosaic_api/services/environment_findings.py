@@ -12,6 +12,7 @@ from mosaic_api.domain import (
     ModelEndpoint,
     MosaicModel,
     Publication,
+    PublishedResourceKind,
     canonical_mcp_url,
     deterministic_id,
     utc_now,
@@ -170,6 +171,12 @@ class EnvironmentFindingsService:
             for item in mcp_publications
             if item.may_own_gateway_state()
             for name in (item.api_name, item.metadata_api_name)
+        )
+        own_api_names.update(
+            (item.gateway_id, resource.name.casefold())
+            for item in mcp_publications
+            for resource in item.resources
+            if resource.kind == PublishedResourceKind.API and resource.created_by_mosaic
         )
         own_mcp_server_names = {
             (item.gateway_id, item.api_name.casefold())

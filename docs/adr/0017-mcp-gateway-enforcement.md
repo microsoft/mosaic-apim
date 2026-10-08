@@ -5,6 +5,10 @@ server that names the application it calls models as receives each call's refere
 calls can be attributed to the call's caller, and every MCP server removes a reference a caller
 sent.
 
+The 2026-10-08 amendment below replaces the per-publication metadata API with operations on one
+shared, blank-path API, because API Management services created since about October 2026 refuse an
+API path that starts with a dot.
+
 ## Context
 
 ADR 0007 let MOSAIC register MCP servers directly and record the tools they declare. ADR 0005 let
@@ -102,7 +106,9 @@ audience is refused because the gateway would not know which token to request.
 ## Alternatives considered
 
 - **Use one shared protected-resource-metadata API.** Rejected because it would create shared
-  ownership across publications and make rollback/unpublish unsafe under ADR 0010.
+  ownership across publications and make rollback/unpublish unsafe under ADR 0010. Reversed by the
+  2026-10-08 amendment: new API Management services refuse the per-publication API's path, and the
+  amendment confines the sharing to one API with no policy of its own.
 - **Forward the caller's bearer token to the MCP server.** Rejected. The token audience is MOSAIC's
   runtime registration, and the MCP authorization model forbids token passthrough to a different
   resource.
@@ -185,3 +191,73 @@ Live verification should also confirm that the trace's message reaches
   the backend URL.
 - **Existing publications are corrected by their next reviewed apply.** The plan shows the backend
   as an update, after the deny that guards every backend change.
+
+## Amendment 2026-10-08: Shared blank-path metadata API
+
+**What we saw.** On 8 October 2026, applying an MCP publication failed on API Management services
+created that month. Azure Resource Manager refused the per-publication metadata API with
+`400 ValidationError: Invalid value of the Web API URL suffix` (target `path`). Scratch tests showed
+that these services refuse any API path starting with `.`, with API versions `2022-08-01` and
+`2024-05-01`. A service created in August 2026 still accepted the same path. The same new services
+accept an API whose path is blank, and an operation on it whose URL template is
+`/.well-known/oauth-protected-resource/{api_path}/mcp`.
+
+**Decision.** New publications serve their protected resource metadata as an operation on one shared
+API, `mosaic-mcp-metadata`, whose path is blank. Each publication owns three things on that gateway:
+
+- its `GET` operation on the shared API, named `{api_name}-prm`, whose URL template is the standard
+  well-known path;
+- that operation's policy, which returns the metadata document;
+- a record of the shared API itself.
+
+The URL clients use doesn't change: `https://{gateway}/.well-known/oauth-protected-resource/{api_path}/mcp`.
+The `resource_metadata` value in `WWW-Authenticate` and the document's `resource` are therefore
+the same in both layouts.
+
+**Why routing elsewhere is unaffected.** API Management chooses the API whose path is the longest
+prefix of the request path, then matches the request against that API's operations. A blank-path API
+is chosen only when no other API's path matches. Within it, only its defined operations match, and
+anything else gets the same `404` it got before. Each operation's URL template is a literal path
+with no parameters, so one publication's operation can't answer for another.
+
+**Ownership of the shared API.** The shared API carries no policy and no backend: it is a blank-path
+shell with `subscriptionRequired` false. Publications never share a mutable policy, which is what
+ADR 0010 guards against.
+
+- The first apply that needs it creates it and records it as created by MOSAIC. Every later apply
+  that reuses it records it too, so the fact that MOSAIC created it is carried forward while any
+  publication still uses it.
+- MOSAIC uses an existing `mosaic-mcp-metadata` only if its path is blank and an MCP publication on
+  the gateway has that record. It never infers ownership from the name. Otherwise the plan, or an
+  apply that finds the API after planning, refuses without changing that API.
+- A plan restores the shared API's settings if they drifted, for example if someone set
+  `subscriptionRequired`.
+- Unpublishing deletes the publication's operation policy and operation. It deletes the shared API
+  only if no other operation remains on it and no other publication records it. Otherwise that step
+  is skipped and the unpublish still succeeds. The unpublish plan warns about this.
+- The API name `mosaic-mcp-metadata` is reserved. A publication can't use it as its MCP API name.
+
+**Conflicts that refuse a plan.** API Management allows only one API with a blank path. If the
+gateway already has another API there, MOSAIC refuses to publish rather than touch it, and names the
+API. MOSAIC also refuses if another API's path is a prefix of the metadata path, such as an API at
+`.well-known`, because that API would receive the metadata requests. Inventory and live checks
+both apply, so a conflicting API added after the last sync is still caught at plan time.
+Apply repeats these checks before writing, so a conflict introduced after the review is refused too.
+
+**Existing publications keep the legacy layout.** A publication whose record includes the old
+per-publication metadata API, its `metadata` operation or its policy keeps those resources: re-plans,
+applies and unpublishes treat them exactly as before. Those publications are on older services that
+still accept the path, so migrating them would only add risk. To move one to the shared layout,
+unpublish it and publish it again. A publication whose apply failed before it created the old
+metadata API, as on 8 October 2026, has no legacy record, so its next apply uses the shared layout.
+
+**Concurrency.** Alongside each publication's lock, MCP apply and unpublish hold a gateway-scoped,
+durable, non-expiring metadata write lock for the whole run. This serializes first creation,
+ownership recording, adding operations and last-user deletion, including across API processes.
+Another MCP writer on the gateway is refused while the lock is held; retry after the first finishes.
+An interrupted writer retains both locks until explicit recovery confirms it has stopped and
+establishes denial. Recovery also acquires the gateway lock for interrupted pre-upgrade runs.
+
+If someone adds an unrecorded operation to the shared API, unpublish keeps the API to avoid removing
+their operation. Once the last publication drops its reference, MOSAIC no longer has ownership
+evidence and refuses to adopt that retained API; an operator must resolve it before publishing again.

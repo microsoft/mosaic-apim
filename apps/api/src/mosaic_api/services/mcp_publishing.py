@@ -12,6 +12,8 @@ import structlog
 
 from mosaic_api.budgets import BLOCKED_COST_CENTERS_NAMED_VALUE
 from mosaic_api.domain import (
+    MCP_METADATA_API_NAME,
+    MCP_METADATA_OPERATION,
     ApimResourceId,
     AppliedCostCenterPool,
     AuditEvent,
@@ -53,6 +55,8 @@ from mosaic_api.domain import (
     grant_precedence_key,
     mcp_backend_url,
     mcp_metadata_api_path,
+    mcp_metadata_path,
+    mcp_metadata_url_template,
     mcp_publication_id,
     mcp_server_id,
     new_id,
@@ -66,7 +70,7 @@ from mosaic_api.environments import (
     refuse_blocked_pairing,
 )
 from mosaic_api.errors import ConflictError, NotFoundError, ValidationError
-from mosaic_api.integrations.apim import ApimClient
+from mosaic_api.integrations.apim import ApimClient, JsonObject
 from mosaic_api.integrations.apim.writer import ApimWriter
 from mosaic_api.integrations.mcp_access_policy import (
     McpPolicyDocuments,
@@ -110,9 +114,10 @@ MCP_CREATE_ORDER: tuple[PublishedResourceKind, ...] = (
     PublishedResourceKind.POLICY_FRAGMENT,
     PublishedResourceKind.API,
     PublishedResourceKind.API_POLICY,
+    # The gateway's shared metadata API, then this publication's operation on it and its policy.
     PublishedResourceKind.API,
     PublishedResourceKind.API_OPERATION,
-    PublishedResourceKind.API_POLICY,
+    PublishedResourceKind.API_OPERATION_POLICY,
 )
 
 
@@ -124,8 +129,37 @@ class _Resource:
     target_api: str | None = None
 
 
+def _is_shared_metadata_api(kind: PublishedResourceKind | str, name: str) -> bool:
+    return kind == PublishedResourceKind.API and name == MCP_METADATA_API_NAME
+
+
+def _legacy_metadata_keys(publication: McpPublication) -> set[tuple[PublishedResourceKind, str]]:
+    return {
+        (PublishedResourceKind.API, publication.metadata_api_name),
+        (PublishedResourceKind.API_OPERATION, MCP_METADATA_OPERATION),
+        (PublishedResourceKind.API_POLICY, publication.metadata_api_name),
+    }
+
+
+def _uses_legacy_metadata(publication: McpPublication) -> bool:
+    """Whether this publication still holds its own per-publication metadata API.
+
+    Publications applied before the shared metadata API keep that layout until they're
+    unpublished, so a re-plan never moves live discovery. Every other publication serves its
+    metadata from an operation on the shared, blank-path API. See the ADR 0017 amendment of
+    2026-10-08.
+    """
+
+    legacy = _legacy_metadata_keys(publication)
+    return any((item.kind, item.name) in legacy for item in publication.resources)
+
+
+def _metadata_layout(publication: McpPublication) -> str:
+    return "legacy" if _uses_legacy_metadata(publication) else "shared"
+
+
 def _desired_resources(publication: McpPublication) -> list[_Resource]:
-    return [
+    common = [
         _Resource(
             PublishedResourceKind.BACKEND,
             publication.backend_name,
@@ -143,24 +177,70 @@ def _desired_resources(publication: McpPublication) -> list[_Resource]:
             f"apis/{publication.api_name}/policies/policy",
             target_api=publication.api_name,
         ),
+    ]
+    if _uses_legacy_metadata(publication):
+        return [
+            *common,
+            _Resource(
+                PublishedResourceKind.API,
+                publication.metadata_api_name,
+                f"apis/{publication.metadata_api_name}",
+            ),
+            _Resource(
+                PublishedResourceKind.API_OPERATION,
+                MCP_METADATA_OPERATION,
+                f"apis/{publication.metadata_api_name}/operations/{MCP_METADATA_OPERATION}",
+                target_api=publication.metadata_api_name,
+            ),
+            _Resource(
+                PublishedResourceKind.API_POLICY,
+                publication.metadata_api_name,
+                f"apis/{publication.metadata_api_name}/policies/policy",
+                target_api=publication.metadata_api_name,
+            ),
+        ]
+    operation = f"apis/{MCP_METADATA_API_NAME}/operations/{publication.metadata_api_name}"
+    return [
+        *common,
         _Resource(
-            PublishedResourceKind.API,
-            publication.metadata_api_name,
-            f"apis/{publication.metadata_api_name}",
+            PublishedResourceKind.API, MCP_METADATA_API_NAME, f"apis/{MCP_METADATA_API_NAME}"
         ),
         _Resource(
             PublishedResourceKind.API_OPERATION,
-            "metadata",
-            f"apis/{publication.metadata_api_name}/operations/metadata",
-            target_api=publication.metadata_api_name,
+            publication.metadata_api_name,
+            operation,
+            target_api=MCP_METADATA_API_NAME,
         ),
         _Resource(
-            PublishedResourceKind.API_POLICY,
+            PublishedResourceKind.API_OPERATION_POLICY,
             publication.metadata_api_name,
-            f"apis/{publication.metadata_api_name}/policies/policy",
-            target_api=publication.metadata_api_name,
+            f"{operation}/policies/policy",
+            target_api=MCP_METADATA_API_NAME,
         ),
     ]
+
+
+def _api_name(api: JsonObject) -> str:
+    # A non-current revision is listed as ``name;rev=N`` and shares its API's path.
+    return str(api.get("name") or "").split(";", 1)[0]
+
+
+def _api_path(api: JsonObject) -> str:
+    properties = api.get("properties")
+    path = properties.get("path") if isinstance(properties, dict) else None
+    return path.strip("/") if isinstance(path, str) else ""
+
+
+def _serves_under(api_path: str, path: str) -> bool:
+    """Whether API Management could route a request for ``path`` to an API at ``api_path``.
+
+    The gateway picks the API whose path is the longest segment-wise prefix of the request path,
+    so any non-blank API path that is such a prefix would take the request.
+    """
+
+    api = api_path.strip("/").casefold()
+    target = path.strip("/").casefold()
+    return bool(api) and (target == api or target.startswith(f"{api}/"))
 
 
 def _resource_key(resource: PublishedResource | PublishStepResult) -> tuple[str, str]:
@@ -221,6 +301,8 @@ def mcp_publication_digest(
             "backendAudience": endpoint.resource_audience,
             "fragmentName": publication.fragment_name,
             "metadataApiName": publication.metadata_api_name,
+            "metadataLayout": _metadata_layout(publication),
+            "sharedMetadataApiName": MCP_METADATA_API_NAME,
             "mcpServerId": publication.mcp_server_id,
             "policySha256": policy.content_sha256,
             "accessSnapshot": snapshot.model_dump(mode="json"),
@@ -259,6 +341,8 @@ def mcp_unpublish_digest(publication: McpPublication) -> str:
             "gatewayId": publication.gateway_id,
             "apiName": publication.api_name,
             "metadataApiName": publication.metadata_api_name,
+            "metadataLayout": _metadata_layout(publication),
+            "sharedMetadataApiName": MCP_METADATA_API_NAME,
             "fragmentName": publication.fragment_name,
             "backendName": publication.backend_name,
             "appliedAccess": (
@@ -281,17 +365,24 @@ def _resource_label(publication: McpPublication, item: PublishedResource) -> str
     if item.kind == PublishedResourceKind.API_POLICY:
         return f"the policy on API {item.name}"
     if item.kind == PublishedResourceKind.API_OPERATION:
-        return f"operation {item.name} of API {publication.metadata_api_name}"
+        if item.name == MCP_METADATA_OPERATION:
+            return f"operation {item.name} of API {publication.metadata_api_name}"
+        return f"operation {item.name} of API {MCP_METADATA_API_NAME}"
+    if item.kind == PublishedResourceKind.API_OPERATION_POLICY:
+        return f"the policy on operation {item.name} of API {MCP_METADATA_API_NAME}"
     return f"{_KIND_NOUNS[item.kind]} {item.name}"
 
 
 def _removal_reason(publication: McpPublication, item: PublishedResource) -> str:
     if item.kind == PublishedResourceKind.API:
-        return (
-            "Delete the MCP API. The gateway stops serving the server."
-            if item.name == publication.api_name
-            else "Delete the API that tells MCP clients where to sign in."
-        )
+        if item.name == publication.api_name:
+            return "Delete the MCP API. The gateway stops serving the server."
+        if item.name == MCP_METADATA_API_NAME:
+            return (
+                "Delete the shared API that serves MCP sign-in metadata, if no other MCP server "
+                "on this gateway still uses it."
+            )
+        return "Delete the API that tells MCP clients where to sign in."
     if item.kind == PublishedResourceKind.API_POLICY:
         return (
             "Delete the MCP API's policy."
@@ -300,6 +391,9 @@ def _removal_reason(publication: McpPublication, item: PublishedResource) -> str
         )
     return {
         PublishedResourceKind.API_OPERATION: "Delete the operation that serves sign-in metadata.",
+        PublishedResourceKind.API_OPERATION_POLICY: (
+            "Delete the policy that returns this server's sign-in metadata."
+        ),
         PublishedResourceKind.POLICY_FRAGMENT: "Delete the MOSAIC enforcement fragment.",
         PublishedResourceKind.BACKEND: "Delete the backend that points at the MCP server.",
     }.get(item.kind, f"Delete {_resource_label(publication, item)}.")
@@ -434,6 +528,11 @@ class McpPublishingService:
         api_name = request.api_name or f"mosaic-mcp-{slug}"
         if request.api_name is not None and len(api_name) > 76:
             raise ValidationError("API names over 76 characters leave no room for the metadata API")
+        if api_name.casefold() == MCP_METADATA_API_NAME:
+            raise ValidationError(
+                f"{MCP_METADATA_API_NAME} is the name of the API through which MOSAIC serves MCP "
+                "sign-in metadata. Choose another API name for this server."
+            )
         api_path = request.api_path or f"mosaic/mcp/{slug}"
         publication = McpPublication(
             id=mcp_publication_id(actor.tenant_id, gateway.id, endpoint.id),
@@ -599,7 +698,7 @@ class McpPublishingService:
         environment_fingerprint = compatibility_fingerprint(
             catalog, gateway.environment, endpoint.environment
         )
-        await self._reject_live_collisions(actor, publication, gateway)
+        await self._reject_live_collisions(actor.tenant_id, publication, gateway)
 
         snapshot, access_warnings = await self._access_snapshot(publication, endpoint)
         policy = _policy_documents(
@@ -667,10 +766,15 @@ class McpPublishingService:
         owner = new_id("publishrun")
         await self._repository.acquire_publication_lock(actor.tenant_id, publication_id, owner)
         self._active.add(publication_id)
+        publication: McpPublication | None = None
         try:
+            publication = await self.get_publication(actor, publication_id)
+            await self._acquire_metadata_lock(publication, owner)
             return await self._apply_locked(actor, publication_id, plan_id, owner)
         except BaseException:
             self._active.discard(publication_id)
+            if publication is not None:
+                await self._release_metadata_lock(publication, owner)
             await self._repository.release_publication_lock(
                 actor.tenant_id, publication_id, owner
             )
@@ -776,6 +880,15 @@ class McpPublishingService:
                     "Before it deletes anything, MOSAIC replaces the MCP API's policy with one "
                     "that refuses every call, so callers are cut off first.",
                     *(
+                        [
+                            f"API {MCP_METADATA_API_NAME} serves sign-in metadata for every MCP "
+                            "server MOSAIC publishes on this gateway. Unpublishing deletes it only "
+                            "if no other MCP server still uses it."
+                        ]
+                        if any(_is_shared_metadata_api(item.kind, item.name) for item in removals)
+                        else []
+                    ),
+                    *(
                         f"MOSAIC didn't create {_resource_label(publication, item)}, so it stays "
                         "in API Management."
                         for item in publication.resources
@@ -802,8 +915,10 @@ class McpPublishingService:
         owner = new_id("publishrun")
         await self._repository.acquire_publication_lock(actor.tenant_id, publication_id, owner)
         self._active.add(publication_id)
+        publication: McpPublication | None = None
         try:
             publication = await self.get_publication(actor, publication_id)
+            await self._acquire_metadata_lock(publication, owner)
             gateway = await self._load_gateway(actor, publication.gateway_id)
             self._require_writable(gateway)
             plan = await self._repository.get_publish_plan(actor.tenant_id, plan_id)
@@ -828,6 +943,8 @@ class McpPublishingService:
             return run
         except BaseException:
             self._active.discard(publication_id)
+            if publication is not None:
+                await self._release_metadata_lock(publication, owner)
             await self._repository.release_publication_lock(
                 actor.tenant_id, publication_id, owner
             )
@@ -900,6 +1017,8 @@ class McpPublishingService:
             raise ConflictError("This process still has an active writer.")
         gateway = await self._load_gateway(actor, publication.gateway_id)
         self._require_writable(gateway)
+        # Pre-upgrade interrupted runs may hold only the publication lock.
+        await self._acquire_metadata_lock(publication, run.id)
         client = self._client_factory(ApimResourceId.parse(gateway.azure_resource_id))
         writer = self._writer_factory(ApimResourceId.parse(gateway.azure_resource_id))
         resources = list(publication.resources)
@@ -1146,13 +1265,122 @@ class McpPublishingService:
                 "Another API in this gateway is already served at a planned MCP path.",
                 details={"conflictingApi": clash.name},
             )
+        self._reject_metadata_route_conflicts(
+            publication, [(item.name, item.path) for item in observed]
+        )
+
+    def _reject_metadata_route_conflicts(
+        self, publication: McpPublication, apis: list[tuple[str, str]]
+    ) -> None:
+        """Refuse APIs that would stop the shared metadata API serving this publication.
+
+        API Management routes a request to the API whose path is the longest prefix of the
+        request's path, and within a blank-path API only to its defined operations. So the shared
+        metadata API answers ``/.well-known/oauth-protected-resource/{api_path}/mcp`` only while no
+        other API's path is a prefix of it, and only one API can have the blank path. A legacy
+        publication's own metadata API has the longest such prefix, so these checks don't apply to
+        it.
+        """
+
+        if _uses_legacy_metadata(publication):
+            return
+        target = mcp_metadata_path(publication.api_path)
+        for raw_name, raw_path in apis:
+            name = raw_name.split(";", 1)[0]
+            path = raw_path.strip("/")
+            if name == MCP_METADATA_API_NAME:
+                if path:
+                    raise ConflictError(
+                        f"API {MCP_METADATA_API_NAME} is served at /{path}, not at the gateway's "
+                        "blank path. MOSAIC keeps that name for the API that serves MCP sign-in "
+                        "metadata, and won't change an API it can't vouch for. Rename or delete "
+                        "that API, then plan again.",
+                        details={"conflictingApi": name, "path": path},
+                    )
+                continue
+            if not path:
+                raise ConflictError(
+                    f"API {name} already uses this gateway's blank path. MOSAIC serves MCP "
+                    f"sign-in metadata from its own blank-path API, {MCP_METADATA_API_NAME}, and "
+                    "API Management allows only one API with that path. Give that API a path, "
+                    "then plan again.",
+                    details={"conflictingApi": name},
+                )
+            if _serves_under(path, target):
+                raise ConflictError(
+                    f"API {name} at /{path} would receive requests for this server's sign-in "
+                    f"metadata at /{target}, so MCP clients couldn't discover where to sign in. "
+                    "Move that API, or publish this server at another path.",
+                    details={"conflictingApi": name, "path": path},
+                )
+
+    async def _shared_metadata_api_recorded(self, publication: McpPublication) -> bool:
+        """Whether a MOSAIC MCP publication on this gateway recorded the shared metadata API.
+
+        Every publication that serves its metadata through the shared API records it as created by
+        MOSAIC, a fact first recorded by the apply that created it and carried forward by each one
+        that reused it. MOSAIC never infers that ownership from the API's name.
+        """
+
+        def holds(item: McpPublication) -> bool:
+            return any(
+                _is_shared_metadata_api(resource.kind, resource.name)
+                and resource.created_by_mosaic
+                for resource in item.resources
+            )
+
+        if holds(publication):
+            return True
+        return any(
+            holds(item)
+            for item in await self._repository.list_mcp_publications(
+                publication.tenant_id, gateway_id=publication.gateway_id
+            )
+        )
+
+    async def _shared_metadata_api(
+        self, publication: McpPublication, client: ApimClient
+    ) -> JsonObject | None:
+        """The live shared metadata API, or ``None``. Refuses one MOSAIC can't vouch for."""
+
+        live = await client.get_api(MCP_METADATA_API_NAME)
+        if live is None:
+            return None
+        path = _api_path(live)
+        if path:
+            raise ConflictError(
+                f"API {MCP_METADATA_API_NAME} is served at /{path}, not at the gateway's blank "
+                "path. MOSAIC keeps that name for the API that serves MCP sign-in metadata, and "
+                "won't change an API it can't vouch for. Rename or delete that API, then plan "
+                "again.",
+                details={"conflictingApi": MCP_METADATA_API_NAME, "path": path},
+            )
+        if not await self._shared_metadata_api_recorded(publication):
+            raise ConflictError(
+                f"API {MCP_METADATA_API_NAME} is in this gateway, but no MOSAIC MCP publication "
+                "recorded creating it, so MOSAIC won't use or change it. Delete that API if "
+                "nothing else needs it, then plan again.",
+                details={"conflictingApi": MCP_METADATA_API_NAME},
+            )
+        return live
+
+    @staticmethod
+    def _shared_metadata_api_drifted(live: JsonObject) -> bool:
+        properties = live.get("properties")
+        return (
+            not isinstance(properties, dict)
+            or properties.get("subscriptionRequired") is not False
+        )
 
     async def _reject_live_collisions(
-        self, actor: Actor, publication: McpPublication, gateway: Gateway
+        self, tenant_id: str, publication: McpPublication, gateway: Gateway
     ) -> None:
         resource = ApimResourceId.parse(gateway.azure_resource_id)
         client = self._client_factory(resource)
         for item in _desired_resources(publication):
+            if _is_shared_metadata_api(item.kind, item.name):
+                await self._shared_metadata_api(publication, client)
+                continue
             if await self._exists(client, publication, item) and not self._owns(
                 publication, item.kind, item.name
             ):
@@ -1165,8 +1393,17 @@ class McpPublishingService:
             for item in publication.resources
             if item.kind == PublishedResourceKind.API and item.created_by_mosaic
         }
+        if not _uses_legacy_metadata(publication):
+            self._reject_metadata_route_conflicts(
+                publication,
+                [
+                    (_api_name(api), _api_path(api))
+                    for api in await client.list_apis()
+                    if _api_name(api) not in owned_apis
+                ],
+            )
         observed = await self._repository.list_observed(
-            ObservedApi, actor.tenant_id, gateway.id, "observedApi"
+            ObservedApi, tenant_id, gateway.id, "observedApi"
         )
         paths = {
             publication.api_path.strip("/").casefold(),
@@ -1416,17 +1653,29 @@ class McpPublishingService:
     ) -> list[PublishPlanStep]:
         base: dict[tuple[PublishedResourceKind, str], PublishPlanStep] = {}
         for item in _desired_resources(publication):
-            exists = await self._exists(client, publication, item)
-            if exists and not self._owns(publication, item.kind, item.name):
-                raise ConflictError(
-                    "MOSAIC does not own an existing MCP publication resource.",
-                    details={"kind": str(item.kind), "name": item.name},
+            if _is_shared_metadata_api(item.kind, item.name):
+                live = await self._shared_metadata_api(publication, client)
+                exists = live is not None
+                action = (
+                    PublishAction.CREATE
+                    if live is None
+                    else PublishAction.UPDATE
+                    if self._shared_metadata_api_drifted(live)
+                    else PublishAction.NO_CHANGE
                 )
+            else:
+                exists = await self._exists(client, publication, item)
+                if exists and not self._owns(publication, item.kind, item.name):
+                    raise ConflictError(
+                        "MOSAIC does not own an existing MCP publication resource.",
+                        details={"kind": str(item.kind), "name": item.name},
+                    )
+                action = PublishAction.UPDATE if exists else PublishAction.CREATE
             base[(item.kind, item.name)] = PublishPlanStep(
                 kind=item.kind,
                 name=item.name,
-                action=PublishAction.UPDATE if exists else PublishAction.CREATE,
-                reason=self._reason(publication, item, existed=exists),
+                action=action,
+                reason=self._reason(publication, item, existed=exists, action=action),
                 resource_id=f"{resource.canonical}/{item.segment}",
                 existed=exists,
                 stage="prepare",
@@ -1472,13 +1721,22 @@ class McpPublishingService:
                 update={"stage": "policy", "reason": "Install the reviewed MCP access policy."}
             )
         )
-        steps.append(base[(PublishedResourceKind.API, publication.metadata_api_name)])
-        steps.append(base[(PublishedResourceKind.API_OPERATION, "metadata")])
-        steps.append(
-            base[(PublishedResourceKind.API_POLICY, publication.metadata_api_name)].model_copy(
-                update={"stage": "policy"}
+        if _uses_legacy_metadata(publication):
+            steps.append(base[(PublishedResourceKind.API, publication.metadata_api_name)])
+            steps.append(base[(PublishedResourceKind.API_OPERATION, MCP_METADATA_OPERATION)])
+            steps.append(
+                base[(PublishedResourceKind.API_POLICY, publication.metadata_api_name)].model_copy(
+                    update={"stage": "policy"}
+                )
             )
-        )
+        else:
+            steps.append(base[(PublishedResourceKind.API, MCP_METADATA_API_NAME)])
+            steps.append(base[(PublishedResourceKind.API_OPERATION, publication.metadata_api_name)])
+            steps.append(
+                base[
+                    (PublishedResourceKind.API_OPERATION_POLICY, publication.metadata_api_name)
+                ].model_copy(update={"stage": "policy"})
+            )
         steps.append(
             mcp_api.model_copy(
                 update={
@@ -1492,7 +1750,28 @@ class McpPublishingService:
         return steps
 
     @staticmethod
-    def _reason(publication: McpPublication, item: _Resource, *, existed: bool) -> str:
+    def _reason(
+        publication: McpPublication,
+        item: _Resource,
+        *,
+        existed: bool,
+        action: PublishAction | None = None,
+    ) -> str:
+        if _is_shared_metadata_api(item.kind, item.name):
+            if action == PublishAction.NO_CHANGE:
+                return (
+                    "Use the gateway's shared, blank-path API that serves MCP protected resource "
+                    "metadata. MOSAIC leaves it as it is."
+                )
+            if existed:
+                return (
+                    "Restore the shared, blank-path API that serves MCP protected resource "
+                    "metadata, so it needs no subscription."
+                )
+            return (
+                "Create the shared, blank-path API that serves MCP protected resource metadata "
+                "for every MCP server MOSAIC publishes on this gateway."
+            )
         subject = {
             PublishedResourceKind.BACKEND: "the backend pointing at the registered MCP server",
             PublishedResourceKind.POLICY_FRAGMENT: "the MOSAIC MCP enforcement fragment",
@@ -1502,6 +1781,7 @@ class McpPublishingService:
                 else "the protected resource metadata API"
             ),
             PublishedResourceKind.API_OPERATION: "the protected resource metadata operation",
+            PublishedResourceKind.API_OPERATION_POLICY: "the protected resource metadata policy",
             PublishedResourceKind.API_POLICY: (
                 "the MCP API policy"
                 if item.name == publication.api_name
@@ -1545,6 +1825,9 @@ class McpPublishingService:
             case PublishedResourceKind.API_OPERATION:
                 api = item.target_api or publication.metadata_api_name
                 return await client.get_api_operation(api, item.name) is not None
+            case PublishedResourceKind.API_OPERATION_POLICY:
+                api = item.target_api or MCP_METADATA_API_NAME
+                return await client.get_operation_policy(api, item.name) is not None
             case PublishedResourceKind.API_POLICY:
                 api = item.target_api or item.name
                 if api == publication.api_name:
@@ -1584,8 +1867,42 @@ class McpPublishingService:
             != run.id
         ):
             raise ConflictError("The MCP publication write lock is no longer owned by this run")
+        if (
+            await self._repository.get_publication_lock(
+                publication.tenant_id, self._metadata_lock_id(publication)
+            )
+            != run.id
+        ):
+            raise ConflictError(
+                "The gateway's MCP metadata write lock is no longer owned by this run"
+            )
+
+    @staticmethod
+    def _metadata_lock_id(publication: McpPublication) -> str:
+        # Reuse the durable non-expiring lock storage, with a gateway-scoped identity.
+        return f"mcp-metadata:{publication.gateway_id}"
+
+    async def _acquire_metadata_lock(self, publication: McpPublication, owner: str) -> None:
+        lock_id = self._metadata_lock_id(publication)
+        held = await self._repository.get_publication_lock(publication.tenant_id, lock_id)
+        if held == owner:
+            return
+        try:
+            await self._repository.acquire_publication_lock(publication.tenant_id, lock_id, owner)
+        except ConflictError as error:
+            raise ConflictError(
+                "Another MCP apply or unpublish holds this gateway's shared metadata write lock. "
+                "Wait for it to finish; an interrupted run requires explicit recovery.",
+                details={"gatewayId": publication.gateway_id, **error.details},
+            ) from error
+
+    async def _release_metadata_lock(self, publication: McpPublication, owner: str) -> None:
+        lock_id = self._metadata_lock_id(publication)
+        if await self._repository.get_publication_lock(publication.tenant_id, lock_id) == owner:
+            await self._repository.release_publication_lock(publication.tenant_id, lock_id, owner)
 
     async def _release_run(self, publication: McpPublication, run: PublishRun) -> None:
+        await self._release_metadata_lock(publication, run.id)
         await self._repository.release_publication_lock(
             publication.tenant_id, publication.id, run.id
         )
@@ -1659,6 +1976,9 @@ class McpPublishingService:
         failure: str | None = None
         try:
             try:
+                await self._reject_live_collisions(
+                    publication.tenant_id, publication, gateway
+                )
                 for step in plan.steps:
                     await self._assert_lock(publication, run)
                     result = PublishStepResult(
@@ -1687,16 +2007,26 @@ class McpPublishingService:
                     item = self._resource_for_step(publication, step)
                     write_started = False
                     try:
-                        exists = await self._exists(client, publication, item)
                         current = publication.model_copy(update={"resources": owned})
-                        if exists and not self._owns(current, step.kind, step.name):
-                            raise ConflictError(
-                                f"{step.kind} {step.name} appeared without MOSAIC ownership."
-                            )
-                        result.created_by_mosaic = not exists
+                        shared = _is_shared_metadata_api(step.kind, step.name)
+                        if shared:
+                            # Refuses an API MOSAIC can't vouch for. Every publication that uses
+                            # the shared API records it as MOSAIC's, so the last one deletes it.
+                            live = await self._shared_metadata_api(current, client)
+                            exists = live is not None
+                            result.created_by_mosaic = True
+                        else:
+                            live = None
+                            exists = await self._exists(client, publication, item)
+                            if exists and not self._owns(current, step.kind, step.name):
+                                raise ConflictError(
+                                    f"{step.kind} {step.name} appeared without MOSAIC ownership."
+                                )
+                            result.created_by_mosaic = not exists
                         await self._progress(publication, run, results, owned)
                         write_started = True
-                        await self._write_step(writer, publication, endpoint, policy, step)
+                        if live is None or self._shared_metadata_api_drifted(live):
+                            await self._write_step(writer, publication, endpoint, policy, step)
                         result.status = PublishStepStatus.SUCCEEDED
                         owned = _merge_resources(
                             owned,
@@ -1795,10 +2125,13 @@ class McpPublishingService:
                 subscription_required=False,
                 description=f"Protected resource metadata for {publication.display_name}.",
             )
-        elif step.kind == PublishedResourceKind.API_OPERATION:
+        elif (
+            step.kind == PublishedResourceKind.API_OPERATION
+            and step.name == MCP_METADATA_OPERATION
+        ):
             await writer.put_api_operation(
                 publication.metadata_api_name,
-                "metadata",
+                MCP_METADATA_OPERATION,
                 display_name="Protected resource metadata",
                 method="GET",
                 url_template="/mcp",
@@ -1809,6 +2142,35 @@ class McpPublishingService:
             and step.name == publication.metadata_api_name
         ):
             await writer.put_api_policy(publication.metadata_api_name, policy.metadata_policy_xml)
+        elif _is_shared_metadata_api(step.kind, step.name):
+            # API Management rejects an API path that starts with ".", so the well-known URL is
+            # an operation on one blank-path API per gateway. A blank-path API receives only
+            # requests no other API's path matches, and of those only its operations'.
+            await writer.put_api(
+                MCP_METADATA_API_NAME,
+                display_name="MOSAIC MCP protected resource metadata",
+                path="",
+                subscription_required=False,
+                description=(
+                    "Protected resource metadata (RFC 9728) for the MCP servers MOSAIC publishes "
+                    "on this gateway. Managed by MOSAIC."
+                ),
+            )
+        elif step.kind == PublishedResourceKind.API_OPERATION:
+            await writer.put_api_operation(
+                MCP_METADATA_API_NAME,
+                step.name,
+                display_name=f"{publication.display_name} protected resource metadata",
+                method="GET",
+                url_template=mcp_metadata_url_template(publication.api_path),
+                description=(
+                    f"Return OAuth protected resource metadata for {publication.display_name}."
+                ),
+            )
+        elif step.kind == PublishedResourceKind.API_OPERATION_POLICY:
+            await writer.put_api_operation_policy(
+                MCP_METADATA_API_NAME, step.name, policy.metadata_policy_xml
+            )
 
     async def _establish_deny(
         self,
@@ -1937,13 +2299,19 @@ class McpPublishingService:
                 )
                 try:
                     await self._progress(publication, run, [*results, result], remaining)
-                    await self._remove(writer, publication, step.kind, step.name)
+                    removed = await self._remove(
+                        client, writer, publication, step.kind, step.name
+                    )
                 except Exception as error:
                     result.status = PublishStepStatus.FAILED
                     result.error = str(error)
                     errors.append(f"{step.kind} {step.name}: {error}")
                 else:
-                    result.status = PublishStepStatus.SUCCEEDED
+                    # A shared resource another publication still uses is kept, not deleted. This
+                    # publication stops recording it either way.
+                    result.status = (
+                        PublishStepStatus.SUCCEEDED if removed else PublishStepStatus.SKIPPED
+                    )
                     remaining = [
                         item
                         for item in remaining
@@ -2209,18 +2577,29 @@ class McpPublishingService:
 
     async def _remove(
         self,
+        client: ApimClient,
         writer: ApimWriter,
         publication: McpPublication,
         kind: PublishedResourceKind,
         name: str,
-    ) -> None:
+    ) -> bool:
+        """Delete one resource. ``False`` means MOSAIC deliberately kept it."""
+
         match kind:
             case PublishedResourceKind.API if name == publication.api_name:
                 await writer.delete_mcp_api(name)
+            case PublishedResourceKind.API if name == MCP_METADATA_API_NAME:
+                if await self._shared_metadata_api_in_use(client, publication):
+                    return False
+                await writer.delete_api(name)
             case PublishedResourceKind.API if name == publication.metadata_api_name:
                 await writer.delete_api(name)
-            case PublishedResourceKind.API_OPERATION:
+            case PublishedResourceKind.API_OPERATION if name == MCP_METADATA_OPERATION:
                 await writer.delete_api_operation(publication.metadata_api_name, name)
+            case PublishedResourceKind.API_OPERATION:
+                await writer.delete_api_operation(MCP_METADATA_API_NAME, name)
+            case PublishedResourceKind.API_OPERATION_POLICY:
+                await writer.delete_api_operation_policy(MCP_METADATA_API_NAME, name)
             case PublishedResourceKind.API_POLICY if name == publication.metadata_api_name:
                 await writer.delete_api_policy(publication.metadata_api_name)
             case PublishedResourceKind.API_POLICY:
@@ -2230,14 +2609,44 @@ class McpPublishingService:
             case PublishedResourceKind.BACKEND:
                 await writer.delete_backend(name)
             case _:
-                return
+                return True
+        return True
+
+    async def _shared_metadata_api_in_use(
+        self, client: ApimClient, publication: McpPublication
+    ) -> bool:
+        """Whether anything but this publication still needs the shared metadata API.
+
+        It stays while it has any operation other than this publication's, or while another MCP
+        publication on the gateway records it, even one that isn't applied yet.
+        """
+
+        mine = publication.metadata_api_name
+        if any(
+            str(operation.get("name") or "") != mine
+            for operation in await client.list_operations(MCP_METADATA_API_NAME)
+        ):
+            return True
+        return any(
+            other.id != publication.id
+            and any(
+                _is_shared_metadata_api(resource.kind, resource.name)
+                for resource in other.resources
+            )
+            for other in await self._repository.list_mcp_publications(
+                publication.tenant_id, gateway_id=publication.gateway_id
+            )
+        )
 
     def _unpublish_removals(self, publication: McpPublication) -> list[PublishedResource]:
         order = [
             (PublishedResourceKind.API, publication.api_name),
             (PublishedResourceKind.API, publication.metadata_api_name),
-            (PublishedResourceKind.API_OPERATION, "metadata"),
+            (PublishedResourceKind.API_OPERATION, MCP_METADATA_OPERATION),
             (PublishedResourceKind.API_POLICY, publication.metadata_api_name),
+            (PublishedResourceKind.API_OPERATION_POLICY, publication.metadata_api_name),
+            (PublishedResourceKind.API_OPERATION, publication.metadata_api_name),
+            (PublishedResourceKind.API, MCP_METADATA_API_NAME),
             (PublishedResourceKind.POLICY_FRAGMENT, publication.fragment_name),
             (PublishedResourceKind.BACKEND, publication.backend_name),
         ]

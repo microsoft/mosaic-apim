@@ -1425,8 +1425,13 @@ MCP_MESSAGE_PATH = "mcp"
 # RFC 9728 path insertion: the metadata for a resource at ``https://host/{path}`` is served at
 # ``https://host/.well-known/oauth-protected-resource/{path}``.
 MCP_RESOURCE_METADATA_PREFIX = ".well-known/oauth-protected-resource"
-# The one operation on a published server's discovery API: ``GET /mcp``.
+# The one operation on a legacy per-publication discovery API: ``GET /mcp``.
 MCP_METADATA_OPERATION = "metadata"
+# The one API through which MOSAIC serves every publication's protected resource metadata on a
+# gateway. Its path is blank, because newer API Management services, such as ones created in
+# October 2026, refuse an API path that starts with ``.``; each publication adds one operation whose
+# URL template is the full well-known path. See the ADR 0017 amendment of 2026-10-08.
+MCP_METADATA_API_NAME = "mosaic-mcp-metadata"
 
 
 def mcp_server_url(gateway_url: str, api_path: str) -> str:
@@ -1473,15 +1478,35 @@ def mcp_backend_url(endpoint: str) -> str:
 
 
 def mcp_metadata_api_path(api_path: str) -> str:
-    """The path of the API that serves a published server's protected resource metadata."""
+    """The path of a legacy per-publication API that serves protected resource metadata.
+
+    Only publications applied before the shared metadata API keep such an API. Newer API Management
+    services refuse this as an API path, because it starts with ``.``.
+    """
 
     return f"{MCP_RESOURCE_METADATA_PREFIX}/{api_path.strip('/')}"
+
+
+def mcp_metadata_path(api_path: str) -> str:
+    """The gateway path, without its leading slash, of a published server's resource metadata.
+
+    The same in both layouts: the legacy API's path plus its ``/mcp`` operation, or the shared
+    blank-path API plus an operation whose URL template is this whole path.
+    """
+
+    return f"{mcp_metadata_api_path(api_path)}/{MCP_MESSAGE_PATH}"
+
+
+def mcp_metadata_url_template(api_path: str) -> str:
+    """The URL template of a publication's operation on the shared, blank-path metadata API."""
+
+    return f"/{mcp_metadata_path(api_path)}"
 
 
 def mcp_resource_metadata_url(gateway_url: str, api_path: str) -> str:
     """Where a published server's protected resource metadata is served."""
 
-    return f"{gateway_url.rstrip('/')}/{mcp_metadata_api_path(api_path)}/{MCP_MESSAGE_PATH}"
+    return f"{gateway_url.rstrip('/')}/{mcp_metadata_path(api_path)}"
 
 
 class McpAuthMode(StrEnum):
@@ -2273,6 +2298,7 @@ class PublishedResourceKind(StrEnum):
     API = "api"
     API_OPERATION = "apiOperation"
     API_POLICY = "apiPolicy"
+    API_OPERATION_POLICY = "apiOperationPolicy"
     PRODUCT = "product"
     PRODUCT_API = "productApi"
     SUBSCRIPTION = "subscription"
@@ -2626,9 +2652,11 @@ class McpPublication(Entity):
 
     Desired state, like :class:`Publication`: saving it writes only to Cosmos. An apply creates an
     MCP API in API Management whose backend is the registered server, an enforcement fragment that
-    validates Entra tokens and matches them against the applied grants, and a discovery API that
-    serves the server's protected resource metadata (RFC 9728) so MCP clients can find where to
-    sign in.
+    validates Entra tokens and matches them against the applied grants, and an anonymous operation
+    that serves the server's protected resource metadata (RFC 9728) so MCP clients can find where
+    to sign in. That operation lives on the gateway's shared, blank-path metadata API,
+    :data:`MCP_METADATA_API_NAME`. A publication applied before that API existed keeps its own
+    discovery API, named ``metadata_api_name``, until it is unpublished.
     """
 
     entity_type: Literal["mcpPublication"] = "mcpPublication"
@@ -2639,8 +2667,10 @@ class McpPublication(Entity):
     api_path: str
     backend_name: str
     fragment_name: str
-    # The anonymous API that serves protected resource metadata at
-    # ``/.well-known/oauth-protected-resource/{api_path}/mcp``.
+    # Names what serves protected resource metadata at
+    # ``/.well-known/oauth-protected-resource/{api_path}/mcp``: this publication's operation, and
+    # its operation policy, on the shared metadata API. A legacy publication's own anonymous API
+    # has this name instead.
     metadata_api_name: str
     # The governed MCP server record grants name. Created with the publication, so grants can be
     # recorded before the first apply.

@@ -45,6 +45,10 @@ Action = Callable[[Page], None]
 # Resource, account, and host names from the demo estate. The patterns below catch the generic
 # shapes; these catch the bare names wherever the UI shows them on their own.
 RESOURCE_NAMES = [
+    "mosaic-mcp-metadata",
+    "mosaic-blocked-cost-centers",
+    "ai-starter",
+    "ai-premium",
     "apim-contoso-dev",
     "apim-contoso-ai-dev",
     "apim-contoso-partners",
@@ -85,6 +89,7 @@ REDACTION_PATTERNS = [
     # MOSAIC record IDs and the APIM names derived from them, such as modelApi_<32 hex>,
     # gateway_<32 hex>, and mosaic-grant-<32 hex>.
     r"\b[a-z][\w-]*?[_-][0-9a-f]{24,}\b",
+    r"\bmosaic-(?:mcp|pool)-[a-z0-9-]+\b",
     r"\b[0-9a-f]{24,}\b",
     # The demo's placeholder keys and tokens.
     r"\bdemo[0-9a-z-]*(?:key|secret|token)[0-9a-z-]*\b",
@@ -379,6 +384,15 @@ def scroll_to_text(text: str, margin: int = 24) -> Action:
     return act
 
 
+def scroll_to_table_row(table_name: str, text: str) -> Action:
+    def act(page: Page) -> None:
+        page.get_by_role("table", name=table_name).get_by_role("row").filter(
+            has_text=text
+        ).scroll_into_view_if_needed()
+
+    return act
+
+
 # The README embeds these by name. Keep the two in step: a renamed or removed shot here needs its
 # README reference updated, and a new README screenshot needs an entry here.
 OPEN_GATEWAY = (click_link("Contoso AI Gateway"), wait_for_text("Published by MOSAIC"))
@@ -653,8 +667,9 @@ SHOTS: list[Shot] = [
             scroll_to_text("Published MCP servers", margin=64),
             click_button("Plan and apply"),
             wait_for_text("MCP access changes"),
+            scroll_to_table_row("MCP publish plan steps", "Operation policy"),
         ),
-        height=1040,
+        height=2000,
     ),
     Shot(
         "console-unpublish-review",

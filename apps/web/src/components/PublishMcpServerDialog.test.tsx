@@ -267,6 +267,29 @@ describe('PublishMcpServerDialog', () => {
     expect(api.applyMcpPublication).not.toHaveBeenCalled()
   })
 
+  it('labels the shared metadata operation policy in a reviewed plan', async () => {
+    const user = userEvent.setup()
+    const metadataPlan: PublishPlan = {
+      ...plan,
+      steps: [{
+        kind: 'apiOperationPolicy',
+        name: publication.metadataApiName,
+        action: 'create',
+        reason: 'Return protected resource metadata for this server.',
+        resourceId: `/apis/mosaic-mcp-metadata/operations/${publication.metadataApiName}/policies/policy`,
+        existed: false,
+        stage: 'policy',
+      }],
+    }
+    renderDialogParent([{ publication, plan: metadataPlan }])
+    await user.click(screen.getByRole('button', { name: 'Open review 1' }))
+
+    expect(await screen.findByRole('cell', {
+      name: /Operation policy · mosaic-mcp-weather-tools-prm/,
+    })).toBeInTheDocument()
+    expect(api.applyMcpPublication).not.toHaveBeenCalled()
+  })
+
   it('moves focus to each new step instead of leaving it on a removed control', async () => {
     const user = userEvent.setup()
     renderDialog()

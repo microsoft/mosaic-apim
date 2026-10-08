@@ -1,6 +1,10 @@
+import asyncio
+from typing import Any
+
 import pytest
 from apim_double import CONTRIBUTOR_PERMISSIONS, RESOURCE_ID, FakeApim
 from conftest import (
+    build_arm_client,
     build_gateway_service,
     build_mcp_publishing_service,
     build_mcp_service,
@@ -11,6 +15,9 @@ from mcp_double import FakeMcpServer
 from mosaic_api.cost_centers import CostCenterBook, PendingRecheck, general_cost_center
 from mosaic_api.domain import (
     MCP_MESSAGE_PATH,
+    MCP_METADATA_API_NAME,
+    MCP_METADATA_OPERATION,
+    ApimResourceId,
     AuditEvent,
     CapabilitySupport,
     Entitlement,
@@ -32,6 +39,7 @@ from mosaic_api.domain import (
     McpInventorySummary,
     McpModelCaller,
     McpModelCallerUpdate,
+    McpPublication,
     McpPublicationCreate,
     McpPublicationUpdate,
     McpServer,
@@ -47,15 +55,19 @@ from mosaic_api.domain import (
     PublishedResource,
     PublishedResourceKind,
     PublishPlan,
+    PublishRun,
     PublishRunStatus,
+    PublishStepStatus,
     RequestEnforcement,
     TokenEnforcement,
     canonical_mcp_url,
     mcp_backend_url,
+    mcp_metadata_url_template,
     mcp_server_id,
     new_id,
 )
-from mosaic_api.errors import ConflictError, NotFoundError, ValidationError
+from mosaic_api.errors import ConflictError, NotFoundError, UpstreamError, ValidationError
+from mosaic_api.integrations.apim import ApimWriter
 from mosaic_api.model_pools import ModelPool, PoolModel
 from mosaic_api.observed import ObservedApi
 from mosaic_api.repositories import (
@@ -766,12 +778,13 @@ async def test_plan_new_publication_is_fail_closed_before_activation(harness: Ha
         PublishedResourceKind.API_POLICY,
         PublishedResourceKind.API,
         PublishedResourceKind.API_OPERATION,
-        PublishedResourceKind.API_POLICY,
+        PublishedResourceKind.API_OPERATION_POLICY,
         PublishedResourceKind.API,
     ]
     assert plan.steps[0].name == "mosaic-blocked-cost-centers"
     assert plan.steps[0].action == PublishAction.CREATE
     assert plan.steps[3].stage == "prepare"
+    assert plan.steps[5].name == MCP_METADATA_API_NAME
     assert plan.steps[-1].stage == "activate"
     assert any("0 bytes" in warning for warning in plan.warnings)
 
@@ -1010,8 +1023,8 @@ async def test_apply_writes_mcp_api_policy_and_records_publication(harness: Harn
     assert publication.applied_access is not None
     assert f"apis/{publication.api_name}/policies/policy" in harness.apim.write_paths("PUT")
     assert (
-        f"apis/{publication.metadata_api_name}/policies/policy"
-        in harness.apim.write_paths("PUT")
+        f"apis/{MCP_METADATA_API_NAME}/operations/{publication.metadata_api_name}"
+        "/policies/policy" in harness.apim.write_paths("PUT")
     )
     mcp_api_puts = [
         call
@@ -1068,7 +1081,9 @@ async def test_apply_rejects_stale_plan_and_mismatched_plan(harness: Harness) ->
         "policyFragments/mosaic-mcp-orders-mcp",
         "apis/mosaic-mcp-orders-mcp",
         "apis/mosaic-mcp-orders-mcp/policies/policy",
-        "apis/mosaic-mcp-orders-mcp-prm",
+        "apis/mosaic-mcp-metadata",
+        "apis/mosaic-mcp-metadata/operations/mosaic-mcp-orders-mcp-prm",
+        "apis/mosaic-mcp-metadata/operations/mosaic-mcp-orders-mcp-prm/policies/policy",
     ],
 )
 async def test_apply_failures_establish_fail_closed_state(
@@ -1150,7 +1165,7 @@ async def test_apply_activate_failure_is_denied_and_not_restored(harness: Harnes
 async def test_deny_failure_interrupts_and_recovery_releases_lock(harness: Harness) -> None:
     publication_id = await harness.create()
     plan = await harness.service.plan(ACTOR, publication_id)
-    harness.apim.fail_write("apis/mosaic-mcp-orders-mcp-prm")
+    harness.apim.fail_write("apis/mosaic-mcp-metadata/operations/mosaic-mcp-orders-mcp-prm")
     harness.apim.fail_write("apis/mosaic-mcp-orders-mcp/policies/policy")
     harness.apim.fail_write_after("policyFragments/mosaic-mcp-orders-mcp", successful_writes=1)
 
@@ -1164,6 +1179,10 @@ async def test_deny_failure_interrupts_and_recovery_releases_lock(harness: Harne
     assert (
         await harness.gateway_repository.get_publication_lock(TENANT_ID, publication_id)
         == run.id
+    )
+    metadata_lock = f"mcp-metadata:{harness.gateway_id}"
+    assert (
+        await harness.gateway_repository.get_publication_lock(TENANT_ID, metadata_lock) == run.id
     )
     diagnostic = await harness.service.recover_interrupted(
         ACTOR, publication_id, run_id=run.id, confirm_quiesced=False
@@ -1183,6 +1202,7 @@ async def test_deny_failure_interrupts_and_recovery_releases_lock(harness: Harne
     assert recovered.id == run.id
     assert recovered_publication.access_state == "failed"
     assert await harness.gateway_repository.get_publication_lock(TENANT_ID, publication_id) is None
+    assert await harness.gateway_repository.get_publication_lock(TENANT_ID, metadata_lock) is None
 
 
 async def test_unpublish_deletes_in_fail_closed_order(harness: Harness) -> None:
@@ -1221,10 +1241,24 @@ async def test_unpublish_deletes_in_fail_closed_order(harness: Harness) -> None:
         )
     )
     mcp_delete = calls.index(("DELETE", "apis/mosaic-mcp-orders-mcp", "2025-09-01-preview"))
-    metadata_delete = calls.index(("DELETE", "apis/mosaic-mcp-orders-mcp-prm", "2024-05-01"))
+    operation_delete = calls.index(
+        (
+            "DELETE",
+            "apis/mosaic-mcp-metadata/operations/mosaic-mcp-orders-mcp-prm",
+            "2024-05-01",
+        )
+    )
+    metadata_delete = calls.index(("DELETE", "apis/mosaic-mcp-metadata", "2024-05-01"))
     fragment_delete = calls.index(("DELETE", "policyFragments/mosaic-mcp-orders-mcp", "2024-05-01"))
     backend_delete = calls.index(("DELETE", "backends/mosaic-mcp-orders-mcp", "2024-05-01"))
-    assert deny_index < mcp_delete < metadata_delete < fragment_delete < backend_delete
+    assert (
+        deny_index
+        < mcp_delete
+        < operation_delete
+        < metadata_delete
+        < fragment_delete
+        < backend_delete
+    )
     assert (
         "DELETE",
         "apis/mosaic-mcp-orders-mcp/policies/policy",
@@ -1862,3 +1896,490 @@ async def test_a_model_caller_cant_be_deleted_or_stop_being_an_application(
     await harness.service.clear_model_caller(ACTOR, publication_id)
     await directory.delete_principal(ACTOR, app.id)
     assert await harness.directory_repository.get_principal(TENANT_ID, app.id) is None
+
+
+# API Management services created since about October 2026 refuse an API path that starts with
+# ".", so MOSAIC serves every publication's protected resource metadata as an operation on one
+# shared, blank-path API. See the ADR 0017 amendment of 2026-10-08.
+SHARED_API = f"apis/{MCP_METADATA_API_NAME}"
+FIRST_OPERATION = f"{SHARED_API}/operations/mosaic-mcp-orders-mcp-prm"
+SECOND_OPERATION = f"{SHARED_API}/operations/second-mcp-prm"
+
+
+async def publish(harness: Harness, publication_id: str) -> PublishRun:
+    plan = await harness.service.plan(ACTOR, publication_id)
+    run = await harness.service.apply(ACTOR, publication_id, plan.id)
+    await harness.service.wait_for_idle()
+    return await harness.service.get_run(ACTOR, publication_id, run.id)
+
+
+async def create_second(harness: Harness) -> str:
+    endpoint = await harness.add_endpoint("mcp-endpoint-second")
+    return await harness.create(
+        mcp_endpoint_id=endpoint, api_name="second-mcp", api_path="mosaic/mcp/second"
+    )
+
+
+def legacy_resources(publication: McpPublication) -> list[PublishedResource]:
+    """What an apply made before the shared metadata API: a metadata API per publication."""
+
+    segments = [
+        (PublishedResourceKind.BACKEND, publication.backend_name, "backends/{}"),
+        (PublishedResourceKind.POLICY_FRAGMENT, publication.fragment_name, "policyFragments/{}"),
+        (PublishedResourceKind.API, publication.api_name, "apis/{}"),
+        (PublishedResourceKind.API_POLICY, publication.api_name, "apis/{}/policies/policy"),
+        (PublishedResourceKind.API, publication.metadata_api_name, "apis/{}"),
+        (
+            PublishedResourceKind.API_OPERATION,
+            MCP_METADATA_OPERATION,
+            f"apis/{publication.metadata_api_name}/operations/{{}}",
+        ),
+        (
+            PublishedResourceKind.API_POLICY,
+            publication.metadata_api_name,
+            "apis/{}/policies/policy",
+        ),
+    ]
+    return [
+        PublishedResource(
+            kind=kind,
+            name=name,
+            resource_id=f"{RESOURCE_ID}/{segment.format(name)}",
+            created_by_mosaic=True,
+        )
+        for kind, name, segment in segments
+    ]
+
+
+async def test_fake_gateway_refuses_api_paths_that_start_with_a_dot() -> None:
+    # The double reproduces what a new API Management service answered on 8 October 2026.
+    apim = FakeApim()
+    writer = ApimWriter(build_arm_client(apim), ApimResourceId.parse(RESOURCE_ID))
+
+    with pytest.raises(UpstreamError) as refused:
+        await writer.put_api(
+            "zz-test",
+            display_name="Dot path",
+            path=".well-known/zz-test",
+            subscription_required=False,
+            description="",
+        )
+    assert "Invalid value of the Web API URL suffix" in str(refused.value.details)
+    await writer.put_api(
+        "zz-blank", display_name="Blank", path="", subscription_required=False, description=""
+    )
+    await writer.put_api_operation(
+        "zz-blank",
+        "zz",
+        display_name="Dot template",
+        method="GET",
+        url_template="/.well-known/oauth-protected-resource/mosaic/mcp/zz/mcp",
+        description="",
+    )
+
+
+async def test_first_publication_creates_shared_blank_path_metadata_api(
+    harness: Harness,
+) -> None:
+    assert harness.apim.rejects_dot_paths
+    publication_id = await harness.create()
+
+    completed = await publish(harness, publication_id)
+
+    publication = await harness.service.get_publication(ACTOR, publication_id)
+    assert completed.status == PublishRunStatus.SUCCEEDED, completed.errors
+    assert publication.status == PublicationStatus.PUBLISHED
+    shared = harness.apim.written[SHARED_API]["properties"]
+    assert shared["path"] == ""
+    assert shared["subscriptionRequired"] is False
+    assert "serviceUrl" not in shared
+    operation = harness.apim.written[FIRST_OPERATION]["properties"]
+    assert operation["method"] == "GET"
+    assert operation["urlTemplate"] == (
+        f"/.well-known/oauth-protected-resource/{publication.api_path}/mcp"
+    )
+    assert operation["urlTemplate"] == mcp_metadata_url_template(publication.api_path)
+    policy = harness.apim.written[f"{FIRST_OPERATION}/policies/policy"]["properties"]["value"]
+    assert f"/{publication.api_path}/mcp" in policy
+    # Nothing is written at a path API Management now refuses.
+    assert f"apis/{publication.metadata_api_name}" not in harness.apim.write_paths()
+    assert not any(
+        str(body.get("properties", {}).get("path", "")).startswith(".")
+        for suffix, body in harness.apim.written.items()
+        if suffix.startswith("apis/") and suffix.count("/") == 1
+    )
+    recorded = {(item.kind, item.name): item.created_by_mosaic for item in publication.resources}
+    assert recorded[(PublishedResourceKind.API, MCP_METADATA_API_NAME)] is True
+    assert recorded[(PublishedResourceKind.API_OPERATION, publication.metadata_api_name)] is True
+    assert (
+        recorded[(PublishedResourceKind.API_OPERATION_POLICY, publication.metadata_api_name)]
+        is True
+    )
+    assert (PublishedResourceKind.API, publication.metadata_api_name) not in recorded
+
+    replanned = await harness.service.plan(ACTOR, publication_id)
+    shared_step = next(step for step in replanned.steps if step.name == MCP_METADATA_API_NAME)
+    assert shared_step.action == PublishAction.NO_CHANGE
+
+
+async def test_second_publication_adds_only_its_operation(harness: Harness) -> None:
+    first_id = await harness.create()
+    assert (await publish(harness, first_id)).status == PublishRunStatus.SUCCEEDED
+    second_id = await create_second(harness)
+    harness.apim.writes.clear()
+
+    plan = await harness.service.plan(ACTOR, second_id)
+    shared_step = next(step for step in plan.steps if step.name == MCP_METADATA_API_NAME)
+    assert shared_step.action == PublishAction.NO_CHANGE
+    assert "Use the gateway's shared" in shared_step.reason
+    run = await harness.service.apply(ACTOR, second_id, plan.id)
+    await harness.service.wait_for_idle()
+
+    completed = await harness.service.get_run(ACTOR, second_id, run.id)
+    second = await harness.service.get_publication(ACTOR, second_id)
+    assert completed.status == PublishRunStatus.SUCCEEDED, completed.errors
+    assert SHARED_API not in harness.apim.write_paths()
+    assert SECOND_OPERATION in harness.apim.write_paths("PUT")
+    assert f"{SECOND_OPERATION}/policies/policy" in harness.apim.write_paths("PUT")
+    assert harness.apim.written[SECOND_OPERATION]["properties"]["urlTemplate"] == (
+        "/.well-known/oauth-protected-resource/mosaic/mcp/second/mcp"
+    )
+    # Reusing the shared API carries MOSAIC's ownership of it forward.
+    assert any(
+        item.kind == PublishedResourceKind.API
+        and item.name == MCP_METADATA_API_NAME
+        and item.created_by_mosaic
+        for item in second.resources
+    )
+
+
+async def test_unpublishing_keeps_shared_api_until_the_last_publication(
+    harness: Harness,
+) -> None:
+    first_id = await harness.create()
+    second_id = await create_second(harness)
+    assert (await publish(harness, first_id)).status == PublishRunStatus.SUCCEEDED
+    assert (await publish(harness, second_id)).status == PublishRunStatus.SUCCEEDED
+
+    plan = await harness.service.plan_unpublish(ACTOR, first_id)
+    assert any("only if no other MCP server still uses it" in item for item in plan.warnings)
+    run = await harness.service.unpublish(ACTOR, first_id, plan.id)
+    await harness.service.wait_for_idle()
+
+    completed = await harness.service.get_run(ACTOR, first_id, run.id)
+    first = await harness.service.get_publication(ACTOR, first_id)
+    assert completed.status == PublishRunStatus.SUCCEEDED, completed.errors
+    assert first.resources == []
+    shared_step = next(step for step in completed.steps if step.name == MCP_METADATA_API_NAME)
+    assert shared_step.status == PublishStepStatus.SKIPPED
+    assert ("DELETE", SHARED_API) not in harness.apim.writes
+    assert FIRST_OPERATION not in harness.apim.written
+    assert SHARED_API in harness.apim.written
+    assert SECOND_OPERATION in harness.apim.written
+    assert f"{SECOND_OPERATION}/policies/policy" in harness.apim.written
+
+    last = await reviewed_unpublish(harness.service, ACTOR, second_id)
+    await harness.service.wait_for_idle()
+
+    finished = await harness.service.get_run(ACTOR, second_id, last.id)
+    assert finished.status == PublishRunStatus.SUCCEEDED, finished.errors
+    deletes = harness.apim.write_paths("DELETE")
+    assert deletes.index(f"{SECOND_OPERATION}/policies/policy") < deletes.index(
+        SECOND_OPERATION
+    ) < deletes.index(SHARED_API)
+    assert SHARED_API not in harness.apim.written
+
+
+async def test_unpublishing_keeps_shared_api_with_an_operation_mosaic_did_not_add(
+    harness: Harness,
+) -> None:
+    publication_id = await harness.create()
+    assert (await publish(harness, publication_id)).status == PublishRunStatus.SUCCEEDED
+    harness.apim.seed(f"{SHARED_API}/operations/someone-else", {"properties": {}})
+
+    run = await reviewed_unpublish(harness.service, ACTOR, publication_id)
+    await harness.service.wait_for_idle()
+
+    completed = await harness.service.get_run(ACTOR, publication_id, run.id)
+    assert completed.status == PublishRunStatus.SUCCEEDED, completed.errors
+    assert SHARED_API in harness.apim.written
+    assert ("DELETE", SHARED_API) not in harness.apim.writes
+
+
+async def test_plan_restores_a_drifted_shared_metadata_api(harness: Harness) -> None:
+    publication_id = await harness.create()
+    assert (await publish(harness, publication_id)).status == PublishRunStatus.SUCCEEDED
+    harness.apim.written[SHARED_API]["properties"]["subscriptionRequired"] = True
+    harness.apim.writes.clear()
+
+    completed = await publish(harness, publication_id)
+
+    assert completed.status == PublishRunStatus.SUCCEEDED, completed.errors
+    shared_step = next(step for step in completed.steps if step.name == MCP_METADATA_API_NAME)
+    assert shared_step.action == PublishAction.UPDATE
+    assert ("PUT", SHARED_API) in harness.apim.writes
+    assert harness.apim.written[SHARED_API]["properties"]["subscriptionRequired"] is False
+
+
+async def test_plan_refuses_a_customer_api_on_the_blank_path(harness: Harness) -> None:
+    publication_id = await harness.create()
+    harness.apim.extra_apis.append(
+        ({"name": "customer-root", "properties": {"displayName": "Root", "path": ""}}, [], None)
+    )
+
+    with pytest.raises(ConflictError, match="customer-root already uses this gateway's blank path"):
+        await harness.service.plan(ACTOR, publication_id)
+    assert harness.apim.write_paths() == []
+
+    # Once inventory has seen it, MOSAIC refuses a new publication straight away.
+    await harness.gateways.sync_now(ACTOR, harness.gateway_id)
+    other = await harness.add_endpoint("mcp-endpoint-blank")
+    with pytest.raises(ConflictError, match="blank path"):
+        await harness.create(
+            mcp_endpoint_id=other, api_name="blank-mcp", api_path="mosaic/mcp/blank"
+        )
+
+
+async def test_plan_refuses_an_api_that_would_take_the_metadata_url(harness: Harness) -> None:
+    publication_id = await harness.create()
+    harness.apim.extra_apis.append(
+        (
+            {
+                "name": "well-known",
+                "properties": {"displayName": "Discovery", "path": ".well-known"},
+            },
+            [],
+            None,
+        )
+    )
+
+    with pytest.raises(ConflictError, match="would receive requests"):
+        await harness.service.plan(ACTOR, publication_id)
+    assert harness.apim.write_paths() == []
+
+
+async def test_plan_refuses_a_shared_metadata_api_mosaic_did_not_record(
+    harness: Harness,
+) -> None:
+    publication_id = await harness.create()
+    harness.apim.seed(
+        SHARED_API, {"properties": {"path": "", "subscriptionRequired": False}}
+    )
+
+    with pytest.raises(ConflictError, match="no MOSAIC MCP publication recorded"):
+        await harness.service.plan(ACTOR, publication_id)
+
+    harness.apim.seed(SHARED_API, {"properties": {"path": "elsewhere"}})
+    with pytest.raises(ConflictError, match="not at the gateway's blank path"):
+        await harness.service.plan(ACTOR, publication_id)
+    assert harness.apim.write_paths() == []
+
+
+async def test_apply_refuses_a_shared_metadata_api_that_appears_after_planning(
+    harness: Harness,
+) -> None:
+    publication_id = await harness.create()
+    plan = await harness.service.plan(ACTOR, publication_id)
+    harness.apim.seed(SHARED_API, {"properties": {"path": "", "subscriptionRequired": False}})
+
+    run = await harness.service.apply(ACTOR, publication_id, plan.id)
+    await harness.service.wait_for_idle()
+
+    completed = await harness.service.get_run(ACTOR, publication_id, run.id)
+    failed = await harness.service.get_publication(ACTOR, publication_id)
+    assert completed.status == PublishRunStatus.FAILED
+    assert any("no MOSAIC MCP publication recorded" in error for error in completed.errors)
+    assert ("PUT", SHARED_API) not in harness.apim.writes
+    assert FIRST_OPERATION not in harness.apim.written
+    assert not any(item.name == MCP_METADATA_API_NAME for item in failed.resources)
+
+
+async def test_create_refuses_the_shared_metadata_api_name(harness: Harness) -> None:
+    with pytest.raises(ValidationError, match=MCP_METADATA_API_NAME):
+        await harness.create(api_name=MCP_METADATA_API_NAME)
+
+
+@pytest.mark.parametrize("path", ["", ".well-known/oauth-protected-resource"])
+async def test_apply_refuses_metadata_route_conflicts_added_after_planning(
+    harness: Harness, path: str
+) -> None:
+    publication_id = await harness.create()
+    plan = await harness.service.plan(ACTOR, publication_id)
+    harness.apim.seed("apis/customer-route", {"properties": {"path": path}})
+
+    run = await harness.service.apply(ACTOR, publication_id, plan.id)
+    await harness.service.wait_for_idle()
+
+    completed = await harness.service.get_run(ACTOR, publication_id, run.id)
+    assert completed.status == PublishRunStatus.FAILED
+    assert any("customer-route" in error for error in completed.errors)
+    assert harness.apim.writes == []
+    failed = await harness.service.get_publication(ACTOR, publication_id)
+    assert failed.resources == []
+    assert not harness.gateway_repository.publication_locks
+
+
+@pytest.mark.parametrize(
+    ("first_action", "second_action"),
+    [
+        ("publish", "publish"),
+        ("unpublish", "unpublish"),
+        ("unpublish", "publish"),
+        ("publish", "unpublish"),
+    ],
+)
+async def test_gateway_lock_serializes_metadata_writers_across_services(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch, first_action: str, second_action: str
+) -> None:
+    first_id = await harness.create()
+    second_id = await create_second(harness)
+    for publication_id, action in [(first_id, first_action), (second_id, second_action)]:
+        if action == "unpublish":
+            assert (await publish(harness, publication_id)).status == PublishRunStatus.SUCCEEDED
+    plans = []
+    for publication_id, action in [(first_id, first_action), (second_id, second_action)]:
+        planner = (
+            harness.service.plan if action == "publish" else harness.service.plan_unpublish
+        )
+        plans.append(await planner(ACTOR, publication_id))
+
+    entered = asyncio.Event()
+    proceed = asyncio.Event()
+    method = "_run_apply" if first_action == "publish" else "_run_unpublish"
+    original = getattr(harness.service, method)
+
+    async def paused(*args: Any) -> None:
+        entered.set()
+        await proceed.wait()
+        await original(*args)
+
+    monkeypatch.setattr(harness.service, method, paused)
+    first_writer = (
+        harness.service.apply if first_action == "publish" else harness.service.unpublish
+    )
+    first_run = await first_writer(ACTOR, first_id, plans[0].id)
+    await asyncio.wait_for(entered.wait(), timeout=5)
+    other_service = build_mcp_publishing_service(
+        harness.apim,
+        harness.gateway_repository,
+        harness.mcp_repository,
+        directory_repository=harness.directory_repository,
+        entitlement_repository=harness.entitlement_repository,
+    )
+    second_writer = other_service.apply if second_action == "publish" else other_service.unpublish
+    try:
+        with pytest.raises(ConflictError, match="shared metadata write lock"):
+            await second_writer(ACTOR, second_id, plans[1].id)
+        assert (
+            await harness.gateway_repository.get_publication_lock(TENANT_ID, second_id) is None
+        )
+        assert (
+            await harness.gateway_repository.get_publication_lock(
+                TENANT_ID, f"mcp-metadata:{harness.gateway_id}"
+            )
+            == first_run.id
+        )
+    finally:
+        proceed.set()
+        await harness.service.wait_for_idle()
+
+    assert (
+        await harness.service.get_run(ACTOR, first_id, first_run.id)
+    ).status == PublishRunStatus.SUCCEEDED
+    second_run = await second_writer(ACTOR, second_id, plans[1].id)
+    await other_service.wait_for_idle()
+    assert (
+        await other_service.get_run(ACTOR, second_id, second_run.id)
+    ).status == PublishRunStatus.SUCCEEDED
+    assert not harness.gateway_repository.publication_locks
+    assert (SHARED_API in harness.apim.written) == (
+        first_action == "publish" or second_action == "publish"
+    )
+
+
+async def test_missing_shared_metadata_api_is_recreated(harness: Harness) -> None:
+    publication_id = await harness.create()
+    assert (await publish(harness, publication_id)).status == PublishRunStatus.SUCCEEDED
+    for suffix in list(harness.apim.written):
+        if suffix == SHARED_API or suffix.startswith(f"{SHARED_API}/"):
+            del harness.apim.written[suffix]
+
+    completed = await publish(harness, publication_id)
+
+    assert completed.status == PublishRunStatus.SUCCEEDED, completed.errors
+    shared_step = next(step for step in completed.steps if step.name == MCP_METADATA_API_NAME)
+    assert shared_step.action == PublishAction.CREATE
+    assert FIRST_OPERATION in harness.apim.written
+    assert f"{FIRST_OPERATION}/policies/policy" in harness.apim.written
+
+
+async def test_failed_apply_on_a_new_gateway_recovers_onto_the_shared_api(
+    harness: Harness,
+) -> None:
+    # What the 8 October 2026 failure left: everything before the metadata API.
+    publication_id = await harness.create()
+    publication = await harness.service.get_publication(ACTOR, publication_id)
+    earlier = [
+        item
+        for item in legacy_resources(publication)
+        if item.name not in {publication.metadata_api_name, MCP_METADATA_OPERATION}
+    ]
+    for item in earlier:
+        harness.apim.seed(item.resource_id.removeprefix(f"{RESOURCE_ID}/"))
+    await harness.gateway_repository.record_mcp_publication_state(
+        publication.model_copy(
+            update={"resources": earlier, "status": PublicationStatus.FAILED}
+        )
+    )
+
+    completed = await publish(harness, publication_id)
+
+    assert completed.status == PublishRunStatus.SUCCEEDED, completed.errors
+    assert SHARED_API in harness.apim.written
+    assert FIRST_OPERATION in harness.apim.written
+
+
+async def test_legacy_publication_keeps_its_own_metadata_api(harness: Harness) -> None:
+    # An older service still takes a ".well-known" API path, and existing publications keep it.
+    harness.apim.rejects_dot_paths = False
+    publication_id = await harness.create()
+    publication = await harness.service.get_publication(ACTOR, publication_id)
+    legacy = legacy_resources(publication)
+    for item in legacy:
+        harness.apim.seed(item.resource_id.removeprefix(f"{RESOURCE_ID}/"))
+    await harness.gateway_repository.record_mcp_publication_state(
+        publication.model_copy(
+            update={"resources": legacy, "status": PublicationStatus.PUBLISHED}
+        )
+    )
+
+    plan = await harness.service.plan(ACTOR, publication_id)
+
+    names = [(step.kind, step.name) for step in plan.steps]
+    assert (PublishedResourceKind.API, publication.metadata_api_name) in names
+    assert (PublishedResourceKind.API_OPERATION, MCP_METADATA_OPERATION) in names
+    assert (PublishedResourceKind.API_POLICY, publication.metadata_api_name) in names
+    assert not any(name == MCP_METADATA_API_NAME for _, name in names)
+    assert not any(kind == PublishedResourceKind.API_OPERATION_POLICY for kind, _ in names)
+    run = await harness.service.apply(ACTOR, publication_id, plan.id)
+    await harness.service.wait_for_idle()
+    completed = await harness.service.get_run(ACTOR, publication_id, run.id)
+    assert completed.status == PublishRunStatus.SUCCEEDED, completed.errors
+    metadata = harness.apim.written[f"apis/{publication.metadata_api_name}"]["properties"]
+    assert metadata["path"] == f".well-known/oauth-protected-resource/{publication.api_path}"
+    operation = harness.apim.written[
+        f"apis/{publication.metadata_api_name}/operations/{MCP_METADATA_OPERATION}"
+    ]["properties"]
+    assert operation["urlTemplate"] == "/mcp"
+    assert not any(SHARED_API in path for path in harness.apim.write_paths())
+
+    unpublished = await reviewed_unpublish(harness.service, ACTOR, publication_id)
+    await harness.service.wait_for_idle()
+
+    finished = await harness.service.get_run(ACTOR, publication_id, unpublished.id)
+    assert finished.status == PublishRunStatus.SUCCEEDED, finished.errors
+    deletes = harness.apim.write_paths("DELETE")
+    assert f"apis/{publication.metadata_api_name}" in deletes
+    assert f"apis/{publication.metadata_api_name}/operations/{MCP_METADATA_OPERATION}" in deletes
+    assert f"apis/{publication.metadata_api_name}/policies/policy" in deletes
+    assert not any(SHARED_API in path for path in harness.apim.write_paths())

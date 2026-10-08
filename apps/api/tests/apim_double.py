@@ -325,6 +325,11 @@ class FakeCredential:
         return None
 
 
+def _is_api(suffix: str) -> bool:
+    parts = suffix.split("/")
+    return len(parts) == 2 and parts[0] == "apis"
+
+
 class FakeApim:
     """A small but realistic API Management instance."""
 
@@ -336,10 +341,14 @@ class FakeApim:
         permissions_status: int = 200,
         supports_mcp: bool = True,
         sku_name: str | None = "Developer",
+        rejects_dot_paths: bool = True,
     ) -> None:
         self.permissions = READER_PERMISSIONS if permissions is None else permissions
         self.service_status = service_status
         self.permissions_status = permissions_status
+        # API Management services created since about October 2026 refuse an API path that starts
+        # with "." (such as ".well-known/..."), as ARM validation. Older services still take one.
+        self.rejects_dot_paths = rejects_dot_paths
         # None omits the SKU entirely, as if ARM described the service without one.
         self.sku_name = sku_name
         # Mirrors a service that has not been upgraded to the preview management contract. Such a
@@ -523,8 +532,28 @@ class FakeApim:
         product_apis = self._written_product_apis(suffix)
         if product_apis is not None:
             return product_apis
+        operations = self._written_operations(suffix)
+        if operations is not None:
+            return operations
         page = request.url.params.get("page")
         return self._route(suffix, page, request.url.params.get("$filter"))
+
+    def _written_operations(self, suffix: str) -> httpx.Response | None:
+        """Serve the operations writes created on a written API, as a later listing would."""
+
+        if not suffix.startswith("apis/") or not suffix.endswith("/operations"):
+            return None
+        api = suffix[: -len("/operations")]
+        if api not in self.written:
+            return None
+        prefix = f"{suffix}/"
+        return self._collection(
+            [
+                self._written_resource(key)
+                for key in sorted(self.written)
+                if key.startswith(prefix) and "/" not in key[len(prefix) :]
+            ]
+        )
 
     def _written_product_apis(self, suffix: str) -> httpx.Response | None:
         """Serve the product/API links a write created, so a re-plan sees its own effects."""
@@ -588,6 +617,20 @@ class FakeApim:
         except ValueError:
             body = {}
         body = body if isinstance(body, dict) else {}
+        if self.rejects_dot_paths and _is_api(suffix):
+            properties = body.get("properties")
+            path = properties.get("path") if isinstance(properties, dict) else None
+            if isinstance(path, str) and path.startswith("."):
+                return httpx.Response(
+                    400,
+                    json={
+                        "error": {
+                            "code": "ValidationError",
+                            "message": "Invalid value of the Web API URL suffix.",
+                            "target": "path",
+                        }
+                    },
+                )
         if suffix.startswith("namedValues/"):
             body = self._resolved_named_value(suffix, body)
         if suffix.startswith("policyFragments/"):
@@ -951,7 +994,19 @@ class FakeApim:
                 },
             )
         return httpx.Response(
-            200, json={"value": [echo, mcp, *(api for api, _, _ in self.extra_apis)]}
+            200,
+            json={
+                "value": [
+                    echo,
+                    mcp,
+                    *(api for api, _, _ in self.extra_apis),
+                    *(
+                        self._written_resource(suffix)
+                        for suffix in sorted(self.written)
+                        if _is_api(suffix)
+                    ),
+                ]
+            },
         )
 
     @staticmethod
