@@ -17,6 +17,7 @@ ID.
 """
 
 import argparse
+import http.client
 import json
 import re
 import sys
@@ -91,15 +92,26 @@ def send(
 ) -> Reply:
     request = urllib.request.Request(url, data=body, method=method, headers=dict(headers or {}))
     try:
-        with _OPENER.open(request, timeout=timeout) as response:
-            return Reply(response.status, response.headers, response.read(MAX_BYTES))
-    except urllib.error.HTTPError as error:
-        with error:
-            return Reply(error.code, error.headers, error.read(MAX_BYTES))
-    except (urllib.error.URLError, TimeoutError) as error:
-        if isinstance(error, TimeoutError) or isinstance(error.reason, TimeoutError):
+        try:
+            with _OPENER.open(request, timeout=timeout) as response:
+                return Reply(response.status, response.headers, response.read(MAX_BYTES))
+        except urllib.error.HTTPError as error:
+            # Reading an error's body can time out or fail too, so it's inside the outer try.
+            with error:
+                return Reply(error.code, error.headers, error.read(MAX_BYTES))
+    # URLError and TimeoutError are OSErrors. A connection that closes or breaks before the answer
+    # is complete raises another OSError or an HTTPException, such as RemoteDisconnected.
+    except (OSError, http.client.HTTPException) as error:
+        reason = error.reason if isinstance(error, urllib.error.URLError) else error
+        if isinstance(reason, TimeoutError):
             raise SmokeTimeout(f"The server didn't answer within {timeout:g} seconds.") from None
-        raise SmokeFailure(f"The server couldn't be reached ({type(error).__name__}).") from None
+        if isinstance(error, urllib.error.URLError):
+            raise SmokeFailure(
+                f"The server couldn't be reached ({type(error).__name__})."
+            ) from None
+        raise SmokeFailure(
+            f"The connection failed before the answer was complete ({type(error).__name__})."
+        ) from None
 
 
 def sse_data(text: str) -> Iterator[str]:
@@ -297,12 +309,13 @@ def _opens_sse_stream(url: str) -> bool:
                 line = response.readline(MAX_BYTES).decode("utf-8").strip()
                 if line == "event: endpoint":
                     return True
-    except (urllib.error.URLError, TimeoutError):
+    except (OSError, http.client.HTTPException):
         return False
     return False
 
 
 def check_protected(url: str, say: Report) -> None:
+    checked_url(url)
     for label, headers in (
         ("without a token", {}),
         ("with a token that isn't one", {"Authorization": "Bearer not-a-token"}),
@@ -313,6 +326,8 @@ def check_protected(url: str, say: Report) -> None:
             raise SmokeFailure(
                 f"An initialize {label} got no answer within {PROTECTED_TIMEOUT_SECONDS:g} seconds."
             ) from None
+        except SmokeFailure as failure:
+            raise SmokeFailure(f"An initialize {label} got no answer: {failure}") from None
         if status != 401:
             raise SmokeFailure(f"An initialize {label} returned HTTP {status}, not 401.")
         say(f"an initialize {label} returned HTTP 401")

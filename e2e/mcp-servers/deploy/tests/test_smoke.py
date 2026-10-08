@@ -1,5 +1,6 @@
 """smoke.py's M-protected checks against stand-in servers, using only the standard library."""
 
+import re
 import threading
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -138,6 +139,46 @@ def test_anything_but_401_fails_and_a_redirect_isn_t_followed(answer: Answer, co
         f"FAIL protected: An initialize without a token returned HTTP {code}, not 401."
     ]
     assert len(received) == 1
+
+
+def test_a_401_whose_body_never_arrives_fails_in_time(short_timeout: float) -> None:
+    def stall_after_the_headers(handler: BaseHTTPRequestHandler) -> None:
+        handler.send_response(401)
+        handler.send_header("Content-Length", "10")
+        handler.end_headers()
+        handler.wfile.flush()
+        hang(handler)
+
+    with serve(stall_after_the_headers) as (url, _):
+        passed, lines = run(url)
+
+    assert not passed
+    assert lines == [
+        f"FAIL protected: An initialize without a token got no answer within {short_timeout:g} "
+        "seconds."
+    ]
+
+
+def test_a_connection_closed_without_an_answer_fails() -> None:
+    def close_without_answering(handler: BaseHTTPRequestHandler) -> None:
+        handler.close_connection = True
+
+    with serve(close_without_answering) as (url, _):
+        passed, lines = run(url)
+
+    assert not passed
+    assert len(lines) == 1
+    assert re.fullmatch(
+        r"FAIL protected: An initialize without a token got no answer: The connection failed "
+        r"before the answer was complete \((RemoteDisconnected|Connection\w+Error)\)\.",
+        lines[0],
+    ), lines
+
+
+def test_a_url_the_checks_won_t_use_is_refused_before_any_request() -> None:
+    passed, lines = run("http://m-protected.example.test/mcp")
+    assert not passed
+    assert lines == ["FAIL protected: The URL must use https, or http to this machine."]
 
 
 def test_the_protected_checks_wait_far_less_than_the_others() -> None:
