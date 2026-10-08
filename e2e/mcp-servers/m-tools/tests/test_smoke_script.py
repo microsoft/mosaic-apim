@@ -39,6 +39,15 @@ def test_the_tools_checks_pass_against_m_tools(smoke: ModuleType, tools_origin: 
     ]
 
 
+def test_the_tools_checks_pass_against_the_image_running_as_m_protected(
+    smoke: ModuleType,
+) -> None:
+    # Away from Container Apps' authentication, M-protected answers like M-tools.
+    with serve(create_app(name="M-protected")) as url:
+        passed, lines = run(smoke, "tools", f"{url}/mcp")
+    assert passed, lines
+
+
 def test_the_sse_checks_pass_against_the_sse_only_variant(
     smoke: ModuleType, sse_origin: str
 ) -> None:

@@ -19,7 +19,7 @@ import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-SERVERS = ("m-tools", "m-agent", "m-protected", "deploy")
+SERVERS = ("m-tools", "m-agent", "deploy")
 PYTHON_VERSION = "3.13"
 _HASH_LINE = re.compile(r"^\s+--hash=(?P<algorithm>[a-z0-9]+):")
 

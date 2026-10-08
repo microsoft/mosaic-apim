@@ -41,82 +41,123 @@ def all_resources(template: Resource) -> list[Resource]:
     return found
 
 
-def test_easy_auth_admits_only_tokens_for_the_audience_from_the_two_allowed_clients(
+def servers(template: Resource) -> dict[str, Resource]:
+    """Each container app's module, by name: m-tools, m-tools-sse, m-protected and m-agent."""
+
+    return {
+        resource["name"]: resource
+        for resource in inner(main_module(template, "container-apps"))
+        if resource["type"] == "Microsoft.Resources/deployments"
+    }
+
+
+def protected_auth(template: Resource) -> Resource:
+    return one(
+        inner(main_module(template, "container-apps")), "Microsoft.App/containerApps/authConfigs"
+    )
+
+
+def test_m_protected_runs_m_tools_image_under_its_own_name_with_the_others(
     template: Resource,
 ) -> None:
-    function_app = main_module(template, "function-app")
-    # Deployed with the function app, every time: only deploy's first stage leaves both out.
-    assert function_app["condition"] == "[parameters('deployServers')]"
-    easy_auth = one(inner(function_app), "Microsoft.Web/sites/config", "authsettingsV2")
-    assert "condition" not in easy_auth
-    settings = easy_auth["properties"]
+    container_apps = main_module(template, "container-apps")
+    # Deployed with the other servers, every time: only deploy's first stage leaves them out.
+    assert container_apps["condition"] == "[parameters('deployServers')]"
+    protected = servers(template)["m-protected"]["properties"]["parameters"]
+    assert protected["image"] == {"value": "[parameters('toolsImage')]"}
+    assert protected["name"] == {"value": "[variables('protectedName')]"}
+    assert container_apps["properties"]["template"]["variables"]["protectedName"] == (
+        "[format('{0}-protected', parameters('namePrefix'))]"
+    )
+    assert protected["env"]["value"] == [
+        {"name": "MCP_TRANSPORT", "value": "streamable-http"},
+        {"name": "MCP_SERVER_NAME", "value": "M-protected"},
+    ]
+    assert "systemAssignedIdentity" not in protected
+    # MOSAIC publishes only an endpoint whose last segment is /mcp.
+    assert container_apps["properties"]["template"]["outputs"]["protectedUrl"]["value"] == (
+        "[format('https://{0}/mcp', reference(resourceId('Microsoft.Resources/deployments', "
+        "'m-protected'), '2025-04-01').outputs.fqdn.value)]"
+    )
 
-    assert settings["platform"]["enabled"] is True
-    assert settings["globalValidation"] == {
-        "requireAuthentication": True,
-        "unauthenticatedClientAction": "Return401",
-    }
+
+def test_built_in_authentication_admits_only_tokens_for_the_audience_from_the_two_allowed_clients(
+    template: Resource,
+) -> None:
+    auth = protected_auth(template)
+    # M-protected's own, and applied as soon as its app exists: never another app's, never left out.
+    assert auth["name"] == "[format('{0}/{1}', variables('protectedName'), 'current')]"
+    assert auth["dependsOn"] == ["[resourceId('Microsoft.Resources/deployments', 'm-protected')]"]
+    assert "condition" not in auth
+    settings = auth["properties"]
+
+    assert settings["platform"] == {"enabled": True}
+    # 401 to any request without a valid token, on every path: no redirect, no excluded path.
+    assert settings["globalValidation"] == {"unauthenticatedClientAction": "Return401"}
+    assert settings["httpSettings"] == {"requireHttps": True}
+    assert list(settings["identityProviders"]) == ["azureActiveDirectory"]
     entra = settings["identityProviders"]["azureActiveDirectory"]
     assert entra["enabled"] is True
+    # The tenant's v2 issuer, and no client secret: the app only checks bearer tokens.
     assert entra["registration"] == {
         "openIdIssuer": (
             "[format('{0}{1}/v2.0', environment().authentication.loginEndpoint, "
             "parameters('tenantId'))]"
         ),
-        "clientId": "[parameters('audienceClientId')]",
+        "clientId": "[parameters('protectedAudienceClientId')]",
     }
     # The gateway's token for api://<audience-app-id> is v2, so its aud is the client ID.
-    assert entra["validation"]["allowedAudiences"] == [
-        "[parameters('audienceClientId')]",
-        "[parameters('audienceAppIdUri')]",
-    ]
-    assert entra["validation"]["defaultAuthorizationPolicy"] == {
-        "allowedApplications": "[parameters('allowedClientIds')]"
+    assert entra["validation"] == {
+        "allowedAudiences": [
+            "[parameters('protectedAudienceClientId')]",
+            "[parameters('protectedAudienceAppIdUri')]",
+        ],
+        "defaultAuthorizationPolicy": {
+            "allowedApplications": "[parameters('protectedAllowedClientIds')]"
+        },
     }
-    assert function_app["properties"]["parameters"]["allowedClientIds"]["value"] == [
+    assert "login" not in entra
+    assert main_module(template, "container-apps")["properties"]["parameters"][
+        "protectedAllowedClientIds"
+    ]["value"] == [
         "[parameters('gatewayClientId')]",
         "[parameters('mosaicApiClientId')]",
     ]
-    assert settings["login"]["tokenStore"]["enabled"] is False
+    assert settings["login"] == {"tokenStore": {"enabled": False}}
 
 
-def test_m_protected_accepts_tokens_only_from_its_tenant(template: Resource) -> None:
-    settings = one(
-        inner(main_module(template, "function-app")), "Microsoft.Web/sites/config", "appsettings"
-    )
-    assert settings["properties"]["WEBSITE_AUTH_AAD_ALLOWED_TENANTS"] == "[parameters('tenantId')]"
-
-
-def test_m_protected_runs_python_3_13_on_the_smallest_flex_consumption_instance(
+def test_m_protected_accepts_tokens_only_from_its_tenant_for_its_audience(
     template: Resource,
 ) -> None:
-    resources = inner(main_module(template, "function-app"))
-    plan = one(resources, "Microsoft.Web/serverfarms")
-    assert plan["sku"] == {"tier": "FlexConsumption", "name": "FC1"}
-    site = one(resources, "Microsoft.Web/sites")
-    assert site["identity"] == {"type": "SystemAssigned"}
-    assert site["properties"]["httpsOnly"] is True
-    config = site["properties"]["functionAppConfig"]
-    assert config["runtime"] == {"name": "python", "version": "3.13"}
-    assert config["scaleAndConcurrency"] == {"instanceMemoryMB": 512, "maximumInstanceCount": 1}
-    assert config["deployment"]["storage"]["authentication"] == {"type": "SystemAssignedIdentity"}
+    passed = main_module(template, "container-apps")["properties"]["parameters"]
+    assert passed["tenantId"] == {"value": "[parameters('tenantId')]"}
+    assert passed["protectedAudienceClientId"] == {
+        "value": "[parameters('protectedAudienceClientId')]"
+    }
+    assert passed["protectedAudienceAppIdUri"] == {
+        "value": "[parameters('protectedAudienceAppIdUri')]"
+    }
+    assert template["parameters"]["protectedAudienceAppIdUri"]["defaultValue"] == (
+        "[format('api://{0}', parameters('protectedAudienceClientId'))]"
+    )
 
 
-def test_m_protected_s_storage_takes_no_shared_key_or_public_access(template: Resource) -> None:
-    storage = one(inner(main_module(template, "function-app")), "Microsoft.Storage/storageAccounts")
-    properties = storage["properties"]
-    assert properties["allowSharedKeyAccess"] is False
-    assert properties["allowBlobPublicAccess"] is False
-    assert properties["minimumTlsVersion"] == "TLS1_2"
+def test_nothing_of_the_functions_host_is_deployed_any_more(template: Resource) -> None:
+    types = {resource["type"] for resource in all_resources(template)}
+    assert not {t for t in types if t.startswith(("Microsoft.Web/", "Microsoft.Storage/"))}
+    names = [
+        r["name"] for r in template["resources"] if r["type"] == "Microsoft.Resources/deployments"
+    ]
+    assert not [name for name in names if "function-app" in name]
+    assert "functionAppName" not in template["outputs"]
 
 
 def test_container_apps_pull_with_the_shared_identity_and_never_a_password(
     template: Resource,
 ) -> None:
-    container_apps = main_module(template, "container-apps")
-    servers = [r for r in inner(container_apps) if r["type"] == "Microsoft.Resources/deployments"]
-    assert sorted(server["name"] for server in servers) == ["m-agent", "m-tools", "m-tools-sse"]
-    for server in servers:
+    found = servers(template)
+    assert sorted(found) == ["m-agent", "m-protected", "m-tools", "m-tools-sse"]
+    for server in found.values():
         [app] = inner(server)
         configuration = app["properties"]["configuration"]
         assert configuration["registries"] == [
@@ -141,18 +182,14 @@ def test_container_apps_pull_with_the_shared_identity_and_never_a_password(
 def test_the_sse_only_variant_runs_the_m_tools_image_with_the_sse_transport(
     template: Resource,
 ) -> None:
-    servers = {
-        r["name"]: r["properties"]["parameters"]
-        for r in inner(main_module(template, "container-apps"))
-        if r["type"] == "Microsoft.Resources/deployments"
-    }
-    assert servers["m-tools"]["image"] == servers["m-tools-sse"]["image"]
-    assert servers["m-tools"]["env"]["value"] == [
+    found = {name: server["properties"]["parameters"] for name, server in servers(template).items()}
+    assert found["m-tools"]["image"] == found["m-tools-sse"]["image"]
+    assert found["m-tools"]["env"]["value"] == [
         {"name": "MCP_TRANSPORT", "value": "streamable-http"}
     ]
-    assert servers["m-tools-sse"]["env"]["value"] == [{"name": "MCP_TRANSPORT", "value": "sse"}]
-    assert "systemAssignedIdentity" not in servers["m-tools"]
-    assert servers["m-agent"]["systemAssignedIdentity"]["value"] is True
+    assert found["m-tools-sse"]["env"]["value"] == [{"name": "MCP_TRANSPORT", "value": "sse"}]
+    assert "systemAssignedIdentity" not in found["m-tools"]
+    assert found["m-agent"]["systemAssignedIdentity"]["value"] is True
 
 
 def test_m_agent_is_configured_to_call_its_model_through_the_gateway(template: Resource) -> None:
@@ -187,7 +224,7 @@ def test_every_server_logs_to_the_existing_workspace(template: Resource) -> None
         r for r in all_resources(template) if r["type"] == "Microsoft.Insights/diagnosticSettings"
     ]
     categories = sorted(log["category"] for s in settings for log in s["properties"]["logs"])
-    assert categories == ["ContainerAppConsoleLogs", "ContainerAppSystemLogs", "FunctionAppLogs"]
+    assert categories == ["ContainerAppConsoleLogs", "ContainerAppSystemLogs"]
     for setting in settings:
         assert setting["properties"]["workspaceId"] == "[parameters('logAnalyticsWorkspaceId')]"
 
@@ -203,7 +240,9 @@ def test_the_outputs_give_the_coordinator_everything_the_next_steps_need(
 ) -> None:
     for key, _, _ in deploy.OUTPUT_LINES:
         assert key in template["outputs"]
-    for key in ("acrPullRoleAssignmentId", "functionAppName", "resourceGroupName"):
+    for key in ("acrPullRoleAssignmentId", "resourceGroupName"):
+        assert key in template["outputs"]
+    for _, key in deploy.SMOKE_CHECKS:
         assert key in template["outputs"]
 
 

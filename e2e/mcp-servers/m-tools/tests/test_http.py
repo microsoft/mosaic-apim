@@ -70,6 +70,25 @@ async def test_an_mcp_client_lists_and_calls_every_tool_over_streamable_http(ori
     assert now.content[0].text.endswith("Z")
 
 
+async def test_m_protected_serves_the_same_tools_under_its_own_name() -> None:
+    # M-protected runs this image with MCP_SERVER_NAME=M-protected, behind Container Apps'
+    # built-in authentication. MOSAIC records the name a server gives when it registers it.
+    with serve(create_app(name="M-protected")) as url:
+        async with (
+            streamable_http_client(f"{url}/mcp") as (read, write, _),
+            ClientSession(read, write) as session,
+        ):
+            initialized = await session.initialize()
+            names = {tool.name for tool in (await session.list_tools()).tools}
+            echo = await session.call_tool("echo", {"text": "protected"})
+            added = await session.call_tool("add", {"a": 2, "b": 3})
+
+    assert initialized.serverInfo.name == "M-protected"
+    assert names == {"echo", "utc_now", "add"}
+    assert echo.content[0].text == "protected"
+    assert added.content[0].text == "5"
+
+
 def test_mosaic_s_handshake_negotiates_the_revision_it_offers(origin: str) -> None:
     with httpx.Client(follow_redirects=False) as client:
         started = client.post(f"{origin}/mcp", headers=MOSAIC_HEADERS, json=initialize())

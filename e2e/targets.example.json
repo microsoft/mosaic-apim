@@ -108,7 +108,7 @@
         "tools": ["echo", "utc_now", "add"]
       },
       "m-protected": {
-        "url": "https://m-protected-example.azurewebsites.net/runtime/webhooks/mcp",
+        "url": "https://m-protected-example.azurecontainerapps.io/mcp",
         "displayName": "M-protected",
         "upstreamAuth": "managed-identity",
         "audience": "api://00000000-0000-0000-0000-000000000000",

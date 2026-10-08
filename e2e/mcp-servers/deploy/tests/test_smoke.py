@@ -1,0 +1,152 @@
+"""smoke.py's M-protected checks against stand-in servers, using only the standard library."""
+
+import threading
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+import pytest
+
+import smoke
+
+Answer = Callable[[BaseHTTPRequestHandler], None]
+# Releases every stand-in that's holding a request open, so each test's server stops at once.
+RELEASED = threading.Event()
+
+
+class QuietServer(ThreadingHTTPServer):
+    def handle_error(self, request: object, client_address: object) -> None:
+        # A request the smoke check stopped waiting for can't be answered. That's expected here.
+        pass
+
+
+@contextmanager
+def serve(answer: Answer) -> Iterator[tuple[str, list[str | None]]]:
+    """Answer each POST with answer, on a free local port, recording its Authorization header."""
+
+    received: list[str | None] = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            received.append(self.headers.get("Authorization"))
+            self.rfile.read(int(self.headers.get("Content-Length") or 0))
+            answer(self)
+
+        def log_message(self, format: str, *args: object) -> None:
+            pass
+
+    RELEASED.clear()
+    server = QuietServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_address[1]}/mcp", received
+    finally:
+        RELEASED.set()
+        server.shutdown()
+        server.server_close()
+
+
+def status(code: int, **headers: str) -> Answer:
+    def answer(handler: BaseHTTPRequestHandler) -> None:
+        handler.send_response(code)
+        for name, value in headers.items():
+            handler.send_header(name.replace("_", "-"), value)
+        handler.send_header("Content-Length", "0")
+        handler.end_headers()
+
+    return answer
+
+
+def hang(handler: BaseHTTPRequestHandler) -> None:
+    RELEASED.wait(10)
+
+
+def run(url: str) -> tuple[bool, list[str]]:
+    lines: list[str] = []
+    passed = smoke.run("protected", url, lines.append)
+    return passed, lines
+
+
+@pytest.fixture
+def short_timeout(monkeypatch: pytest.MonkeyPatch) -> float:
+    monkeypatch.setattr(smoke, "PROTECTED_TIMEOUT_SECONDS", 0.3)
+    return 0.3
+
+
+def test_401_at_once_without_a_token_and_with_a_malformed_one_passes() -> None:
+    with serve(status(401, WWW_Authenticate="Bearer")) as (url, received):
+        passed, lines = run(url)
+
+    assert passed, lines
+    assert lines == [
+        "PASS protected: an initialize without a token returned HTTP 401",
+        "PASS protected: an initialize with a token that isn't one returned HTTP 401",
+    ]
+    # Never a real credential: no token, then a bearer value that isn't even shaped like a JWT.
+    anonymous, malformed = received
+    assert anonymous is None
+    assert malformed is not None
+    assert malformed.startswith("Bearer ")
+    assert "." not in malformed
+
+
+def test_a_server_that_doesnt_answer_in_time_fails(short_timeout: float) -> None:
+    with serve(hang) as (url, _):
+        passed, lines = run(url)
+
+    assert not passed
+    assert lines == [
+        f"FAIL protected: An initialize without a token got no answer within {short_timeout:g} "
+        "seconds."
+    ]
+
+
+def test_answering_only_the_anonymous_request_in_time_fails(short_timeout: float) -> None:
+    # The old Functions host answered some requests with a slow 401 and left others hanging.
+    def refuse_anonymous_but_hang_on_a_token(handler: BaseHTTPRequestHandler) -> None:
+        if handler.headers.get("Authorization"):
+            hang(handler)
+        else:
+            status(401)(handler)
+
+    with serve(refuse_anonymous_but_hang_on_a_token) as (url, _):
+        passed, lines = run(url)
+
+    assert not passed
+    assert lines == [
+        "PASS protected: an initialize without a token returned HTTP 401",
+        "FAIL protected: An initialize with a token that isn't one got no answer within "
+        f"{short_timeout:g} seconds.",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("answer", "code"),
+    [
+        (status(302, Location="https://login.example.test/authorize"), 302),
+        (status(403), 403),
+        (status(200), 200),
+    ],
+)
+def test_anything_but_401_fails_and_a_redirect_isn_t_followed(answer: Answer, code: int) -> None:
+    with serve(answer) as (url, received):
+        passed, lines = run(url)
+
+    assert not passed
+    assert lines == [
+        f"FAIL protected: An initialize without a token returned HTTP {code}, not 401."
+    ]
+    assert len(received) == 1
+
+
+def test_the_protected_checks_wait_far_less_than_the_others() -> None:
+    assert smoke.PROTECTED_TIMEOUT_SECONDS <= 10
+    assert smoke.PROTECTED_TIMEOUT_SECONDS < smoke.TIMEOUT_SECONDS
+
+
+def test_the_checks_never_print_the_server_s_address(short_timeout: float) -> None:
+    with serve(hang) as (url, _):
+        _, lines = run(url)
+    port = url.rsplit(":", 1)[1].removesuffix("/mcp")
+    assert not any("127.0.0.1" in line or port in line for line in lines)

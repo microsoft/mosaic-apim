@@ -1,6 +1,2 @@
-# Local settings for running M-protected with Core Tools, and the deployment kit's inputs.
-m-protected/local.settings.json
+# The deployment kit's inputs.
 deploy/parameters.local.json
-# Build output.
-.python_packages/
-*.zip

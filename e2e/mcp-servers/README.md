@@ -12,10 +12,11 @@ environment owner approves it.
 | --- | --- | --- | --- | --- |
 | M-tools | Container Apps | Streamable HTTP at `/mcp` | **None** | M1 to M8 and M10 |
 | M-tools SSE-only | Container Apps, the same image | HTTP+SSE only: `GET /sse`, `POST /messages/` | Not publishable | M1's negative case |
-| M-protected | Azure Functions, Flex Consumption | Streamable HTTP at `/runtime/webhooks/mcp` | **Managed identity** | M1, M2, M5 and M10 |
+| M-protected | Container Apps, M-tools' image, behind built-in authentication | Streamable HTTP at `/mcp` | **Managed identity** | M1, M2, M5 and M10 |
 | M-agent | Container Apps | Streamable HTTP at `/mcp` | **None** | M9, after M1 to M3 |
 
-M-tools and M-protected offer the same three tools, with the same results:
+M-tools and M-protected run the same code, so they offer the same three tools, with the same
+results:
 
 | Tool | Returns |
 | --- | --- |
@@ -46,6 +47,7 @@ the server as an unsupported transport rather than registering it. This variant 
 | Setting | Default | What it does |
 | --- | --- | --- |
 | `MCP_TRANSPORT` | `streamable-http` | `sse` serves the SSE-only variant |
+| `MCP_SERVER_NAME` | `M-tools` | The name the server gives clients when they connect. M-protected sets `M-protected` |
 | `MCP_STATELESS` | `false` | `true` runs the SDK's stateless streamable HTTP, with no `Mcp-Session-Id` |
 | `MCP_JSON_RESPONSE` | `false` | `true` answers each POST with JSON rather than a one-event stream |
 | `PORT` | `8000` | The port the server listens on |
@@ -58,13 +60,15 @@ verifier's pooled-quota proof can probe the gateway with one.
 
 ### M-protected
 
-The same tools on Azure Functions' MCP extension, in Python. It shows the gateway attaching its
-managed identity's token to a server that requires it.
+M-tools' image, run as its own container app with `MCP_SERVER_NAME=M-protected`. It shows the
+gateway attaching its managed identity's token to a server that requires it. The server's code
+checks no token. Container Apps' built-in authentication (Easy Auth) runs beside it on every
+replica and checks each request before passing it on.
 
-App Service Authentication (Easy Auth) checks every request before the Functions host sees it.
-It admits only a v2 Entra token, issued by the tenant (`https://login.microsoftonline.com/<tenant-id>/v2.0`),
-whose audience is the server's own: either `<audience-app-id>` or `api://<audience-app-id>`. The
-token's client application must be one of two:
+The authentication admits only a v2 Entra token, issued by the tenant
+(`https://login.microsoftonline.com/<tenant-id>/v2.0`), whose audience is the server's own: either
+`<audience-app-id>` or `api://<audience-app-id>`. The token's client application must be one of
+two:
 
 - **API Management's system-assigned managed identity**, which calls the server for every
   published request. MOSAIC's MCP policy attaches its token with
@@ -76,24 +80,21 @@ A managed-identity MCP server must accept both identities: MOSAIC API's for regi
 sync, and the gateway's for calls. Without MOSAIC API's, MOSAIC records the server as degraded and
 can't sync its tools.
 
-Easy Auth answers 401 to a request with no valid token, and 403 to a valid token from any other
-client. Entra adds its own check: the audience's service principal requires assignment, and only
-those two identities hold its app role, so nobody else can get a token for it. `host.json` sets
-the extension's webhook authorization level to `Anonymous`, so the Functions system key isn't
-required as well. MOSAIC's publication attaches only the managed identity's token.
+The authentication answers 401 to a request with no valid token, on every path and never with a
+redirect to a sign-in page, and 403 to a valid token from any other client. M-protected never
+signs anyone in, so it has no client secret and keeps no tokens: checking a bearer token's
+signature, issuer, audience and lifetime takes only the signing keys the tenant publishes. Entra
+adds its own check: the audience's service principal requires assignment, and only those two
+identities hold its app role, so nobody else can get a token for it. MOSAIC's publication attaches
+only the managed identity's token.
 
-`host.json` pins the extension bundle to `[4.38.1, 4.39.0)`. Bundle 4.38.1 is the newest fully
-released 4.x bundle on the Functions CDN, and it carries version 1.5.0 of the MCP extension
-(`Microsoft.Azure.Functions.Extensions.Mcp`), whose source routes everything under
-`/runtime/webhooks/mcp` except `/sse` and `/message` to its streamable HTTP handler. Run locally on
-that bundle, the server:
-
-- answers a streamable HTTP `initialize` that offers `2025-11-25` at `/runtime/webhooks/mcp` with
-  `2025-06-18`, a revision MOSAIC accepts, as a server-sent event stream with an `Mcp-Session-Id`;
-- lists and calls all three tools, and passes [the smoke checks](deploy/smoke.py) for M-tools;
-- accepts only POST, answering 405 to `GET` and `DELETE`, which MOSAIC's client tolerates;
-- answers 406 unless `Accept` names both `application/json` and `text/event-stream`, as MOSAIC's
-  client and API Management do.
+**Why Container Apps.** M-protected first ran on Azure Functions' Flex Consumption plan, with the
+Functions MCP extension at `/runtime/webhooks/mcp`. There, requests on fresh connections
+alternated between a 401, often after about 20 seconds, and no answer at all, with or without a
+token, so MOSAIC's connection check found it unreachable. Restarts and four times the memory
+didn't change that, which pointed to the platform's request routing rather than the app. It now
+runs like the other servers. [Replacing M-protected's Functions host](#replacing-m-protecteds-functions-host)
+removes what the old host left.
 
 ### M-agent
 
@@ -135,8 +136,8 @@ call is capped at 16 tokens and a 500-character question, and teardown removes i
 The servers log only status codes, durations and tool names: a line per HTTP request, a line per
 tool call and, for M-agent, a line per model call. They never log a question, an answer, a header
 value, a session ID, a URL or a token. A message from the MCP SDK or an HTTP library, which can
-carry session IDs and host names, is reduced to its level and its exception's type. M-protected
-writes the same tool lines, and `host.json` keeps the Functions host's own logs to warnings.
+carry session IDs and host names, is reduced to its level and its exception's type. M-protected is
+M-tools' code, so it logs the same lines.
 
 ## Layout
 
@@ -144,13 +145,12 @@ writes the same tool lines, and `host.json` keeps the Functions host's own logs 
 e2e/mcp-servers/
   compile_requirements.py   Regenerates every requirements file below
   ruff.toml                 Lints this folder with the repository's rules
-  m-tools/                  M-tools and its SSE-only variant: m_tools/, tests/, Dockerfile
+  m-tools/                  M-tools, its SSE-only variant and M-protected: m_tools/, tests/, Dockerfile
   m-agent/                  M-agent: m_agent/, tests/, Dockerfile
-  m-protected/              M-protected: function_app.py, tools.py, host.json, tests/
   deploy/                   The deployment kit
     main.bicep              The subscription-scope template deploy.py runs
-    modules/                The pull identity, its AcrPull grant, the container apps, the function app
-    deploy.py               plan, deploy, outputs, smoke and teardown
+    modules/                The pull identity, its AcrPull grant, the container apps and M-protected's authentication
+    deploy.py               plan, deploy, outputs, smoke, teardown and remove-functions-host
     smoke.py                Smoke checks for the deployed servers, standard library only
     parameters.example.json The kit's inputs, to copy to parameters.local.json
 ```
@@ -166,14 +166,15 @@ and `requirements-dev.txt`, which adds pytest. Install either into the folder's 
 `--no-config` keeps the workspace's uv settings, such as its `exclude-newer` cutoff, out of it.
 
 ```powershell
-Set-Location e2e/mcp-servers/m-tools        # or m-agent, m-protected, deploy
+Set-Location e2e/mcp-servers/m-tools        # or m-agent, deploy
 uv venv --no-config --python 3.13 .venv
 uv pip install --no-config --python .venv --require-hashes -r requirements-dev.txt
 .venv\Scripts\python -m pytest
 ```
 
 CI does the same for each folder, in the **MCP test servers** jobs, and lints the folder with
-the workspace's ruff.
+the workspace's ruff. Its **MCP test servers (m-protected)** job builds M-tools' image, runs it as
+M-protected and checks it with the smoke checks.
 
 **M-tools.** `.venv\Scripts\python -m m_tools` serves `http://127.0.0.1:8000/mcp`. Set
 `MCP_TRANSPORT=sse` for the SSE-only variant at `/sse`. The tests start the real server on a free
@@ -191,18 +192,18 @@ a token. The tests mock the gateway with httpx and the identity with a fake cred
 the on-behalf value passed on, a request without one, MOSAIC's refusals, and keeping the token
 out of every error.
 
-**M-protected.** Use Azure Functions Core Tools 4.0.7030 or later, and Azurite for the host's
-storage:
+**M-protected.** Run M-tools with `MCP_SERVER_NAME=M-protected`:
 
 ```powershell
-Copy-Item local.settings.example.json local.settings.json
-func start                                   # http://localhost:7071/runtime/webhooks/mcp
-python ..\deploy\smoke.py tools http://127.0.0.1:7071/runtime/webhooks/mcp
+$env:MCP_SERVER_NAME = "M-protected"
+.venv\Scripts\python -m m_tools                       # http://127.0.0.1:8000/mcp
+python ..\deploy\smoke.py tools http://127.0.0.1:8000/mcp
 ```
 
-Locally there's no Easy Auth, and no system key, so anyone on the machine can call it. The tests
-index the function app as the host does, call each tool through its trigger, and check
-`host.json`. The deployment kit's tests check Easy Auth in the Bicep.
+Locally there's no built-in authentication in front of it, so anyone on the machine can call it,
+the `tools` checks pass, and the `protected` checks fail with HTTP 200. M-tools' tests cover the
+name. The deployment kit's tests check the authentication in the Bicep, and run the `protected`
+checks against stand-in servers that answer 401, redirect, or don't answer in time.
 
 **Requirements.** Pin new versions in a folder's `requirements.in`, then regenerate the
 `.txt` files with `python e2e/mcp-servers/compile_requirements.py`. Pass `--index-url` to resolve
@@ -223,7 +224,8 @@ The coordinator makes these changes separately, with the environment owner's app
      (`requestedAccessTokenVersion: 2`);
    - one app role, such as `McpServer.Call`, held only by API Management's system-assigned
      managed identity and MOSAIC API's;
-   - a service principal that requires assignment, so Entra issues tokens for it to no one else.
+   - a service principal that requires assignment, so Entra issues tokens for it to no one else;
+   - no client secret: M-protected's authentication only checks the tokens it's sent.
 4. **M-agent's managed identity**, once the kit has created it, gets the
    `Models.Invoke.Application` app role on MOSAIC's runtime registration. Its principal ID is in
    the kit's outputs. MOSAIC then records it, grants it the model, and names it as the model
@@ -275,23 +277,26 @@ python deploy.py outputs
 python deploy.py smoke
 python deploy.py teardown --dry-run
 python deploy.py teardown
+python deploy.py remove-functions-host --dry-run
+python deploy.py remove-functions-host
 ```
 
-- **plan** is the dry run. It lists every resource deploy creates, the images it builds and the
-  code it deploys, then runs Azure Resource Manager's what-if. It changes nothing.
-  `deploy --dry-run` does the same.
+- **plan** is the dry run. It lists every resource deploy creates and the images it builds, then
+  runs Azure Resource Manager's what-if. It changes nothing. `deploy --dry-run` does the same.
 - **deploy** works in four steps. It deploys the resource group, a user-assigned identity and that
   identity's AcrPull grant on the registry. Then it builds both images in the registry with
   `az acr build`, so no local Docker is needed, which also gives the grant time to take effect.
-  Then it deploys the servers, trying once more after 90 seconds if that fails. Last, it deploys
-  M-protected's code with a remote build, waits for its three functions, prints the outputs and
-  runs the smoke checks.
+  Then it deploys the servers, trying once more after 90 seconds if that fails. Last, it prints
+  the outputs and runs the smoke checks.
 - **outputs** and **smoke** print the outputs, and run the smoke checks, again.
+- **remove-functions-host** deletes what M-protected's old Azure Functions host left in the
+  resource group. See [Replacing M-protected's Functions host](#replacing-m-protecteds-functions-host).
 
 The smoke checks speak MCP as MOSAIC's client does. They expect M-tools to negotiate a revision
 MOSAIC accepts and to answer all three tools, the SSE-only variant to refuse streamable HTTP but
-open an SSE stream, M-protected to answer 401 without a token and with a malformed one, and
-M-agent to list `ask_model`. They never call `ask_model`, so they spend no model quota.
+open an SSE stream, M-protected to answer 401 without a token and with a malformed one, each
+within 10 seconds, and M-agent to list `ask_model`. They never send a real token and never call
+`ask_model`, so they spend no model quota.
 
 ### What it creates
 
@@ -299,26 +304,22 @@ In the new resource group:
 
 - a Container Apps environment on the Consumption workload profile, whose console and system
   logs go to the workspace through a diagnostic setting;
-- M-tools, its SSE-only variant and M-agent: one replica each, always running, at 0.25 vCPU and
-  0.5 GiB, the smallest size, with external HTTPS ingress. M-agent also has a system-assigned
-  managed identity;
-- a user-assigned identity the three apps pull their images with;
-- M-protected: a Flex Consumption plan and function app, Python 3.13, at most one instance of the
-  smallest size, 512 MB, with Easy Auth, a system-assigned identity, a diagnostic setting for its
-  logs, and a storage account that accepts only Entra authentication.
+- M-tools, its SSE-only variant, M-protected and M-agent: one replica each, always running, at
+  0.25 vCPU and 0.5 GiB, the smallest size, with external HTTPS ingress. M-protected runs M-tools'
+  image behind the built-in authentication [described above](#m-protected), and M-agent also has
+  a system-assigned managed identity;
+- a user-assigned identity the four apps pull their images with.
 
 On MOSAIC's registry, the kit adds the AcrPull grant, the deployment record
 `<namePrefix>-registry-pull` in MOSAIC's resource group, and the image repositories
 `<namePrefix>/m-tools` and `<namePrefix>/m-agent`.
 
 **Scale and cost.** One warm replica per container app keeps the servers responsive: the gateway
-and MOSAIC never wait for a scale from zero, and M1's negative case can't time out. Flex
-Consumption is the serverless plan that runs the MCP extension and Easy Auth. Billed per
-execution, it costs nothing measurable at this traffic, though its first call after a quiet spell
-waits a few seconds for an instance. A replica that isn't serving requests is billed at the idle
-rate, about $6 a month at this size, so the three container apps cost about $18 a month, or $0.60
-a day, before the Container Apps monthly free grant. The function app, storage, logs and builds
-add cents. Setting `minReplicas` to 0 removes most of the cost, at the price of cold starts.
+and MOSAIC never wait for a scale from zero, and M1's negative case can't time out. A replica
+that isn't serving requests is billed at the idle rate, about $6 a month at this size, so the
+four container apps cost about $24 a month, or $0.80 a day, before the Container Apps monthly free
+grant. Logs and builds add cents. Setting `minReplicas` to 0 removes most of the cost, at the
+price of cold starts.
 
 ### Outputs
 
@@ -331,13 +332,50 @@ add cents. Setting `minReplicas` to 0 removes most of the cost, at the price of 
 | M-agent URL | Register it with upstream authentication **None** |
 | M-agent principal ID | Assign it `Models.Invoke.Application`, then record and grant it in MOSAIC |
 
+### Replacing M-protected's Functions host
+
+Until October 2026 the kit ran M-protected on Azure Functions. A deployment only adds and updates
+resources, so deploying this version puts the new M-protected beside the old one and leaves the
+old function app, its plan, its storage account, its diagnostic setting and its two storage grants
+in place. To replace it, in order:
+
+1. Run `deploy`. It builds the images, deploys M-protected's container app with its
+   authentication, and runs the smoke checks: M-protected must answer 401 within 10 seconds, both
+   without a token and with a malformed one.
+2. In MOSAIC, point M-protected's registration at the new **M-protected URL** from the outputs,
+   with the same upstream authentication, **Managed identity**, and the same audience. Its
+   connection check must pass, and syncing its tools must find `echo`, `utc_now` and `add`.
+3. Run `remove-functions-host --dry-run`. It lists what's left of the old host, and the commands
+   it would run to delete it. Then run `remove-functions-host`.
+
+`remove-functions-host` finds the old host in the kit's resource group by the names the old
+template gave it, and deletes exactly these, in this order:
+
+1. the diagnostic setting `logs-to-workspace` on the function app, and the function app's two
+   grants on its storage account, Storage Blob Data Owner and Storage Queue Data Contributor.
+   Azure keeps both after the resources they're on are deleted, so they go first;
+2. the function app, `<namePrefix>-protected-<suffix>`, where the suffix is 13 lowercase letters
+   and digits;
+3. its plan, `<namePrefix>-protected-plan`;
+4. its storage account, `st<namePrefix without hyphens><suffix>`, cut to 24 characters;
+5. the deployment record `<namePrefix>-function-app`.
+
+It refuses a resource group the kit didn't create, as teardown does. Before it changes anything,
+it also refuses whatever it can't be sure of: a match that doesn't carry the kit's tag, more than
+one match of a kind, a storage account whose suffix isn't the function app's, or a resource
+outside the group. It never touches the new container apps. It lists anything else named after
+the old host, such as an Application Insights component made outside the kit, as left alone, for
+teardown to delete with the group. Running it again finishes what an earlier run left. Neither it
+nor the new host changes M-protected's audience registration or the identities that hold its role.
+
 ### Teardown
 
 `teardown --dry-run` lists what teardown would delete and changes nothing. `teardown` deletes
 exactly what deploy created:
 
 1. the AcrPull grant on the registry;
-2. the resource group, and everything in it, but only when it carries the kit's tag;
+2. the resource group, and everything in it, but only when it carries the kit's tag. That
+   includes anything M-protected's old Functions host left there;
 3. the deployment records `<namePrefix>-registry-pull` and `<namePrefix>-servers`.
 
 It leaves the images in the registry and prints the `az acr repository delete` commands that
