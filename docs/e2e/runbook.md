@@ -499,12 +499,12 @@ and the run fails this way.
   `--send-model-requests`. The call is charged to M-agent's model grant. M-agent's upstream is
   public, so while that grant is open, anyone who reaches M-agent can spend it.
   `--await-model-grant` keeps it open only for M9's call.
-- **Time:** the driver stops the verifier after 45 minutes, or 60 with `--missing-scope-client-id`
-  for its second sign-in, plus the timeout and interval of each wait: the revocation watch, or
-  M9's waits for the model caller's grant and for the attribution.
+- **Time:** the driver stops the verifier after 45 minutes, plus the timeout and interval of each
+  wait: the revocation watch, or M9's waits for the model caller's grant and for the attribution.
   The MOSAIC API tokens must last 20 minutes, plus those timeouts and intervals and a minute. With
   M9's defaults that's about 62 minutes, longer than a token issued for an hour lasts, so if the
-  driver says a token won't last, lower `--attribution-timeout`. For `--watch-revocation`, drive
+  driver says a token won't last, lower `--attribution-timeout`. `--missing-scope-client-id` adds
+  15 minutes to both, for the user's second sign-in. For `--watch-revocation`, drive
   the admin from another terminal, as for `verify`: revoke the grant, then plan and apply its MCP
   server's access. For `--await-model-grant`, see the next section.
 

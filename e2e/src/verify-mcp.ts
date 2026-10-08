@@ -227,12 +227,12 @@ export function mcpVerifyPersonas(targets: Targets, plan: McpVerifyPlan, choice:
 }
 
 /**
- * How long each MOSAIC API token must stay valid: time for sign-ins and checks, plus a revocation watch or M9's
- * waits, which read MOSAIC with them until the end: for the model caller's grant before the call, and for the
- * call's attribution after it.
+ * How long each MOSAIC API token must stay valid: time for sign-ins and checks, including the user's second sign-in
+ * with --missing-scope-client-id, plus a revocation watch or M9's waits, which read MOSAIC with them until the end:
+ * for the model caller's grant before the call, and for the call's attribution after it.
  */
 export function mcpControlTokenNeeds(plan: McpVerifyPlan): TokenNeeds {
-  const signInsAndChecks = 20 * 60
+  const signInsAndChecks = 20 * 60 + secondSignInSeconds(plan)
   if (plan.watchRevocation !== undefined) {
     return {
       seconds: signInsAndChecks + plan.revocationTimeoutSeconds + plan.revocationIntervalSeconds + 60,
@@ -264,16 +264,20 @@ function onBehalfWaits(plan: McpVerifyPlan): { seconds: number; flags: string[] 
   return { seconds, flags }
 }
 
+/** The user's second sign-in, with --missing-scope-client-id, which can take as long as its device code lasts. */
+function secondSignInSeconds(plan: McpVerifyPlan): number {
+  return plan.missingScopeClientId === undefined ? 0 : 15 * 60
+}
+
 /**
- * How long the driver lets the verifier run: two device sign-ins, whose codes last up to 15 minutes each, another
- * with --missing-scope-client-id, the checks, and a revocation watch or M9's waits.
+ * How long the driver lets the verifier run: two device sign-ins, whose codes last up to 15 minutes each, the
+ * user's second sign-in with --missing-scope-client-id, the checks, and a revocation watch or M9's waits.
  */
 export function mcpVerifierTimeoutMs(plan: McpVerifyPlan): number {
   const wait = plan.watchRevocation !== undefined
     ? plan.revocationTimeoutSeconds + plan.revocationIntervalSeconds
     : onBehalfWaits(plan).seconds
-  const signIn = plan.missingScopeClientId === undefined ? 0 : 15 * 60
-  return (45 * 60 + signIn + wait) * 1_000
+  return (45 * 60 + secondSignInSeconds(plan) + wait) * 1_000
 }
 
 /**

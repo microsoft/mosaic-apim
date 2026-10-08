@@ -282,15 +282,30 @@ test('tokens and the verifier get time for sign-ins, checks, and the waits', () 
   assert.equal(mcpVerifierTimeoutMs(watch), (45 * 60 + 930) * 1_000)
   assert.equal(mcpVerifierTimeoutMs(attribution), (45 * 60 + 1_320) * 1_000)
   assert.equal(mcpVerifierTimeoutMs(both), (45 * 60 + 320 + 1_860) * 1_000)
-  // The user's second sign-in can take another device code's 15 minutes.
-  assert.equal(mcpVerifierTimeoutMs(plan(...secondSignIn, '--check-ungranted-user')), 60 * 60_000)
-  assert.deepEqual(mcpControlTokenNeeds(plan(...secondSignIn)), { seconds: 1_200 })
+  // The user's second sign-in, for --missing-scope-client-id, can take another device code's 15 minutes. Any wait
+  // starts that much later.
+  const second = plan(...secondSignIn, '--check-ungranted-user')
+  assert.deepEqual(mcpControlTokenNeeds(second), { seconds: 1_200 + 900 })
+  assert.equal(mcpVerifierTimeoutMs(second), (45 * 60 + 900) * 1_000)
+  const secondThenWatch = plan(...secondSignIn, '--watch-revocation', 'ent_user')
+  assert.deepEqual(mcpControlTokenNeeds(secondThenWatch), {
+    seconds: 1_200 + 900 + 900 + 30 + 60,
+    shorten: 'Lower --revocation-timeout and run it again.',
+  })
+  assert.equal(mcpVerifierTimeoutMs(secondThenWatch), (45 * 60 + 900 + 930) * 1_000)
+  const secondThenAttribution = plan(...secondSignIn, ...onBehalf, '--await-attribution')
+  assert.deepEqual(mcpControlTokenNeeds(secondThenAttribution), {
+    seconds: 1_200 + 900 + 1_800 + 60 + 60,
+    shorten: 'Lower --attribution-timeout and run it again.',
+  })
+  assert.equal(mcpVerifierTimeoutMs(secondThenAttribution), (45 * 60 + 900 + 1_860) * 1_000)
 
   // The MOSAIC API token check takes the MCP run's needs, and says what would shorten them.
   const now = 1_800_000_000
   const holder = { personaKey: 'user-a', upn: 'user-a@contoso.example', tenantId: targets.tenantId }
   const token = jwt({ tid: targets.tenantId, preferred_username: holder.upn, exp: now + 2_000 })
   assert.equal(controlTokenProblem(token, holder, now, mcpControlTokenNeeds(plan(...user))), undefined)
+  assert.match(controlTokenProblem(token, holder, now, mcpControlTokenNeeds(second)) ?? '', /expires in 2000 seconds, and this run needs it for 2100\.$/)
   assert.match(
     controlTokenProblem(token, holder, now, mcpControlTokenNeeds(attribution)) ?? '',
     /expires in 2000 seconds, and this run needs it for 2580\. Lower --attribution-timeout and run it again\.$/,
