@@ -2,6 +2,7 @@
 
 import re
 import threading
+import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -157,6 +158,32 @@ def test_a_401_whose_body_never_arrives_fails_in_time(short_timeout: float) -> N
         f"FAIL protected: An initialize without a token got no answer within {short_timeout:g} "
         "seconds."
     ]
+
+
+def test_a_401_trickled_out_past_the_deadline_fails_at_the_deadline(short_timeout: float) -> None:
+    # Each byte comes well inside the socket timeout, but the whole answer takes many times longer.
+    answer = (
+        b"HTTP/1.0 401 Unauthorized\r\nContent-Length: 0\r\nX-Padding: " + b"x" * 100 + b"\r\n\r\n"
+    )
+
+    def trickle(handler: BaseHTTPRequestHandler) -> None:
+        for byte in answer:
+            if RELEASED.wait(short_timeout / 6):
+                return
+            handler.wfile.write(bytes([byte]))
+
+    with serve(trickle) as (url, _):
+        started = time.monotonic()
+        passed, lines = run(url)
+        elapsed = time.monotonic() - started
+
+    assert not passed
+    assert lines == [
+        f"FAIL protected: An initialize without a token got no answer within {short_timeout:g} "
+        "seconds."
+    ]
+    # It stopped waiting at the deadline, not when the answer finally ended.
+    assert elapsed < short_timeout * 5
 
 
 def test_a_connection_closed_without_an_answer_fails() -> None:

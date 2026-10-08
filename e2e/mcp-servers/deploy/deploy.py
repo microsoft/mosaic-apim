@@ -928,7 +928,11 @@ def _has_diagnostic_setting(az: Az, site: Resource) -> bool:
 
 
 def _storage_grants(az: Az, site: Resource, storage: Resource) -> list[tuple[str, str]]:
-    """The function app's own grants on its storage account, which the old module made."""
+    """The function app's own grants on its storage account, which the old module made.
+
+    Refuses when grants of those roles are there but the app has no identity to match them by:
+    once the app is deleted, nothing could ever tell its grants apart.
+    """
 
     principal = az.read(
         [
@@ -942,8 +946,6 @@ def _storage_grants(az: Az, site: Resource, storage: Resource) -> list[tuple[str
             "json",
         ]
     )
-    if not isinstance(principal, str) or not principal:
-        return []
     assignments = (
         az.read(
             [
@@ -960,18 +962,29 @@ def _storage_grants(az: Az, site: Resource, storage: Resource) -> list[tuple[str
         )
         or []
     )
-    grants = []
+    # Grants of the old module's roles at exactly the storage account's scope, whoever holds them.
+    candidates: list[tuple[Resource, str]] = []
     for assignment in assignments:
         if not isinstance(assignment, dict):
             continue
         role = str(assignment.get("roleDefinitionId", "")).rsplit("/", 1)[-1].lower()
-        if (
-            role in FUNCTIONS_STORAGE_ROLES
-            and str(assignment.get("principalId", "")).lower() == principal.lower()
-            and str(assignment.get("scope", "")).lower() == str(storage["id"]).lower()
-        ):
-            grants.append((str(assignment["id"]), FUNCTIONS_STORAGE_ROLES[role]))
-    return grants
+        scope = str(assignment.get("scope", "")).lower()
+        if role in FUNCTIONS_STORAGE_ROLES and scope == str(storage["id"]).lower():
+            candidates.append((assignment, role))
+    if not isinstance(principal, str) or not principal:
+        if candidates:
+            raise KitError(
+                f"{site['name']} has no managed identity, so remove-functions-host can't tell "
+                f"whether the {len(candidates)} Storage Blob Data Owner or Storage Queue Data "
+                f"Contributor grants on {storage['name']} are its own, and won't delete anything. "
+                "Delete the function app's grants there by hand, then run it again."
+            )
+        return []
+    return [
+        (str(assignment["id"]), FUNCTIONS_STORAGE_ROLES[role])
+        for assignment, role in candidates
+        if str(assignment.get("principalId", "")).lower() == principal.lower()
+    ]
 
 
 def find_functions_host(kit: Kit, az: Az) -> FunctionsHost:

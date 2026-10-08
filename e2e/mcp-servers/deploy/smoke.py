@@ -21,6 +21,7 @@ import http.client
 import json
 import re
 import sys
+import threading
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Iterator, Mapping
@@ -280,6 +281,32 @@ def _initialize_status(
     return Session(url, headers=headers, timeout=timeout).post(_initialize_payload()).status
 
 
+def _initialize_status_within(url: str, headers: Mapping[str, str], seconds: float) -> int:
+    """The status of an initialize whose whole answer must arrive within seconds.
+
+    urllib's timeout limits each socket operation, so a server that trickles its answer could take
+    far longer in all. The request runs on a daemon thread instead, which can't hold up the result
+    once the deadline passes, or the process's exit.
+    """
+
+    outcome: dict[str, Any] = {}
+
+    def request() -> None:
+        try:
+            outcome["status"] = _initialize_status(url, headers, timeout=seconds)
+        except Exception as error:
+            outcome["error"] = error
+
+    worker = threading.Thread(target=request, daemon=True)
+    worker.start()
+    worker.join(seconds)
+    if worker.is_alive():
+        raise SmokeTimeout(f"The server didn't answer within {seconds:g} seconds.")
+    if "error" in outcome:
+        raise outcome["error"]
+    return int(outcome["status"])
+
+
 def check_sse_only(url: str, say: Report) -> None:
     for label, target in (("its SSE URL", url), ("/mcp", _sibling(url, "/mcp"))):
         status = _initialize_status(target)
@@ -321,7 +348,7 @@ def check_protected(url: str, say: Report) -> None:
         ("with a token that isn't one", {"Authorization": "Bearer not-a-token"}),
     ):
         try:
-            status = _initialize_status(url, headers, timeout=PROTECTED_TIMEOUT_SECONDS)
+            status = _initialize_status_within(url, headers, PROTECTED_TIMEOUT_SECONDS)
         except SmokeTimeout:
             raise SmokeFailure(
                 f"An initialize {label} got no answer within {PROTECTED_TIMEOUT_SECONDS:g} seconds."

@@ -487,6 +487,26 @@ def test_remove_functions_host_skips_what_is_already_gone_around_the_function_ap
     assert fake.changes == REMOVALS[2:5]
 
 
+def test_remove_functions_host_refuses_when_the_app_has_no_identity_to_match_its_grants() -> None:
+    # Deleting the app would leave its grants with nothing to tell them apart by, ever after.
+    fake = with_functions_host(principal=None)
+    with pytest.raises(deploy.KitError, match="can't tell whether the 3 Storage Blob Data Owner"):
+        run("remove-functions-host", fake)
+    assert fake.changes == []
+
+
+def test_remove_functions_host_goes_on_when_an_app_without_identity_left_no_grants() -> None:
+    fake = with_functions_host(
+        principal=None,
+        storage_assignments=[
+            assignment(4, STORAGE_BLOB_DATA_CONTRIBUTOR),
+            assignment(5, BLOB_OWNER, scope=GROUP_ID),
+        ],
+    )
+    run("remove-functions-host", fake)
+    assert fake.changes == [REMOVALS[0], *REMOVALS[2:]]
+
+
 def test_remove_functions_host_matches_names_cut_short_for_a_long_prefix() -> None:
     # st plus a 14-character prefix leaves 8 of the suffix's 13 characters in 24.
     prefix = "mosaic-mcp-e2e01"

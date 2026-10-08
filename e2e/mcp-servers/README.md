@@ -362,8 +362,9 @@ template gave it, and deletes exactly these, in this order:
 
 It refuses a resource group the kit didn't create, as teardown does. Before it changes anything,
 it also refuses whatever it can't be sure of: a match that doesn't carry the kit's tag, more than
-one match of a kind, a storage account whose suffix isn't the function app's, or a resource
-outside the group. It never touches the new container apps. It lists anything else named after
+one match of a kind, a storage account whose suffix isn't the function app's, a resource outside
+the group, or grants of those two roles on the storage account when the function app has no
+identity to tell its own by. It never touches the new container apps. It lists anything else named after
 the old host, such as an Application Insights component made outside the kit, as left alone, for
 teardown to delete with the group. Running it again finishes what an earlier run left. Neither it
 nor the new host changes M-protected's audience registration or the identities that hold its role.
