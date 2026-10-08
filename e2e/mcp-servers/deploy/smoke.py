@@ -4,19 +4,24 @@ Standard library only, so it runs with any Python 3.12 or later:
 
     python smoke.py tools https://<m-tools-host>/mcp
     python smoke.py sse https://<m-tools-sse-host>/sse
-    python smoke.py protected https://<m-protected-host>/runtime/webhooks/mcp
+    python smoke.py protected https://<m-protected-host>/mcp
     python smoke.py agent https://<m-agent-host>/mcp
 
 deploy.py runs all four against the deployment's outputs. The checks speak MCP the way MOSAIC's
 own client does: streamable HTTP, protocol revision 2025-11-25 offered, and redirects never
 followed. They never send a credential and never call ask_model, so they spend no model quota.
-They print check names, tool names and HTTP statuses, never a URL, header value or session ID.
+M-protected must refuse an initialize without a token, and one with a malformed token, each with
+401 within PROTECTED_TIMEOUT_SECONDS: a slow or missing answer fails, as MOSAIC's connection check
+would. They print check names, tool names and HTTP statuses, never a URL, header value or session
+ID.
 """
 
 import argparse
+import http.client
 import json
 import re
 import sys
+import threading
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Iterator, Mapping
@@ -34,12 +39,19 @@ TOOLS = ("echo", "utc_now", "add")
 AGENT_TOOLS = ("ask_model",)
 MAX_BYTES = 1024 * 1024
 TIMEOUT_SECONDS = 60.0
+# A platform that checks tokens answers 401 at once. M-protected's old host took about 20 seconds,
+# or never answered, which MOSAIC's connection check reads as an unreachable server.
+PROTECTED_TIMEOUT_SECONDS = 10.0
 _ISO_UTC = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 _LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 
 
 class SmokeFailure(Exception):
     pass
+
+
+class SmokeTimeout(SmokeFailure):
+    """The server didn't answer in time."""
 
 
 @dataclass(frozen=True)
@@ -72,17 +84,35 @@ def checked_url(url: str) -> str:
 
 
 def send(
-    method: str, url: str, *, headers: Mapping[str, str] | None = None, body: bytes | None = None
+    method: str,
+    url: str,
+    *,
+    headers: Mapping[str, str] | None = None,
+    body: bytes | None = None,
+    timeout: float = TIMEOUT_SECONDS,
 ) -> Reply:
     request = urllib.request.Request(url, data=body, method=method, headers=dict(headers or {}))
     try:
-        with _OPENER.open(request, timeout=TIMEOUT_SECONDS) as response:
-            return Reply(response.status, response.headers, response.read(MAX_BYTES))
-    except urllib.error.HTTPError as error:
-        with error:
-            return Reply(error.code, error.headers, error.read(MAX_BYTES))
-    except (urllib.error.URLError, TimeoutError) as error:
-        raise SmokeFailure(f"The server couldn't be reached ({type(error).__name__}).") from None
+        try:
+            with _OPENER.open(request, timeout=timeout) as response:
+                return Reply(response.status, response.headers, response.read(MAX_BYTES))
+        except urllib.error.HTTPError as error:
+            # Reading an error's body can time out or fail too, so it's inside the outer try.
+            with error:
+                return Reply(error.code, error.headers, error.read(MAX_BYTES))
+    # URLError and TimeoutError are OSErrors. A connection that closes or breaks before the answer
+    # is complete raises another OSError or an HTTPException, such as RemoteDisconnected.
+    except (OSError, http.client.HTTPException) as error:
+        reason = error.reason if isinstance(error, urllib.error.URLError) else error
+        if isinstance(reason, TimeoutError):
+            raise SmokeTimeout(f"The server didn't answer within {timeout:g} seconds.") from None
+        if isinstance(error, urllib.error.URLError):
+            raise SmokeFailure(
+                f"The server couldn't be reached ({type(error).__name__})."
+            ) from None
+        raise SmokeFailure(
+            f"The connection failed before the answer was complete ({type(error).__name__})."
+        ) from None
 
 
 def sse_data(text: str) -> Iterator[str]:
@@ -119,9 +149,16 @@ def rpc_result(reply: Reply, request_id: int) -> dict[str, Any]:
 class Session:
     """One MCP conversation over streamable HTTP, as MOSAIC's client holds it."""
 
-    def __init__(self, url: str, *, headers: Mapping[str, str] | None = None) -> None:
+    def __init__(
+        self,
+        url: str,
+        *,
+        headers: Mapping[str, str] | None = None,
+        timeout: float = TIMEOUT_SECONDS,
+    ) -> None:
         self.url = checked_url(url)
         self.headers = dict(headers or {})
+        self.timeout = timeout
         self.session_id: str | None = None
         self.protocol_version: str | None = None
         self._next_id = 0
@@ -132,7 +169,13 @@ class Session:
             headers["Mcp-Session-Id"] = self.session_id
         if self.protocol_version and self.protocol_version >= "2025-06-18":
             headers["MCP-Protocol-Version"] = self.protocol_version
-        return send("POST", self.url, headers=headers, body=json.dumps(payload).encode("utf-8"))
+        return send(
+            "POST",
+            self.url,
+            headers=headers,
+            body=json.dumps(payload).encode("utf-8"),
+            timeout=self.timeout,
+        )
 
     def request(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         self._next_id += 1
@@ -175,7 +218,7 @@ class Session:
             return
         headers = {"Mcp-Session-Id": self.session_id, **self.headers}
         try:
-            send("DELETE", self.url, headers=headers)
+            send("DELETE", self.url, headers=headers, timeout=self.timeout)
         except SmokeFailure:
             pass
         self.session_id = None
@@ -232,8 +275,36 @@ def _initialize_payload() -> dict[str, Any]:
     }
 
 
-def _initialize_status(url: str, headers: Mapping[str, str] | None = None) -> int:
-    return Session(url, headers=headers).post(_initialize_payload()).status
+def _initialize_status(
+    url: str, headers: Mapping[str, str] | None = None, *, timeout: float = TIMEOUT_SECONDS
+) -> int:
+    return Session(url, headers=headers, timeout=timeout).post(_initialize_payload()).status
+
+
+def _initialize_status_within(url: str, headers: Mapping[str, str], seconds: float) -> int:
+    """The status of an initialize whose whole answer must arrive within seconds.
+
+    urllib's timeout limits each socket operation, so a server that trickles its answer could take
+    far longer in all. The request runs on a daemon thread instead, which can't hold up the result
+    once the deadline passes, or the process's exit.
+    """
+
+    outcome: dict[str, Any] = {}
+
+    def request() -> None:
+        try:
+            outcome["status"] = _initialize_status(url, headers, timeout=seconds)
+        except Exception as error:
+            outcome["error"] = error
+
+    worker = threading.Thread(target=request, daemon=True)
+    worker.start()
+    worker.join(seconds)
+    if worker.is_alive():
+        raise SmokeTimeout(f"The server didn't answer within {seconds:g} seconds.")
+    if "error" in outcome:
+        raise outcome["error"]
+    return int(outcome["status"])
 
 
 def check_sse_only(url: str, say: Report) -> None:
@@ -265,17 +336,25 @@ def _opens_sse_stream(url: str) -> bool:
                 line = response.readline(MAX_BYTES).decode("utf-8").strip()
                 if line == "event: endpoint":
                     return True
-    except (urllib.error.URLError, TimeoutError):
+    except (OSError, http.client.HTTPException):
         return False
     return False
 
 
 def check_protected(url: str, say: Report) -> None:
+    checked_url(url)
     for label, headers in (
         ("without a token", {}),
         ("with a token that isn't one", {"Authorization": "Bearer not-a-token"}),
     ):
-        status = _initialize_status(url, headers)
+        try:
+            status = _initialize_status_within(url, headers, PROTECTED_TIMEOUT_SECONDS)
+        except SmokeTimeout:
+            raise SmokeFailure(
+                f"An initialize {label} got no answer within {PROTECTED_TIMEOUT_SECONDS:g} seconds."
+            ) from None
+        except SmokeFailure as failure:
+            raise SmokeFailure(f"An initialize {label} got no answer: {failure}") from None
         if status != 401:
             raise SmokeFailure(f"An initialize {label} returned HTTP {status}, not 401.")
         say(f"an initialize {label} returned HTTP 401")

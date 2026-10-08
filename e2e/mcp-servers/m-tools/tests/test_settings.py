@@ -19,6 +19,14 @@ def test_the_sse_only_variant_and_the_flags_come_from_the_environment() -> None:
     assert settings == Settings("sse", True, True, 9000)
 
 
+def test_m_protected_is_the_same_server_under_its_own_name() -> None:
+    assert Settings.from_env({"MCP_SERVER_NAME": " M-protected "}) == Settings(
+        server_name="M-protected"
+    )
+    assert Settings.from_env({"MCP_SERVER_NAME": ""}).server_name == "M-tools"
+    assert Settings.from_env({"MCP_SERVER_NAME": "a" * 64}).server_name == "a" * 64
+
+
 @pytest.mark.parametrize(
     "env",
     [
@@ -29,6 +37,10 @@ def test_the_sse_only_variant_and_the_flags_come_from_the_environment() -> None:
         {"PORT": "0"},
         {"PORT": "65536"},
         {"PORT": "eighty"},
+        {"MCP_SERVER_NAME": "-protected"},
+        {"MCP_SERVER_NAME": "a" * 65},
+        {"MCP_SERVER_NAME": "M\nprotected"},
+        {"MCP_SERVER_NAME": "<M-protected>"},
     ],
 )
 def test_invalid_settings_stop_the_server_from_starting(env: dict[str, str]) -> None:

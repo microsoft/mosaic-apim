@@ -94,7 +94,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        server: [m-tools, m-agent, m-protected, deploy]
+        server: [m-tools, m-agent, deploy]
     defaults:
       run:
         working-directory: e2e/mcp-servers/${{ matrix.server }}
@@ -116,6 +116,56 @@ jobs:
       - name: Test
         run: .venv/bin/python -m pytest
 
+  # M-protected runs M-tools' image under its own name, behind Container Apps' built-in
+  # authentication, which the deploy job's Bicep tests pin. This builds that image as the kit's
+  # az acr build does, runs it as M-protected, and checks it with the kit's smoke checks.
+  mcp-protected:
+    name: MCP test servers (m-protected)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: e2e/mcp-servers/deploy
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build M-tools' image
+        run: docker build --tag mcp-m-tools:ci ../m-tools
+      - name: Run it as M-protected
+        run: >-
+          docker run --detach --name m-protected --publish 127.0.0.1:8000:8000
+          --env MCP_SERVER_NAME=M-protected mcp-m-tools:ci
+      - name: Check its tools and name, as MOSAIC's client would
+        # Without the platform's authentication in front, it answers like M-tools.
+        run: |
+          for attempt in $(seq 1 30); do
+            curl --silent --output /dev/null http://127.0.0.1:8000/mcp && break
+            sleep 1
+          done
+          python3 smoke.py tools http://127.0.0.1:8000/mcp
+          python3 - <<'PY'
+          import smoke
+
+          session = smoke.Session("http://127.0.0.1:8000/mcp")
+          result = session.request(
+              "initialize",
+              {
+                  "protocolVersion": smoke.OFFERED_PROTOCOL_VERSION,
+                  "capabilities": {},
+                  "clientInfo": {"name": "ci", "version": "1.0.0"},
+              },
+          )
+          session.close()
+          name = (result.get("serverInfo") or {}).get("name")
+          if name != "M-protected":
+              raise SystemExit(f"The image named itself {name!r}, not M-protected.")
+          print("The image serves M-protected's tools as M-protected.")
+          PY
+      - name: Show the server's log
+        if: always()
+        run: docker logs m-protected
+
   infra:
     name: Infrastructure (Bicep)
     runs-on: ubuntu-latest
@@ -135,7 +185,7 @@ jobs:
   result:
     name: CI result
     if: always()
-    needs: [python, frontend, e2e, mcp-servers, infra]
+    needs: [python, frontend, e2e, mcp-servers, mcp-protected, infra]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

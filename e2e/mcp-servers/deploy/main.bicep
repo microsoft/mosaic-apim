@@ -28,7 +28,7 @@ param imageTag string
 @description('False deploys only the resource group, the pull identity and its AcrPull grant.')
 param deployServers bool = true
 
-@description('The Entra tenant that issues the servers\' tokens.')
+@description('M-protected: the Entra tenant that issues the tokens it accepts.')
 param tenantId string = tenant().tenantId
 
 @description('M-protected: the client ID of its audience\'s app registration.')
@@ -121,6 +121,13 @@ module containerApps 'modules/container-apps.bicep' = if (deployServers) {
     toolsImage: toolsImage
     agentImage: agentImage
     minReplicas: minReplicas
+    tenantId: tenantId
+    protectedAudienceClientId: protectedAudienceClientId
+    protectedAudienceAppIdUri: protectedAudienceAppIdUri
+    protectedAllowedClientIds: [
+      gatewayClientId
+      mosaicApiClientId
+    ]
     modelEndpoint: modelEndpoint
     modelDeployment: modelDeployment
     modelApiVersion: modelApiVersion
@@ -128,24 +135,6 @@ module containerApps 'modules/container-apps.bicep' = if (deployServers) {
     modelCostCenter: modelCostCenter
     modelTokenParameter: modelTokenParameter
     modelMaxTokens: modelMaxTokens
-  }
-}
-
-module functionApp 'modules/function-app.bicep' = if (deployServers) {
-  name: '${namePrefix}-function-app'
-  scope: group
-  params: {
-    location: location
-    tags: tags
-    namePrefix: namePrefix
-    logAnalyticsWorkspaceId: logAnalyticsWorkspaceId
-    tenantId: tenantId
-    audienceClientId: protectedAudienceClientId
-    audienceAppIdUri: protectedAudienceAppIdUri
-    allowedClientIds: [
-      gatewayClientId
-      mosaicApiClientId
-    ]
   }
 }
 
@@ -158,6 +147,5 @@ output toolsUrl string = containerApps.?outputs.toolsUrl ?? ''
 output toolsSseUrl string = containerApps.?outputs.toolsSseUrl ?? ''
 output agentUrl string = containerApps.?outputs.agentUrl ?? ''
 output agentPrincipalId string = containerApps.?outputs.agentPrincipalId ?? ''
-output protectedUrl string = functionApp.?outputs.protectedUrl ?? ''
+output protectedUrl string = containerApps.?outputs.protectedUrl ?? ''
 output protectedAudience string = protectedAudienceAppIdUri
-output functionAppName string = functionApp.?outputs.functionAppName ?? ''

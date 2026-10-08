@@ -1,14 +1,30 @@
 """deploy.py against a fake Azure CLI: what each command runs, and what it never runs."""
 
 import json
-import zipfile
+import shlex
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 import deploy
-from support import OUTPUTS, SUBSCRIPTION, FakeAz, kit, values
+from support import (
+    BLOB_OWNER,
+    GROUP_ID,
+    NEW_RESOURCES,
+    OLD_GRANTS,
+    OLD_PLAN,
+    OLD_SITE,
+    OLD_STORAGE,
+    OUTPUTS,
+    SUBSCRIPTION,
+    SUFFIX,
+    FakeAz,
+    assignment,
+    kit,
+    resource,
+    values,
+)
 
 EXAMPLE = Path(deploy.__file__).with_name("parameters.example.json")
 
@@ -20,6 +36,8 @@ def run(command: str, fake: FakeAz, **options: Any) -> list[str]:
         deploy.plan(kit(), az, lines.append)
     elif command == "deploy":
         deploy.deploy(kit(), az, lines.append, skip_smoke=True, sleep=lambda seconds: None)
+    elif command == "remove-functions-host":
+        deploy.remove_functions_host(kit(**options), az, lines.append)
     else:
         deploy.teardown(kit(), az, lines.append, **options)
     return lines
@@ -140,7 +158,7 @@ def test_a_resource_group_the_kit_didn_t_create_is_refused(command: str) -> None
     assert fake.changes == []
 
 
-def test_deploy_grants_pull_builds_the_images_then_deploys_the_servers_and_code() -> None:
+def test_deploy_grants_pull_builds_the_images_then_deploys_the_servers() -> None:
     fake = FakeAz()
     lines = run("deploy", fake)
 
@@ -150,7 +168,6 @@ def test_deploy_grants_pull_builds_the_images_then_deploys_the_servers_and_code(
         ["acr", "build", "--subscription", SUBSCRIPTION],
         ["acr", "build", "--subscription", SUBSCRIPTION],
         ["deployment", "sub", "create", "--subscription"],
-        ["functionapp", "deployment", "source", "config-zip"],
     ]
     assert fake.deployed_servers == [False, True]
     builds = [call for call in fake.changes if call[:2] == ["acr", "build"]]
@@ -159,12 +176,24 @@ def test_deploy_grants_pull_builds_the_images_then_deploys_the_servers_and_code(
         "mosaic-mcp/m-agent:test-tag",
     ]
     assert all(call[call.index("--registry") + 1] == "crmosaic" for call in builds)
-    [code] = [call for call in fake.changes if "config-zip" in call]
-    assert code[code.index("--name") + 1] == "mosaic-mcp-protected-x"
-    assert code[code.index("--build-remote") + 1] == "true"
+    # M-protected runs M-tools' image, so it has no code or image of its own to deploy.
+    assert not any("functionapp" in call for call in fake.calls)
     text = "\n".join(lines)
     assert OUTPUTS["agentPrincipalId"] in text
     assert OUTPUTS["protectedUrl"] in text
+
+
+@pytest.mark.parametrize("missing", ["toolsUrl", "toolsSseUrl", "protectedUrl", "agentUrl"])
+def test_deploy_stops_when_a_server_s_url_is_missing_from_the_outputs(missing: str) -> None:
+    class MissingUrl(FakeAz):
+        def __call__(self, args: Any, capture: bool) -> Any:
+            result = super().__call__(args, capture)
+            if self.outputs:
+                self.outputs.pop(missing, None)
+            return result
+
+    with pytest.raises(deploy.KitError, match="outputs couldn't be read"):
+        run("deploy", MissingUrl())
 
 
 def test_a_build_failure_stops_deploy_and_returns_a_failure_exit(
@@ -278,13 +307,6 @@ def test_teardown_won_t_touch_a_resource_group_the_kit_didn_t_create() -> None:
     assert fake.changes == []
 
 
-def test_the_package_holds_exactly_what_m_protected_runs(tmp_path: Path) -> None:
-    with zipfile.ZipFile(deploy.build_protected_package(tmp_path)) as package:
-        assert sorted(package.namelist()) == sorted(deploy.PROTECTED_FILES)
-    modules = {path.name for path in deploy.PROTECTED.glob("*.py")}
-    assert modules <= set(deploy.PROTECTED_FILES)
-
-
 def test_deploy_dry_run_is_the_plan(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     parameters = tmp_path / "parameters.json"
     parameters.write_text(json.dumps(values()), encoding="utf-8")
@@ -307,3 +329,252 @@ def test_outputs_name_what_each_value_is_for(capsys: pytest.CaptureFixture[str])
     text = capsys.readouterr().out
     for key, label, note in deploy.OUTPUT_LINES:
         assert label in text and note in text and OUTPUTS[key] in text
+
+
+# remove-functions-host: M-protected's old Azure Functions host, beside the new servers.
+OTHER_PRINCIPAL = "34343434-3434-3434-3434-343434343434"
+STORAGE_BLOB_DATA_CONTRIBUTOR = "ba92f5b4-2d11-453d-a403-e96b0029c9fe"
+FUNCTIONS_RECORD = [
+    "--subscription",
+    SUBSCRIPTION,
+    "--resource-group",
+    "rg-mcp-test-servers",
+    "--name",
+    "mosaic-mcp-function-app",
+]
+REMOVALS = [
+    [
+        "monitor",
+        "diagnostic-settings",
+        "delete",
+        "--resource",
+        OLD_SITE["id"],
+        "--name",
+        "logs-to-workspace",
+    ],
+    ["role", "assignment", "delete", "--ids", OLD_GRANTS[0]["id"], OLD_GRANTS[1]["id"]],
+    ["resource", "delete", "--ids", OLD_SITE["id"]],
+    ["resource", "delete", "--ids", OLD_PLAN["id"]],
+    ["resource", "delete", "--ids", OLD_STORAGE["id"]],
+    ["deployment", "group", "delete", *FUNCTIONS_RECORD],
+]
+
+
+def with_functions_host(**changes: Any) -> FakeAz:
+    """The kit's group after the new deploy: the new servers, and what the old host left."""
+
+    options: dict[str, Any] = {
+        "group": "kit",
+        "outputs": OUTPUTS,
+        "resources": [*NEW_RESOURCES, OLD_SITE, OLD_PLAN, OLD_STORAGE],
+        "storage_assignments": [
+            *OLD_GRANTS,
+            # Not the old module's: another principal's, another role, and one at the group.
+            assignment(3, BLOB_OWNER, principal=OTHER_PRINCIPAL),
+            assignment(4, STORAGE_BLOB_DATA_CONTRIBUTOR),
+            assignment(5, BLOB_OWNER, scope=GROUP_ID),
+        ],
+    }
+    options.update(changes)
+    return FakeAz(**options)
+
+
+def test_remove_functions_host_dry_run_lists_what_it_would_delete_and_changes_nothing() -> None:
+    fake = with_functions_host()
+    lines = run("remove-functions-host", fake, dry_run=True)
+
+    assert fake.changes == []
+    site, storage = OLD_SITE["name"], OLD_STORAGE["name"]
+    listed = [
+        ("Microsoft.Insights/diagnosticSettings", f"logs-to-workspace on {site}"),
+        (
+            "Microsoft.Authorization/roleAssignments",
+            f"Storage Blob Data Owner for {site} on {storage}",
+        ),
+        (
+            "Microsoft.Authorization/roleAssignments",
+            f"Storage Queue Data Contributor for {site} on {storage}",
+        ),
+        ("Microsoft.Web/sites", site),
+        ("Microsoft.Web/serverFarms", OLD_PLAN["name"]),
+        ("Microsoft.Storage/storageAccounts", storage),
+        ("Microsoft.Resources/deployments", "mosaic-mcp-function-app"),
+    ]
+    assert lines[:8] == [
+        "M-protected's Functions host left these in rg-mcp-test-servers:",
+        *(f"  {resource_type:<58} {name}" for resource_type, name in listed),
+    ]
+    would = [line for line in lines if line.startswith("Would run: az ")]
+    assert would == [
+        "Would run: az " + " ".join(shlex.quote(arg) for arg in command) for command in REMOVALS
+    ]
+    assert lines[-1] == "remove-functions-host changed nothing."
+
+
+def test_remove_functions_host_deletes_exactly_what_the_old_module_created_in_order() -> None:
+    fake = with_functions_host()
+    lines = run("remove-functions-host", fake)
+
+    # The diagnostic setting and grants outlive what they're on, so they go first; then the
+    # function app, before the plan it runs on; then the storage account, and the module's record.
+    assert fake.changes == REMOVALS
+    assert lines[-1] == "M-protected's Functions host is removed."
+
+
+def test_remove_functions_host_never_touches_the_new_servers_or_anything_else() -> None:
+    decoys = [
+        resource("Microsoft.Web/sites", "mosaic-mcp-protected-other", "functionapp"),
+        resource("Microsoft.Web/sites", f"mosaic-mcp-tools-{SUFFIX}", "functionapp"),
+        resource("Microsoft.Web/sites", f"mosaic-mcp-protected-{SUFFIX}x", "functionapp"),
+        resource("Microsoft.Web/serverFarms", "mosaic-mcp-tools-plan", "functionapp"),
+        resource("Microsoft.Storage/storageAccounts", "stmosaicmcpdata", "StorageV2"),
+        resource("Microsoft.Storage/storageAccounts", f"stother{SUFFIX}", "StorageV2"),
+        resource("Microsoft.Insights/components", f"mosaic-mcp-protected-{SUFFIX}", "web"),
+    ]
+    fake = with_functions_host(resources=[*NEW_RESOURCES, *decoys, OLD_SITE, OLD_PLAN, OLD_STORAGE])
+    lines = run("remove-functions-host", fake)
+
+    assert fake.changes == REMOVALS
+    touched = {arg for call in fake.changes for arg in call}
+    for kept in [*NEW_RESOURCES, *decoys]:
+        assert kept["id"] not in touched
+    # What the old module didn't create, but is named after the host, is listed and left.
+    assert "Left alone, because the old module didn't create them. Teardown deletes them:" in lines
+    assert f"  {'Microsoft.Insights/components':<58} mosaic-mcp-protected-{SUFFIX}" in lines
+
+
+def test_remove_functions_host_refuses_a_resource_group_the_kit_didn_t_create() -> None:
+    fake = with_functions_host(group="foreign")
+    with pytest.raises(deploy.KitError, match="remove-functions-host won't touch it"):
+        run("remove-functions-host", fake)
+    assert fake.changes == []
+    assert not any(call[:2] == ["resource", "list"] for call in fake.calls)
+
+
+def test_remove_functions_host_says_so_when_the_resource_group_is_gone() -> None:
+    fake = with_functions_host(group="missing")
+    lines = run("remove-functions-host", fake)
+    assert fake.changes == []
+    assert lines == [
+        "The resource group rg-mcp-test-servers doesn't exist, so there's nothing to remove."
+    ]
+
+
+def test_remove_functions_host_says_so_when_nothing_is_left() -> None:
+    fake = with_functions_host(resources=list(NEW_RESOURCES), functions_record=False)
+    lines = run("remove-functions-host", fake)
+    assert fake.changes == []
+    assert lines == ["Nothing of M-protected's Functions host is left in rg-mcp-test-servers."]
+
+
+def test_remove_functions_host_finishes_what_an_earlier_run_left() -> None:
+    # The function app is gone, with its diagnostic setting and grants, but its plan isn't.
+    fake = with_functions_host(resources=[*NEW_RESOURCES, OLD_PLAN, OLD_STORAGE])
+    lines = run("remove-functions-host", fake)
+
+    assert fake.changes == REMOVALS[3:]
+    assert not any(
+        call[:2] in (["resource", "show"], ["role", "assignment"]) for call in fake.calls
+    )
+    assert any("can't tell its grants on the storage account" in line for line in lines)
+
+
+def test_remove_functions_host_skips_what_is_already_gone_around_the_function_app() -> None:
+    fake = with_functions_host(
+        diagnostic_settings=(), storage_assignments=[], functions_record=False
+    )
+    run("remove-functions-host", fake)
+    assert fake.changes == REMOVALS[2:5]
+
+
+def test_remove_functions_host_refuses_when_the_app_has_no_identity_to_match_its_grants() -> None:
+    # Deleting the app would leave its grants with nothing to tell them apart by, ever after.
+    fake = with_functions_host(principal=None)
+    with pytest.raises(deploy.KitError, match="can't tell whether the 3 Storage Blob Data Owner"):
+        run("remove-functions-host", fake)
+    assert fake.changes == []
+
+
+def test_remove_functions_host_goes_on_when_an_app_without_identity_left_no_grants() -> None:
+    fake = with_functions_host(
+        principal=None,
+        storage_assignments=[
+            assignment(4, STORAGE_BLOB_DATA_CONTRIBUTOR),
+            assignment(5, BLOB_OWNER, scope=GROUP_ID),
+        ],
+    )
+    run("remove-functions-host", fake)
+    assert fake.changes == [REMOVALS[0], *REMOVALS[2:]]
+
+
+def test_remove_functions_host_matches_names_cut_short_for_a_long_prefix() -> None:
+    # st plus a 14-character prefix leaves 8 of the suffix's 13 characters in 24.
+    prefix = "mosaic-mcp-e2e01"
+    site = resource("Microsoft.Web/sites", f"{prefix}-protected-{SUFFIX}", "functionapp,linux")
+    plan = resource("Microsoft.Web/serverFarms", f"{prefix}-protected-plan", "functionapp")
+    storage = resource("Microsoft.Storage/storageAccounts", f"stmosaicmcpe2e01{SUFFIX[:8]}")
+    fake = with_functions_host(
+        resources=[site, plan, storage],
+        storage_assignments=[assignment(1, BLOB_OWNER, scope=storage["id"])],
+        functions_record=False,
+    )
+    run("remove-functions-host", fake, namePrefix=prefix)
+
+    deleted = [call[-1] for call in fake.changes if call[:2] == ["resource", "delete"]]
+    assert deleted == [site["id"], plan["id"], storage["id"]]
+
+
+@pytest.mark.parametrize(
+    ("resources", "message"),
+    [
+        (
+            [OLD_SITE, OLD_PLAN, {**OLD_STORAGE, "tags": None}],
+            "doesn't carry the kit's tag",
+        ),
+        (
+            [{**OLD_SITE, "tags": {"mosaic-e2e-kit": "something-else"}}, OLD_PLAN],
+            "doesn't carry the kit's tag",
+        ),
+        (
+            [
+                OLD_SITE,
+                resource(
+                    "Microsoft.Web/sites", "mosaic-mcp-protected-a1b2c3d4e5f6g", "functionapp"
+                ),
+            ],
+            "more than one Microsoft.Web/sites",
+        ),
+        (
+            [OLD_SITE, resource("Microsoft.Storage/storageAccounts", "stmosaicmcpa1b2c3d4e5f6g")],
+            "doesn't share",
+        ),
+        (
+            [
+                {
+                    **OLD_PLAN,
+                    "id": OLD_PLAN["id"].replace("rg-mcp-test-servers", "rg-mosaic"),
+                }
+            ],
+            "isn't in rg-mcp-test-servers",
+        ),
+    ],
+)
+def test_remove_functions_host_refuses_anything_it_can_t_be_sure_of_before_changing_anything(
+    resources: list[dict[str, Any]], message: str
+) -> None:
+    fake = with_functions_host(resources=[*NEW_RESOURCES, *resources])
+    with pytest.raises(deploy.KitError, match=message):
+        run("remove-functions-host", fake)
+    assert fake.changes == []
+
+
+def test_remove_functions_host_dry_run_from_the_command_line(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    parameters = tmp_path / "parameters.json"
+    parameters.write_text(json.dumps(values()), encoding="utf-8")
+    fake = with_functions_host()
+    monkeypatch.setattr(deploy, "run_az", fake)
+    assert deploy.main(["remove-functions-host", "--dry-run", "--parameters", str(parameters)]) == 0
+    assert fake.changes == []
+    assert any(call[:2] == ["resource", "list"] for call in fake.calls)

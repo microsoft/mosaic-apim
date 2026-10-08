@@ -1,4 +1,0 @@
-# M-protected's direct dependencies. requirements.txt pins them and everything they need, with
-# hashes, and the Flex Consumption remote build installs it. Regenerate it with
-# ../compile_requirements.py; the README explains how.
-azure-functions==2.3.0

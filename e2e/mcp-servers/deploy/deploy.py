@@ -6,11 +6,14 @@
     python deploy.py smoke                 # the smoke checks again
     python deploy.py teardown --dry-run    # what teardown would delete
     python deploy.py teardown              # deletes exactly what deploy created
+    python deploy.py remove-functions-host --dry-run
+                                           # what's left of M-protected's old Functions host
+    python deploy.py remove-functions-host # deletes exactly that
 
 Each command reads parameters.local.json beside this script, or the file --parameters names.
 Copy parameters.example.json to start one. The script needs only Python 3.12 or later and the
 Azure CLI, signed in to the servers' tenant. It prints every command that changes anything before
-it runs it. plan, and teardown --dry-run, change nothing.
+it runs it. plan, and every --dry-run, change nothing.
 """
 
 import argparse
@@ -23,7 +26,6 @@ import subprocess
 import sys
 import tempfile
 import time
-import zipfile
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -38,14 +40,34 @@ SERVERS = HERE.parent
 TEMPLATE = HERE / "main.bicep"
 DEFAULT_PARAMETERS = HERE / "parameters.local.json"
 KIT_TAG_NAME, KIT_TAG_VALUE = "mosaic-e2e-kit", "mcp-test-servers"
-# The images deploy builds, from these folders, with az acr build.
+# The images deploy builds, from these folders, with az acr build. M-tools' image also runs
+# M-tools SSE-only and M-protected.
 IMAGES = {"m-tools": SERVERS / "m-tools", "m-agent": SERVERS / "m-agent"}
-PROTECTED = SERVERS / "m-protected"
-# Everything M-protected runs from. The Flex Consumption remote build installs requirements.txt.
-PROTECTED_FILES = ("function_app.py", "tools.py", "host.json", "requirements.txt")
-FUNCTIONS = ("echo", "utc_now", "add")
 RETRY_SECONDS = 90
-FUNCTIONS_TIMEOUT_SECONDS = 600
+# Each smoke check, and the output that holds the URL it checks.
+SMOKE_CHECKS = (
+    ("tools", "toolsUrl"),
+    ("sse", "toolsSseUrl"),
+    ("protected", "protectedUrl"),
+    ("agent", "agentUrl"),
+)
+
+# M-protected ran on Azure Functions until it moved to Container Apps. Deploying the new template
+# doesn't delete what the old modules/function-app.bicep created, because a deployment is
+# incremental. remove-functions-host deletes exactly that, found by the names it gave them: the
+# function app <prefix>-protected-<suffix>, its plan <prefix>-protected-plan, its storage account
+# st<prefix without hyphens><suffix>, cut to 24 characters, its diagnostic setting, its two grants
+# on the storage account, and the module's deployment record. The suffix was
+# uniqueString(resourceGroup().id): 13 lowercase letters and digits.
+FUNCTIONS_SUFFIX_LENGTH = 13
+FUNCTIONS_DIAGNOSTIC_SETTING = "logs-to-workspace"
+FUNCTIONS_STORAGE_ROLES = {
+    "b7e6dc6d-f1e8-4753-8033-0f276bb0955b": "Storage Blob Data Owner",
+    "974c5e8b-45b9-4653-ba55-5f855dd0fb88": "Storage Queue Data Contributor",
+}
+_GRANT_FIELDS = (
+    "[].{id:id, principalId:principalId, roleDefinitionId:roleDefinitionId, scope:scope}"
+)
 
 _GUID = re.compile(r"[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}")
 _PREFIX = re.compile(r"[a-z][a-z0-9-]{1,14}[a-z0-9]")
@@ -221,6 +243,12 @@ class Kit:
     @property
     def registry_pull_deployment(self) -> str:
         return f"{self.name_prefix}-registry-pull"
+
+    @property
+    def functions_host_deployment(self) -> str:
+        """The deployment record of the module that created M-protected's Functions host."""
+
+        return f"{self.name_prefix}-function-app"
 
     def repository(self, server: str) -> str:
         return f"{self.name_prefix}/{server}"
@@ -425,23 +453,12 @@ def planned_resources(kit: Kit) -> list[tuple[str, str]]:
         ("Microsoft.Insights/diagnosticSettings", f"logs-to-workspace on {prefix}-env"),
         ("Microsoft.App/containerApps", f"{prefix}-tools"),
         ("Microsoft.App/containerApps", f"{prefix}-tools-sse"),
+        ("Microsoft.App/containerApps", f"{prefix}-protected"),
+        (
+            "Microsoft.App/containerApps/authConfigs",
+            f"current on {prefix}-protected (built-in authentication)",
+        ),
         ("Microsoft.App/containerApps", f"{prefix}-agent"),
-        ("Microsoft.Storage/storageAccounts", f"st{prefix.replace('-', '')}*"),
-        ("Microsoft.Storage/storageAccounts/blobServices", "default"),
-        ("Microsoft.Storage/storageAccounts/blobServices/containers", "app-package"),
-        ("Microsoft.Web/serverfarms", f"{prefix}-protected-plan"),
-        ("Microsoft.Web/sites", f"{prefix}-protected-*"),
-        (
-            "Microsoft.Authorization/roleAssignments",
-            f"Storage Blob Data Owner for {prefix}-protected-*",
-        ),
-        (
-            "Microsoft.Authorization/roleAssignments",
-            f"Storage Queue Data Contributor for {prefix}-protected-*",
-        ),
-        ("Microsoft.Web/sites/config", "appsettings"),
-        ("Microsoft.Web/sites/config", "authsettingsV2 (Easy Auth)"),
-        ("Microsoft.Insights/diagnosticSettings", f"logs-to-workspace on {prefix}-protected-*"),
     ]
 
 
@@ -457,7 +474,7 @@ def describe_plan(kit: Kit, tag: str, say: Say) -> None:
     say(f"It builds these images in {kit.registry.name} with az acr build:")
     for server in IMAGES:
         say(f"  {kit.image(server, tag)}")
-    say("It deploys M-protected's code with a remote build: " + ", ".join(PROTECTED_FILES) + ".")
+    say("M-tools SSE-only and M-protected run M-tools' image too.")
 
 
 def plan(kit: Kit, az: Az, say: Say) -> None:
@@ -545,52 +562,6 @@ def read_outputs(kit: Kit, az: Az) -> dict[str, str] | None:
     }
 
 
-def build_protected_package(folder: Path) -> Path:
-    package = folder / "m-protected.zip"
-    with zipfile.ZipFile(package, "w", zipfile.ZIP_DEFLATED) as archive:
-        for name in PROTECTED_FILES:
-            archive.write(PROTECTED / name, name)
-    return package
-
-
-def wait_for_functions(
-    kit: Kit, az: Az, app: str, say: Say, sleep: Callable[[float], None]
-) -> None:
-    say("Waiting for the Functions host to list M-protected's tools...")
-    waited = 0
-    while True:
-        names = (
-            az.read(
-                [
-                    "functionapp",
-                    "function",
-                    "list",
-                    "--subscription",
-                    kit.subscription_id,
-                    "--resource-group",
-                    kit.resource_group,
-                    "--name",
-                    app,
-                    "--query",
-                    "[].name",
-                    "--output",
-                    "json",
-                ]
-            )
-            or []
-        )
-        found = {str(name).rsplit("/", 1)[-1] for name in names}
-        if found >= set(FUNCTIONS):
-            say("M-protected lists " + ", ".join(FUNCTIONS) + ".")
-            return
-        if waited >= FUNCTIONS_TIMEOUT_SECONDS:
-            raise KitError(
-                "M-protected's functions didn't appear. Check its logs in the workspace."
-            )
-        sleep(15)
-        waited += 15
-
-
 OUTPUT_LINES = (
     ("toolsUrl", "M-tools", "register with upstream authentication None"),
     ("toolsSseUrl", "M-tools SSE-only", "M1's negative case: MOSAIC must refuse to register it"),
@@ -609,13 +580,7 @@ def print_outputs(outputs: dict[str, str], say: Say) -> None:
 
 
 def smoke_all(outputs: dict[str, str], say: Say) -> bool:
-    checks = (
-        ("tools", "toolsUrl"),
-        ("sse", "toolsSseUrl"),
-        ("protected", "protectedUrl"),
-        ("agent", "agentUrl"),
-    )
-    results = [smoke.run(name, outputs.get(key, ""), say) for name, key in checks]
+    results = [smoke.run(name, outputs.get(key, ""), say) for name, key in SMOKE_CHECKS]
     return all(results)
 
 
@@ -665,35 +630,12 @@ def deploy(
         sleep(RETRY_SECONDS)
         _deploy_template(kit, az, tag, deploy_servers=True)
     outputs = read_outputs(kit, az)
-    if not outputs or not outputs.get("functionAppName"):
+    if not outputs or not all(outputs.get(key) for _, key in SMOKE_CHECKS):
         raise KitError("The deployment's outputs couldn't be read.")
-
-    say("4. M-protected's code.")
-    with tempfile.TemporaryDirectory(prefix="mcp-servers-") as scratch:
-        package = build_protected_package(Path(scratch))
-        az.change(
-            [
-                "functionapp",
-                "deployment",
-                "source",
-                "config-zip",
-                "--subscription",
-                kit.subscription_id,
-                "--resource-group",
-                kit.resource_group,
-                "--name",
-                outputs["functionAppName"],
-                "--src",
-                str(package),
-                "--build-remote",
-                "true",
-            ]
-        )
-    wait_for_functions(kit, az, outputs["functionAppName"], say, sleep)
     print_outputs(outputs, say)
     if skip_smoke:
         return True
-    say("5. Smoke checks.")
+    say("4. Smoke checks.")
     return smoke_all(outputs, say)
 
 
@@ -826,12 +768,312 @@ def teardown(kit: Kit, az: Az, say: Say, *, delete_images: bool = False) -> None
     say("Teardown changed nothing." if az.dry_run else "Teardown is done.")
 
 
+Resource = dict[str, Any]
+
+
+@dataclass(frozen=True)
+class FunctionsHost:
+    """What's left of M-protected's Functions host in the kit's resource group."""
+
+    site: Resource | None
+    plan: Resource | None
+    storage: Resource | None
+    diagnostic_setting: bool
+    # The function app's grants on its storage account: (assignment ID, role name).
+    grants: tuple[tuple[str, str], ...]
+    record: str | None
+    # Other resources named after the host, such as an Application Insights component made
+    # outside the kit. The old module didn't create them, so they're left for teardown.
+    others: tuple[tuple[str, str], ...] = ()
+
+    @property
+    def resources(self) -> list[Resource]:
+        """The function app, its plan and its storage account, in the order they're deleted."""
+
+        return [resource for resource in (self.site, self.plan, self.storage) if resource]
+
+    def describe(self) -> list[tuple[str, str]]:
+        found: list[tuple[str, str]] = []
+        if self.site and self.diagnostic_setting:
+            found.append(
+                (
+                    "Microsoft.Insights/diagnosticSettings",
+                    f"{FUNCTIONS_DIAGNOSTIC_SETTING} on {self.site['name']}",
+                )
+            )
+        for _, role in self.grants:
+            site = self.site["name"] if self.site else ""
+            storage = self.storage["name"] if self.storage else ""
+            found.append(
+                ("Microsoft.Authorization/roleAssignments", f"{role} for {site} on {storage}")
+            )
+        found += [(str(resource["type"]), str(resource["name"])) for resource in self.resources]
+        if self.record:
+            found.append(("Microsoft.Resources/deployments", self.record))
+        return found
+
+
+def _functions_host_record(kit: Kit) -> list[str]:
+    return [
+        "deployment",
+        "group",
+        "show",
+        "--subscription",
+        kit.subscription_id,
+        "--resource-group",
+        kit.resource_group,
+        "--name",
+        kit.functions_host_deployment,
+    ]
+
+
+def _functions_host_resources(
+    kit: Kit, az: Az
+) -> tuple[Resource | None, Resource | None, Resource | None, list[Resource]]:
+    """The function app, plan and storage account, matched by the names the old module gave them.
+
+    Also returns every other resource in the group named after the host, which stays.
+    """
+
+    prefix = kit.name_prefix
+    storage_base = "st" + prefix.replace("-", "")
+    storage_suffix = min(FUNCTIONS_SUFFIX_LENGTH, 24 - len(storage_base))
+    site_name = re.compile(
+        re.escape(f"{prefix}-protected-") + f"[a-z0-9]{{{FUNCTIONS_SUFFIX_LENGTH}}}"
+    )
+    storage_name = re.compile(re.escape(storage_base) + f"[a-z0-9]{{{storage_suffix}}}")
+    in_group = (
+        f"/subscriptions/{kit.subscription_id}/resourceGroups/{kit.resource_group}/providers/"
+    ).lower()
+    listed = (
+        az.read(
+            [
+                "resource",
+                "list",
+                "--subscription",
+                kit.subscription_id,
+                "--resource-group",
+                kit.resource_group,
+                "--output",
+                "json",
+            ]
+        )
+        or []
+    )
+
+    def one(resource_type: str, matches: Callable[[str, str], bool]) -> Resource | None:
+        found = [
+            resource
+            for resource in listed
+            if isinstance(resource, dict)
+            and str(resource.get("type", "")).lower() == resource_type.lower()
+            and matches(str(resource.get("name", "")), str(resource.get("kind") or "").lower())
+        ]
+        if not found:
+            return None
+        if len(found) > 1:
+            raise KitError(
+                f"{kit.resource_group} holds more than one {resource_type} named as M-protected's "
+                "Functions host was, so remove-functions-host won't choose between them."
+            )
+        [resource] = found
+        if not str(resource.get("id", "")).lower().startswith(in_group):
+            raise KitError(
+                f"{resource['name']} isn't in {kit.resource_group}, so remove-functions-host "
+                "won't delete it."
+            )
+        if (resource.get("tags") or {}).get(KIT_TAG_NAME) != KIT_TAG_VALUE:
+            raise KitError(
+                f"{resource['name']} doesn't carry the kit's tag, so remove-functions-host won't "
+                "delete it."
+            )
+        return resource
+
+    site = one(
+        "Microsoft.Web/sites",
+        lambda name, kind: bool(site_name.fullmatch(name)) and "functionapp" in kind,
+    )
+    plan = one("Microsoft.Web/serverFarms", lambda name, _: name == f"{prefix}-protected-plan")
+    storage = one(
+        "Microsoft.Storage/storageAccounts", lambda name, _: bool(storage_name.fullmatch(name))
+    )
+    if site and storage:
+        suffix = str(site["name"])[-FUNCTIONS_SUFFIX_LENGTH:]
+        if storage["name"] != (storage_base + suffix)[:24]:
+            raise KitError(
+                f"{storage['name']} doesn't share {site['name']}'s suffix, so it isn't that "
+                "function app's storage account. remove-functions-host won't delete either."
+            )
+    matched = [resource for resource in (site, plan, storage) if resource]
+    others = [
+        resource
+        for resource in listed
+        if isinstance(resource, dict)
+        and resource not in matched
+        and f"{prefix}-protected-" in str(resource.get("name", ""))
+    ]
+    return site, plan, storage, others
+
+
+def _has_diagnostic_setting(az: Az, site: Resource) -> bool:
+    found = az.read(
+        ["monitor", "diagnostic-settings", "list", "--resource", site["id"], "--output", "json"]
+    )
+    if isinstance(found, dict):
+        found = found.get("value")
+    return any(
+        isinstance(setting, dict) and setting.get("name") == FUNCTIONS_DIAGNOSTIC_SETTING
+        for setting in found or []
+    )
+
+
+def _storage_grants(az: Az, site: Resource, storage: Resource) -> list[tuple[str, str]]:
+    """The function app's own grants on its storage account, which the old module made.
+
+    Refuses when grants of those roles are there but the app has no identity to match them by:
+    once the app is deleted, nothing could ever tell its grants apart.
+    """
+
+    principal = az.read(
+        [
+            "resource",
+            "show",
+            "--ids",
+            site["id"],
+            "--query",
+            "identity.principalId",
+            "--output",
+            "json",
+        ]
+    )
+    assignments = (
+        az.read(
+            [
+                "role",
+                "assignment",
+                "list",
+                "--scope",
+                storage["id"],
+                "--query",
+                _GRANT_FIELDS,
+                "--output",
+                "json",
+            ]
+        )
+        or []
+    )
+    # Grants of the old module's roles at exactly the storage account's scope, whoever holds them.
+    candidates: list[tuple[Resource, str]] = []
+    for assignment in assignments:
+        if not isinstance(assignment, dict):
+            continue
+        role = str(assignment.get("roleDefinitionId", "")).rsplit("/", 1)[-1].lower()
+        scope = str(assignment.get("scope", "")).lower()
+        if role in FUNCTIONS_STORAGE_ROLES and scope == str(storage["id"]).lower():
+            candidates.append((assignment, role))
+    if not isinstance(principal, str) or not principal:
+        if candidates:
+            raise KitError(
+                f"{site['name']} has no managed identity, so remove-functions-host can't tell "
+                f"whether the {len(candidates)} Storage Blob Data Owner or Storage Queue Data "
+                f"Contributor grants on {storage['name']} are its own, and won't delete anything. "
+                "Delete the function app's grants there by hand, then run it again."
+            )
+        return []
+    return [
+        (str(assignment["id"]), FUNCTIONS_STORAGE_ROLES[role])
+        for assignment, role in candidates
+        if str(assignment.get("principalId", "")).lower() == principal.lower()
+    ]
+
+
+def find_functions_host(kit: Kit, az: Az) -> FunctionsHost:
+    """Read what's left of M-protected's Functions host. Changes nothing."""
+
+    site, plan, storage, others = _functions_host_resources(kit, az)
+    record = _deployment_exists(az, _functions_host_record(kit))
+    return FunctionsHost(
+        site=site,
+        plan=plan,
+        storage=storage,
+        diagnostic_setting=_has_diagnostic_setting(az, site) if site else False,
+        grants=tuple(_storage_grants(az, site, storage)) if site and storage else (),
+        record=kit.functions_host_deployment if record else None,
+        others=tuple((str(other.get("type")), str(other.get("name"))) for other in others),
+    )
+
+
+def remove_functions_host(kit: Kit, az: Az, say: Say) -> None:
+    """Delete exactly what M-protected's Functions host left in the kit's resource group."""
+
+    check_account(kit, az)
+    state = resource_group_state(kit, az)
+    if state == "foreign":
+        raise KitError(
+            f"{kit.resource_group} wasn't created by this kit, so remove-functions-host won't "
+            "touch it."
+        )
+    if state == "missing":
+        say(f"The resource group {kit.resource_group} doesn't exist, so there's nothing to remove.")
+        return
+    host = find_functions_host(kit, az)
+    found = host.describe()
+    if found:
+        say(f"M-protected's Functions host left these in {kit.resource_group}:")
+        for resource_type, name in found:
+            say(f"  {resource_type:<58} {name}")
+    else:
+        say(f"Nothing of M-protected's Functions host is left in {kit.resource_group}.")
+    if host.others:
+        say("Left alone, because the old module didn't create them. Teardown deletes them:")
+        for resource_type, name in host.others:
+            say(f"  {resource_type:<58} {name}")
+    if not found:
+        return
+    if host.storage and not host.site:
+        say(
+            "The function app is gone, so remove-functions-host can't tell its grants on the "
+            "storage account from any others there, and leaves them."
+        )
+    # The diagnostic setting and the grants outlive the resources they're on, so they go first.
+    if host.site and host.diagnostic_setting:
+        az.change(
+            [
+                "monitor",
+                "diagnostic-settings",
+                "delete",
+                "--resource",
+                host.site["id"],
+                "--name",
+                FUNCTIONS_DIAGNOSTIC_SETTING,
+            ]
+        )
+    if host.grants:
+        az.change(["role", "assignment", "delete", "--ids", *(grant for grant, _ in host.grants)])
+    # The function app before its plan, which Azure won't delete while an app is on it.
+    for resource in host.resources:
+        az.change(["resource", "delete", "--ids", resource["id"]])
+    if host.record:
+        az.change(["deployment", "group", "delete", *_functions_host_record(kit)[3:]])
+    say(
+        "remove-functions-host changed nothing."
+        if az.dry_run
+        else "M-protected's Functions host is removed."
+    )
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="The Phase 11 MCP test servers' deployment kit.")
-    parser.add_argument("command", choices=("plan", "deploy", "outputs", "smoke", "teardown"))
+    parser.add_argument(
+        "command",
+        choices=("plan", "deploy", "outputs", "smoke", "teardown", "remove-functions-host"),
+    )
     parser.add_argument("--parameters", type=Path, default=DEFAULT_PARAMETERS)
     parser.add_argument(
-        "--dry-run", action="store_true", help="change nothing: deploy runs plan, teardown lists"
+        "--dry-run",
+        action="store_true",
+        help="change nothing: deploy runs plan; teardown and remove-functions-host list what "
+        "they'd delete",
     )
     parser.add_argument(
         "--delete-images", action="store_true", help="teardown: delete the image repositories too"
@@ -848,6 +1090,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0 if deploy(kit, az, print, skip_smoke=arguments.skip_smoke) else 1
         elif command == "teardown":
             teardown(kit, az, print, delete_images=arguments.delete_images)
+        elif command == "remove-functions-host":
+            remove_functions_host(kit, az, print)
         else:
             outputs = read_outputs(kit, az)
             if outputs is None:
