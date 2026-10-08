@@ -151,6 +151,7 @@
         "costCenter": "e2e-revoke",
         "notes": "For --watch-revocation: revoked, and its server's plan applied, during the run."
       }
-    }
+    },
+    "missingScopeClientId": "33333333-3333-3333-3333-333333333333"
   }
 }

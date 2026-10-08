@@ -24,6 +24,49 @@ export function endsDeviceSignIn(line: string, sincePromptMs: number): boolean {
   return sincePromptMs >= deviceSignInGraceMs && !stillWaiting.test(line.trim())
 }
 
+/** A device-code sign-in the driver started: when, and how to end it. */
+export interface DeviceSignIn {
+  startedAt: number
+  finish(): void
+}
+
+/** The device-code sign-ins of one verifier run, followed through its output. */
+export interface DeviceSignIns {
+  /** Reads one line of output, which `show` prints, ending and starting sign-ins around it. */
+  line(raw: string, show: () => void): void
+  /** Ends the sign-in in progress, as when the verifier exits. */
+  end(): void
+}
+
+/**
+ * Follows a verifier's output for its device-code sign-ins, one at a time. Before a line is shown, it ends the
+ * sign-in in progress if endsDeviceSignIn says so. After a prompt is shown, it ends that sign-in anyway and starts
+ * the one the prompt asks for. So every prompt is entered, even a second one for the same person in one run.
+ */
+export function followDeviceSignIns(
+  parse: (line: string) => SignInPrompt | undefined,
+  start: (prompt: SignInPrompt) => DeviceSignIn | undefined,
+  now: () => number = Date.now,
+): DeviceSignIns {
+  let current: DeviceSignIn | undefined
+  const end = () => {
+    current?.finish()
+    current = undefined
+  }
+  return {
+    line(raw, show) {
+      if (current && endsDeviceSignIn(raw, now() - current.startedAt)) end()
+      show()
+      const prompt = parse(raw)
+      if (prompt) {
+        end()
+        current = start(prompt)
+      }
+    },
+    end,
+  }
+}
+
 /** True for a MOSAIC API call that carries a bearer token: where a persona's MOSAIC API token is taken from. */
 export async function carriesApiToken(request: Request, apiOrigin: string): Promise<boolean> {
   return (

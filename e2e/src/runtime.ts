@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process'
 import { createInterface } from 'node:readline'
 import type { Page, TestInfo } from '@playwright/test'
 import { type SuiteRuntime, type Targets, persona } from './config.ts'
-import { deviceCodePersona, endsDeviceSignIn, typeDeviceCode } from './device-code.ts'
+import { type DeviceSignIn, deviceCodePersona, followDeviceSignIns, typeDeviceCode } from './device-code.ts'
 import type { PersonaPool } from './fixtures.ts'
 import { personaApiToken } from './mosaic-api.ts'
 import { redact } from './redact.ts'
@@ -383,7 +383,6 @@ export async function startVerifier(options: StartVerifierOptions): Promise<Runn
   const python = process.env.MOSAIC_E2E_PYTHON || 'python'
   let settled = false
   let timedOut = false
-  let signIn: { startedAt: number; finish(): void } | undefined
 
   // Every line is redacted before it is printed or kept, whether the verifier or the suite wrote it.
   const record = (text: string) => {
@@ -397,11 +396,7 @@ export async function startVerifier(options: StartVerifierOptions): Promise<Runn
       }
     }
   }
-  const endSignIn = () => {
-    signIn?.finish()
-    signIn = undefined
-  }
-  const startSignIn = (prompt: SignInPrompt) => {
+  const startSignIn = (prompt: SignInPrompt): DeviceSignIn | undefined => {
     const yourself = redact(`Enter the code ${prompt.code} yourself at ${prompt.uri}, signed in as ${prompt.who}.`)
     const target = deviceCodePersona(prompt, people)
     if ('refused' in target) {
@@ -441,6 +436,7 @@ export async function startVerifier(options: StartVerifierOptions): Promise<Runn
       },
     }
   }
+  const signIns = followDeviceSignIns((line) => parseSignInPrompt(line), startSignIn)
 
   const child = spawn(python, [verifierScript, ...plan.argv], {
     cwd: repoRoot,
@@ -459,21 +455,13 @@ export async function startVerifier(options: StartVerifierOptions): Promise<Runn
       if (settled) return
       settled = true
       clearTimeout(timer)
-      endSignIn()
+      signIns.end()
       const tail = lines.slice(-5).join(' | ')
       for (const waiter of waiters) waiter.reject(new Error(`The verifier ended first. Its last lines: ${tail}`))
       waiters.clear()
       resolve({ exitCode, timedOut, lines: [...lines] })
     }
-    const onLine = (raw: string) => {
-      if (signIn && endsDeviceSignIn(raw, Date.now() - signIn.startedAt)) endSignIn()
-      record(maskDeviceCode(publicLine(raw, secrets)))
-      const prompt = parseSignInPrompt(raw)
-      if (prompt) {
-        endSignIn()
-        signIn = startSignIn(prompt)
-      }
-    }
+    const onLine = (raw: string) => signIns.line(raw, () => record(maskDeviceCode(publicLine(raw, secrets))))
     createInterface({ input: child.stdout, crlfDelay: Infinity }).on('line', onLine)
     createInterface({ input: child.stderr, crlfDelay: Infinity }).on('line', onLine)
     child.on('error', (error) => {
@@ -512,7 +500,7 @@ export async function startVerifier(options: StartVerifierOptions): Promise<Runn
       })
     },
     stop() {
-      endSignIn()
+      signIns.end()
       if (!settled) child.kill()
     },
   }

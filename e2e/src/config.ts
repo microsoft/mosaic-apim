@@ -164,12 +164,18 @@ export interface McpGrantTarget {
 export interface McpTargets {
   servers: Record<string, McpServerTarget>
   grants: Record<string, McpGrantTarget>
+  /**
+   * A public client consented only for Models.Invoke, for verify-mcp's --missing-scope-client-id: M5's grant holder
+   * signs in through it again for a token without Mcp.Invoke. MOSAIC's model client can't give one, being consented
+   * for both, and Entra puts every scope a client is consented for in its tokens.
+   */
+  missingScopeClientId?: string
 }
 
 export class TargetsError extends Error {}
 
 const personaKeyPattern = /^[a-z][a-z0-9-]{0,31}$/
-const guidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+export const guidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const resourceIdPattern = /^\/subscriptions\/[0-9a-f-]{36}\/resourceGroups\/[^/]+\/providers\/Microsoft\.CognitiveServices\/accounts\/[^/]+(\/projects\/[^/]+)?$/i
 // MOSAIC grant IDs look like ent_<32 hex digits>. A leading letter or digit keeps a value from being read as a flag.
 export const grantIdPattern = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}$/
@@ -577,7 +583,12 @@ function parseMcp(value: unknown, context: SuiteContext): McpTargets {
     owners.set(parsed.id, `${path}.id`)
     grants[key] = parsed
   }
-  return { servers, grants }
+  const missingScopeClientId = optionalString(mcp.missingScopeClientId, 'targets.mcp.missingScopeClientId')
+  if (missingScopeClientId !== undefined && !guidPattern.test(missingScopeClientId)) {
+    throw new TargetsError('targets.mcp.missingScopeClientId must be a GUID')
+  }
+  // Left out when it isn't set, so an @target: reference to it says the manifest doesn't have it.
+  return { servers, grants, ...(missingScopeClientId === undefined ? {} : { missingScopeClientId }) }
 }
 
 export function parseTargets(input: unknown): Targets {

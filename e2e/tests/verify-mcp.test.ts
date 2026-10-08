@@ -31,6 +31,11 @@ const targets = parseTargets(example())
 const { api, gateway } = targets.origins
 const user = ['--user-entitlement', 'ent_user']
 const onBehalf = ['--on-behalf-entitlement', 'ent_agent', '--send-model-requests']
+// Built rather than written out, so the fictional client ID doesn't read as a real one.
+const client = ['c'.repeat(8), 'cccc', '4ccc', '8ccc', 'c'.repeat(12)].join('-')
+/** M5's user signing in again, through the client given, for the token without Mcp.Invoke. */
+const signInAgain = (clientId: string) => ['--user-token-source', 'device-code', '--check-missing-scope', '--missing-scope-client-id', clientId]
+const secondSignIn = [...user, ...signInAgain(client)]
 const plan = (...args: string[]) => planMcpVerification(targets, args)
 
 function jwt(claims: Record<string, unknown>): string {
@@ -48,6 +53,7 @@ test('a minimal run gets the manifest origins and the verifier defaults', () => 
   assert.equal(result.applicationTokenSource, 'env')
   assert.equal(result.checkUngrantedUser, false)
   assert.equal(result.checkMissingScope, false)
+  assert.equal(result.missingScopeClientId, undefined)
   assert.equal(result.awaitAttribution, false)
   assert.equal(result.awaitModelGrant, false)
   assert.deepEqual(
@@ -78,6 +84,7 @@ test('every flag passes through, in either --flag value or --flag=value form', (
     '--application-token-source=client-credentials',
     '--check-ungranted-user',
     '--check-missing-scope',
+    `--missing-scope-client-id=${client}`,
     '--prove-call-limit',
     'ent_b',
     '--await-attribution',
@@ -98,6 +105,7 @@ test('every flag passes through, in either --flag value or --flag=value form', (
     '--model-caller-entitlement', 'ent_model',
     '--user-token-source', 'device-code',
     '--application-token-source', 'client-credentials',
+    '--missing-scope-client-id', client,
     '--prove-call-limit', 'ent_b',
     '--attribution-timeout', '900',
     '--attribution-interval', '45',
@@ -110,6 +118,7 @@ test('every flag passes through, in either --flag value or --flag=value form', (
   assert.equal(result.proveCallLimit, 'ent_b')
   assert.equal(result.userTokenSource, 'device-code')
   assert.equal(result.applicationTokenSource, 'client-credentials')
+  assert.equal(result.missingScopeClientId, client)
   assert.equal(result.attributionTimeoutSeconds, 900)
   assert.equal(result.attributionIntervalSeconds, 45)
   assert.equal(result.awaitModelGrant, true)
@@ -146,6 +155,21 @@ test('grant IDs can come from the manifest, and are checked like any other', () 
   assert.equal(agent.awaitModelGrant, true)
 })
 
+test("M5's second test client can come from the manifest, and must be a GUID", () => {
+  // The runbook's M5 command names the client the user signs in through again for the token without Mcp.Invoke.
+  const fromManifest = plan(...user, ...signInAgain('@target:mcp.missingScopeClientId'))
+  assert.equal(fromManifest.missingScopeClientId, targets.mcp?.missingScopeClientId)
+  assert.ok(fromManifest.argv.includes(targets.mcp?.missingScopeClientId ?? 'unset'))
+  assert.ok(!fromManifest.argv.some((value) => value.startsWith('@target:')))
+  assert.throws(() => plan(...user, ...signInAgain('@target:mcp.grants.tools-user.id')), /--missing-scope-client-id needs a client ID GUID/)
+  const unset = example()
+  delete unset.mcp.missingScopeClientId
+  assert.throws(
+    () => planMcpVerification(parseTargets(unset), [...user, ...signInAgain('@target:mcp.missingScopeClientId')]),
+    /does not resolve to a manifest value/,
+  )
+})
+
 test('only known, full flag names reach the verifier, with checked values', () => {
   const cases: [string[], RegExp][] = [
     [['ent_user', ...user], /Unexpected argument "ent_user"/],
@@ -168,6 +192,8 @@ test('only known, full flag names reach the verifier, with checked values', () =
     [[...user, '--model-grant-interval', '9'], /--model-grant-interval needs a whole number of seconds from 10 to 120/],
     [[...user, '--model-grant-interval=121'], /from 10 to 120/],
     [[...user, '--await-model-grant=yes'], /--await-model-grant takes no value/],
+    [[...user, '--missing-scope-client-id', 'not-a-guid'], /--missing-scope-client-id needs a client ID GUID/],
+    [[...user, `--missing-scope-client-id=api://${client}`], /--missing-scope-client-id needs a client ID GUID/],
   ]
   for (const [args, message] of cases) assert.throws(() => plan(...args), message, args.join(' '))
 })
@@ -188,6 +214,10 @@ test('a run mirrors the verifier: acknowledged, with distinct grants, one proof 
     [[...onBehalf, '--model-caller-entitlement', 'ent_model', '--await-model-grant'], /--model-caller-entitlement is only used with --await-attribution/],
     [['--application-entitlement', 'ent_app', '--check-ungranted-user'], /need a --user-entitlement/],
     [[...onBehalf, '--check-missing-scope'], /need a --user-entitlement/],
+    [[...onBehalf, ...signInAgain(client)], /need a --user-entitlement/],
+    [[...user, '--missing-scope-client-id', client], /--missing-scope-client-id is only used with --check-missing-scope and --user-token-source device-code/],
+    [[...user, '--check-missing-scope', '--missing-scope-client-id', client], /only used with --check-missing-scope and --user-token-source device-code/],
+    [[...user, '--user-token-source', 'device-code', '--missing-scope-client-id', client], /only used with --check-missing-scope/],
     [[...user, '--prove-call-limit', 'ent_user', '--prove-pooled-quota', 'ent_user'], /Choose one proof per run/],
     [[...user, '--prove-call-limit', 'ent_other'], /--prove-call-limit must name a --user-entitlement or --application-entitlement/],
     [[...user, ...onBehalf, '--prove-pooled-quota', 'ent_agent'], /--prove-pooled-quota must name a --user-entitlement/],
@@ -229,6 +259,8 @@ test('the people in a run: the user, the admin where MOSAIC needs one, and a str
   const fromEnv = plan(...user, '--check-ungranted-user')
   assert.equal(mcpVerifyPersonas(targets, fromEnv).stranger, undefined)
   assert.throws(() => mcpVerifyPersonas(targets, fromEnv, { stranger: 'outsider' }), /--stranger is only used with/)
+  // The user signs in again for the token without Mcp.Invoke, so it needs no one else.
+  assert.deepEqual(mcpVerifyPersonas(targets, plan(...secondSignIn)), { user: 'user-a', admin: undefined, stranger: undefined })
 })
 
 test('tokens and the verifier get time for sign-ins, checks, and the waits', () => {
@@ -250,12 +282,30 @@ test('tokens and the verifier get time for sign-ins, checks, and the waits', () 
   assert.equal(mcpVerifierTimeoutMs(watch), (45 * 60 + 930) * 1_000)
   assert.equal(mcpVerifierTimeoutMs(attribution), (45 * 60 + 1_320) * 1_000)
   assert.equal(mcpVerifierTimeoutMs(both), (45 * 60 + 320 + 1_860) * 1_000)
+  // The user's second sign-in, for --missing-scope-client-id, can take another device code's 15 minutes. Any wait
+  // starts that much later.
+  const second = plan(...secondSignIn, '--check-ungranted-user')
+  assert.deepEqual(mcpControlTokenNeeds(second), { seconds: 1_200 + 900 })
+  assert.equal(mcpVerifierTimeoutMs(second), (45 * 60 + 900) * 1_000)
+  const secondThenWatch = plan(...secondSignIn, '--watch-revocation', 'ent_user')
+  assert.deepEqual(mcpControlTokenNeeds(secondThenWatch), {
+    seconds: 1_200 + 900 + 900 + 30 + 60,
+    shorten: 'Lower --revocation-timeout and run it again.',
+  })
+  assert.equal(mcpVerifierTimeoutMs(secondThenWatch), (45 * 60 + 900 + 930) * 1_000)
+  const secondThenAttribution = plan(...secondSignIn, ...onBehalf, '--await-attribution')
+  assert.deepEqual(mcpControlTokenNeeds(secondThenAttribution), {
+    seconds: 1_200 + 900 + 1_800 + 60 + 60,
+    shorten: 'Lower --attribution-timeout and run it again.',
+  })
+  assert.equal(mcpVerifierTimeoutMs(secondThenAttribution), (45 * 60 + 900 + 1_860) * 1_000)
 
   // The MOSAIC API token check takes the MCP run's needs, and says what would shorten them.
   const now = 1_800_000_000
   const holder = { personaKey: 'user-a', upn: 'user-a@contoso.example', tenantId: targets.tenantId }
   const token = jwt({ tid: targets.tenantId, preferred_username: holder.upn, exp: now + 2_000 })
   assert.equal(controlTokenProblem(token, holder, now, mcpControlTokenNeeds(plan(...user))), undefined)
+  assert.match(controlTokenProblem(token, holder, now, mcpControlTokenNeeds(second)) ?? '', /expires in 2000 seconds, and this run needs it for 2100\.$/)
   assert.match(
     controlTokenProblem(token, holder, now, mcpControlTokenNeeds(attribution)) ?? '',
     /expires in 2000 seconds, and this run needs it for 2580\. Lower --attribution-timeout and run it again\.$/,
@@ -339,6 +389,20 @@ test('the harness matches the MCP verifier it drives', () => {
   // The harness refuses a run as the verifier would, in the verifier's words.
   assert.throws(() => plan(...user, '--await-model-grant'), /: --await-model-grant needs a --model-caller-entitlement\.$/)
   assert.ok(source.includes('"--await-model-grant needs a --model-caller-entitlement"'), 'the switch needs a model caller')
+  // The verifier's messages, with the string literals ruff splits across lines joined up again.
+  const joined = source.replace(/"\s*\n\s*"/g, '')
+  assert.throws(
+    () => plan(...user, '--missing-scope-client-id', client),
+    /: --missing-scope-client-id is only used with --check-missing-scope and --user-token-source device-code\.$/,
+  )
+  assert.ok(
+    joined.includes('"--missing-scope-client-id is only used with --check-missing-scope and --user-token-source device-code"'),
+    'the second client needs the missing-scope check and device-code sign-ins',
+  )
+  assert.throws(() => plan(...user, ...signInAgain('x')), /: --missing-scope-client-id needs a client ID GUID, not "x"$/)
+  assert.ok(joined.includes('"--missing-scope-client-id needs a client ID GUID"'), 'the second client is a GUID')
+  // The user's second sign-in names them as their first does, so the driver enters it in their browser.
+  assert.match(source, /self\._sign_in\(\s*grant,\s*WHO_USER,\s*client_id=plan\.client_id,\s*scope=plan\.scope\s*\)/)
   for (const constant of [
     `DEFAULT_REVOCATION_TIMEOUT = ${mcpDefaults.revocationTimeoutSeconds}`,
     `DEFAULT_REVOCATION_INTERVAL = ${mcpDefaults.revocationIntervalSeconds}`,

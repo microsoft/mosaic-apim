@@ -59,6 +59,9 @@ SESSION_HEADER = "Mcp-Session-Id"
 ACCEPT = "application/json, text/event-stream"
 CLIENT_INFO = {"name": "mosaic-mcp-verifier", "version": "1.0"}
 MCP_SCOPE = "Mcp.Invoke"
+# The model scope, on the same API as MCP's. A token from a client consented only for it lacks
+# MCP's scope.
+MODEL_SCOPE = "Models.Invoke"
 MCP_ROLE = "Mcp.Invoke.Application"
 COST_CENTER_HEADER = "x-mosaic-cost-center"
 REMAINING_CALLS_HEADER = "x-mosaic-remaining-calls"
@@ -916,6 +919,36 @@ def protocol_note(session: Session) -> str:
     )
 
 
+@dataclass(frozen=True)
+class MissingScopeSignIn:
+    """How --missing-scope-client-id signs the grant holder in: the client and the scope."""
+
+    client_id: str
+    scope: str
+
+
+def plan_missing_scope_sign_in(grant: McpGrant, client_id: str) -> MissingScopeSignIn:
+    """Sign in through this client for the grant's scope with Models.Invoke in place of Mcp.Invoke.
+
+    Checked before anyone signs in. MOSAIC's model client can't be used: people sign in to it for
+    Mcp.Invoke, and Entra puts every scope a client is consented for in each token it issues.
+    """
+
+    suffix = f"/{MCP_SCOPE}"
+    if not grant.scope.endswith(suffix):
+        raise VerificationFailed(
+            f"{grant.label}: its scope doesn't end in {suffix}, so the verifier can't derive the "
+            f"{MODEL_SCOPE} scope for --missing-scope-client-id to sign in for"
+        )
+    if client_id == grant.client_id:
+        raise VerificationFailed(
+            "--missing-scope-client-id names MOSAIC's model client, which is consented for "
+            f"{MCP_SCOPE} too. Name a client consented only for {MODEL_SCOPE}"
+        )
+    # Only the scope's last segment changes, whatever the resource before it names.
+    return MissingScopeSignIn(client_id, f"{grant.scope.removesuffix(suffix)}/{MODEL_SCOPE}")
+
+
 class Tokens:
     """MCP runtime tokens, from the environment or one sign-in per person, tenant and scope."""
 
@@ -926,11 +959,13 @@ class Tokens:
         user_source: str,
         application_source: str,
         person: str | None,
+        missing_scope_sign_in: MissingScopeSignIn | None = None,
     ) -> None:
         self._client = client
         self._user_source = user_source
         self._application_source = application_source
         self._person = person
+        self._missing_scope_sign_in = missing_scope_sign_in
         self._signed_in: dict[tuple[str, str, str, str], str] = {}
         self._stranger: str | None = None
 
@@ -1025,12 +1060,22 @@ class Tokens:
         return token
 
     def missing_scope(self, grant: McpGrant) -> str:
-        """The grant holder's own token without Mcp.Invoke, such as a model token."""
+        """The grant holder's own token without Mcp.Invoke.
 
-        token = credential(MODEL_RUNTIME_TOKEN)
+        It comes from a sign-in through a client consented only for Models.Invoke, or else it's a
+        model token from MODEL_RUNTIME_TOKEN.
+        """
+
+        plan = self._missing_scope_sign_in
+        if plan is None:
+            token, subject = credential(MODEL_RUNTIME_TOKEN), MODEL_RUNTIME_TOKEN
+        else:
+            # WHO_USER, as for their MCP sign-in, so the live driver enters it in the same browser.
+            token = self._sign_in(grant, WHO_USER, client_id=plan.client_id, scope=plan.scope)
+            subject = "The user's token from --missing-scope-client-id"
         problem = missing_scope_problem(token, grant, self._person)
         if problem is not None:
-            raise VerificationFailed(f"{MODEL_RUNTIME_TOKEN} {problem}")
+            raise VerificationFailed(f"{subject} {problem}")
         return token
 
     def _device_code(self, grant: McpGrant, who: str) -> str:
@@ -1040,13 +1085,16 @@ class Tokens:
                 f"{grant.label}: MOSAIC names no client to sign in with for this grant's "
                 f"audience, so the verifier can't sign in. Set {variable} instead"
             )
-        key = (who, grant.tenant_id, grant.scope, grant.client_id)
+        return self._sign_in(grant, who, client_id=grant.client_id, scope=grant.scope)
+
+    def _sign_in(self, grant: McpGrant, who: str, *, client_id: str, scope: str) -> str:
+        key = (who, grant.tenant_id, scope, client_id)
         if key not in self._signed_in:
             self._signed_in[key] = model.device_code_token(
                 self._client,
                 tenant=grant.tenant_id,
-                client_id=grant.client_id,
-                scope=grant.scope,
+                client_id=client_id,
+                scope=scope,
                 who=who,
                 troubleshooting=TROUBLESHOOTING,
             )
@@ -2186,8 +2234,15 @@ def parse_arguments(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument(
         "--check-missing-scope",
         action="store_true",
-        help=f"Also check that the user's token without Mcp.Invoke, from {MODEL_RUNTIME_TOKEN}, "
-        "is refused",
+        help="Also check that the user's token without Mcp.Invoke is refused. It comes from "
+        f"--missing-scope-client-id's sign-in, or else from {MODEL_RUNTIME_TOKEN}",
+    )
+    parser.add_argument(
+        "--missing-scope-client-id",
+        metavar="CLIENT_ID",
+        help="For --check-missing-scope with --user-token-source device-code: sign the user in "
+        f"again through this public client, consented only for {MODEL_SCOPE}, for the token "
+        f"without Mcp.Invoke, instead of reading {MODEL_RUNTIME_TOKEN}",
     )
     proofs = parser.add_mutually_exclusive_group()
     proofs.add_argument(
@@ -2291,6 +2346,14 @@ def validate(args: argparse.Namespace) -> Setup:
         raise VerificationFailed(
             "--check-ungranted-user and --check-missing-scope need a --user-entitlement"
         )
+    if args.missing_scope_client_id is not None:
+        if model.guid(args.missing_scope_client_id) is None:
+            raise VerificationFailed("--missing-scope-client-id needs a client ID GUID")
+        if not args.check_missing_scope or args.user_token_source != "device-code":
+            raise VerificationFailed(
+                "--missing-scope-client-id is only used with --check-missing-scope and "
+                "--user-token-source device-code"
+            )
     for flag, value in (
         ("--prove-call-limit", args.prove_call_limit),
         ("--prove-pooled-quota", args.prove_pooled_quota),
@@ -2341,7 +2404,7 @@ def validate(args: argparse.Namespace) -> Setup:
             credential(APPLICATION_RUNTIME_TOKEN)
     if args.check_ungranted_user and args.user_token_source == "env":
         credential(UNGRANTED_USER_RUNTIME_TOKEN)
-    if args.check_missing_scope:
+    if args.check_missing_scope and args.missing_scope_client_id is None:
         credential(MODEL_RUNTIME_TOKEN)
     return Setup(origin=origin, user_control=user_control, admin_control=admin_control)
 
@@ -2397,16 +2460,23 @@ def run(client: httpx.Client, args: argparse.Namespace, setup: Setup) -> int:
         if args.model_caller_entitlement
         else None
     )
+    users = [grant for grant in grants if grant.kind == "user"]
+    missing_scope_client = model.guid(args.missing_scope_client_id)
+    missing_scope_sign_in = (
+        plan_missing_scope_sign_in(users[0], missing_scope_client)
+        if missing_scope_client is not None
+        else None
+    )
     tokens = Tokens(
         client,
         user_source=args.user_token_source,
         application_source=args.application_token_source,
         person=model.object_id(setup.user_control) if setup.user_control else None,
+        missing_scope_sign_in=missing_scope_sign_in,
     )
     # Every sign-in happens before the first MCP call, so none can split a call-limit window.
     held = {grant.entitlement_id: tokens.own(grant) for grant in grants}
     on_behalf_token = tokens.user(on_behalf) if on_behalf is not None else None
-    users = [grant for grant in grants if grant.kind == "user"]
     stranger = (
         tokens.stranger(users[0], [held[grant.entitlement_id] for grant in users])
         if args.check_ungranted_user
