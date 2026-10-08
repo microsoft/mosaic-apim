@@ -1424,6 +1424,12 @@ E10 needs them.
   SSE-only server shows "Transport not supported". Publishing M-tools on the production gateway
   then failed at its metadata API, and the apply rolled back (O52). Nothing more is published
   until that fix is deployed.
+
+  Each environment's SSE-only server was also checked in the publication picker on its own
+  gateway. Both are **Not publishable**, their selection is disabled, and the reason names the
+  unsupported transport and required `/mcp` endpoint. No plan was created. Development's three
+  existing MCP publications still return an anonymous 401 advertising metadata that returns
+  200 with the matching resource URL and `Mcp.Invoke` scope.
 - **E8.** `multiEnv` was added on the Identity page. Five direct grants were saved on the
   Entitlements page:
   - `user`: F's Phi model.
