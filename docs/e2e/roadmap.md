@@ -11,6 +11,10 @@ deployed environment:
 Phase 11 extends the same path to MCP servers: published, granted, called and measured the same
 way, including an MCP server that itself calls a model through MOSAIC.
 
+Phase 12 adds two more gateways, one for staging and one for production. Each has its own
+models and MCP servers, and people hold overlapping access across the three environments. The
+phase shows what managing several gateways with MOSAIC looks like in practice.
+
 Model pools ([ADR 0024](../adr/0024-model-pools.md)) add A19 and R15 to R18 to Phase 8: one model
 served by two Azure OpenAI accounts behind one API, built in the console, then called, failed
 over, governed and traced through the gateway.
@@ -58,7 +62,8 @@ Services, a Developer-tier (classic) APIM with a system-assigned identity, and C
 | `user` (member) | User, assigned in Phase 2 | Gets grants directly; calls models by key and by Entra token |
 | `noRole` (member) | None | Portal denial first (P1); then requests access and is approved |
 | `guest` (B2B) | User | Cross-tenant sign-in; holds only User, so the console must withhold admin data (A1). The first to request access (P2, P4, A13) |
-| `outsider` (member) | None | Never granted anything; every runtime call must be denied |
+| `outsider` (member) | None | Never granted anything; every runtime call must be denied. In Phase 12 it becomes the `multiEnv` persona, with grants only on resources Phases 8 and 11 don't test |
+| `devOnly` (member, Phase 12) | User, assigned in Phase 12 | Holds grants in Development only |
 | Workload application | `Models.Invoke.Application` | Client-credentials token plus an admin-handed-off key |
 
 ## Targets
@@ -77,7 +82,8 @@ publishes today. One more endpoint is a deliberate negative case.
 | Foundry in another tenant | Foundry (AIServices), in another Entra tenant | Its URL and an API key pasted in the console (G18) | Anthropic Claude (G5) |
 | Private AOAI (negative) | Azure OpenAI | Pasting the resource ID | None. Public network access is off, so the gateway can't reach it |
 
-Gemini and AWS Bedrock follow in Phase 10.
+Gemini and AWS Bedrock follow in Phase 10. Phase 12 adds five more endpoints, E to I,
+listed there by environment.
 
 ## Product gaps found
 
@@ -1330,6 +1336,83 @@ model-caller link alone do not authorize a model call.
   usage counts calls to a server but not to each tool. Reading the JSON-RPC request's method and
   tool name in the policy would add that. M8 shows how much is missing.
 
+### Phase 12: Several gateways and environments 🔄 E1 in progress
+
+So far everything has run through one gateway, which is classified Development. MOSAIC is built
+to govern many gateways ([ADR 0014](../adr/0014-environments.md)), so Phase 12 adds two more
+and runs the whole path across all three:
+
+- registration and access checks;
+- environment classification and the rules that pair endpoints with gateways;
+- publication, grants and the portal;
+- real traffic, then usage.
+
+The environment owner asked for this phase on 8 October 2026. That request approved both new
+gateways and the work below. A change to Simple Chat needs its own approval (E12).
+
+**Layout.** Each environment has its own gateway, model endpoints and MCP servers. ADR 0014 lets a
+gateway front only endpoints in its own environment or in one it lists as an exception. No
+exceptions are added, so the endpoints listed here are separate accounts, not one shared account.
+
+| Environment | Gateway | Model endpoints, all new to MOSAIC | Models to publish | MCP servers |
+| --- | --- | --- | --- | --- |
+| Development | The existing gateway | The seven from [Targets](#targets), plus **Foundry E**, an account with one small model | Phase 5's models, plus a small GPT-4.1 model on Foundry E | Phase 11's M-tools, M-protected and M-agent |
+| Staging | A new Developer-tier gateway, tagged `environment: Staging` | **Foundry F**, multi-provider; **Foundry G**, another region | Microsoft Phi, DeepSeek and a GPT-4.1 model on F; a GPT-5 mini model on G | A second deployment of Phase 11's kit: M-tools, M-protected and M-agent, with an SSE-only server as the negative |
+| Production | A new Developer-tier gateway, tagged `environment: Production` | **AOAI H**, a shared team account; **Foundry I**, frontier models | GPT-4.1, GPT-5 mini and o4-mini on H; GPT-5.4 on I | A third deployment of the kit, the same four servers |
+
+Both new gateways are classic Developer tier: about USD 50 a month each, with no SLA. They are
+deployed like the `azd` gateway, with a system-assigned identity, the `appinsights` and
+`azuremonitor` loggers, and diagnostics to MOSAIC's Log Analytics workspace. MOSAIC's own roles
+on them are **not** granted in advance, so that E2 can observe what the console reports and how it
+says to fix it. Each MCP kit lives in its own resource group with its own name prefix and reuses
+the images already built. Each staging and production M-protected admits only its own gateway's
+identity and MOSAIC API's. Each M-agent calls a model on its own environment's gateway.
+
+**Who can reach what.** The overlap is deliberate, so each person's catalog, access and traffic
+differ by environment:
+
+| Persona | Development | Staging | Production |
+| --- | --- | --- | --- |
+| `devOnly` | Foundry E's model (requested in the portal), M-tools | None | None |
+| `user` | Phases 8 and 11's grants | Foundry F's Phi model, M-tools | None |
+| `multiEnv` | Foundry E's model | Foundry F's GPT-4.1 model, Foundry G's model, M-tools, M-protected | AOAI H's GPT-4.1 model (requested in the portal), Foundry I's model, M-tools, M-protected |
+
+`multiEnv` gets nothing that a Phase 8 or 11 negative test uses, so those tests' ungranted-person
+checks still hold.
+
+**Batches** (Azure and Entra changes are recorded in the ledger with rollback):
+
+- 🔄 **6a, Azure: two gateways.** Deployment started on 8 October 2026, one resource group each.
+- ⬜ **6b, Azure: roles the console asks for.** On each new gateway, MOSAIC API gets API Management
+  Service Contributor and Monitoring Reader. Each gateway identity gets Key Vault Secrets User if
+  E2 says it needs it, and the role on each new model account that E4's preflight names.
+- ⬜ **6c, Azure and Entra: MCP kits.** Deploy the kit twice with `deploy.py`. Assign the staging
+  and production gateway identities M-protected's audience role. Assign each new M-agent identity
+  `Models.Invoke.Application`.
+- ⬜ **6d, Entra: personas.** Assign the MOSAIC User role to `devOnly` and `multiEnv`.
+- ⬜ **6e, MOSAIC only:** grants, requests and approvals, applied through reviewed plans.
+
+**Journeys** (see the environment table under the journey matrix): E1 provisions the gateways. E2
+to E7 are the admin's work in the console. E8 and E9 are about people and what they see. E10 and
+E11 are traffic and usage. E12 is the Simple Chat spike. E13 is teardown.
+
+**Traffic.** The existing verifiers resolve gateway URLs from grants, so they need no change for a
+second gateway, but E10 confirms that. Each persona signs in with a device code. They call each
+granted model with a short, bounded request, and list and call tools on each granted MCP server.
+They also try one resource from another environment and one they hold no grant on, and both must
+be refused. Model calls are opt-in, as in Phase 8.
+
+**Simple Chat (E12, a spike).** The tenant runs two Simple Chat deployments, one for staging and
+one for production. The spike finds out how Simple Chat authenticates to API Management:
+subscription key, or an Entra token for MOSAIC's runtime audience. It then proposes connecting
+each deployment to its own environment's gateway with an application grant, so that chats show up
+in usage as the application's. Simple Chat's settings stay unchanged until the environment owner
+approves the proposal.
+
+**Teardown (E13)** follows the demonstrations, with its own approval. It unpublishes what E5 and E7
+published, revokes Phase 12's grants, removes the two kits and both gateways' resource groups, and
+removes the persona roles that 6d added. Phase 9's cleanup still covers everything else.
+
 ## Journey matrix
 
 A journey passes only when the stated observable outcome happens in the UI, or at the gateway for
@@ -1413,6 +1496,24 @@ has passed, and ❌ means the latest run failed on the product gap named.
 | M8 | **Analytics** and **Usage & cost** count each person's calls to each MCP server under their grant and cost center; the gap: which tool was called | 11 | ✅ For the exercised M-tools grants, both UI views match gateway attribution: 11 requests under the rate-limit grant, including two gateway 429s, and six under the now-revoked grant. Session lifecycle requests are included; tool-level counts are unavailable. MCP tokens and the upstream bill are not metered |
 | M9 | A call to the agent server's tool leads to a governed model call, which usage attributes to the agent's grant and, by G19's design, to the person who called the tool | 11 | ✅ After the person's sign-in, the temporary model grant was opened for about 90 seconds. `ask_model` answered, and the gateway logged one model call charged to M-agent's grant, carrying the MCP call's reference. MOSAIC attributed it to the person in their own usage report, on that grant's model and cost center. **Analytics** counts it once, as the application's, and lists it under **Model use through MCP servers**; another person's view doesn't show it. Earlier attempts stopped at the sign-in (O50, O51) |
 | M10 | Unpublishing an MCP server removes only what MOSAIC created | 11 | ⏹ Dropped by the environment owner: M-tools stays published for demonstrations |
+
+### Several gateways and environments (Phase 12)
+
+| ID | Journey | Phase | Status |
+| --- | --- | --- | --- |
+| E1 | Two Developer-tier gateways, for staging and production, are deployed with `environment` tags, loggers and diagnostics, and none of MOSAIC's roles | 12 | 🔄 |
+| E2 | The admin registers each new gateway by resource ID; preflight names the missing role, scope and `az` command; after 6b, **Check access** confirms write access and the gateway switches to **Manage** | 12 | ⬜ |
+| E3 | Each gateway's `environment` tag becomes a one-click suggestion; the admin confirms Staging and Production, and **Settings > Environments** shows one gateway in each of the three | 12 | ⬜ |
+| E4 | The admin registers endpoints E to I by suggestion or resource ID, classifies each, and applies the gateway-identity role each preflight names | 12 | ⬜ |
+| E5 | Each environment's models are published on its own gateway after a reviewed plan, and every step succeeds | 12 | ⬜ |
+| E6 | A staging endpoint on the production gateway, a production endpoint on the staging gateway, and a development MCP server on the production gateway are each refused with a verdict that names both environments; nothing is written to API Management | 12 | ⬜ |
+| E7 | The staging and production MCP kits are registered and classified, their tools sync, and M-tools, M-protected and M-agent are published on their own gateways; each SSE-only server is refused | 12 | ⬜ |
+| E8 | `devOnly` and `multiEnv` get the User role; direct grants follow the access table; each requests one resource in the portal and the admin approves it; every plan applies | 12 | ⬜ |
+| E9 | Each persona's catalog, **My access** and connection details show exactly their environments, with badges, and `devOnly` sees no staging or production grant | 12 | ⬜ |
+| E10 | Each persona calls each granted model and MCP server in each environment; calls to another environment's resource, or an ungranted one, are refused | 12 | ⬜ |
+| E11 | **Analytics** and each persona's **Usage & cost** separate E10's traffic by gateway, environment and person | 12 | ⬜ |
+| E12 | Spike: the staging and production Simple Chat deployments call their own environment's gateway with an application grant, and their chats appear in usage | 12 | ⬜ |
+| E13 | Teardown: Phase 12's publications, grants, roles, kits and gateways are removed after the demonstrations, and only those | 12 | ⬜ |
 
 ## Findings
 
