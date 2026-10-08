@@ -1392,7 +1392,8 @@ checks still hold.
   protected server's two 401s.
 - ✅ **6d, Entra: personas.** Assign the MOSAIC User role to `devOnly` and `multiEnv`.
 - 🔄 **6e, MOSAIC only:** grants, requests and approvals, applied through reviewed plans. The
-  direct model grants are applied. The portal requests, and every MCP grant, are still to come.
+  direct persona and agent model grants are applied. The portal requests, and every MCP grant,
+  are still to come.
 
 **What changed from the plan.** Staging needed a model with the Azure OpenAI API shape for its
 M-agent, so the admin registered **AOAI J**, a second Azure OpenAI account, as Staging and
@@ -1434,6 +1435,14 @@ E10 needs them.
   E9. The admin created one key to check a new gateway: `multiEnv`'s key got 200 from F's GPT-4.1
   model. The same key got 403 from F's Phi model, on the same gateway but not granted, and 401
   from I's model on the production gateway. The suspended bootstrap key got 401.
+
+  Both new M-agent managed identities were also registered through **Identity**, and their model
+  grants were reviewed and applied: staging's agent on AOAI J's GPT-4, production's agent on
+  AOAI H's GPT-4.1. Each has 2,000 tokens per minute, 50,000 tokens per month and 10 calls per
+  minute under `general`. Both publications moved to governed access, suspending their bootstrap
+  keys. Their applied policies allow only the matching agent identity, not the other environment's
+  agent. No grant key was created. **Calls models as** is configured on a publication, so those
+  links and live agent calls wait for E7.
 - **E11, early check.** **Analytics** lists all three gateways in its Gateway filter, and each
   gateway's health row reads Current. Filtered to staging, it showed E8's three calls. The 200
   was attributed to `multiEnv` under the `general` cost center. Filtered to production, it showed
