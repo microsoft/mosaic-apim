@@ -1434,6 +1434,12 @@ E10 needs them.
   E9. The admin created one key to check a new gateway: `multiEnv`'s key got 200 from F's GPT-4.1
   model. The same key got 403 from F's Phi model, on the same gateway but not granted, and 401
   from I's model on the production gateway. The suspended bootstrap key got 401.
+- **E11, early check.** **Analytics** lists all three gateways in its Gateway filter, and each
+  gateway's health row reads Current. Filtered to staging, it showed E8's three calls. The 200
+  was attributed to `multiEnv` under the `general` cost center. Filtered to production, it showed
+  the one refused call, with no caller. The publish smoke calls made before then don't appear.
+  Every model API on the new gateways now has its Azure Monitor diagnostic, and each persona's
+  **Usage & cost** is checked after E10.
 
 **Journeys** (see the environment table under the journey matrix): E1 provisions the gateways. E2
 to E7 are the admin's work in the console. E8 and E9 are about people and what they see. E10 and
@@ -1554,7 +1560,7 @@ has passed, and ❌ means the latest run failed on the product gap named.
 | E8 | `devOnly` and `multiEnv` get the User role; direct grants follow the access table; each requests one resource in the portal and the admin approves it; every plan applies | 12 | 🔄 |
 | E9 | Each persona's catalog, **My access** and connection details show exactly their environments, with badges, and `devOnly` sees no staging or production grant | 12 | ⬜ |
 | E10 | Each persona calls each granted model and MCP server in each environment; calls to another environment's resource, or an ungranted one, are refused | 12 | ⬜ |
-| E11 | **Analytics** and each persona's **Usage & cost** separate E10's traffic by gateway, environment and person | 12 | ⬜ |
+| E11 | **Analytics** and each persona's **Usage & cost** separate E10's traffic by gateway, environment and person | 12 | 🔄 |
 | E12 | Spike: the staging and production Simple Chat deployments call their own environment's gateway with an application grant, and their chats appear in usage | 12 | ⬜ |
 | E13 | Teardown: Phase 12's publications, grants, roles, kits and gateways are removed after the demonstrations, and only those | 12 | ⬜ |
 
