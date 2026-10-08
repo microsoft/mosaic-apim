@@ -1466,12 +1466,45 @@ granted model with a short, bounded request, and list and call tools on each gra
 They also try one resource from another environment and one they hold no grant on, and both must
 be refused. Model calls are opt-in, as in Phase 8.
 
-**Simple Chat (E12, a spike).** The tenant runs two Simple Chat deployments, one for staging and
-one for production. The spike finds out how Simple Chat authenticates to API Management:
-subscription key, or an Entra token for MOSAIC's runtime audience. It then proposes connecting
-each deployment to its own environment's gateway with an application grant, so that chats show up
-in usage as the application's. Simple Chat's settings stay unchanged until the environment owner
-approves the proposal.
+**Simple Chat (E12, a spike).** The proposed layout pairs staging and production Simple Chat
+deployments with their respective gateways, using application grants so that chats show up in
+usage as the application's. The source-only spike completed on 8 October against Simple Chat
+commit `817f9dd`, version `0.261.305`. The deployed revision and production mapping are not yet
+verified. No settings, grants, credentials or deployments were changed, and no live chat was run.
+
+The smallest proposed pilot is **Custom > Azure OpenAI API** on staging, pointing at AOAI J's
+published API and deployment. Existing configuration supports `auth.type=api_key`,
+`auth.api_key_header=Ocp-Apim-Subscription-Key` and an empty prefix. Its URL builder preserves
+the gateway's model path before adding `/openai/deployments/<deployment>/`, for ordinary and
+streaming chat. The older built-in APIM setting instead sends the key as `api-key`, which
+MOSAIC's governed policy does not accept.
+
+Custom OAuth2 client credentials also supports a MOSAIC-audience application token without a
+code change. Native Azure OpenAI managed identity currently requests the Cognitive Services
+audience, which MOSAIC refuses. A credential-free pilot would therefore need an approved
+per-connection scope change covering both runtime constructors and the agent token provider;
+changing the deployment-wide cloud settings or disguising the gateway as Foundry is not proposed.
+
+Before any pilot, the owner must confirm the staging deployment and approve the connection,
+pilot access, a separate Simple Chat application grant and budget, and credential storage if a
+key or client secret is chosen. Existing secrets use Key Vault only when that storage is enabled.
+If staging still uses legacy chat, enabling AI Connections is a **one-way migration**, requiring
+separate approval and preservation of the old connection. Keep the current default initially and
+select the pilot connection explicitly. Production stays untouched.
+
+An application grant attributes usage to Simple Chat, not to each signed-in person. Its optional
+pseudonymous identity header is not delegated authentication or per-person MOSAIC authorization.
+Live checks must cover ordinary and streamed chat, grant attribution, missing and wrong
+credentials, and cross-model and cross-environment refusals. Rollback restores the old selection,
+disables the pilot endpoint and revokes its grant; it cannot undo AI Connections enablement.
+The custom streaming client does not request final usage totals by default, so those totals must
+not be assumed.
+
+Source references:
+[custom authentication](https://github.com/microsoft/simplechat/blob/817f9dd07ef5b57d424162c117c2f4ee9d79933b/application/single_app/functions_model_endpoint_auth.py#L35-L167),
+[client construction](https://github.com/microsoft/simplechat/blob/817f9dd07ef5b57d424162c117c2f4ee9d79933b/application/single_app/functions_model_endpoint_runtime.py#L219-L378),
+[URL construction](https://github.com/microsoft/simplechat/blob/817f9dd07ef5b57d424162c117c2f4ee9d79933b/application/single_app/functions_model_endpoint_urls.py#L55-L72),
+and [one-way migration](https://github.com/microsoft/simplechat/blob/817f9dd07ef5b57d424162c117c2f4ee9d79933b/application/single_app/functions_settings.py#L2581-L2583).
 
 **Teardown (E13)** follows the demonstrations, with its own approval. It unpublishes what E5 and E7
 published, revokes Phase 12's grants, removes the two kits and both gateways' resource groups, and
@@ -1576,7 +1609,7 @@ has passed, and ❌ means the latest run failed on the product gap named.
 | E9 | Each persona's catalog, **My access** and connection details show exactly their environments, with badges, and `devOnly` sees no staging or production grant | 12 | ⬜ |
 | E10 | Each persona calls each granted model and MCP server in each environment; calls to another environment's resource, or an ungranted one, are refused | 12 | ⬜ |
 | E11 | **Analytics** and each persona's **Usage & cost** separate E10's traffic by gateway, environment and person | 12 | 🔄 |
-| E12 | Spike: the staging and production Simple Chat deployments call their own environment's gateway with an application grant, and their chats appear in usage | 12 | ⬜ |
+| E12 | Spike: the staging and production Simple Chat deployments call their own environment's gateway with an application grant, and their chats appear in usage | 12 | 🔄 Source-only proposal complete; live trial awaits separate approval |
 | E13 | Teardown: Phase 12's publications, grants, roles, kits and gateways are removed after the demonstrations, and only those | 12 | ⬜ |
 
 ## Findings
