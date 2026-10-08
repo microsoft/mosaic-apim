@@ -1041,7 +1041,7 @@ value that the gateway reads with its own identity, and Phase 10 would reuse it.
 registers AWS Bedrock hosts with a Bedrock API key, but only as Claude members of a model pool,
 and R17 lists what a live Bedrock member needs to show.
 
-### Phase 11: MCP servers end to end 🔄 M2, M4 and M6 to M9 pass; M3 and M5 are partial; M-protected is unreachable; M10 remains
+### Phase 11: MCP servers end to end 🔄 M2 to M4 and M6 to M9 pass; M5 is partial; M-protected is being rehosted; M10 remains
 
 MOSAIC publishes MCP servers through API Management and governs them with grants, as it does
 models. The first live registration and publication journeys began on 6 October 2026. Phase 11
@@ -1109,8 +1109,11 @@ cleanup, because it needs the test accounts that the cleanup removes.
   20 seconds, where a healthy refusal takes under one, which also points to the platform's
   request routing, not the app's memory. M-protected stays unpublished; next is an Azure support
   case, or hosting M-protected another way, each needing its own decision. Authentication and
-  scaling settings are unchanged. M-agent uses `2025-03-01-preview`, interpreting the owner's
-  version input as its model-inference API version.
+  scaling settings are unchanged. On 8 October the environment owner decided to rebuild it, as
+  the kit is ours: M-protected moves to Container Apps, like the other two servers, with the
+  platform's built-in Microsoft Entra authentication admitting the same two identities, and its
+  old Functions resources are removed once the new host works. M-agent uses `2025-03-01-preview`,
+  interpreting the owner's version input as its model-inference API version.
 - ✅ **The MCP verifier**, [#97](https://github.com/microsoft/mosaic-apim/pull/97) and
   [#99](https://github.com/microsoft/mosaic-apim/pull/99), is merged. The follow-up binds an
   application token to the selected applied grant and refuses to call session cleanup complete
@@ -1209,6 +1212,18 @@ again, and the gateway's log shows each call reaching the server's endpoint once
 the runbook's run also covers a user grant on M-protected, which isn't published, an application's
 grant, which waits for an approved credential, and the missing-scope check, which can't run while
 the model client is consented for `Mcp.Invoke`.
+
+**M3 passes, and M5's application leg passes, on 8 October.** The environment owner approved
+the application test: the workload application got the runtime's `Mcp.Invoke.Application` role,
+and a client secret that expired after a day, created for the run and deleted straight after it.
+Through the console, the admin gave the workload a grant on M-tools, 30 calls a minute, and a
+reviewed plan applied it while the server's other grants stayed as they were. The secret existed
+for about a minute and a quarter and was never written down. With the application's own token,
+the verifier passed discovery and every refusal, listed M-tools' tools and called `echo` and
+`add`, with and without the cost-center header, in a session that was closed afterwards. For the
+missing-scope check, the owner approved a second public test client, consented only for
+`Models.Invoke` and only for the user persona. M5 stays partial until that check and the
+M-protected leg run.
 
 **M6's call-limit leg**, on 6 October: through the console, the admin created two test cost
 centers, added the user persona to each and saved separate M-tools grants for the rate-limit and
@@ -1389,9 +1404,9 @@ has passed, and ❌ means the latest run failed on the product gap named.
 | --- | --- | --- | --- |
 | M1 | The admin registers each MCP server by its URL, and MOSAIC syncs its tools; an SSE-only server is refused | 11 | 🔄 M-tools and M-agent synced; SSE-only sync and publication refused; M-protected remains Unreachable |
 | M2 | Publishing a server through the gateway shows a reviewed plan, including the diagnostics warning and the environment verdict; every step succeeds; its anonymous 401 advertises working protected resource metadata, and the portal's catalog lists it | 11 | ✅ M-tools and M-agent, after Batch 3n: every step succeeds, their anonymous 401s advertise working metadata, the verifier's strict discovery passes, and the catalog lists both. M-protected isn't published |
-| M3 | Governed access for an MCP server: a direct grant for the `user` persona and an application grant on a tools server are reviewed and applied | 11 | 🔄 The user persona's direct grant on M-tools, 30 calls a minute, was reviewed and applied. The application grant on a tools server isn't created yet: the client-credentials workload's secret expired, with no new one approved, and M-agent's managed identity holds only the model invocation role. M-agent's model-caller link is applied; its application model grant comes immediately before M9, as decided |
+| M3 | Governed access for an MCP server: a direct grant for the `user` persona and an application grant on a tools server are reviewed and applied | 11 | ✅ The user persona's direct grant on M-tools, 30 calls a minute, was reviewed and applied. On 8 October the workload application, given `Mcp.Invoke.Application`, got a grant on M-tools, which a reviewed plan applied. M-agent's model-caller link is applied, and its temporary model grant was used for M9 |
 | M4 | In the portal, a person requests access to an MCP server, an admin approves it, and the person's connection details give the server URL, the metadata URL and the scope, but never a token | 11 | ✅ The user persona requested M-agent; the admin approved it with a call limit, reviewed and applied it. Connection details give the server URL, the canonical metadata URL and the `Mcp.Invoke` scope, and no token |
-| M5 | A real MCP client, signed in with the `Mcp.Invoke` scope, lists and calls tools through the gateway; an anonymous call gets 401 with the metadata URL, and an ungranted person's token gets 403 | 11 | 🔄 After Batch 3o, the user leg passes: discovery and every attempted refusal (the anonymous call, a MOSAIC control-plane token, a malformed or unknown cost center and an ungranted person's token), and the user's grant lists M-tools' tools and calls `echo` and `add`, with and without the cost-center header, in a session that's closed afterwards. The first run's 404 was O49. Not yet run: a user grant on M-protected, which isn't published; the application leg, which waits for an approved credential; and the missing-scope check, which can't run while the model client is consented for `Mcp.Invoke` |
+| M5 | A real MCP client, signed in with the `Mcp.Invoke` scope, lists and calls tools through the gateway; an anonymous call gets 401 with the metadata URL, and an ungranted person's token gets 403 | 11 | 🔄 After Batch 3o, the user leg passes: discovery and every attempted refusal (the anonymous call, a MOSAIC control-plane token, a malformed or unknown cost center and an ungranted person's token), and the user's grant lists M-tools' tools and calls `echo` and `add`, with and without the cost-center header, in a session that's closed afterwards. The first run's 404 was O49. The application leg passed on 8 October: the workload's own token, from a secret that existed for about a minute, passed the same checks and called the same tools. Not yet run: a user grant on M-protected, which is being rehosted; and the missing-scope check, which needs a token from a second test client consented only for `Models.Invoke`, now created |
 | M6 | An MCP grant's call limit, and a cost center's pooled call quota on the server, refuse calls once spent | 11 | ✅ The eight-per-minute grant's remaining calls fell from seven to zero, then the gateway returned 429 with `Retry-After`. Session deletion succeeded after its one permitted 60-second retry. The 10-call pool allowed exactly 10 calls, the session's `DELETE` among them, then the gateway's quota 403 came, and a grant under another cost center still reached its tools |
 | M7 | After an MCP grant is revoked and its plan applied, its calls are refused | 11 | ✅ The disposable grant worked before revocation, with its session closed. After the admin disabled it and reviewed/applied M-tools' plan, the verifier observed revoked state and two consecutive grant-lookup 403s with the same token and cost-center header. Other grants stayed enabled |
 | M8 | **Analytics** and **Usage & cost** count each person's calls to each MCP server under their grant and cost center; the gap: which tool was called | 11 | ✅ For the exercised M-tools grants, both UI views match gateway attribution: 11 requests under the rate-limit grant, including two gateway 429s, and six under the now-revoked grant. Session lifecycle requests are included; tool-level counts are unavailable. MCP tokens and the upstream bill are not metered |
