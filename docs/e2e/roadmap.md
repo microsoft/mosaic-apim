@@ -1336,7 +1336,7 @@ model-caller link alone do not authorize a model call.
   usage counts calls to a server but not to each tool. Reading the JSON-RPC request's method and
   tool name in the policy would add that. M8 shows how much is missing.
 
-### Phase 12: Several gateways and environments 🔄 E1, E2 and E4 to E7 pass; E3 is partial (O55); devOnly's portal, runtime and personal-usage legs pass; user's bounded Development/Staging runtime checks pass, fresh usage pending; E8 to E11 remain partial
+### Phase 12: Several gateways and environments 🔄 E1, E2 and E4 to E7 pass; E3 is partial (O55); devOnly's portal, runtime and personal-usage legs pass; user's bounded Development/Staging runtime checks and fresh admin-measured attribution pass; E8 to E11 remain partial
 
 So far everything has run through one gateway, which is classified Development. MOSAIC is built
 to govern many gateways ([ADR 0014](../adr/0014-environments.md)), so Phase 12 adds two more
@@ -1622,20 +1622,42 @@ E10 needs them.
   from all callers were not used as evidence of her personal usage. The earlier failed silent
   sign-ins for `user` and `multiEnv` generated no runtime traffic to measure.
 
-  **user's fresh personal-usage attribution is still pending rollup ingestion.** Before Tuxedo's
-  bounded run, her measured portal report showed **Development: 150 requests / 1,919 tokens** and
-  **Staging: zero requests / zero tokens**. Under General, the Development GPT-4o-mini baseline
-  was eight requests / 78 tokens, M-tools 23 requests and M-protected six requests; Staging
-  Phi-4 and M-tools each had zero requests. Both Staging grants already said **Linked from gateway
-  log traces**, but that label alone is **not fresh traffic attribution**. The first post-run
-  read retained the old counts; the report refreshes every 15 minutes. Runtime response token
-  counts are not proof of measured personal attribution, and shared General totals are not
-  personal evidence. E11 remains partial pending Tuxedo's fresh personal rollup, Chevron's fresh
-  human sign-in/runtime/personal-usage checks, and the new agents' caller grant, `ask_model` and
+  **user's fresh measured grant/person attribution is verified in admin Analytics.** Before
+  Tuxedo's bounded run, her measured portal report showed **Development: 150 requests / 1,919
+  tokens** and **Staging: zero requests / zero tokens**. Under General, the Development
+  GPT-4o-mini baseline was eight requests / 78 tokens, M-tools 23 requests and M-protected six
+  requests; Staging Phi-4 and M-tools each had zero requests. Both Staging grants already said
+  **Linked from gateway log traces**, but that label alone was **not fresh traffic attribution**.
+  The first post-run portal read retained the old counts; the report refreshes every 15 minutes.
+
+  The admin then used **Analytics > Refresh now** once on the Staging gateway, opened
+  **Consumers**, and filtered Staging, Development and Production. The rollup was **Updated
+  9 October 2026, 10:54 UTC**. These are measured **per-principal/per-grant admin Analytics
+  rollups**, not a post-refresh Tuxedo portal read or screenshot. Her refreshed post-traffic
+  portal presentation was **not revisited** and remains unverified.
+
+  Tuxedo's exact actor totals across environments are **170 requests / 1,951 tokens**, versus
+  the **150 / 1,919** baseline: **+20 requests / +32 tokens**. The Development actor row is
+  **163 requests / 1,932 tokens**, a delta of **+13 requests / +13 tokens**. Its grant rows show
+  GPT-4o-mini **nine requests, up from eight**, General M-tools **29, up from 23**, and General
+  M-protected **12, up from six**. The Staging actor row is **seven requests / 19 tokens**, up
+  from zero, with exactly **two grants / two resources**. Staging Phi-4's grant row shows
+  **one request / 19 peak tokens / zero key requests / one caller**; Staging M-tools shows
+  **six requests / zero key requests / one caller**. Production Consumers shows **zero linked
+  requests / zero tokens / no rows**, and Tuxedo has no Production grant.
+
+  The measured deltas match **two model calls plus 18 successful MCP requests and 32 tokens**
+  exactly. Shared General totals, Chevron's older Staging **one request / 15 tokens** and the
+  historical M-agent delegated-use **one request / 24 tokens** are **excluded**. Runtime response
+  token counts or Linked labels alone were not used as measured attribution evidence. This
+  supersedes the pending-ingestion result, not the unverified refreshed portal presentation.
+  E11 remains partial pending the outstanding portal checks, Chevron's fresh human
+  sign-in/runtime/personal-usage checks, and the new agents' caller grant, `ask_model` and
   model-use attribution.
 
-**Remaining actions.** Verify Tuxedo's fresh measured personal usage after rollup ingestion.
-Obtain fresh human sign-in for `multiEnv` (Chevron), complete her Production AOAI H portal
+**Remaining actions.** Recheck Tuxedo's refreshed post-traffic portal presentation.
+Obtain fresh human sign-in for `multiEnv` (Chevron); the owner was unavailable, and no Chevron
+runtime token or traffic was produced. Complete her Production AOAI H portal
 request, admin approval and apply, and finish the outstanding E8 and E9 persona checks and E10
 and E11 runtime/usage legs. The six new streamable MCP publications, five persona MCP grants and
 both agents' own-identity model grants and applied caller links remain in place; neither new
@@ -1799,7 +1821,7 @@ has passed, and ❌ means the latest run failed on the product gap named.
 | E8 | `devOnly` and `multiEnv` get the User role; direct grants follow the access table; each requests one resource in the portal and the admin approves it; every plan applies. `devOnly`'s request/apply leg, all planned MCP persona grants and both agents' own-identity links are applied; `multiEnv`'s Production AOAI H portal request and outstanding persona checks remain | 12 | 🔄 |
 | E9 | Catalog distinguishes entitlements from discoverable resources offered for request; **My access** and connection details show each persona's grants, matching gateways and environment badges. `devOnly`'s display/connection leg passes with exactly two Development grants; `user` (Tuxedo)'s fresh My access shows 13 Development/Staging grants, zero pending requests and no Production grant; remaining persona checks, including `multiEnv` (Chevron)'s fresh sign-in, stay pending | 12 | 🔄 |
 | E10 | Each persona calls each granted model and MCP server in each environment; calls to another environment's resource, or an ungranted one, are refused | 12 | 🔄 `devOnly`'s leg passes; `user`'s bounded Development/Staging checks pass: two model calls / 32 tokens, three tool MCP sessions / 18 successful requests, seven expected denials; `multiEnv` and authenticated Production MCP checks remain pending; new agents need an explicit human caller grant before `ask_model` |
-| E11 | **Analytics** and each persona's **Usage & cost** separate E10's traffic by gateway, environment and person | 12 | 🔄 `devOnly`: Development only, two resources, seven requests, 13 tokens; both direct grants Linked. `user`'s fresh measured personal usage awaits rollup ingestion, not proved by existing Linked labels or shared General totals; `multiEnv`'s sign-in/runtime/usage and new-agent caller grant/`ask_model`/attribution remain pending |
+| E11 | **Analytics** and each persona's **Usage & cost** separate E10's traffic by gateway, environment and person | 12 | 🔄 `devOnly`: Development only, two resources, seven requests, 13 tokens; both direct grants Linked. `user`'s fresh admin Analytics Consumers attribution is verified: +20 requests / +32 tokens (Development +13/+13, Staging +7/+19), no Production linked usage; refreshed portal presentation was not revisited. `multiEnv`'s sign-in/runtime/usage and new-agent caller grant/`ask_model`/attribution remain pending |
 | E12 | Spike: the staging and production Simple Chat deployments call their own environment's gateway with an application grant, and their chats appear in usage | 12 | 🔄 Source-only proposal complete; live trial awaits separate approval |
 | E13 | Teardown: Phase 12's publications, grants, roles, kits and gateways are removed after the demonstrations, and only those | 12 | ⬜ |
 
