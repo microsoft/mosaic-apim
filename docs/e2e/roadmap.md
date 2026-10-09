@@ -1336,7 +1336,7 @@ model-caller link alone do not authorize a model call.
   usage counts calls to a server but not to each tool. Reading the JSON-RPC request's method and
   tool name in the policy would add that. M8 shows how much is missing.
 
-### Phase 12: Several gateways and environments 🔄 E1 to E6 pass; E7 is blocked by O52; devOnly's portal legs pass, but E8 and E9 remain partial
+### Phase 12: Several gateways and environments 🔄 E1, E2 and E4 to E6 pass; E3 is partial (O55); E7 is blocked by O52; devOnly's portal legs pass, but E8 and E9 remain partial
 
 So far everything has run through one gateway, which is classified Development. MOSAIC is built
 to govern many gateways ([ADR 0014](../adr/0014-environments.md)), so Phase 12 adds two more
@@ -1357,7 +1357,7 @@ exceptions are added, so the endpoints listed here are separate accounts, not on
 | Environment | Gateway | Model endpoints, all new to MOSAIC | Models to publish | MCP servers |
 | --- | --- | --- | --- | --- |
 | Development | The existing gateway | The seven from [Targets](#targets), plus **Foundry E**, an account with one small model | Phase 5's models, plus a small GPT-4.1 model on Foundry E | Phase 11's M-tools, M-protected and M-agent |
-| Staging | A new Developer-tier gateway, tagged `environment: Staging` | **Foundry F**, multi-provider; **Foundry G**, another region | Microsoft Phi, DeepSeek and a GPT-4.1 model on F; a GPT-5 mini model on G | A second deployment of Phase 11's kit: M-tools, M-protected and M-agent, with an SSE-only server as the negative |
+| Staging | A new Developer-tier gateway, tagged `environment: Staging` | **Foundry F**, multi-provider; **Foundry G**, another region; **AOAI J**, added for M-agent | Microsoft Phi, DeepSeek and a GPT-4.1 model on F; a GPT-5 mini model on G; a GPT-4 model on J | A second deployment of Phase 11's kit: M-tools, M-protected and M-agent, with an SSE-only server as the negative |
 | Production | A new Developer-tier gateway, tagged `environment: Production` | **AOAI H**, a shared team account; **Foundry I**, frontier models | GPT-4.1, GPT-5 mini and o4-mini on H; GPT-5.4 on I | A third deployment of the kit, the same four servers |
 
 Both new gateways are classic Developer tier: about USD 50 a month each, with no SLA. They are
@@ -1413,18 +1413,21 @@ E10 needs them.
 
 **Results so far.**
 
-- **E1 to E4.** Both gateways were registered by resource ID, switched to **Manage** after 6b, and
-  classified from their tags. Each endpoint was registered and classified, and the role its
-  preflight named was granted. The environment wasn't prefilled when a gateway was onboarded
-  (O55).
+- **E1 and E2.** Both tagged gateways were deployed as recorded in 6a, registered by resource ID,
+  and switched to **Manage** after 6b.
+- **E3, partial.** The admin manually chose Staging and Production to match the gateways' tags.
+  Onboarding didn't prefill the environment as a one-click suggestion (O55), so E3 hasn't passed.
+- **E4.** Each endpoint was registered and classified, and the role its preflight named was granted.
 - **E5.** Every model above was published on its own environment's gateway with no failed step.
   An admin call to each returned 200.
 - **E6.** Publishing a staging endpoint on the production gateway, and a production endpoint on the
   staging gateway, was refused, naming both environments. The MCP
   publish dialog on the production gateway lists the development servers as "Not publishable",
   with the same reason.
-- **E7.** The admin registered all eight new MCP servers and synced their tools: three each for
-  M-tools and M-protected, one for M-agent. M-protected uses the gateway's managed identity. Each
+- **E7.** The admin registered eight new MCP servers: two M-tools, two M-protected, two M-agent
+  and two SSE-only servers, one of each type in Staging and one in Production. These are separate
+  from Development's existing servers. Each M-tools and M-protected synced three tools; each
+  M-agent synced one. M-protected uses the gateway's managed identity. Each
   SSE-only server shows "Transport not supported". Publishing M-tools on the production gateway
   then failed at its metadata API, and the apply rolled back (O52). Nothing more is published
   until that fix is deployed. The fix is open in
@@ -1652,7 +1655,7 @@ has passed, and ❌ means the latest run failed on the product gap named.
 | --- | --- | --- | --- |
 | E1 | Two Developer-tier gateways, for staging and production, are deployed with `environment` tags, loggers and diagnostics, and none of MOSAIC's roles | 12 | ✅ |
 | E2 | The admin registers each new gateway by resource ID; preflight names the missing role, scope and `az` command; after 6b, **Check access** confirms write access and the gateway switches to **Manage** | 12 | ✅ |
-| E3 | Each gateway's `environment` tag becomes a one-click suggestion; the admin confirms Staging and Production, and **Settings > Environments** shows one gateway in each of the three | 12 | ✅ |
+| E3 | Each gateway's `environment` tag becomes a one-click suggestion; the admin confirms Staging and Production, and **Settings > Environments** shows one gateway in each of the three | 12 | 🔄 Manual classification applied; onboarding's tag suggestion is missing (O55) |
 | E4 | The admin registers endpoints E to J by suggestion or resource ID, classifies each, and applies the gateway-identity role each preflight names | 12 | ✅ |
 | E5 | Each environment's models are published on its own gateway after a reviewed plan, and every step succeeds | 12 | ✅ |
 | E6 | A staging endpoint on the production gateway, a production endpoint on the staging gateway, and a development MCP server on the production gateway are each refused with a verdict that names both environments; nothing is written to API Management | 12 | ✅ |
