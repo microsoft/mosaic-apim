@@ -22,7 +22,7 @@ try {
     timing = propagationEvidence(scope, runtime, evidence)
     if (runtime.journey === 'R14') {
       if (!evidence.notifications) throw new ModelProofError('R14 mailbox/dedupe evidence missing; no-email harness proves only the block/raise leg')
-      notificationDeliveryEvidence(evidence.notifications)
+      notificationDeliveryEvidence(scope, evidence.notifications)
     }
   } else if (runtime.journey === 'R13') governmentEmailEvidence(evidence)
   else throw new ModelProofError('Unsupported independent-evidence journey')

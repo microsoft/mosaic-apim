@@ -297,6 +297,10 @@ After the owner has approved the actual scope, record `modelJourneys.approval` l
 `budgetWritesAcrossAllManagedGateways` (explicit booleans). Hashing covers origins, tenant,
 persona identities, all owned fixtures, gateway scope, prices and bounds. Any change or expiry
 invalidates approval. Approval for email/configuration/provisioning is **not** represented here.
+The harness rechecks the full readiness gate immediately before each model send and, after form
+preparation, before each budget submit and again at its outgoing PUT. Approval that expires
+during a baseline call, UI preparation or click actionability wait fails before the next shared
+gateway write; initial preflight is not a write permit.
 
 Each invocation must select **one** `MOSAIC_E2E_MODEL_JOURNEY` and the exact
 `MOSAIC_E2E_MODEL_SCOPE` ownerTag. Generic `ALLOW_WRITES`, `SEND_MODEL_REQUESTS`,
@@ -357,20 +361,36 @@ contract (unit fixtures show valid and rejected examples):
   with plain value, `secret: false`, observed timestamp, and actual write audit timestamp/action
   for block/raise. Values must preserve every pre-existing other blocked key. Only the called
   gateway yields measured runtime latency; an absent v2 fixture is reported unavailable.
+  Runtime timings must name the first correlated `budget-block-probe-N` 403 and
+  `budget-raise-probe-N` 200 for the exact isolated budget grant, after their respective UI saves.
 - R13: `government` with actual deployment/domain/MI facts, Government token scope and API
   version, two attempts carrying one Operation-Id and measured statuses/timestamps, and one
-  mailbox message ID/receipt timestamp. This requires human-attested original Government
-  captures; the validator cannot authenticate a JSON assertion.
+  mailbox message ID/receipt timestamp. `mailboxObservation.startedAt` must follow the retry,
+  and `completedAt` must close a nonempty observation window reviewing all correlated receipts
+  from the first send through that completion.
+  A receipt delivered before the retry is valid only with that later mailbox observation.
+  This requires human-attested original Government captures; the validator cannot authenticate
+  a JSON assertion.
 - R14's separate human-assisted mail leg: `notifications` with actual priced checks, notices
   and IDs before/after a recheck, operation IDs, and one independent mailbox receipt per notice.
+  Notice IDs must be nonempty, unique and unchanged across the recheck; only the expected
+  threshold, blocked and unblocked notices are accepted.
+  Every check and notice must name the approved budget's `costCenterId`, and `amount` must match
+  the reviewed scope. Checks include ordered `observedAt` timestamps as well as rollup `through`;
+  notices include `sentAt`, after the corresponding priced check. `recheck.startedAt/completedAt`
+  must follow the sends; `mailboxObservation.startedAt/completedAt` must follow that recheck.
+  Each receipt must follow its own send and be received by the observation's completion.
+  Count all correlated receipts since those sends, including deliveries before the recheck or
+  mailbox window started; the later observation must confirm that no duplicates arrived by its end.
   Budgets are at least $0.01 and compare rounded cents. A one-cent budget crosses 80/100 in the
   same check and deliberately sends **only the highest threshold**, not two emails. Use a staged
   higher budget and separately observed checks for distinct 80% and 100% emails, with exact
   recipient/send approval. Never fabricate spend or alter global prices to force the thresholds.
 
 Evidence assertions validate semantics/correlation, not authenticity, and don't change roadmap
-statuses automatically. Retain originals privately, not in the PR. No raw credentials, host
-inventory, actor IDs, mailbox addresses or real screenshots in committed examples.
+statuses automatically. Mail dedupe is bounded by the recorded observation window; it does not
+claim that no message can arrive later. Retain originals privately, not in the PR. No raw
+credentials, host inventory, actor IDs, mailbox addresses or real screenshots in committed examples.
 
 There is **no automatic cleanup** and no cleanup permission inferred from a run flag. A failure
 may leave the owned budget blocked; request explicit owner approval to raise it through the UI.

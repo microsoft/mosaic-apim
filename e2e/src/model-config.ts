@@ -209,3 +209,9 @@ export function modelReadiness(targets: Targets, journey: ModelJourney, env: Nod
   }
   return problems
 }
+
+/** Unlike initial readiness skips, lost approval during a run must fail before the next action. */
+export function assertModelReadiness(targets: Targets, journey: ModelJourney, env: NodeJS.ProcessEnv, now = Date.now()): void {
+  const problems = modelReadiness(targets, journey, env, now)
+  if (problems.length) throw new ModelProofError(`Model approval/readiness changed before sending or saving: ${problems.join('; ')}`)
+}

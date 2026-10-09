@@ -2,7 +2,7 @@ import type { TestInfo } from '@playwright/test'
 import { type Targets, persona } from './config.ts'
 import { type PersonaPool, expect } from './fixtures.ts'
 import { skip } from './journeys.ts'
-import { type ModelJourney, type ModelJourneys, ModelProofError, modelGrants, modelReadiness, modelScopeHash } from './model-config.ts'
+import { type ModelJourney, type ModelJourneys, ModelProofError, assertModelReadiness, modelGrants, modelReadiness, modelScopeHash } from './model-config.ts'
 import type { ModelBudgetView } from './model-budget.ts'
 import { ModelAllowance, type ModelConnection, type ModelObservation, boundedModelCaller, connectionProblems, modelRoute } from './model-runtime.ts'
 import { MosaicApi } from './mosaic-api.ts'
@@ -149,7 +149,7 @@ export async function prepareModelRun(personas: PersonaPool, targets: Targets, j
   const startedAt = Date.now()
   const allowance = new ModelAllowance(scope)
   const call = boundedModelCaller(scope, targets.origins.gateway, connections, tokens, async (url, headers, body) => {
-    if (modelReadiness(targets, journey, process.env).length) throw new ModelProofError('Approval scope/expiry or pricing date changed before sending')
+    assertModelReadiness(targets, journey, process.env)
     try {
       const response = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body), redirect: 'error', signal: AbortSignal.timeout(30_000) })
       const text = await response.text()

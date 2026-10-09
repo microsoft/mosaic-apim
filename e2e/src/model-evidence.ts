@@ -38,13 +38,26 @@ export interface IndependentModelEvidence {
     apiVersion: string
     attempts: { operationId: string; at: string; status: number }[]
     receipts: { operationId: string; messageId: string; receivedAt: string }[]
+    mailboxObservation: EvidenceWindow
   }
+}
+
+export interface EvidenceWindow {
+  startedAt: string
+  completedAt: string
 }
 
 function timestamp(value: string | undefined): number {
   const n = value === undefined ? NaN : Date.parse(value)
   if (!Number.isFinite(n)) throw new ModelProofError('Missing measured evidence timestamp')
   return n
+}
+
+function observationWindow(window: EvidenceWindow, after: number): number {
+  const start = timestamp(window?.startedAt)
+  const end = timestamp(window?.completedAt)
+  if (start < after || end <= start) throw new ModelProofError('Need a measured post-retry/recheck observation window')
+  return end
 }
 
 function denial(evidence: IndependentModelEvidence, observation: ModelObservation, reason: string): void {
@@ -94,6 +107,27 @@ function blockedKeys(value: string): string[] {
 
 export function propagationEvidence(scope: ModelJourneys, runtime: RuntimeEvidence, evidence: IndependentModelEvidence) {
   if (!scope.budget || !runtime.timing) throw new ModelProofError('Missing budget scope or measured runtime timings')
+  const timing = runtime.timing
+  const probe = (phase: 'block' | 'raise', status: number, at: string) => {
+    const matches = runtime.observations.filter((o) => o.grant === scope.budget!.grant.id && o.status === status &&
+      new RegExp(`^budget-${phase}-probe-[1-9]\\d*$`).test(o.case))
+    const firstAt = Math.min(...matches.map((o) => timestamp(o.at)))
+    const first = matches.filter((o) => timestamp(o.at) === timestamp(at))
+    if (first.length !== 1 || !first[0].requestId || timestamp(at) !== firstAt ||
+        runtime.observations.filter((o) => o.requestId === first[0].requestId).length !== 1) {
+      throw new ModelProofError(`Missing uniquely correlated first actual budget ${phase} probe`)
+    }
+    return first[0]
+  }
+  const first403 = probe('block', 403, timing.first403At)
+  probe('raise', 200, timing.firstSuccessAt)
+  if (timestamp(timing.blockSave.startedAt) > timestamp(timing.blockSave.savedAt) ||
+      timestamp(timing.blockSave.savedAt) > timestamp(timing.first403At) ||
+      timestamp(timing.first403At) > timestamp(timing.raiseSave.startedAt) ||
+      timestamp(timing.raiseSave.startedAt) > timestamp(timing.raiseSave.savedAt) ||
+      timestamp(timing.raiseSave.savedAt) > timestamp(timing.firstSuccessAt)) {
+    throw new ModelProofError('Actual budget probes must follow their completed UI saves in block/raise order')
+  }
   const key = createHash('sha256').update(scope.budget.grant.costCenterId).digest('hex').slice(0, 12)
   const timings: { gatewayId: string; tier: string; writeToFirst403Ms: number; writeToFirstSuccessMs: number }[] = []
   for (const gateway of scope.budget.managedGateways) {
@@ -128,8 +162,6 @@ export function propagationEvidence(scope: ModelJourneys, runtime: RuntimeEviden
       writeToFirst403Ms: timestamp(runtime.timing.first403At) - blockedAt,
       writeToFirstSuccessMs: timestamp(runtime.timing.firstSuccessAt) - raisedAt })
   }
-  const first403 = runtime.observations.find((o) => o.at === runtime.timing?.first403At && o.status === 403)
-  if (!first403) throw new ModelProofError('Missing first actual budget 403')
   denial(evidence, first403, 'budget')
   if (!runtime.observations.some((o) => o.case === 'budget-other-cost-center' && o.status === 200 && o.grant === scope.selection.other.id)) throw new ModelProofError('Other cost center was not independently allowed')
   return { timings, unavailableV2: !scope.budget.managedGateways.some((g) => g.tier === 'v2') }
@@ -144,8 +176,10 @@ export function governmentEmailEvidence(evidence: IndependentModelEvidence): voi
   if (gov.attempts.length !== 2 || !gov.attempts[0].operationId || gov.attempts[0].operationId !== gov.attempts[1].operationId ||
       gov.attempts[0].status !== 202 || ![200, 202, 409].includes(gov.attempts[1].status) ||
       timestamp(gov.attempts[1].at) < timestamp(gov.attempts[0].at)) throw new ModelProofError('Record two actual sends with the same Operation-Id and the observed second status')
+  const observedThrough = observationWindow(gov.mailboxObservation, timestamp(gov.attempts[1].at))
   if (gov.receipts.length !== 1 || gov.receipts[0].operationId !== gov.attempts[0].operationId ||
-      !gov.receipts[0].messageId || timestamp(gov.receipts[0].receivedAt) < timestamp(gov.attempts[0].at)) {
+      !gov.receipts[0].messageId || timestamp(gov.receipts[0].receivedAt) < timestamp(gov.attempts[0].at) ||
+      timestamp(gov.receipts[0].receivedAt) > observedThrough) {
     throw new ModelProofError('ACS acceptance is not delivery; exactly one actual mailbox receipt is required')
   }
 }
@@ -153,38 +187,60 @@ export function governmentEmailEvidence(evidence: IndependentModelEvidence): voi
 export interface NotificationDeliveryEvidence {
   amount: number
   /** Actual priced spend observed at successive checks, not synthetic input to a budget. */
-  checks: { spend: number; through: string }[]
-  noticesBeforeRecheck: { id: string; kind: 'threshold' | 'blocked' | 'unblocked'; threshold?: number; status: string; operationId: string }[]
+  checks: { costCenterId: string; spend: number; through: string; observedAt: string }[]
+  noticesBeforeRecheck: { costCenterId: string; id: string; kind: 'threshold' | 'blocked' | 'unblocked'; threshold?: number; status: string; operationId: string; sentAt: string }[]
   noticesAfterRecheck: string[]
+  recheck: EvidenceWindow
+  mailboxObservation: EvidenceWindow
   receipts: { operationId: string; messageId: string; receivedAt: string }[]
 }
 
-export function notificationDeliveryEvidence(e: NotificationDeliveryEvidence): void {
+export function notificationDeliveryEvidence(scope: ModelJourneys, e: NotificationDeliveryEvidence): void {
+  if (!scope.budget || cents(e.amount) !== cents(scope.budget.amount) ||
+      e.checks.some((c) => c.costCenterId !== scope.budget!.grant.costCenterId) ||
+      e.noticesBeforeRecheck.some((n) => n.costCenterId !== scope.budget!.grant.costCenterId)) {
+    throw new ModelProofError('Notification checks/notices must identify the approved isolated cost center and budget amount')
+  }
   if (cents(e.amount) < 1 || e.checks.length < 2) throw new ModelProofError('Need real staged budget checks')
   const reached = new Set<number>()
-  const notified: number[] = []
+  const notified = new Map<number, number>()
   let through = -Infinity
+  let checkedAt = -Infinity
   for (const check of e.checks) {
     const nextThrough = timestamp(check.through)
-    if (nextThrough <= through) throw new ModelProofError('Notification checks must have independent advancing rollup evidence')
+    const observedAt = timestamp(check.observedAt)
+    if (nextThrough <= through || observedAt <= checkedAt || observedAt < nextThrough) {
+      throw new ModelProofError('Notification checks must have independent advancing rollup evidence and ordered observation times')
+    }
     through = nextThrough
+    checkedAt = observedAt
     const next = [80, 100].filter((threshold) => cents(check.spend) >= cents(e.amount * threshold / 100) && !reached.has(threshold))
     next.forEach((threshold) => reached.add(threshold))
-    if (next.length) notified.push(Math.max(...next))
+    if (next.length) notified.set(Math.max(...next), observedAt)
   }
   if (!reached.has(100)) throw new ModelProofError('Real priced checks never reached 100%')
   const notices = e.noticesBeforeRecheck
   const thresholds = notices.filter((n) => n.kind === 'threshold').map((n) => n.threshold).sort()
-  if (JSON.stringify(thresholds) !== JSON.stringify(notified.sort()) || notices.filter((n) => n.kind === 'blocked').length !== 1 ||
+  if (notices.length !== notified.size + 2 ||
+      JSON.stringify(thresholds) !== JSON.stringify([...notified.keys()].sort()) || notices.filter((n) => n.kind === 'blocked').length !== 1 ||
       notices.filter((n) => n.kind === 'unblocked').length !== 1 || notices.some((n) => n.status !== 'sent' || !n.operationId)) {
     throw new ModelProofError('Need only the highest threshold per check, and one actual sent block/unblock; skipped is not delivery')
   }
-  if (new Set(notices.map((n) => n.id)).size !== notices.length || new Set(notices.map((n) => n.operationId)).size !== notices.length ||
+  if (notices.some((n) => !n.id) || new Set(notices.map((n) => n.id)).size !== notices.length ||
+      new Set(notices.map((n) => n.operationId)).size !== notices.length ||
       JSON.stringify(notices.map((n) => n.id).sort()) !== JSON.stringify([...e.noticesAfterRecheck].sort())) throw new ModelProofError('Recheck changed notification identity/count; dedupe not proved')
+  const blockedAt = timestamp(notices.find((n) => n.kind === 'blocked')!.sentAt)
+  const raisedAt = timestamp(notices.find((n) => n.kind === 'unblocked')!.sentAt)
+  if (blockedAt < notified.get(100)! || raisedAt < blockedAt) throw new ModelProofError('Block/unblock sends must follow the actual 100% check in order')
+  const recheckedThrough = observationWindow(e.recheck, Math.max(checkedAt, ...notices.map((n) => timestamp(n.sentAt))))
+  const observedThrough = observationWindow(e.mailboxObservation, recheckedThrough)
   if (e.receipts.length !== notices.length || new Set(e.receipts.map((r) => r.messageId)).size !== notices.length) throw new ModelProofError('Need exactly one independent mailbox message per notice')
   for (const notice of notices) {
+    const sentAt = timestamp(notice.sentAt)
+    if (notice.kind === 'threshold' && sentAt < notified.get(notice.threshold!)!) throw new ModelProofError('Threshold send predates its actual priced check')
     const receipts = e.receipts.filter((r) => r.operationId === notice.operationId)
     if (receipts.length !== 1 || !receipts[0].messageId) throw new ModelProofError('Duplicate or missing actual receipt')
-    timestamp(receipts[0].receivedAt)
+    const receivedAt = timestamp(receipts[0].receivedAt)
+    if (receivedAt < sentAt || receivedAt > observedThrough) throw new ModelProofError('Mailbox receipt must follow its notice send and precede the completed observation')
   }
 }

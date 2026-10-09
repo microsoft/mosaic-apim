@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test'
 import { CostCenterBudgetPage } from '../src/pages/console/cost-centers.ts'
+import { assertModelReadiness, modelScopeHash } from '../src/model-config.ts'
 import { modelTargets } from '../tests/model-fixtures.ts'
 
 test('budget UI sends only scoped form saves, clears recipients and never enables owner email', async ({ page }) => {
@@ -41,8 +42,11 @@ test('budget UI sends only scoped form saves, clears recipients and never enable
   await page.goto(`${targets.origins.web}/cost-centers/${id}`)
   const budget = new CostCenterBudgetPage(page, targets, id)
   await budget.loaded('Fictional budget')
-  const block = await budget.save(0.01)
-  await budget.save(0.1)
+  let authorizationChecks = 0
+  const authorize = () => { authorizationChecks++ }
+  const block = await budget.save(0.01, authorize)
+  await budget.save(0.1, authorize)
+  expect(authorizationChecks).toBe(4)
   expect(Date.parse(block.savedAt)).toBeGreaterThanOrEqual(Date.parse(block.startedAt))
   expect(writes).toEqual([
     { amount: 0.01, thresholds: [80, 100], recipients: [], notifyOwners: false, action: 'block' },
@@ -63,5 +67,63 @@ test('a refused UI budget save fails instead of returning a success-shaped timin
   })
   await page.goto('https://mosaic.invalid/')
   const budget = new CostCenterBudgetPage(page, targets, 'cc_fictional_budget')
-  await expect(budget.save(0.01)).rejects.toThrow(/answered 403/)
+  await expect(budget.save(0.01, () => {})).rejects.toThrow(/answered 403/)
+})
+
+test('approval lost after preflight prevents the UI submit, including after form preparation', async ({ page }) => {
+  const targets = modelTargets()
+  targets.origins.api = 'https://mosaic.invalid'
+  const scope = targets.modelJourneys!
+  const preflightAt = Date.now()
+  scope.price.date = new Date(preflightAt).toISOString().slice(0, 10)
+  scope.approval = { reference: 'offline-only', expiresAt: new Date(preflightAt + 30_000).toISOString(),
+    scopeSha256: modelScopeHash(targets), journeys: ['R12'], revealExistingKey: false, budgetWritesAcrossAllManagedGateways: true }
+  const env = { MOSAIC_E2E_MODEL_SCOPE: scope.ownerTag, MOSAIC_E2E_MODEL_JOURNEY: 'R12' }
+  assertModelReadiness(targets, 'R12', env, preflightAt)
+  let writes = 0
+  await page.route('**/*', async (route) => {
+    if (route.request().method() === 'PUT') {
+      writes++
+      await route.fulfill({ json: {} })
+    } else await route.fulfill({ contentType: 'text/html', body: `<form aria-label="Cost center budget">
+      <input aria-label="Monthly amount (USD)"><input aria-label="Warn at (%)"><textarea aria-label="Also email"></textarea>
+      <input role="switch" aria-label="Email the owners" type="checkbox"><input type="radio" aria-label="Block calls at the gateway until the budget is raised or the month ends">
+      <button>Set budget</button></form><script>document.querySelector('form').onsubmit = e => { e.preventDefault(); fetch('/api/v1/cost-centers/${scope.budget!.grant.costCenterId}/budget', { method: 'PUT' }) }</script>` })
+  })
+  await page.goto('https://mosaic.invalid/')
+  const budget = new CostCenterBudgetPage(page, targets, scope.budget!.grant.costCenterId)
+  await expect(budget.save(0.01, () => assertModelReadiness(targets, 'R12', env, preflightAt + 30_001)))
+    .rejects.toThrow(/expired/)
+  await expect(page.getByLabel('Monthly amount (USD)')).toHaveValue('0.01')
+  expect(writes).toBe(0)
+})
+
+test('approval expiring between the pre-click check and outgoing save blocks the gateway write', async ({ page }) => {
+  const targets = modelTargets()
+  targets.origins.api = 'https://mosaic.invalid'
+  const scope = targets.modelJourneys!
+  const preflightAt = Date.now()
+  scope.price.date = new Date(preflightAt).toISOString().slice(0, 10)
+  scope.approval = { reference: 'offline-only', expiresAt: new Date(preflightAt + 30_000).toISOString(),
+    scopeSha256: modelScopeHash(targets), journeys: ['R14'], revealExistingKey: false, budgetWritesAcrossAllManagedGateways: true }
+  const env = { MOSAIC_E2E_MODEL_SCOPE: scope.ownerTag, MOSAIC_E2E_MODEL_JOURNEY: 'R14' }
+  let now = preflightAt
+  let writes = 0
+  await page.route('**/*', async (route) => {
+    if (route.request().method() === 'PUT') {
+      writes++
+      await route.fulfill({ json: {} })
+    } else await route.fulfill({ contentType: 'text/html', body: `<form aria-label="Cost center budget">
+      <input aria-label="Monthly amount (USD)"><input aria-label="Warn at (%)"><textarea aria-label="Also email"></textarea>
+      <input role="switch" aria-label="Email the owners" type="checkbox"><input type="radio" aria-label="Block calls at the gateway until the budget is raised or the month ends">
+      <button>Set budget</button></form><script>document.querySelector('form').onsubmit = e => { e.preventDefault(); fetch('/api/v1/cost-centers/${scope.budget!.grant.costCenterId}/budget', { method: 'PUT' }) }</script>` })
+  })
+  await page.goto('https://mosaic.invalid/')
+  const budget = new CostCenterBudgetPage(page, targets, scope.budget!.grant.costCenterId)
+  const authorize = () => {
+    assertModelReadiness(targets, 'R14', env, now)
+    now = preflightAt + 30_001
+  }
+  await expect(budget.save(0.01, authorize)).rejects.toThrow(/expired/)
+  expect(writes).toBe(0)
 })

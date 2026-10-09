@@ -1,6 +1,7 @@
 import { test as fixtureTest, expect } from '../src/fixtures.ts'
 import { type ModelBudgetView, budgetProof } from '../src/model-budget.ts'
 import { approvedModelScope, budgetReady, prepareModelRun } from '../src/model-live.ts'
+import { assertModelReadiness } from '../src/model-config.ts'
 import { pooledTokenProof, selectionProof } from '../src/model-runtime.ts'
 import { CostCenterBudgetPage } from '../src/pages/console/cost-centers.ts'
 import { MyAccessPage } from '../src/pages/portal/my-access.ts'
@@ -20,7 +21,8 @@ test.describe('55 isolated model cost centers and budgets', { tag: ['@model-budg
   test.skip(!process.env.MOSAIC_E2E_MODEL_SCOPE, 'NOT RUN: exact isolated model scope and owner approval required')
 
   test('R10 runtime/UI leg: token header choices and existing key cost-center matrix (not analytics/backend proof)', async ({ personas, targets }, info) => {
-    approvedModelScope(targets, 'R10')
+    const scope = approvedModelScope(targets, 'R10')
+    test.setTimeout((scope.bounds.timeoutSeconds + 120) * 1000)
     const run = await prepareModelRun(personas, targets, 'R10', info)
     let key: string | undefined
     try {
@@ -45,9 +47,9 @@ test.describe('55 isolated model cost centers and budgets', { tag: ['@model-budg
   })
 
   test('R11 fresh shared monthly MODEL token counter across two distinct grants, independent own counters and other-center control', async ({ personas, targets }, info) => {
-    approvedModelScope(targets, 'R11')
+    const scope = approvedModelScope(targets, 'R11')
+    test.setTimeout((scope.bounds.timeoutSeconds + 120) * 1000)
     const run = await prepareModelRun(personas, targets, 'R11', info)
-    test.setTimeout((run.scope.bounds.timeoutSeconds + 120) * 1000)
     try {
       await pooledTokenProof(run.scope, run.connections, run.call, run.pause)
       info.annotations.push({ type: 'boundary', description: 'Fresh model counter proof only; MCP pooled calls are not R11, and missing required headers fail rather than infer pool throttling' })
@@ -68,7 +70,7 @@ test.describe('55 isolated model cost centers and budgets', { tag: ['@model-budg
         await page.loaded(center.name)
         const result = await budgetProof(scope, journey, {
           read: () => run.api.get<ModelBudgetView | null>(`/api/v1/cost-centers/${center.id}/budget`),
-          save: (amount) => page.save(amount),
+          save: (amount) => page.save(amount, () => assertModelReadiness(targets, journey, process.env)),
           call: run.call,
           pause: run.pause,
           banner: async (blocked) => {

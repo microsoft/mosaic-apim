@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { budgetGateProblems, budgetProof, pricedBudget } from '../src/model-budget.ts'
-import { cents, modelGrants, modelReadiness, modelScopeHash, parseModelJourneys } from '../src/model-config.ts'
+import { assertModelReadiness, cents, modelGrants, modelReadiness, modelScopeHash, parseModelJourneys } from '../src/model-config.ts'
 import { ModelAllowance, budgetPrompt, boundedModelCaller, connectionProblems, modelRoute, modelUsage, pooledTokenProof, selectionProof, type ModelReply } from '../src/model-runtime.ts'
 import { runtimeTokenProblems } from '../src/model-live.ts'
 import { budget, connection, modelScope, modelTargets, observation, success } from './model-fixtures.ts'
@@ -39,6 +39,27 @@ test('rejects General, duplicate grants/callers, secret fields and unbounded pai
     assert.throws(() => parseModelJourneys(scope, targets.personas))
   }
   assert.throws(() => parseModelJourneys({ ...modelScope(), key: 'never-a-secret' }, targets.personas), /unknown field/)
+})
+
+test('budget action guard rechecks expiry, scope and all-gateway permission instead of trusting preflight', () => {
+  const targets = modelTargets()
+  const scope = targets.modelJourneys!
+  const now = Date.now()
+  scope.price.date = new Date(now).toISOString().slice(0, 10)
+  scope.approval = { reference: 'offline-only', expiresAt: new Date(now + 30_000).toISOString(),
+    scopeSha256: modelScopeHash(targets), journeys: ['R12', 'R14'], revealExistingKey: false, budgetWritesAcrossAllManagedGateways: true }
+  for (const journey of ['R12', 'R14'] as const) {
+    const env = { MOSAIC_E2E_MODEL_SCOPE: scope.ownerTag, MOSAIC_E2E_MODEL_JOURNEY: journey }
+    assertModelReadiness(targets, journey, env, now)
+    assert.throws(() => assertModelReadiness(targets, journey, env, now + 30_000), /expired/)
+    scope.approval.budgetWritesAcrossAllManagedGateways = false
+    assert.throws(() => assertModelReadiness(targets, journey, env, now), /ALL managed gateways/)
+    scope.approval.budgetWritesAcrossAllManagedGateways = true
+    scope.budget!.raisedAmount += 0.01
+    assert.throws(() => assertModelReadiness(targets, journey, env, now), /changed exact-scope/)
+    scope.budget!.raisedAmount -= 0.01
+    scope.approval.scopeSha256 = modelScopeHash(targets)
+  }
 })
 
 test('connection safeguards and route reject pending/foreign/alias-shaped or other-origin data', () => {
