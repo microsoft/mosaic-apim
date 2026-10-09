@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { targetsFile } from './paths.ts'
+import { type ModelJourneys, parseModelJourneys } from './model-config.ts'
 
 export type AppName = 'web' | 'portal'
 export type MosaicRole = 'Admin' | 'User' | 'None'
@@ -117,6 +118,8 @@ export interface Targets {
   suite?: SuiteTargets
   /** The MCP servers Phase 11 registers, publishes and calls, and the grants on them. */
   mcp?: McpTargets
+  /** Isolated, separately approved R10-R14 model fixtures. Never inferred from suite or MCP grants. */
+  modelJourneys?: ModelJourneys
 }
 
 export type McpUpstreamAuth = 'none' | 'managed-identity'
@@ -667,6 +670,7 @@ export function parseTargets(input: unknown): Targets {
     negatives,
     suite: root.suite === undefined ? undefined : parseSuite(root.suite, { endpoints, personas, roles, workload }),
     mcp: root.mcp === undefined ? undefined : parseMcp(root.mcp, { endpoints, personas, roles, workload }),
+    modelJourneys: root.modelJourneys === undefined ? undefined : parseModelJourneys(root.modelJourneys, personas),
   }
 }
 

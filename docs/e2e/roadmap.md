@@ -954,6 +954,21 @@ R9 to R14 and A17 check pricing, cost centers and budgets, which Batches 3g and 
 R10 to R14 need new grants, and R13 and R14 need email set up, so each waits for the owner's
 approval.
 
+**R10-R14 live status: NOT RUN.** The isolated `55-model-budgets` harness now provides executable
+R10 header/key status checks, a fresh model pooled-token/own-counter R11 proof, and no-email
+budget save/block/banner/raise UI/runtime legs for R12/R14. Only offline mocked validation has
+run; no live scope has been approved. The [runbook](runbook.md#model-cost-centers-and-budgets)
+defines exact-scope guards, bounded paid calls, UI-only writes, no broad cleanup and independent
+evidence requirements. R10 still requires measured exact-grant Analytics attribution and real
+backend header stripping; R12 needs actual plain ARM named-value snapshots and write audits,
+not source or cached sync status. Budget writes affect every managed gateway, including
+Staging/Production when test grants are Development-only. Available read-only readiness found
+classic Developer gateways, not a v2 fixture, and no configured email or Government fixture.
+R13 Government managed-identity delivery/repeated Operation-Id and R14 mailbox/dedupe remain
+human-assisted owner gates. ACS acceptance alone is not delivery. A one-cent budget crosses
+80/100 together and notifies only the highest threshold; separate emails need real staged
+higher-budget spend. M5/M6 MCP proofs remain distinct and cannot satisfy any of these model legs.
+
 A call quota (O28) can't be set in the console, so these grants have none. A weekly one adds a
 policy expression that API Management hasn't compiled yet.
 
