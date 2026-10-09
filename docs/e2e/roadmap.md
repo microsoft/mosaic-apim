@@ -1336,7 +1336,7 @@ model-caller link alone do not authorize a model call.
   usage counts calls to a server but not to each tool. Reading the JSON-RPC request's method and
   tool name in the policy would add that. M8 shows how much is missing.
 
-### Phase 12: Several gateways and environments 🔄 E1, E2 and E4 to E6 pass; E3 is partial (O55); E7 is blocked by O52; devOnly's portal legs pass, but E8 and E9 remain partial
+### Phase 12: Several gateways and environments 🔄 E1, E2 and E4 to E7 pass; E3 is partial (O55); devOnly's portal, runtime and personal-usage legs pass; E8 to E11 remain partial
 
 So far everything has run through one gateway, which is classified Development. MOSAIC is built
 to govern many gateways ([ADR 0014](../adr/0014-environments.md)), so Phase 12 adds two more
@@ -1368,10 +1368,11 @@ says to fix it. Each MCP kit lives in its own resource group with its own name p
 the images already built. Each staging and production M-protected admits only its own gateway's
 identity and MOSAIC API's. Each M-agent calls a model on its own environment's gateway.
 
-**Who can reach what.** The overlap is deliberate, so each person's grants and authorized traffic
-differ by environment. **My access** is the evidence for grant isolation. **Catalog** is a
-discovery and request surface, not an entitled-only list: its environment filter can show resources
-outside a person's grants as **Request access**.
+**Planned access.** The overlap is deliberate, so each person's grants and authorized traffic
+differ by environment. The table is the target, not a claim that every grant has been applied;
+the results below record the completed legs. **My access** is the evidence for grant isolation.
+**Catalog** is a discovery and request surface, not an entitled-only list: its environment filter
+can show resources outside a person's grants as **Request access**.
 
 | Persona | Development | Staging | Production |
 | --- | --- | --- | --- |
@@ -1396,8 +1397,11 @@ checks still hold.
 - 🔄 **6e, MOSAIC only:** grants, requests and approvals, applied through reviewed plans. The
   direct persona and agent model grants are applied. `devOnly`'s Development model request was
   approved and applied, and her Development M-tools grant was applied to its existing publication.
-  `multiEnv`'s Production AOAI H request and the remaining persona/MCP work are pending; staging
-  and production MCP grants remain gated by O52.
+  `multiEnv`'s Production M-tools grant was applied when its failed publication was repaired.
+  The four remaining planned MCP persona grants and both new agents' **Calls models as** links
+  are now reviewed and applied. O52 no longer blocks publication or grants. `multiEnv`'s
+  Production AOAI H portal request, other persona checks and runtime/usage legs remain pending;
+  `ask_model` still needs an explicit human MCP-agent caller choice and grant.
 
 **What changed from the plan.** Staging needed a model with the Azure OpenAI API shape for its
 M-agent, so the admin registered **AOAI J**, a second Azure OpenAI account, as Staging and
@@ -1411,7 +1415,7 @@ published its GPT-4 deployment. The published set is:
 F's DeepSeek model, and H's GPT-5 mini and o4-mini models, weren't published. Nothing in E8 to
 E10 needs them.
 
-**Results so far.**
+**Results so far, verified through 9 October 2026 UTC.**
 
 - **E1 and E2.** Both tagged gateways were deployed as recorded in 6a, registered by resource ID,
   and switched to **Manage** after 6b.
@@ -1424,21 +1428,44 @@ E10 needs them.
   staging gateway, was refused, naming both environments. The MCP
   publish dialog on the production gateway lists the development servers as "Not publishable",
   with the same reason.
-- **E7.** The admin registered eight new MCP servers: two M-tools, two M-protected, two M-agent
+- **E7 passes.** The admin registered eight new MCP servers: two M-tools, two M-protected, two M-agent
   and two SSE-only servers, one of each type in Staging and one in Production. These are separate
   from Development's existing servers. Each M-tools and M-protected synced three tools; each
   M-agent synced one. M-protected uses the gateway's managed identity. Each
-  SSE-only server shows "Transport not supported". Publishing M-tools on the production gateway
-  then failed at its metadata API, and the apply rolled back (O52). Nothing more is published
-  until that fix is deployed. The fix is open in
-  [#126](https://github.com/microsoft/mosaic-apim/pull/126); it is not merged or deployed, and no
-  deployment is authorized at this gate.
+  SSE-only server shows "Transport not supported". The first Production M-tools apply failed at
+  its metadata API and rolled back (O52).
+
+  [#126](https://github.com/microsoft/mosaic-apim/pull/126), merged as `1a0a3b8`, was then built
+  and deployed to **both the API and the matching admin web app**. Both registry builds succeeded,
+  and live schema, health and readiness checks passed. The initial API-only review had a blank
+  operation-policy label; deploying the matching web app restored **Operation policy**. The portal
+  and all non-image settings, authentication, identities, RBAC and SKUs were preserved. Rollback
+  information and sanitized receipts remain private.
+
+  Through the actual admin UI, the admin repaired the original failed Production M-tools
+  publication **in place**, moving its access version from 1 to 2: all eight steps succeeded,
+  including `multiEnv`'s General grant of 30 calls per 60 seconds. The other five streamable
+  publications each moved from no access version to version 1, with all nine steps succeeded
+  and no caller grants: their initial access snapshots deny all callers. **All six** new
+  publications are now published: M-tools, M-protected and M-agent in both Staging and Production.
+  Each protected upstream uses managed identity with the pre-existing, approved `McpServer.Call`
+  assignments; publication made no new permission changes.
+
+  Each new gateway has one MOSAIC-owned blank-path metadata API with **exactly three** operations
+  and their operation policies. Their URL templates contain each publication's full well-known
+  path. Later publications reused the shared API unchanged. Read-only ARM verification confirmed
+  all six operation templates and policies. Live anonymous checks on all six MCP endpoints returned
+  401 with the exact metadata challenge; the advertised metadata returned 200 with the exact
+  caller-facing resource and `Mcp.Invoke` scope. These checks prove publication and discovery,
+  **not an authenticated Staging or Production tool call**.
 
   Each environment's SSE-only server was also checked in the publication picker on its own
   gateway. Both are **Not publishable**, their selection is disabled, and the reason names the
-  unsupported transport and required `/mcp` endpoint. No plan was created. Development's three
-  existing MCP publications still return an anonymous 401 advertising metadata that returns
-  200 with the matching resource URL and `Mcp.Invoke` scope.
+  unsupported transport and required `/mcp` endpoint. No plan was created, and both remain
+  **unpublished**, not fourth published servers. Development's three existing MCP publications
+  still return an anonymous 401 advertising metadata that returns 200 with the matching resource
+  URL and `Mcp.Invoke` scope. All three Development MCP API policies and their included fragments'
+  SHA-256 fingerprints still match the pre-O52 baseline; their legacy metadata layout is preserved.
 - **E8.** `multiEnv` was added on the Identity page. Five direct grants were saved on the
   Entitlements page:
   - `user`: F's Phi model.
@@ -1446,8 +1473,8 @@ E10 needs them.
 
   Each was applied with **Review model changes**, which also moved each of the five publications
   to governed access and suspended its bootstrap key. Every step succeeded. An apply doesn't
-  create grant keys; each holder creates their own on request, so the personas create theirs in
-  E9. The admin created one key to check a new gateway: `multiEnv`'s key got 200 from F's GPT-4.1
+  create grant keys, and Entra-token calls need no key. The admin created one key to check a new
+  gateway: `multiEnv`'s key got 200 from F's GPT-4.1
   model. The same key got 403 from F's Phi model, on the same gateway but not granted, and 401
   from I's model on the production gateway. The suspended bootstrap key got 401.
 
@@ -1456,8 +1483,11 @@ E10 needs them.
   AOAI H's GPT-4.1. Each has 2,000 tokens per minute, 50,000 tokens per month and 10 calls per
   minute under `general`. Both publications moved to governed access, suspending their bootstrap
   keys. Their applied policies allow only the matching agent identity, not the other environment's
-  agent. No grant key was created. **Calls models as** is configured on a publication, so those
-  links and live agent calls wait for E7.
+  agent. No grant key was created. After E7, both new MCP publications' **Calls models as** links
+  were reviewed and **applied**, each naming its **own** managed identity. Each apply moved the
+  access version from 1 to 2, with all eight steps **Succeeded**.
+  No new human caller grant on either M-agent has been created, and `ask_model` end to end awaits
+  an explicit caller choice and grant.
 
   On 9 October 2026 UTC, the owner signed `devOnly` into a separate portal browser. She initially
   had zero grants and zero pending requests, then requested Development Foundry E's GPT-4.1-nano
@@ -1473,7 +1503,25 @@ E10 needs them.
   the dialog was closed. All previously enabled grants were preserved, and the old revoked grant
   stayed disabled. Nothing was unpublished or recreated. `devOnly`'s E8 request/apply leg is
   complete, not the whole journey: `multiEnv`'s Production AOAI H request and other persona/MCP
-  work remain, with staging and production MCP grants blocked by O52.
+  checks remain.
+
+  The four remaining planned MCP persona grants were then applied through the admin UI under
+  General, each at **30 calls per 60 seconds, with no token limits**. Staging M-tools' reviewed
+  full snapshot contains exactly `user` and `multiEnv`; Staging M-protected and Production
+  M-protected each grant only `multiEnv`. These three publication applies each moved from access
+  version 1 to 2, with all eight steps **Succeeded**. The existing applied `multiEnv` Production
+  M-tools grant was preserved. `devOnly` remains Development-only; both new M-agent publications
+  still have no human caller grants.
+
+  Read-only ARM checks of all six actual applied MCP API policies and included fragments then
+  confirmed **five expected General grant counter identities** across the four tools/protected
+  publications, including the existing Production M-tools grant. The actor object IDs and
+  30-call/60-second limits match the exact expected grants. Counter identities are SHA-256 hashes
+  derived from tenant, publication and entitlement, not plaintext entitlement IDs; verification
+  used the actual publication IDs observed in authenticated UI requests. Both agents' policies
+  forward the on-behalf request reference. No new-environment `devOnly` grant or human-agent
+  caller grant is present. Raw policies and credentials were not saved; sanitized receipts and
+  rollback information remain private. These applied-policy checks are not runtime proof.
 - **E9, portal display and connections.** Reloaded on 9 October 2026 UTC, `devOnly`'s **My access**
   showed exactly two grants and zero pending requests: Foundry E's GPT-4.1-nano and M-tools.
   Both were **Applied to APIM**, **General** (`general`), **Development**, with the approved
@@ -1494,36 +1542,75 @@ E10 needs them.
 
   **Catalog** filtered to Development showed both resources as **already entitled** for
   **General**. Filtered to Production, it intentionally still offered two model APIs and the
-  earlier failed M-tools publication as **Request access**, with none **already entitled**.
-  That M-tools record was **Recorded, not enforced**. This is discovery behavior, not an
-  isolation defect or a change to the access table. `devOnly`'s display/connection leg is
-  complete; E9 remains partial pending the other persona checks and MCP work.
-- **E10, still pending.** No new key was created or revealed for `devOnly`: the confirmation
-  attempt received a user-unavailable response, so key generation awaits explicit approval.
-  No `Models.Invoke` or `Mcp.Invoke` runtime sign-in token was acquired for her, and no model or
-  tool call was made. The private manifest's `loadTargets` validation passed, and its inventory
-  remains git-ignored. **Applied to APIM** does not prove runtime access, negative checks or usage;
-  her E11 **Usage & cost** check waits for calls.
+  then-failed M-tools publication as **Request access**, with none **already entitled**.
+  At that earlier check, the M-tools record was **Recorded, not enforced**; E7 subsequently
+  repaired it. Cross-environment catalog resources remain discoverable and requestable, not
+  entitlement-filtered. This is discovery behavior, not an isolation defect or a change to the
+  access table. The current portal check still confirms exactly `devOnly`'s two applied direct
+  General grants in Development, no Staging or Production grants and no pending requests.
+  Her display/connection leg is complete; E9 remains partial pending the other persona checks
+  after human sign-in. `user` and `multiEnv`'s fresh silent sign-in attempts both returned
+  `login_required`, so the applied grants do not prove their portal views.
+- **E10, devOnly's leg passes.** A fresh native-runtime authorization-code sign-in with PKCE,
+  `prompt=none` and `form_post` reused her human-authenticated browser SSO. Before bounded calls,
+  the caller object ID, tenant, runtime audience, client, `Models.Invoke` and `Mcp.Invoke` scopes
+  and token lifetime were checked. No `offline_access` was requested, no portal token substituted,
+  and no token, key or refresh credential saved. No new consent or permission was added.
+
+  Her Development Foundry E model returned 200 and used 13 tokens: 12 prompt and one completion.
+  An ungranted Development model and Staging F's Phi model both returned 403. Her Development
+  M-tools session negotiated MCP `2025-11-25`, listed three tools and returned the expected `echo`
+  and `add` results, including with case-insensitive General cost-center selection. Sessions closed
+  successfully, and ungranted Development M-protected returned 403. The loopback callback listener
+  was stopped. No key was created or revealed. The private manifest's `loadTargets` validation
+  passed, and its inventory remains git-ignored. E10 remains partial: `user` and `multiEnv`'s
+  Phase 12 runtime legs, authenticated Staging and Production MCP calls, and both new agents'
+  `ask_model` calls are still pending.
+
+  Fresh silent native-runtime PKCE/`form_post` attempts for `user` and `multiEnv` both returned
+  `login_required`. Both callback listeners were shut down. Neither attempt acquired a runtime
+  token or sent model or tool traffic; their remaining token-based runtime and personal-usage
+  legs require human sign-in. Earlier E8 admin key checks are separate evidence, not a completed
+  persona runtime leg. Neither **Applied** nor anonymous metadata discovery establishes that
+  either persona has called the new MCP servers.
 - **E11, early check.** **Analytics** lists all three gateways in its Gateway filter, and each
   gateway's health row reads Current. Filtered to staging, it showed E8's three calls. The 200
   was attributed to `multiEnv` under the `general` cost center. Filtered to production, it showed
   the one refused call, with no caller. The publish smoke calls made before then don't appear.
-  Every model API on the new gateways now has its Azure Monitor diagnostic, and each persona's
-  **Usage & cost** is checked after E10.
+  Every model API on the new gateways now has its Azure Monitor diagnostic.
+
+  **devOnly's personal-usage leg passes.** Her measured **Usage & cost**, generated at 02:43 UTC
+  on 9 October, shows **Development only**, two resources, seven requests and 13 tokens:
+  one model request with 13 tokens and six MCP requests. MCP counts include session lifecycle
+  requests, not only tool calls. Her personal report shows zero errors and zero throttled requests,
+  and **both direct General grants are Linked** from gateway log traces. Shared General totals
+  from all callers were not used as evidence of her personal usage. E11 remains partial pending
+  human sign-in for `user` and `multiEnv`'s Phase 12 runtime and personal-usage checks, and the
+  new agents' model-use attribution. Their failed silent sign-ins generated no runtime traffic
+  to measure.
+
+**Remaining actions.** Obtain human sign-in for `user` and `multiEnv`, complete `multiEnv`'s
+Production AOAI H portal request, and finish the outstanding E8 and E9 persona checks and E10
+and E11 runtime/usage legs. The planned tools/protected MCP grants and both agents' own-identity
+links are applied, but neither proves runtime success. Choose and grant the human MCP-agent
+caller explicitly before `ask_model`. E3 still needs O55's onboarding suggestion.
+E12 is a read-only source proposal requiring separate exact owner approval; no live Simple Chat
+change, production integration or teardown has occurred.
 
 **Journeys** (see the environment table under the journey matrix): E1 provisions the gateways. E2
 to E7 are the admin's work in the console. E8 and E9 are about people and what they see. E10 and
 E11 are traffic and usage. E12 is the Simple Chat spike. E13 is teardown.
 
 **Traffic.** The existing verifiers resolve gateway URLs from grants, so they need no change for a
-second gateway, but E10 confirms that. Each persona signs in with a device code. They call each
+second gateway, but E10 confirms that. The verifiers use device-code sign-in; `devOnly`'s live
+leg instead used the native-runtime authorization-code PKCE flow described above. Personas call each
 granted model with a short, bounded request, and list and call tools on each granted MCP server.
 They also try one resource from another environment and one they hold no grant on, and both must
 be refused. Model calls are opt-in, as in Phase 8.
 
-**Simple Chat (E12, a spike).** The proposed layout pairs staging and production Simple Chat
-deployments with their respective gateways, using application grants so that chats show up in
-usage as the application's. The source-only spike completed on 8 October against Simple Chat
+**Simple Chat (E12, a read-only source proposal).** The proposed layout pairs staging and production
+Simple Chat deployments with their respective gateways, using application grants so that chats
+show up in usage as the application's. The source-only spike completed on 8 October against Simple Chat
 commit `817f9dd`, version `0.261.305`. The deployed revision and production mapping are not yet
 verified. No settings, grants, credentials or deployments were changed, and no live chat was run.
 
@@ -1540,8 +1627,9 @@ audience, which MOSAIC refuses. A credential-free pilot would therefore need an 
 per-connection scope change covering both runtime constructors and the agent token provider;
 changing the deployment-wide cloud settings or disguising the gateway as Foundry is not proposed.
 
-Before any pilot, the owner must confirm the staging deployment and approve the connection,
-pilot access, a separate Simple Chat application grant and budget, and credential storage if a
+Before any pilot, the owner must give separate, exact approval after confirming the deployed
+version, UI and environment mapping, authentication and storage choices, connection, pilot
+access, a new dedicated Simple Chat application grant and budget, and credential storage if a
 key or client secret is chosen. Existing secrets use Key Vault only when that storage is enabled.
 If staging still uses legacy chat, enabling AI Connections is a **one-way migration**, requiring
 separate approval and preservation of the old connection. Keep the current default initially and
@@ -1659,11 +1747,11 @@ has passed, and ❌ means the latest run failed on the product gap named.
 | E4 | The admin registers endpoints E to J by suggestion or resource ID, classifies each, and applies the gateway-identity role each preflight names | 12 | ✅ |
 | E5 | Each environment's models are published on its own gateway after a reviewed plan, and every step succeeds | 12 | ✅ |
 | E6 | A staging endpoint on the production gateway, a production endpoint on the staging gateway, and a development MCP server on the production gateway are each refused with a verdict that names both environments; nothing is written to API Management | 12 | ✅ |
-| E7 | The staging and production MCP kits are registered and classified, their tools sync, and M-tools, M-protected and M-agent are published on their own gateways; each SSE-only server is refused | 12 | 🔄 Blocked by O52 / [#126](https://github.com/microsoft/mosaic-apim/pull/126) |
-| E8 | `devOnly` and `multiEnv` get the User role; direct grants follow the access table; each requests one resource in the portal and the admin approves it; every plan applies. `devOnly`'s request/apply leg passes; `multiEnv`'s Production AOAI H request and remaining persona/MCP work are pending | 12 | 🔄 |
-| E9 | Catalog distinguishes entitlements from discoverable resources offered for request; **My access** and connection details show each persona's grants, matching gateways and environment badges. `devOnly`'s display/connection leg passes with exactly two Development grants and none in staging or production; other persona checks and MCP work remain | 12 | 🔄 |
-| E10 | Each persona calls each granted model and MCP server in each environment; calls to another environment's resource, or an ungranted one, are refused | 12 | ⬜ |
-| E11 | **Analytics** and each persona's **Usage & cost** separate E10's traffic by gateway, environment and person | 12 | 🔄 |
+| E7 | The staging and production MCP kits are registered and classified, their tools sync, and M-tools, M-protected and M-agent are published on their own gateways; each SSE-only server is refused | 12 | ✅ O52 fixed live after [#126](https://github.com/microsoft/mosaic-apim/pull/126); six publications and discovery verified, two SSE-only negatives unpublished |
+| E8 | `devOnly` and `multiEnv` get the User role; direct grants follow the access table; each requests one resource in the portal and the admin approves it; every plan applies. `devOnly`'s request/apply leg, all planned MCP persona grants and both agents' own-identity links are applied; `multiEnv`'s Production AOAI H portal request and outstanding persona checks remain | 12 | 🔄 |
+| E9 | Catalog distinguishes entitlements from discoverable resources offered for request; **My access** and connection details show each persona's grants, matching gateways and environment badges. `devOnly`'s display/connection leg passes with exactly two Development grants and none in staging or production; other persona checks await human sign-in after `login_required` | 12 | 🔄 |
+| E10 | Each persona calls each granted model and MCP server in each environment; calls to another environment's resource, or an ungranted one, are refused | 12 | 🔄 `devOnly`'s Development model/MCP and negative checks pass; `user`/`multiEnv` await human sign-in, with no traffic from failed silent attempts; new agents still need an explicit human caller grant |
+| E11 | **Analytics** and each persona's **Usage & cost** separate E10's traffic by gateway, environment and person | 12 | 🔄 `devOnly`: Development only, two resources, seven requests, 13 tokens; both direct grants Linked; other persona usage awaits human sign-in and traffic, and new-agent usage awaits a caller grant and `ask_model` |
 | E12 | Spike: the staging and production Simple Chat deployments call their own environment's gateway with an application grant, and their chats appear in usage | 12 | 🔄 Source-only proposal complete; live trial awaits separate approval |
 | E13 | Teardown: Phase 12's publications, grants, roles, kits and gateways are removed after the demonstrations, and only those | 12 | ⬜ |
 
@@ -1725,7 +1813,7 @@ be confirmed, or fixed, once the journeys that exercise them have run.
 | O49 | **An authorized MCP call through the gateway gets 404.** In M5's first run, the user's applied grant on M-tools passed every refusal check, but its `initialize` got 404. The gateway's request log shows why: it forwarded the call to the server's endpoint with `/mcp` twice. The gateway appends the request's `/mcp` to the backend URL, and MOSAIC writes the backend URL as the server's whole endpoint, which already ends in `/mcp`. The server answers its endpoint directly, and MOSAIC's connection check and tool sync work, because they don't go through the gateway. Seen live in M5 | Fixed in [#109](https://github.com/microsoft/mosaic-apim/pull/109), merged 6 October as `46e22e0`: the backend URL omits the endpoint's final `/mcp`, and MOSAIC refuses to publish a streamable endpoint that doesn't end in it. **Verified live after Batch 3o:** both servers' fresh plans denied the MCP API first and then replaced the backend. M5's rerun reached the server's endpoint once per call, and its user leg passed |
 | O50 | **A brief failure of the sign-in service ends a verifier run.** While a device-code sign-in waits for the person to confirm it, the verifiers poll Microsoft's token endpoint, and stop on any answer other than success, `authorization_pending` or `slow_down`. In M9's first attempt, one poll got HTTP 502 with no OAuth error, about eight minutes into the code's 15 minutes, and the run ended before its tool call, with its temporary model grant already applied. Seen live in M9 | [#112](https://github.com/microsoft/mosaic-apim/pull/112) keeps polling through up to two 500, 502, 503 or 504 answers in a row that carry no OAuth error, or only `server_error` or `temporarily_unavailable`, and fails on the third. Any other answer still ends the sign-in at once. The live driver keeps the sign-in page open through the verifier's note that it's still waiting, where it would otherwise have closed it. Its head passes the scripts' 153 tests and the harness's 171 independently; against main's verifier, its new tests fail with O50's message. Merged 7 October as `36cd974` |
 | O51 | **M9's temporary model grant has to stay open for the whole sign-in.** M-agent's upstream is public, so its managed identity gets a model grant only for M9's one call. The verifier calls `ask_model` as soon as the person has signed in, and a device-code sign-in waits for the person to confirm it, for up to the code's 15 minutes. So the grant has to be applied before the run starts. In M9's two attempts it was open for about 10 and 17 minutes, capped, and nothing called it. Seen live in M9 | [#114](https://github.com/microsoft/mosaic-apim/pull/114) adds `--await-model-grant`. After the sign-in, and right before `ask_model`, the verifier waits until MOSAIC reports the model caller's grant enabled and applied. It then makes the call and says to revoke the grant. Merged 7 October as `78eb65a`, with a review fix: a run that stops during the wait also says to revoke the grant. The merged code passes the scripts' 159 tests and the harness's 171 independently; against the earlier verifier, the new tests fail. A later review found that its bound on the call held only for each read, so a server that kept its stream alive could hold the grant open for longer. [#117](https://github.com/microsoft/mosaic-apim/pull/117) gives the call a deadline in elapsed time: with the grant open, the run says to revoke it at most 19 minutes after the call starts. Its head passes the scripts' 161 tests and the harness's 171 independently; against the merged verifier, its new tests fail. Merged 7 October as `1e909b8`, and the merged code passes the scripts' 166 tests and the harness's 171. **Verified live in M9 on 8 October:** the grant was opened only after the sign-in and was open for about 90 seconds |
-| O52 | **Publishing an MCP server fails on a newly created gateway.** MOSAIC writes each MCP publication's OAuth protected-resource metadata as its own API, whose path starts with `.well-known/`. API Management now refuses an API path that starts with a dot. The two Phase 12 gateways, created in October 2026, refuse it with "Invalid value of the Web API URL suffix", with either ARM API version tried. The development gateway, created in August, still accepts it. A blank-path API whose operation's URL template is `/.well-known/oauth-protected-resource/…` is accepted on all three. Seen live in E7: M-tools' apply on the production gateway failed at that step and rolled back, leaving a failed publication record | Fix open in [#126](https://github.com/microsoft/mosaic-apim/pull/126), not merged or deployed: one MOSAIC-owned blank-path metadata API per gateway, with an operation and policy for each new publication, unchanged metadata URLs and legacy compatibility. After merge, deploy it, retry the failed publication and publish the rest of E7 |
+| O52 | **Publishing an MCP server fails on a newly created gateway.** MOSAIC writes each MCP publication's OAuth protected-resource metadata as its own API, whose path starts with `.well-known/`. API Management now refuses an API path that starts with a dot. The two Phase 12 gateways, created in October 2026, refuse it with "Invalid value of the Web API URL suffix", with either ARM API version tried. The development gateway, created in August, still accepts it. A blank-path API whose operation's URL template is `/.well-known/oauth-protected-resource/…` is accepted on all three. Seen live in E7: M-tools' apply on the production gateway failed at that step and rolled back, leaving a failed publication record | **Fixed live on 9 October:** [#126](https://github.com/microsoft/mosaic-apim/pull/126), merged as `1a0a3b8`, deployed to both API and matching admin web. Production M-tools repaired in place (access version 1 to 2, eight steps succeeded); the other five initial publications succeeded (no version to 1, nine steps each). Each new gateway owns one blank-path metadata API with exactly three full well-known operations and operation policies; later publications reused the API unchanged. All six endpoints pass anonymous 401/metadata 200 checks with exact resource and `Mcp.Invoke` scope. Development's three MCP API-policy and included-fragment fingerprints match the pre-O52 baseline. No authenticated Staging/Production tool call is claimed |
 | O53 | **A model endpoint's runtime-access verdict changes only on Check access.** After the gateway identity's role was granted on a new endpoint, **Sync** listed the deployments but left the old verdict, which said the role was missing. Only **Check access** refreshed it. Seen in E4 | Refresh the runtime-access verdict when a sync succeeds, or say on the endpoint that the verdict is from the last check and when that was |
 | O54 | **Check access shows no result.** Pressing it on an endpoint gives no progress, toast or status. The only sign that it ran is that the endpoint's verdict changes, if it does. Seen in E4 | Show that the check is running, then its result and time, the way the gateway's check does |
 | O55 | **Onboarding a gateway doesn't prefill its environment from its tag.** E3 expects the gateway's `environment` tag to be a one-click suggestion. While onboarding, the admin had to choose the environment by hand, even though both gateways carry the tag | Prefill the environment from the tag during onboarding, and label it as a suggestion the admin confirms |
