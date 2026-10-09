@@ -1379,8 +1379,7 @@ class McpPublishingService:
         return (
             not isinstance(properties, dict)
             or properties.get("subscriptionRequired") is not False
-            or not isinstance(protocols, list)
-            or [str(protocol).casefold() for protocol in protocols] != ["https"]
+            or protocols != ["https"]
             or service_url not in (None, "")
         )
 
