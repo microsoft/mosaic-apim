@@ -82,8 +82,8 @@ publishes today. One more endpoint is a deliberate negative case.
 | Foundry in another tenant | Foundry (AIServices), in another Entra tenant | Its URL and an API key pasted in the console (G18) | Anthropic Claude (G5) |
 | Private AOAI (negative) | Azure OpenAI | Pasting the resource ID | None. Public network access is off, so the gateway can't reach it |
 
-Gemini and AWS Bedrock follow in Phase 10. Phase 12 adds six more endpoints, E to J,
-listed there by environment.
+Gemini and AWS Bedrock are tracked separately in [Phase 10](#phase-10-gemini-and-aws-bedrock),
+queued but not started. Phase 12 adds six more endpoints, E to J, listed there by environment.
 
 ## Product gaps found
 
@@ -759,7 +759,9 @@ The environment owner decided on 2026-09-30:
   on 2026-10-01 the owner registered a Claude deployment in another tenant through G18 instead
   (Phase 2), so the sitting has no Claude step.
 - The `user` persona's User role is removed once the runtime tests are done.
-- Phase 10 is deferred.
+- Phase 10 was deferred at that sitting. The owner's 9 October request supersedes the deferral
+  for tracking and design preparation only; [Phase 10](#phase-10-gemini-and-aws-bedrock) retains
+  separate live approval gates.
 
 Progress:
 
@@ -1034,18 +1036,68 @@ C, so they wait for the owner's approval too. Bedrock members wait for Phase 10.
   they're the goal. The rollback waits until Phase 11 is done, because Phase 11 still needs the
   test accounts and the `user` persona's role (decided 5 October 2026).
 
-### Phase 10 (later): Gemini and AWS Bedrock ⬜ deferred by the environment owner (2026-09-30)
+<a id="phase-10-later-gemini-and-aws-bedrock--deferred-by-the-environment-owner-2026-09-30"></a>
+<a id="phase-10-gemini-and-aws-bedrock"></a>
 
-The console can already register an OpenAI-compatible endpoint, storing a Key Vault secret URI
-rather than the key. MOSAIC doesn't discover that endpoint's models, though, and it refuses to
-publish it because no curated API shape exists. Phase 10 is a design spike to close that gap:
-discovery, a versioned shape, and backend credentials kept in Key Vault and read by the APIM
-identity. Gemini would use its OpenAI-compatible endpoint or the Vertex AI API; Bedrock would use
-an API key or SigV4. The environment owner writes the secrets and shares only their Key Vault URIs.
-G18 has since built the backend-credential part for Azure AI endpoints, a Key Vault-backed named
-value that the gateway reads with its own identity, and Phase 10 would reuse it. ADR 0024 already
-registers AWS Bedrock hosts with a Bedrock API key, but only as Claude members of a model pool,
-and R17 lists what a live Bedrock member needs to show.
+### Phase 10: Gemini and AWS Bedrock ⬜ tracked/queued, not started
+
+**Decision, 9 October 2026.** The environment owner asked to add Gemini and Bedrock to the
+remaining trackable work. The 30 September deferral remains history, not the current tracking
+status. Tracking and design preparation may proceed; this is **not** approval for external
+accounts, credentials, cloud access, grants, deployments or billed model calls. Each provider
+has its own issue and journeys; neither is available or live-validated by this decision.
+
+**Reuse, not a rebuild.** Registration of an OpenAI-compatible endpoint with a Key Vault secret
+URI exists, but generic Gemini discovery and a curated publishable API shape do not. G18,
+[ADR 0018](../adr/0018-key-authenticated-backends.md) and
+[ADR 0021](../adr/0021-keys-mosaic-keeps.md) provide Azure AI backend-key handling to reuse where
+applicable: the gateway reads a Key Vault-backed named value with its own identity.
+[ADR 0024](../adr/0024-model-pools.md#members-reached-with-a-key-phase-3) already supports
+Bedrock API-key Claude **pool members**, with explicitly declared models; it refuses standalone
+Bedrock publication. Preserve that narrow path, do not duplicate it, and do not infer general
+Bedrock discovery, SigV4 support or provider readiness. R17's Bedrock live checks remain unrun.
+
+#### Gemini: GM1 to GM3
+
+Persistent acceptance checklist: [#130](https://github.com/microsoft/mosaic-apim/issues/130).
+These gates summarize it rather than replace it.
+
+- [ ] **GM1, design:** choose the first API and auth route (OpenAI-compatible versus native/Vertex),
+  model discovery versus explicit declaration, URL/version mapping and capability limits. Define
+  the curated, versioned API shape, approved Key Vault credential storage and gateway retrieval,
+  readiness, publication-plan review/apply and portal connection guidance. Name unsupported routes.
+- [ ] **GM2, implementation/offline:** reuse the existing patterns and prove exact host/path/body/auth
+  translation, ordinary and streamed responses and errors, credential stripping, and
+  untrusted-host, scope and environment protections without live calls or committed secrets.
+- [ ] **GM3, separately approved live proof:** approve the exact non-production account/project,
+  region, model, least-privilege auth/storage and dedicated MOSAIC grant, bounded call budget and
+  rollback first. Then prove discovery/declaration, reviewed publication, portal guidance,
+  ordinary/streamed calls and authorization negatives, plus measured grant/actor attribution.
+
+#### AWS Bedrock: BR1 to BR3
+
+Persistent acceptance checklist: [#131](https://github.com/microsoft/mosaic-apim/issues/131).
+The existing API-key Claude pool path is prior art, not this workstream's completion.
+
+- [ ] **BR1, design:** inventory the existing path and missing standalone support; choose the first
+  API/model family, region, discovery versus declaration and auth route (API key versus proposed
+  SigV4). Define the curated, versioned shape, request/stream formats, Key Vault credential
+  storage, publication plan and portal guidance. Document unsupported routes and, if signing is
+  chosen, temporary/session-credential requirements; do not assert SigV4 exists.
+- [ ] **BR2, implementation/offline:** integrate the chosen path without rebuilding pool-member
+  support; prove exact host/path/body/auth handling, ordinary/streamed responses and errors,
+  credential stripping, missing credentials and region/model validation. Test canonical signing
+  and session credentials offline only if SigV4 is chosen.
+- [ ] **BR3, separately approved live proof:** approve the exact non-production AWS account,
+  region/model access, least-privilege auth/storage, dedicated MOSAIC grant, bounded inference
+  budget and rollback first. Then prove reviewed publication, portal guidance, ordinary/streamed
+  calls, authorization negatives and measured grant/actor attribution. Link actual pool-member
+  evidence to R17 without marking the other pool checks complete.
+
+**Exit, per provider:** distinguish design, code/offline coverage, deployment and actual live
+evidence. Update directly related provider documentation and the issue; record scoped rollback
+without removing retained publications or demonstrations. Secrets go only through approved
+storage, never into issues, this roadmap or receipts committed to the repository.
 
 ### Phase 11: MCP servers end to end ✅ M1 to M9 pass; M10 dropped
 
@@ -1761,6 +1813,13 @@ E10 needs them.
 **Remaining actions.** Recheck Tuxedo's refreshed post-traffic portal presentation.
 Chevron's human sign-in, Production H request/approval/apply, bounded three-environment runtime
 and fresh personal-portal plus admin Consumers attribution legs are complete.
+The current read-only E9 follow-up inspected Chevron's Production H **Connection details**:
+the Production gateway prefix, `gpt-4.1` deployment, chat-completions/responses routes,
+`Models.Invoke` scope, native client and runtime audience, General header and
+subscription-key-or-Entra methods matched the grant. It showed 2,000 TPM, 50,000 monthly tokens,
+10 calls per 60 seconds and the publication's 12,000 TPM. It also said
+"No subscription key exists yet"; no key was created, revealed or copied, and no token or
+example was executed. This one card is evidence for that connection leg only, not an E9 pass.
 Finish the outstanding E8 and E9 persona
 catalog/connection/diagnostic checks and E10 and E11 agent/runtime/usage legs.
 The six new streamable MCP publications, five persona MCP grants and
@@ -1831,6 +1890,42 @@ and [one-way migration](https://github.com/microsoft/simplechat/blob/817f9dd07ef
 published, revokes Phase 12's grants, removes the two kits and both gateways' resource groups, and
 removes the persona roles that 6d added. Phase 9's cleanup still covers everything else.
 
+## Prioritized remaining work (9 October 2026)
+
+**Current gate:** continue cheap, read-only checks within the already authenticated persona's
+existing scope. **Next gates:** obtain the exact approvals and fixtures below before writes,
+credential access or billed traffic; a tracking issue or an earlier sitting is not blanket approval.
+
+1. **Finish available portal/catalog/connection checks first.** Chevron's current nine-grant,
+   zero-pending-request E9 follow-up is read-only; the Production H card above is not all portal
+   coverage. Revisit Tuxedo's refreshed post-traffic **Usage & cost** display only when the owner
+   authenticates that exact persona. Admin negative-permission checks (A7), partial discovery
+   (A2) and Phase 9's full ordered live harness each need their respective safe scope,
+   disposable targets and human/session fixtures; don't remove working roles to manufacture a
+   negative. E3/O55 and E8 to E11 remain partial. R9's Dashboard/Cost Management comparison
+   remains partial, with `CostsMissing` here.
+2. **Then the new Staging/Production agents, if approved.** Obtain an explicit owner choice of
+   human caller and the dedicated MCP caller grants before bounded `ask_model` calls and fresh
+   attribution checks. Their own-identity model grants and caller links are already applied;
+   neither new agent has a human caller grant or `ask_model` proof. Preserve all planned
+   publications and the five existing MCP persona grants.
+3. **Model cost centers and budgets (R10 to R14).** These need new scoped grants and explicit
+   bounded model-call, budget and email approval. R13 also needs a suitable Azure Government
+   environment. M5/M6's MCP cost-center and pooled-call-quota proof is not a substitute for
+   model header stripping, pooled token quotas, propagation or budget/email round trips.
+4. **Model pools (A19, R15 to R18).** Approve the test resources, dedicated grants, capacity
+   changes and billed-call bounds first. These live journeys are unrun; built source and
+   Bedrock API-key member support do not prove failover, governance, metering or health.
+5. **Gemini and Bedrock, independently.** Proceed with the separate Phase 10 design tracks
+   [#130](https://github.com/microsoft/mosaic-apim/issues/130) and
+   [#131](https://github.com/microsoft/mosaic-apim/issues/131), then offline implementation and
+   coverage. GM3 and BR3 each require their own least-privilege non-production live approval,
+   bounded proof, measured attribution and scoped rollback.
+
+Simple Chat E12 and teardown E13/Phase 9 remain independent, separately approved work.
+No decommissioning is authorized by this sequence: M-tools and the retained demo estate stay.
+Do not collapse the passed Paisley, Tuxedo and Chevron legs into wholesale phase completion.
+
 ## Journey matrix
 
 A journey passes only when the stated observable outcome happens in the UI, or at the gateway for
@@ -1899,6 +1994,20 @@ has passed, and ❌ means the latest run failed on the product gap named.
 | R16 | With ADR 0024, a governed pool's models appear in the portal by display name only, warn when portal users would see one twice, and pass the verifier like publications; a failed-over call counts once against each limit and quota, a blocking budget refuses the pool's calls, and each call is priced at the member that served it | 8 | ⬜ |
 | R17 | With ADR 0024, a pool of key members reaches Claude with the member's key and no bearer token, rewriting the body's model for each attempt; how API Management handles backend credentials and missing named values; Bedrock members wait for Phase 10 | 8 | ⬜ |
 | R18 | With ADR 0024, each attempt writes one `mosaic-attempt` trace that names its backend, status, host and path; what the gateway logs name for a pool call; and the pool's **Health** card reports R15's calls | 8 | ⬜ |
+
+### Gemini and AWS Bedrock (Phase 10)
+
+Design/offline gates are not live journey passes. Each provider's live gate is separately
+approved; detailed acceptance stays in its linked issue.
+
+| ID | Journey | Phase | Status |
+| --- | --- | --- | --- |
+| GM1 | Choose Gemini discovery/declaration, API/auth and versioned shape; define Key Vault storage, readiness, publication plan and portal guidance ([#130](https://github.com/microsoft/mosaic-apim/issues/130)) | 10 | ⬜ Tracked/queued, not started |
+| GM2 | Implement the selected Gemini path and prove ordinary/streamed responses, errors, credential stripping and host/scope/environment protections offline | 10 | ⬜ Tracked/queued, not started |
+| GM3 | After exact separate non-production approval, publish/grant Gemini and prove bounded ordinary/streamed calls, refusals, measured attribution and scoped rollback | 10 | ⬜ Tracked/queued, not started; live approval required |
+| BR1 | Choose Bedrock discovery/declaration, API/model family/region/auth and versioned shape; define Key Vault storage, publication plan and portal guidance, preserving ADR 0024's existing API-key Claude pool path ([#131](https://github.com/microsoft/mosaic-apim/issues/131)) | 10 | ⬜ Tracked/queued, not started |
+| BR2 | Implement only missing selected Bedrock support; prove ordinary/streamed responses, errors, credential stripping and host/region/model/auth handling offline; signing/session tests only if SigV4 is chosen | 10 | ⬜ Tracked/queued, not started |
+| BR3 | After exact separate non-production approval, publish/grant Bedrock and prove bounded ordinary/streamed calls, refusals, measured attribution and scoped rollback; link actual member evidence to R17 without closing other pool checks | 10 | ⬜ Tracked/queued, not started; live approval required |
 
 ### MCP servers (Phase 11)
 
