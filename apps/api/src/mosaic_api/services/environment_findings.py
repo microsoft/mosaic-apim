@@ -167,10 +167,9 @@ class EnvironmentFindingsService:
             if item.may_own_gateway_state()
         }
         own_api_names.update(
-            (item.gateway_id, name.casefold())
+            (item.gateway_id, item.api_name.casefold())
             for item in mcp_publications
             if item.may_own_gateway_state()
-            for name in (item.api_name, item.metadata_api_name)
         )
         own_api_names.update(
             (item.gateway_id, resource.name.casefold())

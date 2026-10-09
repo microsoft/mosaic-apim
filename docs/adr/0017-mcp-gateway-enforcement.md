@@ -230,8 +230,9 @@ ADR 0010 guards against.
 - MOSAIC uses an existing `mosaic-mcp-metadata` only if its path is blank and an MCP publication on
   the gateway has that record. It never infers ownership from the name. Otherwise the plan, or an
   apply that finds the API after planning, refuses without changing that API.
-- A plan restores the shared API's settings if they drifted, for example if someone set
-  `subscriptionRequired`.
+- A plan restores the shared API's required routing settings if they drift: it must be HTTPS-only,
+  have no service URL, and not require a subscription. MOSAIC refuses an API-scoped policy rather
+  than overwrite it, because it can change or intercept the operation policy's response.
 - Unpublishing deletes the publication's operation policy and operation. It deletes the shared API
   only if no other operation remains on it and no other publication records it. Otherwise that step
   is skipped and the unpublish still succeeds. The unpublish plan warns about this.

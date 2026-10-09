@@ -2121,6 +2121,46 @@ async def test_plan_restores_a_drifted_shared_metadata_api(harness: Harness) -> 
     assert harness.apim.written[SHARED_API]["properties"]["subscriptionRequired"] is False
 
 
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("protocols", ["http"]),
+        ("protocols", ["https", "http"]),
+        ("serviceUrl", "https://metadata.example.test"),
+    ],
+)
+async def test_plan_restores_routing_drift_on_shared_metadata_api(
+    harness: Harness, key: str, value: object
+) -> None:
+    publication_id = await harness.create()
+    assert (await publish(harness, publication_id)).status == PublishRunStatus.SUCCEEDED
+    harness.apim.written[SHARED_API]["properties"][key] = value
+    harness.apim.writes.clear()
+
+    completed = await publish(harness, publication_id)
+
+    assert completed.status == PublishRunStatus.SUCCEEDED, completed.errors
+    shared_step = next(step for step in completed.steps if step.name == MCP_METADATA_API_NAME)
+    assert shared_step.action == PublishAction.UPDATE
+    assert ("PUT", SHARED_API) in harness.apim.writes
+    properties = harness.apim.written[SHARED_API]["properties"]
+    assert properties["protocols"] == ["https"]
+    assert properties.get("serviceUrl") is None
+
+
+async def test_plan_refuses_shared_metadata_api_scoped_policy(harness: Harness) -> None:
+    publication_id = await harness.create()
+    assert (await publish(harness, publication_id)).status == PublishRunStatus.SUCCEEDED
+    harness.apim.seed(
+        f"{SHARED_API}/policies/policy",
+        {"properties": {"format": "rawxml", "value": "<policies/>"}},
+    )
+
+    with pytest.raises(ConflictError, match="API-scoped policy"):
+        await harness.service.plan(ACTOR, publication_id)
+    assert ("DELETE", f"{SHARED_API}/policies/policy") not in harness.apim.writes
+
+
 async def test_plan_refuses_a_customer_api_on_the_blank_path(harness: Harness) -> None:
     publication_id = await harness.create()
     harness.apim.extra_apis.append(

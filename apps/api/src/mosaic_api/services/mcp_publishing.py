@@ -1362,14 +1362,26 @@ class McpPublishingService:
                 "nothing else needs it, then plan again.",
                 details={"conflictingApi": MCP_METADATA_API_NAME},
             )
+        if await client.get_api_policy(MCP_METADATA_API_NAME) is not None:
+            raise ConflictError(
+                f"API {MCP_METADATA_API_NAME} has an API-scoped policy. The shared metadata API "
+                "must not have one because it can change metadata responses; remove that policy "
+                "and plan again.",
+                details={"conflictingApi": MCP_METADATA_API_NAME, "resource": "apiPolicy"},
+            )
         return live
 
     @staticmethod
     def _shared_metadata_api_drifted(live: JsonObject) -> bool:
         properties = live.get("properties")
+        protocols = properties.get("protocols") if isinstance(properties, dict) else None
+        service_url = properties.get("serviceUrl") if isinstance(properties, dict) else None
         return (
             not isinstance(properties, dict)
             or properties.get("subscriptionRequired") is not False
+            or not isinstance(protocols, list)
+            or [str(protocol).casefold() for protocol in protocols] != ["https"]
+            or service_url not in (None, "")
         )
 
     async def _reject_live_collisions(

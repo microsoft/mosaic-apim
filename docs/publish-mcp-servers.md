@@ -102,6 +102,9 @@ and then only to the operations defined on it, so routing to your other APIs doe
   `.well-known`, because that API would receive the requests.
 - If an API named `mosaic-mcp-metadata` exists but no MOSAIC publication recorded creating it, or it
   isn't at the blank path, MOSAIC refuses rather than adopt it.
+- The shared API stays HTTPS-only, has no backend service URL, and doesn't require a subscription.
+  MOSAIC restores those settings when they drift. An API-scoped policy is refused rather than
+  overwritten, because it can alter the metadata response.
 - If someone adds their own operation to the shared API, MOSAIC keeps the API on unpublish. Once
   no publication records it, MOSAIC refuses to adopt that retained API; resolve it before publishing
   again.
