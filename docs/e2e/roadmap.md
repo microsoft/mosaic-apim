@@ -1336,7 +1336,11 @@ model-caller link alone do not authorize a model call.
   usage counts calls to a server but not to each tool. Reading the JSON-RPC request's method and
   tool name in the policy would add that. M8 shows how much is missing.
 
-### Phase 12: Several gateways and environments 🔄 E1, E2 and E4 to E7 pass; E3 is partial (O55); devOnly's portal, runtime and personal-usage legs pass; user's bounded Development/Staging runtime checks and fresh admin-measured attribution pass; E8 to E11 remain partial
+### Phase 12: Several gateways and environments
+
+🔄 E1, E2 and E4 to E7 pass; E3 is partial (O55); devOnly's portal, runtime and personal-usage
+legs pass; user's bounded Development/Staging runtime checks and fresh admin-measured attribution
+pass; E8 to E11 remain partial.
 
 So far everything has run through one gateway, which is classified Development. MOSAIC is built
 to govern many gateways ([ADR 0014](../adr/0014-environments.md)), so Phase 12 adds two more
@@ -1554,7 +1558,7 @@ E10 needs them.
   after human sign-in. At that earlier check, `user` and `multiEnv`'s fresh silent sign-in attempts
   both returned `login_required`, so the applied grants did not prove their portal views.
 
-  The owner then freshly signed `user` (Tuxedo) into the persona portal on 9 October.
+  The owner then freshly signed `user` (Tuxedo) into the persona portal on 9 October 2026 UTC.
   **My access** showed **13 current grants**, in **Development and Staging only**, zero pending
   requests and **no Production grant**. This verifies her current grant display and environment
   isolation, not all outstanding catalog/connection checks or `multiEnv` (Chevron)'s portal leg.
