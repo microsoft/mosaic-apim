@@ -1393,7 +1393,8 @@ model-caller link alone do not authorize a model call.
 🔄 E1, E2 and E4 to E7 pass; E3 is partial (O55); devOnly's portal, runtime and personal-usage
 legs pass; user's bounded Development/Staging runtime checks and fresh admin-measured attribution
 pass; multiEnv's Production request/apply and bounded runtime checks across all three environments
-pass, as do her fresh personal-portal and admin-measured attribution legs; E8 to E11 remain partial.
+pass, as do her fresh personal-portal and admin-measured attribution legs. Her read-only catalog
+and all-nine connection presentation checks pass; E8 to E11 remain partial.
 
 So far everything has run through one gateway, which is classified Development. MOSAIC is built
 to govern many gateways ([ADR 0014](../adr/0014-environments.md)), so Phase 12 adds two more
@@ -1460,8 +1461,8 @@ checks still hold.
   The four remaining planned MCP persona grants and both new agents' **Calls models as** links
   are now reviewed and applied. O52 no longer blocks publication or grants. `multiEnv`'s
   Production AOAI H portal request is approved and applied, and her bounded runtime checks pass.
-  Her fresh personal and admin usage attribution is verified; outstanding persona
-  catalog/connection/diagnostic checks remain;
+  Her fresh personal and admin usage attribution and read-only catalog/all-nine connection
+  presentation are verified; other persona catalog/connection and diagnostic checks remain;
   `ask_model` still needs an explicit human MCP-agent caller choice and grant.
 
 **What changed from the plan.** Staging needed a model with the Azure OpenAI API shape for its
@@ -1643,8 +1644,55 @@ E10 needs them.
   Staging and Production and matching the approved access matrix before H's requested grant.
   After E8's approval/apply, it showed **nine grants / zero pending requests**; Production H's
   GPT-4.1 was **Applied to APIM**, under **General**, with the exact approved limits above.
-  This verifies her grant display and the planned Production request journey, not every
-  outstanding catalog, connection or diagnostic check. E9 remains partial.
+  That grant display and request journey alone did not establish catalog or connection coverage.
+
+  **multiEnv's catalog and connection presentation subset passes.** The read-only follow-up
+  stayed in the existing human-authenticated Chevron portal. At **18:04:52 UTC on 9 October
+  2026**, all **nine My access Connection details** were opened: five models (Development E's
+  GPT-4.1 nano, Staging F's GPT-4.1 and G's GPT-5 mini, Production H's GPT-4.1 and I's GPT-5.4)
+  and four MCP grants (M-tools and M-protected in each of Staging and Production). Every card
+  showed **Applied to APIM**, its correct environment badge, its own gateway host, the exact
+  base or server URL, the appropriate `Models.Invoke` or `Mcp.Invoke` scope, and the expected
+  tenant, runtime audience, native client and `x-mosaic-cost-center: general` header.
+  All model cards matched the exact deployment and **2,000 TPM / 50,000 monthly tokens /
+  10 calls per 60 seconds**; all MCP cards matched **30 calls per 60 seconds**.
+
+  Model guidance correctly used `Ocp-Apim-Subscription-Key`, **Entra OR key** authentication
+  and placeholder samples. H's chat-completions/responses routes and publication's **12,000
+  TPM** safeguard also matched. The four MCP cards showed streamable transport and a VS Code
+  `http` entry with the General header. Four model cards (E, G, H and I) reported
+  **"No subscription key exists yet"**; F's key controls were not used. These are portal UI
+  observations, **not a claim of server-side key absence**. No key was created, revealed or
+  copied, no token was acquired or copied, and no sample was executed.
+
+  At **18:06:05 UTC**, all four MCP **Advanced details** showed the exact full well-known
+  protected-resource URL and applied server/publication identifiers matching the private
+  inventory. This was **UI-only**: no remote metadata HTTP request, connection diagnostic or
+  runtime call was made.
+
+  At **18:07:43 UTC**, **Catalog** showed **29 unique published resources**: exactly the same
+  **nine already entitled** resources (five models / four MCPs) and **20 ungranted requestable**
+  resources. The nine had no **Request access** button; all 20 ungranted resources offered it,
+  and **zero request forms were submitted**. The six prior runtime-negative targets (Staging
+  Phi-4, Staging J, Development GPT-4o-mini, Staging and Production M-agent, and Development
+  M-tools) remained **requestable, not entitled**. All eight native environment/type filters
+  matched their exact resource and entitlement sets:
+
+  | Environment / type filter | Published resources | Already entitled |
+  | --- | --- | --- |
+  | Development / All | 17 | 1 |
+  | Staging / All | 7 | 4 |
+  | Production / All | 5 | 4 |
+  | All / Models | 20 | 5 |
+  | All / MCP | 9 | 4 |
+  | Production / Models | 2 | 2 |
+  | Staging / MCP | 3 | 2 |
+  | Development / MCP | 3 | 0 |
+
+  Filters were restored to **All environments / All types**. No model or MCP traffic, paid
+  calls, grants, roles, cloud configuration, credential access or real-tenant screenshots were
+  added. This closes Chevron's **catalog/connection presentation subset only**; E8 to E11,
+  including E9, remain partial pending other persona checks, diagnostics and human-gated legs.
 - **E10, devOnly's leg passes.** A fresh native-runtime authorization-code sign-in with PKCE,
   `prompt=none` and `form_post` reused her human-authenticated browser SSO. Before bounded calls,
   the caller object ID, tenant, runtime audience, client, `Models.Invoke` and `Mcp.Invoke` scopes
@@ -1810,18 +1858,17 @@ E10 needs them.
   presentation has **not** been revisited. E11 remains partial pending outstanding portal checks
   and the new agents' caller grant, `ask_model` and model-use attribution.
 
-**Remaining actions.** Recheck Tuxedo's refreshed post-traffic portal presentation.
+**Remaining actions.** Recheck Tuxedo's refreshed post-traffic portal presentation only after
+the owner's exact human sign-in. The owner was unavailable when asked for permission to prepare
+that sign-in; **no approval was inferred and no account switch occurred**. The browser remained
+Chevron, and Tuxedo's previously measured admin Consumers attribution remains valid.
 Chevron's human sign-in, Production H request/approval/apply, bounded three-environment runtime
-and fresh personal-portal plus admin Consumers attribution legs are complete.
-The current read-only E9 follow-up inspected Chevron's Production H **Connection details**:
-the Production gateway prefix, `gpt-4.1` deployment, chat-completions/responses routes,
-`Models.Invoke` scope, native client and runtime audience, General header and
-subscription-key-or-Entra methods matched the grant. It showed 2,000 TPM, 50,000 monthly tokens,
-10 calls per 60 seconds and the publication's 12,000 TPM. It also said
-"No subscription key exists yet"; no key was created, revealed or copied, and no token or
-example was executed. This one card is evidence for that connection leg only, not an E9 pass.
-Finish the outstanding E8 and E9 persona
-catalog/connection/diagnostic checks and E10 and E11 agent/runtime/usage legs.
+and fresh personal-portal plus admin Consumers attribution legs are complete, as is her
+read-only E9 catalog/all-nine connection presentation subset: **nine grants / zero pending
+requests**, **29 catalog resources / nine entitled / 20 requestable**, four MCP Advanced details
+and eight exact filter sets. This does **not** close E9 or replace connection diagnostics.
+Finish the outstanding E8 and E9 other-persona catalog/connection and diagnostic checks,
+and E10 and E11 agent/runtime/usage legs.
 The six new streamable MCP publications, five persona MCP grants and
 both agents' own-identity model grants and applied caller links remain in place; neither new
 agent has a human MCP caller grant. The owner was unavailable when asked about the two Chevron
@@ -1892,14 +1939,19 @@ removes the persona roles that 6d added. Phase 9's cleanup still covers everythi
 
 ## Prioritized remaining work (9 October 2026)
 
-**Current gate:** continue cheap, read-only checks within the already authenticated persona's
-existing scope. **Next gates:** obtain the exact approvals and fixtures below before writes,
-credential access or billed traffic; a tracking issue or an earlier sitting is not blanket approval.
+**First read-only increment complete:** Chevron's catalog/all-nine connection presentation
+subset passes, without credential access or new runtime calls; this is not a whole E9 pass.
+**Current gate:** other persona presentation and connection-diagnostic checks still need their
+exact human/session scope; Tuxedo's refreshed personal portal remains pending, with no account
+switch or approval inferred. **Next gates:** obtain the exact approvals and fixtures below before
+writes, credential access or billed traffic; a tracking issue or an earlier sitting is not
+blanket approval.
 
-1. **Finish available portal/catalog/connection checks first.** Chevron's current nine-grant,
-   zero-pending-request E9 follow-up is read-only; the Production H card above is not all portal
-   coverage. Revisit Tuxedo's refreshed post-traffic **Usage & cost** display only when the owner
-   authenticates that exact persona. Admin negative-permission checks (A7), partial discovery
+1. **Chevron's first read-only increment passes; finish other portal/diagnostic checks next.**
+   All nine connection cards, four MCP Advanced details, the 29-resource catalog (nine entitled /
+   20 requestable) and eight exact filter sets are verified above. Other persona connections and
+   diagnostics remain open. Revisit Tuxedo's refreshed post-traffic **Usage & cost** display only
+   when the owner authenticates that exact persona. Admin negative-permission checks (A7), partial discovery
    (A2) and Phase 9's full ordered live harness each need their respective safe scope,
    disposable targets and human/session fixtures; don't remove working roles to manufacture a
    negative. E3/O55 and E8 to E11 remain partial. R9's Dashboard/Cost Management comparison
@@ -2036,7 +2088,7 @@ approved; detailed acceptance stays in its linked issue.
 | E6 | A staging endpoint on the production gateway, a production endpoint on the staging gateway, and a development MCP server on the production gateway are each refused with a verdict that names both environments; nothing is written to API Management | 12 | ✅ |
 | E7 | The staging and production MCP kits are registered and classified, their tools sync, and M-tools, M-protected and M-agent are published on their own gateways; each SSE-only server is refused | 12 | ✅ O52 fixed live after [#126](https://github.com/microsoft/mosaic-apim/pull/126); six publications and discovery verified, two SSE-only negatives unpublished |
 | E8 | `devOnly` and `multiEnv` get the User role; direct grants follow the access table; each requests one resource in the portal and the admin approves it; every plan applies. Both personas' request/apply legs, all planned MCP persona grants and both agents' own-identity links are applied; `multiEnv`'s Production H review/apply moved version 1 to 2 with all 17 steps Succeeded, preserving the agent grant; outstanding persona checks remain | 12 | 🔄 |
-| E9 | Catalog distinguishes entitlements from discoverable resources offered for request; **My access** and connection details show each persona's grants, matching gateways and environment badges. `devOnly`'s display/connection leg passes with exactly two Development grants; `user` (Tuxedo) shows 13 Development/Staging grants and no Production grant; `multiEnv` (Chevron) shows nine grants across all three environments, Production H Applied to APIM with approved limits; all have zero pending requests, but outstanding catalog/connection/diagnostic checks remain | 12 | 🔄 |
+| E9 | Catalog distinguishes entitlements from discoverable resources offered for request; **My access** and connection details show each persona's grants, matching gateways and environment badges. `devOnly`'s display/connection leg passes with exactly two Development grants; `user` (Tuxedo) shows 13 Development/Staging grants and no Production grant; all have zero pending requests | 12 | 🔄 `multiEnv` (Chevron)'s read-only presentation subset passes: all nine applied connection cards (five models / four MCPs), four MCP Advanced details, 29 unique catalog resources / exactly nine entitled / 20 requestable, six prior negative targets not entitled, eight exact filter sets; no requests submitted, credentials accessed or runtime/remote diagnostic calls. Other persona catalog/connection and diagnostic checks remain; not a whole E9 pass |
 | E10 | Each persona calls each granted model and MCP server in each environment; calls to another environment's resource, or an ungranted one, are refused | 12 | 🔄 `devOnly`'s leg passes; `user`: two model calls / 32 tokens, three tool MCP sessions / 18 successful requests, seven expected denials; `multiEnv`: five model calls / 72 tokens, four tool MCP sessions / 24 successful requests including Production, six expected denials; new agents still need an explicit owner-approved human caller grant before `ask_model` |
 | E11 | **Analytics** and each persona's **Usage & cost** separate E10's traffic by gateway, environment and person | 12 | 🔄 `devOnly`: Development only, two resources, seven requests, 13 tokens; both direct grants Linked. `user`'s fresh admin Analytics Consumers attribution is verified: +20 requests / +32 tokens (Development +13/+13, Staging +7/+19), no Production linked usage; refreshed portal presentation was not revisited. `multiEnv`'s admin Consumers (11:54 UTC) and actual personal portal (11:55 UTC) agree: 30 requests / 87 tokens, nine grants/resources, +29/+72 over baseline (Development +1/+12, Staging +14/+33, Production +14/+27). New-agent caller grant/`ask_model`/attribution and outstanding portal checks remain pending |
 | E12 | Spike: the staging and production Simple Chat deployments call their own environment's gateway with an application grant, and their chats appear in usage | 12 | 🔄 Source-only proposal complete; live trial awaits separate approval |
