@@ -70,6 +70,7 @@ const kindLabels: Record<PublishedResourceKind, string> = {
   api: 'API',
   apiOperation: 'Operation',
   apiPolicy: 'API policy',
+  apiOperationPolicy: 'Operation policy',
   product: 'Product',
   productApi: 'Product link',
   subscription: 'Subscription',

@@ -2813,6 +2813,8 @@ class ModelPoolService:
                 return await client.get_api_operation(pool.api_name, name) is not None
             case PublishedResourceKind.API_POLICY:
                 return await client.get_api_policy(pool.api_name) is not None
+            case PublishedResourceKind.API_OPERATION_POLICY:
+                return await client.get_operation_policy(pool.api_name, name) is not None
             case PublishedResourceKind.PRODUCT:
                 return await client.get_product(name) is not None
             case PublishedResourceKind.PRODUCT_API:

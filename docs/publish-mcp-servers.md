@@ -65,7 +65,8 @@ environments, so a rule change can't trap a publication in place.
 
 ## What MOSAIC creates
 
-One MCP publication owns seven APIM resources:
+One MCP publication owns seven APIM resources. Three of them share one API across the gateway's MCP
+servers:
 
 | Order | Resource | Purpose |
 | --- | --- | --- |
@@ -73,12 +74,47 @@ One MCP publication owns seven APIM resources:
 | 2 | Policy fragment | Validates Entra tokens, matches grants, tags each authorized call with its grant, applies call limits, strips caller credentials and attaches backend managed identity when configured. With a model caller, it also passes each call's reference to the server |
 | 3 | MCP API | Exposes the streamable MCP endpoint at `{gateway}/{api_path}/mcp` |
 | 4 | MCP API policy | Includes the enforcement fragment and adds the resource metadata challenge on validation failures |
-| 5 | Metadata API | Owns the well-known protected-resource-metadata path for this publication |
-| 6 | `metadata` operation | Handles `GET /mcp` under the metadata API |
-| 7 | Metadata API policy | Returns the RFC 9728 JSON document with the resource URL, tenant authorization server and `Mcp.Invoke` scope |
+| 5 | Shared metadata API | `mosaic-mcp-metadata`, at the gateway's blank path. Every MCP server MOSAIC publishes on the gateway uses it. It has no policy or backend of its own |
+| 6 | Metadata operation | `{api_name}-prm` on the shared API. Handles `GET /.well-known/oauth-protected-resource/{api_path}/mcp` |
+| 7 | Metadata operation policy | Returns the RFC 9728 JSON document with the resource URL, tenant authorization server and `Mcp.Invoke` scope |
 
 MOSAIC never takes over an APIM resource it did not create or already record as its own. A name or
 path collision with customer-owned APIM state stops creation or planning.
+
+### The shared metadata API
+
+API Management services created since about October 2026 refuse an API path that starts with a dot,
+such as `.well-known/...`. So MOSAIC serves each server's protected resource metadata as an
+operation on one API whose path is blank. The URL clients use is the standard well-known URL either
+way. API Management sends a request to the blank-path API only when no other API's path matches it,
+and then only to the operations defined on it, so routing to your other APIs doesn't change.
+
+- The first publication's apply creates the shared API. Later publications add only their operation
+  and its policy.
+- Unpublishing a server removes its operation and policy. MOSAIC deletes the shared API only with
+  the last MCP server that uses it, and only because MOSAIC created it.
+- MCP apply and unpublish runs share a durable gateway write lock. If another run is active, wait
+  for it to finish and retry. An interrupted run keeps the lock until explicit recovery.
+- If another API already uses the gateway's blank path, MOSAIC refuses to plan and names that API.
+  API Management allows only one API there, and MOSAIC won't change yours. Give that API a path, or
+  publish to another gateway.
+- MOSAIC also refuses if an API's path is a prefix of the metadata URL, for example an API at
+  `.well-known`, because that API would receive the requests.
+- If an API named `mosaic-mcp-metadata` exists but no MOSAIC publication recorded creating it, or it
+  isn't at the blank path, MOSAIC refuses rather than adopt it.
+- The shared API stays HTTPS-only, has no backend service URL, and doesn't require a subscription.
+  MOSAIC restores those settings when they drift. An API-scoped policy is refused rather than
+  overwritten, because it can alter the metadata response.
+- If someone adds their own operation to the shared API, MOSAIC keeps the API on unpublish. Once
+  no publication records it, MOSAIC refuses to adopt that retained API; resolve it before publishing
+  again.
+
+**Servers published before this change** keep their own metadata API at
+`.well-known/oauth-protected-resource/{api_path}`, with its `metadata` operation and policy. Those
+gateways still accept the path. Re-planning and applying keeps that layout, and unpublishing
+removes it. To move a server to the shared API, unpublish it and publish it again.
+[ADR 0017](adr/0017-mcp-gateway-enforcement.md#amendment-2026-10-08-shared-blank-path-metadata-api)
+records the decision.
 
 ## The backend URL
 

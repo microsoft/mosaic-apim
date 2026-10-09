@@ -18,6 +18,7 @@ from mosaic_api.domain import (
     QuotaPeriod,
     RequestEnforcement,
     TokenEnforcement,
+    mcp_metadata_url_template,
     mcp_resource_metadata_url,
     mcp_server_url,
 )
@@ -736,6 +737,8 @@ def test_challenges_and_server_metadata_use_the_same_origin_and_nested_path(
         'var origin = url.Scheme + "://" + url.Host + port;'
     )
     metadata_path = f"/.well-known/oauth-protected-resource/{api_path}/mcp"
+    # The shared blank-path metadata API answers at exactly the URL the challenge advertises.
+    assert mcp_metadata_url_template(api_path) == metadata_path
     for expression in [*headers, body]:
         assert origin in expression
         assert "url.Path" not in expression and "context.Api.Path" not in expression

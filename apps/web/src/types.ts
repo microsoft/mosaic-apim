@@ -1232,6 +1232,7 @@ export type PublishedResourceKind =
   | 'api'
   | 'apiOperation'
   | 'apiPolicy'
+  | 'apiOperationPolicy'
   | 'product'
   | 'productApi'
   | 'subscription'

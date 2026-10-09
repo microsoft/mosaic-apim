@@ -392,6 +392,7 @@ _KIND_NOUNS: dict[PublishedResourceKind, str] = {
     PublishedResourceKind.API: "API",
     PublishedResourceKind.API_OPERATION: "operation",
     PublishedResourceKind.API_POLICY: "API policy",
+    PublishedResourceKind.API_OPERATION_POLICY: "operation policy",
     PublishedResourceKind.PRODUCT: "product",
     PublishedResourceKind.PRODUCT_API: "product link",
     PublishedResourceKind.SUBSCRIPTION: "subscription",
@@ -1636,6 +1637,11 @@ class PublishingService:
                 )
             case PublishedResourceKind.API_POLICY:
                 return await client.get_api_policy(publication.api_name) is not None
+            case PublishedResourceKind.API_OPERATION_POLICY:
+                return (
+                    await client.get_operation_policy(publication.api_name, item.name)
+                    is not None
+                )
             case PublishedResourceKind.PRODUCT:
                 return await client.get_product(item.name) is not None
             case PublishedResourceKind.PRODUCT_API:

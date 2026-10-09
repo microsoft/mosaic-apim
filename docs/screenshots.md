@@ -172,6 +172,8 @@ survives to be read back.
 
 - `SENSITIVE_LITERALS` in `demo_api.py`: the demo tenant, client, and object IDs.
 - `RESOURCE_NAMES` in `capture.py`: the demo's gateway, resource group, account, and vault names.
+- The shared MCP metadata API, readable MOSAIC MCP/pool resource names, and product names are
+  redacted too; API paths and display names remain readable.
 - `REDACTION_PATTERNS` in `capture.py`: GUIDs, email addresses, URLs and URIs, Azure resource IDs,
   Azure, Communication Services, and Contoso hostnames, IPv4 addresses, MOSAIC record IDs and the
   APIM names derived from them, and the demo's placeholder keys.
@@ -252,7 +254,7 @@ shows both themes. Keep new shots in that pattern.
 | `console-overlapping-grants` | Console | `/entitlements`, scrolled to **Overlapping grants** | Dark | Overlapping grants |
 | `console-cost-centers` | Console | `/cost-centers` | Light | Cost centers |
 | `console-cost-center-detail` | Console | `/cost-centers`, **Customer Insights** opened | Dark | Cost center |
-| `console-mcp-publish` | Console | `/mcps`, **Plan and apply** review for the published Docs MCP server | Light | MCP publish review |
+| `console-mcp-publish` | Console | `/mcps`, **Plan and apply** review for the published Docs MCP server, including the shared metadata API, operation, and operation policy | Light | MCP publish review |
 | `console-unpublish-review` | Console | `/models`, **Unpublish** review for GPT-4o, never confirmed | Light | Unpublish review |
 | `console-budgets` | Console | `/cost-centers`, **Customer Support** opened, scrolled to **Budget** | Dark | Budgets |
 | `console-analytics` | Console | `/analytics`, **Overview** tab | Dark | Analytics |

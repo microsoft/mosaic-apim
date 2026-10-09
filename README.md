@@ -235,7 +235,8 @@ one under **Settings > Appearance**.
       <img src="docs/images/screenshots/console-mcp-publish.png" alt="MCP publish review with access changes, the application the server calls models as, and plan steps">
       <p><b>MCP publish review.</b> A MOSAIC-owned MCP server is published through API
       Management only after the administrator reviews the access snapshot, including the
-      application its tools call models as, and the exact gateway resources that will change.</p>
+      application its tools call models as, and the exact gateway resources that will change.
+      Sign-in metadata uses a dedicated operation and policy on the gateway's shared blank-path API.</p>
     </td>
     <td width="50%" valign="top">
       <img src="docs/images/screenshots/console-analytics.png" alt="Analytics with request, token, cost, caller, error, and latency figures, a daily trend, and the top models, callers, and cost centers">
@@ -498,8 +499,9 @@ explicit local/test modes and application startup rejects them when `MOSAIC_ENVI
   persisted deterministic plan, an explicit apply, per-step results, and a rollback that deletes
   only the resources that apply created
 - MCP publishing: expose a registered MCP server through a gateway by creating its backend, policy
-  fragment, passthrough MCP API, API policy, protected-resource-metadata API, metadata operation
-  and metadata policy — through the same reviewed plan and explicit apply model
+  fragment, passthrough MCP API, API policy, and a protected-resource-metadata operation and its
+  policy on the gateway's shared metadata API — through the same reviewed plan and explicit apply
+  model
 - Model pools: serve one vendor's models from deployments on many endpoints and regions through one
   API, so callers see one base URL and the pool's model names and never the deployments behind
   them. Breaker and preferential pools balance their deployments with API Management backend pools
@@ -1868,8 +1870,9 @@ because credentials are issued for direct grants only.
 
 Use **MCP servers** to publish a registered streamable MCP server through a managed API Management
 gateway. MOSAIC creates a passthrough MCP API, a backend, an enforcement fragment, an API policy,
-and a per-publication protected-resource-metadata API. It owns those resources under the same
-reviewed plan, explicit apply boundary, and [environment rules](#environments) as model
+and a protected-resource-metadata operation on one shared, blank-path API per gateway. It owns those
+resources under the same reviewed plan, explicit apply boundary, and
+[environment rules](#environments) as model
 publishing. See [Publish MCP servers through API Management](docs/publish-mcp-servers.md).
 
 Published MCP servers accept Entra runtime tokens only. People and agent users request
