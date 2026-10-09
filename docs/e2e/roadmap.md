@@ -1340,7 +1340,8 @@ model-caller link alone do not authorize a model call.
 
 🔄 E1, E2 and E4 to E7 pass; E3 is partial (O55); devOnly's portal, runtime and personal-usage
 legs pass; user's bounded Development/Staging runtime checks and fresh admin-measured attribution
-pass; E8 to E11 remain partial.
+pass; multiEnv's Production request/apply and bounded runtime checks across all three environments
+pass, with fresh measured usage still pending; E8 to E11 remain partial.
 
 So far everything has run through one gateway, which is classified Development. MOSAIC is built
 to govern many gateways ([ADR 0014](../adr/0014-environments.md)), so Phase 12 adds two more
@@ -1406,7 +1407,8 @@ checks still hold.
   `multiEnv`'s Production M-tools grant was applied when its failed publication was repaired.
   The four remaining planned MCP persona grants and both new agents' **Calls models as** links
   are now reviewed and applied. O52 no longer blocks publication or grants. `multiEnv`'s
-  Production AOAI H portal request, other persona checks and runtime/usage legs remain pending;
+  Production AOAI H portal request is approved and applied, and her bounded runtime checks pass.
+  Outstanding persona catalog/connection and fresh measured-usage checks remain;
   `ask_model` still needs an explicit human MCP-agent caller choice and grant.
 
 **What changed from the plan.** Staging needed a model with the Azure OpenAI API shape for its
@@ -1488,10 +1490,10 @@ E10 needs them.
   grants were reviewed and applied: staging's agent on AOAI J's GPT-4, production's agent on
   AOAI H's GPT-4.1. Each has 2,000 tokens per minute, 50,000 tokens per month and 10 calls per
   minute under `general`. Both publications moved to governed access, suspending their bootstrap
-  keys. Their applied policies allow only the matching agent identity, not the other environment's
-  agent. No grant key was created. After E7, both new MCP publications' **Calls models as** links
-  were reviewed and **applied**, each naming its **own** managed identity. Each apply moved the
-  access version from 1 to 2, with all eight steps **Succeeded**.
+  keys. At that stage, their applied policies allowed only the matching agent identity, not the
+  other environment's agent. No grant key was created. After E7, both new MCP publications'
+  **Calls models as** links were reviewed and **applied**, each naming its **own** managed
+  identity. Each apply moved the access version from 1 to 2, with all eight steps **Succeeded**.
   No new human caller grant on either M-agent has been created, and `ask_model` end to end awaits
   an explicit caller choice and grant.
 
@@ -1508,8 +1510,8 @@ E10 needs them.
   reported that the service had applied the MCP plan; all eight steps showed **Succeeded**, and
   the dialog was closed. All previously enabled grants were preserved, and the old revoked grant
   stayed disabled. Nothing was unpublished or recreated. `devOnly`'s E8 request/apply leg is
-  complete, not the whole journey: `multiEnv`'s Production AOAI H request and other persona/MCP
-  checks remain.
+  complete, not the whole journey: `multiEnv`'s Production AOAI H request was still pending then;
+  its subsequent completion is recorded below.
 
   The four remaining planned MCP persona grants were then applied through the admin UI under
   General, each at **30 calls per 60 seconds, with no token limits**. Staging M-tools' reviewed
@@ -1528,6 +1530,26 @@ E10 needs them.
   forward the on-behalf request reference. No new-environment `devOnly` grant or human-agent
   caller grant is present. Raw policies and credentials were not saved; sanitized receipts and
   rollback information remain private. These applied-policy checks are not runtime proof.
+
+  **multiEnv's Production request/apply leg passes.** After the owner's fresh Chevron sign-in
+  at about **11:45 UTC on 9 October**, her portal **Catalog** request for AOAI H's GPT-4.1 used
+  General and a bounded-demo justification. **My requests** first showed **Pending**. The admin
+  verified the exact Chevron actor and both requested and current **Production** classification,
+  then approved **2,000 tokens per minute, 50,000 tokens per month and 10 calls per 60 seconds**.
+  Approval created new grant intent. A fresh, publication-wide **Review model changes** and apply
+  moved access version **1 to 2**, with **all 17 steps Succeeded**.
+
+  The review contained exactly the new Chevron grant and the existing Production agent's own
+  managed-identity model grant. It preserved that grant, **subscription key OR Entra token**
+  authentication, the publication's **12,000 tokens per minute** safeguard and suspended
+  bootstrap key. **My requests** now showed **Approved** with the decision note, and the portal
+  showed **nine grants / zero pending requests**. No key was retrieved or used, and no other
+  grants, configuration, deployments or Entra settings changed.
+
+  An independent read-only ARM check of the applied fragment confirmed Chevron and the existing
+  agent, with Paisley and Tuxedo absent, and the required `Models.Invoke` scope and
+  `Models.Invoke.Application` role. Rollback revokes **only the new Chevron grant** and
+  reviews/applies H's model publication, preserving the agent and all other resources.
 - **E9, portal display and connections.** Reloaded on 9 October 2026 UTC, `devOnly`'s **My access**
   showed exactly two grants and zero pending requests: Foundry E's GPT-4.1-nano and M-tools.
   Both were **Applied to APIM**, **General** (`general`), **Development**, with the approved
@@ -1561,7 +1583,15 @@ E10 needs them.
   The owner then freshly signed `user` (Tuxedo) into the persona portal on 9 October 2026 UTC.
   **My access** showed **13 current grants**, in **Development and Staging only**, zero pending
   requests and **no Production grant**. This verifies her current grant display and environment
-  isolation, not all outstanding catalog/connection checks or `multiEnv` (Chevron)'s portal leg.
+  isolation, not all outstanding catalog/connection checks.
+
+  After the owner's fresh Chevron sign-in, **My access** initially showed the **E2E
+  multi-environment persona**, **eight grants / zero pending requests**, spanning Development,
+  Staging and Production and matching the approved access matrix before H's requested grant.
+  After E8's approval/apply, it showed **nine grants / zero pending requests**; Production H's
+  GPT-4.1 was **Applied to APIM**, under **General**, with the exact approved limits above.
+  This verifies her grant display and the planned Production request journey, not every
+  outstanding catalog, connection or diagnostic check. E9 remains partial.
 - **E10, devOnly's leg passes.** A fresh native-runtime authorization-code sign-in with PKCE,
   `prompt=none` and `form_post` reused her human-authenticated browser SSO. Before bounded calls,
   the caller object ID, tenant, runtime audience, client, `Models.Invoke` and `Mcp.Invoke` scopes
@@ -1609,9 +1639,39 @@ E10 needs them.
   tool MCP sessions** and **seven expected denials** (two models and five MCP routes). It made
   no new grants or Azure, Entra, configuration or deployment mutations. These are Tuxedo's
   Development/Staging positives and cross-environment/ungranted negatives, **not** Chevron's
-  runtime leg or either new agent's `ask_model`. E10 remains partial: `multiEnv` still needs
-  fresh human sign-in and runtime checks, including authenticated Production MCP calls; both
-  new agents still need an explicitly chosen human caller grant before `ask_model`.
+  subsequent runtime leg or either new agent's `ask_model`.
+- **E10, multiEnv's bounded three-environment checks pass.** Chevron's live traffic ran on
+  **9 October 2026, 11:51:00 to 11:51:26 UTC**. A fresh native-runtime, in-memory MSAL
+  authorization-code token with PKCE, `prompt=none` and `form_post` reused her human SSO.
+  Before traffic, the exact actor, tenant, runtime audience, native client, both `Models.Invoke`
+  and `Mcp.Invoke` scopes and token lifetime were verified. No `offline_access` was requested,
+  no refresh credential or token persisted, no portal token substituted and no key used.
+  The callback listener stopped **before calls**, and the bounded, validated helper exited 0.
+
+  All five granted model calls returned **200**, with visible completion text and bounded output:
+
+  | Model | Prompt tokens | Completion tokens | Total tokens | Output bound |
+  | --- | --- | --- | --- | --- |
+  | Development E GPT-4.1-nano | 11 | 1 | 12 | `max_tokens=8` |
+  | Staging F GPT-4.1 | 11 | 2 | 13 | `max_tokens=8` |
+  | Staging G GPT-5-mini | 10 | 10 | 20 | `max_completion_tokens=32`, `reasoning_effort=minimal` |
+  | Production I GPT-5.4 | 10 | 4 | 14 | `max_completion_tokens=8`, `reasoning_effort=none` |
+  | Newly requested Production H GPT-4.1 | 11 | 2 | 13 | `max_tokens=8` |
+
+  Ungranted **Staging Phi-4**, **Staging J GPT-4** and **Development GPT-4o-mini** each returned
+  **403**. **Staging M-tools and M-protected**, and **Production M-tools and M-protected**,
+  each negotiated MCP `2025-11-25`: initialize **200**, initialized notification **202**, list
+  **200** with exactly **three tools**, and `echo` and `add` **200**, including case-insensitive
+  General selection. Each session closed with **DELETE 200**: **six successful requests each,
+  24 in total**. Ungranted **Staging M-agent**, **Production M-agent** and **Development M-tools**
+  each refused initialize with **403**, with no session or tool invocation afterwards.
+
+  Overall this proves **five successful model calls / 72 model tokens**, **four successful MCP
+  sessions / 24 MCP requests** and **29 successful requests**, plus **six expected denials**
+  (three models and three MCPs). It includes authenticated Production MCP positives. Both new
+  agents still have **zero human caller grants**: no `ask_model` or governed agent-model
+  attribution is claimed. E10 remains partial until an explicit owner caller choice and grant
+  permits that separate leg.
 - **E11, early check.** **Analytics** lists all three gateways in its Gateway filter, and each
   gateway's health row reads Current. Filtered to staging, it showed E8's three calls. The 200
   was attributed to `multiEnv` under the `general` cost center. Filtered to production, it showed
@@ -1655,15 +1715,29 @@ E10 needs them.
   historical M-agent delegated-use **one request / 24 tokens** are **excluded**. Runtime response
   token counts or Linked labels alone were not used as measured attribution evidence. This
   supersedes the pending-ingestion result, not the unverified refreshed portal presentation.
-  E11 remains partial pending the outstanding portal checks, Chevron's fresh human
-  sign-in/runtime/personal-usage checks, and the new agents' caller grant, `ask_model` and
+
+  **multiEnv's fresh personal rollup is still pending.** Chevron's measured personal **Usage &
+  cost** baseline, generated at **11:46 UTC on 9 October**, was **one Staging GPT-4.1 request /
+  15 tokens** from historical key traffic. Development and Production each showed **zero
+  requests / zero tokens**, and all four MCP grants showed zero requests. All eight baseline
+  grants were **Linked**, but that label is not fresh attribution; shared General totals are
+  explicitly excluded. The first post-run portal read at **11:52 UTC** still showed that
+  **one request / 15 tokens** baseline on the report's 15-minute refresh cadence.
+
+  Expected after ingestion, **not measured results**, are **30 cumulative requests / 87 tokens**,
+  a delta of **+29 requests / +72 tokens**: Development **1 / 12**, Staging **15 / 48**
+  (including the historical **1 / 15**) and Production **14 / 27**. Fresh portal and/or admin
+  Consumers attribution must be verified and identified by source before these expectations
+  become proof. E11 remains partial pending the outstanding portal checks, Chevron's fresh
+  measured personal usage, and the new agents' caller grant, `ask_model` and
   model-use attribution.
 
 **Remaining actions.** Recheck Tuxedo's refreshed post-traffic portal presentation.
-Obtain fresh human sign-in for `multiEnv` (Chevron); the owner was unavailable, and no Chevron
-runtime token or traffic was produced. Complete her Production AOAI H portal
-request, admin approval and apply, and finish the outstanding E8 and E9 persona checks and E10
-and E11 runtime/usage legs. The six new streamable MCP publications, five persona MCP grants and
+Verify Chevron's fresh measured usage after ingestion, distinctly identifying portal and/or admin
+Consumers evidence; her human sign-in, Production H request/approval/apply and bounded
+three-environment runtime checks are complete. Finish the outstanding E8 and E9 persona
+catalog/connection/diagnostic checks and E10 and E11 agent/runtime/usage legs.
+The six new streamable MCP publications, five persona MCP grants and
 both agents' own-identity model grants and applied caller links remain in place; neither new
 agent has a human MCP caller grant. Choose and grant that caller explicitly before `ask_model`.
 Both SSE-only negatives remain unpublished, and M-tools stays published as requested.
@@ -1676,9 +1750,10 @@ to E7 are the admin's work in the console. E8 and E9 are about people and what t
 E11 are traffic and usage. E12 is the Simple Chat spike. E13 is teardown.
 
 **Traffic.** The existing verifiers resolve gateway URLs from grants, so they need no change for a
-second gateway, but E10 confirms that. The verifiers use device-code sign-in; `devOnly` and `user`'s
-live checks instead used the native-runtime authorization-code PKCE flow described above. Personas call each
-granted model with a short, bounded request, and list and call tools on each granted MCP server.
+second gateway, but E10 confirms that. The verifiers use device-code sign-in; the live checks for
+`devOnly`, `user` and `multiEnv` instead used the native-runtime authorization-code PKCE flow
+described above. Personas call each granted model with a short, bounded request, and list and
+call tools on each granted MCP server.
 They also try one resource from another environment and one they hold no grant on, and both must
 be refused. Model calls are opt-in, as in Phase 8.
 
@@ -1822,10 +1897,10 @@ has passed, and ❌ means the latest run failed on the product gap named.
 | E5 | Each environment's models are published on its own gateway after a reviewed plan, and every step succeeds | 12 | ✅ |
 | E6 | A staging endpoint on the production gateway, a production endpoint on the staging gateway, and a development MCP server on the production gateway are each refused with a verdict that names both environments; nothing is written to API Management | 12 | ✅ |
 | E7 | The staging and production MCP kits are registered and classified, their tools sync, and M-tools, M-protected and M-agent are published on their own gateways; each SSE-only server is refused | 12 | ✅ O52 fixed live after [#126](https://github.com/microsoft/mosaic-apim/pull/126); six publications and discovery verified, two SSE-only negatives unpublished |
-| E8 | `devOnly` and `multiEnv` get the User role; direct grants follow the access table; each requests one resource in the portal and the admin approves it; every plan applies. `devOnly`'s request/apply leg, all planned MCP persona grants and both agents' own-identity links are applied; `multiEnv`'s Production AOAI H portal request and outstanding persona checks remain | 12 | 🔄 |
-| E9 | Catalog distinguishes entitlements from discoverable resources offered for request; **My access** and connection details show each persona's grants, matching gateways and environment badges. `devOnly`'s display/connection leg passes with exactly two Development grants; `user` (Tuxedo)'s fresh My access shows 13 Development/Staging grants, zero pending requests and no Production grant; remaining persona checks, including `multiEnv` (Chevron)'s fresh sign-in, stay pending | 12 | 🔄 |
-| E10 | Each persona calls each granted model and MCP server in each environment; calls to another environment's resource, or an ungranted one, are refused | 12 | 🔄 `devOnly`'s leg passes; `user`'s bounded Development/Staging checks pass: two model calls / 32 tokens, three tool MCP sessions / 18 successful requests, seven expected denials; `multiEnv` and authenticated Production MCP checks remain pending; new agents need an explicit human caller grant before `ask_model` |
-| E11 | **Analytics** and each persona's **Usage & cost** separate E10's traffic by gateway, environment and person | 12 | 🔄 `devOnly`: Development only, two resources, seven requests, 13 tokens; both direct grants Linked. `user`'s fresh admin Analytics Consumers attribution is verified: +20 requests / +32 tokens (Development +13/+13, Staging +7/+19), no Production linked usage; refreshed portal presentation was not revisited. `multiEnv`'s sign-in/runtime/usage and new-agent caller grant/`ask_model`/attribution remain pending |
+| E8 | `devOnly` and `multiEnv` get the User role; direct grants follow the access table; each requests one resource in the portal and the admin approves it; every plan applies. Both personas' request/apply legs, all planned MCP persona grants and both agents' own-identity links are applied; `multiEnv`'s Production H review/apply moved version 1 to 2 with all 17 steps Succeeded, preserving the agent grant; outstanding persona checks remain | 12 | 🔄 |
+| E9 | Catalog distinguishes entitlements from discoverable resources offered for request; **My access** and connection details show each persona's grants, matching gateways and environment badges. `devOnly`'s display/connection leg passes with exactly two Development grants; `user` (Tuxedo) shows 13 Development/Staging grants and no Production grant; `multiEnv` (Chevron) shows nine grants across all three environments, Production H Applied to APIM with approved limits; all have zero pending requests, but outstanding catalog/connection/diagnostic checks remain | 12 | 🔄 |
+| E10 | Each persona calls each granted model and MCP server in each environment; calls to another environment's resource, or an ungranted one, are refused | 12 | 🔄 `devOnly`'s leg passes; `user`: two model calls / 32 tokens, three tool MCP sessions / 18 successful requests, seven expected denials; `multiEnv`: five model calls / 72 tokens, four tool MCP sessions / 24 successful requests including Production, six expected denials; new agents still need an explicit owner-approved human caller grant before `ask_model` |
+| E11 | **Analytics** and each persona's **Usage & cost** separate E10's traffic by gateway, environment and person | 12 | 🔄 `devOnly`: Development only, two resources, seven requests, 13 tokens; both direct grants Linked. `user`'s fresh admin Analytics Consumers attribution is verified: +20 requests / +32 tokens (Development +13/+13, Staging +7/+19), no Production linked usage; refreshed portal presentation was not revisited. `multiEnv`'s fresh measured rollup remains pending; baseline one Staging request / 15 tokens, expected delta +29/+72 is not measured proof. New-agent caller grant/`ask_model`/attribution remain pending |
 | E12 | Spike: the staging and production Simple Chat deployments call their own environment's gateway with an application grant, and their chats appear in usage | 12 | 🔄 Source-only proposal complete; live trial awaits separate approval |
 | E13 | Teardown: Phase 12's publications, grants, roles, kits and gateways are removed after the demonstrations, and only those | 12 | ⬜ |
 
