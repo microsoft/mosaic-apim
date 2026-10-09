@@ -95,7 +95,16 @@ export interface ApiPublication extends ScopePublication {
     settings: AccessMethods
     audience?: string | null
     publicationEnforcement?: unknown
-    grants: { entitlementId: string; enabled: boolean; subscriptionName?: string | null; intentDigest?: string }[]
+    grants: {
+      entitlementId: string
+      enabled: boolean
+      subscriptionName?: string | null
+      intentDigest?: string
+      costCenterId?: string
+      costCenterCode?: string
+      defaultCostCenter?: boolean
+    }[]
+    pools?: { costCenterId: string; monthlyTokens: number | null; monthlyCalls: number | null }[]
   } | null
   accessState: 'pending' | 'applying' | 'applied' | 'failed' | 'unknown'
 }

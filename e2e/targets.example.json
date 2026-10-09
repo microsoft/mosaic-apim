@@ -99,6 +99,50 @@
       "tokenLimit": { "persona": "user-a", "endpoint": "foundry-partners", "deployment": "Llama-3.3-70B-Instruct", "tokensPerMinute": 100 }
     }
   },
+  "modelJourneys": {
+    "ownerTag": "e2e-model-demo",
+    "publicationId": "pub_fictional_model_proofs",
+    "modelApiId": "api_fictional_model_proofs",
+    "gatewayId": "gw_fictional_development",
+    "price": {
+      "actualModel": "fictional-chat-mini",
+      "version": "2026-01-01",
+      "deploymentType": "Standard",
+      "region": "eastus",
+      "date": "2026-01-01",
+      "inputPerMillion": 0.5,
+      "cachedInputPerMillion": 0.1,
+      "outputPerMillion": 2,
+      "evidenceReference": "fictional-price-review-NOT-LIVE"
+    },
+    "bounds": {
+      "maxRequests": 80,
+      "maxPromptTokens": 32000,
+      "maxOutputTokens": 8,
+      "maxUsd": 0.02,
+      "intervalSeconds": 30,
+      "timeoutSeconds": 1800
+    },
+    "selection": {
+      "default": { "id": "ent_fictional_default", "persona": "user-a", "costCenterId": "cc_fictional_default", "code": "e2e-model-demo-default" },
+      "other": { "id": "ent_fictional_control", "persona": "user-a", "costCenterId": "cc_fictional_control", "code": "e2e-model-demo-control" }
+    },
+    "pool": {
+      "first": { "id": "ent_fictional_pool_a", "persona": "user-a", "costCenterId": "cc_fictional_pool", "code": "e2e-model-demo-pool" },
+      "second": { "id": "ent_fictional_pool_b", "persona": "guest", "costCenterId": "cc_fictional_pool", "code": "e2e-model-demo-pool" },
+      "monthlyTokens": 320
+    },
+    "budget": {
+      "grant": { "id": "ent_fictional_budget", "persona": "user-a", "costCenterId": "cc_fictional_budget", "code": "e2e-model-demo-budget" },
+      "amount": 0.01,
+      "raisedAmount": 0.1,
+      "managedGateways": [
+        { "id": "gw_fictional_development", "tier": "classic" },
+        { "id": "gw_fictional_staging", "tier": "classic" },
+        { "id": "gw_fictional_production", "tier": "classic" }
+      ]
+    }
+  },
   "mcp": {
     "servers": {
       "m-tools": {

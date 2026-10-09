@@ -726,6 +726,8 @@ Set-Location ..\..\e2e
 npm run test:unit
 npm run typecheck
 npm run lint
+npx playwright install chromium
+npm run test:offline
 Set-Location ..
 
 az bicep build --file infra\main.bicep
@@ -733,7 +735,8 @@ uv run python -m unittest discover -s scripts/tests -t .
 ```
 
 [CI](.github/workflows/ci.yml) runs these checks on every pull request to `main` and every push to
-it.
+it. The E2E browser checks use mocked traffic and temporary contexts, not live fixtures or
+persona profiles; CI installs Chromium's Linux system dependencies as well.
 
 ### Merging into `main`
 

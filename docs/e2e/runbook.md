@@ -38,6 +38,8 @@ Edit `targets.local.json`, which git ignores:
   [Run the ordered suite](#run-the-ordered-suite).
 - `mcp` (optional): Phase 11's MCP servers and the grants on them, described in
   [Verify MCP access](#verify-mcp-access).
+- `modelJourneys` (optional): isolated, separately approved R10-R14 fixtures; see
+  [Model cost centers and budgets](#model-cost-centers-and-budgets).
 
 The manifest is checked on load. The error names the field to fix if an origin isn't a bare
 origin, a persona key is invalid, a role points to a missing persona, or a resource ID isn't a
@@ -163,6 +165,7 @@ the same environment. Playwright runs them in file order. The journey IDs come f
 | `30-access` | A10 to A12 and A16: identities, governed access, the workload's key handoff, and environments | `@console` |
 | `40-portal` | P0 to P9 and A13: the catalog, My access, keys, requests, isolation between people, and usage | `@portal` |
 | `50-runtime` | R1 to R6, through the runtime verifier | `@runtime` |
+| `55-model-budgets` | R10/R11 executable model checks, no-email R12/R14 UI/runtime legs, R13 explicit human-assisted gate | `@model-budgets`, `@runtime`, and `@writes` for budgets |
 | `60-lifecycle` | A14 and R7: turning a method off and on, revoking a grant and enabling it again, and the gateway refusing a revoked grant | `@console`, `@writes` |
 | `90-cleanup` | A15, and putting back everything else the suite changed | `@console`, `@writes`, `@cleanup` |
 
@@ -212,6 +215,194 @@ every field. Each part is optional: a journey whose part is missing skips, and n
 The manifest is checked on load. `sharedBudget` and `tokenLimit` must be on different models, and
 on neither of the `runtime` models, because each run applies their models' access plans, and every
 apply briefly refuses calls to the model.
+
+## Model cost centers and budgets
+
+**Live R10-R14: NOT RUN.** This extension was validated only with local unit fixtures and mocked
+Playwright controls. There is no owner approval for new grants, budgets, key reveals, model
+calls or email. Do not run the live spec while that remains true. The example section is
+fictional, unapproved and deliberately has stale example pricing; it is not a deployment recipe.
+MCP M5/M6 pooled-call evidence does not prove model grant selection or a pooled token counter.
+
+### Executable legs and evidence boundaries
+
+| Journey | Executable coverage | Required independent evidence / limitation |
+| --- | --- | --- |
+| R10 | My access disambiguates same-model grants by cost center and shows each connection header; token explicit/default/unknown/malformed matrix, uppercase selection, existing key own/absent/other matrix | A 200 does not identify its grant. Correlate each success to the exact grant and cost center in real Analytics, each refusal to `mosaic-deny` in the gateway trace, and explicit-header successes to independently captured backend headers. Source/XML never proves stripping. |
+| R11 | Two distinct User personas' applied grants consume one fresh monthly MODEL token pool; remaining pooled and own TPM/monthly headers, both callers' final 429s, other-center 200 | The applied model pool must match exactly, with no call pool. Own quotas must remain larger. Missing headers, dirty counters, unrelated throttles or accounting mismatches fail; do not infer APIM behavior. This is not M6's MCP call quota or R5's call-rate budget. |
+| R12 | UI saves a budget below existing real priced spend, probes actual budget 403 and first success after UI raise, records timestamps and all managed gateways' sync states | Raw plain named-value ARM GETs before/block/raise and `gateway.blockedCostCentersUpdated` write audits are human-assisted: current MOSAIC API exposes named-value metadata, not its value or raw write audits. Cached `syncedAt` is not write/on-wire proof. Measure runtime latency only on the called gateway. |
+| R13 | Offline evidence assertions and explicit blocked live spec | Requires actual Government ACS resource/domain, managed-identity token, API `2023-03-31`, `https://communication.azure.us/.default`, two actual sends with one Operation-Id, observed second status and exactly one actual mailbox message. No provisioning/settings/sends implemented. |
+| R14 | UI sets a no-recipient blocking budget above current spend; bounded actual usage followed by an advancing priced rollup, selected-center budget 403, other-center 200, blocked My access banner, UI raise and allowed calls/banner clearing | Same independent denial/ARM/audit requirements as R12. Notification delivery/dedupe is **NOT RUN** in the no-email leg, not passed. A sent record or ACS 202 is not a receipt. |
+
+The parent investigation's sanitized readiness findings are **not live proofs or permission**:
+usage is rollup-backed and budgets are default-enabled (no explicit override); email has no
+saved endpoint/sender or prior test send, and no ACS/Government fixture was available. Observed
+managed gateways were classic Developer with plain empty blocked lists; v2 is not required
+when unavailable and must not be labelled tested. Host, account, tenant, actor and resource
+inventory is intentionally omitted. The candidate's exact current regional price match has
+since been verified read-only against its restored in-effect price row and actual ARM facts;
+the temporary override is corrected. This does not authorize calls, and future traffic must
+revalidate that match. Government/email setup still needs owner decisions. A deployment alias
+can name a different ARM model: review
+the actual model, version, deployment type, region and UTC pricing date, never just the alias.
+
+### Isolated fixture preparation (owner-approved UI work only)
+
+Prepare a dedicated publication, never General, an existing production model, or `suite`/MCP
+disposables. Its display name must start with `<ownerTag>-`; every grant's notes and each cost
+center's description must equal `ownerTag` (`e2e-model-...`). The fixture contains only the exact
+manifest grants, all enabled/applied direct User grants on the same model API/publication:
+
+1. One holder under two different owned cost centers (`selection.default` and `selection.other`).
+   The holder's existing prepared default must match `selection.default`. **The harness never
+   changes a persona or tenant default.** Prefer dedicated test personas; default changes can
+   revoke unrelated grants and require their own approval.
+2. Two distinct holders under a third owned cost center, with a small fresh pooled monthly
+   **token** quota (`pool.monthlyTokens`, 20-500). The example uses 320. Keep own monthly quotas
+   and TPM above the pool, a publication TPM safeguard at least as high as each grant's TPM,
+   and request limits that won't mask the pool proof. Freshness is asserted from measured
+   headers; changing a quota does not reset an already-used APIM monthly counter.
+3. For budgets, an additional isolated grant/center, and a preparation budget saved through the
+   UI, no recipients and **Email the owners off**. R12 starts with measured spend at/above the
+   test amount and an unblocked higher preparation budget. R14 starts below the test amount.
+   Existing current notifications must also have zero recipients.
+
+Use **Cost centers** to create centers/add members/set monthly tokens, **Entitlements** to
+choose the exact cost center when granting, and **Review model changes > Apply plan** after
+reviewing publication scope. The harness deliberately does **not** create/edit grants, change
+membership, re-enable revoked grants, apply plans, or manufacture spend/prices; it verifies these
+prepared fixtures before any billable request. Reuse existing plan-scope review helpers for any
+separately approved interactive preparation. R10 additionally needs an existing isolated key
+created through the portal UI under separate permission; it never silently creates a key.
+
+Budget changes write the shared plain `mosaic-blocked-cost-centers` list on **ALL managed
+gateways**, even if every test grant is Development-only. List all current gateway IDs and
+observed tiers in `budget.managedGateways`, including Staging/Production, and acknowledge that
+scope expressly. A new/missing gateway or tier mismatch blocks execution. Grants/publications
+remain unchanged and other blocked keys must be preserved.
+
+### Approval, credentials and cost guards
+
+An approval object records an **already obtained** owner decision; copying a hash is not approval.
+No approval object is committed in the example. Generate the proposed exact scope hash offline:
+
+```powershell
+$env:MOSAIC_E2E_TARGETS = 'targets.local.json'
+npm run model:plan
+```
+
+After the owner has approved the actual scope, record `modelJourneys.approval` locally:
+`reference` (the decision's non-secret identifier), `expiresAt` (UTC timestamp), `scopeSha256`,
+`journeys` (only approved R10/R11/R12/R14), `revealExistingKey` and
+`budgetWritesAcrossAllManagedGateways` (explicit booleans). Hashing covers origins, tenant,
+persona identities, all owned fixtures, gateway scope, prices and bounds. Any change or expiry
+invalidates approval. Approval for email/configuration/provisioning is **not** represented here.
+The harness rechecks the full readiness gate immediately before each model send and, after form
+preparation, before each budget submit and again at its outgoing PUT. Approval that expires
+during a baseline call, UI preparation or click actionability wait fails before the next shared
+gateway write; initial preflight is not a write permit.
+
+Each invocation must select **one** `MOSAIC_E2E_MODEL_JOURNEY` and the exact
+`MOSAIC_E2E_MODEL_SCOPE` ownerTag. Generic `ALLOW_WRITES`, `SEND_MODEL_REQUESTS`,
+`--prove-shared-budget`, and MCP verifier flags cannot authorize these tests. With no dedicated
+scope the spec skips before manifest/profile fixtures; with missing/invalid approval it skips
+before any browser, control-plane HTTP or model call. Missing prerequisites are visibly
+skipped/blocked with reasons; wrong evidence fails assertions.
+
+Runtime tokens are provided only in dedicated in-memory environment variables
+`MOSAIC_E2E_MODEL_TOKEN_<PERSONA>` (hyphens become underscores, name uppercased).
+They must match their holder, tenant, runtime audience, `Models.Invoke` and the whole run's
+lifetime. No automatic runtime authentication, new credentials, key creation or persistent
+token files. Fresh human authentication is an owner gate. Keys are revealed through the UI only
+with exact permission, checked for `no-store`/no browser storage, immediately hidden, and used
+only in RAM. New specs attach no live screenshots, traces, videos, full headers, bodies or keys.
+Avoid opt-in HTML reporting when revealing a key.
+
+Only deployment-scoped Azure OpenAI chat completions accepting `max_tokens`, without reasoning,
+tools, streams, custom payloads or redirects, are currently supported. Unsupported providers or
+unknown metadata stop; the extension does not guess a provider protocol. Each request,
+including denials/probes, reserves an upper bound **before sending**, across the whole single
+proof: at most 80 requests, 32,000 reserved prompt tokens, 8 output tokens per request, $0.02
+reserved spend and one hour (the manifest may choose smaller bounds). No automatic retry of
+network/unknown-usage failures. Required actual input/output/cached prices must match the
+current exact MOSAIC price ID and actual ARM facts; capacity pricing isn't supported.
+
+Normal probes use `Reply with OK.` with a conservative 160-prompt-token reservation. R14's
+spend probes append a fixed 240 `". "` pairs, reserving their UTF-8 bytes plus the framing bound.
+Measured cached/prompt/completion usage prices these calls. Once known usage reaches the
+rounded-cent threshold, it switches to small probes and waits for **real** priced rollups;
+estimates cannot satisfy the budget assertion. Both successful and rejected attempts count
+toward ceilings. If the budget cannot be reached and observed inside these limits, the proof
+fails incomplete instead of raising limits, extending retries or changing prices. Probes start
+after the UI save response; the first observed status gives a sampled **upper bound**, not the
+exact earliest propagation instant. Combine it with independently timed write audits.
+
+The entire executable leg is no-email: preflight refuses enabled automatic budget email and
+never changes settings. Saving "off" would not authorize a send: **Send test email** uses saved
+settings even while off. The harness never clicks it. Use approved human assistance for actual
+Government/mailbox work.
+
+### Independent evidence and recovery
+
+Local reports always say `fullJourney: NOT PROVEN`. Review original captures, then extract a
+small credential-free evidence file and validate it offline:
+
+```powershell
+node tools/model-evidence.ts <local-runtime-report.json> <independent-evidence.json>
+```
+
+Both files need the same `scopeSha256`. `src/model-evidence.ts` exports the typed evidence
+contract (unit fixtures show valid and rejected examples):
+
+- R10: `attribution` entries from `logAnalytics`, with request ID, exact grant and cost-center
+  IDs; `backend` entries from `backend-capture`, with request ID and header **names only**; and
+  `denials` from `gateway-trace`, with request ID and the `mosaic-deny v=1 r=...` message.
+- R12/R14: `namedValues` from `arm-get` for `before`, `block`, `raise` on every managed gateway,
+  with plain value, `secret: false`, observed timestamp, and actual write audit timestamp/action
+  for block/raise. Values must preserve every pre-existing other blocked key. Only the called
+  gateway yields measured runtime latency; an absent v2 fixture is reported unavailable.
+  Runtime timings must name the first correlated `budget-block-probe-N` 403 and
+  `budget-raise-probe-N` 200 for the exact isolated budget grant, after their respective UI saves.
+- R13: `government` with actual deployment/domain/MI facts, Government token scope and API
+  version, two attempts carrying one Operation-Id and measured statuses/timestamps, and one
+  mailbox message ID/receipt timestamp. `mailboxObservation.startedAt` must follow the retry,
+  and `completedAt` must close a nonempty observation window reviewing all correlated receipts
+  from the first send through that completion.
+  A receipt delivered before the retry is valid only with that later mailbox observation.
+  This requires human-attested original Government captures; the validator cannot authenticate
+  a JSON assertion.
+- R14's separate human-assisted mail leg: `notifications` with actual priced checks, notices
+  and IDs before/after a recheck, operation IDs, and one independent mailbox receipt per notice.
+  Notice IDs must be nonempty, unique and unchanged across the recheck; only the expected
+  threshold, blocked and unblocked notices are accepted.
+  Every check and notice must name the approved budget's `costCenterId`, and `amount` must match
+  the reviewed scope. Checks include ordered `observedAt` timestamps as well as rollup `through`;
+  notices include `sentAt`, after the corresponding priced check. `recheck.startedAt/completedAt`
+  must follow the sends; `mailboxObservation.startedAt/completedAt` must follow that recheck.
+  Each receipt must follow its own send and be received by the observation's completion.
+  Count all correlated receipts since those sends, including deliveries before the recheck or
+  mailbox window started; the later observation must confirm that no duplicates arrived by its end.
+  Budgets are at least $0.01 and compare rounded cents. A one-cent budget crosses 80/100 in the
+  same check and deliberately sends **only the highest threshold**, not two emails. Use a staged
+  higher budget and separately observed checks for distinct 80% and 100% emails, with exact
+  recipient/send approval. Never fabricate spend or alter global prices to force the thresholds.
+
+Evidence assertions validate semantics/correlation, not authenticity, and don't change roadmap
+statuses automatically. Mail dedupe is bounded by the recorded observation window; it does not
+claim that no message can arrive later. Retain originals privately, not in the PR. No raw
+credentials, host inventory, actor IDs, mailbox addresses or real screenshots in committed examples.
+
+There is **no automatic cleanup** and no cleanup permission inferred from a run flag. A failure
+may leave the owned budget blocked; request explicit owner approval to raise it through the UI.
+Successful runs retain the raised budget/centers/evidence. Separately approve revocation/apply
+and subscription cleanup for exact newly owned grants only; never delete by prefix, reuse
+`90-cleanup` for these centers, edit named values directly, delete General or touch existing
+grants/pricing/email/MCP resources.
+
+## Ordered suite repeatability and cleanup
+
+This section describes the original suite/disposable journeys, **not** `55-model-budgets`.
+The isolated model budget fixtures above have no automatic cleanup.
 
 **How a run stays repeatable:**
 
