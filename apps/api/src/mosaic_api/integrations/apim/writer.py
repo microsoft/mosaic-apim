@@ -250,6 +250,17 @@ class ApimWriter:
     async def delete_api_policy(self, api_name: str) -> bool:
         return await self._delete(f"apis/{api_name}/policies/policy")
 
+    async def put_api_operation_policy(
+        self, api_name: str, operation_name: str, value: str
+    ) -> JsonObject | None:
+        return await self._put(
+            f"apis/{api_name}/operations/{operation_name}/policies/policy",
+            {"properties": {"format": "rawxml", "value": value}},
+        )
+
+    async def delete_api_operation_policy(self, api_name: str, operation_name: str) -> bool:
+        return await self._delete(f"apis/{api_name}/operations/{operation_name}/policies/policy")
+
     async def put_mcp_api(
         self,
         name: str,

@@ -298,8 +298,10 @@ async def test_mcp_canonical_url_matching(findings_client: TestClient) -> None:
 
 async def test_owned_mcp_publication_reports_blocked_once(findings_client: TestClient) -> None:
     gateways = findings_client.gateways  # type: ignore[attr-defined]
+    endpoints = findings_client.endpoints  # type: ignore[attr-defined]
     mcp = findings_client.mcp  # type: ignore[attr-defined]
     await _gateway(gateways, "gateway-prod", "Prod gateway", "production")
+    await _model_endpoint(endpoints, "endpoint-dev", "Dev model endpoint", DEV_URL, "development")
     await _mcp_endpoint(mcp, "mcp-dev", "Dev MCP", "https://mcp.example.com/mcp", "development")
     await _mcp_publication(
         gateways,
@@ -332,7 +334,7 @@ async def test_owned_mcp_publication_reports_blocked_once(findings_client: TestC
                 name="docs-mcp-prm",
                 display_name="Docs MCP metadata",
                 path="docs-prm",
-                service_url="https://mcp.example.com/mcp",
+                service_url=DEV_URL,
             ),
             ObservedMcpServer(
                 id="mcp-server",
@@ -352,10 +354,17 @@ async def test_owned_mcp_publication_reports_blocked_once(findings_client: TestC
 
     assert response.status_code == 200, response.text
     items = response.json()["items"]
-    assert [item["kind"] for item in items] == ["blockedPublication"]
-    assert items[0]["target"]["resourceKind"] == "mcpEndpoint"
-    assert items[0]["target"]["resourceName"] == "Dev MCP"
-    assert items[0]["subject"]["name"] == "Docs MCP"
+    assert [item["kind"] for item in items] == [
+        "apiCrossesEnvironments",
+        "blockedPublication",
+    ]
+    api_finding = next(item for item in items if item["kind"] == "apiCrossesEnvironments")
+    assert api_finding["subject"]["apiName"] == "docs-mcp-prm"
+    assert api_finding["target"]["resourceKind"] == "modelEndpoint"
+    blocked = next(item for item in items if item["kind"] == "blockedPublication")
+    assert blocked["target"]["resourceKind"] == "mcpEndpoint"
+    assert blocked["target"]["resourceName"] == "Dev MCP"
+    assert blocked["subject"]["name"] == "Docs MCP"
 
 
 async def test_gateway_filter_and_unknown_gateway(findings_client: TestClient) -> None:
