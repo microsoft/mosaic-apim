@@ -88,7 +88,7 @@ export function modelFixture(existing = false) {
           enabled: true, keysAllowed: true, costCenterId: g.costCenterId, costCenterCode: g.code,
           defaultCostCenter: profiles.get(g.persona)!.defaultCostCenter?.id === g.costCenterId,
         })),
-        pools: [{ costCenterId: scope.pool.first.costCenterId, monthlyTokens: scope.pool.monthlyTokens, monthlyCalls: null }],
+        pools: [{ costCenterId: scope.pool.first.costCenterId, costCenterCode: scope.pool.first.code, monthlyTokens: scope.pool.monthlyTokens, monthlyCalls: null }],
       },
     },
     grants, centers, profiles, connections,

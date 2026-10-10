@@ -110,6 +110,7 @@ export function assertModelFixtureState(targets: Targets, scope: ModelJourneys, 
   if (scope.budget) assertModelBudgetTarget(scope)
   const pools = applied?.pools
   if (pools?.length !== 1 || pools[0].costCenterId !== scope.pool.first.costCenterId ||
+      pools[0].costCenterCode !== scope.pool.first.code ||
       pools[0].monthlyTokens !== scope.pool.monthlyTokens || pools[0].monthlyCalls != null) {
     throw new ModelProofError('Applied monthly MODEL token pool differs from the exact isolated fixture')
   }

@@ -153,6 +153,7 @@ test('read-only default still rejects foreign grants/centers, wrong subjects, ro
     (f: ReturnType<typeof fixture>) => { f.state.publication.appliedAccess!.settings.keysEnabled = false },
     (f: ReturnType<typeof fixture>) => { f.state.publication.appliedAccess!.grants.push({ entitlementId: 'foreign', enabled: true }) },
     (f: ReturnType<typeof fixture>) => { f.state.publication.appliedAccess!.grants.pop() },
+    (f: ReturnType<typeof fixture>) => { f.state.publication.appliedAccess!.pools![0].costCenterCode = 'foreign' },
     (f: ReturnType<typeof fixture>) => { f.state.publication.appliedAccess!.grants[0].costCenterId = 'foreign' },
     (f: ReturnType<typeof fixture>) => { f.state.publication.appliedAccess!.grants[0].costCenterCode = 'foreign' },
     (f: ReturnType<typeof fixture>) => { f.state.publication.appliedAccess!.grants[0].subject = { kind: 'user', id: 'foreign' } },

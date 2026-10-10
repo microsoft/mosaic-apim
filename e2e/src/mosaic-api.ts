@@ -107,7 +107,7 @@ export interface ApiPublication extends ScopePublication {
       costCenterCode?: string
       defaultCostCenter?: boolean
     }[]
-    pools?: { costCenterId: string; monthlyTokens: number | null; monthlyCalls: number | null }[]
+    pools?: { costCenterId: string; costCenterCode: string; monthlyTokens: number | null; monthlyCalls: number | null }[]
   } | null
   accessState: 'pending' | 'applying' | 'applied' | 'failed' | 'unknown'
 }
