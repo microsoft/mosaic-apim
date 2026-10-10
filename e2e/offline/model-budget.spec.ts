@@ -1,7 +1,8 @@
 import { test, expect } from '@playwright/test'
 import { CostCenterBudgetPage } from '../src/pages/console/cost-centers.ts'
 import { assertModelReadiness, modelScopeHash } from '../src/model-config.ts'
-import { modelTargets } from '../tests/model-fixtures.ts'
+import { modelActionGuard } from '../src/model-state.ts'
+import { modelFixture, modelTargets } from '../tests/model-fixtures.ts'
 
 test('budget UI sends only scoped form saves, clears recipients and never enables owner email', async ({ page }) => {
   const targets = modelTargets()
@@ -126,4 +127,69 @@ test('approval expiring between the pre-click check and outgoing save blocks the
   }
   await expect(budget.save(0.01, authorize)).rejects.toThrow(/expired/)
   expect(writes).toBe(0)
+})
+
+test('existing default profile drift at the outgoing PUT prevents a shared budget write and stops the run', async ({ page }) => {
+  const f = modelFixture(true)
+  f.targets.origins.api = 'https://mosaic.invalid'
+  f.scope.price.date = new Date().toISOString().slice(0, 10)
+  f.scope.approval = { reference: 'offline-only', expiresAt: new Date(Date.now() + 3600_000).toISOString(),
+    scopeSha256: modelScopeHash(f.targets), journeys: ['R14'], revealExistingKey: false, budgetWritesAcrossAllManagedGateways: true }
+  let reads = 0
+  let writes = 0
+  const guard = modelActionGuard(f.targets, 'R14', { MOSAIC_E2E_MODEL_SCOPE: f.scope.ownerTag, MOSAIC_E2E_MODEL_JOURNEY: 'R14' }, async () => {
+    if (++reads === 2) f.profiles.get(f.scope.selection.default.persona)!.defaultCostCenter!.id = 'cc_changed'
+    f.validate()
+  })
+  const id = f.scope.budget!.grant.costCenterId
+  await page.route('**/*', async (route) => {
+    if (route.request().method() === 'PUT') {
+      writes++
+      await route.fulfill({ json: {} })
+    } else await route.fulfill({ contentType: 'text/html', body: `<form aria-label="Cost center budget">
+      <input aria-label="Monthly amount (USD)"><input aria-label="Warn at (%)"><textarea aria-label="Also email"></textarea>
+      <input role="switch" aria-label="Email the owners" type="checkbox"><input type="radio" aria-label="Block calls at the gateway until the budget is raised or the month ends">
+      <button>Set budget</button></form><script>document.querySelector('form').onsubmit = e => { e.preventDefault(); fetch('/api/v1/cost-centers/${id}/budget', { method: 'PUT' }) }</script>` })
+  })
+  await page.goto('https://mosaic.invalid/')
+  const budget = new CostCenterBudgetPage(page, f.targets, id)
+  await expect(budget.save(0.01, guard)).rejects.toThrow(/default flag/)
+  expect(reads).toBe(2)
+  expect(writes).toBe(0)
+  f.profiles.get(f.scope.selection.default.persona)!.defaultCostCenter!.id = f.scope.selection.default.costCenterId
+  await expect(budget.save(0.1, guard)).rejects.toThrow(/guard stopped/)
+  expect(writes).toBe(0)
+})
+
+test('budget form refuses existing default or a mutated budget target before form editing or submit', async ({ page }) => {
+  const f = modelFixture(true)
+  const id = f.scope.budget!.grant.costCenterId
+  expect(() => new CostCenterBudgetPage(page, f.targets, f.scope.selection.default.costCenterId)).toThrow(/Budget target/)
+  const budget = new CostCenterBudgetPage(page, f.targets, id)
+  f.scope.budget!.grant.costCenterId = f.scope.selection.default.costCenterId
+  await expect(budget.save(0.01, async () => { throw new Error('Must not reach live approval/readers') })).rejects.toThrow(/Budget target/)
+  expect(page.url()).toBe('about:blank')
+})
+
+test('a misdirected form cannot send a budget write to an existing default or organization endpoint', async ({ page }) => {
+  const f = modelFixture(true)
+  f.targets.origins.api = 'https://mosaic.invalid'
+  const id = f.scope.budget!.grant.costCenterId
+  let writes = 0
+  for (const path of [`/api/v1/cost-centers/${f.scope.selection.default.costCenterId}/budget`, '/api/v1/budgets/organization']) {
+    await page.route('**/*', async (route) => {
+      if (route.request().method() === 'PUT') {
+        writes++
+        await route.fulfill({ json: {} })
+      } else await route.fulfill({ contentType: 'text/html', body: `<form aria-label="Cost center budget">
+        <input aria-label="Monthly amount (USD)"><input aria-label="Warn at (%)"><textarea aria-label="Also email"></textarea>
+        <input role="switch" aria-label="Email the owners" type="checkbox"><input type="radio" aria-label="Block calls at the gateway until the budget is raised or the month ends">
+        <button>Set budget</button></form><script>document.querySelector('form').onsubmit = e => { e.preventDefault(); fetch('${path}', { method: 'PUT' }) }</script>` })
+    })
+    await page.goto('https://mosaic.invalid/')
+    const budget = new CostCenterBudgetPage(page, f.targets, id)
+    await expect(budget.save(0.01, async () => {})).rejects.toThrow(/unapproved write target/)
+    expect(writes).toBe(0)
+    await page.unroute('**/*')
+  }
 })

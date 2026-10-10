@@ -1,7 +1,6 @@
 import { test as fixtureTest, expect } from '../src/fixtures.ts'
 import { type ModelBudgetView, budgetProof } from '../src/model-budget.ts'
 import { approvedModelScope, budgetReady, prepareModelRun } from '../src/model-live.ts'
-import { assertModelReadiness } from '../src/model-config.ts'
 import { pooledTokenProof, selectionProof } from '../src/model-runtime.ts'
 import { CostCenterBudgetPage } from '../src/pages/console/cost-centers.ts'
 import { MyAccessPage } from '../src/pages/portal/my-access.ts'
@@ -33,6 +32,7 @@ test.describe('55 isolated model cost centers and budgets', { tag: ['@model-budg
       const center = run.centers.get(grant.costCenterId)!
       const card = access.cards.filter({ hasText: `${center.name} · ${center.code}` })
       const panel = await access.connectionDetails(card)
+      await run.guard()
       const shown = await panel.keys.show('primary')
       if (!shown.response.ok() || !shown.noStore || shown.keptIn.length || shown.shownLength < 8) throw new Error('Key reveal failed its secret-hygiene checks')
       key = (await panel.keys.secret.textContent())?.trim()
@@ -70,7 +70,7 @@ test.describe('55 isolated model cost centers and budgets', { tag: ['@model-budg
         await page.loaded(center.name)
         const result = await budgetProof(scope, journey, {
           read: () => run.api.get<ModelBudgetView | null>(`/api/v1/cost-centers/${center.id}/budget`),
-          save: (amount) => page.save(amount, () => assertModelReadiness(targets, journey, process.env)),
+          save: (amount) => page.save(amount, run.guard),
           call: run.call,
           pause: run.pause,
           banner: async (blocked) => {

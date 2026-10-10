@@ -30,6 +30,15 @@ R12 named-value write audits have explicit independent evidence boundaries; none
 from a mock, source XML, cached sync status or ACS acceptance. See
 [Model cost centers and budgets](../docs/e2e/runbook.md#model-cost-centers-and-budgets).
 
+Already-declared User personas may be reused without changing their defaults or unrelated
+grants. Optional `selection.defaultCenterMode: "existing-read-only"` references the primary
+holder's current effective default (including General), but still requires a **new owned
+grant** on a dedicated publication. Full executable scope needs **three new owned centers**
+(other, shared pool, budget) and **five new owned grants**; absent mode remains strict
+all-owned and needs four centers. General is never changed or budgeted. UI fixture preparation,
+an actually unpublished supported/priced Development deployment, runtime authentication and
+exact owner approval remain separate gates; account reuse alone authorizes none of them.
+
 Offline validation uses no manifest credentials or persona profiles:
 
 ```powershell

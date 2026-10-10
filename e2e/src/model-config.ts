@@ -34,7 +34,12 @@ export interface ModelJourneys {
     intervalSeconds: number
     timeoutSeconds: number
   }
-  selection: { default: ModelGrantTarget; other: ModelGrantTarget }
+  selection: {
+    /** Absent means owned. Only the default center, never its new grant, may be read-only. */
+    defaultCenterMode?: 'owned' | 'existing-read-only'
+    default: ModelGrantTarget
+    other: ModelGrantTarget
+  }
   pool: { first: ModelGrantTarget; second: ModelGrantTarget; monthlyTokens: number }
   budget?: {
     grant: ModelGrantTarget
@@ -86,18 +91,25 @@ export function parseModelJourneys(value: unknown, personas: Targets['personas']
   const path = 'targets.modelJourneys'
   const root = object(value, ['ownerTag', 'publicationId', 'modelApiId', 'gatewayId', 'price', 'bounds', 'selection', 'pool', 'budget', 'approval'], path)
   const ownerTag = text(root.ownerTag, `${path}.ownerTag`, /^e2e-model-[a-z0-9-]{1,40}$/)
-  const grant = (value: unknown): ModelGrantTarget => {
+  const selection = object(root.selection, ['defaultCenterMode', 'default', 'other'], `${path}.selection`)
+  if (selection.defaultCenterMode !== undefined && selection.defaultCenterMode !== 'owned' && selection.defaultCenterMode !== 'existing-read-only') {
+    throw new ModelProofError('Selection defaultCenterMode must be owned or existing-read-only')
+  }
+  const grant = (value: unknown, existingDefault = false): ModelGrantTarget => {
     const g = object(value, ['id', 'persona', 'costCenterId', 'code'], `${path}.grant`)
     const persona = text(g.persona, `${path}.grant.persona`)
     if (!Object.hasOwn(personas, persona) || personas[persona].expectedRole !== 'User') throw new ModelProofError('Model journey holders must be named User personas')
+    const code = text(g.code, `${path}.grant.code`, /^[a-z0-9._-]{1,64}$/)
+    if (!existingDefault && !new RegExp(`^${ownerTag}-[a-z0-9-]{1,16}$`).test(code)) {
+      throw new ModelProofError('Owned model center code must be ownerTag-prefixed')
+    }
     return {
       id: text(g.id, `${path}.grant.id`),
       persona,
       costCenterId: text(g.costCenterId, `${path}.grant.costCenterId`),
-      code: text(g.code, `${path}.grant.code`, new RegExp(`^${ownerTag}-[a-z0-9-]{1,16}$`)),
+      code,
     }
   }
-  const selection = object(root.selection, ['default', 'other'], `${path}.selection`)
   const pool = object(root.pool, ['first', 'second', 'monthlyTokens'], `${path}.pool`)
   const price = object(root.price, ['actualModel', 'version', 'deploymentType', 'region', 'date', 'inputPerMillion', 'cachedInputPerMillion', 'outputPerMillion', 'evidenceReference'], `${path}.price`)
   const bounds = object(root.bounds, ['maxRequests', 'maxPromptTokens', 'maxOutputTokens', 'maxUsd', 'intervalSeconds', 'timeoutSeconds'], `${path}.bounds`)
@@ -106,7 +118,11 @@ export function parseModelJourneys(value: unknown, personas: Targets['personas']
     publicationId: text(root.publicationId, `${path}.publicationId`),
     modelApiId: text(root.modelApiId, `${path}.modelApiId`),
     gatewayId: text(root.gatewayId, `${path}.gatewayId`),
-    selection: { default: grant(selection.default), other: grant(selection.other) },
+    selection: {
+      ...(selection.defaultCenterMode === undefined ? {} : { defaultCenterMode: selection.defaultCenterMode }),
+      default: grant(selection.default, selection.defaultCenterMode === 'existing-read-only'),
+      other: grant(selection.other),
+    },
     pool: { first: grant(pool.first), second: grant(pool.second), monthlyTokens: number(pool.monthlyTokens, `${path}.pool.monthlyTokens`, 20, 500) },
     price: {
       actualModel: text(price.actualModel, `${path}.price.actualModel`),
@@ -172,6 +188,16 @@ export function parseModelJourneys(value: unknown, personas: Targets['personas']
     }
   }
   return result
+}
+
+export function assertModelBudgetTarget(scope: ModelJourneys, centerId = scope.budget?.grant.costCenterId): void {
+  const grant = scope.budget?.grant
+  if (!grant || centerId !== grant.costCenterId || grant.costCenterId === scope.selection.default.costCenterId ||
+      [scope.selection.other, scope.pool.first, scope.pool.second].some((g) => g.costCenterId === grant.costCenterId || g.code === grant.code) ||
+      grant.code === scope.selection.default.code || !/^[a-z0-9-]{1,64}$/.test(grant.code) ||
+      !new RegExp(`^${scope.ownerTag}-[a-z0-9-]{1,16}$`).test(grant.code)) {
+    throw new ModelProofError('Budget target must be its separate owned center, never an existing default, General or organization')
+  }
 }
 
 export function modelGrants(scope: ModelJourneys): ModelGrantTarget[] {

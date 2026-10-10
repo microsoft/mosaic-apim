@@ -239,25 +239,45 @@ usage is rollup-backed and budgets are default-enabled (no explicit override); e
 saved endpoint/sender or prior test send, and no ACS/Government fixture was available. Observed
 managed gateways were classic Developer with plain empty blocked lists; v2 is not required
 when unavailable and must not be labelled tested. Host, account, tenant, actor and resource
-inventory is intentionally omitted. The candidate's exact current regional price match has
-since been verified read-only against its restored in-effect price row and actual ARM facts;
-the temporary override is corrected. This does not authorize calls, and future traffic must
-revalidate that match. Government/email setup still needs owner decisions. A deployment alias
+inventory is intentionally omitted. The earlier candidate's regional price match was verified
+read-only against its restored in-effect price row and actual ARM facts; the temporary override
+was corrected. That historical match does not establish today's price for a new dedicated
+fixture or authorize calls; future traffic must revalidate its own exact match.
+The parent's later read-only UI preflight recovered admin authentication and observed an
+unpublished Development candidate, but runtime persona authentication, fixture preparation,
+current matched pricing and exact live approval remain pending. This source follow-up reads no
+live inventory, profiles or browser. Government/email setup still needs owner decisions. A deployment alias
 can name a different ARM model: review
 the actual model, version, deployment type, region and UTC pricing date, never just the alias.
 
 ### Isolated fixture preparation (owner-approved UI work only)
 
-Prepare a dedicated publication, never General, an existing production model, or `suite`/MCP
-disposables. Its display name must start with `<ownerTag>-`; every grant's notes and each cost
-center's description must equal `ownerTag` (`e2e-model-...`). The fixture contains only the exact
-manifest grants, all enabled/applied direct User grants on the same model API/publication:
+Choose an **actually unpublished**, supported, priced Azure OpenAI deployment on Development
+for a dedicated publication, not an existing shared/mixed publication or `suite`/MCP disposable.
+Publication identity is deterministic from tenant, gateway, endpoint and deployment: changing
+the display/API name cannot create a second fixture for an already published deployment with
+resources or applied access. Do not rename or repurpose the old mixed publication to evade
+this requirement. A publish dialog candidate is not proof of today's matched price or calls.
 
-1. One holder under two different owned cost centers (`selection.default` and `selection.other`).
-   The holder's existing prepared default must match `selection.default`. **The harness never
-   changes a persona or tenant default.** Prefer dedicated test personas; default changes can
-   revoke unrelated grants and require their own approval.
-2. Two distinct holders under a third owned cost center, with a small fresh pooled monthly
+Its display name must start with `<ownerTag>-`; **every new grant's notes** must equal
+`ownerTag` (`e2e-model-...`), including the grant under a reused default. Every owned center's
+description must also equal `ownerTag`, with neither built-in nor tenant-default status.
+The dedicated publication's current **and applied** full grant sets must contain only the
+exact manifest grants, all enabled/applied direct User grants on the same model API/publication:
+
+1. One holder under two different cost centers (`selection.default` and `selection.other`).
+   With `selection.defaultCenterMode` absent or `"owned"`, both centers must be owned; the
+   holder's already prepared effective default must match `selection.default`. Existing
+   manifests keep their original strict behavior and absent-mode hash shape. With explicit
+   `"existing-read-only"`, reuse an already-declared User account and reference its **existing
+   effective default** by exact ID and canonical lowercase code (backend-safe letters,
+   numbers, dots, underscores and hyphens, 1-64 characters; no surrounding whitespace).
+   Only this center may bypass owner-description/built-in/tenant-default restrictions;
+   its grant must still be newly created, distinct and owner-tagged on the dedicated
+   publication. General may be referenced **only here**, never mutated or budgeted.
+   **The harness never changes a persona or tenant default, existing grants or membership.**
+   Account reuse is not permission for grants, key operations, calls, budget writes or email.
+2. Two distinct holders under a separate owned cost center, with a small fresh pooled monthly
    **token** quota (`pool.monthlyTokens`, 20-500). The example uses 320. Keep own monthly quotas
    and TPM above the pool, a publication TPM safeguard at least as high as each grant's TPM,
    and request limits that won't mask the pool proof. Freshness is asserted from measured
@@ -266,6 +286,23 @@ manifest grants, all enabled/applied direct User grants on the same model API/pu
    UI, no recipients and **Email the owners off**. R12 starts with measured spend at/above the
    test amount and an unblocked higher preparation budget. R14 starts below the test amount.
    Existing current notifications must also have zero recipients.
+
+Full executable scope requires **five new owned grants** in both modes. Read-only default
+reuse requires **three new owned centers** (other, shared pool, budget); all-owned mode requires
+four. These centers must be distinct by both ID and code from each other and the selected
+default. The two pool grants alone share one center. The budget form and shaped rollup refuse
+the existing default, General, organization or any foreign target.
+
+For example, this fictional selection replaces only the example manifest's selection section;
+it is unapproved and does not reuse any old grant:
+
+```json
+{
+  "defaultCenterMode": "existing-read-only",
+  "default": { "id": "ent_fictional_new_default", "persona": "user-a", "costCenterId": "cc_fictional_general", "code": "general" },
+  "other": { "id": "ent_fictional_other", "persona": "user-a", "costCenterId": "cc_fictional_other", "code": "e2e-model-demo-other" }
+}
+```
 
 Use **Cost centers** to create centers/add members/set monthly tokens, **Entitlements** to
 choose the exact cost center when granting, and **Review model changes > Apply plan** after
@@ -295,12 +332,19 @@ After the owner has approved the actual scope, record `modelJourneys.approval` l
 `reference` (the decision's non-secret identifier), `expiresAt` (UTC timestamp), `scopeSha256`,
 `journeys` (only approved R10/R11/R12/R14), `revealExistingKey` and
 `budgetWritesAcrossAllManagedGateways` (explicit booleans). Hashing covers origins, tenant,
-persona identities, all owned fixtures, gateway scope, prices and bounds. Any change or expiry
+persona identities/roles, default-center mode and exact reference ID/code, all new owned
+grants/centers, gateway scope, prices and bounds. Any change or expiry
 invalidates approval. Approval for email/configuration/provisioning is **not** represented here.
-The harness rechecks the full readiness gate immediately before each model send and, after form
-preparation, before each budget submit and again at its outgoing PUT. Approval that expires
-during a baseline call, UI preparation or click actionability wait fails before the next shared
-gateway write; initial preflight is not a write permit.
+The harness rechecks the full readiness gate and read-only fixture state before each model
+send or approved existing-key reveal and, after form preparation, before each budget submit
+and again at its outgoing PUT. It compares current holder profile identity/User role and
+effective default ID/code, every new grant's subject, ownership and runtime, the exact applied
+grant set/subjects/default flags, all center IDs/codes and own connection quotas/methods/key
+readiness. Only the selected default receives the read-only exception. A default/center
+mismatch, lost approval or failed read stops the run permanently before further calls/shared
+writes, even if later repaired. Approval is also checked after the reads; initial preflight
+is not a write permit. Offline `model:plan` remains parsing/readiness/hash only, without service
+calls or profiles.
 
 Each invocation must select **one** `MOSAIC_E2E_MODEL_JOURNEY` and the exact
 `MOSAIC_E2E_MODEL_SCOPE` ownerTag. Generic `ALLOW_WRITES`, `SEND_MODEL_REQUESTS`,
@@ -326,6 +370,11 @@ proof: at most 80 requests, 32,000 reserved prompt tokens, 8 output tokens per r
 reserved spend and one hour (the manifest may choose smaller bounds). No automatic retry of
 network/unknown-usage failures. Required actual input/output/cached prices must match the
 current exact MOSAIC price ID and actual ARM facts; capacity pricing isn't supported.
+
+An aggregate ceiling of **320 requests / 128,000 reserved prompt tokens / at most 8 output
+tokens per request / $0.08 across four proofs including preparation** has been **PROPOSED,
+NOT APPROVED**. It is not live permission, does not broaden the per-invocation
+80/32,000/$0.02 limits, and does not authorize preparation spend or unbounded retries.
 
 Normal probes use `Reply with OK.` with a conservative 160-prompt-token reservation. R14's
 spend probes append a fixed 240 `". "` pairs, reserving their UTF-8 bytes plus the framing bound.
