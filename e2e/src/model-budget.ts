@@ -1,4 +1,4 @@
-import { cents, ModelProofError, type ModelJourneys } from './model-config.ts'
+import { assertModelBudgetTarget, cents, ModelProofError, type ModelJourneys } from './model-config.ts'
 import type { ModelCaller, ModelObservation } from './model-runtime.ts'
 
 export interface ModelBudgetView {
@@ -39,7 +39,9 @@ export interface BudgetProofResult {
 }
 
 export function pricedBudget(view: ModelBudgetView, scope: ModelJourneys): number {
+  assertModelBudgetTarget(scope)
   if (!scope.budget || view.scope !== 'costCenter' || view.costCenter?.id !== scope.budget.grant.costCenterId ||
+      view.costCenter.code !== scope.budget.grant.code ||
       view.status.month !== new Date().toISOString().slice(0, 7) || view.status.monthToDate === null ||
       view.status.unpricedTokens !== 0 || view.status.error || !view.status.through || !Number.isFinite(Date.parse(view.status.through))) {
     throw new ModelProofError('Missing current, fully priced isolated monthly rollup; budget proof blocked')
@@ -64,6 +66,7 @@ export function budgetGateProblems(view: ModelBudgetView, scope: ModelJourneys, 
 export async function budgetProof(scope: ModelJourneys, journey: 'R12' | 'R14', io: BudgetProofIO): Promise<BudgetProofResult> {
   const fixture = scope.budget
   if (!fixture) throw new ModelProofError('Missing isolated budget fixture')
+  assertModelBudgetTarget(scope)
   const before = await io.read()
   if (!before) throw new ModelProofError('Owner must prepare an isolated no-recipient budget through the UI; no implicit setup')
   const spent = pricedBudget(before, scope)

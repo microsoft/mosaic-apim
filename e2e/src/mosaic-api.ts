@@ -97,6 +97,9 @@ export interface ApiPublication extends ScopePublication {
     publicationEnforcement?: unknown
     grants: {
       entitlementId: string
+      subject?: { kind: string; id: string }
+      objectId?: string
+      keysAllowed?: boolean
       enabled: boolean
       subscriptionName?: string | null
       intentDigest?: string
@@ -104,7 +107,7 @@ export interface ApiPublication extends ScopePublication {
       costCenterCode?: string
       defaultCostCenter?: boolean
     }[]
-    pools?: { costCenterId: string; monthlyTokens: number | null; monthlyCalls: number | null }[]
+    pools?: { costCenterId: string; costCenterCode: string; monthlyTokens: number | null; monthlyCalls: number | null }[]
   } | null
   accessState: 'pending' | 'applying' | 'applied' | 'failed' | 'unknown'
 }
@@ -131,6 +134,7 @@ export interface ApiEnforcement {
 
 export interface ApiEntitlement {
   id: string
+  costCenterId?: string
   subject: { kind: string; id: string }
   resource: { kind: string; id: string }
   enabled: boolean

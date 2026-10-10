@@ -969,6 +969,24 @@ human-assisted owner gates. ACS acceptance alone is not delivery. A one-cent bud
 80/100 together and notifies only the highest threshold; separate emails need real staged
 higher-budget spend. M5/M6 MCP proofs remain distinct and cannot satisfy any of these model legs.
 
+The source-only account-reuse follow-up adds optional
+`selection.defaultCenterMode: "existing-read-only"`: an already-declared User's existing
+effective default (including General) is referenced without changing it or unrelated grants,
+while its dedicated publication grant is still **new, distinct and owner-tagged**.
+Full executable scope needs **three new owned centers** (other, shared pool, budget) and
+**five new owned grants**; absent/`owned` mode remains strict and needs four centers.
+All non-default centers remain isolated/owned, and General is never mutated or budgeted.
+The fixture must use an **actually unpublished supported/priced Development deployment**:
+publication identity depends on tenant/gateway/endpoint/deployment, not the display/API name.
+Do not rename or repurpose the existing mixed publication. Parent read-only admin UI
+authentication recovered and an unpublished candidate was observed; runtime persona auth,
+fixture UI preparation, today's exact price and owner-approved live scope remain pending.
+The aggregate 320 requests / 128,000 reserved prompt tokens / max 8 output tokens per call /
+$0.08 across four proofs including preparation is **PROPOSED, NOT APPROVED**; per-invocation
+80 requests / 32,000 reserved prompt tokens / $0.02 bounds are unchanged. Only offline
+source checks run in this follow-up; **R10-R14 remain NOT RUN**, including all prior
+Analytics/backend/ARM/email evidence boundaries.
+
 A call quota (O28) can't be set in the console, so these grants have none. A weekly one adds a
 policy expression that API Management hasn't compiled yet.
 
@@ -1980,6 +1998,10 @@ blanket approval.
    bounded model-call, budget and email approval. R13 also needs a suitable Azure Government
    environment. M5/M6's MCP cost-center and pooled-call-quota proof is not a substitute for
    model header stripping, pooled token quotas, propagation or budget/email round trips.
+   Reusable User accounts may reference their existing default read-only; prepare three new
+   owned centers and five new owned grants on a genuinely unpublished Development deployment,
+   without moving defaults or repurposing the existing mixed publication. All-owned mode still
+   needs four centers. Account reuse/source preparation is not live grant/call/write approval.
 4. **Model pools (A19, R15 to R18).** Approve the test resources, dedicated grants, capacity
    changes and billed-call bounds first. These live journeys are unrun; built source and
    Bedrock API-key member support do not prove failover, governance, metering or health.

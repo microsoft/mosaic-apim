@@ -2,8 +2,9 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { parseTargets } from '../src/config.ts'
 import type { ModelBudgetView } from '../src/model-budget.ts'
-import type { ModelGrantTarget, ModelJourneys } from '../src/model-config.ts'
+import { modelGrants, type ModelGrantTarget, type ModelJourneys } from '../src/model-config.ts'
 import type { ModelConnection, ModelObservation, ModelReply } from '../src/model-runtime.ts'
+import { assertModelFixtureState, type ModelFixtureState, type ModelProfile } from '../src/model-state.ts'
 import { e2eRoot } from '../src/paths.ts'
 
 export function modelTargets() {
@@ -41,4 +42,57 @@ export function budget(scope: ModelJourneys, spend: number, blocked = false): Mo
       gateways: scope.budget!.managedGateways.map((g) => ({ gatewayId: g.id, enforcing: blocked, syncedAt: new Date().toISOString(), error: null })),
     },
   }
+
+}
+
+export function modelFixture(existing = false) {
+  const targets = modelTargets()
+  const scope = targets.modelJourneys!
+  if (existing) {
+    scope.selection.defaultCenterMode = 'existing-read-only'
+    scope.selection.default.costCenterId = 'cc_fictional_general'
+    scope.selection.default.code = 'general'
+  }
+  const profiles = new Map<string, ModelProfile>()
+  const identities = new Map<string, string>()
+  for (const g of modelGrants(scope)) {
+    const objectId = `fictional-object-${g.persona}`
+    identities.set(g.persona, objectId)
+    profiles.set(g.persona, {
+      objectId, tenantId: targets.tenantId, principalId: `principal-${g.persona}`, roles: ['User'], isAdmin: false,
+      defaultCostCenter: { id: scope.selection.default.costCenterId, code: scope.selection.default.code },
+    })
+  }
+  const grants = modelGrants(scope).map((g) => ({
+    id: g.id, costCenterId: g.costCenterId, notes: scope.ownerTag, enabled: true,
+    subject: { kind: 'user', id: profiles.get(g.persona)!.principalId! }, resource: { kind: 'modelApi', id: scope.modelApiId },
+    runtime: { status: 'applied' as const, publicationId: scope.publicationId },
+  }))
+  const centers = new Map(modelGrants(scope).map((g) => [g.costCenterId, {
+    id: g.costCenterId, name: `Fictional ${g.code}`, code: g.code, description: scope.ownerTag,
+    builtIn: false, isTenantDefault: false,
+  }]))
+  if (existing) Object.assign(centers.get(scope.selection.default.costCenterId)!, { description: 'Unrelated existing center', builtIn: true, isTenantDefault: true })
+  const connections = new Map(modelGrants(scope).map((g) => [g.id, connection(g, scope)]))
+  const state: ModelFixtureState = {
+    publication: {
+      id: scope.publicationId, modelApiId: scope.modelApiId, gatewayId: scope.gatewayId,
+      modelEndpointId: 'endpoint_fictional', deploymentName: 'deployment-alias', displayName: `${scope.ownerTag}-proof`,
+      apiName: 'fictional-api', apiPath: 'fictional', backendName: 'fictional-backend', fragmentName: 'fictional-fragment',
+      productName: 'fictional-product', subscriptionName: 'fictional-subscription', status: 'published', accessState: 'applied',
+      resources: [], lastAppliedAt: null, lastRunId: null,
+      appliedAccess: {
+        settings: { entraEnabled: true, keysEnabled: true },
+        grants: modelGrants(scope).map((g) => ({
+          entitlementId: g.id, subject: grants.find((item) => item.id === g.id)!.subject, objectId: identities.get(g.persona),
+          enabled: true, keysAllowed: true, costCenterId: g.costCenterId, costCenterCode: g.code,
+          defaultCostCenter: profiles.get(g.persona)!.defaultCostCenter?.id === g.costCenterId,
+        })),
+        pools: [{ costCenterId: scope.pool.first.costCenterId, costCenterCode: scope.pool.first.code, monthlyTokens: scope.pool.monthlyTokens, monthlyCalls: null }],
+      },
+    },
+    grants, centers, profiles, connections,
+  }
+  const validate = () => assertModelFixtureState(targets, scope, state, identities)
+  return { targets, scope, state, centers, profiles, connections, identities, validate }
 }

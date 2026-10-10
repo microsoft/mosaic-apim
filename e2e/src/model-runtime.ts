@@ -152,8 +152,12 @@ export function boundedModelCaller(
   transport: ModelTransport,
   allowance: ModelAllowance,
   observe: (entry: ModelObservation) => void,
+  beforeSend?: () => Promise<void>,
 ): ModelCaller {
   return async (grant, code, label, expected, key) => {
+    if (beforeSend) {
+      try { await beforeSend() } catch (error) { allowance.stop(); throw error }
+    }
     const connection = connections.get(grant.id)
     const token = tokens.get(grant.persona)
     if (!connection || !token) throw new ModelProofError('Missing approved in-memory connection or runtime credential')
