@@ -68,6 +68,8 @@ import type {
 } from '../types'
 import styles from './McpsPage.module.css'
 
+const MCP_PAGE_MUTATION_KEY = ['mcp-page'] as const
+
 const statusLabels: Record<McpEndpointStatus, string> = {
   pending: 'Not checked',
   connected: 'Connected',
@@ -352,6 +354,7 @@ function RegisteredMcpServers({
   }
 
   const register = useMutation({
+    mutationKey: MCP_PAGE_MUTATION_KEY,
     mutationFn: () =>
       api.registerMcpEndpoint({
         endpoint: url.trim(),
@@ -372,11 +375,13 @@ function RegisteredMcpServers({
   })
 
   const recheck = useMutation({
+    mutationKey: MCP_PAGE_MUTATION_KEY,
     mutationFn: (id: string) => api.preflightMcpEndpoint(id),
     onSuccess: invalidate,
   })
 
   const sync = useMutation({
+    mutationKey: MCP_PAGE_MUTATION_KEY,
     mutationFn: (id: string) => api.syncMcpEndpoint(id),
     onSuccess: async () => {
       await invalidate()
@@ -385,6 +390,7 @@ function RegisteredMcpServers({
   })
 
   const remove = useMutation({
+    mutationKey: MCP_PAGE_MUTATION_KEY,
     mutationFn: (id: string) => api.deleteMcpEndpoint(id),
     onSuccess: async () => {
       await invalidate()
@@ -654,6 +660,7 @@ function RegisteredMcpServers({
       </Dialog>
       {changingEndpoint && (
         <ChangeEnvironmentDialog
+          mutationKey={MCP_PAGE_MUTATION_KEY}
           resource={{
             resourceKind: 'mcpEndpoint',
             resourceId: changingEndpoint.id,
@@ -772,6 +779,7 @@ function PublishedMcpServers({ onBanner }: { onBanner: (message: string) => void
   }
 
   const reviewPlan = useMutation({
+    mutationKey: MCP_PAGE_MUTATION_KEY,
     mutationFn: async (publication: McpPublication) => ({
       publication,
       plan: await api.planMcpPublication(publication.id),
@@ -783,6 +791,7 @@ function PublishedMcpServers({ onBanner }: { onBanner: (message: string) => void
   })
 
   const remove = useMutation({
+    mutationKey: MCP_PAGE_MUTATION_KEY,
     mutationFn: (publicationId: string) => api.deleteMcpPublication(publicationId),
     onSuccess: async () => {
       setRemoving(null)
@@ -795,6 +804,7 @@ function PublishedMcpServers({ onBanner }: { onBanner: (message: string) => void
   })
 
   const setModelCaller = useMutation({
+    mutationKey: MCP_PAGE_MUTATION_KEY,
     mutationFn: ({ publication, principalId }: { publication: McpPublication; principalId: string }) =>
       api.setMcpModelCaller(publication.id, principalId),
     onSuccess: async (updated, { publication, principalId }) => {
@@ -805,6 +815,7 @@ function PublishedMcpServers({ onBanner }: { onBanner: (message: string) => void
   })
 
   const clearModelCaller = useMutation({
+    mutationKey: MCP_PAGE_MUTATION_KEY,
     mutationFn: (publication: McpPublication) => api.clearMcpModelCaller(publication.id),
     onSuccess: async (_updated, publication) => {
       await queryClient.invalidateQueries({ queryKey: ['mcp-publications'] })
@@ -956,6 +967,7 @@ function PublishedMcpServers({ onBanner }: { onBanner: (message: string) => void
       </Card>
       <PublishMcpServerDialog
         open={review !== null}
+        mutationKey={MCP_PAGE_MUTATION_KEY}
         initialReview={review}
         onClose={() => setReview(null)}
         onPublished={onBanner}
@@ -963,6 +975,7 @@ function PublishedMcpServers({ onBanner }: { onBanner: (message: string) => void
       <UnpublishDialog
         open={unpublishing !== null}
         target="mcp"
+        mutationKey={MCP_PAGE_MUTATION_KEY}
         publication={unpublishing}
         onClose={() => setUnpublishing(null)}
         onUnpublished={onBanner}
@@ -1101,6 +1114,7 @@ function ImportedMcpServers({ onBanner }: { onBanner: (message: string) => void 
   }
 
   const removeMutation = useMutation({
+    mutationKey: MCP_PAGE_MUTATION_KEY,
     mutationFn: (id: string) => api.deleteMcpServer(id),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['mcp-servers'] })
@@ -1109,6 +1123,7 @@ function ImportedMcpServers({ onBanner }: { onBanner: (message: string) => void 
   })
 
   const visibilityMutation = useMutation({
+    mutationKey: MCP_PAGE_MUTATION_KEY,
     mutationFn: ({ id, visibility }: { id: string; visibility: CatalogVisibility }) =>
       api.updateMcpServerCatalog(id, { visibility }),
     onSuccess: async () => {
@@ -1259,6 +1274,7 @@ function ImportedMcpServers({ onBanner }: { onBanner: (message: string) => void 
 
       <ImportFromGatewayDialog
         kind="mcpServers"
+        mutationKey={MCP_PAGE_MUTATION_KEY}
         open={importOpen}
         initialGatewayId={requestedGatewayId}
         onClose={() => {
@@ -1283,7 +1299,7 @@ const mcpSections = [
 ]
 
 export function McpsPage() {
-  const pendingOperations = useIsMutating()
+  const pendingOperations = useIsMutating({ mutationKey: MCP_PAGE_MUTATION_KEY })
   const location = useLocation()
   const params = useMemo(() => new URLSearchParams(location.search), [location.search])
   const [section, selectSection] = usePageSection(mcpSections, params.has('import') ? 'imported' : 'published')
@@ -1331,6 +1347,7 @@ export function McpsPage() {
       </SectionLayout>
       <PublishMcpServerDialog
         open={publishOpen}
+        mutationKey={MCP_PAGE_MUTATION_KEY}
         onClose={() => setPublishOpen(false)}
         onPublished={setBanner}
       />

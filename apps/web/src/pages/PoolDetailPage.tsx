@@ -72,6 +72,8 @@ import type {
 } from '../types'
 import styles from './PoolDetailPage.module.css'
 
+const POOL_DETAIL_MUTATION_KEY = ['pool-detail'] as const
+
 /** How many runs the history shows. Older runs stay in the audit log. */
 const RUN_HISTORY_LIMIT = 10
 
@@ -392,7 +394,7 @@ const poolDetailSections = [
 ]
 
 function PoolDetail({ poolId }: { poolId: string }) {
-  const pendingOperations = useIsMutating()
+  const pendingOperations = useIsMutating({ mutationKey: POOL_DETAIL_MUTATION_KEY })
   const [section, selectSection] = usePageSection(poolDetailSections)
   const api = useMosaicApi()
   const navigate = useNavigate()
@@ -428,6 +430,7 @@ function PoolDetail({ poolId }: { poolId: string }) {
   const gateways = useQuery({ queryKey: ['gateways'], queryFn: () => api.listGateways() })
 
   const drain = useMutation({
+    mutationKey: POOL_DETAIL_MUTATION_KEY,
     mutationFn: (change: DrainChange) =>
       api.updateModelPool(poolId, {
         models: specsWithMemberDrained(
@@ -446,6 +449,7 @@ function PoolDetail({ poolId }: { poolId: string }) {
   })
 
   const remove = useMutation({
+    mutationKey: POOL_DETAIL_MUTATION_KEY,
     mutationFn: () => api.deleteModelPool(poolId),
     onSuccess: () => {
       navigate('/pools', { replace: true })

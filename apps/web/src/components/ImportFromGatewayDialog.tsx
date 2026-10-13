@@ -70,12 +70,14 @@ const COPY: Record<
 
 export function ImportFromGatewayDialog({
   kind,
+  mutationKey,
   open,
   initialGatewayId,
   onClose,
   onImported,
 }: {
   kind: ImportKind
+  mutationKey?: readonly unknown[]
   open: boolean
   initialGatewayId?: string | null
   onClose: () => void
@@ -190,6 +192,7 @@ export function ImportFromGatewayDialog({
   }, [candidates])
 
   const importMutation = useMutation({
+    mutationKey,
     mutationFn: async (apiNames: string[]) =>
       kind === 'apis'
         ? await api.importModelApis(gatewayId, apiNames)

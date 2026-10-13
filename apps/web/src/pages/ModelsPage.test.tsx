@@ -1,4 +1,4 @@
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { QueryClient, QueryClientProvider, useMutation } from '@tanstack/react-query'
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, useLocation, useNavigate } from 'react-router-dom'
@@ -256,7 +256,15 @@ function LocationProbe() {
   </>
 }
 
-function renderModelsPage(entry = '/models') {
+function UnrelatedPendingMutation() {
+  const mutation = useMutation({
+    mutationKey: ['unrelated'],
+    mutationFn: () => new Promise<void>(() => {}),
+  })
+  return <button onClick={() => mutation.mutate()}>Start unrelated operation</button>
+}
+
+function renderModelsPage(entry = '/models', includeUnrelatedMutation = false) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   })
@@ -264,6 +272,7 @@ function renderModelsPage(entry = '/models') {
     <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={[entry]}>
         <ModelsPage />
+        {includeUnrelatedMutation && <UnrelatedPendingMutation />}
         <LocationProbe />
       </MemoryRouter>
     </QueryClientProvider>,
@@ -348,6 +357,16 @@ describe('ModelsPage', () => {
     api.planUnpublishPublication.mockResolvedValue(unpublishPlan)
     api.listPrincipals.mockResolvedValue([])
     api.deletePublication.mockResolvedValue(undefined)
+  })
+
+  it('allows section changes while an unrelated mutation is pending', async () => {
+    const user = userEvent.setup()
+    renderPage('/models', true)
+
+    await user.click(screen.getByRole('button', { name: 'Start unrelated operation' }))
+    await user.click(screen.getByRole('button', { name: 'Imported model APIs' }))
+
+    expect(await screen.findByText('No model APIs imported yet')).toBeVisible()
   })
 
   it('selects one real section, preserves query filters, and supports history', async () => {

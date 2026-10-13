@@ -160,7 +160,9 @@ export function MyRequestsPage() {
                     <Button onClick={() => withdraw.mutate(request.id)} disabled={withdraw.isPending}>Confirm withdrawal</Button>
                     <Button onClick={() => setWithdrawingId(null)} disabled={withdraw.isPending}>Keep request</Button>
                   </>}
-                  {withdraw.isError && <Text className="form-error">{withdraw.error.message}</Text>}
+                  {withdraw.isError && withdraw.variables === request.id && (
+                    <Text className="form-error">{withdraw.error.message}</Text>
+                  )}
                 </div>
               )}
             </Card>

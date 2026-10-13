@@ -1,4 +1,4 @@
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { QueryClient, QueryClientProvider, useMutation } from '@tanstack/react-query'
 import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, useLocation } from 'react-router-dom'
@@ -333,7 +333,15 @@ function LocationProbe() {
   return <span data-testid="location">{`${location.pathname}${location.search}`}</span>
 }
 
-function renderMcpsPage(entry = '/mcps') {
+function UnrelatedPendingMutation() {
+  const mutation = useMutation({
+    mutationKey: ['unrelated'],
+    mutationFn: () => new Promise<void>(() => {}),
+  })
+  return <button onClick={() => mutation.mutate()}>Start unrelated operation</button>
+}
+
+function renderMcpsPage(entry = '/mcps', includeUnrelatedMutation = false) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   })
@@ -341,6 +349,7 @@ function renderMcpsPage(entry = '/mcps') {
     <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={[entry]}>
         <McpsPage />
+        {includeUnrelatedMutation && <UnrelatedPendingMutation />}
         <LocationProbe />
       </MemoryRouter>
     </QueryClientProvider>,
@@ -429,6 +438,16 @@ describe('McpsPage', () => {
     api.registerMcpEndpoint.mockResolvedValue(buildMcpEndpoint())
     api.syncMcpEndpoint.mockResolvedValue({ id: 'syncrun_1' })
     api.preflightMcpEndpoint.mockResolvedValue(buildMcpEndpoint())
+  })
+
+  it('allows section changes while an unrelated mutation is pending', async () => {
+    const user = userEvent.setup()
+    renderPage('/mcps', true)
+
+    await user.click(screen.getByRole('button', { name: 'Start unrelated operation' }))
+    await user.click(screen.getByRole('button', { name: 'Registered MCP servers' }))
+
+    expect(await screen.findByRole('button', { name: 'Register server' })).toBeVisible()
   })
 
   it('loads only the selected section and keeps lifecycle tasks separate', async () => {

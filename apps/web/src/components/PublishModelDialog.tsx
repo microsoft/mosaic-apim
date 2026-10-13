@@ -292,6 +292,7 @@ type ModelReview = {
 
 type PublishModelDialogProps = {
   open: boolean
+  mutationKey?: readonly unknown[]
   onClose: () => void
   onPublished: (message: string) => void
   initialReview?: ModelReview | null
@@ -300,7 +301,7 @@ type PublishModelDialogProps = {
 // Every opening starts a new session, so the first frame the dialog commits is already the step it opens on,
 // and Fluent moves focus into that step. Closing keeps the session, with the review it opened, until the
 // dialog next opens, so nothing in it changes while Fluent animates the dialog out.
-export function PublishModelDialog({ open, onClose, onPublished, initialReview }: PublishModelDialogProps) {
+export function PublishModelDialog({ open, mutationKey, onClose, onPublished, initialReview }: PublishModelDialogProps) {
   const review = initialReview ?? null
   const [session, setSession] = useState({ open, review, key: 0 })
   if (open && (!session.open || review !== session.review)) {
@@ -312,6 +313,7 @@ export function PublishModelDialog({ open, onClose, onPublished, initialReview }
     <PublishModelSession
       key={session.key}
       open={open}
+      mutationKey={mutationKey}
       initialReview={session.review}
       onClose={onClose}
       onPublished={onPublished}
@@ -319,7 +321,7 @@ export function PublishModelDialog({ open, onClose, onPublished, initialReview }
   )
 }
 
-function PublishModelSession({ open, onClose, onPublished, initialReview }: PublishModelDialogProps) {
+function PublishModelSession({ open, mutationKey, onClose, onPublished, initialReview }: PublishModelDialogProps) {
   const api = useMosaicApi()
   const queryClient = useQueryClient()
   const [step, setStep] = useState<Step>(initialReview ? 'review' : 'choose')
@@ -379,6 +381,7 @@ function PublishModelSession({ open, onClose, onPublished, initialReview }: Publ
   }, [selectedModel])
 
   const createAndPlan = useMutation({
+    mutationKey,
     mutationFn: async () => {
       if (!selectedModel) throw new Error('Choose a model before reviewing the plan.')
       const created = await api.createPublication({
@@ -405,6 +408,7 @@ function PublishModelSession({ open, onClose, onPublished, initialReview }: Publ
   })
 
   const apply = useMutation({
+    mutationKey,
     mutationFn: async () => {
       if (!publication || !plan) throw new Error('Review the plan before applying it.')
       return await api.applyPublishPlan(publication.id, plan.id)

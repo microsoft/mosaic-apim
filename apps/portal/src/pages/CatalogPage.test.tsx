@@ -83,9 +83,38 @@ const servedModelEntry: CatalogEntry = {
 }
 
 function renderPage(entries: CatalogEntry[], requests: AccessRequest[], centers: PortalCostCenter[] | Error = costCenters) {
-  const createAccessRequest = vi.fn(async (payload) => ({ ...pendingRequest, ...payload }))
+  let currentRequests = [...requests]
+  const createAccessRequest = vi.fn(async (payload) => {
+    const created = {
+      ...pendingRequest,
+      ...payload,
+      id: 'request-created',
+      state: 'pending' as const,
+    }
+    currentRequests = [...currentRequests, created]
+    return created
+  })
+  const withdrawAccessRequest = vi.fn(async (requestId: string) => {
+    currentRequests = currentRequests.map((request) =>
+      request.id === requestId ? { ...request, state: 'withdrawn' as const } : request,
+    )
+  })
   mocks.api = {
-    listCatalog: async () => entries,
+    listCatalog: async () => entries.map((entry) => {
+      if (entry.requestedCostCenterIds || entry.requestState === 'pending') return entry
+      return {
+        ...entry,
+        requestedCostCenterIds: currentRequests
+          .filter((request) =>
+            request.state === 'pending' &&
+            request.resource.kind === entry.kind &&
+            request.resource.id === entry.id &&
+            (request.resource.scopeId ?? null) === (entry.scopeId ?? null),
+          )
+          .map((request) => request.costCenterId)
+          .filter((id): id is string => Boolean(id)),
+      }
+    }),
     listCostCenters: async () => {
       if (centers instanceof Error) throw centers
       return centers
@@ -108,9 +137,9 @@ function renderPage(entries: CatalogEntry[], requests: AccessRequest[], centers:
         order: 50,
       },
     ],
-    listAccessRequests: async () => requests,
+    listAccessRequests: async () => currentRequests,
     createAccessRequest,
-    withdrawAccessRequest: vi.fn(),
+    withdrawAccessRequest,
   } as unknown as PortalApi
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   render(
@@ -118,7 +147,7 @@ function renderPage(entries: CatalogEntry[], requests: AccessRequest[], centers:
       <MemoryRouter><CatalogPage /></MemoryRouter>
     </QueryClientProvider>,
   )
-  return { createAccessRequest }
+  return { createAccessRequest, withdrawAccessRequest }
 }
 
 async function openAccessOptions(name = 'Weather tools') {
@@ -155,6 +184,26 @@ describe('CatalogPage', () => {
       costCenterId: 'cc-research',
       justification: undefined,
     })
+  })
+
+  it('shows submission acknowledgement only while the created request is open for the selected cost center', async () => {
+    const user = userEvent.setup()
+    const { withdrawAccessRequest } = renderPage([catalogEntry], [])
+
+    await openAccessOptions()
+    const selector = await screen.findByRole('combobox', { name: 'Cost center for Weather tools' })
+    await user.click(screen.getByRole('button', { name: 'Request access' }))
+
+    expect(await screen.findByText(/Request submitted\./)).toBeVisible()
+    await user.selectOptions(selector, 'cc-research')
+    expect(screen.queryByText(/Request submitted\./)).not.toBeInTheDocument()
+
+    await user.selectOptions(selector, 'cc-general')
+    expect(await screen.findByText(/Request submitted\./)).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Withdraw' }))
+
+    await waitFor(() => expect(withdrawAccessRequest).toHaveBeenCalledWith('request-created'))
+    await waitFor(() => expect(screen.queryByText(/Request submitted\./)).not.toBeInTheDocument())
   })
 
   it('marks cost centers that already have access or a request', async () => {

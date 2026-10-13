@@ -296,6 +296,7 @@ function McpAccessReview({ plan }: { plan: PublishPlan }) {
 
 type PublishMcpServerDialogProps = {
   open: boolean
+  mutationKey?: readonly unknown[]
   onClose: () => void
   onPublished: (message: string) => void
   initialReview?: {
@@ -307,7 +308,7 @@ type PublishMcpServerDialogProps = {
 
 // Commit the opening step before Fluent focuses it. Retain that session during the close animation;
 // the next opening gets fresh state, including when it reviews the same publication again.
-export function PublishMcpServerDialog({ open, onClose, onPublished, initialReview }: PublishMcpServerDialogProps) {
+export function PublishMcpServerDialog({ open, mutationKey, onClose, onPublished, initialReview }: PublishMcpServerDialogProps) {
   const review = initialReview ?? null
   const [session, setSession] = useState({ open, review, key: 0 })
   if (open && (!session.open || review !== session.review)) {
@@ -316,12 +317,12 @@ export function PublishMcpServerDialog({ open, onClose, onPublished, initialRevi
     setSession({ ...session, open })
   }
   return (
-    <PublishMcpServerSession key={session.key} open={open} initialReview={session.review}
+    <PublishMcpServerSession key={session.key} open={open} mutationKey={mutationKey} initialReview={session.review}
       onClose={onClose} onPublished={onPublished} />
   )
 }
 
-function PublishMcpServerSession({ open, onClose, onPublished, initialReview }: PublishMcpServerDialogProps) {
+function PublishMcpServerSession({ open, mutationKey, onClose, onPublished, initialReview }: PublishMcpServerDialogProps) {
   const api = useMosaicApi()
   const queryClient = useQueryClient()
   const [step, setStep] = useState<Step>(initialReview ? 'review' : 'choose')
@@ -379,6 +380,7 @@ function PublishMcpServerSession({ open, onClose, onPublished, initialReview }: 
   }, [endpoint])
 
   const createAndPlan = useMutation({
+    mutationKey,
     mutationFn: async () => {
       if (!endpoint) throw new Error('Choose an MCP server before reviewing the plan.')
       const apiName = form.apiName.trim()
@@ -440,6 +442,7 @@ function PublishMcpServerSession({ open, onClose, onPublished, initialReview }: 
   }, [queryClient])
 
   const apply = useMutation({
+    mutationKey,
     mutationFn: async () => {
       if (!publication || !plan) throw new Error('Review the plan before applying it.')
       return await api.applyMcpPublication(publication.id, plan.id)

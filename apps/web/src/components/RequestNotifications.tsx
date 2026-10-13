@@ -15,10 +15,13 @@ export function RequestNotifications() {
     refetchIntervalInBackground: false,
   })
   const openQueue = () => navigate('/entitlements?tab=requests')
+  const notificationLabel = requests.isSuccess
+    ? `Notifications, ${requests.data.length} pending ${requests.data.length === 1 ? 'request' : 'requests'}`
+    : 'Notifications'
   return (
     <Menu>
       <MenuTrigger disableButtonEnhancement>
-        <Button appearance="subtle" icon={<AlertRegular />} aria-label="Notifications">
+        <Button appearance="subtle" icon={<AlertRegular />} aria-label={notificationLabel}>
           {requests.isSuccess && requests.data.length > 0 && <Badge color="important" appearance="filled">{requests.data.length}</Badge>}
         </Button>
       </MenuTrigger>

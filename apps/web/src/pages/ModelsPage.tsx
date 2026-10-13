@@ -83,6 +83,8 @@ import type {
 } from '../types'
 import styles from './ModelsPage.module.css'
 
+const MODELS_PAGE_MUTATION_KEY = ['models-page'] as const
+
 const statusLabels: Record<ModelEndpointStatus, string> = {
   pending: 'Not checked',
   connected: 'Connected',
@@ -190,6 +192,7 @@ function PublishedModels({ onMessage }: { onMessage: (message: string) => void }
   // Apply plan applies it, so the administrator sees every plan before it runs. Unpublish works
   // the same way: its dialog plans the unpublish, and only its confirm button runs that plan.
   const reviewPlan = useMutation({
+    mutationKey: MODELS_PAGE_MUTATION_KEY,
     mutationFn: async (publication: Publication) => ({
       publication,
       plan: await api.createPublishPlan(publication.id),
@@ -200,6 +203,7 @@ function PublishedModels({ onMessage }: { onMessage: (message: string) => void }
     },
   })
   const remove = useMutation({
+    mutationKey: MODELS_PAGE_MUTATION_KEY,
     mutationFn: (publicationId: string) => api.deletePublication(publicationId),
     onSuccess: async () => {
       setRemoving(null)
@@ -297,6 +301,7 @@ function PublishedModels({ onMessage }: { onMessage: (message: string) => void }
     </Card>
     <PublishModelDialog
       open={review !== null}
+      mutationKey={MODELS_PAGE_MUTATION_KEY}
       initialReview={review}
       onClose={() => setReview(null)}
       onPublished={onMessage}
@@ -304,6 +309,7 @@ function PublishedModels({ onMessage }: { onMessage: (message: string) => void }
     <UnpublishDialog
       open={unpublishing !== null}
       target="model"
+      mutationKey={MODELS_PAGE_MUTATION_KEY}
       publication={unpublishing}
       onClose={() => setUnpublishing(null)}
       onUnpublished={onMessage}
@@ -414,6 +420,7 @@ function ImportedModelApis({ onRemoved }: { onRemoved: (message: string) => void
   }
 
   const removeMutation = useMutation({
+    mutationKey: MODELS_PAGE_MUTATION_KEY,
     mutationFn: (id: string) => api.deleteModelApi(id),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['model-apis'] })
@@ -422,6 +429,7 @@ function ImportedModelApis({ onRemoved }: { onRemoved: (message: string) => void
   })
 
   const visibilityMutation = useMutation({
+    mutationKey: MODELS_PAGE_MUTATION_KEY,
     mutationFn: ({ id, visibility }: { id: string; visibility: CatalogVisibility }) =>
       api.updateModelApiCatalog(id, { visibility }),
     onSuccess: async () => {
@@ -941,6 +949,7 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
   }
 
   const register = useMutation({
+    mutationKey: MODELS_PAGE_MUTATION_KEY,
     mutationFn: api.registerModelEndpoint,
     onSuccess: async (endpoint) => {
       setResourceId('')
@@ -966,7 +975,11 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
     },
   })
 
-  const sync = useMutation({ mutationFn: api.syncModelEndpoint, onSuccess: refresh })
+  const sync = useMutation({
+    mutationKey: MODELS_PAGE_MUTATION_KEY,
+    mutationFn: api.syncModelEndpoint,
+    onSuccess: refresh,
+  })
   // A refusal says why at the top of the dialog, and takes focus so a screen reader reads it.
   const registerErrorRef = useRef<HTMLDivElement>(null)
   const shownRegisterError = useRef<unknown>(null)
@@ -976,8 +989,13 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
     if (!register.error || Object.is(register.error, shown) || registerOrigin !== 'dialog') return
     registerErrorRef.current?.focus()
   }, [register.error, registerOrigin])
-  const recheck = useMutation({ mutationFn: api.preflightModelEndpoint, onSuccess: refresh })
+  const recheck = useMutation({
+    mutationKey: MODELS_PAGE_MUTATION_KEY,
+    mutationFn: api.preflightModelEndpoint,
+    onSuccess: refresh,
+  })
   const remove = useMutation({
+    mutationKey: MODELS_PAGE_MUTATION_KEY,
     mutationFn: (endpoint: ModelEndpoint) => api.deleteModelEndpoint(endpoint.id),
     onSuccess: async (_, endpoint) => {
       setRemoving(null)
@@ -1795,6 +1813,7 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
       </RemovalDialog>
       {changingEndpoint && (
         <ChangeEnvironmentDialog
+          mutationKey={MODELS_PAGE_MUTATION_KEY}
           resource={{
             resourceKind: 'modelEndpoint',
             resourceId: changingEndpoint.id,
@@ -1821,7 +1840,7 @@ const modelSections = [
 ]
 
 export function ModelsPage() {
-  const pendingOperations = useIsMutating()
+  const pendingOperations = useIsMutating({ mutationKey: MODELS_PAGE_MUTATION_KEY })
   const location = useLocation()
   const navigate = useNavigate()
   const hasConsumedImportQueryRef = useRef(false)
@@ -1903,12 +1922,14 @@ export function ModelsPage() {
 
       <PublishModelDialog
         open={publishOpen}
+        mutationKey={MODELS_PAGE_MUTATION_KEY}
         onClose={() => setPublishOpen(false)}
         onPublished={setLiveBanner}
       />
 
       <ImportFromGatewayDialog
         kind="apis"
+        mutationKey={MODELS_PAGE_MUTATION_KEY}
         open={importOpen}
         initialGatewayId={requestedImportGatewayId}
         onClose={() => {

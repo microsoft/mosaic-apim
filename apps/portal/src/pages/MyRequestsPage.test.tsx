@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { render, screen, within } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { describe, expect, it, vi } from 'vitest'
 import type { PortalApi } from '../api'
@@ -51,13 +52,13 @@ function accessRequest(overrides: Partial<AccessRequest>): AccessRequest {
 
 const opened = `Opened ${new Date('2026-01-01T00:00:00Z').toLocaleDateString()}`
 
-function renderPage(requests: AccessRequest[]) {
+function renderPage(requests: AccessRequest[], withdrawAccessRequest = vi.fn()) {
   mocks.api = {
     listAccessRequests: async () => requests,
     listEnvironments: async () => [
       { key: 'production', displayName: 'Production', description: null, color: 'danger', production: true, order: 50 },
     ],
-    withdrawAccessRequest: vi.fn(),
+    withdrawAccessRequest,
   } as unknown as PortalApi
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   render(
@@ -67,6 +68,7 @@ function renderPage(requests: AccessRequest[]) {
       </MemoryRouter>
     </QueryClientProvider>,
   )
+  return { withdrawAccessRequest }
 }
 
 describe('MyRequestsPage', () => {
@@ -138,6 +140,31 @@ describe('MyRequestsPage', () => {
     expect(await screen.findByRole('button', { name: 'Withdraw' })).toBeVisible()
     expect(screen.getByText('Not for this project')).toBeVisible()
     expect(screen.queryByText('Grant')).not.toBeInTheDocument()
+  })
+
+  it('shows a withdrawal error only on the request that failed', async () => {
+    const user = userEvent.setup()
+    const withdrawAccessRequest = vi.fn(async () => {
+      throw new Error('Withdrawal failed')
+    })
+    renderPage([
+      accessRequest({ id: 'request-1' }),
+      accessRequest({
+        id: 'request-2',
+        resource: { kind: 'mcpServer', id: 'docs-mcp', scopeId: null },
+        resourceDisplayName: 'Docs search',
+      }),
+    ], withdrawAccessRequest)
+
+    const firstCard = (await screen.findByRole('heading', { level: 2, name: 'Chat completions' })).closest('.request-card')
+    const secondCard = screen.getByRole('heading', { level: 2, name: 'Docs search' }).closest('.request-card')
+    const firstRequest = within(firstCard as HTMLElement)
+    const secondRequest = within(secondCard as HTMLElement)
+    await user.click(firstRequest.getByRole('button', { name: 'Withdraw' }))
+    await user.click(firstRequest.getByRole('button', { name: 'Confirm withdrawal' }))
+
+    await waitFor(() => expect(firstRequest.getByText('Withdrawal failed')).toBeVisible())
+    expect(secondRequest.queryByText('Withdrawal failed')).not.toBeInTheDocument()
   })
 
   it('uses summaries and snapshots without rendering raw resource IDs', async () => {

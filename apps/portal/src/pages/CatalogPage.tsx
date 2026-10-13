@@ -177,7 +177,9 @@ function CatalogAction({ entry }: { entry: CatalogEntry }) {
       )}
       {create.isError && <Text className="form-error">{create.error.message}</Text>}
       {withdraw.isError && <Text className="form-error">{withdraw.error.message}</Text>}
-      {create.isSuccess && <Text>Request submitted. <Link to="/requests">Track it in My requests</Link>. Approval does not apply gateway access immediately.</Text>}
+      {create.isSuccess && pendingRequest?.id === create.data.id && (
+        <Text>Request submitted. <Link to="/requests">Track it in My requests</Link>. Approval does not apply gateway access immediately.</Text>
+      )}
     </div>
   )
 }

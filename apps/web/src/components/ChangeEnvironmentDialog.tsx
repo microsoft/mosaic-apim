@@ -41,11 +41,13 @@ export interface EnvironmentChangeResource {
 
 export function ChangeEnvironmentDialog({
   resource,
+  mutationKey,
   open,
   onClose,
   onChanged,
 }: {
   resource: EnvironmentChangeResource
+  mutationKey?: readonly unknown[]
   open: boolean
   onClose: () => void
   onChanged: (result: EnvironmentAssignmentResult) => void
@@ -66,6 +68,7 @@ export function ChangeEnvironmentDialog({
     }
   }, [open, resource.environment])
   const mutation = useMutation({
+    mutationKey,
     mutationFn: async ({
       includeSuggestions,
       acknowledgeGrants,

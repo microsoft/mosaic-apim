@@ -1,5 +1,5 @@
 import { FluentProvider, webLightTheme } from '@fluentui/react-components'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { QueryClient, QueryClientProvider, useMutation } from '@tanstack/react-query'
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
@@ -52,12 +52,13 @@ const draftDetail: ModelPoolDetail = {
 
 type Entry = string | { pathname: string; state: unknown }
 
-function renderPoolPage(entry: Entry = `/pools/${anthropicPool.id}`) {
+function renderPoolPage(entry: Entry = `/pools/${anthropicPool.id}`, includeUnrelatedMutation = false) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   render(
     <QueryClientProvider client={queryClient}>
       <FluentProvider theme={webLightTheme}>
         <MemoryRouter initialEntries={[entry]}>
+          {includeUnrelatedMutation && <UnrelatedPendingMutation />}
           <Routes>
             <Route path="/pools" element={<p>Pool list</p>} />
             <Route path="/pools/:poolId" element={<PoolDetailPage />} />
@@ -66,6 +67,14 @@ function renderPoolPage(entry: Entry = `/pools/${anthropicPool.id}`) {
       </FluentProvider>
     </QueryClientProvider>,
   )
+}
+
+function UnrelatedPendingMutation() {
+  const mutation = useMutation({
+    mutationKey: ['unrelated'],
+    mutationFn: () => new Promise<void>(() => {}),
+  })
+  return <button onClick={() => mutation.mutate()}>Start unrelated operation</button>
 }
 
 const renderPage = renderPoolPage
@@ -84,6 +93,16 @@ describe('PoolDetailPage', () => {
     api.listModelPoolRuns.mockResolvedValue([poolRun])
     api.listGateways.mockResolvedValue([poolGateway])
     api.getModelPoolHealth.mockResolvedValue(notConfiguredPoolHealth)
+  })
+
+  it('allows section changes while an unrelated mutation is pending', async () => {
+    const user = userEvent.setup()
+    renderPage(`/pools/${anthropicPool.id}`, true)
+
+    await user.click(screen.getByRole('button', { name: 'Start unrelated operation' }))
+    await user.click(screen.getByRole('button', { name: 'Models and deployments' }))
+
+    expect(await screen.findByText('2 of 3 deployments active')).toBeVisible()
   })
 
   it('shows each model’s deployments, how the pool routes, and how callers connect', async () => {
