@@ -49,6 +49,8 @@ If `uv` is available only as a Python module, use `python -m uv run ...` with th
 | `--only NAME` | Capture only that shot. Repeat it to capture several |
 | `--output DIR` | Write the PNGs somewhere else, for example to compare before and after |
 | `--headed` | Show the browser while it captures |
+| `--preview` | Serve production assets after building both apps with `npm run build --prefix apps\web` and `npm run build --prefix apps\portal`; avoids cold dev-server dependency bundling |
+| `--check-navigation` | Also verify desktop collapse, mobile focus/inert behavior, and the portal's docked detail layout against the fictional estate |
 | `--reuse-servers` | Use a demo API and apps that are already running instead of starting them |
 | `--api-port`, `--console-port`, `--portal-port` | Change the ports, which default to 18000, 15173, and 15174 |
 
@@ -172,15 +174,15 @@ survives to be read back.
 
 - `SENSITIVE_LITERALS` in `demo_api.py`: the demo tenant, client, and object IDs.
 - `RESOURCE_NAMES` in `capture.py`: the demo's gateway, resource group, account, and vault names.
-- The shared MCP metadata API, readable MOSAIC MCP/pool resource names, and product names are
-  redacted too; API paths and display names remain readable.
+- The shared MCP metadata API, readable MOSAIC-owned APIM resource names, product names, and
+  fictional person/workload/gateway names and directory aliases are redacted too.
 - `REDACTION_PATTERNS` in `capture.py`: GUIDs, email addresses, URLs and URIs, Azure resource IDs,
   Azure, Communication Services, and Contoso hostnames, IPv4 addresses, MOSAIC record IDs and the
   APIM names derived from them, and the demo's placeholder keys.
 
-Some things stay readable on purpose, because they explain the product without identifying
-anything. These are the fictional people and workloads, the display names of gateways, models, and
-MCP servers, API paths, deployment names, limits, and dates.
+Fictional people, workload identities, directory results, and gateway/account display names are
+also blurred. Public model names, API paths, deployment names, limits, and dates stay readable
+where they do not contain an endpoint, account name, or identifier.
 
 Redaction reads the page's text. It can't see text drawn in an image or a canvas. If a shot shows
 something identifying that isn't text, or the rules miss something, add a literal or a pattern
@@ -235,44 +237,48 @@ shows both themes. Keep new shots in that pattern.
 | `console-dashboard-light`, `console-dashboard-dark` | Console | `/dashboard` | Both | Light and dark: console overview |
 | `portal-catalog-light`, `portal-catalog-dark` | Portal | `/catalog` | Both | Light and dark: portal catalog |
 | `console-gateways` | Console | `/gateways` | Light | Gateways |
-| `console-gateway-overview` | Console | Contoso AI Gateway, **Overview** tab | Dark | Gateway overview |
-| `console-gateway-apis` | Console | Contoso AI Gateway, **APIs and endpoints** tab | Light | APIs and endpoints |
+| `console-gateway-overview` | Console | Contoso AI Gateway, **Overview** section | Dark | Gateway overview |
+| `console-gateway-apis` | Console | Contoso AI Gateway, **APIs and endpoints** section | Light | APIs and endpoints |
 | `console-models` | Console | `/models` | Dark | Models |
 | `console-register-key-endpoint` | Console | `/models?register=1`, **Azure AI with an API key** tab with a pasted, masked key, filled in and never submitted | Light | Register with an API key |
-| `console-key-endpoint` | Console | `/models`, Fabrikam partner Foundry selected, scrolled to its **Access** card with **Replace API key** | Dark | Endpoint reached with an API key |
-| `console-pools` | Console | `/pools`, listing the published Anthropic Claude pool and the Claude evaluation draft, with the pool suggested for Claude Haiku 4.5 | Light | Model pools |
-| `console-pool-detail` | Console | `/pools`, Anthropic Claude opened, with its models, members, request example, and **Run history** | Dark | A model pool |
-| `console-pool-access` | Console | `/pools`, Anthropic Claude opened, scrolled to **Who can call it** | Light | Who can call a pool |
-| `console-pool-health` | Console | `/pools`, Anthropic Claude opened, scrolled to **Health** for the last 24 hours | Dark | Pool health |
-| `console-pool-editor` | Console | `/pools`, **Create pool** on the Claude Haiku 4.5 suggestion, on the **3. Models** step, never saved | Light | Create a pool |
-| `console-endpoint-pools` | Console | `/models`, Contoso AI Foundry selected, scrolled to its deployments and **Used by pools** | Dark | Pools on an endpoint |
-| `console-mcps` | Console | `/mcps`, showing published and registered MCP servers, and the application the published one calls models as | Light | MCP servers |
+| `console-key-endpoint` | Console | `/models?tab=endpoints`, Fabrikam partner Foundry selected, scrolled to its **Access** card with **Replace API key** | Dark | Endpoint reached with an API key |
+| `console-pools` | Console | `/pools`, published Anthropic Claude pool and Claude evaluation draft, with separate Suggestions navigation | Light | Model pools |
+| `console-pool-detail` | Console | Anthropic Claude detail, **Models and deployments** section | Dark | A model pool |
+| `console-pool-access` | Console | Anthropic Claude detail, **Access and connection** section | Light | Who can call a pool |
+| `console-pool-health` | Console | Anthropic Claude detail, **Health** section for the last 24 hours | Dark | Pool health |
+| `console-pool-editor` | Console | `/pools?tab=suggestions`, **Create pool** on the Claude Haiku 4.5 suggestion, **3. Models** step, never saved | Light | Create a pool |
+| `console-endpoint-pools` | Console | `/models?tab=endpoints`, Contoso AI Foundry selected, deployments and **Used by pools** | Dark | Pools on an endpoint |
+| `console-mcps` | Console | `/mcps`, **Published MCP servers** and the application each calls models as | Light | MCP servers |
 | `console-identity` | Console | `/identity?tab=agents` | Dark | Identity |
 | `console-directory-picker` | Console | `/identity?tab=agents`, **Add agent** dialog with query `agent` | Light | Directory picker |
-| `console-security-group-members` | Console | `/identity?tab=workloads`, filtered to **AI Model Users** | Dark | Security group members |
+| `console-security-group-members` | Console | `/identity?tab=security-groups`, filtered to **AI Model Users** | Dark | Security group members |
 | `console-entitlements` | Console | `/entitlements`, scrolled to **Grants** | Light | Entitlements |
-| `console-overlapping-grants` | Console | `/entitlements`, scrolled to **Overlapping grants** | Dark | Overlapping grants |
+| `console-access-requests` | Console | `/entitlements?tab=requests`, pending queue | Light | Access requests |
+| `console-model-access-settings` | Console | `/entitlements?tab=settings`, GPT-4o selected | Dark | Model access settings |
+| `console-overlapping-grants` | Console | `/entitlements?tab=effective`, **Overlapping grants** | Dark | Overlapping grants |
 | `console-cost-centers` | Console | `/cost-centers` | Light | Cost centers |
-| `console-cost-center-detail` | Console | `/cost-centers`, **Customer Insights** opened | Dark | Cost center |
-| `console-mcp-publish` | Console | `/mcps`, **Plan and apply** review for the published Docs MCP server, including the shared metadata API, operation, and operation policy | Light | MCP publish review |
+| `console-cost-center-detail` | Console | Customer Insights detail, **Members** section | Dark | Cost center members |
+| `console-mcp-publish` | Console | `/mcps`, **Review changes** for the published Docs MCP server, including the shared metadata API, operation, and operation policy | Light | MCP publish review |
 | `console-unpublish-review` | Console | `/models`, **Unpublish** review for GPT-4o, never confirmed | Light | Unpublish review |
-| `console-budgets` | Console | `/cost-centers`, **Customer Support** opened, scrolled to **Budget** | Dark | Budgets |
-| `console-analytics` | Console | `/analytics`, **Overview** tab | Dark | Analytics |
+| `console-budgets` | Console | Customer Support detail, **Budget** section | Dark | Budgets |
+| `console-analytics` | Console | `/analytics`, **Overview** section | Dark | Analytics |
 | `console-analytics-cost` | Console | `/analytics?tab=cost` | Light | Cost |
-| `console-pricing` | Console | `/pricing`, **Prices** tab filtered to `2024-11-20` | Dark | Pricing |
+| `console-pricing` | Console | `/pricing`, **Prices** section filtered to `2024-11-20` | Dark | Pricing |
 | `console-analytics-consumers` | Console | `/analytics?tab=consumers` | Light | Consumers |
 | `console-analytics-mcp-model-use` | Console | `/analytics?tab=consumers`, scrolled to **Model use through MCP servers** | Dark | Model use through MCP servers |
 | `console-analytics-limits` | Console | `/analytics?tab=limits` | Dark | Grant limits |
-| `console-gateway-telemetry` | Console | Contoso AI Gateway, **Overview** tab, scrolled to **Telemetry** | Light | Gateway telemetry |
+| `console-gateway-telemetry` | Console | Contoso AI Gateway, **Overview** section, scrolled to **Telemetry** | Light | Gateway telemetry |
 | `console-analytics-reliability` | Console | `/analytics?tab=reliability` | Dark | Reliability |
 | `console-environments` | Console | `/settings` | Light | Environments |
-| `console-environment-findings` | Console | `/settings`, scrolled to **Findings** | Dark | Environment findings |
-| `console-email-settings` | Console | `/settings`, scrolled to **Email** | Light | Budget email |
+| `console-environment-findings` | Console | `/settings?tab=findings` | Dark | Environment findings |
+| `console-email-settings` | Console | `/settings?tab=email` | Light | Budget email |
+| `portal-request-access` | Portal | `/catalog`, GPT-4o mini access options open | Light | Request access |
 | `portal-access` | Portal | `/access`, with a grant's **Connection details** open | Light | My access |
 | `portal-connection-cost-center` | Portal | `/access`, the GPT-4o grant under General with **Connection details** open, scrolled to **Cost center header** | Light | Choosing a cost center |
-| `portal-pool-connection` | Portal | `/access`, the Claude Sonnet 4.5 grant with **Connection details** open, scrolled to its card | Dark | Models that share a key |
+| `portal-pool-connection` | Portal | `/access`, Claude Sonnet 4.5 selected, contextual **Connection details** open | Dark | Models that share a key |
 | `portal-mcp-connection` | Portal | `/access`, with an enforced MCP grant's **Connection details** open | Dark | MCP connection |
 | `portal-requests` | Portal | `/requests` | Dark | My requests |
 | `portal-usage` | Portal | `/usage` | Light | Usage & cost |
-| `portal-usage-resources` | Portal | `/usage`, scrolled to **Cost centers**, then **Model use through MCP servers** | Dark | Cost centers and usage by resource |
+| `portal-usage-resources` | Portal | `/usage?tab=resources`, **By resource** | Dark | Usage by resource |
+| `portal-usage-breakdowns` | Portal | `/usage?tab=breakdowns`, **Cost centers** and pooled quotas | Light | Usage breakdowns |
 | `portal-budget-banner` | Portal | `/access`, with the budget banner for Customer Insights | Light | Budget banner |

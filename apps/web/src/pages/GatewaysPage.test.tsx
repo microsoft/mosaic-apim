@@ -149,7 +149,7 @@ describe('GatewaysPage', () => {
     renderPage()
 
     expect(
-      await screen.findByText(/It does not change your gateway/),
+      await screen.findByText(/Changes require managed mode and a reviewed plan/),
     ).toBeVisible()
   })
 
@@ -173,7 +173,7 @@ describe('GatewaysPage', () => {
     ])
     renderPage()
 
-    await screen.findByText(/It does not change your gateway/)
+    await screen.findByText(/Changes require managed mode and a reviewed plan/)
     expect(screen.queryByRole('heading', { name: 'Detected gateway' })).toBeNull()
   })
 

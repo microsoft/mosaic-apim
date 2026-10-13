@@ -1,0 +1,18 @@
+.layout { display: grid; grid-template-columns: 184px minmax(0, 1fr); gap: 24px; align-items: start; }
+.navigation { position: sticky; top: 76px; display: grid; gap: 4px; padding: 0 16px 16px 0; border-right: 1px solid var(--mosaic-border-soft); }
+.navigation > button { text-align: left; min-height: 40px; padding: 10px 12px; border: 0; border-radius: 4px; background: transparent; color: var(--mosaic-text-muted); cursor: pointer; font-weight: 500; }
+.navigation > button:hover { background: var(--mosaic-surface-subtle); color: var(--mosaic-text); }
+.navigation > button:focus-visible { outline: 2px solid var(--mosaic-primary); outline-offset: 2px; }
+.navigation > button.active { background: var(--mosaic-primary-soft); color: var(--mosaic-primary); font-weight: 600; }
+.collapsed { grid-template-columns: 60px minmax(0, 1fr); }
+.collapsed .navigation { padding-right: 8px; }
+.collapsed .navigation > button { text-align: center; }
+.content { min-width: 0; display: grid; gap: 20px; }
+.description { margin: 0; max-width: 75ch; color: var(--mosaic-text-muted); line-height: 1.6; }
+.compact { display: none; }
+@media (max-width: 1050px) {
+  .layout, .collapsed { grid-template-columns: minmax(0, 1fr); gap: 16px; }
+  .navigation { display: none; }
+  .compact { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+  .compact select { min-width: 0; max-width: 100%; padding: 8px 12px; border: 1px solid var(--mosaic-border); border-radius: 4px; color: var(--mosaic-text); background: var(--mosaic-surface); }
+}

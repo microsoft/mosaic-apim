@@ -86,6 +86,7 @@ test.describe('40 portal', { tag: '@portal' }, () => {
     for (const entry of entries) named.set(entry.displayName, (named.get(entry.displayName) ?? 0) + 1)
     for (const [name, count] of named) await expect.soft(catalog.card(name)).toHaveCount(count)
     for (const entry of entries.filter((item) => item.entitled)) {
+      await catalog.openOptions(catalog.card(entry.displayName).first())
       await expect.soft(catalog.entitled(catalog.card(entry.displayName).first())).toBeVisible()
     }
   })
@@ -146,6 +147,7 @@ test.describe('40 portal', { tag: '@portal' }, () => {
       const card = access.card(portalCardTitle(entry))
       await expect.soft(card).toHaveCount(1)
       await expect.soft(access.runtime(card.first(), status)).toBeVisible()
+      await access.grantDetails(card.first())
       await expect.soft(access.limits(card.first())).toHaveText(limitLines(held.grant.enforcement))
       await expect.soft(access.attribution(card.first())).toBeVisible()
     }
@@ -337,6 +339,7 @@ test.describe('40 portal', { tag: '@portal' }, () => {
       if (!publication || !modelApi) throw new Error(`${label} isn't published, as P4 should have left it. ${cleanupHint}`)
 
       const entitlements = await EntitlementsPage.open(personas, targets)
+      await entitlements.selectSection('requests')
       const row = entitlements.requestRow(second)
       await expect(row).toHaveCount(1)
       const dialog = await entitlements.approve(row)
@@ -354,6 +357,7 @@ test.describe('40 portal', { tag: '@portal' }, () => {
       expect.soft(limitsMatch(intent.enforcement, disposable.limits), `the approved grant to allow ${describeLimits(disposable.limits)}`).toBe(true)
       expect.soft(intent.runtime?.status, 'the approved grant before its review').toBe('pending')
       await entitlements.reload()
+      await entitlements.selectSection('grants')
       await expect.soft(entitlements.grantState(grantId, 'pending')).toBeVisible()
 
       const requests = await MyRequestsPage.open(personas, targets, requester)
@@ -363,6 +367,7 @@ test.describe('40 portal', { tag: '@portal' }, () => {
 
       await reviewAndApply(ctx, entitlements, publication, `${requester}'s approved grant on ${label}`, { settle: [grantId] })
       await entitlements.reload()
+      await entitlements.selectSection('grants')
       await expect(entitlements.grantState(grantId, 'applied')).toBeVisible()
     })
 
@@ -384,6 +389,7 @@ test.describe('40 portal', { tag: '@portal' }, () => {
       const card = access.card(portalCardTitle(entry))
       await expect(card).toHaveCount(1)
       await expect(access.runtime(card, 'applied')).toBeVisible()
+      await access.grantDetails(card)
       await expect(access.limits(card)).toHaveText(limitLines(grant.enforcement))
       const requests = await MyRequestsPage.open(personas, targets, requester)
       await expect(requests.state(requests.request(second), 'Approved')).toBeVisible()

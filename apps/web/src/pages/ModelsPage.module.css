@@ -23,6 +23,31 @@
   gap: 16px;
 }
 
+.panelHeading {
+  display: grid;
+  gap: 4px;
+}
+
+.publicationTable {
+  min-width: 860px;
+}
+
+.publicationActionCell {
+  width: 196px;
+  min-width: 196px;
+}
+
+.publicationActions {
+  display: grid;
+  justify-items: start;
+  gap: 6px;
+  width: max-content;
+}
+
+.publicationActions > button {
+  white-space: nowrap;
+}
+
 .connectionForm,
 .dialogForm {
   padding: 18px 20px 20px;
@@ -466,3 +491,6 @@
   color: var(--colorNeutralForeground2);
 }
 
+.recordAction {
+  margin-inline-start: 12px;
+}

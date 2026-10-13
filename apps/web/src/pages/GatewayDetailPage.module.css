@@ -22,33 +22,33 @@
   gap: 10px;
 }
 
-.tabs {
-  overflow-x: auto;
-  border-bottom: 1px solid var(--mosaic-border-soft);
-}
-
 .tabPanel {
   display: grid;
   gap: 16px;
 }
 
-.metricGrid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: 16px;
+.environmentRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
 }
 
-.metricCard {
-  padding: 18px;
-  display: grid;
-  gap: 4px;
-  border: 1px solid var(--mosaic-border-soft);
-  background: var(--mosaic-surface);
-  box-shadow: var(--mosaic-shadow);
+.inventory {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px 24px;
+  margin: 12px 0 0;
 }
 
-.metricValue {
-  margin: 0;
+.inventory dt {
+  color: var(--mosaic-text-muted);
+  font-size: 12px;
+}
+
+.inventory dd {
+  margin: 4px 0 0;
+  font-weight: 600;
 }
 
 .muted {

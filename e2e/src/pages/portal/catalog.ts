@@ -43,13 +43,13 @@ export class CatalogPage {
   }
 
   /** Shown when the person already holds the resource under the cost center the card has selected. */
-  entitled(card: Locator): Locator {
-    return card.getByText(/^Already entitled( for this cost center)?$/)
+  entitled(_card: Locator): Locator {
+    return this.page.getByText(/^Already entitled( for this cost center)?$/)
   }
 
   /** Shown when the person has an open request for the resource under the selected cost center. */
-  requestOpen(card: Locator): Locator {
-    return card.getByText(/^A request is already open( for this cost center)?\.$/)
+  requestOpen(_card: Locator): Locator {
+    return this.page.getByText(/^A request is already open( for this cost center)?\.$/)
   }
 
   /** The cost center a request charges. It starts on the person's default cost center. */
@@ -58,7 +58,11 @@ export class CatalogPage {
   }
 
   requestButton(card: Locator): Locator {
-    return card.getByRole('button', { name: 'Request access', exact: true })
+    return card.getByRole('button', { name: /^View access options for / })
+  }
+
+  async openOptions(card: Locator): Promise<void> {
+    await this.requestButton(card).click()
   }
 
   /**
@@ -67,15 +71,17 @@ export class CatalogPage {
    */
   async request(displayName: string, justification: string, costCenter?: string): Promise<Response> {
     const card = this.card(displayName)
-    if (costCenter) await this.costCenter(card, displayName).selectOption({ label: costCenter })
-    await card.getByRole('textbox', { name: `Justification for ${displayName}`, exact: true }).fill(justification)
-    return responseTo(this.page, this.targets.origins.api, 'POST', /^\/api\/v1\/portal\/access-requests$/, () => this.requestButton(card).click())
+    await this.openOptions(card)
+    if (costCenter) await this.page.getByRole('combobox', { name: `Cost center for ${displayName}`, exact: true }).selectOption({ label: costCenter })
+    await this.page.getByRole('textbox', { name: `Justification for ${displayName}`, exact: true }).fill(justification)
+    return responseTo(this.page, this.targets.origins.api, 'POST', /^\/api\/v1\/portal\/access-requests$/, () => this.page.getByRole('button', { name: 'Request access', exact: true }).click())
   }
 
   /** Withdraws the open request from the catalog card. */
-  withdraw(displayName: string): Promise<Response> {
+  async withdraw(displayName: string): Promise<Response> {
+    await this.openOptions(this.card(displayName))
     return responseTo(this.page, this.targets.origins.api, 'POST', /^\/api\/v1\/portal\/access-requests\/[^/]+\/withdraw$/, () =>
-      this.card(displayName).getByRole('button', { name: 'Withdraw', exact: true }).click(),
+      this.page.getByRole('button', { name: 'Withdraw', exact: true }).click(),
     )
   }
 }

@@ -40,6 +40,10 @@ changes, regenerate them and update their descriptions as described in
 
 ### Light and dark
 
+The blue mosaic-tile mark anchors collapsible primary navigation in both apps. Section menus
+separate administrative workflows, while portal details dock beside the list on wide screens
+and open in an accessible drawer on smaller ones.
+
 Both apps follow the operating system's light or dark setting, and the console can pin either
 one under **Settings > Appearance**.
 
@@ -54,13 +58,12 @@ one under **Settings > Appearance**.
   </tr>
   <tr>
     <td colspan="2"><b>Console overview.</b> Live counts of the people, agents, applications and
-    security groups, and MOSAIC groups registered in MOSAIC, each opening its tab under Identity,
-    and of the gateways, model endpoints, and MCP servers in each environment. Below them, the last
+    security groups, and MOSAIC groups registered in MOSAIC, each opening its section under Identity.
+    Below them, the last
     7 days of gateway usage rolled up from Log Analytics: requests, tokens, active callers, errors,
     and latency, what this month has cost so far with its month-end forecast, the daily trend, how
-    current each gateway's telemetry is, each budget's progress this month with any cost center it
-    blocks, any model pool with a deployment its gateway can't use or a failed apply, and the top
-    models, callers, and APIs.</td>
+    current each gateway's telemetry is, then top models, callers, and APIs, budgets, pools needing
+    attention, and a compact environment inventory.</td>
   </tr>
   <tr>
     <td><img src="docs/images/screenshots/portal-catalog-light.png" alt="The portal catalog in the light theme"></td>
@@ -69,9 +72,8 @@ one under **Settings > Appearance**.
   <tr>
     <td colspan="2"><b>Portal catalog.</b> The model APIs and MCP servers published to portal
     users, each labelled with its environment and, for an MCP server, whether the gateway enforces
-    it. People request the development or production copy, charged to one of their cost centers,
-    with an optional justification, and can see what they already hold or have asked for under
-    each.</td>
+    it. Search and environment/type filters narrow the catalog; each card opens access options
+    in a contextual panel without mixing the request form into the resource list.</td>
   </tr>
 </table>
 
@@ -88,8 +90,8 @@ one under **Settings > Appearance**.
     <td width="50%" valign="top">
       <img src="docs/images/screenshots/console-gateway-overview.png" alt="A gateway overview with inventory counts and service details">
       <p><b>Gateway overview.</b> One gateway at a glance: its AI APIs, operations, MCP servers,
-      access paths, and policy rules, with its environment, mode, and service details. Tabs open
-      its APIs, MCP servers, products, subscriptions, users and groups, policies, and backends.</p>
+      access paths, and policy rules, with its environment, mode, and service details. The section
+      menu opens its read-only APIM inventory, separately from MOSAIC-managed actions.</p>
     </td>
   </tr>
   <tr>
@@ -122,23 +124,22 @@ one under **Settings > Appearance**.
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/console-pools.png" alt="The Model pools page listing two Anthropic pools with their gateway, models, routing type, active members, access, readiness, and status, and below them a suggested pool for Claude Haiku 4.5">
+      <img src="docs/images/screenshots/console-pools.png" alt="Model pools with gateway, models, routing type, active members, access, readiness, and status, and a separate Suggestions section">
       <p><b>Model pools.</b> Each pool serves one vendor's models from deployments on many
       endpoints and regions through a single API, with its routing type, how many deployments
-      are active, whether callers need a grant, and whether it is a draft or published. Where a
-      model is deployed on two or more endpoints a gateway can reach and no pool serves it, MOSAIC
-      suggests one.</p>
+      are active, whether callers need a grant, and whether it is a draft or published. A separate
+      Suggestions section finds models deployed on multiple reachable endpoints without a pool.</p>
     </td>
     <td width="50%" valign="top">
       <img src="docs/images/screenshots/console-pool-detail.png" alt="A breaker pool serving Claude Opus 4.5 and Claude Sonnet 4.5 from five deployments in three regions, with weights, readiness, and drain switches">
-      <p><b>A model pool.</b> How the pool routes and recovers, what it owns in API Management,
-      and each model with the deployments behind it, their region, capacity, and share of
-      requests. Callers see one base URL and the pool's model names, never the deployments.</p>
+      <p><b>A model pool.</b> The Models and deployments section shows each model's deployments,
+      regions, capacity, readiness, weights, and drain controls. Overview, access, health, and
+      policy/run history are separate destinations.</p>
     </td>
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/console-pool-access.png" alt="A governed pool's Who can call it card, with key and Entra sign-in switches, five grants listing each model, subject, cost center, and limits, and a cost center's pooled quota">
+      <img src="docs/images/screenshots/console-pool-access.png" alt="A governed pool's Access and connection section, with key and Entra sign-in switches, saved and applied authentication, and the start of its grants table">
       <p><b>Who can call a pool.</b> A governed pool admits only callers granted one of its models,
       each charging a cost center and signing in with their own key or a Microsoft Entra token. The
       card lists the grants in force, their limits, and each cost center's pooled quota.</p>
@@ -168,16 +169,15 @@ one under **Settings > Appearance**.
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/console-mcps.png" alt="Registered and published MCP servers with environment, status, authentication, and tools, and the application a published server calls models as">
-      <p><b>MCP servers.</b> Servers registered directly or imported from a gateway, with their
-      environment, connection status, authentication method, and tools, and the servers MOSAIC
-      publishes, with their gateway apply state and the application each calls models as, applied
-      or not yet. MOSAIC reads what a server offers and never calls a tool.</p>
+      <img src="docs/images/screenshots/console-mcps.png" alt="Published MCP servers with gateway apply state, authentication, and the application each calls models as">
+      <p><b>MCP servers.</b> Published MCP servers show their gateway apply state and the
+      application each calls models as, with separate sections for imported and registered
+      servers. MOSAIC reads what a server offers and never calls a tool.</p>
     </td>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/console-identity.png" alt="The Identity page's Agents tab listing agent identities and an agent user, with a detail panel that shows the agent's default cost center">
+      <img src="docs/images/screenshots/console-identity.png" alt="The Identity page's Agents section listing agent identities and an agent user, with a detail panel that shows the agent's default cost center">
       <p><b>Identity.</b> The people, agents, applications, and security groups MOSAIC references
-      by Entra object ID, each on its own tab. The Agents tab shows each agent's blueprint or
+      by Entra object ID, each on its own section, separately from MOSAIC-local groups. The Agents section shows each agent's blueprint or
       parent agent; Entra stays the source of truth, and MOSAIC keeps only a local label, a type,
       and the default cost center a principal's calls are charged to.</p>
     </td>
@@ -185,7 +185,7 @@ one under **Settings > Appearance**.
   <tr>
     <td width="50%" valign="top">
       <img src="docs/images/screenshots/console-directory-picker.png" alt="The Add agent dialog with a default cost center, agent search results, and already-added badges">
-      <p><b>Directory picker.</b> <b>Add agent</b> on the Agents tab searches Microsoft Entra for
+      <p><b>Directory picker.</b> <b>Add agent</b> in the Agents section searches Microsoft Entra for
       agents, and the same picker finds people and security groups. Results show what is already
       in MOSAIC and what can still be added, and whoever is added gets the default cost center
       chosen above them: the tenant's, unless the administrator picks another.</p>
@@ -215,18 +215,18 @@ one under **Settings > Appearance**.
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/console-cost-centers.png" alt="The Cost centers page listing each cost center's code, members, grants, whether keys are allowed, owners, and budget badges, with the organization budget below them, beside the forms that create one and choose the tenant default">
+      <img src="docs/images/screenshots/console-cost-centers.png" alt="Cost centers with codes, members, grants, key eligibility, owners, and budget badges, alongside creation and tenant-default controls">
       <p><b>Cost centers.</b> Every grant, and so every call, is charged to a cost center, which
       spans gateways and has a unique code callers can name in a header, owners, members, and a
       switch for whether its grants may use keys. Administrators create them here, choose the
-      tenant default that new people are charged to, and set the organization's monthly budget,
-      which only warns, while a badge marks each cost center near or past its own.</p>
+      tenant default that new people are charged to; a separate Organization-wide budget section
+      manages the aggregate warn-only budget while each center's badge shows its own status.</p>
     </td>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/console-cost-center-detail.png" alt="A cost center's details and summary, its budget near its limit with the email sent at 80%, its members with their kind and default badges, and its per-person limits and pooled monthly quotas">
-      <p><b>Cost center.</b> One cost center's budget, its people, applications, agents, and
-      security groups, and its limits: per-person defaults and pooled monthly quotas for each
-      model and MCP server. Removing a member revokes the grants that relied on it and deletes their
+      <img src="docs/images/screenshots/console-cost-center-detail.png" alt="A selected cost center's Members section with member kinds and default badges, alongside Overview, Limits, and Budget navigation">
+      <p><b>Cost center members.</b> The selected center's people, applications, agents, and
+      security groups, with overview, limits, and budget in separate sections. Removing a member
+      revokes the grants that relied on it and deletes their
       keys on the next apply.</p>
     </td>
   </tr>
@@ -243,12 +243,12 @@ one under **Settings > Appearance**.
       <p><b>Analytics.</b> Real gateway usage rolled up from Log Analytics, filtered by time range,
       gateway, environment, resource, cost center, and kind of subject. The overview compares the
       headline figures, cost among them, with the previous period and ranks the top models,
-      callers, cost centers, and APIs, and every tab exports CSV.</p>
+      callers, cost centers, and APIs, and each report has a CSV export.</p>
     </td>
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/console-analytics-cost.png" alt="The Cost tab with this month's spend, the month-end forecast, the range's cost, a cost and token trend, and cost by model, consumer, and cost center">
+      <img src="docs/images/screenshots/console-analytics-cost.png" alt="The Cost section with this month's spend, the month-end forecast, the range's cost, a cost and token trend, and cost by model, consumer, and cost center">
       <p><b>Cost.</b> What measured usage cost at list price: this month's spend and its month-end
       forecast, the range's cost and trend, and cost by model, consumer, cost center, API, and
       deployment, with a chargeback export that names each row's cost center. Usage MOSAIC can't
@@ -264,14 +264,14 @@ one under **Settings > Appearance**.
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/console-analytics-consumers.png" alt="The Consumers tab listing people, agents, applications, and security groups with their requests, tokens, grants, resources, last call, and cost">
+      <img src="docs/images/screenshots/console-analytics-consumers.png" alt="The Consumers section listing people, agents, applications, and security groups with their requests, tokens, grants, resources, last call, and cost">
       <p><b>Consumers.</b> Each person, agent, application, and security group that called a
       governed API, with requests, tokens, grants, resources, when they were last seen, and what
       their calls cost. Below it, model use through MCP servers by person, and the same usage by
       grant, by cost center, and by client application.</p>
     </td>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/console-analytics-limits.png" alt="The Limits tab showing each grant's cost center and its quota and rate-limit use with reached, near-limit, and OK badges">
+      <img src="docs/images/screenshots/console-analytics-limits.png" alt="The Limits section showing each grant's cost center and its quota and rate-limit use with reached, near-limit, and OK badges">
       <p><b>Grant limits.</b> How close each grant is to its quotas and rate limits, busiest first,
       with its cost center and the calls the gateway throttled or refused for quota. A grant is
       near its limit at 80% and has reached it once the gateway refuses its calls.</p>
@@ -286,7 +286,7 @@ one under **Settings > Appearance**.
       MOSAIC published, refresh now, or backfill from the workspace's retention.</p>
     </td>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/console-analytics-reliability.png" alt="The Reliability tab with successful, throttled, backend 429, and denied counts, a latency histogram, and denials by reason">
+      <img src="docs/images/screenshots/console-analytics-reliability.png" alt="The Reliability section with successful, throttled, backend 429, and denied counts, a latency histogram, and denials by reason">
       <p><b>Reliability.</b> Successful calls, calls the gateway throttled, 429s from the model
       deployments, and denied calls, with an estimated latency histogram. Denials are broken down by
       reason, such as a caller who isn't signed in or a key the gateway doesn't know.</p>
@@ -330,11 +330,25 @@ one under **Settings > Appearance**.
       an endpoint and a sender here, and <b>Send test email</b> checks both.</p>
     </td>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/console-analytics-mcp-model-use.png" alt="The Consumers tab's Model use through MCP servers table, listing each person, the MCP server, and the application that called models for them, with requests, tokens, share, and cost, below a count of the references MOSAIC couldn't attribute, by reason">
+      <img src="docs/images/screenshots/console-analytics-mcp-model-use.png" alt="The Consumers section's Model use through MCP servers table, listing each person, the MCP server, and the application that called models for them, with requests, tokens, share, and cost, below a count of the references MOSAIC couldn't attribute, by reason">
       <p><b>Model use through MCP servers.</b> The model calls an MCP server's application made for
       each person who called the server, with the application, requests, tokens, and cost, and the
       references MOSAIC couldn't use, by reason. The calls stay the application's own in every
       other figure, so the table adds to no total.</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/images/screenshots/console-access-requests.png" alt="Pending access requests with requester, resource, cost center, justification, and approval or denial actions">
+      <p><b>Access requests.</b> The focused approval queue is reachable from the header's live
+      pending count or the Entitlements section menu. Approval saves grant intent; administrators
+      still review and apply the gateway changes separately.</p>
+    </td>
+    <td width="50%" valign="top">
+      <img src="docs/images/screenshots/console-model-access-settings.png" alt="A selected published model's authentication settings, desired and applied access state, and model-wide review controls">
+      <p><b>Model access settings.</b> A dedicated section configures authentication for a
+      selected published model, distinct from filtering individual grants. Review includes all
+      saved grants and settings for that model and does not apply them automatically.</p>
     </td>
   </tr>
 </table>
@@ -345,14 +359,15 @@ one under **Settings > Appearance**.
   <tr>
     <td width="50%" valign="top">
       <img src="docs/images/screenshots/portal-access.png" alt="A model grant with its cost center, environment, limits, and expanded connection details">
-      <p><b>My access.</b> Each grant with the cost center it charges, its environment, limits,
-      APIM state, and how its usage is tracked. A direct model grant expands to show its endpoint,
+      <p><b>My access.</b> Compact grant summaries show cost center, environment, and gateway
+      readiness, while a selected grant's contextual panel shows limits and usage attribution.
+      Its connection section shows the endpoint,
       operations, cost-center header, accepted credentials, and Entra details, with code samples
       and its key below.</p>
     </td>
     <td width="50%" valign="top">
       <img src="docs/images/screenshots/portal-mcp-connection.png" alt="An enforced MCP grant with VS Code mcp.json connection details">
-      <p><b>MCP connection.</b> An enforced MCP grant expands to show the server URL, protected
+      <p><b>MCP connection.</b> An enforced MCP grant's detail panel shows the server URL, protected
       resource metadata, VS Code <code>mcp.json</code> snippet, Entra authentication values, and
       call limits.</p>
     </td>
@@ -368,7 +383,8 @@ one under **Settings > Appearance**.
     <td width="50%" valign="top">
       <img src="docs/images/screenshots/portal-requests.png" alt="Approved, denied, and pending access requests with their environments and cost centers">
       <p><b>My requests.</b> Access requests with their environment, cost center, justification,
-      state, and the administrator's decision note. A pending request can be withdrawn.</p>
+      state, and the administrator's decision note, with status filters and exact grant links.
+      Withdrawing a pending request requires confirmation.</p>
     </td>
   </tr>
   <tr>
@@ -380,13 +396,10 @@ one under **Settings > Appearance**.
       show when they used it.</p>
     </td>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/portal-usage-resources.png" alt="Each of a person's cost centers with this month's total, and each       pooled resource's total against its quota, then their model use through MCP servers by model, with the cost center each was charged to, then usage by resource with each grant's requests, tokens, estimated cost, quota use, busiest minute, and usage tracking">
-      <p><b>Cost centers and usage by resource.</b> Each cost center the person charges, with this
-      month's total from everyone who charges it, and each pooled resource they hold there against
-      its quota: totals only, never who used them. Then the model calls MCP servers made for them,
-            by model, charged to each server's application grant, not to them. Below, their own figures
-            by granted resource, with each one's estimated cost, or <b>No price</b> and why, each quota's
-            use, the busiest minute against each rate limit, and how its calls are linked.</p>
+      <img src="docs/images/screenshots/portal-usage-resources.png" alt="Usage by granted resource with requests, tokens, estimated cost, quotas, rate limits, and usage tracking">
+      <p><b>Usage by resource.</b> A dedicated report shows each grant's requests, tokens,
+      estimated cost or <b>No price</b>, quota use, busiest minute, and attribution.
+      Overview and breakdowns share the same period and resource/environment filters.</p>
     </td>
   </tr>
   <tr>
@@ -397,10 +410,24 @@ one under **Settings > Appearance**.
       shows the cost center's total against its budget, never anyone's own share.</p>
     </td>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/portal-pool-connection.png" alt="A Claude Sonnet 4.5 grant's connection details: one base URL and the model name to send, the cost center header, accepted credentials, Entra values, and a key that also works for Claude Opus 4.5">
+      <img src="docs/images/screenshots/portal-pool-connection.png" alt="A selected Claude Sonnet 4.5 grant's contextual connection details, with one base URL, the model name to send, the cost-center header, and a curl sample">
       <p><b>Models that share a key.</b> A model served from several deployments shows one base URL
       and the model name to send, never the deployments behind it. One key serves every such model
       a person holds there under the same cost center, and the portal names the others it covers.</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/images/screenshots/portal-request-access.png" alt="The catalog with a contextual access request panel for a selected model">
+      <p><b>Request access.</b> Select a catalog resource to choose the cost center charged
+      for calls, check existing access or requests, and add a justification. The focused form
+      keeps discovery separate from requesting access.</p>
+    </td>
+    <td width="50%" valign="top">
+      <img src="docs/images/screenshots/portal-usage-breakdowns.png" alt="Usage breakdowns with aggregate cost-center totals and pooled quotas">
+      <p><b>Usage breakdowns.</b> Each cost center shows aggregate monthly totals and pooled
+      quotas for resources the person holds, never another person's activity. The same report
+      separates model calls an MCP server made on their behalf from their own usage totals.</p>
     </td>
   </tr>
 </table>

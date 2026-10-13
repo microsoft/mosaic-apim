@@ -286,3 +286,11 @@
     margin-bottom: 8px;
   }
 }
+.lifecycleActions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  padding-block: 16px;
+  border-top: 1px solid var(--mosaic-border-soft);
+}

@@ -116,6 +116,8 @@ const api = {
   enableGatewayTelemetry: vi.fn(),
   refreshGatewayTelemetry: vi.fn(),
   backfillGatewayTelemetry: vi.fn(),
+  listGatewayBackends: vi.fn(),
+  listGatewayNamedValues: vi.fn(),
 }
 
 vi.mock('../api', () => ({
@@ -137,7 +139,7 @@ function serve(initial: Gateway) {
   )
 }
 
-function renderPage() {
+function renderPage(entry = '/gateways/gateway_1') {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   })
@@ -147,7 +149,7 @@ function renderPage() {
   render(
     <QueryClientProvider client={queryClient}>
       <FluentProvider theme={webLightTheme}>
-        <MemoryRouter initialEntries={['/gateways/gateway_1']}>
+        <MemoryRouter initialEntries={[entry]}>
           <Routes>
             <Route path="/gateways/:gatewayId" element={<GatewayDetailPage />} />
           </Routes>
@@ -188,6 +190,30 @@ describe('GatewayDetailPage management mode', () => {
     api.enableGatewayTelemetry.mockResolvedValue(telemetryFixture)
     api.refreshGatewayTelemetry.mockResolvedValue({})
     api.backfillGatewayTelemetry.mockResolvedValue({})
+    api.listGatewayBackends.mockResolvedValue([])
+    api.listGatewayNamedValues.mockResolvedValue([])
+  })
+
+  it('supports section deep links and fetches observed details only when selected', async () => {
+    const user = userEvent.setup()
+    serve(gateway({ access: writable }))
+    renderPage('/gateways/gateway_1?tab=backends')
+    expect(await screen.findByText('No backends')).toBeVisible()
+    expect(screen.getByText(/Read-only · Synced from APIM/)).toBeVisible()
+    expect(api.listGatewayBackends).toHaveBeenCalledWith('gateway_1')
+    expect(api.getGatewayTelemetry).not.toHaveBeenCalled()
+    expect(screen.queryByRole('radiogroup', { name: 'Management mode' })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Overview' }))
+    expect(await modeControl()).toBeVisible()
+    expect(screen.getByRole('region', { name: 'Observed inventory' })).toBeVisible()
+    expect(screen.queryByRole('heading', { name: 'Named values' })).not.toBeInTheDocument()
+  })
+
+  it('falls back to overview for an unknown section', async () => {
+    serve(gateway({ access: writable }))
+    renderPage('/gateways/gateway_1?tab=unknown')
+    expect(await modeControl()).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Overview' })).toHaveAttribute('aria-current', 'page')
   })
 
   it('shows the gateway’s real management mode', async () => {

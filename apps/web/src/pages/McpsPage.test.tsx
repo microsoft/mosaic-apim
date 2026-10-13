@@ -333,7 +333,7 @@ function LocationProbe() {
   return <span data-testid="location">{`${location.pathname}${location.search}`}</span>
 }
 
-function renderPage(entry = '/mcps') {
+function renderMcpsPage(entry = '/mcps') {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   })
@@ -346,6 +346,8 @@ function renderPage(entry = '/mcps') {
     </QueryClientProvider>,
   )
 }
+
+const renderPage = renderMcpsPage
 
 describe('McpsPage', () => {
   beforeEach(() => {
@@ -429,8 +431,23 @@ describe('McpsPage', () => {
     api.preflightMcpEndpoint.mockResolvedValue(buildMcpEndpoint())
   })
 
+  it('loads only the selected section and keeps lifecycle tasks separate', async () => {
+    const user = userEvent.setup()
+    renderPage('/mcps?tab=invalid')
+    expect(await screen.findByText('No MCP servers published yet')).toBeVisible()
+    expect(api.listMcpEndpoints).not.toHaveBeenCalled()
+    expect(api.listMcpServers).not.toHaveBeenCalled()
+    await user.click(screen.getByRole('button', { name: 'Registered MCP servers' }))
+    expect(await screen.findByRole('button', { name: 'Register server' })).toBeVisible()
+    expect(screen.queryByRole('heading', { name: 'Published MCP servers' })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Imported MCP servers' }))
+    expect(await screen.findByText('No MCP servers imported yet')).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Register server' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Import from gateway' })).toBeVisible()
+  })
+
   it('invites an import when nothing has been adopted yet', async () => {
-    renderPage()
+    renderPage('/mcps?tab=imported')
 
     expect(await screen.findByText('No MCP servers imported yet')).toBeVisible()
     expect(screen.getByText(/MCP grant enforcement depends on how the server is governed/)).toBeVisible()
@@ -439,7 +456,7 @@ describe('McpsPage', () => {
   it('shows the transport and gateway of an imported server', async () => {
     api.listMcpServers.mockResolvedValue([mcpServer])
 
-    renderPage()
+    renderPage('/mcps?tab=imported')
 
     const table = await screen.findByRole('table', { name: 'Imported MCP servers' })
     expect(within(table).getByText('Weather MCP')).toBeVisible()
@@ -459,7 +476,7 @@ describe('McpsPage', () => {
     expect(within(table).getByText('Published')).toBeVisible()
     expect(within(table).getByText('Access applied')).toBeVisible()
 
-    await user.click(within(table).getByRole('button', { name: 'Plan and apply' }))
+    await user.click(within(table).getByRole('button', { name: /Review changes|Review publish plan/ }))
     expect(await screen.findByRole('dialog')).toBeVisible()
     expect(api.planMcpPublication).toHaveBeenCalledWith('mcp_pub_1')
     expect(await screen.findByRole('table', { name: 'MCP publish plan steps' })).toBeVisible()
@@ -470,7 +487,7 @@ describe('McpsPage', () => {
     expect(dialog).toContainElement(document.activeElement as HTMLElement)
     await user.keyboard('{Escape}')
     await waitFor(() => expect(document.querySelector('[role="dialog"]')).toBeNull())
-    const opener = screen.getByRole('button', { name: 'Plan and apply' })
+    const opener = screen.getByRole('button', { name: /Review changes|Review publish plan/ })
     await waitFor(() => expect(opener).toHaveFocus())
     await user.click(opener)
     await waitFor(() => expect(screen.getByRole('button', { name: 'Close' })).toHaveFocus())
@@ -486,7 +503,7 @@ describe('McpsPage', () => {
     api.listMcpPublications.mockResolvedValue([mcpPublication])
     api.planMcpPublication.mockReturnValueOnce(new Promise<PublishPlan>((resolve) => { finish = resolve }))
     renderPage()
-    await user.click(await screen.findByRole('button', { name: 'Plan and apply' }))
+    await user.click(await screen.findByRole('button', { name: /Review changes|Review publish plan/ }))
     const planning = await screen.findByRole('button', { name: 'Planning…' })
     expect(planning).toHaveFocus()
     expect(planning).toHaveAttribute('aria-disabled', 'true')
@@ -497,14 +514,14 @@ describe('McpsPage', () => {
     await act(async () => { finish(mcpPlan) })
     await waitFor(() => expect(screen.getByRole('button', { name: 'Close' })).toHaveFocus())
     await user.keyboard('{Escape}')
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Plan and apply' })).toHaveFocus())
+    await waitFor(() => expect(screen.getByRole('button', { name: /Review changes|Review publish plan/ })).toHaveFocus())
     expect(api.applyMcpPublication).not.toHaveBeenCalled()
   })
 
   it.each(['Publish an MCP server', 'Publish through a gateway'])('restores the %s opener after publishing is dismissed', async (name) => {
     const user = userEvent.setup()
     api.listMcpEndpoints.mockResolvedValue([buildMcpEndpoint()])
-    renderPage()
+    renderPage(name === 'Publish through a gateway' ? '/mcps?tab=registered' : '/mcps')
     const opener = await screen.findByRole('button', { name })
     await user.click(opener)
     await waitFor(() => expect(screen.getByRole('dialog')).toContainElement(document.activeElement as HTMLElement))
@@ -555,8 +572,8 @@ describe('McpsPage', () => {
 
     const table = await screen.findByRole('table', { name: 'Published MCP servers' })
     expect(within(table).getByText(/Not applied yet/)).toBeVisible()
-    expect(within(table).getByText('Still live as Old bot. Plan and apply to switch.')).toBeVisible()
-    expect(within(table).getByRole('button', { name: 'Plan and apply' })).toBeVisible()
+    expect(within(table).getByText('Still live as Old bot. Review changes and apply the plan to switch.')).toBeVisible()
+    expect(within(table).getByRole('button', { name: /Review changes|Review publish plan/ })).toBeVisible()
   })
 
   it('says what to do when a model caller is named but never applied, or cleared while live', async () => {
@@ -580,10 +597,10 @@ describe('McpsPage', () => {
     const table = await screen.findByRole('table', { name: 'Published MCP servers' })
     const [named, cleared, none] = within(table).getAllByRole('row').slice(1)
     expect(within(named).getByText('Not applied yet')).toBeVisible()
-    expect(within(named).getByText('Plan and apply to start attributing its model calls.')).toBeVisible()
+    expect(within(named).getByText('Review changes and apply the plan to start attributing its model calls.')).toBeVisible()
     expect(within(cleared).getByText('None')).toBeVisible()
     expect(
-      within(cleared).getByText('Still live as Support bot. Plan and apply to stop attributing its model calls.'),
+      within(cleared).getByText('Still live as Support bot. Review changes and apply the plan to stop attributing its model calls.'),
     ).toBeVisible()
     expect(within(none).getAllByText('None')).toHaveLength(1)
     expect(within(none).queryByText('Not applied yet')).not.toBeInTheDocument()
@@ -677,7 +694,7 @@ describe('McpsPage', () => {
     expect(within(table).getByText(`Unpublished ${new Date(unpublishedAt).toLocaleString()}`)).toBeVisible()
     expect(within(table).queryByText('Access applied')).not.toBeInTheDocument()
     expect(within(table).queryByText('Draft')).not.toBeInTheDocument()
-    expect(within(table).getByRole('button', { name: 'Plan and apply' })).toBeEnabled()
+    expect(within(table).getByRole('button', { name: /Review changes|Review publish plan/ })).toBeEnabled()
   })
 
   it('says a server MOSAIC publishes is hidden from the portal while it is not published', async () => {
@@ -687,7 +704,7 @@ describe('McpsPage', () => {
     ])
     api.listMcpPublications.mockResolvedValue([{ ...mcpPublication, status: 'draft', resources: [] }])
 
-    renderPage()
+    renderPage('/mcps?tab=imported')
 
     const table = await screen.findByRole('table', { name: 'Imported MCP servers' })
     const [, published, imported] = within(table).getAllByRole('row')
@@ -700,11 +717,11 @@ describe('McpsPage', () => {
   it('marks MOSAIC-published imported rows and points deletion to the publication', async () => {
     api.listMcpServers.mockResolvedValue([{ ...mcpServer, publicationId: 'mcp_pub_1' }])
 
-    renderPage()
+    renderPage('/mcps?tab=imported')
 
     const table = await screen.findByRole('table', { name: 'Imported MCP servers' })
     expect(within(table).getByText('Published by MOSAIC')).toBeVisible()
-    expect(within(table).getByText('Delete the publication instead.')).toBeVisible()
+    expect(within(table).getByText('Remove the publication record instead.')).toBeVisible()
     expect(within(table).queryByRole('button', { name: 'Remove' })).not.toBeInTheDocument()
   })
 
@@ -767,6 +784,9 @@ describe('McpsPage', () => {
   })
 
   describe('registered servers', () => {
+    function renderPage(entry = '/mcps?tab=registered') {
+      return renderMcpsPage(entry)
+    }
     it('invites a registration when nothing is registered yet', async () => {
       renderPage()
 

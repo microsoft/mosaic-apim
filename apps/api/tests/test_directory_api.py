@@ -200,6 +200,49 @@ def test_directory_search_when_lookup_is_on_and_principal_annotation(
     assert response.json()[0]["principalId"] == principal["id"]
 
 
+def test_application_lookup_and_registration_preserve_manual_semantics(
+    directory_client: TestClient,
+) -> None:
+    install_directory_lookup(
+        directory_client.app,
+        FakeDirectoryLookup(
+            [
+                DirectoryObject(
+                    object_id=USER_ID,
+                    kind=PrincipalKind.MANAGED_IDENTITY,
+                    display_name="Build workload",
+                ),
+                DirectoryObject(
+                    object_id=AGENT_ID,
+                    kind=PrincipalKind.AGENT_IDENTITY,
+                    display_name="Build agent",
+                ),
+            ]
+        ),
+    )
+    response = directory_client.get(
+        "/api/v1/directory/search", params={"kind": "application", "q": "Build", "limit": 5}
+    )
+    assert response.status_code == 200
+    assert [item["kind"] for item in response.json()] == ["managedIdentity"]
+    created = directory_client.post(
+        "/api/v1/principals",
+        json={"objectId": USER_ID, "kind": "managedIdentity", "label": "Build workload"},
+    )
+    assert created.status_code == 201
+    assert created.json()["directoryVerifiedAt"] is None
+    again = directory_client.get(
+        "/api/v1/directory/search", params={"kind": "application", "q": "Build"}
+    )
+    assert again.json()[0]["principalId"] == created.json()["id"]
+    assert (
+        directory_client.get(
+            "/api/v1/directory/search", params={"kind": "application", "q": "Build", "limit": 26}
+        ).status_code
+        == 422
+    )
+
+
 def test_verify_on_create_success_missing_object_kind_mismatch_and_lowercasing(
     directory_client: TestClient,
 ) -> None:

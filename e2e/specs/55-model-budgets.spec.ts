@@ -66,7 +66,7 @@ test.describe('55 isolated model cost centers and budgets', { tag: ['@model-budg
         await budgetReady(run.api, scope)
         const fixture = scope.budget!
         const center = run.centers.get(fixture.grant.costCenterId)!
-        const page = new CostCenterBudgetPage(await personas.page(targets.roles.admin, 'web', `/cost-centers/${center.id}`), targets, center.id)
+        const page = new CostCenterBudgetPage(await personas.page(targets.roles.admin, 'web', `/cost-centers/${center.id}?tab=budget`), targets, center.id)
         await page.loaded(center.name)
         const result = await budgetProof(scope, journey, {
           read: () => run.api.get<ModelBudgetView | null>(`/api/v1/cost-centers/${center.id}/budget`),

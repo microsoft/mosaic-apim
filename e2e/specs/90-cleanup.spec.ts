@@ -26,6 +26,7 @@ test.describe('90 cleanup', { tag: ['@console', '@writes', '@cleanup'] }, () => 
       return
     }
     const entitlements = await EntitlementsPage.open(personas, targets)
+    await entitlements.selectSection('requests')
     for (const request of open) {
       await expectOk(await entitlements.deny(entitlements.requestRow(request.justification ?? '')), "Denying one of the suite's open requests")
     }

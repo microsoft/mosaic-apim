@@ -91,7 +91,7 @@ describe('MyRequestsPage', () => {
     ).toBeVisible()
     expect(request.getByRole('link', { name: 'See its status in My access' })).toHaveAttribute(
       'href',
-      '/access',
+      '/access?grant=entitlement-1',
     )
     expect(request.queryByRole('button', { name: 'Withdraw' })).not.toBeInTheDocument()
   })

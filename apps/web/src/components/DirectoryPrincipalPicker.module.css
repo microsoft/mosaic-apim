@@ -60,6 +60,20 @@
 .secondary {
   color: var(--mosaic-text-muted);
   font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.results details {
+  padding: 8px 14px;
+}
+
+.results summary {
+  cursor: pointer;
+}
+
+.results summary:focus-visible {
+  outline: 2px solid var(--mosaic-primary);
+  outline-offset: 2px;
 }
 
 .liveRegion {

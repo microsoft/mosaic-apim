@@ -1,6 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApiError } from '../api'
 import { MosaicThemeProvider } from '../theme'
@@ -76,12 +77,12 @@ const catalog: EnvironmentCatalogView = {
   updatedAt: null,
 }
 
-function renderSettings() {
+function renderSettings(section = 'environments') {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={queryClient}>
       <MosaicThemeProvider>
-        <SettingsPage />
+        <MemoryRouter initialEntries={[`/settings?tab=${section}`]}><SettingsPage /></MemoryRouter>
       </MosaicThemeProvider>
     </QueryClientProvider>,
   )
@@ -105,6 +106,8 @@ describe('SettingsPage', () => {
     const user = userEvent.setup()
     renderSettings()
 
+    expect(screen.queryByRole('radio', { name: 'Dark' })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Appearance' }))
     await user.click(await screen.findByRole('radio', { name: 'Dark' }))
 
     expect(document.documentElement.dataset.theme).toBe('dark')
@@ -123,6 +126,29 @@ describe('SettingsPage', () => {
     ).toBeVisible()
     expect(screen.getByText('2 model endpoints')).toBeVisible()
     expect(screen.getByText('1 MCP server')).toBeVisible()
+  })
+
+  it('keeps persisted, read-only and local settings in separate views', async () => {
+    const user = userEvent.setup()
+    renderSettings()
+    await screen.findByRole('heading', { name: 'Environments' })
+    expect(screen.queryByRole('form', { name: 'Email settings' })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Runtime configuration' }))
+    expect(screen.getByRole('heading', { name: 'Runtime identity and configuration' })).toBeVisible()
+    expect(screen.queryByRole('textbox', { name: 'Support destination alias' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Add environment' })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Integration preview' }))
+    const field = screen.getByRole('textbox', { name: 'Support destination alias' })
+    await user.clear(field)
+    await user.type(field, 'local-draft')
+    await user.click(screen.getByRole('button', { name: 'Save local preview' }))
+    expect(screen.getByText(/Shared MOSAIC runtime configuration was not changed/)).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Budget email' }))
+    expect(await screen.findByRole('form', { name: 'Email settings' })).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Save local preview' })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Integration preview' }))
+    expect(screen.getByRole('textbox', { name: 'Support destination alias' })).toHaveValue('local-draft')
+    expect(api.saveEmailSettings).not.toHaveBeenCalled()
   })
 
   it('validates create keys before calling the API', async () => {
@@ -262,7 +288,7 @@ describe('SettingsPage', () => {
       updatedAt: '2026-09-01T12:00:00Z',
     }
     api.saveEmailSettings.mockResolvedValue(saved)
-    renderSettings()
+    renderSettings('email')
 
     const form = await screen.findByRole('form', { name: 'Email settings' })
     expect(screen.getByText('Not set up')).toBeVisible()
@@ -288,7 +314,7 @@ describe('SettingsPage', () => {
 
   it('refuses to turn email on without an endpoint and a sender', async () => {
     const user = userEvent.setup()
-    renderSettings()
+    renderSettings('email')
     const form = await screen.findByRole('form', { name: 'Email settings' })
     await user.click(within(form).getByRole('switch', { name: 'Send budget email' }))
     await user.click(within(form).getByRole('button', { name: 'Save email settings' }))
@@ -310,7 +336,7 @@ describe('SettingsPage', () => {
     api.sendTestEmail
       .mockResolvedValueOnce({ sent: true, to: 'avery@contoso.com', operationId: 'op-1', error: null })
       .mockRejectedValueOnce(new ApiError('A test email went less than 30 seconds ago', 429))
-    renderSettings()
+    renderSettings('email')
 
     const test = await screen.findByRole('form', { name: 'Test email' })
     expect(screen.getByText('Off')).toBeVisible()
@@ -331,12 +357,19 @@ describe('SettingsPage', () => {
       endpoint: 'https://contoso-mosaic.communication.azure.com',
       sender: 'DoNotReply@contoso.azurecomm.net',
     })
-    renderSettings()
+    renderSettings('email')
     const form = await screen.findByRole('form', { name: 'Email settings' })
     const test = screen.getByRole('form', { name: 'Test email' })
     expect(within(test).getByRole('button', { name: 'Send test email' })).toBeEnabled()
     await user.type(within(form).getByRole('textbox', { name: 'Sender address' }), 'x')
     expect(within(test).getByRole('button', { name: 'Send test email' })).toBeDisabled()
     expect(within(test).getByText(/Save your changes first/)).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Appearance' }))
+    expect(screen.queryByRole('form', { name: 'Email settings' })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Budget email' }))
+    const returned = await screen.findByRole('form', { name: 'Email settings' })
+    expect(within(returned).getByRole('textbox', { name: 'Sender address' })).toHaveValue('DoNotReply@contoso.azurecomm.netx')
+    expect(screen.getByRole('button', { name: 'Send test email' })).toBeDisabled()
+    expect(screen.getByText(/Save your changes first/)).toBeVisible()
   })
 })

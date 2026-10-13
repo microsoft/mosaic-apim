@@ -42,6 +42,7 @@ vi.mock('./api', async (importOriginal) => {
     getConsoleAccess: mocks.getConsoleAccess,
     listPrincipals: async () => [],
     listGroups: async () => [],
+    listAccessRequests: async () => [],
   }
   return { ...actual, useMosaicApi: () => api }
 })
@@ -89,6 +90,7 @@ beforeEach(() => {
   mocks.getConsoleAccess.mockReset()
   mocks.loginRedirect.mockReset()
   mocks.logoutRedirect.mockReset()
+  localStorage.removeItem('mosaic.primary.collapsed')
 })
 
 describe('App shell', () => {
@@ -101,7 +103,9 @@ describe('App shell', () => {
     for (const label of primaryLinks) {
       expect(screen.getByRole('link', { name: label })).toBeVisible()
     }
-    expect(screen.getByRole('button', { name: 'Add model endpoint' })).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Add model endpoint' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Collapse navigation' })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Notifications' })).toBeVisible()
     expect(screen.queryByText('AzureLite')).not.toBeInTheDocument()
     // Cost centers sits next to Entitlements; Pricing sits right after Analytics, whose figures it prices.
     const primary = within(screen.getByRole('navigation', { name: 'Primary navigation' }))
@@ -141,11 +145,11 @@ describe('Console access in Entra mode', () => {
     for (const label of primaryLinks) {
       expect(screen.getByRole('link', { name: label })).toBeVisible()
     }
-    expect(screen.getByRole('button', { name: 'Add model endpoint' })).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Add model endpoint' })).not.toBeInTheDocument()
     expect(screen.getByText('MOSAIC Admin')).toBeVisible()
     expect(screen.queryByText('Global Admin')).not.toBeInTheDocument()
     expect(screen.getByText('Name (Team)')).toBeVisible()
-    expect(screen.getAllByText('NT')).toHaveLength(2)
+    expect(screen.getAllByText('NT')).toHaveLength(1)
     expect(screen.queryByText('N(')).not.toBeInTheDocument()
     expect(mocks.getConsoleAccess).toHaveBeenCalledTimes(1)
   })

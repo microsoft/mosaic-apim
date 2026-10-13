@@ -19,16 +19,6 @@
   color: var(--mosaic-text-muted);
 }
 
-.tabs {
-  margin-bottom: 16px;
-  overflow-x: auto;
-  border-bottom: 1px solid var(--mosaic-border-soft);
-}
-
-.tabBadge {
-  margin-left: 6px;
-}
-
 .controls {
   display: flex;
   flex-wrap: wrap;
@@ -43,6 +33,27 @@
   color: var(--mosaic-text-muted);
   font-size: 12px;
   font-weight: 600;
+}
+
+.priceTableScroll {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.priceTable {
+  min-width: 1320px;
+}
+
+.priceTable > thead > tr > th:first-child {
+  min-width: 240px;
+}
+
+.priceTable > thead > tr > th:nth-child(8) {
+  min-width: 200px;
+}
+
+.priceTable > thead > tr > th:last-child {
+  min-width: 200px;
 }
 
 .priceTable td {

@@ -22,6 +22,7 @@ const searchKindLabels: Record<DirectorySearchKind, string> = {
   user: 'People',
   agent: 'Agents',
   group: 'Security groups',
+  application: 'Applications & managed identities',
 }
 
 function directoryErrorMessage(error: unknown) {
@@ -40,7 +41,7 @@ function directoryErrorMessage(error: unknown) {
 }
 
 function resultLabel(result: DirectoryObject) {
-  return result.displayName?.trim() || result.objectId
+  return result.displayName?.trim() || `Unnamed ${PRINCIPAL_KIND_LABELS[result.kind].toLowerCase()}`
 }
 
 export function DirectoryPrincipalPicker({
@@ -75,11 +76,7 @@ export function DirectoryPrincipalPicker({
     enabled: debouncedQuery.length >= 2,
   })
 
-  useEffect(() => {
-    if (search.error instanceof ApiError && search.error.status === 409 && search.error.body?.code === 'directory_disabled') {
-      onManualFallback?.()
-    }
-  }, [onManualFallback, search.error])
+  const currentResults = query.trim() === debouncedQuery && debouncedQuery.length >= 2
 
   const createPrincipal = useMutation({
     mutationFn: (result: DirectoryObject) =>
@@ -99,9 +96,10 @@ export function DirectoryPrincipalPicker({
   })
 
   const status = useMemo(() => {
-    if (debouncedQuery.length < 2) {
+    if (query.trim().length < 2) {
       return 'Enter at least 2 characters to search.'
     }
+    if (!currentResults) return 'Waiting to search.'
     if (search.isPending) {
       return 'Searching directory.'
     }
@@ -109,10 +107,10 @@ export function DirectoryPrincipalPicker({
       return `${search.data.length} result${search.data.length === 1 ? '' : 's'} found.`
     }
     return ''
-  }, [debouncedQuery.length, search.data?.length, search.isPending, search.isSuccess])
+  }, [query, currentResults, search.data?.length, search.isPending, search.isSuccess])
 
   function add(result: DirectoryObject) {
-    if (result.principalId) {
+    if (result.principalId || !currentResults || createPrincipal.isPending) {
       return
     }
     createPrincipal.reset()
@@ -143,7 +141,7 @@ export function DirectoryPrincipalPicker({
           <Input
             value={query}
             aria-label="Directory search"
-            placeholder="Type a name, UPN, app ID, or mail nickname"
+            placeholder={kind === 'application' ? 'Type a name prefix, object ID, or app ID' : 'Type a name, UPN, app ID, or mail nickname'}
             onChange={(_, data) => setQuery(data.value)}
           />
         </Field>
@@ -154,28 +152,39 @@ export function DirectoryPrincipalPicker({
       </div>
       <Text size={200}>{status}</Text>
 
-      {search.isError && (
+      {currentResults && search.isError && (
         <MessageBar intent="error">
           <MessageBarBody>
             <MessageBarTitle>Directory search failed</MessageBarTitle>
             {directoryErrorMessage(search.error)}
+            <div>
+              <Button onClick={() => search.refetch()} disabled={search.isFetching}>Retry directory search</Button>
+              {' '}<a href="/settings?tab=runtime">Check directory configuration</a>
+            </div>
           </MessageBarBody>
         </MessageBar>
       )}
       {createPrincipal.isError && <ErrorState title="Unable to add identity" error={createPrincipal.error} />}
-      {search.isPending && debouncedQuery.length >= 2 && <Loading label="Searching directory" />}
+      {search.isPending && currentResults && <Loading label="Searching directory" />}
 
-      {search.data && search.data.length > 0 && (
+      {currentResults && search.isSuccess && search.data.length === 0 && (
+        <Text>No matching directory identities. Try another name or use manual entry.</Text>
+      )}
+      {currentResults && search.data && search.data.length > 0 && (
         <ul className={styles.results} aria-label="Directory search results">
           {search.data.map((result) => {
             const alreadyAdded = Boolean(result.principalId)
+            const ambiguous = (search.data ?? []).filter((item) => resultLabel(item) === resultLabel(result)).length > 1
+            const choiceLabel = ambiguous
+              ? `${resultLabel(result)} (${PRINCIPAL_KIND_LABELS[result.kind]}; ${result.detail || result.appId || result.objectId})`
+              : resultLabel(result)
             return (
               <li key={`${result.kind}:${result.objectId}`}>
                 <button
                   type="button"
                   className={styles.resultButton}
                   disabled={alreadyAdded || createPrincipal.isPending}
-                  aria-label={`${alreadyAdded ? 'Already added: ' : 'Add '}${resultLabel(result)}`}
+                  aria-label={`${alreadyAdded ? 'Already added: ' : 'Add '}${choiceLabel}`}
                   onClick={() => add(result)}
                 >
                   <span className={styles.resultHeader}>
@@ -192,24 +201,26 @@ export function DirectoryPrincipalPicker({
                   {result.blueprintId && (
                     <span className={styles.secondary}>Blueprint {result.blueprintId}</span>
                   )}
-                  <span className={styles.secondary}>
-                    {PRINCIPAL_KIND_LABELS[result.kind]} · {result.objectId}
-                  </span>
                 </button>
+                <details className={styles.secondary}>
+                  <summary>Technical details for {resultLabel(result)}</summary>
+                  Microsoft Entra · {PRINCIPAL_KIND_LABELS[result.kind]} · {result.objectId}
+                  {result.appId && <div>Application ID: {result.appId}</div>}
+                </details>
               </li>
             )
           })}
         </ul>
       )}
 
-      <Button
+      {onManualFallback && <Button
         appearance="secondary"
         type="button"
         className={styles.manualEntry}
         onClick={onManualFallback}
       >
         Use manual entry
-      </Button>
+      </Button>}
     </div>
   )
 }

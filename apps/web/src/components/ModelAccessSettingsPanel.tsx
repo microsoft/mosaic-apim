@@ -63,6 +63,10 @@ export function ModelAccessSettingsPanel({
           {publication.governedAccess ? `Access: ${publication.accessState}` : 'Legacy publication'}
         </Badge>
       </div>
+      <Text size={200}>
+        Settings belong to this published model, not the grants-table filters. Save intent first,
+        then review the complete model plan. API Management changes only when you explicitly apply that plan.
+      </Text>
       {!publication.appliedAccess && (
         <MessageBar intent="warning">
           <MessageBarBody>

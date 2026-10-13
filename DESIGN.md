@@ -1,0 +1,39 @@
+# MOSAIC interface conventions
+
+## Visual authority
+
+Use the existing Fluent UI React components and semantic `--mosaic-*` tokens in each app's
+`src/index.css`. System typography follows Segoe UI, Aptos, and the platform system stack. Blue
+identifies navigation and primary actions; warning and danger colors communicate actual state,
+not decorative emphasis. Both apps support system, light, and dark appearance.
+
+## Navigation and hierarchy
+
+A collapsible primary rail contains domains and one bottom account menu. The administrator's
+slim header contains page/section search and actionable pending-request notifications.
+Section navigation presents one real view at a time, preserving URL parameters and browser
+history. At constrained widths, a labeled selector replaces the section rail.
+
+Primary mobile navigation is modal, traps focus, restores the opener, and makes the underlying
+header/content inert. Contextual portal details dock beside lists on wide displays and become an
+accessible trailing-edge drawer on smaller displays. Closing or switching grant details
+unmounts credential controls; secrets never persist in route state.
+
+## Brand
+
+The mosaic symbol uses seven rounded tiles arranged as an abstract M. Render it in the theme's
+primary foreground color, with the MOSAIC wordmark when space allows. Use the standalone blue
+vector for favicons. The mark is decorative when the adjacent wordmark names the application.
+
+## Content and state
+
+Page headings name the task; descriptions explain scope and effects. Prefer one obvious task
+action and separate destructive actions. Clearly distinguish read-only APIM inventory, local
+preview, saved intent, and applied gateway state. Unknown data is not zero, missing telemetry is
+not healthy, and unpriced usage is not free.
+
+## Accessibility and responsiveness
+
+Use semantic landmarks, visible focus, descriptive icon labels, active-navigation announcements,
+and explicit loading/error/empty states. Preserve keyboard operation, reduced motion, theme
+contrast, and reflow. Essential tasks must work without a wide context pane or hover.

@@ -1,5 +1,6 @@
 import {
   Badge,
+  Button,
   Card,
   CardHeader,
   MessageBar,
@@ -8,12 +9,14 @@ import {
   Text,
 } from '@fluentui/react-components'
 import { useQuery } from '@tanstack/react-query'
+import { Link, useSearchParams } from 'react-router-dom'
 import { usePortalApi } from '../api'
 import { EmptyState, ErrorState, Loading } from '../components/AsyncState'
 import { BudgetBanner } from '../components/BudgetBanner'
 import { ConnectionDetails } from '../components/ConnectionDetails'
 import { EnvironmentBadge } from '../components/EnvironmentBadge'
 import { PageHeader } from '../components/PageHeader'
+import { DetailPanel } from '../components/DetailPanel'
 import {
   describeAttribution,
   describeBinding,
@@ -34,6 +37,7 @@ function costCenterText(resolved: ResolvedEntitlement) {
 
 export function MyAccessPage() {
   const api = usePortalApi()
+  const [params, setParams] = useSearchParams()
   const profile = useQuery({ queryKey: ['portal', 'profile'], queryFn: api.getProfile })
   const entitlements = useQuery({
     queryKey: ['portal', 'entitlements'],
@@ -48,6 +52,13 @@ export function MyAccessPage() {
         return nameA.localeCompare(nameB) || costCenterText(a).localeCompare(costCenterText(b))
       }) ?? []
   const environments = usePortalEnvironments()
+  const selected = visibleEntitlements.find((resolved) => resolved.entitlement.id === params.get('grant'))
+  function selectGrant(id: string | null) {
+    const next = new URLSearchParams(params)
+    if (id) next.set('grant', id)
+    else next.delete('grant')
+    setParams(next)
+  }
 
   return (
     <>
@@ -70,9 +81,11 @@ export function MyAccessPage() {
       {entitlements.isSuccess && visibleEntitlements.length === 0 && (
         <EmptyState title="No access granted yet">
           Your account has the portal role, but no model APIs or MCP servers are entitled to you yet.
+          {' '}<Link to="/catalog">Discover resources in the catalog</Link>.
         </EmptyState>
       )}
       {entitlements.isSuccess && visibleEntitlements.length > 0 && (
+        <div className={selected ? 'resource-workspace with-details' : 'resource-workspace'}>
         <div className="access-list">
           {visibleEntitlements.map((resolved) => (
             <Card key={resolved.entitlement.id} className="access-card">
@@ -107,39 +120,62 @@ export function MyAccessPage() {
                 <Badge appearance="tint">{costCenterText(resolved)}</Badge>
                 <EnvironmentBadge environment={resolved.resourceSummary?.environment ?? null} environments={environments.data} />
               </div>
+              <div className="resource-select">
+                <p>{runtimeGuidance(resolved)}</p>
+                <Button onClick={() => selectGrant(resolved.entitlement.id)}>View grant details</Button>
+              </div>
+            </Card>
+          ))}
+        </div>
+        {selected && (
+          <DetailPanel key={selected.entitlement.id} title={`Grant for ${resourceTitle(selected.entitlement.resource, selected.resourceDisplayName, selected.resourceSummary)}`}
+            onClose={() => selectGrant(null)}>
+              <p>{runtimeGuidance(selected)}</p>
               <div className="access-card-grid">
                 <section>
                   <h3>Configured grant limits</h3>
                   <ul className="plain-list">
-                    {describeLimits(resolved.entitlement).map((limit) => (
+                    {describeLimits(selected.entitlement).map((limit) => (
                       <li key={limit}>{limit}</li>
                     ))}
                   </ul>
                   <Text size={200}>
-                    {resolved.entitlement.resource.kind === 'poolModel' ? 'Model' : 'Publication'} and
+                    {selected.entitlement.resource.kind === 'poolModel' ? 'Model' : 'Publication'} and
                     gateway limits may also apply. Pending changes are not yet enforced by the gateway.
-                    {isSecurityGroupGrant(resolved) && ' Group access limits apply to each person individually.'}
+                    {isSecurityGroupGrant(selected) && ' Group access limits apply to each person individually.'}
                   </Text>
                 </section>
                 <section>
                   <h3>Usage attribution</h3>
-                  <Text>{describeBinding(resolved.entitlement)}</Text>
+                  <Text>{describeBinding(selected.entitlement)}</Text>
                   <dl className="compact-facts">
                     <div>
                       <dt>Gateway</dt>
-                      <dd>{gatewayLabel(resolved.resourceSummary)}</dd>
+                      <dd>{gatewayLabel(selected.resourceSummary)}</dd>
                     </div>
                   </dl>
                 </section>
               </div>
-              {(isModelResource(resolved.entitlement.resource.kind) ||
-                resolved.entitlement.resource.kind === 'mcpServer') && (
-                <ConnectionDetails resolved={resolved} />
+              {(isModelResource(selected.entitlement.resource.kind) ||
+                selected.entitlement.resource.kind === 'mcpServer') && (
+                <ConnectionDetails resolved={selected} />
               )}
-            </Card>
-          ))}
+          </DetailPanel>
+        )}
         </div>
       )}
     </>
   )
+}
+
+function runtimeGuidance(resolved: ResolvedEntitlement) {
+  switch (resolved.entitlement.runtime?.status) {
+    case 'pending': return 'Waiting for an administrator to review and apply gateway access.'
+    case 'applying': return 'Gateway access is being applied. Check again before connecting.'
+    case 'applied': return 'Gateway configuration is applied. Open the grant details for connection instructions.'
+    case 'failed': return 'Gateway access could not be applied. Ask an administrator to review the failure.'
+    case 'revocationPending': return 'Removal is awaiting application at the gateway.'
+    case 'revoked': return 'Gateway access has been revoked. Request new access from the catalog if needed.'
+    default: return 'Gateway readiness has not been confirmed. Open the grant details or ask an administrator.'
+  }
 }

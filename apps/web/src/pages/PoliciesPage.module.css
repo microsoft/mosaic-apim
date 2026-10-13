@@ -1,6 +1,8 @@
 .page {
   min-width: 0;
+  container-type: inline-size;
 }
+
 
 .headerActions {
   display: flex;
@@ -74,29 +76,6 @@
   gap: 12px;
 }
 
-.statusPill {
-  padding: 3px 8px;
-  border-radius: 999px;
-  font-size: 11px;
-  font-weight: 700;
-  white-space: nowrap;
-}
-
-.statusPreviewed {
-  background: var(--mosaic-success-soft);
-  color: var(--mosaic-success);
-}
-
-.statusPending {
-  background: var(--mosaic-primary-soft);
-  color: var(--mosaic-primary);
-}
-
-.statusAttention {
-  background: var(--mosaic-warning-soft);
-  color: var(--mosaic-warning);
-}
-
 .editorColumn {
   display: grid;
   gap: 18px;
@@ -142,27 +121,6 @@
   font-weight: 600;
   letter-spacing: 0.03em;
   text-transform: uppercase;
-}
-
-.syncRow {
-  padding: 14px 16px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  border: 1px solid var(--mosaic-border-soft);
-  border-radius: 8px;
-  background: var(--mosaic-surface-subtle);
-}
-
-.syncRow p,
-.syncRow span {
-  color: var(--mosaic-text-muted);
-}
-
-.syncTitle {
-  color: var(--mosaic-text);
-  font-weight: 600;
 }
 
 .formPanel {
@@ -274,7 +232,6 @@
 
 @media (max-width: 760px) {
   .metadataHeader,
-  .syncRow,
   .formFooter {
     flex-direction: column;
     align-items: stretch;
@@ -302,4 +259,13 @@
   padding: 0;
   margin: 0;
   list-style: none;
+}
+
+@container (max-width: 850px) {
+  .workspace,
+  .numericGrid,
+  .metadataGrid,
+  .previewMetadata {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }

@@ -1,6 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { PoliciesPage } from './PoliciesPage'
 
@@ -44,7 +45,7 @@ describe('PoliciesPage', () => {
     })
     render(
       <QueryClientProvider client={queryClient}>
-        <PoliciesPage />
+        <MemoryRouter><PoliciesPage /></MemoryRouter>
       </QueryClientProvider>,
     )
 
@@ -75,7 +76,7 @@ describe('PoliciesPage', () => {
     })
     const { container } = render(
       <QueryClientProvider client={queryClient}>
-        <PoliciesPage />
+        <MemoryRouter><PoliciesPage /></MemoryRouter>
       </QueryClientProvider>,
     )
 
@@ -86,5 +87,26 @@ describe('PoliciesPage', () => {
     expect(container.textContent).not.toContain('llm-token-limit')
     expect(screen.queryByRole('tab', { name: 'XML' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Copy XML' })).toBeNull()
+  })
+
+  it('separates illustrative scopes from live preview and retains the generated request metadata', async () => {
+    const user = userEvent.setup()
+    const queryClient = new QueryClient({ defaultOptions: { mutations: { retry: false } } })
+    render(<QueryClientProvider client={queryClient}><MemoryRouter><PoliciesPage /></MemoryRouter></QueryClientProvider>)
+    expect(screen.queryByRole('heading', { name: 'Sample scopes' })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Generate Preview' }))
+    await screen.findByText(/Limits model usage to 12,000 tokens per minute/)
+    await user.click(screen.getByRole('button', { name: 'Sample scopes' }))
+    expect(screen.queryByRole('button', { name: 'Generate Preview' })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: /Embeddings burst cap/ }))
+    expect(screen.getByText(/not queued for sync/)).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Enforcement preview' }))
+    const backend = screen.getByRole('textbox', { name: 'Backend resource' })
+    await user.clear(backend)
+    await user.type(backend, 'https://example.com')
+    expect(screen.getByText(/The form has changed/)).toBeVisible()
+    await user.click(screen.getByRole('tab', { name: 'Metadata' }))
+    expect(screen.getByText('https://cognitiveservices.azure.com')).toBeVisible()
+    expect(apiMocks.previewPolicy).toHaveBeenCalledTimes(1)
   })
 })

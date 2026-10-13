@@ -2807,12 +2807,13 @@ class DirectorySearchKind(StrEnum):
 
     ``user`` finds people and agent users. ``group`` finds security-enabled groups only, because
     only those appear in a token's ``groups`` claim. ``agent`` finds agent identities and agent
-    users.
+    users. ``application`` finds application service principals and managed identities.
     """
 
     USER = "user"
     GROUP = "group"
     AGENT = "agent"
+    APPLICATION = "application"
 
 
 class DirectoryObject(MosaicModel):

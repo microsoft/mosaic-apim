@@ -3,6 +3,14 @@ import { cleanup } from '@testing-library/react'
 import { proxy as happyDomProxy } from 'happy-dom/lib/PropertySymbol.js'
 import { afterEach, beforeEach } from 'vitest'
 
+// Use Fluent Motion's supported test fallback: Happy DOM's animation cancellation
+// rejects finished promises during cleanup, unlike the browser's motion lifecycle.
+Object.defineProperty(Element.prototype, 'animate', {
+  configurable: true,
+  writable: true,
+  value: undefined,
+})
+
 // happy-dom has no layout, so document.body measures 0x0 and tabster, Fluent's focus manager, treats
 // every element as invisible. An opened Dialog then focuses its own surface instead of its first
 // control, tabster never activates the dialog's focus trap, and tabster's delayed aria-hidden pass

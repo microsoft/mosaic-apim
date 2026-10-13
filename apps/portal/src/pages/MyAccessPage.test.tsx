@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { render, screen, within } from '@testing-library/react'
+import { fireEvent, render, screen, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { describe, expect, it, vi } from 'vitest'
 import type { PortalApi } from '../api'
@@ -100,7 +100,7 @@ function renderPage(
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   const rendered = render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={['/access']}>
+      <MemoryRouter initialEntries={[`/access${entitlements.length === 1 ? `?grant=${encodeURIComponent(entitlements[0].entitlement.id)}` : ''}`]}>
         <MyAccessPage />
       </MemoryRouter>
     </QueryClientProvider>,
@@ -408,11 +408,18 @@ describe('MyAccessPage', () => {
     ])
 
     expect(await screen.findByText('Team chat')).toBeVisible()
+    fireEvent.click(within(screen.getByText('Team chat').closest('.access-card') as HTMLElement).getByRole('button', { name: 'View grant details' }))
     expect(screen.getByText('The gateway records each call you make with this grant, so your own usage can be measured.')).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Close details' }))
+    fireEvent.click(within(screen.getByText('Gateway chat').closest('.access-card') as HTMLElement).getByRole('button', { name: 'View grant details' }))
     expect(screen.getByText('The gateway records each call made with this grant, so its usage can be measured.')).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Close details' }))
+    fireEvent.click(within(screen.getByText('Subscription chat').closest('.access-card') as HTMLElement).getByRole('button', { name: 'View grant details' }))
     expect(
       screen.getByText('Linked through APIM subscription grant-subscription in product model-product.'),
     ).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Close details' }))
+    fireEvent.click(within(screen.getByText('Pending chat').closest('.access-card') as HTMLElement).getByRole('button', { name: 'View grant details' }))
     expect(screen.getByText("Usage can't be measured for this grant yet.")).toBeVisible()
     expect(screen.queryByText('Gateway attribution configured')).not.toBeInTheDocument()
   })
@@ -449,9 +456,9 @@ describe('MyAccessPage', () => {
     expect(await screen.findByText('Chat completions')).toBeVisible()
     expect(screen.getByText('Docs MCP')).toBeVisible()
     expect(screen.getByText('Recorded, not enforced by MOSAIC')).toBeVisible()
-    const details = screen.getAllByRole('button', { name: 'Connection details' })
-    expect(details).toHaveLength(2)
-    expect(details[0]).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByRole('button', { name: 'Connection details' })).not.toBeInTheDocument()
+    fireEvent.click(within(screen.getByText('Chat completions').closest('.access-card') as HTMLElement).getByRole('button', { name: 'View grant details' }))
+    expect(screen.getByRole('button', { name: 'Connection details' })).toHaveAttribute('aria-expanded', 'false')
     expect(api.getMyEntitlementConnection).not.toHaveBeenCalled()
     expect(api.getMcpConnection).not.toHaveBeenCalled()
     expect(api.revealMyEntitlementKey).not.toHaveBeenCalled()

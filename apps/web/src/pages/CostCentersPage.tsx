@@ -27,6 +27,7 @@ import { BUDGET_LEVEL_LABELS, budgetBadgeColor } from '../budgets'
 import { EmptyState, ErrorState, Loading } from '../components/AsyncState'
 import { BudgetDetails, BudgetForm, BudgetMeter } from '../components/BudgetEditor'
 import { PageHeader } from '../components/PageHeader'
+import { SectionLayout, usePageSection } from '../components/SectionLayout'
 import { PRINCIPAL_KIND_LABELS } from '../labels'
 import type { BudgetUpdate, BudgetView, CostCenter, CostCenterLimit, QuotaPeriod } from '../types'
 import styles from './CostCentersPage.module.css'
@@ -197,6 +198,11 @@ function CostCenterTable({ costCenters, budgets }: { costCenters: CostCenter[]; 
 }
 
 export function CostCentersPage() {
+  const sections = [
+    { value: 'centers', label: 'Cost centers' },
+    { value: 'organization', label: 'Organization-wide budget', description: 'Aggregate monthly spending across all cost centers and gateways. Warn-only: this budget never blocks calls.' },
+  ]
+  const [section, selectSection] = usePageSection(sections)
   const api = useMosaicApi()
   const queryClient = useQueryClient()
   const [form, setForm] = useState<CostCenterForm>(emptyForm)
@@ -257,9 +263,10 @@ export function CostCentersPage() {
         description="Charge grants and keys to named cost centers across gateways."
         source="live"
       />
-      {(costCenters.isPending || settings.isPending) && <Loading label="Loading cost centers" />}
-      {(costCenters.isError || settings.isError) && <ErrorState error={costCenters.error ?? settings.error} />}
-      {costCenters.data && settings.data && (
+      <SectionLayout label="Cost centers" sections={sections} active={section} onSelect={selectSection}>
+      {section === 'centers' && (costCenters.isPending || settings.isPending) && <Loading label="Loading cost centers" />}
+      {section === 'centers' && (costCenters.isError || settings.isError) && <ErrorState error={costCenters.error ?? settings.error} />}
+      {section === 'centers' && costCenters.data && settings.data && (
         <div className={styles.grid}>
           <div className={styles.stack}>
             <div className={styles.card}>
@@ -279,36 +286,6 @@ export function CostCentersPage() {
               )}
             </div>
 
-            <div className={styles.card}>
-              <div className={styles.cardHeader}>
-                <Title3 as="h2">Organization budget</Title3>
-                <Text className={styles.muted}>
-                  Every priced call this month, across every cost center and gateway, including calls MOSAIC couldn&apos;t
-                  link to a grant and reserved capacity nobody called. It emails at each threshold and never blocks.
-                </Text>
-              </div>
-              {budgets.isError && <ErrorState error={budgets.error} />}
-              {budgets.data?.organization && (
-                <BudgetMeter budget={budgets.data.organization} label="Organization" />
-              )}
-              {budgets.data && (
-                <BudgetForm
-                  budget={budgets.data.organization}
-                  organization
-                  saving={saveOrganizationBudget.isPending}
-                  removing={removeOrganizationBudget.isPending}
-                  error={
-                    saveOrganizationBudget.isError
-                      ? errorMessage(saveOrganizationBudget.error, 'Unable to save the organization budget.')
-                      : removeOrganizationBudget.isError
-                        ? errorMessage(removeOrganizationBudget.error, 'Unable to remove the organization budget.')
-                        : null
-                  }
-                  onSave={(payload) => saveOrganizationBudget.mutate(payload)}
-                  onRemove={() => removeOrganizationBudget.mutate()}
-                />
-              )}
-            </div>
           </div>
 
           <div className={styles.card}>
@@ -373,6 +350,36 @@ export function CostCentersPage() {
           </div>
         </div>
       )}
+      {section === 'organization' && <div className={styles.card}>
+        <div className={styles.cardHeader}>
+          <Title3 as="h2">Organization-wide budget</Title3>
+          <Badge appearance="tint" color="warning">Warn-only · Never blocks</Badge>
+          <Text className={styles.muted}>
+            Every priced call this month, including calls MOSAIC couldn&apos;t link to a grant
+            and reserved capacity nobody called. Email at each threshold; blocking is available
+            only on an individual cost-center budget.
+          </Text>
+        </div>
+        {budgets.isPending && <Loading label="Loading organization budget" />}
+        {budgets.isError && <ErrorState error={budgets.error} />}
+        {budgets.data?.organization && <BudgetMeter budget={budgets.data.organization} label="Organization" />}
+        {budgets.data && <BudgetForm
+          budget={budgets.data.organization}
+          organization
+          saving={saveOrganizationBudget.isPending}
+          removing={removeOrganizationBudget.isPending}
+          error={
+            saveOrganizationBudget.isError
+              ? errorMessage(saveOrganizationBudget.error, 'Unable to save the organization budget.')
+              : removeOrganizationBudget.isError
+                ? errorMessage(removeOrganizationBudget.error, 'Unable to remove the organization budget.')
+                : null
+          }
+          onSave={(payload) => saveOrganizationBudget.mutate(payload)}
+          onRemove={() => removeOrganizationBudget.mutate()}
+        />}
+      </div>}
+      </SectionLayout>
     </section>
   )
 }
@@ -409,6 +416,13 @@ function parsePositiveInteger(value: string) {
 }
 
 export function CostCenterDetailPage() {
+  const sections = [
+    { value: 'overview', label: 'Overview' },
+    { value: 'members', label: 'Members' },
+    { value: 'limits', label: 'Limits' },
+    { value: 'budget', label: 'Budget' },
+  ]
+  const [section, selectSection] = usePageSection(sections)
   const api = useMosaicApi()
   const queryClient = useQueryClient()
   const navigate = useNavigate()
@@ -593,7 +607,9 @@ export function CostCenterDetailPage() {
           <MessageBarBody>{errorMessage(recheck.error, 'Unable to check the grants again.')}</MessageBarBody>
         </MessageBar>
       )}
-      <div className={styles.grid}>
+      <SectionLayout label="Cost center" sections={sections} active={section} onSelect={selectSection}>
+      <Text className={styles.muted}>Scope: {data.name} ({data.code}) · This cost center only.</Text>
+      {section === 'overview' && <div className={styles.grid}>
         <div className={styles.card}>
           <form className={styles.form} onSubmit={(event) => { event.preventDefault(); if (!codeInvalid) update.mutate() }}>
             <Title3 as="h2">Details</Title3>
@@ -637,9 +653,9 @@ export function CostCenterDetailPage() {
             </>
           )}
         </div>
-      </div>
+      </div>}
 
-      <div className={styles.card}>
+      {section === 'budget' && <div className={styles.card}>
         <div className={styles.cardHeader}>
           <Title3 as="h2">Budget</Title3>
           <Text className={styles.muted}>
@@ -681,10 +697,10 @@ export function CostCenterDetailPage() {
             />
           </div>
         )}
-      </div>
+      </div>}
 
-      <div className={styles.stack}>
-        <div className={styles.card}>
+      {(section === 'members' || section === 'limits') && <div className={styles.stack}>
+        {section === 'members' && <div className={styles.card}>
           <Title3 as="h2">Members</Title3>
           <Text className={styles.muted}>Removing a member revokes their grants under this cost center, unless they may still charge it another way, such as through a listed security group. The next apply deletes their keys. Removing a security group revokes the grants that relied on it.</Text>
           <form className={styles.addMember} onSubmit={(event) => { event.preventDefault(); if (memberId) addMember.mutate() }}>
@@ -732,9 +748,9 @@ export function CostCenterDetailPage() {
               </tbody>
             </table>
           </div>
-        </div>
+        </div>}
 
-        <div className={styles.card}>
+        {section === 'limits' && <div className={styles.card}>
           <Title3 as="h2">Limits</Title3>
           <Text className={styles.muted}>
             Per-person limits apply to each grant under this cost center that sets none of its own. A pooled quota is shared by every grant under the cost center on that model, per gateway. MCP servers use calls only.
@@ -794,8 +810,9 @@ export function CostCenterDetailPage() {
               <Button appearance="primary" type="button" onClick={() => saveLimits.mutate()} disabled={saveLimits.isPending}>Save limits</Button>
             </div>
           </form>
-        </div>
-      </div>
+        </div>}
+      </div>}
+      </SectionLayout>
 
       <Dialog open={removeMember !== null} onOpenChange={(_, dialogData) => !dialogData.open && setRemoveMember(null)}>
         <DialogSurface>

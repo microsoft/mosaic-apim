@@ -76,7 +76,10 @@ test.describe('30 access', { tag: '@console' }, () => {
       if (!user || !modelApi || !runtime.userGrants.some((grant) => sameModel(grant, model))) continue
       const [grant] = await ctx.api.grantsOf(user.id, modelApi.id)
       expect.soft(grant?.runtime?.status, `${targets.roles.user}'s grant on ${label}`).toBe('applied')
-      if (grant?.runtime) await expect.soft(entitlements.grantState(grant.id, grant.runtime.status)).toBeVisible()
+      if (grant?.runtime) {
+        await entitlements.selectSection('grants')
+        await expect.soft(entitlements.grantState(grant.id, grant.runtime.status)).toBeVisible()
+      }
     }
   })
 

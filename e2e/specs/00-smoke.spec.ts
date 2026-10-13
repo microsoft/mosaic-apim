@@ -36,8 +36,9 @@ test.describe('00 smoke', { tag: '@smoke' }, () => {
   test('A0 admin reaches the MOSAIC console', async ({ personas, targets }) => {
     const page = await personas.page(targets.roles.admin, 'web', '/models')
     await expect(page.getByRole(primaryNavigation.role, { name: primaryNavigation.name })).toBeVisible()
-    await expect(page.getByRole('heading', { name: 'Model endpoints' })).toBeVisible()
-    await expect(page.getByRole('button', { name: 'Add model endpoint' }).first()).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Published models' })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Publish a model', exact: true })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Add model endpoint' })).toHaveCount(0)
     await expect(page.getByText('MOSAIC Admin', { exact: true })).toBeVisible()
     await expect(page.getByText('Global Admin')).toHaveCount(0)
     await expect(page.getByText('Unable to load data')).toHaveCount(0)

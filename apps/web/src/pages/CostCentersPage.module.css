@@ -1,7 +1,9 @@
 .page {
   display: grid;
   gap: 20px;
+  container-type: inline-size;
 }
+
 
 .grid {
   display: grid;
@@ -166,6 +168,13 @@
 @media (max-width: 980px) {
   .grid {
     grid-template-columns: 1fr;
+  }
+
+  @container (max-width: 850px) {
+    .grid,
+    .budgetLayout {
+      grid-template-columns: minmax(0, 1fr);
+    }
   }
 
   .budgetLayout {

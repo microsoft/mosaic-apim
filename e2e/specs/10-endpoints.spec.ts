@@ -23,7 +23,7 @@ async function registeredEndpoint(api: MosaicApi, key: string): Promise<ApiEndpo
 
 test.describe('10 endpoints', { tag: '@console' }, () => {
   test('A2 discovery lists the manifest endpoints and shows remediation', async ({ personas, targets }) => {
-    const models = await ModelsPage.open(personas, targets)
+    const models = await ModelsPage.open(personas, targets, targets.roles.admin, 'endpoints')
     const found = await jsonOf<ApiSuggestions>(
       await responseTo(models.page, targets.origins.api, 'GET', /^\/api\/v1\/model-endpoints\/suggested$/, () => models.reload(), 120_000),
       'Listing the endpoints MOSAIC found',
@@ -65,7 +65,7 @@ test.describe('10 endpoints', { tag: '@console' }, () => {
 
   test('A3 A4 the manifest endpoints are registered and MOSAIC can read them', async ({ personas, targets }) => {
     const api = await MosaicApi.as(personas, targets, targets.roles.admin)
-    const models = await ModelsPage.open(personas, targets)
+    const models = await ModelsPage.open(personas, targets, targets.roles.admin, 'endpoints')
     for (const key of Object.keys(targets.endpoints)) {
       const endpoint = await registeredEndpoint(api, key)
       if (!endpoint) continue
@@ -86,7 +86,7 @@ test.describe('10 endpoints', { tag: '@console' }, () => {
 
   test('A5 synced deployments include every model the manifest publishes', async ({ personas, targets }) => {
     const api = await MosaicApi.as(personas, targets, targets.roles.admin)
-    const models = await ModelsPage.open(personas, targets)
+    const models = await ModelsPage.open(personas, targets, targets.roles.admin, 'endpoints')
     const disposable = targets.suite?.disposable?.publication
     for (const [key, target] of Object.entries(targets.endpoints)) {
       const endpoint = await registeredEndpoint(api, key)
@@ -105,7 +105,7 @@ test.describe('10 endpoints', { tag: '@console' }, () => {
 
   test('A6 the suite gateway can invoke every manifest endpoint and none of the negatives', async ({ personas, targets }) => {
     const ctx = await suiteContext(personas, targets)
-    const models = await ModelsPage.open(personas, targets)
+    const models = await ModelsPage.open(personas, targets, targets.roles.admin, 'endpoints')
     for (const key of Object.keys(targets.endpoints)) {
       const endpoint = await registeredEndpoint(ctx.api, key)
       if (!endpoint) continue
@@ -151,7 +151,7 @@ test.describe('10 endpoints', { tag: '@console' }, () => {
       }
       if (!chosen) skip('No manifest endpoint is registered exactly once, so there is nothing to register twice.')
       const { key, resourceId } = chosen
-      const models = await ModelsPage.open(personas, targets)
+      const models = await ModelsPage.open(personas, targets, targets.roles.admin, 'endpoints')
       const dialog = await models.openRegisterDialog()
       const name = `${disposablePrefix}duplicate ${key}`
       const response = await dialog.registerAzureResource(resourceId, name)
@@ -170,7 +170,7 @@ test.describe('10 endpoints', { tag: '@console' }, () => {
       const keys = Object.keys(targets.endpoints)
       test.setTimeout((keys.length * 4 + 1) * 60_000)
       const api = await MosaicApi.as(personas, targets, targets.roles.admin)
-      const models = await ModelsPage.open(personas, targets)
+      const models = await ModelsPage.open(personas, targets, targets.roles.admin, 'endpoints')
       for (const key of keys) {
         const endpoint = await registeredEndpoint(api, key)
         if (!endpoint?.access.canRead) continue
@@ -186,7 +186,7 @@ test.describe('10 endpoints', { tag: '@console' }, () => {
       const keys = Object.keys(targets.endpoints)
       test.setTimeout((keys.length * 2 + 1) * 60_000)
       const ctx = await suiteContext(personas, targets)
-      const models = await ModelsPage.open(personas, targets)
+      const models = await ModelsPage.open(personas, targets, targets.roles.admin, 'endpoints')
       for (const key of keys) {
         const endpoint = await registeredEndpoint(ctx.api, key)
         if (!endpoint) continue

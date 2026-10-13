@@ -141,7 +141,7 @@ function BudgetsPanel({
   overview: BudgetOverview | undefined
   loading: boolean
   error: unknown
-  onOpen: (costCenterId: string | null) => void
+  onOpen: (costCenterId: string | null, budget?: boolean) => void
 }) {
   const budgets = overview
     ? [...(overview.organization ? [overview.organization] : []), ...overview.costCenters.slice(0, BUDGET_ROWS)]
@@ -179,7 +179,7 @@ function BudgetsPanel({
                 <button
                   type="button"
                   className={styles.budgetRow}
-                  onClick={() => onOpen(budget.costCenter?.id ?? null)}
+                  onClick={() => onOpen(budget.costCenter?.id ?? null, true)}
                 >
                   <span className={styles.budgetName}>
                     <strong>{budgetName(budget)}</strong>
@@ -389,9 +389,9 @@ export function DashboardPage() {
   )
   const liveError = principals.error ?? groups.error
   const principalCounts = useMemo(() => {
-    const counts: Record<PrincipalTab, number> = { users: 0, agents: 0, workloads: 0 }
+    const counts: Record<PrincipalTab | 'securityGroups', number> = { users: 0, agents: 0, workloads: 0, securityGroups: 0 }
     for (const principal of principals.data ?? []) {
-      counts[principalTabForKind(principal.kind)] += 1
+      counts[principal.kind === 'securityGroup' ? 'securityGroups' : principalTabForKind(principal.kind)] += 1
     }
     return counts
   }, [principals.data])
@@ -406,8 +406,8 @@ export function DashboardPage() {
       <div className={styles.liveSection}>
         <div className={styles.sectionHeading}>
           <div>
-            <Title2 as="h2" block>Desired-state inventory</Title2>
-            <Text block>Live records stored and managed by MOSAIC.</Text>
+            <Title2 as="h2" block>Service consumers</Title2>
+            <Text block>People, agents, applications and groups registered to consume the service. Active callers appear in usage below.</Text>
           </div>
           <DataSourceBadge kind="live" />
         </div>
@@ -434,10 +434,18 @@ export function DashboardPage() {
             <InventoryCard
               icon={<CloudDatabaseRegular />}
               count={principals.isLoading ? undefined : principalCounts.workloads}
-              loadingLabel="Loading applications and security groups"
-              singular="app or security group"
-              plural="apps and security groups"
-              onClick={() => navigate('/identity?tab=workloads')}
+              loadingLabel="Loading applications"
+              singular="application"
+              plural="applications"
+              onClick={() => navigate('/identity?tab=applications')}
+            />
+            <InventoryCard
+              icon={<PeopleCommunityRegular />}
+              count={principals.isLoading ? undefined : principalCounts.securityGroups}
+              loadingLabel="Loading security groups"
+              singular="Entra security group"
+              plural="Entra security groups"
+              onClick={() => navigate('/identity?tab=security-groups')}
             />
             <InventoryCard
               icon={<PeopleCommunityRegular />}
@@ -449,70 +457,6 @@ export function DashboardPage() {
             />
           </div>
         )}
-        <Card className={styles.environmentsCard}>
-          <div className={styles.environmentsHeader}>
-            <div>
-              <Title3 as="h3" block>
-                Environments
-              </Title3>
-              <Text size={200} block>
-                Live classification counts from Settings.
-              </Text>
-            </div>
-            <Button appearance="subtle" size="small" onClick={() => navigate('/settings')}>
-              Classify
-            </Button>
-          </div>
-          {environmentCatalog.isLoading && <Spinner size="tiny" label="Loading environments" />}
-          {environmentCatalog.isError && <ErrorState error={environmentCatalog.error} />}
-          {environmentCatalog.data && environmentCatalog.data.environments.length === 0 && (
-            <Text>No environments are configured yet.</Text>
-          )}
-          {environmentCatalog.data && environmentCatalog.data.environments.length > 0 && (
-            <div className={styles.environmentRows} role="list" aria-label="Environment usage">
-              {environmentCatalog.data.environments.map((environment) => (
-                <div key={environment.key} className={styles.environmentRow} role="listitem">
-                  <EnvironmentBadge environment={environment.key} catalog={environmentCatalog.data} />
-                  <span>{plural(environment.usage.gateways, 'gateway')}</span>
-                  <span>{plural(environment.usage.modelEndpoints, 'model endpoint')}</span>
-                  <span>{plural(environment.usage.mcpEndpoints, 'MCP server')}</span>
-                </div>
-              ))}
-              <div
-                className={`${styles.environmentRow} ${
-                  environmentCatalog.data.unclassified.gateways +
-                    environmentCatalog.data.unclassified.modelEndpoints +
-                    environmentCatalog.data.unclassified.mcpEndpoints >
-                  0
-                    ? styles.unclassifiedRow
-                    : ''
-                }`}
-                role="listitem"
-              >
-                <EnvironmentBadge environment={null} catalog={environmentCatalog.data} />
-                <span>{plural(environmentCatalog.data.unclassified.gateways, 'gateway')}</span>
-                <span>
-                  {plural(environmentCatalog.data.unclassified.modelEndpoints, 'model endpoint')}
-                </span>
-                <span>{plural(environmentCatalog.data.unclassified.mcpEndpoints, 'MCP server')}</span>
-                <Button appearance="subtle" size="small" onClick={() => navigate('/settings')}>
-                  Review suggestions
-                </Button>
-              </div>
-            </div>
-          )}
-          <div className={styles.findingsLine}>
-            {environmentFindings.isLoading ? (
-              <Spinner size="tiny" label="Loading findings" />
-            ) : environmentFindings.isError ? (
-              <Text>Findings unavailable</Text>
-            ) : (
-              <Button appearance="subtle" size="small" onClick={() => navigate('/settings')}>
-                {plural(environmentFindings.data?.items.length ?? 0, 'environment finding')}
-              </Button>
-            )}
-          </div>
-        </Card>
       </div>
 
       {analytics.data?.dataSource === 'notConfigured' && (
@@ -565,6 +509,7 @@ export function DashboardPage() {
           </div>
           <div className={styles.healthList}>
             {analyticsStatus.isLoading && <Spinner size="tiny" label="Loading telemetry health" />}
+            {analyticsStatus.isError && <ErrorState error={analyticsStatus.error} />}
             {analyticsStatus.data?.gateways.map((gateway) => (
               <div key={gateway.gatewayId}>
                 <span className={styles.healthName}>
@@ -580,15 +525,23 @@ export function DashboardPage() {
                 <Badge color={statusColor(gateway.status)}>{FRESHNESS_STATUS_LABELS[gateway.status]}</Badge>
               </div>
             ))}
-            {!analyticsStatus.isLoading && (analyticsStatus.data?.gateways.length ?? 0) === 0 && <Text>No gateway health yet.</Text>}
+            {analyticsStatus.isSuccess && analyticsStatus.data.gateways.length === 0 && <Text>No gateway health yet.</Text>}
           </div>
         </div>
+
+        {analytics.isError ? <ErrorState error={analytics.error} /> : <>
+          <RankingPanel title="Top models" caption="By tokens" items={(analytics.data?.topModels ?? []).slice(0, TOP).map(byTokens)} loading={analytics.isLoading} />
+          <RankingPanel title="Top callers" caption="By tokens" items={(analytics.data?.topCallers ?? []).slice(0, TOP).map(byTokens)} loading={analytics.isLoading} />
+          <RankingPanel title="Top APIs" caption="By calls, since MCP servers use no tokens" items={(analytics.data?.topApis ?? []).slice(0, TOP).map(byCalls)} loading={analytics.isLoading} />
+        </>}
 
         <BudgetsPanel
           overview={budgets.data}
           loading={budgets.isLoading}
           error={budgets.error}
-          onOpen={(costCenterId) => navigate(costCenterId ? `/cost-centers/${encodeURIComponent(costCenterId)}` : '/cost-centers')}
+          onOpen={(costCenterId, budget) => navigate(costCenterId
+            ? `/cost-centers/${encodeURIComponent(costCenterId)}${budget ? '?tab=budget' : ''}`
+            : budget ? '/cost-centers?tab=organization' : '/cost-centers')}
         />
 
         <PoolsPanel
@@ -598,10 +551,44 @@ export function DashboardPage() {
           onOpen={(poolId) => navigate(poolId ? `/pools/${encodeURIComponent(poolId)}` : '/pools')}
         />
 
-        <RankingPanel title="Top models" caption="By tokens" items={(analytics.data?.topModels ?? []).slice(0, TOP).map(byTokens)} loading={analytics.isLoading} />
-        <RankingPanel title="Top callers" caption="By tokens" items={(analytics.data?.topCallers ?? []).slice(0, TOP).map(byTokens)} loading={analytics.isLoading} />
-        <RankingPanel title="Top APIs" caption="By calls, since MCP servers use no tokens" items={(analytics.data?.topApis ?? []).slice(0, TOP).map(byCalls)} loading={analytics.isLoading} />
       </div>
+      <Card className={styles.environmentsCard}>
+        <div className={styles.environmentsHeader}>
+          <div>
+            <Title3 as="h2" block>Environments</Title3>
+            <Text size={200} block>Registered resources by environment. Classification is managed in Settings.</Text>
+          </div>
+          <Button appearance="subtle" size="small" onClick={() => navigate('/settings?tab=environments')}>Classify</Button>
+        </div>
+        {environmentCatalog.isLoading && <Spinner size="tiny" label="Loading environments" />}
+        {environmentCatalog.isError && <ErrorState error={environmentCatalog.error} />}
+        {environmentCatalog.data && (
+          <div className={styles.environmentRows} role="list" aria-label="Environment usage">
+            {environmentCatalog.data.environments.map((environment) => (
+              <div key={environment.key} className={styles.environmentRow} role="listitem">
+                <EnvironmentBadge environment={environment.key} catalog={environmentCatalog.data} />
+                <span>{plural(environment.usage.gateways, 'gateway')}</span>
+                <span>{plural(environment.usage.modelEndpoints, 'model endpoint')}</span>
+                <span>{plural(environment.usage.mcpEndpoints, 'MCP server')}</span>
+              </div>
+            ))}
+            <div className={`${styles.environmentRow} ${styles.unclassifiedRow}`} role="listitem">
+              <EnvironmentBadge environment={null} catalog={environmentCatalog.data} />
+              <span>{plural(environmentCatalog.data.unclassified.gateways, 'gateway')}</span>
+              <span>{plural(environmentCatalog.data.unclassified.modelEndpoints, 'model endpoint')}</span>
+              <span>{plural(environmentCatalog.data.unclassified.mcpEndpoints, 'MCP server')}</span>
+              <Button appearance="subtle" size="small" onClick={() => navigate('/settings?tab=environments')}>Review suggestions</Button>
+            </div>
+          </div>
+        )}
+        <div className={styles.findingsLine}>
+          {environmentFindings.isLoading ? <Spinner size="tiny" label="Loading findings" /> :
+            environmentFindings.isError ? <ErrorState error={environmentFindings.error} /> :
+              <Button appearance="subtle" size="small" onClick={() => navigate('/settings?tab=findings')}>
+                {plural(environmentFindings.data?.items.length ?? 0, 'environment finding')}
+              </Button>}
+        </div>
+      </Card>
     </section>
   )
 }
