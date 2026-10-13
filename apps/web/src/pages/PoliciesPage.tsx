@@ -17,6 +17,7 @@ import {
   Tooltip,
 } from '@fluentui/react-components'
 import { useMutation } from '@tanstack/react-query'
+import { SectionLayout, usePageSection } from '../components/SectionLayout'
 import { type FormEvent, type ReactNode, useMemo, useState } from 'react'
 import { useMosaicApi } from '../api'
 import { PageHeader, PreviewNotice } from '../components/PageHeader'
@@ -24,7 +25,6 @@ import type { TokenEnforcement } from '../types'
 import { PolicyFacetItem } from '../components/PolicyFacets'
 import styles from './PoliciesPage.module.css'
 
-type PolicyStatus = 'Previewed' | 'Pending sync' | 'Attention'
 type PreviewTab = 'rules' | 'metadata'
 type QuotaPeriod = NonNullable<TokenEnforcement['tokenQuotaPeriod']>
 
@@ -32,12 +32,8 @@ interface SamplePolicyRecord {
   id: string
   name: string
   scope: string
-  status: PolicyStatus
-  revision: string
   environment: string
   owner: string
-  lastPreviewedAt: string
-  syncEnabled: boolean
   note: string
 }
 
@@ -72,37 +68,25 @@ const samplePolicies: SamplePolicyRecord[] = [
     id: 'shared-chat-preview',
     name: 'Shared chat completions',
     scope: 'APIM product / shared-chat',
-    status: 'Previewed',
-    revision: 'rev-12',
     environment: 'MOSAIC / prod-westus3',
     owner: 'Platform security',
-    lastPreviewedAt: '2026-08-13 09:48 ET',
-    syncEnabled: true,
     note: 'Sample metadata only. This policy shape mirrors the current MOSAIC policy workspace.',
   },
   {
     id: 'embeddings-burst-cap',
     name: 'Embeddings burst cap',
     scope: 'APIM product / embeddings',
-    status: 'Pending sync',
-    revision: 'rev-7',
     environment: 'MOSAIC / prod-eastus2',
     owner: 'AI operations',
-    lastPreviewedAt: '2026-08-12 17:20 ET',
-    syncEnabled: false,
-    note: 'Queued for future reconciliation. Save/apply is intentionally unavailable in this release.',
+    note: 'Illustrative embedding scope only. It is not queued for sync or saved to APIM.',
   },
   {
     id: 'finance-annual-quota',
     name: 'Finance annual quota',
     scope: 'APIM product / finops-assist',
-    status: 'Attention',
-    revision: 'rev-3',
     environment: 'MOSAIC / preprod-centralus',
     owner: 'FinOps governance',
-    lastPreviewedAt: '2026-08-11 14:05 ET',
-    syncEnabled: true,
-    note: 'Sample status indicates human review is needed before a future APIM rollout path exists.',
+    note: 'Illustrative finance scope only. No persisted policy or rollout state is represented.',
   },
 ]
 
@@ -218,9 +202,15 @@ function DisabledAction({
 }
 
 export function PoliciesPage() {
+  const sections = [
+    { value: 'preview', label: 'Enforcement preview', description: 'Generate rules and metadata from the form below using the live preview API. This does not save intent or change APIM.' },
+    { value: 'samples', label: 'Sample scopes', description: 'Illustrative policy metadata only, not a configured policy inventory. Selecting a sample does not change the preview request.' },
+  ]
+  const [section, selectSection] = usePageSection(sections)
   const api = useMosaicApi()
   const [selectedPolicyId, setSelectedPolicyId] = useState(samplePolicies[0]?.id ?? '')
   const [form, setForm] = useState<PolicyFormState>(initialForm)
+  const [submittedForm, setSubmittedForm] = useState<PolicyFormState | null>(null)
   const [previewTab, setPreviewTab] = useState<PreviewTab>('rules')
   const [hasSubmitted, setHasSubmitted] = useState(false)
   const [generatedAt, setGeneratedAt] = useState('')
@@ -240,8 +230,9 @@ export function PoliciesPage() {
   const preview = previewMutation.data
   const previewWarnings = preview?.warnings ?? []
   const validationMessages = hasSubmitted ? validation.summary : []
-  const backendResourceDisplay = form.backendResource.trim() || '—'
-  const counterKeyDisplay = form.counterKeyExpression.trim() || '—'
+  const backendResourceDisplay = submittedForm?.backendResource.trim() || '—'
+  const counterKeyDisplay = submittedForm?.counterKeyExpression.trim() || '—'
+  const previewIsStale = preview && submittedForm && JSON.stringify(form) !== JSON.stringify(submittedForm)
 
   async function copyPolicyDigest() {
     if (!preview?.contentSha256) {
@@ -270,6 +261,7 @@ export function PoliciesPage() {
     if (!validation.payload) {
       return
     }
+    setSubmittedForm({ ...form })
     previewMutation.mutate(validation.payload)
   }
 
@@ -277,48 +269,36 @@ export function PoliciesPage() {
     <section className={styles.page}>
       <PageHeader
         title="Policies"
-        description="Preview the enforcement MOSAIC would apply, described in plain language. Policy inventory, sync, save, apply, and rollback remain intentionally read-only."
-        source="sample"
+        description="Inspect enforcement rules before making changes. This workspace previews only; publish and review model changes in Models to apply a supported one-shot plan."
+        source={section === 'samples' ? 'sample' : preview ? 'live' : undefined}
         actions={
           <div className={styles.headerActions}>
-            <DisabledAction hint="Policy persistence is not available in this foundation release.">
-              <Button disabled aria-describedby="policies-unavailable-actions">
-                Save draft
-              </Button>
-            </DisabledAction>
             <DisabledAction hint="This workspace cannot apply policy to APIM. Publishing a model from the Models workspace is the supported way to write policy today.">
               <Button disabled aria-describedby="policies-unavailable-actions">
                 Apply to APIM
-              </Button>
-            </DisabledAction>
-            <DisabledAction hint="Rollback requires future revision history and apply support.">
-              <Button disabled aria-describedby="policies-unavailable-actions">
-                Roll back
               </Button>
             </DisabledAction>
           </div>
         }
       />
 
-      <PreviewNotice kind="local">
-        Sample policy inventory and metadata are shown below. Generate Preview calls the live,
-        deterministic preview API; save, sync, apply, and rollback remain unavailable.
-      </PreviewNotice>
-
       <Text
         id="policies-unavailable-actions"
         size={200}
         className={styles.unavailableActionsHint}
       >
-        Save, sync, apply, and rollback are disabled until MOSAIC adds policy persistence and APIM
-        reconciliation.
+        Preview does not persist policy or apply it. Model publication applies a reviewed plan
+        once, on request; this is not continuous reconciliation or policy revision history.
       </Text>
 
-      <div className={styles.workspace}>
+      <SectionLayout label="Policies" sections={sections} active={section} onSelect={selectSection}>
+      {section === 'samples' && <PreviewNotice kind="local">Sample scopes and metadata are illustrative, not live APIM state.</PreviewNotice>}
+      <div className={section === 'samples' ? styles.workspace : styles.editorColumn}>
+        {section === 'samples' && <>
         <aside className={`panel ${styles.policyListPanel}`}>
           <div className="panel-header">
             <div>
-              <Title3 as="h2">Policy list</Title3>
+              <Title3 as="h2">Sample scopes</Title3>
               <Text size={200}>Sample data</Text>
             </div>
             <Badge appearance="outline">MOSAIC sample</Badge>
@@ -338,20 +318,8 @@ export function PoliciesPage() {
               >
                 <div className={styles.policyListRow}>
                   <strong>{policy.name}</strong>
-                  <span
-                    className={`${styles.statusPill} ${
-                      policy.status === 'Previewed'
-                        ? styles.statusPreviewed
-                        : policy.status === 'Pending sync'
-                          ? styles.statusPending
-                          : styles.statusAttention
-                    }`}
-                  >
-                    {policy.status}
-                  </span>
                 </div>
                 <span>{policy.scope}</span>
-                <small>{policy.revision}</small>
               </button>
             ))}
           </div>
@@ -364,7 +332,7 @@ export function PoliciesPage() {
                 <Title2 as="h2">{selectedPolicy.name}</Title2>
                 <Text className={styles.sampleLabel}>Selected policy metadata · sample data</Text>
               </div>
-              <Badge appearance="tint">Revision {selectedPolicy.revision}</Badge>
+              <Badge appearance="outline">Illustrative only</Badge>
             </div>
 
             <div className={styles.metadataGrid}>
@@ -380,33 +348,15 @@ export function PoliciesPage() {
                 <span>Owner</span>
                 <strong>{selectedPolicy.owner}</strong>
               </div>
-              <div>
-                <span>Last previewed</span>
-                <strong>{selectedPolicy.lastPreviewedAt}</strong>
-              </div>
             </div>
 
             <Text>{selectedPolicy.note}</Text>
 
-            <div className={styles.syncRow}>
-              <div>
-                <Text className={styles.syncTitle}>Future APIM sync</Text>
-                <Text size={200}>
-                  Preview is live. Sync state and revision history remain sample-only until apply
-                  workflows are implemented.
-                </Text>
-              </div>
-              <DisabledAction hint="Continuous sync is not implemented. Publishing applies a plan once, on request, rather than reconciling in the background.">
-                <Switch
-                  checked={selectedPolicy.syncEnabled}
-                  disabled
-                  label="Sync enabled"
-                  aria-describedby="policies-unavailable-actions"
-                />
-              </DisabledAction>
-            </div>
           </Card>
+        </div>
+        </>}
 
+        {section === 'preview' && <div className={styles.editorColumn}>
           <div className={`panel ${styles.formPanel}`}>
             <div className="panel-header">
               <div>
@@ -548,6 +498,7 @@ export function PoliciesPage() {
             </div>
 
             <div className={styles.messageArea}>
+              {previewIsStale && <MessageBar intent="warning"><MessageBarBody>The form has changed. Generate Preview again to inspect these values; the output below is the previous request.</MessageBarBody></MessageBar>}
               {validationMessages.length > 0 && (
                 <MessageBar intent="error">
                   <MessageBarBody>
@@ -629,13 +580,14 @@ export function PoliciesPage() {
                 </div>
                 <div>
                   <span>Prompt token estimation</span>
-                  <strong>{form.estimatePromptTokens ? 'Enabled' : 'Disabled'}</strong>
+                  <strong>{submittedForm ? submittedForm.estimatePromptTokens ? 'Enabled' : 'Disabled' : '—'}</strong>
                 </div>
               </div>
             )}
           </div>
-        </div>
+        </div>}
       </div>
+      </SectionLayout>
     </section>
   )
 }

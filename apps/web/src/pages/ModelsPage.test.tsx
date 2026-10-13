@@ -1,7 +1,7 @@
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { QueryClient, QueryClientProvider, useMutation } from '@tanstack/react-query'
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter, useLocation } from 'react-router-dom'
+import { MemoryRouter, useLocation, useNavigate } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ModelsPage } from './ModelsPage'
 import { accessPlan, modelPublication } from '../test/model-access'
@@ -248,10 +248,23 @@ vi.mock('../api', () => ({
 
 function LocationProbe() {
   const location = useLocation()
-  return <span data-testid="location">{`${location.pathname}${location.search}`}</span>
+  const navigate = useNavigate()
+  return <>
+    <span data-testid="location">{`${location.pathname}${location.search}`}</span>
+    <button onClick={() => navigate(-1)}>Back in test</button>
+    <button onClick={() => navigate(1)}>Forward in test</button>
+  </>
 }
 
-function renderPage(entry = '/models') {
+function UnrelatedPendingMutation() {
+  const mutation = useMutation({
+    mutationKey: ['unrelated'],
+    mutationFn: () => new Promise<void>(() => {}),
+  })
+  return <button onClick={() => mutation.mutate()}>Start unrelated operation</button>
+}
+
+function renderModelsPage(entry = '/models', includeUnrelatedMutation = false) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   })
@@ -259,11 +272,14 @@ function renderPage(entry = '/models') {
     <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={[entry]}>
         <ModelsPage />
+        {includeUnrelatedMutation && <UnrelatedPendingMutation />}
         <LocationProbe />
       </MemoryRouter>
     </QueryClientProvider>,
   )
 }
+
+const renderPage = renderModelsPage
 
 describe('ModelsPage', () => {
   beforeEach(() => {
@@ -343,8 +359,54 @@ describe('ModelsPage', () => {
     api.deletePublication.mockResolvedValue(undefined)
   })
 
-  it('invites an import when nothing has been adopted yet', async () => {
+  it('allows section changes while an unrelated mutation is pending', async () => {
+    const user = userEvent.setup()
+    renderPage('/models', true)
+
+    await user.click(screen.getByRole('button', { name: 'Start unrelated operation' }))
+    await user.click(screen.getByRole('button', { name: 'Imported model APIs' }))
+
+    expect(await screen.findByText('No model APIs imported yet')).toBeVisible()
+  })
+
+  it('selects one real section, preserves query filters, and supports history', async () => {
+    const user = userEvent.setup()
+    renderPage('/models?filter=keep')
+    expect(await screen.findByText('No models published yet')).toBeVisible()
+    expect(screen.queryByRole('heading', { name: 'Imported model APIs' })).not.toBeInTheDocument()
+    expect(api.listModelEndpoints).not.toHaveBeenCalled()
+    expect(api.listModelApis).not.toHaveBeenCalled()
+    await user.click(screen.getByRole('button', { name: 'Imported model APIs' }))
+    expect(await screen.findByText('No model APIs imported yet')).toBeVisible()
+    expect(screen.queryByRole('heading', { name: 'Published models' })).not.toBeInTheDocument()
+    expect(screen.getByTestId('location')).toHaveTextContent('filter=keep&tab=imported')
+    await user.click(screen.getByRole('button', { name: 'Model endpoints' }))
+    expect(await screen.findByRole('button', { name: 'Register endpoint' })).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Publish a model' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Import from gateway' })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Back in test' }))
+    expect(await screen.findByText('No model APIs imported yet')).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Forward in test' }))
+    expect(await screen.findByRole('button', { name: 'Register endpoint' })).toBeVisible()
+  })
+
+  it('keeps a pending plan attached to its section until it can be reviewed', async () => {
+    const user = userEvent.setup()
+    let finish!: (plan: PublishPlan) => void
+    api.listPublications.mockResolvedValue([publication])
+    api.createPublishPlan.mockReturnValueOnce(new Promise<PublishPlan>((resolve) => { finish = resolve }))
     renderPage()
+    await user.click(await screen.findByRole('button', { name: 'Review changes' }))
+    await user.click(screen.getByRole('button', { name: 'Imported model APIs' }))
+    expect(screen.getByRole('table', { name: 'Published models' })).toBeVisible()
+    expect(screen.queryByRole('heading', { name: 'Imported model APIs' })).not.toBeInTheDocument()
+    finish(publishPlan)
+    expect(await screen.findByRole('table', { name: 'Publish plan steps' })).toBeVisible()
+    expect(api.applyPublishPlan).not.toHaveBeenCalled()
+  })
+
+  it('invites an import when nothing has been adopted yet', async () => {
+    renderPage('/models?tab=imported')
 
     expect(await screen.findByText('No model APIs imported yet')).toBeVisible()
   })
@@ -352,7 +414,7 @@ describe('ModelsPage', () => {
   it('lists imported model APIs with the provider MOSAIC detected', async () => {
     api.listModelApis.mockResolvedValue([modelApi])
 
-    renderPage()
+    renderPage('/models?tab=imported')
 
     // Scoped to the live table: the sample preview below also mentions Azure OpenAI.
     const table = await screen.findByRole('table', { name: 'Imported model APIs' })
@@ -395,8 +457,9 @@ describe('ModelsPage', () => {
     await user.click(screen.getByRole('button', { name: 'Cancel' }))
 
     await waitFor(() => {
-      expect(screen.getByTestId('location')).toHaveTextContent('/models')
+      expect(screen.getByTestId('location')).toHaveTextContent('/models?tab=imported')
     })
+    expect(screen.getByRole('button', { name: 'Imported model APIs' })).toHaveAttribute('aria-current', 'page')
   })
 
 
@@ -419,7 +482,7 @@ describe('ModelsPage', () => {
     renderPage()
 
     const table = await screen.findByRole('table', { name: 'Published models' })
-    await user.click(within(table).getByRole('button', { name: 'Re-plan' }))
+    await user.click(within(table).getByRole('button', { name: /Review changes|Review publish plan/ }))
 
     await waitFor(() => expect(api.createPublishPlan).toHaveBeenCalledWith('pub_1'))
     const steps = await screen.findByRole('table', { name: 'Publish plan steps' })
@@ -442,7 +505,7 @@ describe('ModelsPage', () => {
 
     const table = await screen.findByRole('table', { name: 'Published models' })
     expect(within(table).queryByRole('button', { name: 'Apply' })).not.toBeInTheDocument()
-    await user.click(within(table).getByRole('button', { name: 'Re-plan' }))
+    await user.click(within(table).getByRole('button', { name: /Review changes|Review publish plan/ }))
 
     const applyPlan = await screen.findByRole('button', { name: 'Apply plan' })
     expect(screen.getByRole('table', { name: 'Publish plan steps' })).toBeVisible()
@@ -460,7 +523,7 @@ describe('ModelsPage', () => {
     api.createPublishPlan.mockResolvedValue(accessPlan)
     renderPage()
     const table = await screen.findByRole('table', { name: 'Published models' })
-    await user.click(within(table).getByRole('button', { name: 'Re-plan' }))
+    await user.click(within(table).getByRole('button', { name: /Review changes|Review publish plan/ }))
     expect(await screen.findByRole('table', { name: 'All target model grants' })).toBeVisible()
     expect(api.applyPublishPlan).not.toHaveBeenCalled()
   })
@@ -471,7 +534,7 @@ describe('ModelsPage', () => {
     api.createPublishPlan.mockResolvedValue(accessPlan)
     renderPage()
     const table = await screen.findByRole('table', { name: 'Published models' })
-    await user.click(within(table).getByRole('button', { name: 'Re-plan' }))
+    await user.click(within(table).getByRole('button', { name: /Review changes|Review publish plan/ }))
 
     expect(await screen.findByRole('table', { name: 'All target model grants' })).toBeVisible()
     await waitFor(() => {
@@ -486,7 +549,7 @@ describe('ModelsPage', () => {
     api.listPublications.mockResolvedValue([publication])
     renderPage()
     const table = await screen.findByRole('table', { name: 'Published models' })
-    await user.click(within(table).getByRole('button', { name: 'Re-plan' }))
+    await user.click(within(table).getByRole('button', { name: /Review changes|Review publish plan/ }))
 
     expect(await screen.findByRole('table', { name: 'Publish plan steps' })).toBeVisible()
     await waitFor(() => {
@@ -501,7 +564,7 @@ describe('ModelsPage', () => {
     api.listPublications.mockResolvedValue([publication])
     renderPage()
     const table = await screen.findByRole('table', { name: 'Published models' })
-    await user.click(within(table).getByRole('button', { name: 'Re-plan' }))
+    await user.click(within(table).getByRole('button', { name: /Review changes|Review publish plan/ }))
     await user.click(await screen.findByRole('button', { name: 'Apply plan' }))
 
     expect(
@@ -531,7 +594,7 @@ describe('ModelsPage', () => {
     api.applyPublishPlan.mockRejectedValueOnce(new TestApiError(refusal, 409))
     renderPage()
     const table = await screen.findByRole('table', { name: 'Published models' })
-    await user.click(within(table).getByRole('button', { name: 'Re-plan' }))
+    await user.click(within(table).getByRole('button', { name: /Review changes|Review publish plan/ }))
     await user.click(await screen.findByRole('button', { name: 'Apply plan' }))
 
     expect(
@@ -556,7 +619,7 @@ describe('ModelsPage', () => {
     api.getPublishRun.mockResolvedValue(interrupted)
     renderPage()
     const table = await screen.findByRole('table', { name: 'Published models' })
-    await user.click(within(table).getByRole('button', { name: 'Re-plan' }))
+    await user.click(within(table).getByRole('button', { name: /Review changes|Review publish plan/ }))
     await user.click(await screen.findByRole('button', { name: 'Apply plan' }))
     expect(await screen.findByText('Apply interrupted — runtime state unknown')).toBeVisible()
     expect(screen.getByText('Worker stopped after policy install.')).toBeVisible()
@@ -580,7 +643,7 @@ describe('ModelsPage', () => {
     renderPage()
 
     const table = await screen.findByRole('table', { name: 'Published models' })
-    await user.click(within(table).getByRole('button', { name: 'Re-plan' }))
+    await user.click(within(table).getByRole('button', { name: /Review changes|Review publish plan/ }))
     await user.click(await screen.findByRole('button', { name: 'Apply plan' }))
 
     expect(
@@ -611,7 +674,7 @@ describe('ModelsPage', () => {
     renderPage()
 
     const table = await screen.findByRole('table', { name: 'Published models' })
-    await user.click(within(table).getByRole('button', { name: 'Re-plan' }))
+    await user.click(within(table).getByRole('button', { name: /Review changes|Review publish plan/ }))
 
     expect(
       await screen.findByText('API Management already matches this publication. Nothing to apply.'),
@@ -631,7 +694,7 @@ describe('ModelsPage', () => {
       renderPage()
 
       const table = await screen.findByRole('table', { name: 'Published models' })
-      await user.click(within(table).getByRole('button', { name: 'Re-plan' }))
+      await user.click(within(table).getByRole('button', { name: /Review changes|Review publish plan/ }))
       const applyPlan = await screen.findByRole('button', { name: 'Apply plan' })
       expect(api.applyPublishPlan).not.toHaveBeenCalled()
       await user.click(applyPlan)
@@ -644,7 +707,7 @@ describe('ModelsPage', () => {
     renderPage()
 
     expect(
-      await screen.findByText(/Reading and importing do not change Azure/i),
+      await screen.findByText(/Reviewing does not apply changes to API Management/i),
     ).toBeVisible()
     expect(
       screen.queryByText(/MOSAIC never changes API Management or your model resources/i),
@@ -658,7 +721,7 @@ describe('ModelsPage', () => {
     renderPage()
 
     const table = await screen.findByRole('table', { name: 'Published models' })
-    await user.click(within(table).getByText('Remove'))
+    await user.click(within(table).getByText('Remove MOSAIC record'))
 
     const dialog = await screen.findByRole('alertdialog', { name: 'Remove GPT-4o production?' })
     expect(dialog).toHaveTextContent(
@@ -672,7 +735,7 @@ describe('ModelsPage', () => {
 
     // The rest of the page stays hidden from assistive technology for a moment after the modal
     // dialog is gone, so the first role query outside it has to wait.
-    await user.click(await within(table).findByRole('button', { name: 'Remove' }))
+    await user.click(await within(table).findByRole('button', { name: 'Remove MOSAIC record' }))
     await user.click(
       within(await screen.findByRole('alertdialog')).getByRole('button', {
         name: 'Remove publication',
@@ -698,7 +761,7 @@ describe('ModelsPage', () => {
     renderPage()
 
     const table = await screen.findByRole('table', { name: 'Published models' })
-    await user.click(within(table).getByText('Remove'))
+    await user.click(within(table).getByText('Remove MOSAIC record'))
     const dialog = await screen.findByRole('alertdialog')
     await user.click(within(dialog).getByRole('button', { name: 'Remove publication' }))
 
@@ -762,7 +825,7 @@ describe('ModelsPage', () => {
     expect(within(table).queryByText('Draft')).not.toBeInTheDocument()
     expect(within(table).queryByText(new Date(publication.lastAppliedAt!).toLocaleString())).not.toBeInTheDocument()
 
-    await user.click(within(recent).getByRole('button', { name: 'Re-plan' }))
+    await user.click(within(recent).getByRole('button', { name: /Review changes|Review publish plan/ }))
 
     await waitFor(() => expect(api.createPublishPlan).toHaveBeenCalledWith('pub_1'))
     expect(await screen.findByRole('button', { name: 'Apply plan' })).toBeEnabled()
@@ -783,7 +846,7 @@ describe('ModelsPage', () => {
       },
     ])
 
-    renderPage()
+    renderPage('/models?tab=imported')
 
     const table = await screen.findByRole('table', { name: 'Imported model APIs' })
     const note = "Hidden from the portal catalog while it isn't published."
@@ -1000,6 +1063,9 @@ function grantAt(scope: string, roleName: string, roleDefinitionId: string): Acc
 }
 
 describe('ModelsPage model endpoints', () => {
+  function renderPage(entry = '/models?tab=endpoints') {
+    return renderModelsPage(entry)
+  }
   beforeEach(() => {
     vi.clearAllMocks()
     api.listGateways.mockResolvedValue([gateway])

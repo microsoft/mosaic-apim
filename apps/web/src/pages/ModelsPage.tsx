@@ -29,7 +29,7 @@ import {
   useRestoreFocusTarget,
 } from '@fluentui/react-components'
 import { AddRegular } from '@fluentui/react-icons'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useIsMutating, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { type FormEvent, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { useMosaicApi } from '../api'
@@ -52,6 +52,7 @@ import {
 } from '../key-endpoint'
 import { PublishModelDialog } from '../components/PublishModelDialog'
 import { PageHeader } from '../components/PageHeader'
+import { SectionLayout, usePageSection } from '../components/SectionLayout'
 import { RemovalDialog } from '../components/RemovalDialog'
 import { UnpublishDialog } from '../components/UnpublishDialog'
 import { AI_KIND_LABELS, CAPACITY_TYPE_LABELS, PROCESSING_SCOPE_LABELS } from '../labels'
@@ -81,6 +82,8 @@ import type {
   SuggestionSource,
 } from '../types'
 import styles from './ModelsPage.module.css'
+
+const MODELS_PAGE_MUTATION_KEY = ['models-page'] as const
 
 const statusLabels: Record<ModelEndpointStatus, string> = {
   pending: 'Not checked',
@@ -189,6 +192,7 @@ function PublishedModels({ onMessage }: { onMessage: (message: string) => void }
   // Apply plan applies it, so the administrator sees every plan before it runs. Unpublish works
   // the same way: its dialog plans the unpublish, and only its confirm button runs that plan.
   const reviewPlan = useMutation({
+    mutationKey: MODELS_PAGE_MUTATION_KEY,
     mutationFn: async (publication: Publication) => ({
       publication,
       plan: await api.createPublishPlan(publication.id),
@@ -199,6 +203,7 @@ function PublishedModels({ onMessage }: { onMessage: (message: string) => void }
     },
   })
   const remove = useMutation({
+    mutationKey: MODELS_PAGE_MUTATION_KEY,
     mutationFn: (publicationId: string) => api.deletePublication(publicationId),
     onSuccess: async () => {
       setRemoving(null)
@@ -219,9 +224,9 @@ function PublishedModels({ onMessage }: { onMessage: (message: string) => void }
     <>
     <Card className={styles.panel}>
       <div className={styles.panelHeader}>
-        <div>
+        <div className={styles.panelHeading}>
           <Title3 as="h2">Published models</Title3>
-          <Text>Model deployments MOSAIC has planned or published into API Management.</Text>
+          <Text block>Model deployments MOSAIC has planned or published into API Management.</Text>
         </div>
       </div>
       {reviewPlan.isError && <ErrorState error={reviewPlan.error} />}
@@ -234,7 +239,7 @@ function PublishedModels({ onMessage }: { onMessage: (message: string) => void }
           </EmptyState>
         ) : (
           <div className={styles.tableWrap}>
-            <Table aria-label="Published models">
+            <Table className={styles.publicationTable} aria-label="Published models">
               <TableHeader>
                 <TableRow>
                   <TableHeaderCell>Publication</TableHeaderCell>
@@ -242,7 +247,7 @@ function PublishedModels({ onMessage }: { onMessage: (message: string) => void }
                   <TableHeaderCell>Gateway</TableHeaderCell>
                   <TableHeaderCell>API path</TableHeaderCell>
                   <TableHeaderCell>Last applied</TableHeaderCell>
-                  <TableHeaderCell>Actions</TableHeaderCell>
+                  <TableHeaderCell className={styles.publicationActionCell}>Actions</TableHeaderCell>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -267,14 +272,14 @@ function PublishedModels({ onMessage }: { onMessage: (message: string) => void }
                     </TableCell>
                     <TableCell>/{publication.apiPath}</TableCell>
                     <TableCell>{lastAppliedLabel(publication)}</TableCell>
-                    <TableCell>
-                      <div className={styles.actionRow}>
+                    <TableCell className={styles.publicationActionCell}>
+                      <div className={styles.publicationActions}>
                         <Button
                           appearance="secondary"
                           disabled={reviewPlan.isPending || publication.status === 'applying' || publication.accessState === 'applying' || publication.accessState === 'unknown'}
                           onClick={() => reviewPlan.mutate(publication)}
                         >
-                          {reviewPlan.isPending && reviewPlan.variables?.id === publication.id ? 'Planning…' : 'Re-plan'}
+                          {reviewPlan.isPending && reviewPlan.variables?.id === publication.id ? 'Planning…' : publication.status === 'published' || holdsApi(publication) ? 'Review changes' : 'Review publish plan'}
                         </Button>
                         <Button
                           appearance="secondary"
@@ -284,7 +289,7 @@ function PublishedModels({ onMessage }: { onMessage: (message: string) => void }
                         >
                           Unpublish
                         </Button>
-                        <Button appearance="subtle" disabled={remove.isPending} onClick={() => confirmRemoval(publication)} {...restoreFocus}>Remove</Button>
+                        <Button className={styles.recordAction} appearance="subtle" disabled={remove.isPending} onClick={() => confirmRemoval(publication)} {...restoreFocus}>Remove MOSAIC record</Button>
                       </div>
                     </TableCell>
                   </TableRow>
@@ -296,6 +301,7 @@ function PublishedModels({ onMessage }: { onMessage: (message: string) => void }
     </Card>
     <PublishModelDialog
       open={review !== null}
+      mutationKey={MODELS_PAGE_MUTATION_KEY}
       initialReview={review}
       onClose={() => setReview(null)}
       onPublished={onMessage}
@@ -303,6 +309,7 @@ function PublishedModels({ onMessage }: { onMessage: (message: string) => void }
     <UnpublishDialog
       open={unpublishing !== null}
       target="model"
+      mutationKey={MODELS_PAGE_MUTATION_KEY}
       publication={unpublishing}
       onClose={() => setUnpublishing(null)}
       onUnpublished={onMessage}
@@ -413,6 +420,7 @@ function ImportedModelApis({ onRemoved }: { onRemoved: (message: string) => void
   }
 
   const removeMutation = useMutation({
+    mutationKey: MODELS_PAGE_MUTATION_KEY,
     mutationFn: (id: string) => api.deleteModelApi(id),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['model-apis'] })
@@ -421,6 +429,7 @@ function ImportedModelApis({ onRemoved }: { onRemoved: (message: string) => void
   })
 
   const visibilityMutation = useMutation({
+    mutationKey: MODELS_PAGE_MUTATION_KEY,
     mutationFn: ({ id, visibility }: { id: string; visibility: CatalogVisibility }) =>
       api.updateModelApiCatalog(id, { visibility }),
     onSuccess: async () => {
@@ -940,6 +949,7 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
   }
 
   const register = useMutation({
+    mutationKey: MODELS_PAGE_MUTATION_KEY,
     mutationFn: api.registerModelEndpoint,
     onSuccess: async (endpoint) => {
       setResourceId('')
@@ -965,7 +975,11 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
     },
   })
 
-  const sync = useMutation({ mutationFn: api.syncModelEndpoint, onSuccess: refresh })
+  const sync = useMutation({
+    mutationKey: MODELS_PAGE_MUTATION_KEY,
+    mutationFn: api.syncModelEndpoint,
+    onSuccess: refresh,
+  })
   // A refusal says why at the top of the dialog, and takes focus so a screen reader reads it.
   const registerErrorRef = useRef<HTMLDivElement>(null)
   const shownRegisterError = useRef<unknown>(null)
@@ -975,8 +989,13 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
     if (!register.error || Object.is(register.error, shown) || registerOrigin !== 'dialog') return
     registerErrorRef.current?.focus()
   }, [register.error, registerOrigin])
-  const recheck = useMutation({ mutationFn: api.preflightModelEndpoint, onSuccess: refresh })
+  const recheck = useMutation({
+    mutationKey: MODELS_PAGE_MUTATION_KEY,
+    mutationFn: api.preflightModelEndpoint,
+    onSuccess: refresh,
+  })
   const remove = useMutation({
+    mutationKey: MODELS_PAGE_MUTATION_KEY,
     mutationFn: (endpoint: ModelEndpoint) => api.deleteModelEndpoint(endpoint.id),
     onSuccess: async (_, endpoint) => {
       setRemoving(null)
@@ -1794,6 +1813,7 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
       </RemovalDialog>
       {changingEndpoint && (
         <ChangeEnvironmentDialog
+          mutationKey={MODELS_PAGE_MUTATION_KEY}
           resource={{
             resourceKind: 'modelEndpoint',
             resourceId: changingEndpoint.id,
@@ -1813,18 +1833,33 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
   )
 }
 
+const modelSections = [
+  { value: 'published', label: 'Published models', description: 'Publish a registered deployment to a managed gateway through a reviewed plan. Reviewing does not apply changes to API Management.' },
+  { value: 'imported', label: 'Imported model APIs', description: 'Record governance for APIs already on a gateway. Importing does not change API Management.' },
+  { value: 'endpoints', label: 'Model endpoints', description: 'Register provider endpoints and discover their models. Registration does not publish a model or change the provider.' },
+]
+
 export function ModelsPage() {
+  const pendingOperations = useIsMutating({ mutationKey: MODELS_PAGE_MUTATION_KEY })
   const location = useLocation()
   const navigate = useNavigate()
   const hasConsumedImportQueryRef = useRef(false)
   const [importOpen, setImportOpen] = useState(false)
   const [publishOpen, setPublishOpen] = useState(false)
   const [liveBanner, setLiveBanner] = useState<string | null>(null)
+  const params = useMemo(() => new URLSearchParams(location.search), [location.search])
+  const [section, selectSection] = usePageSection(modelSections,
+    params.has('import') ? 'imported' : params.get('register') === '1' ? 'endpoints' : 'published')
 
   const requestedImportGatewayId = useMemo(
     () => new URLSearchParams(location.search).get('import'),
     [location.search],
   )
+
+  useEffect(() => {
+    const requestedSection = requestedImportGatewayId ? 'imported' : params.get('register') === '1' ? 'endpoints' : null
+    if (requestedSection && params.get('tab') !== requestedSection) selectSection(requestedSection)
+  }, [params, requestedImportGatewayId, selectSection])
 
   useEffect(() => {
     if (requestedImportGatewayId && !hasConsumedImportQueryRef.current) {
@@ -1857,16 +1892,16 @@ export function ModelsPage() {
     <section className={styles.page}>
       <PageHeader
         title="Models"
-        description="Model APIs MOSAIC governs, and the provider endpoints they are served from. Reading and importing do not change Azure. Publishing changes API Management only after a reviewed plan is applied, and only for a gateway switched to managed mode."
+        description="Manage model publication, imported APIs, and provider endpoints."
         source="live"
         actions={
           <div className={styles.actionRow}>
-            <Button appearance="primary" icon={<AddRegular />} onClick={() => setPublishOpen(true)}>
+            {section === 'published' && <Button appearance="primary" icon={<AddRegular />} onClick={() => setPublishOpen(true)}>
               Publish a model
-            </Button>
-            <Button appearance="secondary" onClick={() => setImportOpen(true)}>
+            </Button>}
+            {section === 'imported' && <Button appearance="primary" onClick={() => setImportOpen(true)}>
               Import from gateway
-            </Button>
+            </Button>}
           </div>
         }
       />
@@ -1877,20 +1912,24 @@ export function ModelsPage() {
         </MessageBar>
       )}
 
-      <PublishedModels onMessage={setLiveBanner} />
-
-      <ImportedModelApis onRemoved={setLiveBanner} />
-
-      <ModelEndpoints onMessage={setLiveBanner} />
+      {pendingOperations > 0 && <Text role="status">Finish the current operation before changing sections.</Text>}
+      <SectionLayout label="Models" sections={modelSections} active={section}
+        onSelect={(value) => { if (!pendingOperations) selectSection(value) }}>
+        {section === 'published' && <PublishedModels onMessage={setLiveBanner} />}
+        {section === 'imported' && <ImportedModelApis onRemoved={setLiveBanner} />}
+        {section === 'endpoints' && <ModelEndpoints onMessage={setLiveBanner} />}
+      </SectionLayout>
 
       <PublishModelDialog
         open={publishOpen}
+        mutationKey={MODELS_PAGE_MUTATION_KEY}
         onClose={() => setPublishOpen(false)}
         onPublished={setLiveBanner}
       />
 
       <ImportFromGatewayDialog
         kind="apis"
+        mutationKey={MODELS_PAGE_MUTATION_KEY}
         open={importOpen}
         initialGatewayId={requestedImportGatewayId}
         onClose={() => {

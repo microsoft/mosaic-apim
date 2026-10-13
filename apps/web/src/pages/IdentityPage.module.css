@@ -13,10 +13,6 @@
   box-shadow: var(--mosaic-shadow);
 }
 
-.tabs {
-  overflow-x: auto;
-}
-
 .toolbarControls {
   display: flex;
   flex-wrap: wrap;
@@ -42,7 +38,7 @@
 
 .contentGrid {
   display: grid;
-  grid-template-columns: minmax(0, 1.8fr) minmax(320px, 1fr);
+  grid-template-columns: minmax(0, 1.8fr) minmax(280px, 1fr);
   align-items: start;
   gap: 16px;
 }

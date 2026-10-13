@@ -3,18 +3,20 @@ import type { Targets } from '../../config.ts'
 import type { PersonaPool } from '../../fixtures.ts'
 import { expectNoLoadError, field, responseTo } from '../common.ts'
 
-export type IdentityTab = 'users' | 'agents' | 'workloads'
+export type IdentityTab = 'users' | 'agents' | 'workloads' | 'security-groups'
 
 const tabs: Record<IdentityTab, { title: string; filter: string; add: string }> = {
   users: { title: 'People', filter: 'Filter by label or object ID', add: 'Add person' },
   agents: { title: 'Agents', filter: 'Filter by label, detail, object ID, or kind', add: 'Add agent' },
-  workloads: { title: 'Applications and security groups', filter: 'Filter by label, detail, object ID, or kind', add: 'Add identity' },
+  workloads: { title: 'Applications and managed identities', filter: 'Filter by label, detail, object ID, or kind', add: 'Add application or managed identity' },
+  'security-groups': { title: 'Entra security groups', filter: 'Filter by label, detail, object ID, or kind', add: 'Add security group' },
 }
 
 /** The Identity tab that lists a principal of this kind. */
 export function identityTabFor(kind: string): IdentityTab {
   if (kind === 'user') return 'users'
   if (kind === 'agentIdentity' || kind === 'agentUser') return 'agents'
+  if (kind === 'securityGroup') return 'security-groups'
   return 'workloads'
 }
 
@@ -38,7 +40,7 @@ export class IdentityPage {
 
   async loaded(): Promise<void> {
     await expect(this.page.getByRole('heading', { level: 1, name: 'Identity', exact: true })).toBeVisible()
-    await expect(this.page.getByRole('tab', { name: tabs[this.tab].title, exact: true })).toHaveAttribute('aria-selected', 'true')
+    await expect(this.page.getByRole('navigation', { name: 'Identity sections' }).locator('[aria-current="page"]')).toBeVisible()
     await expect(this.shown).toBeVisible()
     await expectNoLoadError(this.page)
   }

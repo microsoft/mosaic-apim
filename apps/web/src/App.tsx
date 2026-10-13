@@ -1,6 +1,5 @@
 import {
   Button,
-  Input,
   Menu,
   MenuItem,
   MenuList,
@@ -8,11 +7,8 @@ import {
   MenuTrigger,
   Text,
   Title3,
-  Tooltip,
 } from '@fluentui/react-components'
 import {
-  AddRegular,
-  AlertRegular,
   ChartMultipleRegular,
   CloudDatabaseRegular,
   CodeTextEditRegular,
@@ -20,21 +16,21 @@ import {
   MoneyRegular,
   DismissRegular,
   HomeRegular,
-  HistoryRegular,
   NavigationRegular,
   PersonAccountsRegular,
   PersonCircleRegular,
   PlugConnectedRegular,
   PuzzlePieceRegular,
   QuestionCircleRegular,
-  SearchRegular,
+  ChevronLeftRegular,
+  ChevronRightRegular,
   SettingsRegular,
   ShieldKeyholeRegular,
   SignOutRegular,
   StackRegular,
 } from '@fluentui/react-icons'
 import { useMsal } from '@azure/msal-react'
-import { type FormEvent, type ReactNode, useMemo, useState } from 'react'
+import { type ReactNode, useCallback, useMemo, useState } from 'react'
 import {
   NavLink,
   Navigate,
@@ -64,6 +60,10 @@ import { SettingsPage } from './pages/SettingsPage'
 import { SupportPage } from './pages/SupportPage'
 import { runtimeConfig } from './runtime-config'
 import { MosaicThemeProvider } from './theme'
+import { MosaicMark } from './components/MosaicMark'
+import { PageSearch } from './components/PageSearch'
+import { RequestNotifications } from './components/RequestNotifications'
+import { useNavigationDrawer } from './components/useNavigationDrawer'
 import './index.css'
 
 interface NavigationItem {
@@ -104,6 +104,8 @@ function NavigationLinks({
       to={item.to}
       className={({ isActive }) => (isActive ? 'nav-link active' : 'nav-link')}
       onClick={onNavigate}
+      title={item.label}
+      aria-label={item.label}
     >
       {item.icon}
       <span>{item.label}</span>
@@ -115,42 +117,44 @@ function AdminShell() {
   const { instance, accounts } = useMsal()
   const navigate = useNavigate()
   const [mobileNavigationOpen, setMobileNavigationOpen] = useState(false)
-  const [searchQuery, setSearchQuery] = useState('')
-  const [searchMessage, setSearchMessage] = useState('')
+  const [collapsed, setCollapsed] = useState(() => localStorage.getItem('mosaic.primary.collapsed') === 'true')
   const accountName = accounts[0]?.name ?? 'MOSAIC administrator'
   const initials = useMemo(() => initialsFor(accountName), [accountName])
 
-  function submitSearch(event: FormEvent) {
-    event.preventDefault()
-    const query = searchQuery.trim().toLowerCase()
-    if (!query) {
-      return
-    }
-    const match = [...primaryNavigation, ...utilityNavigation].find((item) =>
-      item.label.toLowerCase().includes(query),
-    )
-    if (match) {
-      navigate(match.to)
-      setSearchQuery('')
-      setSearchMessage(`Opened ${match.label}`)
-    } else {
-      setSearchMessage(`No MOSAIC page matched "${searchQuery.trim()}"`)
-    }
+  const closeNavigation = useCallback(() => setMobileNavigationOpen(false), [])
+  const navigationRef = useNavigationDrawer(mobileNavigationOpen, closeNavigation)
+  function toggleCollapse() {
+    const next = !collapsed
+    localStorage.setItem('mosaic.primary.collapsed', String(next))
+    setCollapsed(next)
   }
-
-  const closeNavigation = () => setMobileNavigationOpen(false)
+  const searchDestinations = [
+    ...primaryNavigation, ...utilityNavigation,
+    { label: 'Models · Published models', to: '/models?tab=published' },
+    { label: 'Models · Imported model APIs', to: '/models?tab=imported' },
+    { label: 'Models · Model endpoints', to: '/models?tab=endpoints' },
+    { label: 'Entitlements · Access requests', to: '/entitlements?tab=requests' },
+    { label: 'Entitlements · Model access settings', to: '/entitlements?tab=settings' },
+    { label: 'Pricing · Unpriced deployments', to: '/pricing?tab=unpriced' },
+    { label: 'Settings · Appearance', to: '/settings?tab=appearance' },
+  ]
 
   return (
-    <div className="app-shell">
-      <aside className={mobileNavigationOpen ? 'sidebar open' : 'sidebar'}>
+    <div className={`app-shell ${collapsed ? 'rail-collapsed' : ''}`}>
+      <a className="skip-link" href="#main-content">Skip to content</a>
+      <aside ref={navigationRef} className={mobileNavigationOpen ? 'sidebar open' : 'sidebar'}
+        role={mobileNavigationOpen ? 'dialog' : undefined} aria-modal={mobileNavigationOpen || undefined}
+        aria-label={mobileNavigationOpen ? 'Navigation' : undefined}>
         <div className="sidebar-brand">
           <div className="brand-mark" aria-hidden="true">
-            M
+            <MosaicMark />
           </div>
           <div>
             <Title3 as="span">MOSAIC</Title3>
             <Text size={200}>AI gateway control plane</Text>
           </div>
+          <Button className="rail-toggle" appearance="subtle" icon={collapsed ? <ChevronRightRegular /> : <ChevronLeftRegular />}
+            aria-label={collapsed ? 'Expand navigation' : 'Collapse navigation'} aria-expanded={!collapsed} onClick={toggleCollapse} />
           <Button
             className="sidebar-close"
             appearance="subtle"
@@ -164,7 +168,9 @@ function AdminShell() {
         </nav>
         <nav className="utility-navigation" aria-label="Utility navigation">
           <NavigationLinks items={utilityNavigation} onNavigate={closeNavigation} />
-          <button className="profile-quick-link" onClick={() => navigate('/profile')}>
+          <Menu>
+            <MenuTrigger disableButtonEnhancement>
+          <button className="profile-quick-link" aria-label={`Account menu for ${accountName}`} title={accountName}>
             <span className="avatar">{initials}</span>
             <span>
               <strong>{accountName}</strong>
@@ -172,6 +178,12 @@ function AdminShell() {
               <small>{runtimeConfig.authMode === 'entra' ? 'MOSAIC Admin' : 'Local mode'}</small>
             </span>
           </button>
+            </MenuTrigger>
+            <MenuPopover><MenuList>
+              <MenuItem icon={<PersonCircleRegular />} onClick={() => { closeNavigation(); navigate('/profile') }}>Admin Profile</MenuItem>
+              {runtimeConfig.authMode === 'entra' && <MenuItem icon={<SignOutRegular />} onClick={() => void instance.logoutRedirect()}>Sign out</MenuItem>}
+            </MenuList></MenuPopover>
+          </Menu>
         </nav>
       </aside>
       {mobileNavigationOpen && (
@@ -181,7 +193,7 @@ function AdminShell() {
           onClick={closeNavigation}
         />
       )}
-      <header className="topbar">
+      <header className="topbar" inert={mobileNavigationOpen}>
         <Button
           className="mobile-menu"
           appearance="subtle"
@@ -189,85 +201,12 @@ function AdminShell() {
           aria-label="Open navigation"
           onClick={() => setMobileNavigationOpen(true)}
         />
-        <form className="global-search" role="search" onSubmit={submitSearch}>
-          <Input
-            value={searchQuery}
-            contentBefore={<SearchRegular />}
-            placeholder="Search MOSAIC pages..."
-            aria-label="Search MOSAIC pages"
-            onChange={(_, data) => setSearchQuery(data.value)}
-          />
-        </form>
-        <span className="sr-only" role="status">
-          {searchMessage}
-        </span>
+        <PageSearch destinations={searchDestinations} />
         <div className="topbar-actions">
-          <Button
-            className="deploy-button"
-            appearance="primary"
-            icon={<AddRegular />}
-            onClick={() => navigate('/models?register=1')}
-          >
-            Add model endpoint
-          </Button>
-          <Menu>
-            <MenuTrigger disableButtonEnhancement>
-              <Tooltip content="Notifications" relationship="label">
-                <Button appearance="subtle" icon={<AlertRegular />} aria-label="Notifications" />
-              </Tooltip>
-            </MenuTrigger>
-            <MenuPopover>
-              <MenuList>
-                <MenuItem>No new notifications</MenuItem>
-              </MenuList>
-            </MenuPopover>
-          </Menu>
-          <Menu>
-            <MenuTrigger disableButtonEnhancement>
-              <Tooltip content="Recent activity" relationship="label">
-                <Button appearance="subtle" icon={<HistoryRegular />} aria-label="Recent activity" />
-              </Tooltip>
-            </MenuTrigger>
-            <MenuPopover>
-              <MenuList>
-                <MenuItem>Signed in to MOSAIC</MenuItem>
-                <MenuItem onClick={() => navigate('/profile')}>View account activity</MenuItem>
-              </MenuList>
-            </MenuPopover>
-          </Menu>
-          <Tooltip content="Support" relationship="label">
-            <Button
-              appearance="subtle"
-              icon={<QuestionCircleRegular />}
-              aria-label="Support"
-              onClick={() => navigate('/support')}
-            />
-          </Tooltip>
-          <Menu>
-            <MenuTrigger disableButtonEnhancement>
-              <Button className="account-button" appearance="subtle" aria-label={`Account menu for ${accountName}`}>
-                <span className="topbar-avatar">{initials}</span>
-              </Button>
-            </MenuTrigger>
-            <MenuPopover>
-              <MenuList>
-                <MenuItem icon={<PersonCircleRegular />} onClick={() => navigate('/profile')}>
-                  Admin Profile
-                </MenuItem>
-                {runtimeConfig.authMode === 'entra' && (
-                  <MenuItem
-                    icon={<SignOutRegular />}
-                    onClick={() => void instance.logoutRedirect()}
-                  >
-                    Sign out
-                  </MenuItem>
-                )}
-              </MenuList>
-            </MenuPopover>
-          </Menu>
+          <RequestNotifications />
         </div>
       </header>
-      <main className="content">
+      <main id="main-content" className="content" inert={mobileNavigationOpen}>
         <div className="content-inner">
           <Outlet />
         </div>

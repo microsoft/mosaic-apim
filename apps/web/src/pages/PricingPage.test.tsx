@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter, useLocation } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApiError } from '../api'
 import { PricingPage } from './PricingPage'
@@ -134,12 +134,18 @@ vi.mock('../api', async (importOriginal) => {
   return { ...actual, useMosaicApi: () => api }
 })
 
+function LocationState() {
+  const location = useLocation()
+  return <output aria-label="Current query">{location.search}</output>
+}
+
 function renderPage(initial = '/pricing') {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   render(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={[initial]}>
         <PricingPage />
+        <LocationState />
       </MemoryRouter>
     </QueryClientProvider>,
   )
@@ -173,6 +179,22 @@ describe('PricingPage', () => {
     })
     api.addPrice.mockResolvedValue(price({ id: 'price_added', origin: 'admin' }))
     api.updateEndpointPricing.mockResolvedValue(endpoints[1])
+  })
+
+  it('navigates real sections while retaining cloud filters and clearing endpoint focus', async () => {
+    const user = userEvent.setup()
+    renderPage('/pricing?tab=endpoints&endpoint=endpoint-partner&cloud=government&extra=kept')
+    await screen.findByRole('table', { name: 'Endpoint pricing' })
+    await user.click(screen.getByRole('button', { name: 'Sources' }))
+    expect(screen.queryByRole('table', { name: 'Endpoint pricing' })).not.toBeInTheDocument()
+    expect(await screen.findByRole('list', { name: 'Price sources' })).toBeVisible()
+    const query = new URLSearchParams(screen.getByLabelText('Current query').textContent ?? '')
+    expect(query.get('tab')).toBe('sources')
+    expect(query.get('endpoint')).toBeNull()
+    expect(query.get('cloud')).toBe('government')
+    expect(query.get('extra')).toBe('kept')
+    await user.click(screen.getByRole('button', { name: 'Prices' }))
+    await waitFor(() => expect(api.listPrices).toHaveBeenCalledWith('government'))
   })
 
   it('lists each cloud’s prices with their sources', async () => {
@@ -313,6 +335,23 @@ describe('PricingPage', () => {
       // The version the form opened on, so a save over another administrator's change fails.
       version: 'etag-partner-1',
     }))
+  })
+
+  it('does not suggest adding prices to fix unknown inventory or deployment dates', async () => {
+    api.getUnpricedDeployments.mockResolvedValue({
+      ...unpriced,
+      rows: [
+        { ...unpriced.rows[0], key: 'unknown', label: 'Unknown model', model: null, reason: 'noModel' },
+        { ...unpriced.rows[0], key: 'before', label: 'Earlier usage', reason: 'beforeDeployment' },
+        { ...unpriced.rows[0], key: 'imported', label: 'Imported API', kind: 'api', reason: 'unknownDeployment' },
+      ],
+    })
+    renderPage('/pricing?tab=unpriced')
+    const table = await screen.findByRole('table', { name: 'Unpriced deployments' })
+    expect(within(table).queryByRole('button', { name: 'Add price' })).not.toBeInTheDocument()
+    expect(within(table).getByRole('link', { name: 'Review endpoint' })).toHaveAttribute('href', '/models?tab=endpoints')
+    expect(within(table).getByRole('link', { name: 'Review imported API' })).toHaveAttribute('href', '/models?tab=imported')
+    expect(within(table).getByText(/Adding a price will not fix this date mismatch/)).toBeVisible()
   })
 
   it('never saves a form opened before someone else’s change, and can load their change', async () => {

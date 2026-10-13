@@ -156,6 +156,82 @@ async def test_agent_search_maps_agent_identity_fields() -> None:
 
 
 @pytest.mark.asyncio
+async def test_application_search_is_bounded_read_only_and_excludes_agents() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        assert request.url.path == "/v1.0/servicePrincipals"
+        assert request.url.params["$top"] == "25"
+        assert request.url.params["$select"] == "id,displayName,appId,servicePrincipalType"
+        assert "startswith(displayName,'O''Brien')" in request.url.params["$filter"]
+        assert "servicePrincipalType eq 'ManagedIdentity'" in request.url.params["$filter"]
+        assert request.headers["ConsistencyLevel"] == "eventual"
+        return httpx.Response(
+            200,
+            json={
+                "value": [
+                    {
+                        "id": USER_ID,
+                        "displayName": "O'Brien app",
+                        "servicePrincipalType": "Application",
+                    },
+                    {
+                        "id": GROUP_ID,
+                        "displayName": "O'Brien identity",
+                        "servicePrincipalType": "ManagedIdentity",
+                    },
+                    {
+                        "id": AGENT_ID,
+                        "@odata.type": "#microsoft.graph.agentIdentityBlueprintPrincipal",
+                        "servicePrincipalType": "Application",
+                    },
+                    {"id": AGENT_USER_ID, "servicePrincipalType": "Legacy"},
+                ],
+                "@odata.nextLink": "https://graph.microsoft.com/v1.0/servicePrincipals?next",
+            },
+        )
+
+    result = await _client(handler).search(DirectorySearchKind.APPLICATION, "O'Brien", limit=99)
+    assert [item.kind for item in result] == [
+        PrincipalKind.SERVICE_PRINCIPAL,
+        PrincipalKind.MANAGED_IDENTITY,
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("object_found", [True, False])
+async def test_application_guid_search_checks_object_then_app_id(object_found: bool) -> None:
+    paths: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        paths.append(request.url.path)
+        item = {
+            "id": USER_ID,
+            "displayName": "Application",
+            "appId": AGENT_ID,
+            "servicePrincipalType": "Application",
+        }
+        if request.url.path == f"/v1.0/servicePrincipals/{AGENT_ID}":
+            return httpx.Response(200, json=item) if object_found else httpx.Response(404)
+        assert request.url.path == "/v1.0/servicePrincipals"
+        assert f"appId eq '{AGENT_ID}'" in request.url.params["$filter"]
+        return httpx.Response(200, json={"value": [item]})
+
+    result = await _client(handler).search(DirectorySearchKind.APPLICATION, AGENT_ID.upper())
+    assert result[0].object_id == USER_ID
+    assert result[0].app_id == AGENT_ID
+    assert len(paths) == (1 if object_found else 2)
+
+
+@pytest.mark.asyncio
+async def test_application_search_permission_error_names_read_only_permission() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(403)
+
+    with pytest.raises(DirectoryForbiddenError, match=r"Application\.Read\.All"):
+        await _client(handler).search(DirectorySearchKind.APPLICATION, "Contoso")
+
+
+@pytest.mark.asyncio
 async def test_group_members_paginates_truncates_and_rejects_foreign_next_link() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         if str(request.url).startswith(

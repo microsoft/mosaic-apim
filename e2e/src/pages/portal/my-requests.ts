@@ -54,9 +54,10 @@ export class MyRequestsPage {
     return card.getByText('Approval created your grant. It may not work until an administrator applies it.', { exact: false })
   }
 
-  withdraw(card: Locator): Promise<Response> {
+  async withdraw(card: Locator): Promise<Response> {
+    await card.getByRole('button', { name: 'Withdraw', exact: true }).click()
     return responseTo(this.page, this.targets.origins.api, 'POST', /^\/api\/v1\/portal\/access-requests\/[^/]+\/withdraw$/, () =>
-      card.getByRole('button', { name: 'Withdraw', exact: true }).click(),
+      card.getByRole('button', { name: 'Confirm withdrawal', exact: true }).click(),
     )
   }
 }

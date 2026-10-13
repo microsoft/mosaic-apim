@@ -336,6 +336,7 @@ export async function expectGrantBadge(ctx: SuiteContext, entitlements: Entitlem
   const grant = await ctx.api.entitlement(grantId)
   const status = grant.runtime?.status ?? skip('MOSAIC reports no runtime state for this grant, so the table shows none to compare.')
   await entitlements.reload()
+  await entitlements.selectSection('grants')
   await expect(entitlements.grantState(grantId, status)).toBeVisible()
   return grant
 }
@@ -539,6 +540,7 @@ export async function cleanupDisposable(ctx: SuiteContext, disposable: SuiteDisp
     )
     if (open.length > 0) {
       const entitlements = await EntitlementsPage.open(ctx.personas, ctx.targets)
+      await entitlements.selectSection('requests')
       for (const request of open) {
         if (!request.justification) throw new Error(`An open request for ${label} has no justification, so the suite can't find its row to deny it.`)
         await expectOk(await entitlements.deny(entitlements.requestRow(request.justification)), `Denying an open request for ${label}`)

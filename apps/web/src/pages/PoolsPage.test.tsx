@@ -213,6 +213,7 @@ describe('PoolsPage', () => {
   it('suggests a pool for models deployed on two or more endpoints, and the pools that could take them', async () => {
     api.listModelPoolSuggestions.mockResolvedValue([sonnetSuggestion])
     renderPage()
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Suggested pools' }))
 
     const table = await screen.findByRole('table', { name: 'Suggested pools' })
     expect(screen.getByRole('heading', { name: 'Suggested pools', level: 2 })).toBeVisible()
@@ -234,6 +235,8 @@ describe('PoolsPage', () => {
     renderPage()
 
     await screen.findByRole('table', { name: 'Model pools' })
+    expect(api.listModelPoolSuggestions).not.toHaveBeenCalled()
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Suggested pools' }))
     await waitFor(() => expect(api.listModelPoolSuggestions).toHaveBeenCalled())
     expect(screen.queryByRole('table', { name: 'Suggested pools' })).not.toBeInTheDocument()
   })
@@ -249,6 +252,7 @@ describe('PoolsPage', () => {
     api.listModelPoolSuggestions.mockResolvedValue([sonnetSuggestion])
     renderPage()
 
+    await user.click(screen.getByRole('button', { name: 'Suggested pools' }))
     expect(await screen.findByRole('table', { name: 'Suggested pools' })).toBeVisible()
     await user.selectOptions(screen.getByRole('combobox', { name: /gateway/i }), observedGateway.id)
     expect(screen.queryByRole('table', { name: 'Suggested pools' })).not.toBeInTheDocument()
@@ -262,6 +266,7 @@ describe('PoolsPage', () => {
     api.createModelPool.mockResolvedValue({ ...draftPool, id: 'modelpool_new', displayName: 'Anthropic' })
     renderPage()
 
+    await user.click(screen.getByRole('button', { name: 'Suggested pools' }))
     await user.click(await screen.findByRole('button', { name: createSuggestedName }))
     const dialog = await screen.findByRole('dialog', { name: 'Create a model pool' })
     expect(api.getPoolCandidates).toHaveBeenCalledWith(poolGateway.id)
@@ -295,6 +300,7 @@ describe('PoolsPage', () => {
     api.listModelPoolSuggestions.mockResolvedValue([sonnetSuggestion])
     renderPage()
 
+    await user.click(screen.getByRole('button', { name: 'Suggested pools' }))
     await user.click(await screen.findByRole('button', { name: createSuggestedName }))
     const dialog = await screen.findByRole('dialog', { name: 'Create a model pool' })
     expect(within(dialog).getByRole('textbox', { name: /^Name/ })).toHaveValue('Anthropic 2')
@@ -306,6 +312,7 @@ describe('PoolsPage', () => {
     api.getPoolCandidates.mockRejectedValue(new Error('The gateway didn’t answer.'))
     renderPage()
 
+    await user.click(screen.getByRole('button', { name: 'Suggested pools' }))
     await user.click(await screen.findByRole('button', { name: createSuggestedName }))
 
     expect(

@@ -8,14 +8,13 @@ import {
   MessageBarTitle,
   Select,
   Spinner,
-  Tab,
-  TabList,
   Text,
   Title3,
 } from '@fluentui/react-components'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMemo, useState } from 'react'
 import { Link as RouterLink, useSearchParams } from 'react-router-dom'
+import { SectionLayout } from '../components/SectionLayout'
 import { ApiError, useMosaicApi } from '../api'
 import { EmptyState, ErrorState, Loading } from '../components/AsyncState'
 import { BarList, type BarListItem } from '../components/charts/BarList'
@@ -925,9 +924,8 @@ export function AnalyticsPage() {
         }
       />
 
-      <TabList className={styles.tabs} selectedValue={tab} onTabSelect={(_, data) => updateFilter('tab', data.value as string)}>
-        {tabs.map((item) => <Tab key={item.key} value={item.key}>{item.label}</Tab>)}
-      </TabList>
+      <SectionLayout label="Analytics" sections={tabs.map((item) => ({ value: item.key, label: item.label }))}
+        active={tab} onSelect={(value) => updateFilter('tab', value)}>
 
       {exportStatus && <div className={styles.exportStatus} role="status">{exportStatus}</div>}
       {refreshMessage && <MessageBar intent="warning"><MessageBarBody>{refreshMessage}</MessageBarBody></MessageBar>}
@@ -956,6 +954,7 @@ export function AnalyticsPage() {
         </div>
       )}
       {reportQuery.isFetching && !reportQuery.isPending && <Spinner size="tiny" label="Refreshing analytics" />}
+      </SectionLayout>
     </section>
   )
 }

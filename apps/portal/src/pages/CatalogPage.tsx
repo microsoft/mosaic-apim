@@ -1,10 +1,12 @@
-import { Badge, Button, Card, CardHeader, Textarea, Text } from '@fluentui/react-components'
+import { Badge, Button, Card, CardHeader, Input, Textarea, Text } from '@fluentui/react-components'
+import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMemo, useState } from 'react'
 import { usePortalApi } from '../api'
 import { EmptyState, ErrorState, Loading } from '../components/AsyncState'
 import { EnvironmentBadge } from '../components/EnvironmentBadge'
 import { PageHeader } from '../components/PageHeader'
+import { DetailPanel } from '../components/DetailPanel'
 import {
   apiStyleLabel,
   capacityLabel,
@@ -174,6 +176,10 @@ function CatalogAction({ entry }: { entry: CatalogEntry }) {
         </>
       )}
       {create.isError && <Text className="form-error">{create.error.message}</Text>}
+      {withdraw.isError && <Text className="form-error">{withdraw.error.message}</Text>}
+      {create.isSuccess && pendingRequest?.id === create.data.id && (
+        <Text>Request submitted. <Link to="/requests">Track it in My requests</Link>. Approval does not apply gateway access immediately.</Text>
+      )}
     </div>
   )
 }
@@ -198,15 +204,19 @@ export function CatalogPage() {
   const environments = usePortalEnvironments()
   const [environmentFilter, setEnvironmentFilter] = useState('all')
   const [kindFilter, setKindFilter] = useState<KindFilter>('all')
+  const [search, setSearch] = useState('')
+  const [selectedId, setSelectedId] = useState<string | null>(null)
   const filteredCatalog = useMemo(() => {
     if (!catalog.data) return []
     return catalog.data.filter((entry) => {
       const matchesEnvironment =
         environmentFilter === 'all' ||
         (environmentFilter === 'unclassified' ? entry.environment === null : entry.environment === environmentFilter)
-      return matchesEnvironment && matchesKind(entry, kindFilter)
+      return matchesEnvironment && matchesKind(entry, kindFilter) &&
+        `${entry.displayName} ${entry.summary ?? ''} ${entry.gatewayName ?? ''}`.toLowerCase().includes(search.trim().toLowerCase())
     })
-  }, [catalog.data, environmentFilter, kindFilter])
+  }, [catalog.data, environmentFilter, kindFilter, search])
+  const selected = filteredCatalog.find((entry) => `${entry.kind}:${entry.id}:${entry.scopeId ?? ''}` === selectedId)
   const filterOptions = useMemo(
     () => environmentOptions(catalog.data ?? [], environments.data),
     [catalog.data, environments.data],
@@ -214,6 +224,7 @@ export function CatalogPage() {
   const clearFilters = () => {
     setEnvironmentFilter('all')
     setKindFilter('all')
+    setSearch('')
   }
 
   return (
@@ -232,6 +243,8 @@ export function CatalogPage() {
       {catalog.isSuccess && catalog.data.length > 0 && (
         <>
           <div className="filter-row" role="group" aria-label="Catalog filters">
+            <Input aria-label="Search catalog" placeholder="Find a model or MCP server" value={search}
+              onChange={(_, data) => setSearch(data.value)} />
             <label>
               <span>Environment</span>
               <select
@@ -272,9 +285,10 @@ export function CatalogPage() {
               <Button onClick={clearFilters}>Clear filters</Button>
             </EmptyState>
           ) : (
+            <div className={selected ? 'resource-workspace with-details' : 'resource-workspace'}>
             <div className="catalog-grid">
               {filteredCatalog.map((entry) => (
-                <Card key={`${entry.kind}:${entry.id}`} className="catalog-card">
+                <Card key={`${entry.kind}:${entry.id}:${entry.scopeId ?? ''}`} className="catalog-card">
                   <CardHeader
                     header={<h2>{entry.displayName}</h2>}
                     description={entryDescription(entry)}
@@ -293,9 +307,16 @@ export function CatalogPage() {
                     <CatalogCapacityBadge entry={entry} />
                   </div>
                   <Text>{entry.summary ?? 'No summary provided.'}</Text>
-                  <CatalogAction entry={entry} />
+                  <Button onClick={() => setSelectedId(`${entry.kind}:${entry.id}:${entry.scopeId ?? ''}`)}>
+                    View access options for {entry.displayName}
+                  </Button>
                 </Card>
               ))}
+            </div>
+            {selected && <DetailPanel key={selectedId} title={`Access to ${selected.displayName}`} onClose={() => setSelectedId(null)}>
+              <p>Choose the cost center that will pay for your calls, and explain what you need. An administrator reviews your request.</p>
+              <CatalogAction entry={selected} />
+            </DetailPanel>}
             </div>
           )}
         </>

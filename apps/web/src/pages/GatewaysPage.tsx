@@ -209,7 +209,7 @@ export function GatewaysPage() {
     <div className={styles.page}>
       <PageHeader
         title="Gateways"
-        description="Bring an existing Azure API Management service under MOSAIC. MOSAIC reads what is already there and describes it in plain language. It does not change your gateway unless an administrator switches it to manage mode and publishes a model."
+        description="Register an existing API Management service and sync its read-only inventory. Changes require managed mode and a reviewed plan."
         source="live"
         actions={
           <Button
@@ -338,7 +338,7 @@ export function GatewaysPage() {
                           onClick={() => remove.mutate(gateway.id)}
                           disabled={remove.isPending}
                         >
-                          Remove
+                          Remove MOSAIC record
                         </Button>
                       </div>
                     </td>

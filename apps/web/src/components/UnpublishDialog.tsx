@@ -47,6 +47,7 @@ export interface UnpublishSubject {
 interface UnpublishDialogProps {
   open: boolean
   target: UnpublishTarget
+  mutationKey?: readonly unknown[]
   /** The publication to unpublish. The dialog keeps showing the last one while it closes. */
   publication: UnpublishSubject | null
   onClose: () => void
@@ -126,6 +127,7 @@ export function UnpublishDialog(props: UnpublishDialogProps) {
 function UnpublishSession({
   open,
   target,
+  mutationKey,
   publication,
   sessionKey,
   onClose,
@@ -174,6 +176,7 @@ function UnpublishSession({
   }, [queryClient, target])
 
   const unpublish = useMutation({
+    mutationKey,
     mutationFn: () => {
       if (!plan) throw new Error('Review the unpublish plan before you unpublish.')
       return target === 'model'

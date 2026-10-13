@@ -24,15 +24,15 @@ export class ModelsPage {
     this.targets = targets
   }
 
-  static async open(personas: PersonaPool, targets: Targets, personaKey = targets.roles.admin): Promise<ModelsPage> {
+  static async open(personas: PersonaPool, targets: Targets, personaKey = targets.roles.admin, section: 'published' | 'imported' | 'endpoints' = 'published'): Promise<ModelsPage> {
     const models = new ModelsPage(await personas.page(personaKey, 'web', '/models'), targets)
     await models.loaded()
+    await models.selectSection(section)
     return models
   }
 
   async loaded(): Promise<void> {
     await expect(this.page.getByRole('heading', { name: 'Models', exact: true })).toBeVisible()
-    await expect(this.page.getByRole('heading', { name: 'Model endpoints', exact: true })).toBeVisible()
     await expectDataLoaded(this.page, ['Loading published models', 'Loading imported model APIs', 'Loading model endpoints'])
     await expectNoLoadError(this.page)
   }
@@ -40,6 +40,14 @@ export class ModelsPage {
   async reload(): Promise<void> {
     await this.page.reload()
     await this.loaded()
+  }
+
+  async selectSection(section: 'published' | 'imported' | 'endpoints'): Promise<void> {
+    const labels = { published: 'Published models', imported: 'Imported model APIs', endpoints: 'Model endpoints' }
+    const compact = this.page.getByRole('combobox', { name: 'Models section', exact: true })
+    if (await compact.isVisible()) await compact.selectOption(section)
+    else await this.page.getByRole('navigation', { name: 'Models sections' }).getByRole('button', { name: labels[section], exact: true }).click()
+    await expectDataLoaded(this.page, ['Loading published models', 'Loading imported model APIs', 'Loading model endpoints'])
   }
 
   banner(text: string | RegExp): Locator {
@@ -67,6 +75,7 @@ export class ModelsPage {
   }
 
   async openPublishDialog(): Promise<PublishDialog> {
+    await this.selectSection('published')
     await this.page.getByRole('button', { name: 'Publish a model', exact: true }).click()
     const dialog = new PublishDialog(this.page, this.targets, 'Publish a model')
     await dialog.visible()
@@ -75,8 +84,9 @@ export class ModelsPage {
 
   /** Re-plans a publication; the dialog opens on the plan's review and the response is the plan. */
   async replan(row: Locator): Promise<{ dialog: PublishDialog; plan: Response }> {
+    await this.selectSection('published')
     const plan = await this.#respond('POST', /^\/api\/v1\/publications\/[^/]+\/plan$/, () =>
-      row.getByRole('button', { name: 'Re-plan', exact: true }).click(),
+      row.getByRole('button', { name: /^Review (changes|publish plan)$/ }).click(),
     )
     const dialog = new PublishDialog(this.page, this.targets, /^(Publish a model|Review model access)$/)
     await dialog.visible()
@@ -88,6 +98,7 @@ export class ModelsPage {
    * is the plan, or MOSAIC's refusal to plan one.
    */
   async openUnpublish(row: Locator, displayName: string): Promise<{ dialog: UnpublishDialog; plan: Response }> {
+    await this.selectSection('published')
     const plan = await this.#respond('POST', /^\/api\/v1\/publications\/[^/]+\/unpublish-plan$/, () =>
       row.getByRole('button', { name: 'Unpublish', exact: true }).click(),
     )
@@ -98,7 +109,8 @@ export class ModelsPage {
 
   /** Removes a publication record through its confirmation dialog. */
   async removePublication(row: Locator, displayName: string): Promise<Response> {
-    await row.getByRole('button', { name: 'Remove', exact: true }).click()
+    await this.selectSection('published')
+    await row.getByRole('button', { name: 'Remove MOSAIC record', exact: true }).click()
     const dialog = this.page.getByRole('alertdialog', { name: `Remove ${displayName}?` })
     await expect(dialog).toBeVisible()
     const response = await this.#respond('DELETE', /^\/api\/v1\/publications\/[^/]+$/, () =>
@@ -123,11 +135,13 @@ export class ModelsPage {
   }
 
   async setVisibility(displayName: string, visibility: 'catalog' | 'private'): Promise<Response> {
+    await this.selectSection('imported')
     return this.#respond('PATCH', /^\/api\/v1\/model-apis\/[^/]+\/catalog$/, () => this.visibility(displayName).selectOption(visibility))
   }
 
   /** Stops governing a model API at once: the console asks for no confirmation. */
-  removeModelApi(displayName: string): Promise<Response> {
+  async removeModelApi(displayName: string): Promise<Response> {
+    await this.selectSection('imported')
     return this.#respond('DELETE', /^\/api\/v1\/model-apis\/[^/]+$/, () =>
       this.modelApiRow(displayName).getByRole('button', { name: 'Remove', exact: true }).click(),
     )
@@ -148,19 +162,22 @@ export class ModelsPage {
    * endpoint MOSAIC reads with its managed identity, or "Deployments on <name>" for one reached with an API key.
    */
   async selectEndpoint(name: string): Promise<void> {
+    await this.selectSection('endpoints')
     await this.endpointRow(name).getByRole('button', { name, exact: true }).click()
     await expect(this.page.getByRole('heading', { name: new RegExp(`^(Models|Deployments) on ${escapeRegExp(name)}$`) })).toBeVisible()
   }
 
   /** Checks access again. The page shows no banner, so the response is the result. */
-  checkAccess(name: string): Promise<Response> {
+  async checkAccess(name: string): Promise<Response> {
+    await this.selectSection('endpoints')
     return this.#respond('POST', /^\/api\/v1\/model-endpoints\/[^/]+\/preflight$/, () =>
       this.endpointRow(name).getByRole('button', { name: 'Check access', exact: true }).click(),
     )
   }
 
   /** Syncs an endpoint's models. The page shows no banner, so the response is the result. */
-  sync(name: string): Promise<Response> {
+  async sync(name: string): Promise<Response> {
+    await this.selectSection('endpoints')
     return this.#respond(
       'POST',
       /^\/api\/v1\/model-endpoints\/[^/]+\/sync$/,
@@ -171,6 +188,7 @@ export class ModelsPage {
 
   /** Removes what MOSAIC stored about an endpoint, through its confirmation dialog. Azure is never changed. */
   async removeEndpoint(name: string): Promise<Response> {
+    await this.selectSection('endpoints')
     await this.endpointRow(name).getByRole('button', { name: 'Remove', exact: true }).click()
     const dialog = this.page.getByRole('alertdialog', { name: `Remove ${name}?` })
     await expect(dialog).toBeVisible()
@@ -243,6 +261,7 @@ export class ModelsPage {
   // Registering an endpoint
 
   async openRegisterDialog(): Promise<RegisterEndpointDialog> {
+    await this.selectSection('endpoints')
     await this.page.getByRole('button', { name: 'Register endpoint', exact: true }).click()
     const dialog = new RegisterEndpointDialog(this.page, this.targets)
     await expect(dialog.root).toBeVisible()

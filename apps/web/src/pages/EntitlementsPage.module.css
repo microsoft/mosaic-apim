@@ -10,8 +10,7 @@
 }
 
 .summaryCard {
-  min-height: 118px;
-  padding: 16px;
+  padding: 12px 16px;
   display: grid;
   gap: 4px;
   border: 1px solid var(--mosaic-border);
@@ -46,6 +45,7 @@
   align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
+  flex-wrap: wrap;
 }
 
 .tableHeader h2 {

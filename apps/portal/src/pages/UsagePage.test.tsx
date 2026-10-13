@@ -353,12 +353,16 @@ function renderPage(report: MyUsageReport | Error = usageReport(), budgets: Port
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter>
+      <MemoryRouter initialEntries={['/usage?tab=resources']}>
         <UsagePage />
       </MemoryRouter>
     </QueryClientProvider>,
   )
   return { getMyUsage }
+}
+
+async function openSection(label: string) {
+  await userEvent.click(await screen.findByRole('button', { name: label }))
 }
 
 async function findResourceRow(name: string) {
@@ -496,6 +500,7 @@ describe('UsagePage', () => {
   it('shows cost center aggregates without per-person details', async () => {
     renderPage()
 
+    await openSection('Usage breakdowns')
     expect(await screen.findByText('Cost centers')).toBeVisible()
     expect(screen.getByText("Each cost center's total this month, from everyone who charges it, and its pooled quotas on what you hold there. MOSAIC shows only totals, never who used them.")).toBeVisible()
     expect(screen.getAllByText('Research · RES')[0]).toBeVisible()
@@ -511,6 +516,7 @@ describe('UsagePage', () => {
   it('shows model use through MCP servers with server, model, cost center, and charge text', async () => {
     renderPage(usageReport({ dataSource: 'logAnalytics', notes: [], onBehalf: [onBehalfRow()] }))
 
+    await openSection('Usage breakdowns')
     const table = await screen.findByRole('table', { name: 'Model use through MCP servers' })
     expect(screen.getByText('Model use through MCP servers')).toBeVisible()
     expect(
@@ -529,6 +535,7 @@ describe('UsagePage', () => {
     renderPage(usageReport({ onBehalf: [] }))
 
     await screen.findByRole('table', { name: 'Usage by resource' })
+    await openSection('Usage breakdowns')
     expect(screen.queryByRole('table', { name: 'Model use through MCP servers' })).not.toBeInTheDocument()
   })
 
@@ -536,6 +543,7 @@ describe('UsagePage', () => {
     renderPage()
 
     await screen.findByRole('table', { name: 'Usage by resource' })
+    await openSection('Usage breakdowns')
     expect(screen.queryByRole('table', { name: 'Model use through MCP servers' })).not.toBeInTheDocument()
   })
 
@@ -543,6 +551,7 @@ describe('UsagePage', () => {
     const user = userEvent.setup()
     renderPage(usageReport({ dataSource: 'logAnalytics', notes: [], onBehalf: [onBehalfRow()] }))
 
+    await openSection('Usage breakdowns')
     expect(await screen.findByRole('table', { name: 'Model use through MCP servers' })).toBeVisible()
     await user.selectOptions(screen.getByLabelText('Environment'), 'development')
     expect(screen.queryByRole('table', { name: 'Model use through MCP servers' })).not.toBeInTheDocument()
@@ -562,6 +571,7 @@ describe('UsagePage', () => {
       }),
     )
 
+    await openSection('Usage breakdowns')
     const table = await screen.findByRole('table', { name: 'Model use through MCP servers' })
     expect(within(table).getByText('No price')).toBeVisible()
     expect(within(table).getByText('No price for Contoso chat in Azure Commercial.')).toBeVisible()
@@ -610,6 +620,7 @@ describe('UsagePage', () => {
   it('summarizes each environment with its cost and resource count', async () => {
     renderPage()
 
+    await openSection('Usage breakdowns')
     expect(await screen.findByText('100 requests · 12,000 tokens · $1.23 · 2 resources')).toBeVisible()
     // The development grant can't be measured, so its environment doesn't claim zero calls.
     expect(screen.getByText('Usage unavailable · 1 resource')).toBeVisible()
@@ -619,6 +630,7 @@ describe('UsagePage', () => {
     const [production] = usageReport().byEnvironment
     renderPage(usageReport({ byEnvironment: [{ ...production, resources: 3, unmeasuredResources: 1 }] }))
 
+    await openSection('Usage breakdowns')
     expect(
       await screen.findByText('100 requests · 12,000 tokens · $1.23 · 3 resources, 1 not measured'),
     ).toBeVisible()
@@ -751,6 +763,7 @@ describe('UsagePage', () => {
     renderPage()
 
     await screen.findByRole('table', { name: 'Usage by resource' })
+    await openSection('Overview & trends')
     await user.click(screen.getAllByRole('button', { name: 'Show as table' })[0])
     expect(screen.getByRole('table', { name: 'Daily requests by environment' })).toBeVisible()
     expect(screen.getByRole('columnheader', { name: 'Production' })).toBeVisible()
@@ -759,6 +772,7 @@ describe('UsagePage', () => {
   it('renders recent hours', async () => {
     renderPage(usageReport({ dataSource: 'logAnalytics', freshness: null, notes: [] }))
 
+    await openSection('Overview & trends')
     expect(await screen.findByRole('img', { name: 'Hourly request chart for the last 24 hours in UTC' })).toBeVisible()
   })
 
@@ -773,6 +787,7 @@ describe('UsagePage', () => {
     })
     const chartName = 'Hourly request chart for the last 24 hours in UTC'
 
+    await openSection('Overview & trends')
     expect(await screen.findByRole('img', { name: chartName })).toBeVisible()
     await user.selectOptions(screen.getByLabelText('Environment'), 'development')
     expect(screen.queryByRole('img', { name: chartName })).not.toBeInTheDocument()

@@ -14,8 +14,6 @@ import {
   MessageBarBody,
   MessageBarTitle,
   Select,
-  Tab,
-  TabList,
   Text,
   Textarea,
   Title3,
@@ -28,12 +26,28 @@ import { EmptyState, ErrorState, Loading } from '../components/AsyncState'
 import { DirectoryPrincipalPicker } from '../components/DirectoryPrincipalPicker'
 import { PageHeader } from '../components/PageHeader'
 import { PrincipalKindBadge } from '../components/PrincipalKindBadge'
-import { PRINCIPAL_KIND_LABELS, type PrincipalTab, principalTabForKind } from '../labels'
+import { SectionLayout } from '../components/SectionLayout'
+import { PRINCIPAL_KIND_LABELS } from '../labels'
 import type { DirectorySearchKind, Principal, PrincipalKind } from '../types'
 import styles from './IdentityPage.module.css'
 
+type PrincipalTab = 'users' | 'agents' | 'applications' | 'security-groups'
 type IdentityTab = PrincipalTab | 'groups'
 type PrincipalDialogView = 'search' | 'manual'
+
+const IDENTITY_SECTIONS = [
+  { value: 'users', label: 'People', description: 'People referenced from Microsoft Entra. Labels and defaults are stored in MOSAIC; adding a reference does not create an Entra account.' },
+  { value: 'agents', label: 'Agents', description: 'Microsoft Entra agent identities and their paired agent users. MOSAIC records references, not new agents.' },
+  { value: 'applications', label: 'Applications & managed identities', description: 'Application service principals and Azure managed identities from Microsoft Entra. Registration in MOSAIC does not grant an Entra application role.' },
+  { value: 'security-groups', label: 'Entra security groups', description: 'Security-enabled groups whose membership is managed in Microsoft Entra. Group grants use validated token claims, not MOSAIC-local membership.' },
+  { value: 'groups', label: 'MOSAIC groups', description: 'Local collections of registered principals. Creating a MOSAIC group does not create or change an Entra group; these grants remain desired state only.' },
+] as const
+
+function principalTabForKind(kind: PrincipalKind): PrincipalTab {
+  if (kind === 'user') return 'users'
+  if (kind === 'agentIdentity' || kind === 'agentUser') return 'agents'
+  return kind === 'securityGroup' ? 'security-groups' : 'applications'
+}
 
 const PRINCIPAL_TAB_TEXT: Record<
   PrincipalTab,
@@ -62,11 +76,19 @@ const PRINCIPAL_TAB_TEXT: Record<
     selectPrompt: 'Select an agent',
     filter: 'Filter by label, detail, object ID, or kind',
   },
-  workloads: {
-    title: 'Applications and security groups',
-    add: 'Add identity',
-    emptyTitle: 'No applications or security groups registered',
-    emptyHint: 'Add an application, managed identity, or security group to begin.',
+  applications: {
+    title: 'Applications & managed identities',
+    add: 'Add application or managed identity',
+    emptyTitle: 'No applications or managed identities registered',
+    emptyHint: 'Add an application or managed identity to begin.',
+    selectPrompt: 'Select a record',
+    filter: 'Filter by label, detail, object ID, or kind',
+  },
+  'security-groups': {
+    title: 'Entra security groups',
+    add: 'Add security group',
+    emptyTitle: 'No Entra security groups registered',
+    emptyHint: 'Reference a security-enabled Entra group to begin.',
     selectPrompt: 'Select a record',
     filter: 'Filter by label, detail, object ID, or kind',
   },
@@ -76,7 +98,8 @@ const PRINCIPAL_TAB_TEXT: Record<
 const ADD_DIALOG_DEFAULTS: Record<IdentityTab, { search: DirectorySearchKind; manual: PrincipalKind }> = {
   users: { search: 'user', manual: 'user' },
   agents: { search: 'agent', manual: 'agentIdentity' },
-  workloads: { search: 'group', manual: 'servicePrincipal' },
+  applications: { search: 'application', manual: 'servicePrincipal' },
+  'security-groups': { search: 'group', manual: 'securityGroup' },
   groups: { search: 'user', manual: 'user' },
 }
 
@@ -85,12 +108,14 @@ const MANUAL_KIND_FOR_SEARCH: Record<DirectorySearchKind, PrincipalKind> = {
   user: 'user',
   agent: 'agentIdentity',
   group: 'securityGroup',
+  application: 'servicePrincipal',
 }
 
 const SEARCH_DIALOG_TITLES: Record<DirectorySearchKind, string> = {
   user: 'Add person',
   agent: 'Add agent',
   group: 'Add security group',
+  application: 'Add application or managed identity',
 }
 
 type ConfirmationState =
@@ -114,7 +139,7 @@ type ConfirmationState =
   | null
 
 function isIdentityTab(value: string | null): value is IdentityTab {
-  return value === 'users' || value === 'agents' || value === 'workloads' || value === 'groups'
+  return IDENTITY_SECTIONS.some((section) => section.value === value)
 }
 
 function matchesSearch(search: string, ...values: Array<string | undefined>) {
@@ -149,7 +174,7 @@ function formatTimestamp(value: string) {
 function LiveBadge() {
   return (
     <Badge appearance="tint" className={styles.liveBadge}>
-      Live
+      MOSAIC record
     </Badge>
   )
 }
@@ -161,7 +186,7 @@ export function IdentityPage() {
   const location = useLocation()
   const searchParams = useMemo(() => new URLSearchParams(location.search), [location.search])
   const rawTab = searchParams.get('tab')
-  const activeTab: IdentityTab = isIdentityTab(rawTab) ? rawTab : 'users'
+  const activeTab: IdentityTab = rawTab === 'workloads' ? 'applications' : isIdentityTab(rawTab) ? rawTab : 'users'
 
   const [searchQuery, setSearchQuery] = useState('')
   const [requestedPrincipalId, setSelectedPrincipalId] = useState('')
@@ -323,7 +348,7 @@ export function IdentityPage() {
 
   const normalizedSearch = searchQuery.trim().toLowerCase()
   const principalsByTab = useMemo(() => {
-    const grouped: Record<PrincipalTab, Principal[]> = { users: [], agents: [], workloads: [] }
+    const grouped: Record<PrincipalTab, Principal[]> = { users: [], agents: [], applications: [], 'security-groups': [] }
     for (const principal of principals.data ?? []) {
       grouped[principalTabForKind(principal.kind)].push(principal)
     }
@@ -438,7 +463,7 @@ export function IdentityPage() {
 
   const directoryLookupEnabled = directoryStatus.data?.lookupEnabled === true
   const effectivePrincipalDialogView =
-    principalDialogView === 'search' && directoryLookupEnabled ? 'search' : 'manual'
+    principalDialogView === 'search' && (directoryLookupEnabled || directoryStatus.isPending) ? 'search' : 'manual'
   // The title names what the dialog will add, so it follows the search or type choice.
   const principalDialogTitle =
     effectivePrincipalDialogView === 'search'
@@ -446,10 +471,12 @@ export function IdentityPage() {
       : `Add ${PRINCIPAL_KIND_LABELS[createPrincipalKind].toLowerCase()}`
   const principalCreateHint =
     effectivePrincipalDialogView === 'search'
-      ? 'Search Microsoft Entra for people, agents, and security groups. Applications and managed identities need manual entry.'
+      ? 'Search Microsoft Entra and add a reference to MOSAIC. Nothing is created or changed in Entra.'
       : directoryLookupEnabled
-        ? 'Enter the Entra object ID and type for an application, a managed identity, or anyone the directory search does not find.'
-        : 'Directory lookup is off. Enter the Entra object ID and kind manually.'
+        ? 'Enter the Entra object ID and type. Manual entry does not bypass required directory verification while lookup is enabled. Application and managed-identity references remain unverified.'
+        : directoryStatus.isError
+          ? 'Directory status could not be loaded. Manual entry is available; retry to check lookup availability.'
+          : 'Directory lookup is off. Enter the Entra object ID and kind manually.'
 
   const groupSearchPlaceholder = 'Filter groups or visible members'
 
@@ -572,7 +599,7 @@ export function IdentityPage() {
       <PageHeader
         title="Identity"
         source="live"
-        description="MOSAIC stores live references to Entra object IDs for access control. Entra IDs remain the authoritative source for identity details."
+        description="Manage registered identity references and local groups. Microsoft Entra remains authoritative for directory identities and security-group membership."
       />
 
       {directoryStatus.data?.groupClaimsEnabled === false && (
@@ -585,22 +612,9 @@ export function IdentityPage() {
         </MessageBar>
       )}
 
+      <SectionLayout label="Identity" sections={IDENTITY_SECTIONS} active={activeTab}
+        onSelect={(value) => isIdentityTab(value) && updateTab(value)}>
       <div className={styles.toolbar}>
-        <TabList
-          className={styles.tabs}
-          selectedValue={activeTab}
-          onTabSelect={(_, data) => {
-            if (typeof data.value === 'string' && isIdentityTab(data.value) && data.value !== activeTab) {
-              updateTab(data.value)
-            }
-          }}
-        >
-          <Tab value="users">People</Tab>
-          <Tab value="agents">Agents</Tab>
-          <Tab value="workloads">Applications and security groups</Tab>
-          <Tab value="groups">MOSAIC groups</Tab>
-        </TabList>
-
         <div className={styles.toolbarControls}>
           <Input
             className={styles.searchInput}
@@ -611,14 +625,14 @@ export function IdentityPage() {
           />
 
           <div className={styles.actionRow}>
-            <Button
-              appearance={activeTab !== 'groups' ? 'primary' : 'secondary'}
+            {activeTab !== 'groups' && <Button
+              appearance="primary"
               onClick={() => openPrincipalDialog()}
             >
-              {activeTab === 'groups' ? 'Add identity' : principalTabText.add}
-            </Button>
-            <Button
-              appearance={activeTab === 'groups' ? 'primary' : 'secondary'}
+              {principalTabText.add}
+            </Button>}
+            {activeTab === 'groups' && <Button
+              appearance="primary"
               onClick={() => {
                 createGroup.reset()
                 setCreateGroupName('')
@@ -626,8 +640,8 @@ export function IdentityPage() {
                 setCreateGroupOpen(true)
               }}
             >
-              Create group
-            </Button>
+              Create MOSAIC group
+            </Button>}
           </div>
         </div>
       </div>
@@ -691,7 +705,6 @@ export function IdentityPage() {
                 <>
                   <div className={styles.detailHeader}>
                     <div className={styles.detailTitleBlock}>
-                      <Text className={styles.eyebrow}>Group</Text>
                       <Title3 as="h2">{selectedGroup.name}</Title3>
                       <Text className={styles.muted}>
                         Organize identities in MOSAIC. The gateway doesn&apos;t enforce these
@@ -897,7 +910,7 @@ export function IdentityPage() {
                     <tr>
                       <th scope="col">Identity</th>
                       <th scope="col">Type</th>
-                      <th scope="col">Details</th>
+                      <th scope="col">Technical details</th>
                       <th scope="col">Status</th>
                     </tr>
                   </thead>
@@ -949,7 +962,7 @@ export function IdentityPage() {
                                 appearance="tint"
                                 className={`${styles.statusBadge} ${principal.directoryVerifiedAt ? styles.liveBadge : styles.groupBadge}`}
                               >
-                                {principal.directoryVerifiedAt ? 'Verified in Entra' : 'Entered by hand'}
+                                {principal.directoryVerifiedAt ? 'Verified in Entra' : 'Not directory-verified'}
                               </Badge>
                               {principal.directoryVerifiedAt && (
                                 <span className={styles.rowSecondary}>
@@ -983,9 +996,6 @@ export function IdentityPage() {
               <>
                 <div className={styles.detailHeader}>
                   <div className={styles.detailTitleBlock}>
-                    <Text className={styles.eyebrow}>
-                      {PRINCIPAL_KIND_LABELS[selectedPrincipal.kind]}
-                    </Text>
                     <Title3 as="h2">{getPrincipalName(selectedPrincipal)}</Title3>
                     <div className={styles.badgeRow}>
                       <LiveBadge />
@@ -1186,6 +1196,8 @@ export function IdentityPage() {
         </div>
       )}
 
+      </SectionLayout>
+
       <Dialog open={principalDialogOpen} onOpenChange={(_, data) => !data.open && closePrincipalDialog()}>
         <DialogSurface>
           {effectivePrincipalDialogView === 'search' ? (
@@ -1193,6 +1205,13 @@ export function IdentityPage() {
               <DialogTitle>{principalDialogTitle}</DialogTitle>
               <DialogContent className={styles.dialogForm}>
                 <Text className={styles.muted}>{principalCreateHint}</Text>
+                {!directoryLookupEnabled && <MessageBar intent={directoryStatus.isError ? 'error' : 'warning'}>
+                  <MessageBarBody>
+                    {directoryStatus.isError ? 'Could not check directory availability.' : 'Directory lookup is disabled; entries are recorded without directory verification.'}
+                    {' '}<a href="/settings?tab=runtime">Check directory configuration</a>
+                    <Button onClick={() => directoryStatus.refetch()} disabled={directoryStatus.isFetching}>Retry directory availability</Button>
+                  </MessageBarBody>
+                </MessageBar>}
                 {directoryKind !== 'group' && (
                   <Field label="Default cost center">
                     <Select
@@ -1208,7 +1227,7 @@ export function IdentityPage() {
                     </Select>
                   </Field>
                 )}
-                <DirectoryPrincipalPicker
+                {directoryStatus.isPending ? <Loading label="Checking directory lookup availability" /> : <DirectoryPrincipalPicker
                   kind={directoryKind}
                   onKindChange={setDirectoryKind}
                   defaultCostCenterId={directoryKind === 'group' ? null : createPrincipalDefaultCostCenterId}
@@ -1220,7 +1239,7 @@ export function IdentityPage() {
                     setCreatePrincipalKind(MANUAL_KIND_FOR_SEARCH[directoryKind])
                     setPrincipalDialogView('manual')
                   }}
-                />
+                />}
               </DialogContent>
               <DialogActions>
                 <Button appearance="secondary" type="button" onClick={closePrincipalDialog}>

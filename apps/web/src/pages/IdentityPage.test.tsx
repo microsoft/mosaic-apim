@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter, useLocation, useNavigate } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Principal } from '../types'
 import { IdentityPage } from './IdentityPage'
@@ -105,9 +105,19 @@ function renderPage(path = '/identity?tab=users') {
     <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={[path]}>
         <IdentityPage />
+        <NavigationProbe />
       </MemoryRouter>
     </QueryClientProvider>,
   )
+}
+
+function NavigationProbe() {
+  const navigate = useNavigate()
+  const location = useLocation()
+  return <>
+    <button onClick={() => navigate(-1)}>Previous section</button>
+    <output aria-label="Section query">{location.search}</output>
+  </>
 }
 
 function principalRow(name: string | RegExp) {
@@ -148,7 +158,7 @@ describe('IdentityPage', () => {
     expect(screen.queryByText('Build agent')).not.toBeInTheDocument()
     expect(screen.getByText('Live data')).toBeVisible()
 
-    await user.click(screen.getByRole('tab', { name: 'Agents' }))
+    await user.click(screen.getByRole('button', { name: 'Agents' }))
 
     expect(await screen.findByRole('heading', { name: 'Agents' })).toBeVisible()
     expect(principalRow(/Benefits Bot mailbox/)).toBeVisible()
@@ -158,11 +168,13 @@ describe('IdentityPage', () => {
     expect(screen.queryByText('Build agent')).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Add agent' })).toBeVisible()
 
-    await user.click(screen.getByRole('tab', { name: 'Applications and security groups' }))
+    await user.click(screen.getByRole('button', { name: 'Applications & managed identities' }))
 
     expect((await screen.findAllByText('Build agent')).length).toBeGreaterThan(0)
     expect(screen.queryByText('Alex User')).not.toBeInTheDocument()
     expect(screen.queryByText('Benefits Bot mailbox')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Security Readers/ })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Entra security groups' }))
     expect(screen.getByText(/Security-group grants are not enforceable yet/)).toBeVisible()
     await user.click(principalRow(/Security Readers/))
     expect(await screen.findByText('Member User')).toBeVisible()
@@ -179,12 +191,13 @@ describe('IdentityPage', () => {
 
     renderPage('/identity?tab=workloads')
 
-    expect(await screen.findByRole('heading', { name: 'Applications and security groups' })).toBeVisible()
+    expect(await screen.findByRole('heading', { name: 'Applications & managed identities' })).toBeVisible()
     // Named in the same order whatever order the publications arrive in.
     expect(screen.getAllByText('Calls models for Contoso Docs, Contoso Search').length).toBeGreaterThan(0)
-    await user.click(principalRow(/Security Readers/))
+    await user.click(screen.getByRole('button', { name: 'Entra security groups' }))
+    await user.click(await screen.findByRole('button', { name: /Security Readers/ }))
     // Only the application's own row keeps its badge; Security Readers' detail panel has none.
-    expect(screen.getAllByText('Calls models for Contoso Docs, Contoso Search')).toHaveLength(1)
+    expect(screen.queryByText('Calls models for Contoso Docs, Contoso Search')).not.toBeInTheDocument()
   })
 
   it('opens Add person on directory search and switches to manual entry and back', async () => {
@@ -231,6 +244,35 @@ describe('IdentityPage', () => {
     expect(within(dialog).getByRole('combobox', { name: 'Principal type' })).toHaveValue('agentIdentity')
     await user.selectOptions(within(dialog).getByRole('combobox', { name: 'Principal type' }), 'agentUser')
     expect(screen.getByRole('dialog', { name: 'Add agent user' })).toBeVisible()
+  })
+
+  it('maps the old workloads link to applications and exposes independent Entra and MOSAIC group sections', async () => {
+    const user = userEvent.setup()
+    renderPage('/identity?tab=workloads&scope=kept')
+    expect(await screen.findByRole('heading', { name: 'Applications & managed identities' })).toBeVisible()
+    expect(screen.queryByRole('button', { name: /Security Readers/ })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Add application or managed identity' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Add application or managed identity' })
+    expect(within(dialog).getByRole('combobox', { name: 'Directory search kind' })).toHaveValue('application')
+    await user.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    await user.click(await screen.findByRole('button', { name: 'MOSAIC groups' }))
+    expect(screen.getByText(/does not create or change an Entra group/)).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Create MOSAIC group' })).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Add identity' })).not.toBeInTheDocument()
+  })
+
+  it('supports browser Back between actual views and retains other query values', async () => {
+    const user = userEvent.setup()
+    renderPage('/identity?tab=users&scope=kept')
+    expect(await screen.findByRole('heading', { name: 'People' })).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Agents' }))
+    expect(await screen.findByRole('heading', { name: 'Agents' })).toBeVisible()
+    expect(screen.queryByRole('heading', { name: 'People' })).not.toBeInTheDocument()
+    expect(screen.getByRole('status', { name: 'Section query' })).toHaveTextContent('scope=kept')
+    await user.click(screen.getByRole('button', { name: 'Previous section' }))
+    expect(await screen.findByRole('heading', { name: 'People' })).toBeVisible()
+    expect(screen.queryByRole('heading', { name: 'Agents' })).not.toBeInTheDocument()
   })
 
   it('opens Add person on manual entry when directory lookup is off', async () => {
@@ -416,7 +458,7 @@ describe('IdentityPage', () => {
 
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
     // The closed dialog's aria-hidden on the page lifts a moment later, so wait for the tab.
-    expect(await screen.findByRole('tab', { name: 'People', selected: true })).toBeVisible()
+    expect(await screen.findByRole('button', { name: 'People' })).toHaveAttribute('aria-current', 'page')
     expect(await screen.findByRole('button', { name: /Nia Person/, pressed: true })).toBeVisible()
   })
 
@@ -438,7 +480,7 @@ describe('IdentityPage', () => {
     await user.selectOptions(screen.getByRole('combobox', { name: 'Principal type' }), 'agentIdentity')
     await user.click(screen.getByRole('button', { name: 'Save changes' }))
 
-    expect(await screen.findByRole('tab', { name: 'Agents', selected: true })).toBeVisible()
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Agents' })).toHaveAttribute('aria-current', 'page'))
     expect(await screen.findByRole('button', { name: /Build agent/, pressed: true })).toBeVisible()
     expect(screen.getByRole('button', { name: /Benefits Bot mailbox/, pressed: false })).toBeVisible()
   })
@@ -464,7 +506,7 @@ describe('IdentityPage', () => {
     await user.selectOptions(screen.getByRole('combobox', { name: 'Principal type' }), 'agentIdentity')
     await user.click(screen.getByRole('button', { name: 'Save changes' }))
 
-    expect(await screen.findByRole('tab', { name: 'Agents', selected: true })).toBeVisible()
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Agents' })).toHaveAttribute('aria-current', 'page'))
     expect(filter).toHaveValue('')
     expect(await screen.findByRole('button', { name: /Build agent/, pressed: true })).toBeVisible()
   })

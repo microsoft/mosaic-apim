@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter, useLocation } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { AnalyticsPage } from './AnalyticsPage'
 import type { EnvironmentCatalogView } from '../types'
@@ -59,12 +59,18 @@ vi.mock('../api', () => ({
   },
 }))
 
+function LocationState() {
+  const location = useLocation()
+  return <output aria-label="Current query">{location.search}</output>
+}
+
 function renderPage(initial = '/analytics') {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   render(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={[initial]}>
         <AnalyticsPage />
+        <LocationState />
       </MemoryRouter>
     </QueryClientProvider>,
   )
@@ -89,7 +95,8 @@ describe('AnalyticsPage', () => {
     api.getAnalyticsCost.mockResolvedValue(costFixture)
     api.refreshGatewayTelemetry.mockResolvedValue(overviewFixture.gateways[0])
     api.exportAnalytics.mockResolvedValue({ blob: new Blob(['csv'], { type: 'text/csv' }), filename: 'mosaic-trend-20260219-20260320.csv' })
-    vi.stubGlobal('URL', { createObjectURL: vi.fn(() => 'blob:csv'), revokeObjectURL: vi.fn() })
+    URL.createObjectURL = vi.fn(() => 'blob:csv')
+    URL.revokeObjectURL = vi.fn()
     HTMLAnchorElement.prototype.click = vi.fn()
   })
 
@@ -160,7 +167,7 @@ describe('AnalyticsPage', () => {
     const user = userEvent.setup()
     renderPage()
 
-    await user.click(await screen.findByRole('tab', { name: label }))
+    await user.click(await screen.findByRole('button', { name: label }))
 
     expect(await screen.findByRole('heading', { name: heading })).toBeVisible()
     expect(screen.getByText(text)).toBeVisible()
@@ -184,7 +191,7 @@ describe('AnalyticsPage', () => {
     expect(within(costCenters).getByText('Support')).toBeVisible()
     expect(within(costCenters).getByText('support')).toBeVisible()
 
-    await user.click(screen.getByRole('tab', { name: 'Limits' }))
+    await user.click(screen.getByRole('button', { name: 'Limits' }))
 
     const limits = await screen.findByRole('table', { name: 'Grant limit use' })
     expect(within(limits).getByText('OK')).toBeVisible()
@@ -282,7 +289,7 @@ describe('AnalyticsPage', () => {
     const backend = screen.getByText('Backend 429s', { selector: 'span' }).parentElement as HTMLElement
     expect(within(backend).getByText('2')).toBeVisible()
 
-    await user.click(screen.getByRole('tab', { name: 'Models' }))
+    await user.click(screen.getByRole('button', { name: 'Models' }))
 
     const deployments = await screen.findByRole('table', { name: 'Deployments' })
     const cells = within(within(deployments).getByText('chat-prod').closest('tr') as HTMLElement).getAllByRole('cell')
@@ -300,15 +307,24 @@ describe('AnalyticsPage', () => {
 
   it('keeps filters and active tab in the URL', async () => {
     const user = userEvent.setup()
-    renderPage()
+    renderPage('/analytics?range=custom&start=2026-03-01&end=2026-03-05&extra=kept')
 
     await user.selectOptions(await screen.findByLabelText('Range'), '24h')
     await user.selectOptions(screen.getByLabelText('Gateway'), 'gateway-prod')
-    await user.click(screen.getByRole('tab', { name: 'Consumers' }))
+    await user.click(screen.getByRole('button', { name: 'Consumers' }))
 
     await waitFor(() => {
       expect(api.getAnalyticsConsumers).toHaveBeenCalledWith(expect.objectContaining({ range: '24h', gatewayId: 'gateway-prod' }))
     })
+    const query = new URLSearchParams(screen.getByLabelText('Current query').textContent ?? '')
+    expect(query.get('tab')).toBe('consumers')
+    expect(query.get('gatewayId')).toBe('gateway-prod')
+    expect(query.get('range')).toBe('24h')
+    expect(query.get('extra')).toBe('kept')
+    expect(query.has('start')).toBe(false)
+    expect(query.has('end')).toBe(false)
+    expect(screen.getByLabelText('Gateway')).toHaveValue('gateway-prod')
+    expect(screen.queryByRole('img', { name: /Requests and tokens trend/ })).not.toBeInTheDocument()
   })
 
   it('shows notConfigured without invented numbers', async () => {

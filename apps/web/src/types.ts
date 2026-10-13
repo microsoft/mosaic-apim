@@ -2003,7 +2003,7 @@ export interface McpConnection {
   limits?: EntitlementEnforcement | null
 }
 
-export type DirectorySearchKind = 'user' | 'group' | 'agent'
+export type DirectorySearchKind = 'user' | 'group' | 'agent' | 'application'
 
 export interface DirectoryObject {
   objectId: string

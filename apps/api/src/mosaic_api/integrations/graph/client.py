@@ -58,6 +58,8 @@ class GraphDirectoryLookup:
         if not term:
             raise ValidationError("Directory search query cannot be empty")
         term = term[:120]
+        if kind == DirectorySearchKind.APPLICATION:
+            return await self._search_applications(term, limit)
         if _is_guid(term):
             item = await self.get_object(term)
             if item and _matches_search_kind(kind, item.kind):
@@ -78,6 +80,43 @@ class GraphDirectoryLookup:
             )
             return _dedupe(agent_identities + agent_users)[:limit]
         raise ValidationError("Unsupported directory search kind")
+
+    async def _search_applications(self, query: str, limit: int) -> list[DirectoryObject]:
+        select = "id,displayName,appId,servicePrincipalType"
+        if _is_guid(query):
+            data = await self._json(
+                "get_application",
+                "GET",
+                f"/servicePrincipals/{query.lower()}",
+                permission="Application.Read.All",
+                params={"$select": select},
+            )
+            if data:
+                item = _application_from_service_principal(data)
+                return [item] if item else []
+            expression = f"appId eq '{query.lower()}'"
+        else:
+            escaped = query.replace("'", "''")
+            expression = f"startswith(displayName,'{escaped}')"
+        data = await self._json(
+            "search_applications",
+            "GET",
+            "/servicePrincipals",
+            permission="Application.Read.All",
+            params={
+                "$filter": f"({expression}) and (servicePrincipalType eq 'Application' "
+                "or servicePrincipalType eq 'ManagedIdentity')",
+                "$select": select,
+                "$top": limit,
+                "$count": "true",
+            },
+            headers={"ConsistencyLevel": "eventual"},
+        )
+        return [
+            item
+            for raw in _items(data)[:limit]
+            if (item := _application_from_service_principal(raw)) is not None
+        ]
 
     async def get_object(self, object_id: str) -> DirectoryObject | None:
         if not _is_guid(object_id):
@@ -449,6 +488,29 @@ def _object_from_agent_identity(data: dict[str, Any]) -> DirectoryObject:
         detail=app_id,
         app_id=app_id,
         blueprint_id=_text(data.get("agentIdentityBlueprintId")),
+    )
+
+
+def _application_from_service_principal(data: dict[str, Any]) -> DirectoryObject | None:
+    odata_type = str(data.get("@odata.type", "")).casefold()
+    if odata_type and odata_type != "#microsoft.graph.serviceprincipal":
+        return None
+    principal_type = data.get("servicePrincipalType")
+    if principal_type not in {"Application", "ManagedIdentity"} or not _is_guid(
+        str(data.get("id", ""))
+    ):
+        return None
+    app_id = _text(data.get("appId"))
+    return DirectoryObject(
+        object_id=str(data["id"]).lower(),
+        kind=(
+            PrincipalKind.MANAGED_IDENTITY
+            if principal_type == "ManagedIdentity"
+            else PrincipalKind.SERVICE_PRINCIPAL
+        ),
+        display_name=_text(data.get("displayName")),
+        detail=app_id,
+        app_id=app_id,
     )
 
 

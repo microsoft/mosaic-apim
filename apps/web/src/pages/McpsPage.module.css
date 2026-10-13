@@ -153,3 +153,6 @@
   color: var(--mosaic-text-muted);
   border: 1px dashed var(--mosaic-border-soft);
 }
+.recordAction {
+  margin-inline-start: 12px;
+}

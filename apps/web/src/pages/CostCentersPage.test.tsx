@@ -110,7 +110,7 @@ describe('Cost centers pages', () => {
   it('sets a budget that blocks at 100%, emailing the owners and anyone else', async () => {
     const user = userEvent.setup()
     api.setCostCenterBudget.mockResolvedValue(researchBudgetFixture)
-    renderRoute('/cost-centers/cc-general')
+    renderRoute('/cost-centers/cc-general?tab=budget')
 
     expect(await screen.findByText('No budget')).toBeVisible()
     await user.type(screen.getByLabelText('Monthly amount (USD)'), '4000')
@@ -136,7 +136,7 @@ describe('Cost centers pages', () => {
 
   it('refuses an amount or thresholds it can not judge, before saving', async () => {
     const user = userEvent.setup()
-    renderRoute('/cost-centers/cc-general')
+    renderRoute('/cost-centers/cc-general?tab=budget')
 
     await screen.findByText('No budget')
     await user.click(screen.getByRole('button', { name: 'Set budget' }))
@@ -158,7 +158,7 @@ describe('Cost centers pages', () => {
     const user = userEvent.setup()
     api.getCostCenterBudget.mockResolvedValue(researchBudgetFixture)
     api.deleteCostCenterBudget.mockResolvedValue(undefined)
-    renderRoute('/cost-centers/cc-general')
+    renderRoute('/cost-centers/cc-general?tab=budget')
 
     expect(await screen.findByText('$4,320.00')).toBeVisible()
     expect(screen.getByText('of $4,000.00')).toBeVisible()
@@ -186,6 +186,10 @@ describe('Cost centers pages', () => {
 
     const table = await screen.findByRole('table', { name: 'Cost centers' })
     expect(await within(table).findByText('Blocked')).toBeVisible()
+    expect(screen.queryByRole('form', { name: 'Organization budget' })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Organization-wide budget' }))
+    expect(screen.queryByRole('table', { name: 'Cost centers' })).not.toBeInTheDocument()
+    expect(screen.getByText('Warn-only · Never blocks')).toBeVisible()
     const form = screen.getByRole('form', { name: 'Organization budget' })
     expect(within(form).queryByRole('radio')).not.toBeInTheDocument()
     expect(within(form).queryByRole('switch')).not.toBeInTheDocument()
@@ -245,10 +249,13 @@ describe('Cost centers pages', () => {
     renderRoute('/cost-centers/cc-general')
 
     expect(await screen.findByRole('heading', { name: 'General' })).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Members' }))
     expect(screen.getByText(/revokes their grants under this cost center/i)).toBeVisible()
     await user.click(screen.getByRole('button', { name: 'Remove' }))
     expect(screen.getAllByText(/the next apply deletes their keys/i).length).toBeGreaterThan(0)
     await user.click(screen.getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByRole('dialog', { hidden: true })).not.toBeInTheDocument())
+    await user.click(await screen.findByRole('button', { name: 'Limits' }))
     await user.selectOptions(screen.getByLabelText('Resource'), 'modelApi:model-1')
     await user.type(screen.getByLabelText('Tokens per minute'), '1000')
     await user.click(screen.getByRole('button', { name: 'Add limit' }))
@@ -287,7 +294,7 @@ describe('Cost centers pages', () => {
 
   it('adds a pool-only limit and refuses an empty limit', async () => {
     const user = userEvent.setup()
-    renderRoute('/cost-centers/cc-general')
+    renderRoute('/cost-centers/cc-general?tab=limits')
 
     expect(await screen.findByRole('heading', { name: 'General' })).toBeVisible()
     await user.selectOptions(screen.getByLabelText('Resource'), 'modelApi:model-1')
@@ -322,7 +329,7 @@ describe('Cost centers pages', () => {
         pool: null,
       }],
     })
-    renderRoute('/cost-centers/cc-general')
+    renderRoute('/cost-centers/cc-general?tab=limits')
 
     expect(await screen.findByText('Claude Opus 4.5 in OpenAI chat (pool model) · 500 tokens per minute')).toBeVisible()
     await user.selectOptions(screen.getByLabelText('Resource'), 'Claude Opus 4.5 in Anthropic Claude (pool model)')

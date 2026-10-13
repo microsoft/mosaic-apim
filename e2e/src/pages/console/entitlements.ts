@@ -49,12 +49,18 @@ export class EntitlementsPage {
 
   async loaded(): Promise<void> {
     await expect(this.page.getByRole('heading', { name: 'Entitlements', exact: true })).toBeVisible()
-    await expect(this.grants.or(this.page.getByText('Nothing has been granted yet', { exact: true }))).toBeVisible()
     await expectNoLoadError(this.page)
   }
 
   async reload(): Promise<void> {
     await this.page.reload()
+    await this.loaded()
+  }
+
+  async selectSection(section: 'grants' | 'effective' | 'requests' | 'settings'): Promise<void> {
+    const url = new URL(this.page.url())
+    url.searchParams.set('tab', section)
+    await this.page.goto(url.href)
     await this.loaded()
   }
 
@@ -77,6 +83,7 @@ export class EntitlementsPage {
   }
 
   async selectPublication(publicationId: string, displayName: string): Promise<void> {
+    await this.selectSection('settings')
     await this.publishedModel.selectOption(publicationId)
     await expect(this.governed.getByRole('heading', { name: displayName, exact: true })).toBeVisible()
   }
@@ -167,6 +174,7 @@ export class EntitlementsPage {
   }
 
   async connectionInfo(entitlementId: string): Promise<ConnectionDialog> {
+    await this.selectSection('grants')
     await this.grantRow(entitlementId).getByRole('button', { name: 'Connection info', exact: true }).click()
     const dialog = new ConnectionDialog(this.page, this.targets)
     await expect(dialog.root).toBeVisible()

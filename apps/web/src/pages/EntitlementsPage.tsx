@@ -26,15 +26,16 @@ import {
 } from '@fluentui/react-components'
 import { AddRegular } from '@fluentui/react-icons'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { type FormEvent, useCallback, useMemo, useRef, useState } from 'react'
+import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link as RouterLink, useNavigate, useSearchParams } from 'react-router-dom'
-import { useMosaicApi } from '../api'
+import { ApiError, useMosaicApi } from '../api'
 import {
   ApproveAccessRequestDialog,
   type ApprovalRequester,
 } from '../components/ApproveAccessRequestDialog'
 import { EmptyState, ErrorState, Loading } from '../components/AsyncState'
 import { PageHeader } from '../components/PageHeader'
+import { SectionLayout, usePageSection } from '../components/SectionLayout'
 import { EntitlementAccessState } from '../components/EntitlementAccessState'
 import { EntitlementConnectionDialog } from '../components/EntitlementConnectionDialog'
 import { EnvironmentBadge } from '../components/EnvironmentBadge'
@@ -205,6 +206,13 @@ function approvalBanner({ accessRequest, requester, publication, reviewable, poo
 
 const grantRowId = (entitlementId: string) => `grant-${entitlementId}`
 
+const ACCESS_SECTIONS = [
+  { value: 'grants', label: 'Grants', description: 'Saved grants describe desired access. Saving, disabling, or revoking a grant does not by itself apply gateway changes.' },
+  { value: 'effective', label: 'Effective access & overlaps', description: 'Inspect recorded access paths and precedence. This is desired state, not a live runtime authorization test.' },
+  { value: 'requests', label: 'Access requests', description: 'Decide portal requests, then review and apply the affected model, pool, or MCP plan where runtime access is governed.' },
+  { value: 'settings', label: 'Model access settings', description: 'Choose a published model to configure its authentication methods and review all saved grants and settings together.' },
+] as const
+
 function grantPathLabel(item: ResolvedEntitlement): string {
   const group = item.viaGroupName ?? item.viaGroupId ?? ''
   if (item.via === 'direct') return 'Direct'
@@ -262,6 +270,10 @@ export function EntitlementsPage() {
   const queryClient = useQueryClient()
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
+  const [activeSection, selectSection] = usePageSection(ACCESS_SECTIONS)
+  const requestedStatus = searchParams.get('requestStatus') ?? 'pending'
+  const requestStatus = ['pending', 'approved', 'denied', 'withdrawn', 'all'].includes(requestedStatus)
+    ? requestedStatus : 'pending'
   const costCenterFilter = searchParams.get('costCenter') ?? 'all'
   const [dialogOpen, setDialogOpen] = useState(false)
   const [banner, setBanner] = useState<Banner | null>(null)
@@ -275,7 +287,6 @@ export function EntitlementsPage() {
   const [highlightedGrantId, setHighlightedGrantId] = useState<string | null>(null)
   const [review, setReview] = useState<{ publication: Publication; plan: PublishPlan } | null>(null)
   const [approving, setApproving] = useState<ApprovalContext | null>(null)
-  const governedCardRef = useRef<HTMLDivElement>(null)
   const publishedModelSelectRef = useRef<HTMLSelectElement>(null)
 
   const entitlements = useQuery({
@@ -296,13 +307,19 @@ export function EntitlementsPage() {
   const environmentCatalog = useEnvironmentCatalog()
   const publications = useQuery({ queryKey: ['publications'], queryFn: () => api.listPublications() })
   const mcpPublications = useQuery({ queryKey: ['mcp-publications'], queryFn: () => api.listMcpPublications() })
-  const accessRequests = useQuery({
+  const pendingRequests = useQuery({
     queryKey: ['access-requests', 'pending'],
     queryFn: () => api.listAccessRequests('pending'),
+  })
+  const accessRequests = useQuery({
+    queryKey: ['access-requests', requestStatus],
+    queryFn: () => api.listAccessRequests(requestStatus === 'all' ? undefined : requestStatus),
+    enabled: activeSection === 'requests',
   })
   const overlaps = useQuery({
     queryKey: ['entitlements', 'overlaps'],
     queryFn: () => api.getGrantOverlaps(),
+    enabled: activeSection === 'effective',
   })
 
   const subjectOptions = useMemo<SubjectOption[]>(
@@ -380,7 +397,7 @@ export function EntitlementsPage() {
   const resolved = useQuery({
     queryKey: ['entitlements', 'resolve', inspectedPrincipal],
     queryFn: () => api.resolveEntitlements(inspectedPrincipal),
-    enabled: Boolean(inspectedPrincipal),
+    enabled: activeSection === 'effective' && Boolean(inspectedPrincipal),
   })
 
   const createMutation = useMutation({
@@ -443,6 +460,7 @@ export function EntitlementsPage() {
   const approveMutation = useMutation({
     mutationFn: ({ context, approval }: { context: ApprovalContext; approval: AccessRequestApproval }) =>
       api.approveAccessRequest(context.accessRequest.id, approval),
+    onMutate: () => setBanner(null),
     onSuccess: async (_, { context }) => {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['access-requests'] }),
@@ -454,13 +472,24 @@ export function EntitlementsPage() {
       setApproving((current) => (current?.accessRequest.id === context.accessRequest.id ? null : current))
       setBanner(approvalBanner(context))
     },
+    onError: async (error) => {
+      if (error instanceof ApiError && error.status === 409) {
+        await queryClient.invalidateQueries({ queryKey: ['access-requests'] })
+      }
+    },
   })
 
   const denyMutation = useMutation({
     mutationFn: (id: string) => api.denyAccessRequest(id),
+    onMutate: () => setBanner(null),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['access-requests'] })
       announce('Denied the access request. No grant was created, and API Management is unchanged.')
+    },
+    onError: async (error) => {
+      if (error instanceof ApiError && error.status === 409) {
+        await queryClient.invalidateQueries({ queryKey: ['access-requests'] })
+      }
     },
   })
 
@@ -548,17 +577,26 @@ export function EntitlementsPage() {
     setSelectedPublicationId(publicationId)
     reviewMutation.reset()
     setConnectionGrantId(null)
-    governedCardRef.current?.scrollIntoView?.({ block: 'start' })
-    publishedModelSelectRef.current?.focus({ preventScroll: true })
+    selectSection('settings')
   }
 
   /** Brings a grant's row into view so its actions (disable, revoke, manage) are one step away. */
   function showGrant(entitlementId: string) {
     setHighlightedGrantId(entitlementId)
-    const row = document.getElementById(grantRowId(entitlementId))
-    row?.scrollIntoView?.({ block: 'center' })
-    row?.focus({ preventScroll: true })
+    selectSection('grants')
   }
+
+  useEffect(() => {
+    if (activeSection === 'grants' && highlightedGrantId) {
+      const row = document.getElementById(grantRowId(highlightedGrantId))
+      row?.scrollIntoView?.({ block: 'center' })
+      row?.focus({ preventScroll: true })
+    }
+  }, [activeSection, highlightedGrantId])
+
+  useEffect(() => {
+    if (activeSection === 'settings' && selectedPublicationId) publishedModelSelectRef.current?.focus({ preventScroll: true })
+  }, [activeSection, selectedPublicationId])
 
   function addDirectGrant(modelApiId: string) {
     setDirectModelId(modelApiId)
@@ -617,16 +655,16 @@ export function EntitlementsPage() {
   const connectionGrant = rows.find((entitlement) => entitlement.id === connectionGrantId)
   // The approval dialog reports whether the requester is registered and already holds a grant,
   // and prefills limits from the publication, so it waits until those are known.
-  const approvalReady = principals.isSuccess && entitlements.isSuccess && !publications.isPending
-    && !modelApis.isPending && !mcpServers.isPending && !modelPools.isPending
+  const approvalReady = principals.isSuccess && entitlements.isSuccess && publications.isSuccess
+    && modelApis.isSuccess && mcpServers.isSuccess && modelPools.isSuccess && mcpPublications.isSuccess
 
   return (
     <section className={styles.page}>
       <PageHeader
         title="Entitlements"
-        description="Save desired grants and limits, then explicitly review and apply them: model grants below, pool model grants on their pool's page, and MCP server grants with Plan and apply on the MCPs page. Saving alone never changes API Management. MOSAIC-group and imported-only grants remain desired state."
+        description="Manage grants, inspect access paths, and decide requests. Saving intent never changes API Management; review and apply the affected resource's plan separately."
         source="live"
-        actions={
+        actions={activeSection === 'grants' ? (
           <Button
             appearance="primary"
             icon={<AddRegular />}
@@ -640,9 +678,21 @@ export function EntitlementsPage() {
           >
             Add entitlement
           </Button>
-        }
+        ) : undefined}
       />
 
+      <div className={styles.rowActions}>
+        <Button onClick={() => {
+          const next = new URLSearchParams(searchParams)
+          next.set('tab', 'requests')
+          next.delete('requestStatus')
+          setSearchParams(next)
+        }}>
+          {pendingRequests.isSuccess ? `${pendingRequests.data.length} pending access requests` : 'Open access requests'}
+        </Button>
+        {pendingRequests.isPending && <Text role="status">Checking pending requests…</Text>}
+        {pendingRequests.isError && <Text role="status">Pending count unavailable. Open requests to retry.</Text>}
+      </div>
       {banner && (
         <MessageBar intent="success">
           <MessageBarBody>
@@ -687,8 +737,9 @@ export function EntitlementsPage() {
         </MessageBar>
       )}
 
-      <Card className={styles.detailCard} id="governed-model-access" ref={governedCardRef}>
-        <Title3 as="h2">Governed model access</Title3>
+      <SectionLayout label="Entitlements" sections={ACCESS_SECTIONS} active={activeSection} onSelect={selectSection}>
+      {activeSection === 'settings' && <Card className={styles.detailCard} id="governed-model-access">
+        <Title3 as="h2">Model access settings</Title3>
         <Text>Choose a successfully published MOSAIC model. Direct grants to people, agents, and applications, and Entra security-group grants, are applied; MOSAIC groups and imported-only APIs are not orchestrated.</Text>
         {publications.isPending && <Loading label="Loading published models..." />}
         {publications.isError && <ErrorState error={publications.error} />}
@@ -723,36 +774,32 @@ export function EntitlementsPage() {
           />
         )}
         {reviewMutation.isError && <ErrorState error={reviewMutation.error} />}
-      </Card>
+      </Card>}
 
-      <div className={styles.summaryGrid}>
+      {activeSection === 'grants' && <div className={styles.summaryGrid}>
         <Card className={styles.summaryCard}>
           <Text size={200}>Grants</Text>
-          <strong>{rows.length}</strong>
+          <strong>{entitlements.isSuccess ? rows.length : '—'}</strong>
         </Card>
         <Card className={styles.summaryCard}>
           <Text size={200}>Desired enabled</Text>
-          <strong>{rows.filter((item) => item.enabled).length}</strong>
+          <strong>{entitlements.isSuccess ? rows.filter((item) => item.enabled).length : '—'}</strong>
         </Card>
         <Card className={styles.summaryCard}>
           <Text size={200}>Without a binding</Text>
-          <strong>{unbound}</strong>
+          <strong>{entitlements.isSuccess ? unbound : '—'}</strong>
           <Text size={200}>Consumption cannot be attributed until one is recorded.</Text>
         </Card>
-        <Card className={styles.summaryCard}>
-          <Text size={200}>Pending requests</Text>
-          <strong>{accessRequests.data?.length ?? 0}</strong>
-        </Card>
-      </div>
+      </div>}
 
-      <Card className={styles.tableCard}>
+      {activeSection === 'grants' && <Card className={styles.tableCard}>
         <div className={styles.tableHeader}>
           <div className={styles.tableHeading}>
             <Title3 as="h2" block>
               Grants
             </Title3>
             <Text size={200} block>
-              Desired intent and last recorded runtime state are separate. Model-wide review above
+              Desired intent and last recorded runtime state are separate. Model-wide review in Model access settings
               includes every saved change for that model. Applied metadata is not a live invocation test.
             </Text>
           </div>
@@ -1011,9 +1058,9 @@ export function EntitlementsPage() {
               </Table>
             ))}
         </div>
-      </Card>
+      </Card>}
 
-      <Card className={styles.tableCard}>
+      {activeSection === 'effective' && <Card className={styles.tableCard}>
         <div className={styles.tableHeader}>
           <div className={styles.tableHeading}>
             <Title3 as="h2">Overlapping grants</Title3>
@@ -1095,9 +1142,9 @@ export function EntitlementsPage() {
             </div>
           )}
         </div>
-      </Card>
+      </Card>}
 
-      <div className={styles.contentGrid}>
+      {activeSection === 'requests' &&
         <Card className={styles.tableCard}>
           <div className={styles.tableHeader}>
             <div className={styles.tableHeading}>
@@ -1107,18 +1154,33 @@ export function EntitlementsPage() {
                 with the limits you confirm. A request can be decided once; a decision is final.
               </Text>
             </div>
+            <Field label="Request status">
+              <Select value={requestStatus} onChange={(_, data) => {
+                const next = new URLSearchParams(searchParams)
+                if (data.value === 'pending') next.delete('requestStatus')
+                else next.set('requestStatus', data.value)
+                setSearchParams(next)
+              }}>
+                <option value="pending">Pending</option>
+                <option value="approved">Approved</option>
+                <option value="denied">Denied</option>
+                <option value="withdrawn">Withdrawn</option>
+                <option value="all">All statuses</option>
+              </Select>
+            </Field>
           </div>
           <div className={styles.tableWrap}>
             {accessRequests.isPending && <Loading label="Loading access requests..." />}
             {accessRequests.isError && <ErrorState error={accessRequests.error} />}
+            {accessRequests.isError && <Button onClick={() => accessRequests.refetch()}>Retry requests</Button>}
             {accessRequests.isSuccess &&
               (accessRequests.data.length === 0 ? (
-                <EmptyState title="No pending requests">
+                <EmptyState title={requestStatus === 'pending' ? 'No pending requests' : 'No requests with this status'}>
                   Requests appear here when a portal user asks for a resource they can see but are
                   not entitled to.
                 </EmptyState>
               ) : (
-                <Table aria-label="Pending access requests">
+                <Table aria-label={requestStatus === 'pending' ? 'Pending access requests' : 'Access requests'}>
                   <TableHeader>
                     <TableRow>
                       <TableHeaderCell>Requester</TableHeaderCell>
@@ -1127,6 +1189,7 @@ export function EntitlementsPage() {
                       <TableHeaderCell>Requested environment</TableHeaderCell>
                       <TableHeaderCell>Current environment</TableHeaderCell>
                       <TableHeaderCell>Justification</TableHeaderCell>
+                      <TableHeaderCell>Status</TableHeaderCell>
                       <TableHeaderCell>Actions</TableHeaderCell>
                     </TableRow>
                   </TableHeader>
@@ -1197,13 +1260,14 @@ export function EntitlementsPage() {
                             {accessRequest.justification ?? 'No justification given'}
                           </Text>
                         </TableCell>
+                        <TableCell><Badge appearance="tint">{accessRequest.state}</Badge></TableCell>
                         <TableCell>
                           {/* Small: at 1280 px this column is narrower than a medium button's 96 px minimum width. */}
                           <div className={styles.rowActions}>
                             <Button
                               appearance="primary"
                               size="small"
-                              disabled={!approvalReady || approveMutation.isPending || denyMutation.isPending}
+                              disabled={accessRequest.state !== 'pending' || !approvalReady || approveMutation.isPending || denyMutation.isPending}
                               onClick={() => openApproval(accessRequest)}
                             >
                               Approve
@@ -1211,7 +1275,7 @@ export function EntitlementsPage() {
                             <Button
                               appearance="subtle"
                               size="small"
-                              disabled={approveMutation.isPending || denyMutation.isPending}
+                              disabled={accessRequest.state !== 'pending' || approveMutation.isPending || denyMutation.isPending}
                               onClick={() => denyMutation.mutate(accessRequest.id)}
                             >
                               Deny
@@ -1224,9 +1288,9 @@ export function EntitlementsPage() {
                 </Table>
               ))}
           </div>
-        </Card>
+        </Card>}
 
-        <Card className={styles.detailCard}>
+        {activeSection === 'effective' && <Card className={styles.detailCard}>
           <div className={styles.detailHeader}>
             <Title3 as="h2">Resolved desired access</Title3>
           </div>
@@ -1248,6 +1312,7 @@ export function EntitlementsPage() {
             </Select>
           </Field>
           {resolved.isError && <ErrorState error={resolved.error} />}
+          {inspectedPrincipal && resolved.isPending && <Loading label="Resolving desired access" />}
           {resolved.isSuccess &&
             (resolved.data.length === 0 ? (
               <Text size={200}>Nothing has been granted to this principal.</Text>
@@ -1274,8 +1339,8 @@ export function EntitlementsPage() {
                 ))}
               </dl>
             ))}
-        </Card>
-      </div>
+        </Card>}
+      </SectionLayout>
 
       <Dialog open={dialogOpen} onOpenChange={(_, data) => setDialogOpen(data.open)}>
         <DialogSurface>

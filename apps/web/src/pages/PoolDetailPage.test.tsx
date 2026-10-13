@@ -1,5 +1,5 @@
 import { FluentProvider, webLightTheme } from '@fluentui/react-components'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { QueryClient, QueryClientProvider, useMutation } from '@tanstack/react-query'
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
@@ -52,12 +52,13 @@ const draftDetail: ModelPoolDetail = {
 
 type Entry = string | { pathname: string; state: unknown }
 
-function renderPage(entry: Entry = `/pools/${anthropicPool.id}`) {
+function renderPoolPage(entry: Entry = `/pools/${anthropicPool.id}`, includeUnrelatedMutation = false) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   render(
     <QueryClientProvider client={queryClient}>
       <FluentProvider theme={webLightTheme}>
         <MemoryRouter initialEntries={[entry]}>
+          {includeUnrelatedMutation && <UnrelatedPendingMutation />}
           <Routes>
             <Route path="/pools" element={<p>Pool list</p>} />
             <Route path="/pools/:poolId" element={<PoolDetailPage />} />
@@ -67,6 +68,16 @@ function renderPage(entry: Entry = `/pools/${anthropicPool.id}`) {
     </QueryClientProvider>,
   )
 }
+
+function UnrelatedPendingMutation() {
+  const mutation = useMutation({
+    mutationKey: ['unrelated'],
+    mutationFn: () => new Promise<void>(() => {}),
+  })
+  return <button onClick={() => mutation.mutate()}>Start unrelated operation</button>
+}
+
+const renderPage = renderPoolPage
 
 describe('PoolDetailPage', () => {
   beforeEach(() => {
@@ -84,10 +95,25 @@ describe('PoolDetailPage', () => {
     api.getModelPoolHealth.mockResolvedValue(notConfiguredPoolHealth)
   })
 
+  it('allows section changes while an unrelated mutation is pending', async () => {
+    const user = userEvent.setup()
+    renderPage(`/pools/${anthropicPool.id}`, true)
+
+    await user.click(screen.getByRole('button', { name: 'Start unrelated operation' }))
+    await user.click(screen.getByRole('button', { name: 'Models and deployments' }))
+
+    expect(await screen.findByText('2 of 3 deployments active')).toBeVisible()
+  })
+
   it('shows each model’s deployments, how the pool routes, and how callers connect', async () => {
+    const user = userEvent.setup()
     renderPage()
 
     expect(await screen.findByRole('heading', { name: 'Anthropic Claude', level: 1 })).toBeVisible()
+    expect(screen.getByText('Up to 3 retries, each on another deployment')).toBeVisible()
+    expect(screen.getByText('200,000 tokens per minute, for each model')).toBeVisible()
+    expect(api.getModelPoolHealth).not.toHaveBeenCalled()
+    await user.click(screen.getByRole('button', { name: 'Models and deployments' }))
     expect(screen.getByRole('heading', { name: 'Claude Opus 4.5', level: 3 })).toBeVisible()
     expect(screen.getByText('2 of 3 deployments active')).toBeVisible()
 
@@ -99,26 +125,26 @@ describe('PoolDetailPage', () => {
     expect(within(westUs3).getByRole('switch', { name: 'Drain claude-opus-4-5 on foundry-westus3' })).toBeChecked()
     expect(within(eastUs2).getByRole('switch', { name: 'Drain claude-opus-4-5 on foundry-eastus2' })).not.toBeChecked()
 
-    expect(screen.getByText('Up to 3 retries, each on another deployment')).toBeVisible()
-    expect(screen.getByText('200,000 tokens per minute, for each model')).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Access and connection' }))
     expect(screen.getByText(anthropicPoolDetail.baseUrl ?? '')).toBeVisible()
     expect(screen.getByText(/never see the deployments behind them/)).toBeVisible()
     expect(screen.getByText('Worth checking')).toBeVisible()
 
+    await user.click(screen.getByRole('button', { name: 'Policy and runs' }))
     const runs = await screen.findByRole('table', { name: 'Pool runs' })
     const [, latest] = within(runs).getAllByRole('row')
     expect(within(latest).getByText('Publish')).toBeVisible()
     expect(within(latest).getByText('20.0 s')).toBeVisible()
     expect(within(latest).getByText('1 change')).toBeVisible()
 
-    expect(screen.getByRole('button', { name: 'Review plan' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Review changes' })).toBeEnabled()
     expect(screen.getByRole('button', { name: 'Unpublish' })).toBeEnabled()
-    expect(screen.queryByRole('button', { name: 'Remove' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Remove MOSAIC record' })).toBeDisabled()
   })
 
   it('places deployments reached with an API key after the backend pool, without weights', async () => {
     api.getModelPoolDetail.mockResolvedValue(keyedAnthropicPoolDetail)
-    renderPage()
+    renderPage(`/pools/${anthropicPool.id}?tab=models`)
 
     const deployments = await screen.findByRole('table', { name: 'Deployments serving Claude Opus 4.5' })
     const [, eastUs2, northCentral, sweden, norway] = within(deployments).getAllByRole('row')
@@ -136,14 +162,13 @@ describe('PoolDetailPage', () => {
     expect(within(sweden).getByText('Tried first after the backend pool')).toBeVisible()
     expect(cells(norway)[0]).toHaveTextContent(/^4$/)
     expect(within(norway).getByText('Tried second after the backend pool')).toBeVisible()
-    expect(
-      screen.getByText('Up to 3 retries in the backend pool, then one attempt on each deployment reached with an API key'),
-    ).toBeVisible()
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Overview' }))
+    expect(screen.getByText('Up to 3 retries in the backend pool, then one attempt on each deployment reached with an API key')).toBeVisible()
   })
 
   it('marks a deployment on AWS Bedrock, which the pool tries once after Azure', async () => {
     api.getModelPoolDetail.mockResolvedValue(bedrockAnthropicPoolDetail)
-    renderPage()
+    renderPage(`/pools/${anthropicPool.id}?tab=models`)
 
     const deployments = await screen.findByRole('table', { name: 'Deployments serving Claude Opus 4.5' })
     const [, eastUs2, , bedrock] = within(deployments).getAllByRole('row')
@@ -165,7 +190,7 @@ describe('PoolDetailPage', () => {
   it('saves a drained deployment and says the gateway follows once a plan is applied', async () => {
     const user = userEvent.setup()
     api.updateModelPool.mockResolvedValue(anthropicPool)
-    renderPage()
+    renderPage(`/pools/${anthropicPool.id}?tab=models`)
 
     await user.click(await screen.findByRole('switch', { name: 'Drain claude-opus-4-5 on foundry-northcentralus' }))
 
@@ -190,7 +215,7 @@ describe('PoolDetailPage', () => {
   it('copies the base URL', async () => {
     const user = userEvent.setup()
     const writeText = vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue()
-    renderPage()
+    renderPage(`/pools/${anthropicPool.id}?tab=access`)
 
     await user.click(await screen.findByRole('button', { name: 'Copy base URL' }))
 
@@ -203,13 +228,13 @@ describe('PoolDetailPage', () => {
     api.getModelPoolDetail.mockResolvedValue(draftDetail)
     api.listModelPoolRuns.mockResolvedValue([])
     api.deleteModelPool.mockResolvedValue(undefined)
-    renderPage(`/pools/${draftPool.id}`)
+    renderPage(`/pools/${draftPool.id}?tab=plans`)
 
     expect(await screen.findByText('No runs yet. Publishing the pool records a run here.')).toBeVisible()
-    expect(screen.getByRole('button', { name: 'Publish' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Review publish plan' })).toBeEnabled()
     expect(screen.queryByRole('button', { name: 'Unpublish' })).not.toBeInTheDocument()
 
-    await user.click(screen.getByRole('button', { name: 'Remove' }))
+    await user.click(screen.getByRole('button', { name: 'Remove MOSAIC record' }))
     const dialog = await screen.findByRole('alertdialog', { name: 'Remove OpenAI chat?' })
     expect(within(dialog).getByText(/never published, so nothing changes in API Management/)).toBeVisible()
     await user.click(within(dialog).getByRole('button', { name: 'Remove pool' }))
@@ -230,10 +255,10 @@ describe('PoolDetailPage', () => {
 
   it('blocks plans while MOSAIC only observes the gateway', async () => {
     api.listGateways.mockResolvedValue([{ ...observedGateway, id: poolGateway.id }])
-    renderPage()
+    renderPage(`/pools/${anthropicPool.id}?tab=plans`)
 
     expect(await screen.findByText('MOSAIC can’t change this pool in API Management')).toBeVisible()
-    expect(screen.getByRole('button', { name: 'Review plan' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Review changes' })).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Unpublish' })).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Edit' })).toBeEnabled()
   })
@@ -248,7 +273,7 @@ describe('PoolDetailPage', () => {
 
     expect(await screen.findByText('Fix these before you apply changes')).toBeVisible()
     expect(screen.getByText('Claude Opus 4.5 has no active deployments.')).toBeVisible()
-    for (const button of screen.getAllByRole('button', { name: 'Review plan' })) {
+    for (const button of screen.getAllByRole('button', { name: 'Review changes' })) {
       expect(button).toBeDisabled()
     }
   })
@@ -260,7 +285,7 @@ describe('PoolDetailPage', () => {
     renderPage()
 
     expect(await screen.findByText('Saved changes aren’t running yet')).toBeVisible()
-    const [, fromNotice] = screen.getAllByRole('button', { name: 'Review plan' })
+    const [, fromNotice] = screen.getAllByRole('button', { name: 'Review changes' })
     await user.click(fromNotice)
 
     expect(await screen.findByRole('dialog', { name: 'Publish Anthropic Claude' })).toBeVisible()
@@ -296,7 +321,7 @@ describe('PoolDetailPage', () => {
       ...anthropicPool,
       governedAccess: { keysEnabled: false, entraEnabled: true },
     })
-    renderPage()
+    renderPage(`/pools/${anthropicPool.id}?tab=access`)
 
     const access = await screen.findByRole('group', { name: 'Who can call it' })
     expect(within(access).getByText('Shared key')).toBeVisible()
@@ -321,7 +346,7 @@ describe('PoolDetailPage', () => {
 
   it('lists the grants in force once a plan applied governed access', async () => {
     api.getModelPoolDetail.mockResolvedValue(governedAnthropicPoolDetail)
-    renderPage()
+    renderPage(`/pools/${anthropicPool.id}?tab=access`)
 
     const access = await screen.findByRole('group', { name: 'Who can call it' })
     expect(within(access).getByText('Governed')).toBeVisible()
@@ -344,7 +369,9 @@ describe('PoolDetailPage', () => {
     expect(within(research).getByText('No grant-specific limit is configured.')).toBeVisible()
     expect(within(access).getByText('Claude Opus 4.5: FIN-001 shares 5,000,000 tokens a month')).toBeVisible()
 
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Overview' }))
     expect(screen.getByText(/suspended by governed access/)).toBeVisible()
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Access and connection' }))
     expect(
       screen.getByText(
         'Each caller uses their own grant: the key from their grant in the Ocp-Apim-Subscription-Key header, or a Microsoft Entra token in the Authorization header. People find their models, keys, and examples in the portal.',
@@ -357,7 +384,7 @@ describe('PoolDetailPage', () => {
       ...governedAnthropicPoolDetail,
       pool: { ...governedAnthropicPool, accessState: 'unknown' },
     })
-    renderPage()
+    renderPage(`/pools/${anthropicPool.id}?tab=access`)
 
     const access = await screen.findByRole('group', { name: 'Who can call it' })
     expect(within(access).getByText('Governed, gateway state unknown')).toBeVisible()
@@ -367,6 +394,9 @@ describe('PoolDetailPage', () => {
   })
 
   describe('health', () => {
+    function renderPage(entry: Entry = `/pools/${anthropicPool.id}?tab=health`) {
+      return renderPoolPage(entry)
+    }
     const [opus] = anthropicPoolHealth.models
     const figure = (card: HTMLElement, term: string) =>
       within(card).getByText(term, { selector: 'dt' }).nextElementSibling?.textContent
@@ -558,7 +588,7 @@ describe('PoolDetailPage', () => {
     it('isn’t shown for a pool with no models', async () => {
       api.getModelPoolDetail.mockResolvedValue(draftDetail)
       api.listModelPoolRuns.mockResolvedValue([])
-      renderPage(`/pools/${draftPool.id}`)
+      renderPage(`/pools/${draftPool.id}?tab=models`)
 
       expect(await screen.findByRole('heading', { name: 'No models yet', level: 3 })).toBeVisible()
       expect(screen.queryByRole('group', { name: 'Health' })).not.toBeInTheDocument()

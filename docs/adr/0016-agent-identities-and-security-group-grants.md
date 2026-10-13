@@ -39,6 +39,23 @@ the console and detect overlapping grants. It never writes to Entra, and the API
 never calls Graph. Operators can set `MOSAIC_ENTRA_DIRECTORY_LOOKUP=false` to disable lookup; then
 administrators type object IDs and MOSAIC records unverified principals.
 
+**Application lookup is an optional read-only extension.** The console can search application
+service principals and Azure managed identities using the Microsoft Graph v1.0
+`/servicePrincipals` API. Name queries match a display-name prefix; GUID queries first check an
+object ID, then an application ID if the object is absent. Reads select only `id`, `displayName`,
+`appId`, and `servicePrincipalType`, return at most 25 results, and never follow search paging.
+Only `Application` and `ManagedIdentity` service principals are offered; agent identities and
+blueprint principals are excluded from this picker.
+
+The least-privileged **application** permission for this optional lookup is `Application.Read.All`.
+An operator must explicitly authorize it for the API's managed identity if they want this feature.
+MOSAIC does not request consent, change tenant permissions, or add this permission during deployment.
+A denied read is shown with retry/configuration guidance and manual fallback. Existing manual
+application registration remains supported and does not claim directory verification. Registering
+a search result still saves a MOSAIC reference, not an Entra object or an application-role assignment.
+Other directory searches retain their existing permissions; no write or `Directory.Read.All`
+permission is required for application lookup.
+
 **Security-group grants are enforced from the validated token's `groups` claim.** Bootstrap sets
 `groupMembershipClaims: SecurityGroup` on the model-runtime app registration so runtime access
 tokens carry the caller's security-group object IDs. It sets the same on the MOSAIC API
@@ -123,6 +140,8 @@ center too.
 
 ## References
 
+- [List service principals and least-privileged permissions](https://learn.microsoft.com/graph/api/serviceprincipal-list?view=graph-rest-1.0)
+- [servicePrincipal resource type](https://learn.microsoft.com/graph/api/resources/serviceprincipal?view=graph-rest-1.0)
 - [Overview of agent identities in Microsoft Entra](https://learn.microsoft.com/entra/agent-id/agent-identities)
 - [Agent autonomous app OAuth flow](https://learn.microsoft.com/entra/agent-id/agent-autonomous-app-oauth-flow)
 - [Agent's user account impersonation protocol](https://learn.microsoft.com/entra/agent-id/agent-user-oauth-flow)

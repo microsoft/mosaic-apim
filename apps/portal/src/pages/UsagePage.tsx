@@ -14,6 +14,7 @@ import { Link } from 'react-router-dom'
 import { usePortalApi } from '../api'
 import { EmptyState, ErrorState, Loading } from '../components/AsyncState'
 import { BudgetBanner } from '../components/BudgetBanner'
+import { SectionLayout, usePageSection } from '../components/SectionLayout'
 import { EnvironmentBadge } from '../components/EnvironmentBadge'
 import { PageHeader } from '../components/PageHeader'
 import { RecentHoursChart, UsageTrendChart } from '../components/UsageTrendChart'
@@ -633,6 +634,12 @@ function ResourceTable({
 }
 
 export function UsagePage() {
+  const sections = [
+    { value: 'overview', label: 'Overview & trends', description: 'Your calls over time. The period, environment and resource filters apply to every view.' },
+    { value: 'resources', label: 'Resources & limits', description: 'Usage and configured limits for each grant. Reported usage may be delayed; it is not a live quota counter.' },
+    { value: 'breakdowns', label: 'Usage breakdowns', description: 'Understand where calls are attributed, by environment and cost center.' },
+  ]
+  const [section, selectSection] = usePageSection(sections)
   const api = usePortalApi()
   const [period, setPeriod] = useState<UsagePeriod>('30d')
   const [environmentFilter, setEnvironmentFilter] = useState('all')
@@ -797,13 +804,25 @@ export function UsagePage() {
                   Your grants are ready, but MOSAIC has no calls to show for this period.
                 </EmptyState>
               ) : null}
+              <SectionLayout label="Usage" sections={sections} active={section} onSelect={selectSection}>
+              {section === 'overview' && <>
               <UsageTrendChart
                 points={filtered.timeline}
                 resources={filtered.byResource}
                 environments={environments.data}
               />
               {recentHours.length > 0 && <RecentHoursChart points={recentHours} />}
+              </>}
+              {section === 'resources' && <>
               <LiveQuotaNote />
+              <ResourceTable
+                rows={filtered.byResource}
+                currency={usage.data.currency}
+                environments={environments.data}
+                showCost={showCost}
+              />
+              </>}
+              {section === 'breakdowns' && <>
               <EnvironmentBreakdown
                 rows={filtered.byEnvironment}
                 currency={usage.data.currency}
@@ -816,12 +835,8 @@ export function UsagePage() {
                 currency={usage.data.currency}
                 showCost={showCost}
               />
-              <ResourceTable
-                rows={filtered.byResource}
-                currency={usage.data.currency}
-                environments={environments.data}
-                showCost={showCost}
-              />
+              </>}
+              </SectionLayout>
               <Text size={200} className="usage-generated">
                 Generated {formatGeneratedAt(usage.data.generatedAt)} for{' '}
                 {environmentFilter === 'all'

@@ -15,17 +15,19 @@ vi.mock('../api', () => ({ useMosaicApi: () => api }))
 
 function renderPanel(overrides: Partial<Publication> = {}) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  const onReview = vi.fn()
   render(
     <QueryClientProvider client={queryClient}>
       <ModelAccessSettingsPanel
         publication={{ ...modelPublication, ...overrides }}
         reviewing={false}
-        onReview={vi.fn()}
+        onReview={onReview}
         onAddGrant={vi.fn()}
         onMessage={vi.fn()}
       />
     </QueryClientProvider>,
   )
+  return { onReview }
 }
 
 describe('ModelAccessSettingsPanel', () => {
@@ -111,5 +113,16 @@ describe('ModelAccessSettingsPanel', () => {
     expect(screen.getByRole('switch', { name: 'Dedicated subscription keys' })).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Check recovery status (diagnostic only)' })).toBeEnabled()
     expect(api.updatePublication).not.toHaveBeenCalled()
+  })
+
+  it('reviews saved model intent without applying it and explains the model-wide scope', async () => {
+    const user = userEvent.setup()
+    const { onReview } = renderPanel()
+    expect(screen.getByText(/Settings belong to this published model/)).toBeVisible()
+    expect(screen.getByText(/all saved grants and settings for this model/)).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Review model changes' }))
+    expect(onReview).toHaveBeenCalledOnce()
+    expect(api.updatePublication).not.toHaveBeenCalled()
+    expect(api.applyPublishPlan).not.toHaveBeenCalled()
   })
 })

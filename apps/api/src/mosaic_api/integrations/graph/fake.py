@@ -38,11 +38,7 @@ class FakeDirectoryLookup:
             item
             for item in self._objects.values()
             if _matches_kind(kind, item.kind)
-            and (
-                normalized in (item.display_name or "").casefold()
-                or normalized in (item.detail or "").casefold()
-                or normalized == item.object_id.casefold()
-            )
+            and _matches_query(kind, item, normalized)
         ]
         return sorted(matches, key=lambda item: (item.display_name or "", item.object_id))[
             : min(max(limit, 1), 25)
@@ -116,4 +112,20 @@ def _matches_kind(kind: DirectorySearchKind, object_kind: PrincipalKind) -> bool
         return object_kind == PrincipalKind.SECURITY_GROUP
     if kind == DirectorySearchKind.AGENT:
         return object_kind in {PrincipalKind.AGENT_IDENTITY, PrincipalKind.AGENT_USER}
+    if kind == DirectorySearchKind.APPLICATION:
+        return object_kind in {PrincipalKind.SERVICE_PRINCIPAL, PrincipalKind.MANAGED_IDENTITY}
     return False
+
+
+def _matches_query(kind: DirectorySearchKind, item: DirectoryObject, query: str) -> bool:
+    if kind == DirectorySearchKind.APPLICATION:
+        return (
+            (item.display_name or "").casefold().startswith(query)
+            or query == item.object_id.casefold()
+            or query == (item.app_id or "").casefold()
+        )
+    return (
+        query in (item.display_name or "").casefold()
+        or query in (item.detail or "").casefold()
+        or query == item.object_id.casefold()
+    )

@@ -33,13 +33,14 @@ import {
   Title3,
   useId,
 } from '@fluentui/react-components'
-import { type FormEvent, useEffect, useMemo, useState } from 'react'
+import { type Dispatch, type FormEvent, type SetStateAction, useEffect, useMemo, useState } from 'react'
 import { ApiError, useMosaicApi } from '../api'
 import { EnvironmentBadge } from '../components/EnvironmentBadge'
 import { EnvironmentFindings } from '../components/EnvironmentFindings'
 import { PublicationsBlockedRefusal } from '../components/EnvironmentRefusal'
 import { ReviewEnvironmentSuggestionsDialog } from '../components/ReviewEnvironmentSuggestionsDialog'
 import { PageHeader, PreviewNotice, DataSourceBadge } from '../components/PageHeader'
+import { SectionLayout, usePageSection } from '../components/SectionLayout'
 import {
   environmentInUseDetails,
   invalidEnvironmentField,
@@ -664,24 +665,32 @@ interface Outcome {
   text: string
 }
 
-function EmailSettingsSection() {
+interface EmailDraftState {
+  form: EmailFormState
+  syncedWith: string | null
+}
+
+function EmailSettingsSection({ draft, setDraft }: {
+  draft: EmailDraftState
+  setDraft: Dispatch<SetStateAction<EmailDraftState>>
+}) {
   const api = useMosaicApi()
   const queryClient = useQueryClient()
   const settings = useQuery({ queryKey: ['email-settings'], queryFn: () => api.getEmailSettings() })
-  const [form, setForm] = useState<EmailFormState>({ enabled: false, endpoint: '', sender: '' })
-  const [syncedWith, setSyncedWith] = useState<string | null>(null)
+  const { form, syncedWith } = draft
   const [saveOutcome, setSaveOutcome] = useState<Outcome | null>(null)
   const [testTo, setTestTo] = useState('')
   const [testOutcome, setTestOutcome] = useState<Outcome | null>(null)
   const switchHintId = useId('email-switch-hint-')
 
   // Reset the form whenever the saved configuration changes, but not when only the last test does.
-  const saved = settings.data ? emailForm(settings.data) : null
+  const saved = useMemo(() => settings.data ? emailForm(settings.data) : null, [settings.data])
   const savedKey = saved ? `${saved.enabled}|${saved.endpoint}|${saved.sender}` : null
-  if (saved && savedKey !== syncedWith) {
-    setSyncedWith(savedKey)
-    setForm(saved)
-  }
+  useEffect(() => {
+    if (saved && savedKey !== syncedWith) {
+      setDraft({ syncedWith: savedKey, form: saved })
+    }
+  }, [saved, savedKey, syncedWith, setDraft])
 
   const save = useMutation({
     mutationFn: () =>
@@ -738,7 +747,7 @@ function EmailSettingsSection() {
   const configured = Boolean(saved?.endpoint && saved.sender)
 
   function update(change: Partial<EmailFormState>) {
-    setForm((current) => ({ ...current, ...change }))
+    setDraft((current) => ({ ...current, form: { ...current.form, ...change } }))
     setSaveOutcome(null)
   }
 
@@ -899,6 +908,19 @@ function EmailSettingsSection() {
 }
 
 export function SettingsPage() {
+  const sections = [
+    { value: 'environments', label: 'Environments', description: 'Shared environment classifications and enforcement settings saved to MOSAIC.' },
+    { value: 'findings', label: 'Findings', description: 'Live findings about environment classification and compatibility.' },
+    { value: 'email', label: 'Budget email', description: 'Shared budget email settings saved to MOSAIC. Test messages use the saved configuration.' },
+    { value: 'runtime', label: 'Runtime configuration', description: 'Read-only deployed configuration. Change deployment settings outside this page.' },
+    { value: 'appearance', label: 'Appearance', description: 'Preferences apply immediately and are saved only in this browser.' },
+    { value: 'integrations', label: 'Integration preview', description: 'Local page-state preview only. No deployed integrations are changed.' },
+  ]
+  const [section, selectSection] = usePageSection(sections)
+  const [emailDraft, setEmailDraft] = useState<EmailDraftState>({
+    form: { enabled: false, endpoint: '', sender: '' },
+    syncedWith: null,
+  })
   const { accounts } = useMsal()
   const { preference, resolvedTheme, setPreference } = useMosaicTheme()
   const [integrations, setIntegrations] =
@@ -943,18 +965,12 @@ export function SettingsPage() {
         title="Settings"
         description="Classify environments, set up budget email, review safe runtime details, and personalize appearance."
       />
-      <PreviewNotice kind="local">
-        Environments and Email are saved to MOSAIC. Integration overview is a browser-side preview
-        only. MOSAIC keeps the rest of its configuration in deployed settings and never displays
-        secrets here.
-      </PreviewNotice>
+      <SectionLayout label="Settings" sections={sections} active={section} onSelect={selectSection}>
+      {section === 'environments' && <EnvironmentsSettingsSection />}
+      {section === 'findings' && <EnvironmentFindings title="Findings" />}
+      {section === 'email' && <EmailSettingsSection draft={emailDraft} setDraft={setEmailDraft} />}
 
-      <EnvironmentsSettingsSection />
-      <EnvironmentFindings title="Findings" />
-      <EmailSettingsSection />
-
-      <div className={styles.grid}>
-        <Card className={styles.card}>
+        {section === 'runtime' && <Card className={styles.card}>
           <div className={styles.cardHeader}>
             <div>
               <Title3 as="h2">Runtime identity and configuration</Title3>
@@ -975,9 +991,9 @@ export function SettingsPage() {
             Secrets, tokens, client secrets, and connection-string contents are never shown or
             stored in MOSAIC settings.
           </Text>
-        </Card>
+        </Card>}
 
-        <Card className={styles.card}>
+        {section === 'appearance' && <Card className={styles.card}>
           <div className={styles.cardHeader}>
             <div>
               <Title3 as="h2">Appearance</Title3>
@@ -1009,18 +1025,19 @@ export function SettingsPage() {
               while Light and Dark override it immediately.
             </Text>
           </div>
-        </Card>
+        </Card>}
 
-        <Card className={styles.card}>
+        {section === 'integrations' && <Card className={styles.card}>
           <div className={styles.cardHeader}>
             <div>
-              <Title3 as="h2">Integration overview</Title3>
+              <Title3 as="h2">Integration preview</Title3>
               <Text className={styles.cardDescription}>
                 These fields are editable for local preview only and do not update deployed
                 integrations.
               </Text>
             </div>
           </div>
+          <PreviewNotice kind="local">These values live only in this page state, not browser storage or MOSAIC.</PreviewNotice>
           <form className={styles.integrationForm} onSubmit={handleSavePreview}>
             <Field label="Support destination alias">
               <Input
@@ -1054,8 +1071,8 @@ export function SettingsPage() {
               <MessageBarBody>{saveMessage}</MessageBarBody>
             </MessageBar>
           )}
-        </Card>
-      </div>
+        </Card>}
+      </SectionLayout>
     </section>
   )
 }

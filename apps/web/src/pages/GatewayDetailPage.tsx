@@ -12,8 +12,6 @@ import {
   MessageBar,
   MessageBarBody,
   MessageBarTitle,
-  Tab,
-  TabList,
   Text,
   Title3,
 } from '@fluentui/react-components'
@@ -32,18 +30,20 @@ import { lastAppliedLabel, publicationStatusLabel } from '../publication-state'
 import type { AiBackendKind, ApiDiagnosticGap, ApiTelemetry, Gateway, GatewayTelemetry } from '../types'
 import { environmentLabel, invalidateEnvironmentQueries, useEnvironmentCatalog } from '../environments'
 import { PageHeader } from '../components/PageHeader'
+import { SectionLayout, usePageSection } from '../components/SectionLayout'
 import { AccessPanel, GatewayStatusBadge } from './GatewaysPage'
 import styles from './GatewayDetailPage.module.css'
 
-type TabKey =
-  | 'overview'
-  | 'apis'
-  | 'mcpServers'
-  | 'products'
-  | 'subscriptions'
-  | 'identities'
-  | 'policies'
-  | 'backends'
+const gatewaySections = [
+  { value: 'overview', label: 'Overview' },
+  { value: 'apis', label: 'APIs and endpoints' },
+  { value: 'mcpServers', label: 'MCP servers' },
+  { value: 'products', label: 'Products' },
+  { value: 'subscriptions', label: 'Subscriptions' },
+  { value: 'identities', label: 'Users and groups' },
+  { value: 'policies', label: 'Policies' },
+  { value: 'backends', label: 'Backends' },
+]
 
 
 function PublishedModelsSection({ gatewayId }: { gatewayId: string }) {
@@ -110,58 +110,18 @@ function Overview({ gateway, onChanged }: { gateway: Gateway; onChanged: (messag
   const [changeOpen, setChangeOpen] = useState(false)
   return (
     <>
-      <div className={styles.metricGrid}>
-        <Card className={styles.metricCard}>
-          <Text size={200}>AI surface</Text>
-          <Title3 as="p">
-            {inventory.aiApis} of {inventory.apis}
-          </Title3>
-          <Text size={200}>APIs front Azure AI backends</Text>
-        </Card>
-        <Card className={styles.metricCard}>
-          <Text size={200}>Endpoints</Text>
-          <Title3 as="p">{inventory.operations}</Title3>
-          <Text size={200}>operations across all APIs</Text>
-        </Card>
-        <Card className={styles.metricCard}>
-          <Text size={200}>MCP servers</Text>
-          <Title3 as="p">{inventory.mcpServers}</Title3>
-          <Text size={200}>
-            {capabilities.mcpServers === 'unavailable'
-              ? 'not supported on this service'
-              : 'hosted by this gateway'}
-          </Text>
-        </Card>
-        <Card className={styles.metricCard}>
-          <Text size={200}>Access paths</Text>
-          <Title3 as="p">{inventory.subscriptions}</Title3>
-          <Text size={200}>
-            subscriptions across {inventory.products} product
-            {inventory.products === 1 ? '' : 's'}
-          </Text>
-        </Card>
-        <Card className={styles.metricCard}>
-          <Text size={200}>Policy rules</Text>
-          <Title3 as="p">{inventory.recognizedFacets}</Title3>
-          <Text size={200}>
-            understood, {inventory.unrecognizedFacets} authored outside MOSAIC
-          </Text>
-        </Card>
-      </div>
       <Card className={styles.detailCard}>
-        <div className={styles.apiHeader}>
-          <Title3 as="h3">Environment</Title3>
-          <Button appearance="secondary" onClick={() => setChangeOpen(true)}>Change</Button>
+        <Title3 as="h3">Service</Title3>
+        <div className={styles.environmentRow}>
+          <Text weight="semibold">Environment</Text>
+          <EnvironmentBadge environment={gateway.environment} catalog={catalog.data} />
+          <Button appearance="subtle" size="small" onClick={() => setChangeOpen(true)}>Change</Button>
         </div>
-        <EnvironmentBadge environment={gateway.environment} catalog={catalog.data} />
         {gateway.azureEnvironmentTag && <Text block size={200}>Azure tag: {gateway.azureEnvironmentTag}</Text>}
         {gateway.environmentLabel && <Text block size={200}>Legacy label: {gateway.environmentLabel}</Text>}
         <Text block size={200}>
           Use {environmentLabel(catalog.data, gateway.environment)} consistently for endpoints published through this gateway.
         </Text>
-      </Card>
-      <Card className={styles.detailCard}>
-        <Title3 as="h3">Service</Title3>
         <Text block>
           {gateway.serviceName} · {capabilities.skuName ?? 'unknown tier'}
           {capabilities.skuCapacity ? ` × ${capabilities.skuCapacity}` : ''} ·{' '}
@@ -171,6 +131,7 @@ function Overview({ gateway, onChanged }: { gateway: Gateway; onChanged: (messag
         <Text block size={200}>
           Resource group {gateway.resourceGroup} in subscription {gateway.subscriptionId}.
         </Text>
+        <Text block size={200}>Last synced: {gateway.lastSyncedAt ? new Date(gateway.lastSyncedAt).toLocaleString() : 'Not synced yet'}</Text>
         <Text block size={200}>
           AI gateway policies: {capabilities.aiGatewayPolicies === 'available'
             ? 'observed in use on this gateway'
@@ -183,6 +144,17 @@ function Overview({ gateway, onChanged }: { gateway: Gateway; onChanged: (messag
           </Text>
         ))}
       </Card>
+      <section aria-label="Observed inventory">
+        <Title3 as="h2">Inventory</Title3>
+        <Text block size={200} className={styles.muted}>Read-only · Synced from APIM</Text>
+        <dl className={styles.inventory}>
+          <div><dt>AI APIs / all APIs</dt><dd>{inventory.aiApis} / {inventory.apis}</dd></div>
+          <div><dt>Endpoints</dt><dd>{inventory.operations} operations</dd></div>
+          <div><dt>MCP servers</dt><dd>{capabilities.mcpServers === 'unavailable' ? 'Not supported' : inventory.mcpServers}</dd></div>
+          <div><dt>Access paths</dt><dd>{inventory.subscriptions} subscriptions · {inventory.products} products</dd></div>
+          <div><dt>Policy rules</dt><dd>{inventory.recognizedFacets} understood · {inventory.unrecognizedFacets} authored outside MOSAIC</dd></div>
+        </dl>
+      </section>
       <AccessPanel gateway={gateway} />
       <GatewayManagementMode key={gateway.id} gateway={gateway} />
       <ChangeEnvironmentDialog
@@ -809,7 +781,7 @@ export function GatewayDetailPage() {
   const api = useMosaicApi()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
-  const [tab, setTab] = useState<TabKey>('overview')
+  const [tab, setTab] = usePageSection(gatewaySections)
   const [message, setMessage] = useState<string | null>(null)
   const catalog = useEnvironmentCatalog()
 
@@ -883,27 +855,14 @@ export function GatewayDetailPage() {
       )}
       {message && <Text block size={200} className={styles.syncError}>{message}</Text>}
 
-      <TabList
-        className={styles.tabs}
-        selectedValue={tab}
-        onTabSelect={(_, data) => setTab(data.value as TabKey)}
-      >
-        <Tab value="overview">Overview</Tab>
-        <Tab value="apis">APIs and endpoints</Tab>
-        <Tab value="mcpServers">MCP servers</Tab>
-        <Tab value="products">Products</Tab>
-        <Tab value="subscriptions">Subscriptions</Tab>
-        <Tab value="identities">Users and groups</Tab>
-        <Tab value="policies">Policies</Tab>
-        <Tab value="backends">Backends</Tab>
-      </TabList>
-
+      <EnvironmentFindings gatewayId={gatewayId} hideWhenEmpty />
+      <SectionLayout label="Gateway" sections={gatewaySections} active={tab} onSelect={setTab}>
       <div className={styles.tabPanel}>
+        {tab !== 'overview' && <Text block size={200} className={styles.muted}>Read-only · Synced from APIM. Import records governance in MOSAIC; it does not edit this inventory.</Text>}
         {tab === 'overview' && (
           <>
             <Overview gateway={gateway.data} onChanged={(text) => void environmentChanged(text)} />
             <TelemetrySection gatewayId={gatewayId} />
-            <EnvironmentFindings gatewayId={gatewayId} hideWhenEmpty />
             <PublishedModelsSection gatewayId={gatewayId} />
           </>
         )}
@@ -915,6 +874,7 @@ export function GatewayDetailPage() {
         {tab === 'policies' && <PoliciesTab gatewayId={gatewayId} />}
         {tab === 'backends' && <BackendsTab gatewayId={gatewayId} />}
       </div>
+      </SectionLayout>
     </div>
   )
 }

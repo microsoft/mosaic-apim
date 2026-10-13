@@ -1,13 +1,9 @@
 .page {
   display: grid;
   gap: 20px;
+  container-type: inline-size;
 }
 
-.grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-  gap: 20px;
-}
 
 .card {
   padding: 24px;
@@ -251,3 +247,10 @@
 .swatch-subtle { background: var(--colorNeutralBackground5); }
 .swatch-success { background: var(--colorPaletteGreenBackground3); }
 .swatch-warning { background: var(--colorPaletteYellowBackground3); }
+
+@container (max-width: 760px) {
+  .definitionRow,
+  .emailLayout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

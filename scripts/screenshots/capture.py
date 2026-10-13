@@ -30,8 +30,10 @@ from playwright.sync_api import Locator, Page, sync_playwright
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 from scripts.screenshots.demo_api import (
+    EXTRA_DIRECTORY_OBJECTS,
     PARTNER_FOUNDRY_DEMO_KEY,
     PARTNER_FOUNDRY_URL,
+    PEOPLE,
     SENSITIVE_LITERALS,
 )
 
@@ -45,6 +47,15 @@ Action = Callable[[Page], None]
 # Resource, account, and host names from the demo estate. The patterns below catch the generic
 # shapes; these catch the bare names wherever the UI shows them on their own.
 RESOURCE_NAMES = [
+    *(person.label for person in PEOPLE),
+    *(person.label.lower().replace(" ", "-") for person in PEOPLE),
+    *(person.display_name for person in EXTRA_DIRECTORY_OBJECTS),
+    "Contoso AI Gateway",
+    "Contoso AI Dev Gateway",
+    "Partner Gateway",
+    "Contoso AI Foundry",
+    "Contoso Azure OpenAI",
+    "Fabrikam partner Foundry",
     "mosaic-mcp-metadata",
     "mosaic-blocked-cost-centers",
     "ai-starter",
@@ -89,7 +100,7 @@ REDACTION_PATTERNS = [
     # MOSAIC record IDs and the APIM names derived from them, such as modelApi_<32 hex>,
     # gateway_<32 hex>, and mosaic-grant-<32 hex>.
     r"\b[a-z][\w-]*?[_-][0-9a-f]{24,}\b",
-    r"\bmosaic-(?:mcp|pool)-[a-z0-9-]+\b",
+    r"\bmosaic-(?:contoso|mcp|pool)-[a-z0-9-]+\b",
     r"\b[0-9a-f]{24,}\b",
     # The demo's placeholder keys and tokens.
     r"\bdemo[0-9a-z-]*(?:key|secret|token)[0-9a-z-]*\b",
@@ -283,7 +294,9 @@ def _visible_text(page: Page, text: str) -> Locator:
 
 def click_tab(name: str) -> Action:
     def act(page: Page) -> None:
-        page.get_by_role("tab", name=name, exact=True).click()
+        page.get_by_role("tab", name=name, exact=True).or_(
+            page.get_by_role("button", name=name, exact=True)
+        ).filter(visible=True).first.click()
 
     return act
 
@@ -341,7 +354,12 @@ def fill_labelled(pattern: str, text: str) -> Action:
 
 def click_card_button_matching(texts: Sequence[str], button_name: str) -> Action:
     def act(page: Page) -> None:
-        _card_matching(page, texts).get_by_role("button", name=button_name).click()
+        card = _card_matching(page, texts)
+        if button_name == "Connection details":
+            card.get_by_role("button", name="View grant details", exact=True).click()
+            page.get_by_role("button", name=button_name, exact=True).click()
+        else:
+            card.get_by_role("button", name=button_name).click()
 
     return act
 
@@ -395,7 +413,7 @@ def scroll_to_table_row(table_name: str, text: str) -> Action:
 
 # The README embeds these by name. Keep the two in step: a renamed or removed shot here needs its
 # README reference updated, and a new README screenshot needs an entry here.
-OPEN_GATEWAY = (click_link("Contoso AI Gateway"), wait_for_text("Published by MOSAIC"))
+OPEN_GATEWAY = (click_link("Contoso AI Gateway"), wait_for_text("Read-only"))
 # The overview's usage panels, gateway health, and pools load after its inventory counts.
 DASHBOARD_LOADED = (
     wait_for_text("Contoso Support Copilot"),
@@ -470,7 +488,7 @@ SHOTS: list[Shot] = [
     Shot(
         "console-key-endpoint",
         "console",
-        "/models",
+        "/models?tab=endpoints",
         "dark",
         "Fabrikam partner Foundry",
         actions=(
@@ -489,7 +507,7 @@ SHOTS: list[Shot] = [
         "light",
         "Claude evaluation",
         # The suggestions load after the pools.
-        actions=(wait_for_text("Suggested pools"),),
+        actions=(),
         # Tall enough for both pools and, below them, the pool MOSAIC suggests for Claude Haiku 4.5.
         height=1130,
     ),
@@ -499,7 +517,7 @@ SHOTS: list[Shot] = [
         "/pools",
         "dark",
         "Anthropic Claude",
-        actions=(click_link("Anthropic Claude"), wait_for_text("Run history")),
+        actions=(click_link("Anthropic Claude"), click_tab("Models and deployments")),
         # Tall enough for both models' deployments, ending above the pool's health card.
         height=1482,
     ),
@@ -514,9 +532,8 @@ SHOTS: list[Shot] = [
         # loads first, so the scroll lands where the card finally sits.
         actions=(
             click_link("Anthropic Claude"),
+            click_tab("Access and connection"),
             wait_for_text("Grants in force"),
-            wait_for_text("Breaker tripped"),
-            scroll_to_text("Who can call it", margin=110),
         ),
         # Tall enough to end just below the card, after the pooled quotas.
         height=867,
@@ -532,6 +549,7 @@ SHOTS: list[Shot] = [
         # breaker while the other regions take the retries.
         actions=(
             click_link("Anthropic Claude"),
+            click_tab("Health"),
             wait_for_text("Breaker tripped"),
             scroll_to_text("calls to each model ended", margin=168),
         ),
@@ -541,7 +559,7 @@ SHOTS: list[Shot] = [
     Shot(
         "console-pool-editor",
         "console",
-        "/pools",
+        "/pools?tab=suggestions",
         "light",
         "Suggested pools",
         # Create pool on the Claude Haiku 4.5 suggestion opens the editor with the deployments the
@@ -558,9 +576,9 @@ SHOTS: list[Shot] = [
     Shot(
         "console-endpoint-pools",
         "console",
-        "/models",
+        "/models?tab=endpoints",
         "dark",
-        "GPT-4o mini",
+        "Model endpoints",
         # Contoso AI Foundry, the endpoint selected first, serves both pools: its deployments with
         # the pools each one serves, and the card listing those pools.
         actions=(
@@ -605,9 +623,9 @@ SHOTS: list[Shot] = [
     Shot(
         "console-security-group-members",
         "console",
-        "/identity?tab=workloads",
+        "/identity?tab=security-groups",
         "dark",
-        "Applications and security groups",
+        "Entra security groups",
         actions=(
             fill_text("Filter by label, detail, object ID, or kind", "AI Model Users"),
             wait_for_text("Security group members"),
@@ -627,9 +645,26 @@ SHOTS: list[Shot] = [
         height=1384,
     ),
     Shot(
+        "console-access-requests",
+        "console",
+        "/entitlements?tab=requests",
+        "light",
+        "Pending access requests",
+        height=1040,
+    ),
+    Shot(
+        "console-model-access-settings",
+        "console",
+        "/entitlements?tab=settings",
+        "dark",
+        "Published model",
+        actions=(select_option("Published model", "GPT-4o"),),
+        height=1100,
+    ),
+    Shot(
         "console-overlapping-grants",
         "console",
-        "/entitlements",
+        "/entitlements?tab=effective",
         "dark",
         "Overlapping grants",
         actions=(scroll_to_text("Overlapping grants", margin=64),),
@@ -652,10 +687,12 @@ SHOTS: list[Shot] = [
         "/cost-centers",
         "dark",
         "Customer Insights",
-        actions=(click_link("Customer Insights"), wait_for_text("Membership")),
-        # Tall enough for the details, the budget, the members, and the per-person and pooled
-        # limits.
-        height=2400,
+        actions=(
+            click_link("Customer Insights"),
+            click_tab("Members"),
+            wait_for_text("Membership"),
+        ),
+        height=1100,
     ),
     Shot(
         "console-mcp-publish",
@@ -665,7 +702,7 @@ SHOTS: list[Shot] = [
         "Published MCP servers",
         actions=(
             scroll_to_text("Published MCP servers", margin=64),
-            click_button("Plan and apply"),
+            click_button("Review changes"),
             wait_for_text("MCP access changes"),
             scroll_to_table_row("MCP publish plan steps", "Operation policy"),
         ),
@@ -692,6 +729,7 @@ SHOTS: list[Shot] = [
         # this month's emails, beside the amount, thresholds, recipients, and action.
         actions=(
             click_link("Customer Support"),
+            click_tab("Budget"),
             wait_for_text("Refusing calls"),
             scroll_to_text("A monthly amount in US dollars", margin=110),
         ),
@@ -783,24 +821,33 @@ SHOTS: list[Shot] = [
     Shot(
         "console-environment-findings",
         "console",
-        "/settings",
+        "/settings?tab=findings",
         "dark",
-        "needs classification",
+        "Findings",
         height=924,
         actions=(wait_for_text("Limitations:"), scroll_to_text("Findings", margin=80)),
     ),
     Shot(
         "console-email-settings",
         "console",
-        "/settings",
+        "/settings?tab=email",
         "light",
-        "needs classification",
+        "Send test email",
         # Budget email through Communication Services, turned on, with its last test email.
         actions=(
             wait_for_text("Send test email"),
             scroll_to_text("Budget warnings and blocks are emailed", margin=150),
         ),
         height=548,
+    ),
+    Shot(
+        "portal-request-access",
+        "portal",
+        "/catalog",
+        "light",
+        "Docs search MCP",
+        actions=(click_button("View access options for GPT-4o mini"),),
+        height=1100,
     ),
     Shot(
         "portal-access",
@@ -812,7 +859,6 @@ SHOTS: list[Shot] = [
         actions=(
             click_card_button_matching(("Model API", "Applied to APIM"), "Connection details"),
             wait_for_text("Base URL"),
-            scroll_to_card_matching(("Model API", "Applied to APIM"), margin=58),
         ),
     ),
     Shot(
@@ -844,7 +890,6 @@ SHOTS: list[Shot] = [
                 ("Claude Sonnet 4.5", "Applied to APIM"), "Connection details"
             ),
             wait_for_text("This key also works for"),
-            scroll_to_card_matching(("Claude Sonnet 4.5", "Applied to APIM"), margin=58),
         ),
         # Tall enough to end on the note naming the other model the key works for.
         height=1700,
@@ -858,7 +903,6 @@ SHOTS: list[Shot] = [
         actions=(
             click_card_button_matching(("MCP server", "Applied to APIM"), "Connection details"),
             wait_for_text("VS Code"),
-            scroll_to_card_matching(("MCP server", "Applied to APIM"), margin=72),
         ),
         height=1240,
     ),
@@ -868,12 +912,21 @@ SHOTS: list[Shot] = [
     Shot(
         "portal-usage-resources",
         "portal",
-        "/usage",
+        "/usage?tab=resources",
         "dark",
-        "Busiest resource",
+        "By resource",
         # Each of Megan's cost centers' totals this month, then her own usage by resource.
-        actions=(scroll_to_text("Each cost center's total this month", margin=150),),
+        actions=(),
         height=1240,
+    ),
+    Shot(
+        "portal-usage-breakdowns",
+        "portal",
+        "/usage?tab=breakdowns",
+        "light",
+        "Cost centers",
+        actions=(scroll_to_text("Each cost center's total this month", margin=150),),
+        height=1100,
     ),
     # Customer Insights, which Megan charges, has used most of its budget, and blocks at 100%.
     Shot(
@@ -920,14 +973,17 @@ def _running(
                 process.wait()
 
 
-def _vite(app_dir: Path, port: int) -> list[str]:
+def _vite(app_dir: Path, port: int, preview: bool = False) -> list[str]:
     node = shutil.which("node")
     if node is None:
         raise RuntimeError("Node.js is required to serve the console and portal")
     vite = app_dir / "node_modules" / "vite" / "bin" / "vite.js"
     if not vite.exists():
         raise RuntimeError(f"Run `npm ci` in {app_dir.relative_to(REPO_ROOT)} first")
-    return [node, str(vite), "--port", str(port), "--strictPort", "--host", "127.0.0.1"]
+    if preview and not (app_dir / "dist" / "index.html").exists():
+        raise RuntimeError(f"Run `npm run build` in {app_dir.relative_to(REPO_ROOT)} first")
+    mode = ["preview"] if preview else []
+    return [node, str(vite), *mode, "--port", str(port), "--strictPort", "--host", "127.0.0.1"]
 
 
 def _ensure_chromium() -> None:
@@ -1038,6 +1094,54 @@ def _capture_one(
     return target
 
 
+def _check_navigation(page: Page, app: App) -> None:
+    """Exercise shell geometry and focus using the same fictional estate as the captures."""
+    page.get_by_role("button", name="Collapse navigation", exact=True).click()
+    sidebar = page.locator(".sidebar")
+    collapsed = sidebar.bounding_box()
+    if collapsed is None or collapsed["width"] > 90:
+        raise CaptureError(f"{app}: collapsed primary navigation is not a compact rail")
+    page.get_by_role("button", name="Expand navigation", exact=True).click()
+    expanded = sidebar.bounding_box()
+    if expanded is None or expanded["width"] < 200:
+        raise CaptureError(f"{app}: expanding primary navigation did not restore its labels")
+
+    if app == "portal":
+        origin = "/".join(page.url.split("/")[:3])
+        page.goto(origin + "/access")
+        page.get_by_role("button", name="View grant details", exact=True).first.click()
+        panel = page.locator(".detail-panel").bounding_box()
+        cards = page.locator(".access-list").bounding_box()
+        if panel is None or cards is None or panel["x"] < cards["x"] + cards["width"] - 1:
+            raise CaptureError("portal: grant details are not docked beside the access list")
+        page.get_by_role("button", name="Close details", exact=True).click()
+        page.goto(origin + "/usage?tab=resources")
+        page.get_by_role("table", name="Usage by resource", exact=True).wait_for()
+        if page.evaluate("document.documentElement.scrollWidth > window.innerWidth + 1"):
+            raise CaptureError("portal: resource usage overflows the desktop viewport horizontally")
+    else:
+        search = page.get_by_role("textbox", name="Search MOSAIC pages", exact=True)
+        search.fill("model endpoints")
+        page.get_by_role("link", name="Models · Model endpoints", exact=True).click()
+        page.get_by_role("heading", name="Model endpoints", exact=True).wait_for()
+
+    page.set_viewport_size({"width": 390, "height": 844})
+    opener = page.get_by_role("button", name="Open navigation", exact=True)
+    opener.click()
+    dialog = page.get_by_role("dialog", name="Navigation", exact=True)
+    dialog.wait_for()
+    if not dialog.evaluate("(element) => element.contains(document.activeElement)"):
+        raise CaptureError(f"{app}: opening mobile navigation did not move focus inside")
+    if not page.locator("main").evaluate("(element) => element.inert"):
+        raise CaptureError(f"{app}: mobile navigation did not make the background inert")
+    page.keyboard.press("Escape")
+    if not opener.evaluate("(element) => element === document.activeElement"):
+        raise CaptureError(f"{app}: closing mobile navigation did not restore focus")
+    if page.evaluate("document.documentElement.scrollWidth > window.innerWidth + 1"):
+        raise CaptureError(f"{app}: the mobile shell overflows the viewport horizontally")
+    print(f"verified {app} desktop collapse, mobile navigation, and contextual layout")
+
+
 def capture(
     shots: Sequence[Shot],
     *,
@@ -1046,11 +1150,13 @@ def capture(
     api_port: int,
     logs: Path,
     headed: bool = False,
+    check_navigation: bool = False,
 ) -> list[Path]:
     output.mkdir(parents=True, exist_ok=True)
     literals = sorted({*SENSITIVE_LITERALS, *RESOURCE_NAMES}, key=len, reverse=True)
     written: list[Path] = []
     failures: list[CaptureError] = []
+    verified: set[App] = set()
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=not headed)
         try:
@@ -1075,6 +1181,9 @@ def capture(
                     page.set_default_timeout(45_000)
                     page.set_default_navigation_timeout(60_000)
                     written.append(_capture_one(page, shot, urls[shot.app], literals, output, logs))
+                    if check_navigation and shot.app not in verified:
+                        _check_navigation(page, shot.app)
+                        verified.add(shot.app)
                 except CaptureError as error:
                     failures.append(error)
                     print(f"FAILED {error}", file=sys.stderr)
@@ -1097,6 +1206,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--console-port", type=int, default=15173)
     parser.add_argument("--portal-port", type=int, default=15174)
     parser.add_argument("--headed", action="store_true", help="Show the browser while capturing")
+    parser.add_argument(
+        "--preview",
+        action="store_true",
+        help="Serve existing production builds instead of Vite dev",
+    )
+    parser.add_argument(
+        "--check-navigation", action="store_true", help="Verify desktop and mobile shell behavior"
+    )
     parser.add_argument(
         "--reuse-servers",
         action="store_true",
@@ -1149,7 +1266,7 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 for app, (app_dir, port) in apps.items():
                     stack.enter_context(
-                        _running(app, _vite(app_dir, port), app_dir, urls[app], logs)
+                        _running(app, _vite(app_dir, port, args.preview), app_dir, urls[app], logs)
                     )
             capture(
                 shots,
@@ -1158,6 +1275,7 @@ def main(argv: list[str] | None = None) -> int:
                 api_port=args.api_port,
                 logs=logs,
                 headed=args.headed,
+                check_navigation=args.check_navigation,
             )
     except Exception:
         print(f"Screenshot capture failed. Server logs and debug captures: {logs}", file=sys.stderr)

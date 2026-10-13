@@ -8,6 +8,7 @@ import type { AccessRequest, Entitlement, EnvironmentCatalogView, McpPublication
 import { GOVERNED_COUNTER_KEY, callRateError, describeLimits, describePublicationLimits } from '../entitlement-limits'
 import { EntitlementsPage } from './EntitlementsPage'
 import { accessPlan, directGrant, modelPublication, publishedModelApi } from '../test/model-access'
+import { ApiError } from '../api'
 import { anthropicPool, draftPool, governedAnthropicPool } from '../test/pool-fixtures'
 
 const entitlement: Entitlement = {
@@ -170,6 +171,9 @@ const docsPublication: McpPublication = {
 }
 
 async function openApproval(user: ReturnType<typeof userEvent.setup>) {
+  if (!screen.queryByRole('table', { name: 'Pending access requests' })) {
+    await user.click(screen.getByRole('button', { name: 'Access requests' }))
+  }
   const requests = await screen.findByRole('table', { name: 'Pending access requests' })
   const approve = within(requests).getByRole('button', { name: 'Approve' })
   await waitFor(() => expect(approve).toBeEnabled())
@@ -210,6 +214,7 @@ function renderPage(initial = '/entitlements') {
       </MemoryRouter>
     </QueryClientProvider>,
   )
+  return queryClient
 }
 
 describe('EntitlementsPage', () => {
@@ -260,6 +265,70 @@ describe('EntitlementsPage', () => {
     expect(screen.getByText('Not bound')).toBeVisible()
     expect(screen.getByText('Live data')).toBeVisible()
     expect(screen.queryByText('Sample data')).not.toBeInTheDocument()
+  })
+
+  it('renders only the selected entitlement view and preserves unrelated query parameters', async () => {
+    const user = userEvent.setup()
+    api.listPublications.mockResolvedValue([modelPublication])
+    api.listCostCenters.mockResolvedValue([{ id: 'cc-support', name: 'Support', code: 'support' }])
+    renderPage('/entitlements?tab=requests&costCenter=cc-support')
+    expect(await screen.findByRole('heading', { name: 'Access requests' })).toBeVisible()
+    expect(screen.queryByRole('table', { name: 'Entitlements' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('combobox', { name: 'Published model' })).not.toBeInTheDocument()
+    expect(api.getGrantOverlaps).not.toHaveBeenCalled()
+    await user.click(screen.getByRole('button', { name: 'Model access settings' }))
+    expect(await screen.findByRole('combobox', { name: 'Published model' })).toBeVisible()
+    expect(screen.queryByRole('heading', { name: 'Access requests' })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Grants' }))
+    expect(await screen.findByRole('combobox', { name: 'Filter grants by cost center' })).toHaveValue('cc-support')
+  })
+
+  it('filters request history without exposing actionable decisions on a decided request', async () => {
+    const user = userEvent.setup()
+    api.listAccessRequests.mockImplementation(async (state?: string) =>
+      state === 'approved' ? [{ ...pendingRequest, state: 'approved' }] : [],
+    )
+    renderPage('/entitlements?tab=requests')
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Request status' }), 'approved')
+    const table = await screen.findByRole('table', { name: 'Access requests' })
+    expect(within(table).getByText('approved')).toBeVisible()
+    expect(within(table).getByRole('button', { name: 'Approve' })).toBeDisabled()
+    expect(within(table).getByRole('button', { name: 'Deny' })).toBeDisabled()
+    expect(api.listAccessRequests).toHaveBeenCalledWith('approved')
+  })
+
+  it('keeps request failures distinct from an empty queue and invalidates the shell pending key after denial', async () => {
+    const user = userEvent.setup()
+    api.listAccessRequests.mockRejectedValueOnce(new Error('Requests are unavailable.')).mockResolvedValue([pendingRequest])
+    api.denyAccessRequest.mockResolvedValue({ ...pendingRequest, state: 'denied' })
+    const queryClient = renderPage('/entitlements?tab=requests')
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+    expect(await screen.findByText('Requests are unavailable.')).toBeVisible()
+    expect(screen.queryByText('No pending requests')).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Retry requests' }))
+    const table = await screen.findByRole('table', { name: 'Pending access requests' })
+    await user.click(within(table).getByRole('button', { name: 'Deny' }))
+    await waitFor(() => expect(invalidate).toHaveBeenCalledWith({ queryKey: ['access-requests'] }))
+    expect(queryClient.getQueryData(['access-requests', 'pending'])).toBeDefined()
+  })
+
+  it.each([403, 409])('reports a failed request decision without announcing success (%s)', async (status) => {
+    const user = userEvent.setup()
+    api.listAccessRequests.mockResolvedValue([pendingRequest])
+    api.denyAccessRequest.mockRejectedValue(new ApiError(
+      status === 409 ? 'This request has already been decided.' : 'You are not authorized to decide requests.',
+      status,
+    ))
+    const queryClient = renderPage('/entitlements?tab=requests')
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+    const table = await screen.findByRole('table', { name: 'Pending access requests' })
+    await user.click(within(table).getByRole('button', { name: 'Deny' }))
+    expect(await screen.findByText(status === 409 ? 'This request has already been decided.' : 'You are not authorized to decide requests.')).toBeVisible()
+    expect(screen.queryByText(/Denied the access request/)).not.toBeInTheDocument()
+    if (status === 409) {
+      await waitFor(() => expect(invalidate).toHaveBeenCalledWith({ queryKey: ['access-requests'] }))
+    }
+    expect(api.createEntitlement).not.toHaveBeenCalled()
   })
 
   it('shows cost-center names and codes in the grants table', async () => {
@@ -385,7 +454,7 @@ describe('EntitlementsPage', () => {
         available: false,
       },
     }])
-    renderPage()
+    renderPage('/entitlements?tab=requests')
 
     const requests = await screen.findByRole('table', { name: 'Pending access requests' })
     expect(within(requests).getByText('Chat completions')).toBeVisible()
@@ -488,7 +557,7 @@ describe('EntitlementsPage', () => {
       // Reviewing an unpublished model's access would publish it again.
       { ...modelPublication, id: 'pub_unpublished', displayName: 'Retired chat', status: 'draft', unpublishedAt: modelPublication.createdAt },
     ])
-    renderPage()
+    renderPage('/entitlements?tab=settings')
 
     const picker = await screen.findByRole('combobox', { name: 'Published model' })
     await within(picker).findByRole('option', { name: /Published chat/ })
@@ -501,7 +570,7 @@ describe('EntitlementsPage', () => {
     api.listPublications.mockResolvedValue([modelPublication])
     api.listModelApis.mockResolvedValue([publishedModelApi])
     api.createEntitlement.mockResolvedValue(directGrant)
-    renderPage()
+    renderPage('/entitlements?tab=settings')
     await screen.findByRole('option', { name: /Published chat/ })
     fireEvent.change(screen.getByLabelText('Published model'), { target: { value: modelPublication.id } })
     await user.click(await screen.findByRole('button', { name: 'Add direct grant' }))
@@ -784,7 +853,7 @@ describe('EntitlementsPage', () => {
         reason: 'A direct grant wins over a security-group grant.',
       }],
     })
-    renderPage()
+    renderPage('/entitlements?tab=effective')
 
     expect(await screen.findByText('Direct grant overrides group grant')).toBeVisible()
     expect(screen.getByText('Affected principal:')).toBeVisible()
@@ -801,14 +870,13 @@ describe('EntitlementsPage', () => {
 
     // Each grant links to its row in the grants table, where it can be disabled or revoked.
     const link = await screen.findByRole('link', { name: 'Go to the Security readers grant on Chat completions' })
+    expect(document.getElementById('grant-group_grant')).toBeNull()
+    await user.click(link)
     const row = document.getElementById('grant-group_grant')
     expect(row).not.toBeNull()
-    const scrollIntoView = vi.fn()
-    row!.scrollIntoView = scrollIntoView
-    await user.click(link)
     expect(row).toHaveFocus()
-    expect(scrollIntoView).toHaveBeenCalledWith({ block: 'center' })
-    expect(screen.getByRole('link', { name: 'Go to the Ada Lovelace grant on Chat completions' })).toBeVisible()
+    expect(screen.queryByRole('link', { name: 'Go to the Ada Lovelace grant on Chat completions' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Grants' })).toHaveAttribute('aria-current', 'page')
   })
 
   it('shows resolved access paths and whether each grant applies', async () => {
@@ -831,7 +899,7 @@ describe('EntitlementsPage', () => {
         shadowedBy: null,
       },
     ])
-    renderPage()
+    renderPage('/entitlements?tab=effective')
 
     await screen.findByRole('option', { name: 'Ada Lovelace' })
     fireEvent.change(screen.getByRole('combobox', { name: 'Principal' }), { target: { value: 'principal_1' } })
@@ -855,7 +923,7 @@ describe('EntitlementsPage', () => {
         }],
       },
     })
-    renderPage()
+    renderPage('/entitlements?tab=settings')
     await screen.findByRole('option', { name: /Published chat/ })
     fireEvent.change(screen.getByLabelText('Published model'), { target: { value: modelPublication.id } })
     await user.click(await screen.findByRole('button', { name: 'Review model changes' }))
@@ -877,7 +945,6 @@ describe('EntitlementsPage', () => {
     renderPage()
     const add = await screen.findByRole('button', { name: 'Add entitlement' })
     await waitFor(() => expect(add).toBeEnabled())
-    if (governed) await screen.findByRole('option', { name: /Published chat/ })
     await user.click(add)
     const dialog = await screen.findByRole('dialog')
     fireEvent.change(within(dialog).getByRole('combobox', { name: 'Subject' }), { target: { value: 'principal_1' } })
@@ -909,7 +976,7 @@ describe('EntitlementsPage', () => {
     const user = userEvent.setup()
     api.listPublications.mockResolvedValue([modelPublication])
     api.createPublishPlan.mockRejectedValue(new Error('This gateway does not support the selected policy.'))
-    renderPage()
+    renderPage('/entitlements?tab=settings')
     await screen.findByRole('option', { name: /Published chat/ })
     fireEvent.change(screen.getByLabelText('Published model'), { target: { value: modelPublication.id } })
     await user.click(await screen.findByRole('button', { name: 'Review model changes' }))
@@ -937,7 +1004,7 @@ describe('EntitlementsPage', () => {
         // Matched by the principal the request recorded, whatever its object ID.
         { ...pendingRequest, id: 'request_2', requesterObjectId: 'other-object-2', requesterPrincipalId: 'principal_2' },
       ])
-      renderPage()
+      renderPage('/entitlements?tab=requests')
 
       const requests = await screen.findByRole('table', { name: 'Pending access requests' })
       await within(requests).findByText('Grace Hopper')
@@ -961,7 +1028,7 @@ describe('EntitlementsPage', () => {
         pendingRequest,
         { ...pendingRequest, id: 'request_2', requesterObjectId: 'new-object-1' },
       ])
-      renderPage()
+      renderPage('/entitlements?tab=requests')
 
       const requests = await screen.findByRole('table', { name: 'Pending access requests' })
       await within(requests).findByText('Ada Lovelace')
@@ -972,7 +1039,7 @@ describe('EntitlementsPage', () => {
     it('shows only the object ID while principals cannot be loaded', async () => {
       api.listPrincipals.mockRejectedValue(new Error('Principals are unavailable.'))
       api.listAccessRequests.mockResolvedValue([pendingRequest])
-      renderPage()
+      renderPage('/entitlements?tab=requests')
 
       expect(await screen.findByText('Principals are unavailable.')).toBeVisible()
       const requests = await screen.findByRole('table', { name: 'Pending access requests' })
@@ -1014,7 +1081,7 @@ describe('EntitlementsPage', () => {
       const user = userEvent.setup()
       api.listPrincipals.mockResolvedValue(principals)
       api.listAccessRequests.mockResolvedValue([pendingRequest])
-      renderPage()
+      renderPage('/entitlements?tab=requests')
 
       const requests = await screen.findByRole('table', { name: 'Pending access requests' })
       // Approve waits for principals, so by then the table shows all it knows about the requester.
@@ -1201,7 +1268,7 @@ describe('EntitlementsPage', () => {
         api.listAccessRequests.mockResolvedValue([])
         return { ...pendingRequest, state: 'denied' }
       })
-      renderPage()
+      renderPage('/entitlements?tab=requests')
 
       const requests = await screen.findByRole('table', { name: 'Pending access requests' })
       await user.click(within(requests).getByRole('button', { name: 'Deny' }))

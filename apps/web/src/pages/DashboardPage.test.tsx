@@ -332,7 +332,8 @@ describe('DashboardPage', () => {
     expect(await screen.findByText('person')).toBeVisible()
     expect(within(inventoryCard('person')).getByText('1')).toBeVisible()
     expect(within(inventoryCard('agents')).getByText('2')).toBeVisible()
-    expect(within(inventoryCard('apps and security groups')).getByText('3')).toBeVisible()
+    expect(within(inventoryCard('applications')).getByText('2')).toBeVisible()
+    expect(within(inventoryCard('Entra security group')).getByText('1')).toBeVisible()
     expect(within(inventoryCard('MOSAIC group')).getByText('1')).toBeVisible()
     expect(screen.getAllByText('Live data').length).toBeGreaterThan(0)
     expect(screen.queryByText('Sample data')).not.toBeInTheDocument()
@@ -390,6 +391,16 @@ describe('DashboardPage', () => {
     renderPage()
 
     expect(await screen.findByText('2 gateways')).toBeVisible()
-    expect(await screen.findByText('Findings unavailable')).toBeVisible()
+    expect(await screen.findByText(/Findings failed/)).toBeVisible()
+  })
+
+  it('orders consumers, usage, rankings, budgets, pools and environments for scanning', async () => {
+    renderPage()
+    await screen.findByText('Alice Admin')
+    const headings = screen.getAllByRole('heading').map((heading) => heading.textContent)
+    const expected = ['Service consumers', 'Requests and tokens', 'Telemetry health', 'Top models', 'Top callers', 'Top APIs', 'Budgets', 'Pools', 'Environments']
+    const positions = expected.map((name) => headings.findIndex((heading) => heading === name || heading?.startsWith(name)))
+    expect(positions.every((position) => position >= 0)).toBe(true)
+    expect(positions).toEqual([...positions].sort((a, b) => a - b))
   })
 })

@@ -10,7 +10,7 @@ import {
   Title3,
   useRestoreFocusTarget,
 } from '@fluentui/react-components'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useIsMutating, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { useMosaicApi } from '../api'
@@ -19,6 +19,7 @@ import { CopyButton } from '../components/CopyButton'
 import { EnvironmentBadge } from '../components/EnvironmentBadge'
 import { ModelAccessRecovery } from '../components/ModelAccessRecovery'
 import { PageHeader } from '../components/PageHeader'
+import { SectionLayout, usePageSection } from '../components/SectionLayout'
 import { PolicyFacetItem } from '../components/PolicyFacets'
 import { PoolAccessCard } from '../components/PoolAccessCard'
 import {
@@ -70,6 +71,8 @@ import type {
   PublishRun,
 } from '../types'
 import styles from './PoolDetailPage.module.css'
+
+const POOL_DETAIL_MUTATION_KEY = ['pool-detail'] as const
 
 /** How many runs the history shows. Older runs stay in the audit log. */
 const RUN_HISTORY_LIMIT = 10
@@ -382,7 +385,17 @@ function RunHistory({ runs }: { runs: PublishRun[] }) {
   )
 }
 
+const poolDetailSections = [
+  { value: 'overview', label: 'Overview' },
+  { value: 'models', label: 'Models and deployments' },
+  { value: 'access', label: 'Access and connection' },
+  { value: 'health', label: 'Health' },
+  { value: 'plans', label: 'Policy and runs', description: 'Reviewing a plan does not apply it. Unpublishing removes MOSAIC-owned gateway resources; removing a record only changes MOSAIC.' },
+]
+
 function PoolDetail({ poolId }: { poolId: string }) {
+  const pendingOperations = useIsMutating({ mutationKey: POOL_DETAIL_MUTATION_KEY })
+  const [section, selectSection] = usePageSection(poolDetailSections)
   const api = useMosaicApi()
   const navigate = useNavigate()
   const location = useLocation()
@@ -399,9 +412,9 @@ function PoolDetail({ poolId }: { poolId: string }) {
 
   useEffect(() => {
     if ((location.state as PoolLocationState | null)?.openPlan) {
-      navigate(location.pathname, { replace: true, state: null })
+      navigate({ pathname: location.pathname, search: location.search }, { replace: true, state: null })
     }
-  }, [location.pathname, location.state, navigate])
+  }, [location.pathname, location.search, location.state, navigate])
 
   const detail = useQuery({
     queryKey: ['model-pools', 'detail', poolId],
@@ -417,6 +430,7 @@ function PoolDetail({ poolId }: { poolId: string }) {
   const gateways = useQuery({ queryKey: ['gateways'], queryFn: () => api.listGateways() })
 
   const drain = useMutation({
+    mutationKey: POOL_DETAIL_MUTATION_KEY,
     mutationFn: (change: DrainChange) =>
       api.updateModelPool(poolId, {
         models: specsWithMemberDrained(
@@ -435,6 +449,7 @@ function PoolDetail({ poolId }: { poolId: string }) {
   })
 
   const remove = useMutation({
+    mutationKey: POOL_DETAIL_MUTATION_KEY,
     mutationFn: () => api.deleteModelPool(poolId),
     onSuccess: () => {
       navigate('/pools', { replace: true })
@@ -502,22 +517,8 @@ function PoolDetail({ poolId }: { poolId: string }) {
             <Button appearance="secondary" disabled={applying} onClick={() => setEditing(true)} {...restoreFocus}>
               Edit
             </Button>
-            {published ? (
-              <Button
-                appearance="secondary"
-                disabled={applying || Boolean(writeBlocker)}
-                onClick={() => setPlanMode('unpublish')}
-                {...restoreFocus}
-              >
-                Unpublish
-              </Button>
-            ) : (
-              <Button appearance="secondary" disabled={applying} onClick={() => setRemoving(true)} {...restoreFocus}>
-                Remove
-              </Button>
-            )}
             <Button appearance="primary" disabled={planBlocked} onClick={() => setPlanMode('publish')} {...restoreFocus}>
-              {published ? 'Review plan' : 'Publish'}
+              {published ? 'Review changes' : 'Review publish plan'}
             </Button>
           </div>
         }
@@ -571,7 +572,7 @@ function PoolDetail({ poolId }: { poolId: string }) {
             </MessageBarBody>
             <MessageBarActions>
               <Button size="small" disabled={planBlocked} onClick={() => setPlanMode('publish')} {...restoreFocus}>
-                Review plan
+                Review changes
               </Button>
             </MessageBarActions>
           </MessageBar>
@@ -608,7 +609,10 @@ function PoolDetail({ poolId }: { poolId: string }) {
         </div>
       </div>
 
-      <div className={styles.overview}>
+      {pendingOperations > 0 && <Text role="status">Finish the current operation before changing sections.</Text>}
+      <SectionLayout label="Pool" sections={poolDetailSections} active={section}
+        onSelect={(value) => { if (!pendingOperations) selectSection(value) }}>
+      {section === 'overview' && <div className={styles.overview}>
         <Card className={styles.card} aria-labelledby="pool-routing-heading">
           <Title3 as="h2" id="pool-routing-heading">Routing</Title3>
           <div className={styles.routingType}>
@@ -663,9 +667,9 @@ function PoolDetail({ poolId }: { poolId: string }) {
             <dd>{lastAppliedLabel(pool)}</dd>
           </dl>
         </Card>
-      </div>
+      </div>}
 
-      <section className={styles.section} aria-labelledby="pool-models-heading">
+      {section === 'models' && <section className={styles.section} aria-labelledby="pool-models-heading">
         <div className={styles.sectionHeading}>
           <Title3 as="h2" id="pool-models-heading">Models</Title3>
           <Text size={200} className={styles.muted}>
@@ -690,10 +694,13 @@ function PoolDetail({ poolId }: { poolId: string }) {
             />
           ))
         )}
-      </section>
+      </section>}
 
-      {detail.data.models.length > 0 && <PoolHealthCard poolId={pool.id} models={detail.data.models} />}
+      {section === 'health' && (detail.data.models.length > 0
+        ? <PoolHealthCard poolId={pool.id} models={detail.data.models} />
+        : <EmptyState title="No models to monitor">Add models to the pool before checking deployment health.</EmptyState>)}
 
+      {section === 'access' && <>
       <PoolAccessCard
         key={JSON.stringify(pool.governedAccess ?? null)}
         pool={pool}
@@ -701,7 +708,9 @@ function PoolDetail({ poolId }: { poolId: string }) {
       />
 
       <ConnectionCard detail={detail.data} published={published} />
+      </>}
 
+      {section === 'plans' && <>
       {detail.data.facets.length > 0 && (
         <Card className={styles.card} aria-labelledby="pool-policy-heading">
           <div className={styles.sectionHeading}>
@@ -727,6 +736,15 @@ function PoolDetail({ poolId }: { poolId: string }) {
         {runs.isError && <ErrorState error={runs.error} title="Unable to load runs" />}
         {runs.data && <RunHistory runs={runs.data} />}
       </Card>
+      <div className={styles.lifecycleActions}>
+        {published && <Button appearance="secondary" disabled={applying || Boolean(writeBlocker)}
+          onClick={() => setPlanMode('unpublish')} {...restoreFocus}>Unpublish</Button>}
+        <Button appearance="subtle" disabled={applying || published}
+          onClick={() => setRemoving(true)} {...restoreFocus}>Remove MOSAIC record</Button>
+        <Text size={200}>Unpublish first if the pool still owns gateway resources. Record removal never changes API Management.</Text>
+      </div>
+      </>}
+      </SectionLayout>
 
       {editing && (
         <PoolEditorDialog

@@ -17,8 +17,6 @@ import {
   RadioGroup,
   Select,
   Spinner,
-  Tab,
-  TabList,
   Text,
   Textarea,
 } from '@fluentui/react-components'
@@ -26,6 +24,8 @@ import { AddRegular } from '@fluentui/react-icons'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { type FormEvent, Fragment, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
+import { Link as RouterLink } from 'react-router-dom'
+import { SectionLayout } from '../components/SectionLayout'
 import { ApiError, useMosaicApi } from '../api'
 import { EmptyState, ErrorState, Loading } from '../components/AsyncState'
 import { PageHeader } from '../components/PageHeader'
@@ -49,7 +49,7 @@ type PriceKind = 'tokens' | 'ptu' | 'monthly'
 const tabs: Array<{ key: PricingTab; label: string }> = [
   { key: 'prices', label: 'Prices' },
   { key: 'unpriced', label: 'Unpriced deployments' },
-  { key: 'endpoints', label: 'Clouds and endpoints' },
+  { key: 'endpoints', label: 'Endpoint facts' },
   { key: 'sources', label: 'Sources' },
 ]
 
@@ -98,6 +98,18 @@ const REASON_LABELS: Record<UnpricedReason, string> = {
 
 // Reasons an endpoint's facts fix, rather than a price.
 const ENDPOINT_FIXES = new Set<UnpricedReason>(['noCloud', 'noDeploymentType', 'noCapacity'])
+const PRICE_FIXES = new Set<UnpricedReason>(['noPrice', 'noOutputPrice', 'notYetEffective'])
+const REASON_HELP: Record<UnpricedReason, string> = {
+  unknownDeployment: 'Review and sync the endpoint inventory in Models before pricing its deployment.',
+  noCloud: 'Set the endpoint cloud or provider in Endpoint facts.',
+  noModel: 'Review the endpoint inventory in Models; a model identity is needed before a price can match.',
+  noDeploymentType: 'Set the deployment type in Endpoint facts.',
+  noCapacity: 'Set the provisioned capacity (PTUs) in Endpoint facts.',
+  noPrice: 'Add a matching model price with its source and effective date.',
+  notYetEffective: 'Review the price effective date. Add a price only if a sourced rate covers the usage date.',
+  noOutputPrice: 'Add a sourced rate that includes output tokens.',
+  beforeDeployment: 'Usage predates the deployment. Adding a price will not fix this date mismatch.',
+}
 
 function typeLabel(value: string | null | undefined, empty = 'Any type') {
   if (!value) return empty
@@ -234,7 +246,7 @@ function PriceTable({ lines, onOverride }: { lines: PriceLineView[]; onOverride:
   const [open, setOpen] = useState<string | null>(null)
   const columns = 9
   return (
-    <div className="table-scroll">
+    <div className={`table-scroll ${styles.priceTableScroll}`}>
       <table aria-label="Prices" className={styles.priceTable}>
         <thead>
           <tr>
@@ -643,6 +655,9 @@ function UnpricedTab({ onPrice, onEndpoint }: { onPrice: (row: UnpricedDeploymen
                   <td>
                     <Badge appearance="tint" color="warning">{REASON_LABELS[row.reason]}</Badge>
                     <Text block size={200} className={styles.reason}>{row.message}</Text>
+                    <Text block size={200} className={styles.muted}>
+                      {row.kind === 'api' ? 'Imported API usage has no matched deployment. Review its inventory and model linkage; adding an unrelated price does not price these calls.' : REASON_HELP[row.reason]}
+                    </Text>
                   </td>
                   <td className={styles.number}>
                     {formatCount(row.totalTokens)}
@@ -652,9 +667,13 @@ function UnpricedTab({ onPrice, onEndpoint }: { onPrice: (row: UnpricedDeploymen
                     {row.kind === 'deployment' && ENDPOINT_FIXES.has(row.reason) && (
                       <Button size="small" onClick={() => onEndpoint(row)}>Set facts</Button>
                     )}
-                    {row.kind === 'deployment' && !ENDPOINT_FIXES.has(row.reason) && (
+                    {row.kind === 'deployment' && PRICE_FIXES.has(row.reason) && (
                       <Button size="small" onClick={() => onPrice(row)}>Add price</Button>
                     )}
+                    {row.kind === 'deployment' && (row.reason === 'unknownDeployment' || row.reason === 'noModel') && (
+                      <RouterLink to="/models?tab=endpoints">Review endpoint</RouterLink>
+                    )}
+                    {row.kind === 'api' && <RouterLink to="/models?tab=imported">Review imported API</RouterLink>}
                   </td>
                 </tr>
               ))}
@@ -928,14 +947,13 @@ export function PricingPage() {
           </Text>
         </div>
       )}
-      <TabList className={styles.tabs} selectedValue={tab} onTabSelect={(_, data) => update({ tab: data.value as string, endpoint: null })}>
-        {tabs.map((item) => (
-          <Tab key={item.key} value={item.key}>
-            {item.label}
-            {item.key === 'unpriced' && unpricedCount ? <Badge appearance="filled" color="warning" size="small" className={styles.tabBadge}>{unpricedCount}</Badge> : null}
-          </Tab>
-        ))}
-      </TabList>
+      <SectionLayout label="Pricing" sections={tabs.map((item) => ({
+        value: item.key,
+        label: item.key === 'unpriced' && unpricedCount ? `${item.label} (${unpricedCount})` : item.label,
+        description: item.key === 'unpriced' && unpricedCount !== undefined
+          ? `${unpricedCount} unpriced entries. Fix missing endpoint facts or add the missing price using each row's action.`
+          : undefined,
+      }))} active={tab} onSelect={(value) => update({ tab: value, endpoint: null })}>
       {tab === 'prices' && (
         <PricesTab
           cloud={cloud}
@@ -967,6 +985,7 @@ export function PricingPage() {
         </div>
       )}
       {tab === 'sources' && overview.isPending && <Loading label="Loading sources" />}
+      </SectionLayout>
       {draft && <PriceDialog draft={draft} clouds={clouds} onClose={() => setDraft(null)} />}
     </section>
   )

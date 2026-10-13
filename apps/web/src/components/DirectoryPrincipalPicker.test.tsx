@@ -121,8 +121,51 @@ describe('DirectoryPrincipalPicker', () => {
     await user.type(screen.getByRole('textbox', { name: 'Directory search' }), 'ad')
 
     expect(await screen.findByText(message)).toBeVisible()
-    if (error.status === 409) {
-      expect(onManualFallback).toHaveBeenCalled()
-    }
+    expect(onManualFallback).not.toHaveBeenCalled()
+    await user.click(screen.getByRole('button', { name: 'Use manual entry' }))
+    expect(onManualFallback).toHaveBeenCalledOnce()
+  })
+
+  it('hides stale results immediately while a new query is being debounced', async () => {
+    const user = userEvent.setup()
+    renderPicker()
+    const input = screen.getByRole('textbox', { name: 'Directory search' })
+    await user.type(input, 'ad')
+    expect(await screen.findByRole('button', { name: 'Add Ada Lovelace' })).toBeVisible()
+    await user.clear(input)
+    expect(screen.queryByRole('button', { name: 'Add Ada Lovelace' })).not.toBeInTheDocument()
+    expect(mocks.api.createPrincipal).not.toHaveBeenCalled()
+  })
+
+  it('explains an empty result and supports retry after a permission failure', async () => {
+    const user = userEvent.setup()
+    mocks.api.searchDirectory
+      .mockRejectedValueOnce(new mocks.TestApiError('Missing Application.Read.All.', 403))
+      .mockResolvedValue([])
+    renderPicker()
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Directory search kind' }), 'application')
+    await user.type(screen.getByRole('textbox', { name: 'Directory search' }), 'app')
+    expect(await screen.findByText('Missing Application.Read.All.')).toBeVisible()
+    expect(screen.getByRole('link', { name: 'Check directory configuration' })).toHaveAttribute('href', '/settings?tab=runtime')
+    await user.click(screen.getByRole('button', { name: 'Retry directory search' }))
+    expect(await screen.findByText(/No matching directory identities/)).toBeVisible()
+    expect(mocks.api.searchDirectory).toHaveBeenLastCalledWith('application', 'app', 20)
+  })
+
+  it('disambiguates equal friendly names and registers the selected managed identity object, not its app ID', async () => {
+    const user = userEvent.setup()
+    mocks.api.searchDirectory.mockResolvedValue([
+      { objectId: 'object-one', kind: 'servicePrincipal', displayName: 'Build', appId: 'app-one' },
+      { objectId: 'object-two', kind: 'managedIdentity', displayName: 'Build', appId: 'app-two' },
+    ])
+    renderPicker()
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Directory search kind' }), 'application')
+    await user.type(screen.getByRole('textbox', { name: 'Directory search' }), 'bu')
+    const choices = await screen.findAllByRole('button', { name: /^Add Build/ })
+    expect(choices).toHaveLength(2)
+    await user.click(screen.getByRole('button', { name: 'Add Build (Managed identity; app-two)' }))
+    await waitFor(() => expect(mocks.api.createPrincipal).toHaveBeenCalledWith({
+      objectId: 'object-two', kind: 'managedIdentity', label: 'Build',
+    }))
   })
 })

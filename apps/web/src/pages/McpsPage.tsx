@@ -27,7 +27,7 @@ import {
   useRestoreFocusTarget,
 } from '@fluentui/react-components'
 import { AddRegular } from '@fluentui/react-icons'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useIsMutating, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { type FormEvent, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { useMosaicApi } from '../api'
@@ -37,6 +37,7 @@ import { EnvironmentBadge } from '../components/EnvironmentBadge'
 import { EnvironmentPicker } from '../components/EnvironmentPicker'
 import { ImportFromGatewayDialog } from '../components/ImportFromGatewayDialog'
 import { PageHeader } from '../components/PageHeader'
+import { SectionLayout, usePageSection } from '../components/SectionLayout'
 import { PublishMcpServerDialog } from '../components/PublishMcpServerDialog'
 import { RemovalDialog } from '../components/RemovalDialog'
 import { ModelAccessRecovery } from '../components/ModelAccessRecovery'
@@ -66,6 +67,8 @@ import type {
   PublishPlan,
 } from '../types'
 import styles from './McpsPage.module.css'
+
+const MCP_PAGE_MUTATION_KEY = ['mcp-page'] as const
 
 const statusLabels: Record<McpEndpointStatus, string> = {
   pending: 'Not checked',
@@ -351,6 +354,7 @@ function RegisteredMcpServers({
   }
 
   const register = useMutation({
+    mutationKey: MCP_PAGE_MUTATION_KEY,
     mutationFn: () =>
       api.registerMcpEndpoint({
         endpoint: url.trim(),
@@ -371,11 +375,13 @@ function RegisteredMcpServers({
   })
 
   const recheck = useMutation({
+    mutationKey: MCP_PAGE_MUTATION_KEY,
     mutationFn: (id: string) => api.preflightMcpEndpoint(id),
     onSuccess: invalidate,
   })
 
   const sync = useMutation({
+    mutationKey: MCP_PAGE_MUTATION_KEY,
     mutationFn: (id: string) => api.syncMcpEndpoint(id),
     onSuccess: async () => {
       await invalidate()
@@ -384,6 +390,7 @@ function RegisteredMcpServers({
   })
 
   const remove = useMutation({
+    mutationKey: MCP_PAGE_MUTATION_KEY,
     mutationFn: (id: string) => api.deleteMcpEndpoint(id),
     onSuccess: async () => {
       await invalidate()
@@ -653,6 +660,7 @@ function RegisteredMcpServers({
       </Dialog>
       {changingEndpoint && (
         <ChangeEnvironmentDialog
+          mutationKey={MCP_PAGE_MUTATION_KEY}
           resource={{
             resourceKind: 'mcpEndpoint',
             resourceId: changingEndpoint.id,
@@ -689,12 +697,12 @@ function modelCallerNextStep(publication: McpPublication, principals: Principal[
   const configured = publication.modelCallerId ?? null
   const live = publication.appliedAccess?.modelCaller?.principalId ?? null
   if (live && !configured) {
-    return `Still live as ${modelCallerLabel(live, principals, publication)}. Plan and apply to stop attributing its model calls.`
+    return `Still live as ${modelCallerLabel(live, principals, publication)}. Review changes and apply the plan to stop attributing its model calls.`
   }
   if (live) {
-    return `Still live as ${modelCallerLabel(live, principals, publication)}. Plan and apply to switch.`
+    return `Still live as ${modelCallerLabel(live, principals, publication)}. Review changes and apply the plan to switch.`
   }
-  return 'Plan and apply to start attributing its model calls.'
+  return 'Review changes and apply the plan to start attributing its model calls.'
 }
 
 function ModelCallerValue({
@@ -771,6 +779,7 @@ function PublishedMcpServers({ onBanner }: { onBanner: (message: string) => void
   }
 
   const reviewPlan = useMutation({
+    mutationKey: MCP_PAGE_MUTATION_KEY,
     mutationFn: async (publication: McpPublication) => ({
       publication,
       plan: await api.planMcpPublication(publication.id),
@@ -782,6 +791,7 @@ function PublishedMcpServers({ onBanner }: { onBanner: (message: string) => void
   })
 
   const remove = useMutation({
+    mutationKey: MCP_PAGE_MUTATION_KEY,
     mutationFn: (publicationId: string) => api.deleteMcpPublication(publicationId),
     onSuccess: async () => {
       setRemoving(null)
@@ -794,6 +804,7 @@ function PublishedMcpServers({ onBanner }: { onBanner: (message: string) => void
   })
 
   const setModelCaller = useMutation({
+    mutationKey: MCP_PAGE_MUTATION_KEY,
     mutationFn: ({ publication, principalId }: { publication: McpPublication; principalId: string }) =>
       api.setMcpModelCaller(publication.id, principalId),
     onSuccess: async (updated, { publication, principalId }) => {
@@ -804,6 +815,7 @@ function PublishedMcpServers({ onBanner }: { onBanner: (message: string) => void
   })
 
   const clearModelCaller = useMutation({
+    mutationKey: MCP_PAGE_MUTATION_KEY,
     mutationFn: (publication: McpPublication) => api.clearMcpModelCaller(publication.id),
     onSuccess: async (_updated, publication) => {
       await queryClient.invalidateQueries({ queryKey: ['mcp-publications'] })
@@ -926,7 +938,7 @@ function PublishedMcpServers({ onBanner }: { onBanner: (message: string) => void
                           onClick={() => reviewPlan.mutate(publication)}
                           {...restoreFocus}
                         >
-                          {reviewPlan.isPending && reviewPlan.variables?.id === publication.id ? 'Planning…' : 'Plan and apply'}
+                          {reviewPlan.isPending && reviewPlan.variables?.id === publication.id ? 'Planning…' : publication.status === 'published' || holdsApi(publication) ? 'Review changes' : 'Review publish plan'}
                         </Button>
                         <Button
                           appearance="secondary"
@@ -937,12 +949,13 @@ function PublishedMcpServers({ onBanner }: { onBanner: (message: string) => void
                           Unpublish
                         </Button>
                         <Button
+                          className={styles.recordAction}
                           appearance="subtle"
                           disabled={remove.isPending}
                           onClick={() => setRemoving(publication)}
                           {...restoreFocus}
                         >
-                          Delete
+                          Remove MOSAIC record
                         </Button>
                       </div>
                     </TableCell>
@@ -954,6 +967,7 @@ function PublishedMcpServers({ onBanner }: { onBanner: (message: string) => void
       </Card>
       <PublishMcpServerDialog
         open={review !== null}
+        mutationKey={MCP_PAGE_MUTATION_KEY}
         initialReview={review}
         onClose={() => setReview(null)}
         onPublished={onBanner}
@@ -961,6 +975,7 @@ function PublishedMcpServers({ onBanner }: { onBanner: (message: string) => void
       <UnpublishDialog
         open={unpublishing !== null}
         target="mcp"
+        mutationKey={MCP_PAGE_MUTATION_KEY}
         publication={unpublishing}
         onClose={() => setUnpublishing(null)}
         onUnpublished={onBanner}
@@ -1011,9 +1026,9 @@ function PublishedMcpServers({ onBanner }: { onBanner: (message: string) => void
       </Dialog>
       <RemovalDialog
         open={removing !== null}
-        title={`Delete ${removing?.displayName ?? 'this MCP publication'}?`}
-        confirmLabel="Delete publication"
-        refusalTitle="MOSAIC didn't delete this MCP publication"
+        title={`Remove ${removing?.displayName ?? 'this MCP publication'}?`}
+        confirmLabel="Remove publication"
+        refusalTitle="MOSAIC didn't remove this MCP publication"
         pending={remove.isPending}
         error={remove.error}
         statusLabel={(status) => PUBLICATION_STATUS_LABELS[status as PublicationStatus] ?? status}
@@ -1099,6 +1114,7 @@ function ImportedMcpServers({ onBanner }: { onBanner: (message: string) => void 
   }
 
   const removeMutation = useMutation({
+    mutationKey: MCP_PAGE_MUTATION_KEY,
     mutationFn: (id: string) => api.deleteMcpServer(id),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['mcp-servers'] })
@@ -1107,6 +1123,7 @@ function ImportedMcpServers({ onBanner }: { onBanner: (message: string) => void 
   })
 
   const visibilityMutation = useMutation({
+    mutationKey: MCP_PAGE_MUTATION_KEY,
     mutationFn: ({ id, visibility }: { id: string; visibility: CatalogVisibility }) =>
       api.updateMcpServerCatalog(id, { visibility }),
     onSuccess: async () => {
@@ -1235,7 +1252,7 @@ function ImportedMcpServers({ onBanner }: { onBanner: (message: string) => void 
                       <div className={styles.rowActions}>
                         {server.publicationId ? (
                           <Text size={200} className={styles.muted}>
-                            Delete the publication instead.
+                            Remove the publication record instead.
                           </Text>
                         ) : (
                           <Button
@@ -1257,6 +1274,7 @@ function ImportedMcpServers({ onBanner }: { onBanner: (message: string) => void 
 
       <ImportFromGatewayDialog
         kind="mcpServers"
+        mutationKey={MCP_PAGE_MUTATION_KEY}
         open={importOpen}
         initialGatewayId={requestedGatewayId}
         onClose={() => {
@@ -1274,10 +1292,23 @@ function ImportedMcpServers({ onBanner }: { onBanner: (message: string) => void 
   )
 }
 
+const mcpSections = [
+  { value: 'published', label: 'Published MCP servers', description: 'Publish a registered server through a reviewed plan. Reviewing does not apply changes to API Management.' },
+  { value: 'imported', label: 'Imported MCP servers', description: 'Record governance for servers already on a gateway. Importing never changes API Management.' },
+  { value: 'registered', label: 'Registered MCP servers', description: 'Register a server and sync its tools before publication. MOSAIC reads tools; it never calls them.' },
+]
+
 export function McpsPage() {
+  const pendingOperations = useIsMutating({ mutationKey: MCP_PAGE_MUTATION_KEY })
+  const location = useLocation()
+  const params = useMemo(() => new URLSearchParams(location.search), [location.search])
+  const [section, selectSection] = usePageSection(mcpSections, params.has('import') ? 'imported' : 'published')
   const restoreFocus = useRestoreFocusTarget()
   const [banner, setBanner] = useState<string | null>(null)
   const [publishOpen, setPublishOpen] = useState(false)
+  useEffect(() => {
+    if (params.has('import') && params.get('tab') !== 'imported') selectSection('imported')
+  }, [params, selectSection])
 
   return (
     <section className={styles.page}>
@@ -1286,9 +1317,9 @@ export function McpsPage() {
         description="Model Context Protocol servers MOSAIC governs, whether you registered them directly or imported them from a gateway."
         source="live"
         actions={
-          <Button {...restoreFocus} appearance="primary" icon={<AddRegular />} onClick={() => setPublishOpen(true)}>
+          section === 'published' ? <Button {...restoreFocus} appearance="primary" icon={<AddRegular />} onClick={() => setPublishOpen(true)}>
             Publish an MCP server
-          </Button>
+          </Button> : undefined
         }
       />
 
@@ -1307,11 +1338,16 @@ export function McpsPage() {
         </MessageBar>
       )}
 
-      <PublishedMcpServers onBanner={setBanner} />
-      <RegisteredMcpServers onBanner={setBanner} onPublish={() => setPublishOpen(true)} />
-      <ImportedMcpServers onBanner={setBanner} />
+      {pendingOperations > 0 && <Text role="status">Finish the current operation before changing sections.</Text>}
+      <SectionLayout label="MCPs" sections={mcpSections} active={section}
+        onSelect={(value) => { if (!pendingOperations) selectSection(value) }}>
+        {section === 'published' && <PublishedMcpServers onBanner={setBanner} />}
+        {section === 'registered' && <RegisteredMcpServers onBanner={setBanner} onPublish={() => setPublishOpen(true)} />}
+        {section === 'imported' && <ImportedMcpServers onBanner={setBanner} />}
+      </SectionLayout>
       <PublishMcpServerDialog
         open={publishOpen}
+        mutationKey={MCP_PAGE_MUTATION_KEY}
         onClose={() => setPublishOpen(false)}
         onPublished={setBanner}
       />

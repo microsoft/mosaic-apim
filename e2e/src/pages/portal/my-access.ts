@@ -62,19 +62,25 @@ export class MyAccessPage {
   }
 
   /** The limits a card lists, one per item, in the words limitLines() predicts. */
-  limits(card: Locator): Locator {
-    return card.locator('section', { has: this.page.getByRole('heading', { name: 'Configured grant limits', exact: true }) }).getByRole('listitem')
+  limits(_card: Locator): Locator {
+    return this.page.getByRole('heading', { name: 'Configured grant limits', exact: true }).locator('..').getByRole('listitem')
   }
 
-  attribution(card: Locator): Locator {
-    return card.getByRole('heading', { name: 'Usage attribution', exact: true })
+  attribution(_card: Locator): Locator {
+    return this.page.getByRole('heading', { name: 'Usage attribution', exact: true })
+  }
+
+  async grantDetails(card: Locator): Promise<void> {
+    await card.getByRole('button', { name: 'View grant details', exact: true }).click()
+    await expect(this.page.getByRole('heading', { name: 'Configured grant limits', exact: true })).toBeVisible()
   }
 
   async connectionDetails(card: Locator): Promise<ConnectionPanel> {
-    const toggle = card.getByRole('button', { name: 'Connection details', exact: true })
+    await this.grantDetails(card)
+    const toggle = this.page.getByRole('button', { name: 'Connection details', exact: true })
     if ((await toggle.getAttribute('aria-expanded')) !== 'true') await toggle.click()
     await expect(toggle).toHaveAttribute('aria-expanded', 'true')
-    return new ConnectionPanel(this.page, this.targets, card)
+    return new ConnectionPanel(this.page, this.targets)
   }
 }
 
@@ -84,9 +90,9 @@ export class ConnectionPanel {
   readonly root: Locator
   readonly keys: KeyReveal
 
-  constructor(page: Page, targets: Targets, card: Locator) {
+  constructor(page: Page, targets: Targets) {
     this.page = page
-    this.root = card.locator('.connection-panel')
+    this.root = page.locator('.connection-panel')
     this.keys = new KeyReveal(page, targets, this.root)
   }
 

@@ -17,6 +17,7 @@ import { useMosaicApi } from '../api'
 import { EmptyState, ErrorState, Loading } from '../components/AsyncState'
 import { EnvironmentBadge } from '../components/EnvironmentBadge'
 import { PageHeader } from '../components/PageHeader'
+import { SectionLayout, usePageSection } from '../components/SectionLayout'
 import { PoolStatusBadge, ReadinessSummaryBadge, UnappliedChangesBadge } from '../components/PoolBadges'
 import { PoolEditorDialog } from '../components/PoolEditorDialog'
 import { useEnvironmentCatalog } from '../environments'
@@ -164,7 +165,13 @@ function SuggestionRow({
   )
 }
 
+const poolSections = [
+  { value: 'pools', label: 'Pools' },
+  { value: 'suggestions', label: 'Suggested pools', description: 'Start a pool from deployments a gateway can reach. Review the suggested members before saving.' },
+]
+
 export function PoolsPage() {
+  const [section, selectSection] = usePageSection(poolSections)
   const api = useMosaicApi()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
@@ -180,6 +187,7 @@ export function PoolsPage() {
   const suggestions = useQuery({
     queryKey: ['model-pools', 'suggestions'],
     queryFn: () => api.listModelPoolSuggestions(),
+    enabled: section === 'suggestions',
   })
   const gateways = useQuery({ queryKey: ['gateways'], queryFn: () => api.listGateways() })
 
@@ -238,6 +246,18 @@ export function PoolsPage() {
         </MessageBar>
       )}
 
+      {gatewayOptions.length > 1 && (
+        <Field label="Gateway">
+          <Select aria-label="Filter pools by gateway" value={gatewayFilter}
+            onChange={(event) => setGatewayFilter(event.target.value)}>
+            <option value="all">All gateways</option>
+            {gatewayOptions.map(([id, name]) => <option key={id} value={id}>{name}</option>)}
+          </Select>
+        </Field>
+      )}
+      <SectionLayout label="Pools" sections={poolSections} active={section}
+        onSelect={(value) => { if (!createSuggested.isPending) selectSection(value) }}>
+      {section === 'pools' && <>
       {summaries.isPending && <Loading label="Loading pools" />}
       {summaries.isError && <ErrorState error={summaries.error} />}
       {summaries.data?.length === 0 && (
@@ -257,20 +277,6 @@ export function PoolsPage() {
                 {shown.length} of {plural(all.length, 'pool')}
               </Text>
             </div>
-            {gatewayOptions.length > 1 && (
-              <Field label="Gateway">
-                <Select
-                  aria-label="Filter pools by gateway"
-                  value={gatewayFilter}
-                  onChange={(event) => setGatewayFilter(event.target.value)}
-                >
-                  <option value="all">All gateways</option>
-                  {gatewayOptions.map(([id, name]) => (
-                    <option key={id} value={id}>{name}</option>
-                  ))}
-                </Select>
-              </Field>
-            )}
           </div>
           <div className="table-scroll">
             <table aria-label="Model pools">
@@ -300,6 +306,10 @@ export function PoolsPage() {
         </Card>
       )}
 
+      </>}
+      {section === 'suggestions' && <>
+      {suggestions.isPending && <Loading label="Loading suggested pools" />}
+      {suggestions.isSuccess && suggested.length === 0 && <EmptyState title="No suggested pools">No additional models are deployed on multiple endpoints this gateway can reach.</EmptyState>}
       {suggestions.isError && (
         <ErrorState error={suggestions.error} title="Couldn’t work out which pools to suggest" />
       )}
@@ -352,6 +362,8 @@ export function PoolsPage() {
           </Text>
         </Card>
       )}
+      </>}
+      </SectionLayout>
 
       {editor && (
         <PoolEditorDialog

@@ -1,6 +1,7 @@
 import { Badge, Button, Card, CardHeader, Text } from '@fluentui/react-components'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
+import { useState } from 'react'
 import { usePortalApi } from '../api'
 import { EmptyState, ErrorState, Loading } from '../components/AsyncState'
 import { EnvironmentBadge } from '../components/EnvironmentBadge'
@@ -30,7 +31,7 @@ function GrantStatus({ request }: { request: AccessRequest }) {
     return (
       <>
         Approval created your grant. It may not work until an administrator applies it.{' '}
-        <Link to="/access">See its status in My access</Link>
+        <Link to={`/access?grant=${encodeURIComponent(request.grantedEntitlementId)}`}>See its status in My access</Link>
       </>
     )
   }
@@ -39,12 +40,16 @@ function GrantStatus({ request }: { request: AccessRequest }) {
 
 export function MyRequestsPage() {
   const api = usePortalApi()
+  const [params, setParams] = useSearchParams()
+  const filter = ['pending', 'completed', 'withdrawn'].includes(params.get('status') ?? '') ? params.get('status')! : 'all'
+  const [withdrawingId, setWithdrawingId] = useState<string | null>(null)
   const queryClient = useQueryClient()
   const requests = useQuery({ queryKey: ['portal', 'requests'], queryFn: api.listAccessRequests })
   const environments = usePortalEnvironments()
   const withdraw = useMutation({
     mutationFn: (requestId: string) => api.withdrawAccessRequest(requestId),
     onSuccess: async () => {
+      setWithdrawingId(null)
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['portal', 'requests'] }),
         queryClient.invalidateQueries({ queryKey: ['portal', 'catalog'] }),
@@ -52,6 +57,8 @@ export function MyRequestsPage() {
       ])
     },
   })
+  const visible = requests.data?.filter((request) => filter === 'all' || request.state === filter ||
+    (filter === 'completed' && (request.state === 'approved' || request.state === 'denied'))) ?? []
 
   return (
     <>
@@ -67,8 +74,24 @@ export function MyRequestsPage() {
         </EmptyState>
       )}
       {requests.isSuccess && requests.data.length > 0 && (
+        <>
+        <div className="request-filters">
+          <label htmlFor="request-status">Request status</label>
+          <select id="request-status" value={filter} onChange={(event) => {
+            const next = new URLSearchParams(params)
+            next.set('status', event.target.value)
+            setParams(next)
+          }}>
+            <option value="all">All requests</option>
+            <option value="pending">Pending review</option>
+            <option value="completed">Approved or denied</option>
+            <option value="withdrawn">Withdrawn</option>
+          </select>
+          <Text>Approval creates a grant; gateway access may still need to be applied.</Text>
+        </div>
+        {visible.length === 0 && <EmptyState title="No requests match this status">Choose another status to see your requests.</EmptyState>}
         <div className="request-list">
-          {requests.data.map((request) => (
+          {visible.map((request) => (
             <Card key={request.id} className="request-card">
               <CardHeader
                 header={
@@ -129,15 +152,23 @@ export function MyRequestsPage() {
               </dl>
               {request.state === 'pending' && (
                 <div className="request-actions">
-                  <Button onClick={() => withdraw.mutate(request.id)} disabled={withdraw.isPending}>
+                  <Button onClick={() => setWithdrawingId(request.id)} disabled={withdraw.isPending}>
                     Withdraw
                   </Button>
-                  {withdraw.isError && <Text className="form-error">{withdraw.error.message}</Text>}
+                  {withdrawingId === request.id && <>
+                    <Text>Withdraw this request? You can request access again later.</Text>
+                    <Button onClick={() => withdraw.mutate(request.id)} disabled={withdraw.isPending}>Confirm withdrawal</Button>
+                    <Button onClick={() => setWithdrawingId(null)} disabled={withdraw.isPending}>Keep request</Button>
+                  </>}
+                  {withdraw.isError && withdraw.variables === request.id && (
+                    <Text className="form-error">{withdraw.error.message}</Text>
+                  )}
                 </div>
               )}
             </Card>
           ))}
         </div>
+        </>
       )}
     </>
   )
