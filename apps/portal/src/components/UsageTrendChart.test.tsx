@@ -44,7 +44,7 @@ describe('UsageTrendChart', () => {
     await user.click(screen.getByRole('button', { name: 'Show as table' }))
 
     expect(screen.getByRole('table', { name: 'Daily tokens by resource' })).toBeVisible()
-    expect(screen.getByRole('columnheader', { name: 'grant-model' })).toBeVisible()
+    expect(screen.getByRole('columnheader', { name: 'Unknown resource' })).toBeVisible()
   })
 
   it("draws no line for a grant MOSAIC can't measure instead of a false zero", async () => {
@@ -64,7 +64,7 @@ describe('UsageTrendChart', () => {
     const legend = screen.getByRole('list', { name: 'Trend legend' })
     expect(within(legend).getAllByRole('listitem').map((item) => item.textContent)).toEqual(['production'])
     await user.selectOptions(screen.getByLabelText('Group'), 'resource')
-    expect(within(legend).getAllByRole('listitem').map((item) => item.textContent)).toEqual(['grant-model'])
+    expect(within(legend).getAllByRole('listitem').map((item) => item.textContent)).toEqual(['Unknown resource'])
   })
 
   it('renders recent hours as a chart and table', async () => {

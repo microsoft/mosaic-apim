@@ -50,7 +50,7 @@ If `uv` is available only as a Python module, use `python -m uv run ...` with th
 | `--output DIR` | Write the PNGs somewhere else, for example to compare before and after |
 | `--headed` | Show the browser while it captures |
 | `--preview` | Serve production assets after building both apps with `npm run build --prefix apps\web` and `npm run build --prefix apps\portal`; avoids cold dev-server dependency bundling |
-| `--check-navigation` | Also verify desktop collapse, mobile focus/inert behavior, identity drawer drafts/focus/reflow, forced colors, and the portal's docked detail layout against the fictional estate |
+| `--check-navigation` | Also verify desktop collapse, mobile focus/inert behavior, identity drawer drafts/focus/reflow, forced colors, usage-first portal landing, unchanged list geometry, and drawer/credential teardown against the fictional estate |
 | `--reuse-servers` | Use a demo API and apps that are already running instead of starting them |
 | `--api-port`, `--console-port`, `--portal-port` | Change the ports, which default to 18000, 15173, and 15174 |
 
@@ -177,6 +177,7 @@ survives to be read back.
   local-group names, including their hyphenated aliases wherever they appear in an API path.
 - The shared MCP metadata API, readable MOSAIC-owned APIM resource names, product names, and
   fictional person/workload/gateway names and directory aliases are redacted too.
+- Exact offering names in `.resource-offering` text are blurred, independently of literal matches.
 - `REDACTION_PATTERNS` in `capture.py`: GUIDs, email addresses, URLs and URIs, Azure resource IDs,
   Azure, Communication Services, and Contoso hostnames, IPv4 addresses, MOSAIC record IDs and the
   APIM names derived from them, and the demo's placeholder keys.
@@ -208,7 +209,7 @@ rather than editing the image by hand. Then capture the shot again and check it.
    - `actions` are the steps that reach the pictured state. Build them from `click_link`,
      `click_tab`, `click_button`, `select_option`, `fill_text`, `wait_for_text`, and
      `scroll_to_text`.
-   - `height` is the viewport height in pixels. It defaults to 900.
+   - `height` and `width` are the viewport dimensions in pixels, defaulting to 900 and 1440.
 3. Capture it with `--only`, open the PNG, and check that everything identifying is blurred.
 4. Embed it in the README with a one- or two-sentence description, and add it to the
    [inventory](#shot-inventory).
@@ -239,7 +240,7 @@ shows both themes. Keep new shots in that pattern.
 | Shot | App | Route and state | Theme | README entry |
 | --- | --- | --- | --- | --- |
 | `console-dashboard-light`, `console-dashboard-dark` | Console | `/dashboard` | Both | Light and dark: console overview |
-| `portal-catalog-light`, `portal-catalog-dark` | Portal | `/catalog` | Both | Light and dark: portal catalog |
+| `portal-catalog-light`, `portal-catalog-dark` | Portal | `/catalog`, model-grouped rows with environment and access filters | Both | Light and dark: portal catalog |
 | `console-gateways` | Console | `/gateways` | Light | Gateways |
 | `console-gateway-overview` | Console | Contoso AI Gateway, **Overview** section | Dark | Gateway overview |
 | `console-gateway-apis` | Console | Contoso AI Gateway, **APIs and endpoints** section | Light | APIs and endpoints |
@@ -278,13 +279,13 @@ shows both themes. Keep new shots in that pattern.
 | `console-environments` | Console | `/settings` | Light | Environments |
 | `console-environment-findings` | Console | `/settings?tab=findings` | Dark | Environment findings |
 | `console-email-settings` | Console | `/settings?tab=email` | Light | Budget email |
-| `portal-request-access` | Portal | `/catalog`, GPT-4o mini access options open | Light | Request access |
-| `portal-access` | Portal | `/access`, with a grant's **Connection details** open | Light | My access |
+| `portal-request-access` | Portal | `/catalog`, GPT-4o mini access options in an overlay drawer | Light | Request access |
+| `portal-access` | Portal | `/access`, grouped model rows and an exact grant's **Connection details** open in a drawer | Light | My access |
 | `portal-connection-cost-center` | Portal | `/access`, the GPT-4o grant under General with **Connection details** open, scrolled to **Cost center header** | Light | Choosing a cost center |
-| `portal-pool-connection` | Portal | `/access`, Claude Sonnet 4.5 selected, contextual **Connection details** open | Dark | Models that share a key |
+| `portal-pool-connection` | Portal | `/access`, Claude Sonnet 4.5 selected, **Connection details** drawer scrolled to **Authentication** and the shared-key note | Dark | Models that share a key |
 | `portal-mcp-connection` | Portal | `/access`, with an enforced MCP grant's **Connection details** open | Dark | MCP connection |
-| `portal-requests` | Portal | `/requests` | Dark | My requests |
-| `portal-usage` | Portal | `/usage` | Light | Usage & cost |
-| `portal-usage-resources` | Portal | `/usage?tab=resources`, **By resource** | Dark | Usage by resource |
+| `portal-requests` | Portal | `/requests`, model-first cards with offering and version context | Dark | My requests |
+| `portal-usage` | Portal | `/usage`, the default portal landing page | Light | Usage & cost |
+| `portal-usage-resources` | Portal | `/usage?tab=resources`, **By resource** with exact offering context | Dark | Usage by resource |
 | `portal-usage-breakdowns` | Portal | `/usage?tab=breakdowns`, **Cost centers** and pooled quotas | Light | Usage breakdowns |
 | `portal-budget-banner` | Portal | `/access`, with the budget banner for Customer Insights | Light | Budget banner |

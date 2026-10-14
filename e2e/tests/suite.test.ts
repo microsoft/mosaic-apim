@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import type { ApiEntitlement } from '../src/mosaic-api.ts'
+import type { ApiCatalogEntry, ApiEntitlement } from '../src/mosaic-api.ts'
 import {
   describeLimits,
   disposableDisplayName,
@@ -14,6 +14,9 @@ import {
   methodsLabel,
   missingSuite,
   portalCardTitle,
+  portalCatalogGroupKey,
+  portalCatalogResourceKey,
+  portalCatalogTitle,
   runTag,
   runtimeModels,
   suiteJustification,
@@ -190,11 +193,31 @@ test('limit lines read like the portal lists them', () => {
   assert.deepEqual(limitLines({ tokens: { tokenQuota: 10 }, requests: { calls: 2 } }), none)
 })
 
-test('a My access card is headed by the name the portal would pick, never an ID', () => {
+test('a My access row prefers authoritative model identity and never an ID', () => {
   const entitlement = grant()
+  assert.equal(portalCardTitle({ entitlement, model: { name: ' gpt-4o ' }, resourceDisplayName: 'Gateway / deployment' }), 'gpt-4o')
+  assert.equal(portalCardTitle({ entitlement, model: { name: ' ' }, resourceDisplayName: 'Chat model' }), 'Chat model')
   assert.equal(portalCardTitle({ entitlement, resourceDisplayName: '  Chat model ', resourceSummary: { displayName: 'Other' } }), 'Chat model')
   assert.equal(portalCardTitle({ entitlement, resourceDisplayName: '  ', resourceSummary: { displayName: 'Docs search' } }), 'Docs search')
   assert.equal(portalCardTitle({ entitlement, resourceDisplayName: null, resourceSummary: { displayName: null, available: false } }), 'Resource no longer available')
   assert.equal(portalCardTitle({ entitlement }), 'Model API resource')
   assert.equal(portalCardTitle({ entitlement: grant({ resource: { kind: 'mcpServer', id: 'mcp_1' } }), resourceSummary: null }), 'MCP server resource')
+})
+
+test('catalog grouping preserves exact offerings, scopes and conservative model identity', () => {
+  const entry: ApiCatalogEntry = {
+    kind: 'modelApi', id: 'model_1', displayName: 'Gateway / deployment', gatewayName: null,
+    entitled: false, requestState: null, model: { name: 'gpt-4o', format: 'OpenAI', version: '2024-08-06' },
+  }
+  assert.equal(portalCatalogTitle(entry), 'gpt-4o')
+  assert.equal(portalCatalogTitle({ ...entry, model: { name: ' ' } }), entry.displayName)
+  assert.equal(portalCatalogGroupKey(entry), portalCatalogGroupKey({
+    ...entry, id: 'model_2', model: { name: 'gpt-4o', format: ' openai ', version: '2024-11-20' },
+  }))
+  assert.notEqual(portalCatalogGroupKey(entry), portalCatalogGroupKey({ ...entry, model: { name: 'GPT-4o', format: 'OpenAI' } }))
+  assert.notEqual(portalCatalogGroupKey({ ...entry, model: undefined }), portalCatalogGroupKey({ ...entry, id: 'model_2', model: undefined }))
+  assert.equal(portalCatalogGroupKey({ ...entry, model: { name: 'gpt-4o' } }), portalCatalogResourceKey(entry))
+  assert.notEqual(portalCatalogResourceKey({ ...entry, kind: 'poolModel', scopeId: 'pool_1' }),
+    portalCatalogResourceKey({ ...entry, kind: 'poolModel', scopeId: 'pool_2' }))
+  assert.equal(portalCatalogResourceKey(entry), portalCatalogResourceKey({ ...entry, scopeId: 'legacy_gateway' }))
 })

@@ -22,6 +22,8 @@ environment, the API it's called with, and its capacity badge, but not the pool,
 their regions, or its deployments (ADR 0024).
 """
 
+import asyncio
+from dataclasses import dataclass
 from typing import Literal
 
 from mosaic_api.deployment_capacity import CapacityType
@@ -32,7 +34,9 @@ from mosaic_api.domain import (
     CatalogEntry,
     CatalogEntryKind,
     CatalogVisibility,
+    EntitlementResource,
     PortalAccessRequest,
+    PortalModel,
     PortalProfile,
     PortalResolvedEntitlement,
     PublicationStatus,
@@ -50,9 +54,26 @@ from mosaic_api.services.entitlements import EntitlementService, GovernedRecords
 from mosaic_api.services.model_access import portal_entitlement
 from mosaic_api.services.pool_access import pool_model_listed, pool_model_offered
 
+
 # What inventory says about each endpoint's deployments, by endpoint ID and then by casefolded
 # deployment name, read once for one catalog. None for an endpoint that's no longer registered.
-_Inventory = dict[str, dict[str, ObservedModelDeployment] | None]
+@dataclass
+class _DeploymentInventory:
+    deployments: dict[str, ObservedModelDeployment]
+    models: dict[str, PortalModel]
+
+
+_Inventory = dict[str, _DeploymentInventory | None]
+
+
+def _resource_key(resource: EntitlementResource) -> tuple[str, str, str]:
+    return (
+        str(resource.kind),
+        resource.id,
+        (resource.scope_id or "")
+        if resource.kind in {"poolModel", "modelDeployment", "product"}
+        else "",
+    )
 
 
 class PortalService:
@@ -67,7 +88,7 @@ class PortalService:
         self._entitlements = entitlements
         self._directory = directory_repository
         self._gateways = gateway_repository
-        # Only a pool model's capacity badge reads inventory. Without it, the catalog shows none.
+        # Stored inventory supplies model identity and capacity; never call Azure to render a page.
         self._endpoints = endpoint_repository
 
     async def profile(self, actor: Actor, *, roles: list[str], is_admin: bool) -> PortalProfile:
@@ -130,24 +151,27 @@ class PortalService:
         resources = [item.resource for item in requests]
         names = await self._entitlements.resource_display_names(actor, resources, records=records)
         book = await self._entitlements.cost_center_book(actor.tenant_id)
+        visible = await self._visible_resource_keys(actor, records)
         summaries = await self._entitlements.resource_summaries(
             actor.tenant_id,
             resources,
             snapshots=[item.resource_snapshot for item in requests],
             requested_environments=[item.requested_environment for item in requests],
-            visible=await self._visible_resource_keys(actor, records),
+            visible=visible,
             records=records,
         )
+        models = await self._models(actor.tenant_id, resources, records, visible=visible)
         return [
             PortalAccessRequest.model_validate(
                 {
                     **dict(item),
                     "resource_display_name": name,
                     "resource_summary": summary,
+                    "model": model,
                     "cost_center": book.ref(item.cost_center_id),
                 }
             )
-            for item, name, summary in zip(requests, names, summaries, strict=True)
+            for item, name, summary, model in zip(requests, names, summaries, models, strict=True)
         ]
 
     async def my_entitlements(
@@ -158,15 +182,19 @@ class PortalService:
         names = await self._entitlements.resource_display_names(
             actor, [item.entitlement.resource for item in resolved], records=records
         )
+        models = await self._models(
+            actor.tenant_id, [item.entitlement.resource for item in resolved], records
+        )
         return [
             PortalResolvedEntitlement.model_validate(
                 {
                     **dict(item),
                     "entitlement": portal_entitlement(item.entitlement),
                     "resource_display_name": name,
+                    "model": model,
                 }
             )
-            for item, name in zip(resolved, names, strict=True)
+            for item, name, model in zip(resolved, names, models, strict=True)
         ]
 
     async def my_access_requests(self, actor: Actor) -> list[PortalAccessRequest]:
@@ -188,6 +216,7 @@ class PortalService:
         visible: dict[tuple[str, str, str], bool] = {}
         for item in await self._resolved(actor, records=records):
             resource = item.entitlement.resource
+            visible[_resource_key(resource)] = True
             visible[(str(resource.kind), resource.id, resource.scope_id or "")] = True
         gateways = await records.gateways()
         for model_api in (await records.model_apis()).values():
@@ -229,9 +258,9 @@ class PortalService:
         """
 
         records = self._entitlements.governed_records(actor.tenant_id)
-        entitled_under: dict[tuple[str, str], set[str]] = {}
+        entitled_under: dict[tuple[str, str, str], set[str]] = {}
         for item in await self._resolved(actor, records=records):
-            key = (str(item.entitlement.resource.kind), item.entitlement.resource.id)
+            key = _resource_key(item.entitlement.resource)
             entitled_under.setdefault(key, set()).add(item.entitlement.cost_center_id)
         entitled = set(entitled_under)
         # Only open requests describe the caller's current position. A denied or withdrawn request
@@ -239,13 +268,13 @@ class PortalService:
         pending = [
             item for item in await self._requests(actor) if item.state == AccessRequestState.PENDING
         ]
-        open_requests: dict[tuple[str, str], AccessRequestState] = {
-            (str(item.resource.kind), item.resource.id): item.state for item in pending
+        open_requests: dict[tuple[str, str, str], AccessRequestState] = {
+            _resource_key(item.resource): item.state for item in pending
         }
-        requested_under: dict[tuple[str, str], set[str]] = {}
+        requested_under: dict[tuple[str, str, str], set[str]] = {}
         for request in pending:
             if request.cost_center_id:
-                key = (str(request.resource.kind), request.resource.id)
+                key = _resource_key(request.resource)
                 requested_under.setdefault(key, set()).add(request.cost_center_id)
         gateways = await records.gateways()
 
@@ -265,13 +294,13 @@ class PortalService:
                     gateway_id=model_api.gateway_id,
                     gateway_name=gateway.name,
                     environment=gateway.environment,
-                    entitled=("modelApi", model_api.id) in entitled,
-                    request_state=open_requests.get(("modelApi", model_api.id)),
+                    entitled=("modelApi", model_api.id, "") in entitled,
+                    request_state=open_requests.get(("modelApi", model_api.id, "")),
                     entitled_cost_center_ids=sorted(
-                        entitled_under.get(("modelApi", model_api.id), set())
+                        entitled_under.get(("modelApi", model_api.id, ""), set())
                     ),
                     requested_cost_center_ids=sorted(
-                        requested_under.get(("modelApi", model_api.id), set())
+                        requested_under.get(("modelApi", model_api.id, ""), set())
                     ),
                 )
             )
@@ -297,13 +326,13 @@ class PortalService:
                     gateway_id=mcp_server.gateway_id,
                     gateway_name=gateway.name,
                     environment=gateway.environment,
-                    entitled=("mcpServer", mcp_server.id) in entitled,
-                    request_state=open_requests.get(("mcpServer", mcp_server.id)),
+                    entitled=("mcpServer", mcp_server.id, "") in entitled,
+                    request_state=open_requests.get(("mcpServer", mcp_server.id, "")),
                     entitled_cost_center_ids=sorted(
-                        entitled_under.get(("mcpServer", mcp_server.id), set())
+                        entitled_under.get(("mcpServer", mcp_server.id, ""), set())
                     ),
                     requested_cost_center_ids=sorted(
-                        requested_under.get(("mcpServer", mcp_server.id), set())
+                        requested_under.get(("mcpServer", mcp_server.id, ""), set())
                     ),
                     enforced=enforced,
                 )
@@ -314,11 +343,9 @@ class PortalService:
             if gateway is None:
                 continue
             for model in pool.models:
-                if not pool_model_listed(pool, model.id) or not pool_model_offered(
-                    pool, model.id
-                ):
+                if not pool_model_listed(pool, model.id) or not pool_model_offered(pool, model.id):
                     continue
-                key = ("poolModel", model.id)
+                key = ("poolModel", model.id, pool.id)
                 entries.append(
                     CatalogEntry(
                         kind=CatalogEntryKind.POOL_MODEL,
@@ -339,8 +366,74 @@ class PortalService:
                         capacity=await self._capacity(actor.tenant_id, pool, model, inventory),
                     )
                 )
+        models = await self._models(
+            actor.tenant_id,
+            [
+                EntitlementResource(kind=entry.kind, id=entry.id, scope_id=entry.scope_id)
+                for entry in entries
+            ],
+            records,
+            inventory=inventory,
+        )
+        for entry, descriptor in zip(entries, models, strict=True):
+            entry.model = descriptor
         entries.sort(key=lambda item: (item.display_name.casefold(), item.id))
         return entries
+
+    async def _models(
+        self,
+        tenant_id: str,
+        resources: list[EntitlementResource],
+        records: GovernedRecords,
+        *,
+        visible: dict[tuple[str, str, str], bool] | None = None,
+        inventory: _Inventory | None = None,
+    ) -> list[PortalModel | None]:
+        inventory = {} if inventory is None else inventory
+        result: list[PortalModel | None] = [None] * len(resources)
+        deployments: list[tuple[int, str, str]] = []
+        for index, resource in enumerate(resources):
+            if visible is not None and not visible.get(_resource_key(resource), False):
+                continue
+            if resource.kind == "poolModel":
+                pool = (await records.model_pools()).get(resource.scope_id or "")
+                model = pool.pool_model(resource.id) if pool else None
+                if model and model.model_name:
+                    result[index] = PortalModel(
+                        name=model.model_name,
+                        format=model.model_format,
+                        version=model.expected_version,
+                    )
+            elif self._endpoints is not None:
+                endpoint_id = resource.scope_id if resource.kind == "modelDeployment" else None
+                deployment_name = resource.id
+                if resource.kind == "modelApi":
+                    model_api = (await records.model_apis()).get(resource.id)
+                    publication = (
+                        (await records.publications()).get(model_api.publication_id)
+                        if model_api and model_api.publication_id
+                        else None
+                    )
+                    if publication:
+                        endpoint_id = publication.model_endpoint_id
+                        deployment_name = publication.deployment_name
+                if endpoint_id:
+                    deployments.append((index, endpoint_id, deployment_name))
+        missing = sorted({endpoint_id for _, endpoint_id, _ in deployments} - inventory.keys())
+        inventory.update(
+            zip(
+                missing,
+                await asyncio.gather(
+                    *(self._deployments(tenant_id, endpoint_id) for endpoint_id in missing)
+                ),
+                strict=True,
+            )
+        )
+        for index, endpoint_id, deployment_name in deployments:
+            stored = inventory[endpoint_id]
+            if stored:
+                result[index] = stored.models.get(deployment_name.casefold())
+        return result
 
     async def _capacity(
         self, tenant_id: str, pool: ModelPool, model: PoolModel, inventory: _Inventory
@@ -362,7 +455,7 @@ class PortalService:
                 )
             deployments = inventory[member.model_endpoint_id]
             deployment = (
-                deployments.get(member.deployment_name.casefold())
+                deployments.deployments.get(member.deployment_name.casefold())
                 if deployments is not None
                 else None
             )
@@ -370,13 +463,29 @@ class PortalService:
         label = capacity_label(kinds)
         return None if label == "unknown" else label
 
-    async def _deployments(
-        self, tenant_id: str, endpoint_id: str
-    ) -> dict[str, ObservedModelDeployment] | None:
+    async def _deployments(self, tenant_id: str, endpoint_id: str) -> _DeploymentInventory | None:
         assert self._endpoints is not None
-        if await self._endpoints.get_endpoint(tenant_id, endpoint_id) is None:
+        endpoint = await self._endpoints.get_endpoint(tenant_id, endpoint_id)
+        if endpoint is None:
             return None
         observed = await self._endpoints.list_observed_for_endpoint(
             ObservedModelDeployment, tenant_id, endpoint_id, "observedModelDeployment"
         )
-        return {item.deployment_name.casefold(): item for item in observed}
+        models = {}
+        for item in observed:
+            if item.model_name and item.model_name.strip():
+                descriptor = PortalModel(
+                    name=item.model_name, format=item.model_format, version=item.model_version
+                )
+                models[item.deployment_name.casefold()] = descriptor
+                models[item.id.casefold()] = descriptor
+        if endpoint.uses_backend_key():
+            models = {
+                item.deployment_name.casefold(): PortalModel(
+                    name=item.model_name, format=str(item.api_shape), version=item.model_version
+                )
+                for item in endpoint.declared_deployments
+            }
+        return _DeploymentInventory(
+            deployments={item.deployment_name.casefold(): item for item in observed}, models=models
+        )

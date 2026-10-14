@@ -32,6 +32,8 @@ import {
   missingSuite,
   personaPrincipal,
   portalCardTitle,
+  portalCatalogGroupKey,
+  portalCatalogTitle,
   resolveModel,
   runTag,
   suiteJustification,
@@ -81,13 +83,16 @@ test.describe('40 portal', { tag: '@portal' }, () => {
 
     await MyAccessPage.open(personas, targets, user)
     const catalog = await CatalogPage.open(personas, targets, user)
-    await expect(catalog.cards).toHaveCount(entries.length)
+    const groups = new Map(entries.map((entry) => [portalCatalogGroupKey(entry), portalCatalogTitle(entry)]))
+    await expect(catalog.cards).toHaveCount(groups.size)
     const named = new Map<string, number>()
-    for (const entry of entries) named.set(entry.displayName, (named.get(entry.displayName) ?? 0) + 1)
+    for (const name of groups.values()) named.set(name, (named.get(name) ?? 0) + 1)
     for (const [name, count] of named) await expect.soft(catalog.card(name)).toHaveCount(count)
     for (const entry of entries.filter((item) => item.entitled)) {
-      await catalog.openOptions(catalog.card(entry.displayName).first())
-      await expect.soft(catalog.entitled(catalog.card(entry.displayName).first())).toBeVisible()
+      const card = catalog.card(portalCatalogTitle(entry)).first()
+      await catalog.openOptions(card, entry)
+      if (entry.entitledCostCenterIds?.length) await catalog.costCenter(card, entry.displayName).selectOption(entry.entitledCostCenterIds[0])
+      await expect.soft(catalog.entitled(card)).toBeVisible()
     }
   })
 
@@ -119,9 +124,9 @@ test.describe('40 portal', { tag: '@portal' }, () => {
       await expect(access.cards).toHaveCount(0)
       const entries = await api.portalCatalog()
       const catalog = await CatalogPage.open(personas, targets, key)
-      await expect(catalog.cards).toHaveCount(entries.length)
+      await expect(catalog.cards).toHaveCount(new Set(entries.map(portalCatalogGroupKey)).size)
       for (const entry of entries.filter((item) => item.kind === 'modelApi' && item.requestState !== 'pending')) {
-        await expect.soft(catalog.requestButton(catalog.card(entry.displayName).first())).toBeVisible()
+        await expect.soft(catalog.requestButton(catalog.card(portalCatalogTitle(entry)).first())).toBeVisible()
       }
       return
     }
@@ -146,8 +151,8 @@ test.describe('40 portal', { tag: '@portal' }, () => {
       expect.soft(status, `${user}'s grant on ${held.label}`).toBe('applied')
       const card = access.card(portalCardTitle(entry))
       await expect.soft(card).toHaveCount(1)
+      await access.grantDetails(card.first(), held.grant.id)
       await expect.soft(access.runtime(card.first(), status)).toBeVisible()
-      await access.grantDetails(card.first())
       await expect.soft(access.limits(card.first())).toHaveText(limitLines(held.grant.enforcement))
       await expect.soft(access.attribution(card.first())).toBeVisible()
     }
@@ -168,7 +173,7 @@ test.describe('40 portal', { tag: '@portal' }, () => {
     const title = portalCardTitle(entry)
 
     const access = await MyAccessPage.open(personas, targets, user)
-    const panel = await access.connectionDetails(access.card(title).first())
+    const panel = await access.connectionDetails(access.card(title).first(), keyed.grant.id)
     await expect(panel.section('Endpoint')).toBeVisible()
     await expect(panel.section('Authentication')).toBeVisible()
     await expect(panel.keys.secret).toHaveCount(0)
@@ -187,7 +192,7 @@ test.describe('40 portal', { tag: '@portal' }, () => {
 
     // A reload shows no key: the page kept none.
     await access.reload()
-    const again = await access.connectionDetails(access.card(title).first())
+    const again = await access.connectionDetails(access.card(title).first(), keyed.grant.id)
     await expect(again.keys.secret).toHaveCount(0)
   })
 
@@ -292,26 +297,27 @@ test.describe('40 portal', { tag: '@portal' }, () => {
         for (const line of await cleanupDisposable(ctx, disposable)) note('reset', line)
         state = await ensureDisposable(ctx, disposable)
       }
-      const name = state.modelApi.displayName
-      const catalog = await CatalogPage.open(personas, targets, requester)
-      const card = catalog.card(name)
-      await expect(card).toHaveCount(1)
       const requesterApi = await MosaicApi.as(personas, targets, requester)
+      const entry = (await requesterApi.portalCatalog()).find((item) => item.id === state.modelApi.id && item.kind === 'modelApi')
+      if (!entry) throw new Error(`${requester}'s catalog doesn't list ${label}.`)
+      const catalog = await CatalogPage.open(personas, targets, requester)
+      const card = catalog.card(portalCatalogTitle(entry))
+      await expect(card).toHaveCount(1)
       const open = (await requesterApi.portalAccessRequests()).some(
         (request) => request.state === 'pending' && request.resource.id === state.modelApi.id,
       )
       if (open) {
-        await expectOk(await catalog.withdraw(name), `Withdrawing ${requester}'s open request for ${label} from an earlier run`)
+        await expectOk(await catalog.withdraw(entry), `Withdrawing ${requester}'s open request for ${label} from an earlier run`)
         note('reset', `Withdrew ${requester}'s open request for ${label} from an earlier run.`)
         await catalog.reload()
       }
 
-      // P2's state for this model: no card on My access, and the catalog offers a request.
-      const access = await MyAccessPage.open(personas, targets, requester)
-      await expect(access.card(name)).toHaveCount(0)
+      // A model row may contain other offerings; the requester must not hold this exact resource.
+      await MyAccessPage.open(personas, targets, requester)
+      expect((await requesterApi.portalEntitlements()).some((item) => item.entitlement.resource.id === state.modelApi.id)).toBe(false)
       await expect(catalog.requestButton(card)).toBeVisible()
 
-      await expectOk(await catalog.request(name, first), `Requesting ${label}`)
+      await expectOk(await catalog.request(entry, first), `Requesting ${label}`)
       await expect(catalog.requestOpen(card)).toBeVisible()
       const requests = await MyRequestsPage.open(personas, targets, requester)
       const opened = requests.request(first)
@@ -322,7 +328,7 @@ test.describe('40 portal', { tag: '@portal' }, () => {
 
       await catalog.reload()
       await expect(catalog.requestButton(card)).toBeVisible()
-      await expectOk(await catalog.request(name, second), `Requesting ${label} again`)
+      await expectOk(await catalog.request(entry, second), `Requesting ${label} again`)
       await expect(catalog.requestOpen(card)).toBeVisible()
       await requests.reload()
       await expect(requests.state(requests.request(second), 'Pending')).toBeVisible()
@@ -388,8 +394,8 @@ test.describe('40 portal', { tag: '@portal' }, () => {
       const access = await MyAccessPage.open(personas, targets, requester)
       const card = access.card(portalCardTitle(entry))
       await expect(card).toHaveCount(1)
+      await access.grantDetails(card, grant.id)
       await expect(access.runtime(card, 'applied')).toBeVisible()
-      await access.grantDetails(card)
       await expect(access.limits(card)).toHaveText(limitLines(grant.enforcement))
       const requests = await MyRequestsPage.open(personas, targets, requester)
       await expect(requests.state(requests.request(second), 'Approved')).toBeVisible()

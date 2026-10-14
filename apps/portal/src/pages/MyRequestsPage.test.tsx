@@ -72,6 +72,34 @@ function renderPage(requests: AccessRequest[], withdrawAccessRequest = vi.fn()) 
 }
 
 describe('MyRequestsPage', () => {
+  it('keeps same-model requests distinguishable by their offering and version', async () => {
+    renderPage([
+      accessRequest({
+        id: 'request-first', resourceDisplayName: 'Research offering',
+        model: { name: 'gpt-4o', format: 'OpenAI', version: '2024-08-06' },
+      }),
+      accessRequest({
+        id: 'request-second', resourceDisplayName: 'Operations offering',
+        model: { name: 'gpt-4o', format: 'OpenAI', version: '2024-11-20' },
+      }),
+    ])
+
+    const headings = await screen.findAllByRole('heading', { level: 2, name: 'gpt-4o' })
+    const first = within(headings[0].closest('.request-card') as HTMLElement)
+    const second = within(headings[1].closest('.request-card') as HTMLElement)
+    expect(first.getByText('Research offering')).toBeVisible()
+    expect(first.getByText(/Version 2024-08-06/)).toBeVisible()
+    expect(first.queryByText('Operations offering')).not.toBeInTheDocument()
+    expect(second.getByText('Operations offering')).toBeVisible()
+    expect(second.getByText(/Version 2024-11-20/)).toBeVisible()
+  })
+
+  it('uses a recorded offering when the API omits its display name', async () => {
+    renderPage([accessRequest({ model: { name: 'gpt-4o', format: 'OpenAI', version: '2024-11-20' } })])
+    expect(await screen.findByRole('heading', { level: 2, name: 'gpt-4o' })).toBeVisible()
+    expect(screen.getByText('Chat completions')).toBeVisible()
+  })
+
   it('links an approved request to the grant it created', async () => {
     renderPage([
       accessRequest({

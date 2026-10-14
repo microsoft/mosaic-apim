@@ -1,8 +1,8 @@
 import { Button } from '@fluentui/react-components'
 import { useMemo, useState } from 'react'
 import { environmentLabel, findEnvironment } from '../environments'
-import { formatNumber, resourceLabel } from '../entitlement-format'
-import { environmentSort, formatUtcDate, formatUtcHour } from '../usage-format'
+import { formatNumber } from '../entitlement-format'
+import { environmentSort, formatUtcDate, formatUtcHour, rowContextLabel } from '../usage-format'
 import type {
   PortalEnvironment,
   UsageEnvironmentBreakdown,
@@ -84,7 +84,7 @@ function buildEnvironmentSeries(
   return { dates, series }
 }
 
-function buildResourceSeries(points: UsageTimelinePoint[], rows: UsageResourceRow[], metric: Metric) {
+function buildResourceSeries(points: UsageTimelinePoint[], rows: UsageResourceRow[], metric: Metric, environments?: PortalEnvironment[]) {
   const dates = Array.from(new Set(points.map((point) => point.date))).sort()
   const measured = measuredPoints(points, metric)
   const rowMap = new Map(rows.map((row, index) => [row.entitlementId, { row, index }]))
@@ -106,7 +106,7 @@ function buildResourceSeries(points: UsageTimelinePoint[], rows: UsageResourceRo
       const row = rowMap.get(id)?.row
       return {
         key: id,
-        label: row ? resourceLabel(row.resource, row.resourceSummary) : id,
+        label: row ? rowContextLabel(row, environments) : 'Unknown resource',
         color: colorTokens[colors[index % colors.length]],
         points: dates.map((date) => byDateAndResource.get(`${date}:${id}`) ?? 0),
       }
@@ -164,7 +164,7 @@ export function UsageTrendChart({
     () =>
       groupBy === 'environment'
         ? buildEnvironmentSeries(points, metric, environments)
-        : buildResourceSeries(points, resources, metric),
+        : buildResourceSeries(points, resources, metric, environments),
     [environments, groupBy, metric, points, resources],
   )
   const max = Math.max(0, ...series.flatMap((item) => item.points))

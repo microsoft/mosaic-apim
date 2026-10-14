@@ -366,13 +366,46 @@ async function openSection(label: string) {
 }
 
 async function findResourceRow(name: string) {
-  const matches = await screen.findAllByText(name)
-  const row = matches.map((match) => match.closest('tr')).find(Boolean)
+  const table = await screen.findByRole('table', { name: 'Usage by resource' })
+  const headers = within(table).getAllByRole('rowheader')
+  const title = name === 'Docs MCP' ? name : 'gpt-4o'
+  const context = name === 'Development chat' ? 'Development'
+    : name === 'Retired chat' ? 'No longer available'
+      : name === 'Chat completions' ? 'Research · RES' : ''
+  const row = headers.find((header) =>
+    header.textContent?.includes(title) && header.closest('tr')?.textContent?.includes(context))?.closest('tr')
   expect(row).toBeTruthy()
   return row as HTMLElement
 }
 
 describe('UsagePage', () => {
+  it('distinguishes same-model offerings in the resource table, filter and trend legend', async () => {
+    const first = resourceRow({})
+    const second = resourceRow({
+      entitlementId: 'grant-second',
+      resourceSummary: { ...first.resourceSummary, displayName: 'Second offering' },
+    })
+    const report = usageReport({ byResource: [first, second] })
+    report.timeline = report.timeline.filter((point) => point.entitlementId === first.entitlementId)
+      .flatMap((point) => [point, { ...point, entitlementId: second.entitlementId }])
+    renderPage(report)
+
+    const table = await screen.findByRole('table', { name: 'Usage by resource' })
+    expect(within(table).getAllByText('gpt-4o')).toHaveLength(2)
+    expect(within(table).getByText('Chat completions')).toBeVisible()
+    expect(within(table).getByText('Second offering')).toBeVisible()
+    const filter = screen.getByRole('combobox', { name: 'Resource' })
+    expect(within(filter).getByRole('option', { name: /^gpt-4o · Chat completions ·/ })).toHaveValue('grant-model')
+    expect(within(filter).getByRole('option', { name: /^gpt-4o · Second offering ·/ })).toHaveValue('grant-second')
+    await openSection('Overview & trends')
+    await userEvent.selectOptions(screen.getByRole('combobox', { name: 'Group' }), 'resource')
+    const legend = screen.getByRole('list', { name: 'Trend legend' })
+    expect(within(legend).getAllByRole('listitem').map((item) => item.textContent)).toEqual([
+      'gpt-4o · Chat completions · Research · Production · Production gateway',
+      'gpt-4o · Second offering · Research · Production · Production gateway',
+    ])
+  })
+
   it('shows the sample figures badge and notice for simulated data', async () => {
     renderPage()
 
@@ -525,8 +558,8 @@ describe('UsagePage', () => {
       ),
     ).toBeVisible()
     expect(within(table).getByText('Support bot')).toBeVisible()
-    expect(within(table).getByText('Contoso chat')).toBeVisible()
     expect(within(table).getByText('gpt-4o-mini')).toBeVisible()
+    expect(within(table).queryByText('Contoso chat')).not.toBeInTheDocument()
     expect(within(table).getByText('Support ·')).toBeVisible()
     expect(within(table).getByText('SUP')).toBeVisible()
   })
@@ -753,7 +786,7 @@ describe('UsagePage', () => {
     await user.selectOptions(screen.getByLabelText('Environment'), 'all')
     await user.selectOptions(screen.getByLabelText('Resource'), 'grant-model')
     table = screen.getByRole('table', { name: 'Usage by resource' })
-    expect(within(table).getByText('Chat completions')).toBeVisible()
+    expect(within(table).getByText('gpt-4o')).toBeVisible()
     expect(within(table).queryByText('Docs MCP')).not.toBeInTheDocument()
     expect(screen.getAllByText('100')[0]).toBeVisible()
   })

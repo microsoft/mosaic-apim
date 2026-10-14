@@ -1,35 +1,37 @@
 import { Button, DrawerBody, DrawerHeader, DrawerHeaderTitle, OverlayDrawer } from '@fluentui/react-components'
 import { DismissRegular } from '@fluentui/react-icons'
-import { type ReactNode, useEffect, useState } from 'react'
+import { type ReactNode, useEffect, useId, useRef, useState } from 'react'
 
 export function DetailPanel({ title, onClose, children }: { title: string; onClose: () => void; children: ReactNode }) {
-  const [wide, setWide] = useState(() => window.innerWidth >= 1200)
+  const titleId = useId()
+  const [opener] = useState(() =>
+    document.activeElement instanceof HTMLElement && document.activeElement !== document.body
+      ? document.activeElement
+      : null)
+  const restorationFrame = useRef<number | null>(null)
   useEffect(() => {
-    const query = window.matchMedia('(min-width: 1200px)')
-    const update = () => setWide(query.matches)
-    update()
-    query.addEventListener('change', update)
-    return () => query.removeEventListener('change', update)
-  }, [])
-  if (wide) {
-    return (
-      <section className="detail-panel" aria-label={title}>
-        <div className="detail-panel-header">
-          <h2>{title}</h2>
-          <Button appearance="subtle" icon={<DismissRegular />} aria-label="Close details" onClick={onClose} />
-        </div>
-        {children}
-      </section>
-    )
-  }
+    if (restorationFrame.current !== null) {
+      cancelAnimationFrame(restorationFrame.current)
+      restorationFrame.current = null
+    }
+    return () => {
+      restorationFrame.current = requestAnimationFrame(() => {
+        restorationFrame.current = null
+        const target = opener?.isConnected ? opener : document.querySelector<HTMLElement>('.resource-search input')
+        target?.focus()
+      })
+    }
+  }, [opener])
   return (
-    <OverlayDrawer open position="end" size="medium" onOpenChange={(_, data) => { if (!data.open) onClose() }}>
+    <OverlayDrawer open position="end" size="large" className="resource-drawer" aria-labelledby={titleId}
+      style={{ width: 'min(680px, 100%)', maxWidth: '100%' }}
+      onOpenChange={(_, data) => { if (!data.open) onClose() }}>
       <DrawerHeader>
-        <DrawerHeaderTitle action={<Button appearance="subtle" icon={<DismissRegular />} aria-label="Close details" onClick={onClose} />}>
+        <DrawerHeaderTitle id={titleId} action={<Button appearance="subtle" icon={<DismissRegular />} aria-label="Close details" onClick={onClose} />}>
           {title}
         </DrawerHeaderTitle>
       </DrawerHeader>
-      <DrawerBody>{children}</DrawerBody>
+      <DrawerBody className="resource-drawer-body">{children}</DrawerBody>
     </OverlayDrawer>
   )
 }

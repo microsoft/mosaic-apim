@@ -21,9 +21,10 @@ restrained translucent surfaces; data, forms, and drawers stay opaque. Unsupport
 transparency, and forced colors use solid surfaces.
 
 Primary mobile navigation is modal, traps focus, restores the opener, and makes the underlying
-header/content inert. Contextual portal details dock beside lists on wide displays and become an
-accessible trailing-edge drawer on smaller displays. Closing or switching grant details
-unmounts credential controls; secrets never persist in route state.
+header/content inert. The portal opens on Usage & cost, followed by Catalog, My access, and My
+requests in its primary navigation. Portal details use a modal trailing-edge drawer at every
+width, without resizing the underlying list. Closing or switching grant details unmounts
+credential controls; secrets never persist in route state.
 
 Administrator identity details open only on selection, in a trailing-edge overview drawer.
 Editing local metadata is explicit and closing protects unsaved drafts. Directory onboarding
@@ -45,6 +46,12 @@ Page headings name the task; descriptions explain scope and effects. Prefer one 
 action and separate destructive actions. Clearly distinguish read-only APIM inventory, local
 preview, saved intent, and applied gateway state. Unknown data is not zero, missing telemetry is
 not healthy, and unpriced usage is not free.
+
+Catalog and My access use aligned, model-first resource rows rather than card grids. Group
+offerings only when structured model name and format are known; otherwise retain exact resource
+identity. Keep environment and aggregate state in the list, and select the exact offering or
+cost-center grant in the drawer. Grouping is presentation only: permissions, requests, connection
+details, and accounting remain scoped to their original resources and grants.
 
 ## Accessibility and responsiveness
 

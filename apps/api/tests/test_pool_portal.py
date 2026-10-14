@@ -51,7 +51,6 @@ BEHIND_THE_MODEL = (
     "openai.azure.com",
     "eastus2",
     "swedencentral",
-    "gpt-4o",
 )
 
 
@@ -131,6 +130,8 @@ async def test_a_served_pool_model_is_offered_as_a_model(catalog: Catalog) -> No
     )
     assert entry.api_style == pool.api_shape == "azureOpenAi"
     assert entry.capacity == "payAsYouGo"
+    assert entry.model is not None
+    assert entry.model.name == "gpt-4o"
     assert not entry.entitled
     assert entry.request_state is None
     # The portal reads these names, and needs the scope to ask for the model.
@@ -451,6 +452,7 @@ async def test_a_request_for_a_pool_model_shows_in_the_catalog_and_my_requests(
     assert request.resource_summary is not None
     assert request.resource_summary.display_name == "Contoso Chat"
     assert not request.resource_summary.available
+    assert request.model is None
 
 
 async def test_nothing_a_portal_user_reads_says_where_a_pool_model_runs(catalog: Catalog) -> None:
