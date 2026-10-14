@@ -334,8 +334,25 @@ export function environmentSort(
   return environmentLabel(environments, a.environment).localeCompare(environmentLabel(environments, b.environment))
 }
 
+export function rowTitle(row: UsageResourceRow) {
+  return ['modelApi', 'poolModel', 'modelDeployment'].includes(row.resource.kind) && row.model?.trim()
+    ? row.model.trim()
+    : resourceLabel(row.resource, row.resourceSummary)
+}
+
 export function rowLabel(row: UsageResourceRow) {
-  return resourceLabel(row.resource, row.resourceSummary)
+  const title = rowTitle(row)
+  const offering = row.resourceSummary.displayName?.trim()
+  return offering && offering !== title ? `${title} · ${offering}` : title
+}
+
+export function rowContextLabel(row: UsageResourceRow, environments?: PortalEnvironment[]) {
+  return [
+    rowLabel(row),
+    row.costCenter?.name,
+    environmentLabel(environments, row.environment),
+    row.resourceSummary.gatewayName,
+  ].filter(Boolean).join(' · ')
 }
 
 export function accessLabel(row: UsageResourceRow) {

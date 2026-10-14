@@ -13,6 +13,9 @@ import {
   rateLimitLabel,
   rateLimitPeakLabel,
   relativeTime,
+  rowContextLabel,
+  rowLabel,
+  rowTitle,
   usageTrackingLabel,
 } from './usage-format'
 
@@ -26,6 +29,17 @@ const summary = {
   environment: 'production',
   available: true,
 }
+
+it('keeps offering identity in model-first usage labels and contextual selections', () => {
+  const first = row({ resourceSummary: { ...summary, displayName: 'Research offering' } })
+  const second = row({ entitlementId: 'grant-2', resourceSummary: { ...summary, displayName: 'Operations offering' } })
+  expect(rowTitle(first)).toBe('gpt-4o')
+  expect(rowLabel(first)).toBe('gpt-4o · Research offering')
+  expect(rowLabel(second)).toBe('gpt-4o · Operations offering')
+  expect(rowContextLabel(first)).not.toBe(rowContextLabel(second))
+  expect(rowLabel(row({ resourceSummary: { ...summary, displayName: ' gpt-4o ' } }))).toBe('gpt-4o')
+  expect(rowLabel(row({ resourceSummary: { ...summary, displayName: null } }))).toBe('gpt-4o')
+})
 
 function row(overrides: Partial<UsageResourceRow>): UsageResourceRow {
   return {

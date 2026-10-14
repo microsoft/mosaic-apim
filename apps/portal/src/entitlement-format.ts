@@ -225,7 +225,8 @@ export function describeLimits(entitlement: Entitlement) {
 }
 
 export function sameResource(a: EntitlementResource, b: EntitlementResource) {
-  return a.kind === b.kind && a.id === b.id
+  return a.kind === b.kind && a.id === b.id &&
+    (a.kind !== 'poolModel' || (a.scopeId ?? null) === (b.scopeId ?? null))
 }
 
 export function resourceFromCatalog(entry: CatalogEntry): EntitlementResource {

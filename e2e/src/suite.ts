@@ -3,6 +3,7 @@ import { modelLabel, sameModel } from './config.ts'
 import type { PersonaPool } from './fixtures.ts'
 import type {
   AccessMethods,
+  ApiCatalogEntry,
   ApiEnforcement,
   ApiEntitlement,
   ApiGateway,
@@ -259,15 +260,31 @@ const resourceKinds: Readonly<Record<string, string>> = {
 }
 
 /**
- * The heading of a grant's My access card, picked as the portal picks it: the catalog's name for the resource, then
- * the resource's own name, then what became of it or its kind. The portal never heads a card with an ID.
+ * A My access row prefers the model's identity, then the resource's display names, availability or kind.
+ * The portal never heads a row with an ID.
  */
-export function portalCardTitle(resolved: Pick<ApiResolvedEntitlement, 'entitlement' | 'resourceDisplayName' | 'resourceSummary'>): string {
+export function portalCardTitle(resolved: Pick<ApiResolvedEntitlement, 'entitlement' | 'resourceDisplayName' | 'resourceSummary' | 'model'>): string {
   const usable = (name: string | null | undefined) => name?.trim() || undefined
   const kind = resolved.entitlement.resource.kind
   return (
+    usable(resolved.model?.name) ??
     usable(resolved.resourceDisplayName) ??
     usable(resolved.resourceSummary?.displayName) ??
     (resolved.resourceSummary?.available === false ? 'Resource no longer available' : `${resourceKinds[kind] ?? kind} resource`)
   )
+}
+
+export function portalCatalogTitle(entry: ApiCatalogEntry): string {
+  return entry.model?.name.trim() || entry.displayName
+}
+
+export function portalCatalogResourceKey(entry: ApiCatalogEntry): string {
+  return JSON.stringify([entry.kind, entry.id, ['poolModel', 'modelDeployment', 'product'].includes(entry.kind) ? entry.scopeId ?? null : null])
+}
+
+export function portalCatalogGroupKey(entry: ApiCatalogEntry): string {
+  const model = entry.model
+  return ['modelApi', 'poolModel', 'modelDeployment'].includes(entry.kind) && model?.name.trim() && model.format?.trim()
+    ? JSON.stringify(['model', model.name.trim(), model.format.trim().toLowerCase()])
+    : portalCatalogResourceKey(entry)
 }

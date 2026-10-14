@@ -52,12 +52,19 @@ export interface PortalCostCenter extends CostCenterRef {
   keysAllowed: boolean
 }
 
+export interface PortalModel {
+  name: string
+  format: string | null
+  version: string | null
+}
+
 export interface CatalogEntry {
   kind: PortalResourceKind
   id: string
   /** Set for a `poolModel`: a request for it must send this as its resource's `scopeId`. */
   scopeId?: string | null
   displayName: string
+  model?: PortalModel | null
   summary: string | null
   gatewayId: string
   gatewayName: string | null
@@ -127,6 +134,7 @@ export interface AccessRequest {
    * for example because the resource was deleted. Older APIs omit it.
    */
   resourceDisplayName?: string | null
+  model?: PortalModel | null
   costCenterId?: string | null
   costCenter?: CostCenterRef | null
 }
@@ -218,6 +226,7 @@ export interface ResolvedEntitlement {
    * for example because the resource was deleted. Older APIs omit it.
    */
   resourceDisplayName?: string | null
+  model?: PortalModel | null
 }
 
 export type UsagePeriod = '7d' | '30d' | '90d'

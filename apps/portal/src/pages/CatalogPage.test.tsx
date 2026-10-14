@@ -1,11 +1,13 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { describe, expect, it, vi } from 'vitest'
 import type { PortalApi } from '../api'
 import type { AccessRequest, CatalogEntry, PortalCostCenter } from '../types'
 import { CatalogPage } from './CatalogPage'
+import { resourceFromCatalog } from '../entitlement-format'
+import { resourceKey } from '../model-presentation'
 
 const mocks = vi.hoisted(() => ({
   api: {} as PortalApi,
@@ -155,6 +157,46 @@ async function openAccessOptions(name = 'Weather tools') {
 }
 
 describe('CatalogPage', () => {
+  it('groups a model and requires an exact offering before requesting access', async () => {
+    const first: CatalogEntry = { ...servedModelEntry, model: { name: 'claude-opus-4-5', format: 'Anthropic', version: null } }
+    const second: CatalogEntry = { ...first, scopeId: 'other-pool', displayName: 'Other endpoint / Opus', environment: 'development' }
+    const { createAccessRequest } = renderPage([first, second], [
+      { ...pendingRequest, resource: resourceFromCatalog(first), costCenterId: 'cc-general' },
+    ])
+    expect(await screen.findAllByRole('heading', { name: 'claude-opus-4-5', level: 2 })).toHaveLength(1)
+    expect(screen.queryByText('Other endpoint / Opus')).not.toBeInTheDocument()
+    await openAccessOptions('claude-opus-4-5')
+    const drawer = screen.getByRole('dialog', { name: 'Access to claude-opus-4-5' })
+    expect(within(drawer).queryByRole('button', { name: 'Request access' })).not.toBeInTheDocument()
+    const selector = within(drawer).getByRole('combobox', { name: 'Access option' })
+    await userEvent.selectOptions(selector, resourceKey(resourceFromCatalog(first)))
+    expect(await within(drawer).findByRole('button', { name: 'Withdraw' })).toBeVisible()
+    await userEvent.selectOptions(selector, resourceKey(resourceFromCatalog(second)))
+    expect(within(drawer).queryByRole('button', { name: 'Withdraw' })).not.toBeInTheDocument()
+    const reason = await within(drawer).findByRole('textbox', { name: 'Justification for Other endpoint / Opus' })
+    await userEvent.type(reason, 'Only the second option')
+    await userEvent.selectOptions(selector, resourceKey(resourceFromCatalog(first)))
+    await userEvent.selectOptions(selector, resourceKey(resourceFromCatalog(second)))
+    expect(within(drawer).getByRole('textbox', { name: 'Justification for Other endpoint / Opus' })).toHaveValue('')
+    await userEvent.click(await within(drawer).findByRole('button', { name: 'Request access' }))
+    await waitFor(() => expect(createAccessRequest).toHaveBeenCalledWith({
+      resource: { kind: 'poolModel', id: second.id, scopeId: 'other-pool' },
+      costCenterId: 'cc-general', justification: undefined,
+    }))
+  })
+
+  it('unmounts the request form and restores focus when options close', async () => {
+    renderPage([catalogEntry], [])
+    const opener = await screen.findByRole('button', { name: 'View access options for Weather tools' })
+    await userEvent.click(opener)
+    const justification = await screen.findByRole('textbox', { name: 'Justification for Weather tools' })
+    await userEvent.type(justification, 'Only this request')
+    await userEvent.click(screen.getByRole('button', { name: 'Close details' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    await waitFor(() => expect(opener).toHaveFocus())
+    await userEvent.click(opener)
+    expect(await screen.findByRole('textbox', { name: 'Justification for Weather tools' })).toHaveValue('')
+  })
   it('offers request access for entries without an open request', async () => {
     renderPage([catalogEntry], [])
 
@@ -268,6 +310,7 @@ describe('CatalogPage', () => {
     renderPage([{ ...catalogEntry, enforced }], [])
 
     expect(await screen.findByText('Weather tools')).toBeVisible()
+    await openAccessOptions()
     expect(screen.getByText(label)).toBeVisible()
   })
 
@@ -328,6 +371,8 @@ describe('CatalogPage', () => {
     renderPage([servedModelEntry], [])
 
     expect(await screen.findByRole('heading', { level: 2, name: 'Claude Opus' })).toBeVisible()
+    expect(screen.queryByText('Model · Anthropic Messages API · production gateway')).not.toBeInTheDocument()
+    await openAccessOptions('Claude Opus')
     expect(screen.getByText('Model · Anthropic Messages API · production gateway')).toBeVisible()
     expect(screen.getByText('Provisioned, with pay-as-you-go overflow')).toBeVisible()
     expect(screen.queryByText('Enforced by the gateway')).not.toBeInTheDocument()
@@ -343,6 +388,7 @@ describe('CatalogPage', () => {
     renderPage([{ ...servedModelEntry, capacity }], [])
 
     expect(await screen.findByText('Claude Opus')).toBeVisible()
+    await openAccessOptions('Claude Opus')
     expect(screen.getByText(label)).toBeVisible()
   })
 
@@ -350,6 +396,7 @@ describe('CatalogPage', () => {
     renderPage([{ ...servedModelEntry, capacity: null, apiStyle: null }], [])
 
     expect(await screen.findByText('Claude Opus')).toBeVisible()
+    await openAccessOptions('Claude Opus')
     expect(screen.getByText('Model · production gateway')).toBeVisible()
     expect(screen.queryByText(/Provisioned|Pay-as-you-go/)).not.toBeInTheDocument()
   })
@@ -379,7 +426,7 @@ describe('CatalogPage', () => {
     ], [])
 
     expect(await screen.findByText('Claude Opus')).toBeVisible()
-    expect(screen.getByText('Model API · production gateway')).toBeVisible()
+    expect(screen.getAllByText('Model')).toHaveLength(2)
 
     await user.selectOptions(screen.getByLabelText('Resource type'), 'model')
     expect(screen.getByText('Claude Opus')).toBeVisible()

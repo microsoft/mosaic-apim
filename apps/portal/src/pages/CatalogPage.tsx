@@ -1,4 +1,4 @@
-import { Badge, Button, Card, CardHeader, Input, Textarea, Text } from '@fluentui/react-components'
+import { Badge, Button, Input, Textarea, Text } from '@fluentui/react-components'
 import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMemo, useState } from 'react'
@@ -7,11 +7,13 @@ import { EmptyState, ErrorState, Loading } from '../components/AsyncState'
 import { EnvironmentBadge } from '../components/EnvironmentBadge'
 import { PageHeader } from '../components/PageHeader'
 import { DetailPanel } from '../components/DetailPanel'
+import { ResourceRow } from '../components/ResourceRow'
+import { catalogTitle, groupResources, modelGroupKey, resourceKey, uniqueValues } from '../model-presentation'
+import { environmentLabel } from '../environments'
 import {
   apiStyleLabel,
   capacityLabel,
   isModelResource,
-  requestStateLabel,
   resourceFromCatalog,
   resourceKindLabel,
   sameResource,
@@ -116,7 +118,7 @@ function CatalogAction({ entry }: { entry: CatalogEntry }) {
 
   return (
     <div className="action-stack">
-      {costCenters.isLoading && <Text size={200}>Loading cost centers. The request can use your default if needed.</Text>}
+      {costCenters.isLoading && <Text size={200}>Loading cost centers…</Text>}
       {costCenters.isError && (
         <Text size={200} className="connection-note">
           Cost centers could not load. You can still request access; MOSAIC will use your default cost center.
@@ -178,7 +180,7 @@ function CatalogAction({ entry }: { entry: CatalogEntry }) {
       {create.isError && <Text className="form-error">{create.error.message}</Text>}
       {withdraw.isError && <Text className="form-error">{withdraw.error.message}</Text>}
       {create.isSuccess && pendingRequest?.id === create.data.id && (
-        <Text>Request submitted. <Link to="/requests">Track it in My requests</Link>. Approval does not apply gateway access immediately.</Text>
+        <Text>Request submitted. <Link to="/requests">Track it in My requests</Link>. Gateway access may still need to be applied after approval.</Text>
       )}
     </div>
   )
@@ -206,6 +208,7 @@ export function CatalogPage() {
   const [kindFilter, setKindFilter] = useState<KindFilter>('all')
   const [search, setSearch] = useState('')
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [offeringId, setOfferingId] = useState<string | null>(null)
   const filteredCatalog = useMemo(() => {
     if (!catalog.data) return []
     return catalog.data.filter((entry) => {
@@ -213,10 +216,16 @@ export function CatalogPage() {
         environmentFilter === 'all' ||
         (environmentFilter === 'unclassified' ? entry.environment === null : entry.environment === environmentFilter)
       return matchesEnvironment && matchesKind(entry, kindFilter) &&
-        `${entry.displayName} ${entry.summary ?? ''} ${entry.gatewayName ?? ''}`.toLowerCase().includes(search.trim().toLowerCase())
+        `${catalogTitle(entry)} ${entry.displayName} ${entry.summary ?? ''} ${entry.gatewayName ?? ''}`.toLowerCase().includes(search.trim().toLowerCase())
     })
   }, [catalog.data, environmentFilter, kindFilter, search])
-  const selected = filteredCatalog.find((entry) => `${entry.kind}:${entry.id}:${entry.scopeId ?? ''}` === selectedId)
+  const groups = groupResources(filteredCatalog, (entry) => ({
+    key: modelGroupKey(resourceFromCatalog(entry), entry.model), title: catalogTitle(entry),
+  })).sort((a, b) => Number(!a.items.some((entry) => entry.model?.name.trim())) -
+    Number(!b.items.some((entry) => entry.model?.name.trim())))
+  const selected = groups.find((group) => group.key === selectedId)
+  const offering = selected?.items.length === 1 ? selected.items[0] :
+    selected?.items.find((entry) => resourceKey(resourceFromCatalog(entry)) === offeringId)
   const filterOptions = useMemo(
     () => environmentOptions(catalog.data ?? [], environments.data),
     [catalog.data, environments.data],
@@ -231,7 +240,7 @@ export function CatalogPage() {
     <>
       <PageHeader
         title="Catalog"
-        description="Models and MCP servers published for portal users. Request access when a resource is not already granted."
+        description="Find a model or MCP server."
       />
       {catalog.isLoading && <Loading label="Loading catalog" />}
       {catalog.isError && <ErrorState error={catalog.error} />}
@@ -243,7 +252,7 @@ export function CatalogPage() {
       {catalog.isSuccess && catalog.data.length > 0 && (
         <>
           <div className="filter-row" role="group" aria-label="Catalog filters">
-            <Input aria-label="Search catalog" placeholder="Find a model or MCP server" value={search}
+            <Input className="resource-search" aria-label="Search catalog" placeholder="Search models and MCP servers" value={search}
               onChange={(_, data) => setSearch(data.value)} />
             <label>
               <span>Environment</span>
@@ -285,40 +294,62 @@ export function CatalogPage() {
               <Button onClick={clearFilters}>Clear filters</Button>
             </EmptyState>
           ) : (
-            <div className={selected ? 'resource-workspace with-details' : 'resource-workspace'}>
-            <div className="catalog-grid">
-              {filteredCatalog.map((entry) => (
-                <Card key={`${entry.kind}:${entry.id}:${entry.scopeId ?? ''}`} className="catalog-card">
-                  <CardHeader
-                    header={<h2>{entry.displayName}</h2>}
-                    description={entryDescription(entry)}
-                    action={
-                      entry.requestState && entry.requestState !== 'pending' ? (
-                        <Badge appearance="tint">{requestStateLabel(entry.requestState)}</Badge>
-                      ) : undefined
-                    }
-                  />
-                  <div className="badge-row">
-                    <EnvironmentBadge
-                      environment={entry.environment}
-                      environments={environments.data}
-                    />
-                    <CatalogEnforcementBadge entry={entry} />
-                    <CatalogCapacityBadge entry={entry} />
-                  </div>
-                  <Text>{entry.summary ?? 'No summary provided.'}</Text>
-                  <Button onClick={() => setSelectedId(`${entry.kind}:${entry.id}:${entry.scopeId ?? ''}`)}>
-                    View access options for {entry.displayName}
-                  </Button>
-                </Card>
-              ))}
-            </div>
-            {selected && <DetailPanel key={selectedId} title={`Access to ${selected.displayName}`} onClose={() => setSelectedId(null)}>
-              <p>Choose the cost center that will pay for your calls, and explain what you need. An administrator reviews your request.</p>
-              <CatalogAction entry={selected} />
-            </DetailPanel>}
-            </div>
+            <>
+              <div className="resource-list-caption">{groups.length} {groups.length === 1 ? 'resource' : 'resources'}</div>
+              <div className="resource-list-heading" aria-hidden="true">
+                <span>Model or server</span><span>Environment</span><span>Your access</span><span />
+              </div>
+              <ul className="resource-list catalog-list">
+                {groups.map((group) => {
+                  const granted = group.items.filter((entry) => entry.entitled).length
+                  const pending = group.items.filter((entry) => entry.requestState === 'pending').length
+                  return (
+                    <ResourceRow key={group.key} title={group.title}
+                      subtitle={<>{isModelResource(group.items[0].kind) ? 'Model' : 'MCP server'}
+                        {group.items.length > 1 && ` · ${group.items.length} options`}</>}
+                      environments={uniqueValues(group.items.map((entry) => entry.environment)).map((key) =>
+                        <EnvironmentBadge key={key ?? 'unclassified'} environment={key} environments={environments.data} />)}
+                      status={<>
+                        <span>{granted > 0 ? (group.items.length === 1 ? 'Access granted' : `${granted} of ${group.items.length} options granted`) : 'Not granted'}</span>
+                        {pending > 0 && <small>{pending} {pending === 1 ? 'request' : 'requests'} pending</small>}
+                      </>}
+                      action="View options" actionLabel={`View access options for ${group.title}`}
+                      onSelect={() => { setSelectedId(group.key); setOfferingId(null) }} />
+                  )
+                })}
+              </ul>
+            </>
           )}
+          {selected && <DetailPanel title={`Access to ${selected.title}`} onClose={() => setSelectedId(null)}>
+            {selected.items.length > 1 && (
+              <label className="detail-select">
+                <span>Access option</span>
+                <select value={offering ? resourceKey(resourceFromCatalog(offering)) : ''}
+                  onChange={(event) => setOfferingId(event.currentTarget.value || null)}>
+                  <option value="">Choose an environment and offering</option>
+                  {selected.items.map((entry) => (
+                    <option key={resourceKey(resourceFromCatalog(entry))} value={resourceKey(resourceFromCatalog(entry))}>
+                      {environmentLabel(environments.data, entry.environment)} · {entry.displayName}
+                      {entry.model?.version ? ` · ${entry.model.version}` : ''}
+                      {entry.apiStyle ? ` · ${apiStyleLabel(entry.apiStyle)}` : ''}
+                      {entry.gatewayName ? ` · ${entry.gatewayName}` : ''}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+            {offering ? <div key={resourceKey(resourceFromCatalog(offering))} className="drawer-content">
+              <div className="badge-row">
+                <EnvironmentBadge environment={offering.environment} environments={environments.data} />
+                <CatalogEnforcementBadge entry={offering} />
+                <CatalogCapacityBadge entry={offering} />
+              </div>
+              <p className="resource-context">{entryDescription(offering)}</p>
+              {offering.summary && <p>{offering.summary}</p>}
+              <p className="connection-note">Choose the cost center for your calls. An administrator reviews your request.</p>
+              <CatalogAction entry={offering} />
+            </div> : <p className="connection-note">Select an option to check access or make a request.</p>}
+          </DetailPanel>}
         </>
       )}
     </>
