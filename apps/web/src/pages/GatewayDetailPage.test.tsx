@@ -2,7 +2,7 @@ import { FluentProvider, webLightTheme } from '@fluentui/react-components'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter, Route, Routes } from 'react-router-dom'
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { GatewayDetailPage } from './GatewayDetailPage'
 import { telemetryFixture } from '../test/analytics-fixtures'
@@ -150,14 +150,21 @@ function renderPage(entry = '/gateways/gateway_1') {
     <QueryClientProvider client={queryClient}>
       <FluentProvider theme={webLightTheme}>
         <MemoryRouter initialEntries={[entry]}>
+          <LocationProbe />
           <Routes>
             <Route path="/gateways/:gatewayId" element={<GatewayDetailPage />} />
+            <Route path="/gateways" element={<GatewayDetailPage gatewayId="gateway_1" embedded />} />
           </Routes>
         </MemoryRouter>
       </FluentProvider>
     </QueryClientProvider>,
   )
   return { queryClient, invalidate }
+}
+
+function LocationProbe() {
+  const location = useLocation()
+  return <output data-testid="gateway-location">{location.pathname}{location.search}</output>
 }
 
 async function modeControl() {
@@ -192,6 +199,34 @@ describe('GatewayDetailPage management mode', () => {
     api.backfillGatewayTelemetry.mockResolvedValue({})
     api.listGatewayBackends.mockResolvedValue([])
     api.listGatewayNamedValues.mockResolvedValue([])
+  })
+
+  it('edits record metadata in the workspace and returns without changing management mode', async () => {
+    const user = userEvent.setup()
+    serve(gateway())
+    renderPage()
+    await user.click(await screen.findByRole('button', { name: 'More actions for Development gateway' }))
+    await user.click(await screen.findByRole('menuitem', { name: 'Edit' }))
+    const editor = await screen.findByRole('region', { name: 'Edit Development gateway' })
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    await user.clear(within(editor).getByRole('textbox', { name: 'Display name' }))
+    await user.type(within(editor).getByRole('textbox', { name: 'Display name' }), 'Gateway intent')
+    await user.click(within(editor).getByRole('button', { name: 'Save changes' }))
+    expect(await screen.findByRole('heading', { name: 'Gateway intent', level: 1 })).toBeVisible()
+    expect(api.updateGateway).toHaveBeenCalledWith('gateway_1', { name: 'Gateway intent' })
+    expect(stored.managementMode).toBe('observe')
+    expect(screen.getByTestId('gateway-location')).not.toHaveTextContent('mode=edit')
+  })
+
+  it('preserves selected inventory when an embedded detail section changes', async () => {
+    const user = userEvent.setup()
+    serve(gateway())
+    renderPage('/gateways?selected=gateway_1')
+    await user.click(await screen.findByRole('button', { name: 'Backends' }))
+    expect(await screen.findByText('No backends')).toBeVisible()
+    expect(screen.getByTestId('gateway-location')).toHaveTextContent('selected=gateway_1')
+    expect(screen.getByTestId('gateway-location')).toHaveTextContent('gatewayTab=backends')
+    expect(screen.getByRole('link', { name: 'Open full detail' })).toHaveAttribute('href', '/gateways/gateway_1')
   })
 
   it('supports section deep links and fetches observed details only when selected', async () => {

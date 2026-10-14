@@ -25,7 +25,7 @@
 }
 
 .tableScroll {
-  max-height: 24rem;
+  max-height: 60vh;
   overflow: auto;
   border: 1px solid var(--mosaic-border-soft);
   border-radius: 6px;
@@ -63,4 +63,36 @@
 .footerNote {
   margin-right: auto;
   color: var(--mosaic-text-muted);
+}
+
+.formSection {
+  display: grid;
+  gap: 16px;
+  max-width: 960px;
+}
+
+.nameCell {
+  gap: 8px;
+  min-width: 0;
+}
+
+.selectionActions {
+  flex-wrap: wrap;
+}
+
+.tableScroll :global(th),
+.tableScroll :global(td) {
+  padding: 12px 16px;
+  vertical-align: top;
+}
+
+@media (max-width: 640px) {
+  .gatewayField {
+    min-width: 0;
+    flex-basis: 100%;
+  }
+
+  .selectionActions {
+    margin-left: 0;
+  }
 }

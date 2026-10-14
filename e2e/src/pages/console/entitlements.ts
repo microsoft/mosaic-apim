@@ -10,7 +10,7 @@ const entitlementPath = /^\/api\/v1\/entitlements\/[^/]+$/
 
 export type KeySlot = 'primary' | 'secondary'
 
-/** The runtime badge the grants table shows for each state MOSAIC reports. */
+/** The runtime badge selected grant details show for each state MOSAIC reports. */
 export const grantBadges = {
   pending: 'Saved, not applied',
   applying: 'Applying — not confirmed',
@@ -31,7 +31,7 @@ async function fillLimits(scope: Locator, limits: SuiteLimits): Promise<void> {
   await field(scope, 'Per how many seconds').fill(String(limits.perSeconds ?? 60))
 }
 
-/** The console's Entitlements page: governed model access, the grants table and the access requests. */
+/** The console's Entitlements workbench: governed model access, grants and access requests. */
 export class EntitlementsPage {
   readonly page: Page
   readonly targets: Targets
@@ -60,6 +60,9 @@ export class EntitlementsPage {
   async selectSection(section: 'grants' | 'effective' | 'requests' | 'settings'): Promise<void> {
     const url = new URL(this.page.url())
     url.searchParams.set('tab', section)
+    url.searchParams.delete('selected')
+    url.searchParams.delete('mode')
+    url.searchParams.delete('workbench')
     await this.page.goto(url.href)
     await this.loaded()
   }
@@ -141,7 +144,17 @@ export class EntitlementsPage {
   // Grants
 
   get grants(): Locator {
-    return this.page.getByRole('table', { name: 'Entitlements' })
+    return this.page.getByRole('list', { name: 'Grants', exact: true })
+  }
+
+  async selectGrant(entitlementId: string): Promise<void> {
+    const url = new URL(this.page.url())
+    url.searchParams.set('tab', 'grants')
+    url.searchParams.set('selected', entitlementId)
+    url.searchParams.delete('mode')
+    url.searchParams.delete('workbench')
+    await this.page.goto(url.href)
+    await expect(this.grantRow(entitlementId)).toBeVisible()
   }
 
   grantRow(entitlementId: string): Locator {
@@ -154,27 +167,30 @@ export class EntitlementsPage {
   }
 
   /** Revokes a grant MOSAIC applies, which saves disabled intent until the model's plan is applied. */
-  disable(entitlementId: string): Promise<Response> {
+  async disable(entitlementId: string): Promise<Response> {
+    await this.selectGrant(entitlementId)
     return this.#respond('PATCH', entitlementPath, () =>
       clickRowAction(this.page, this.grantRow(entitlementId), 'Revoke'),
     )
   }
 
   /** Revokes a grant MOSAIC no longer applies, such as one whose model was unpublished, which removes it. */
-  remove(entitlementId: string): Promise<Response> {
+  async remove(entitlementId: string): Promise<Response> {
+    await this.selectGrant(entitlementId)
     return this.#respond('DELETE', entitlementPath, () =>
       clickRowAction(this.page, this.grantRow(entitlementId), 'Revoke'),
     )
   }
 
-  reEnable(entitlementId: string): Promise<Response> {
+  async reEnable(entitlementId: string): Promise<Response> {
+    await this.selectGrant(entitlementId)
     return this.#respond('PATCH', entitlementPath, () =>
       clickRowAction(this.page, this.grantRow(entitlementId), 'Re-enable'),
     )
   }
 
   async connectionInfo(entitlementId: string): Promise<ConnectionDialog> {
-    await this.selectSection('grants')
+    await this.selectGrant(entitlementId)
     await clickRowAction(this.page, this.grantRow(entitlementId), 'Connection info')
     const dialog = new ConnectionDialog(this.page, this.targets)
     await expect(dialog.root).toBeVisible()
@@ -184,12 +200,20 @@ export class EntitlementsPage {
   // Access requests
 
   get requests(): Locator {
-    return this.page.getByRole('table', { name: 'Pending access requests' })
+    return this.page.getByRole('list', { name: 'Access requests', exact: true })
   }
 
-  /** A pending request, by the justification the requester wrote. */
-  requestRow(justification: string): Locator {
-    return this.requests.getByRole('row').filter({ has: this.page.getByText(justification, { exact: true }) })
+  /** Opens the exact request instead of identifying slim rows by hidden justification text. */
+  async selectRequest(requestId: string): Promise<Locator> {
+    const url = new URL(this.page.url())
+    url.searchParams.set('tab', 'requests')
+    url.searchParams.set('selected', requestId)
+    url.searchParams.delete('mode')
+    url.searchParams.delete('workbench')
+    await this.page.goto(url.href)
+    const detail = this.page.getByRole('region', { name: 'Selected access request', exact: true })
+    await expect(detail.getByText(requestId, { exact: true })).toBeVisible()
+    return detail
   }
 
   async approve(row: Locator): Promise<ApproveRequestDialog> {
@@ -214,7 +238,7 @@ export class AddEntitlementDialog {
 
   constructor(page: Page, targets: Targets) {
     this.page = page
-    this.root = page.getByRole('dialog', { name: 'Add entitlement' })
+    this.root = page.getByRole('region', { name: 'New grant', exact: true })
     this.#apiOrigin = targets.origins.api
   }
 
@@ -241,7 +265,7 @@ export class ApproveRequestDialog {
 
   constructor(page: Page, targets: Targets) {
     this.page = page
-    this.root = page.getByRole('dialog', { name: 'Approve access request' })
+    this.root = page.getByRole('region', { name: 'Approve access request', exact: true })
     this.#apiOrigin = targets.origins.api
   }
 

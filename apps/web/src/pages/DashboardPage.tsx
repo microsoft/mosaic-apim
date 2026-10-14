@@ -25,7 +25,7 @@ import { BudgetMeter } from '../components/BudgetEditor'
 import { BarList, type BarListItem } from '../components/charts/BarList'
 import { TrendChart } from '../components/charts/TrendChart'
 import { EnvironmentBadge } from '../components/EnvironmentBadge'
-import { DataSourceBadge, PageHeader } from '../components/PageHeader'
+import { PageHeader } from '../components/PageHeader'
 import { formatCostCompact } from '../cost-format'
 import { environmentFindingsQueryKey, useEnvironmentCatalog } from '../environments'
 import { FRESHNESS_STATUS_LABELS, plural, type PrincipalTab, principalTabForKind } from '../labels'
@@ -55,7 +55,6 @@ function SparkMetric({
       <div className={styles.trendDetail}>
         <Text size={200}>{detail}</Text>
       </div>
-      <DataSourceBadge kind="live" />
     </Card>
   )
 }
@@ -409,7 +408,6 @@ export function DashboardPage() {
             <Title2 as="h2" block>Service consumers</Title2>
             <Text block>People, agents, applications and groups registered to consume the service. Active callers appear in usage below.</Text>
           </div>
-          <DataSourceBadge kind="live" />
         </div>
         {liveError ? (
           <ErrorState error={liveError} />
@@ -505,7 +503,6 @@ export function DashboardPage() {
               <Title3 as="h2">Telemetry health</Title3>
               <Text size={200}>How current each gateway&apos;s usage is.</Text>
             </div>
-            <DataSourceBadge kind={analyticsStatus.data?.dataSource === 'logAnalytics' ? 'live' : 'local'} />
           </div>
           <div className={styles.healthList}>
             {analyticsStatus.isLoading && <Spinner size="tiny" label="Loading telemetry health" />}

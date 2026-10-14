@@ -7,6 +7,7 @@ import {
   MenuTrigger,
   Text,
   Title3,
+  Tooltip,
 } from '@fluentui/react-components'
 import {
   ChartMultipleRegular,
@@ -100,8 +101,8 @@ function NavigationLinks({
   onNavigate: () => void
 }) {
   return items.map((item) => (
+    <Tooltip key={item.to} content={item.label} relationship="label">
     <NavLink
-      key={item.to}
       to={item.to}
       className={({ isActive }) => (isActive ? 'nav-link active' : 'nav-link')}
       onClick={onNavigate}
@@ -111,6 +112,7 @@ function NavigationLinks({
       {item.icon}
       <span>{item.label}</span>
     </NavLink>
+    </Tooltip>
   ))
 }
 

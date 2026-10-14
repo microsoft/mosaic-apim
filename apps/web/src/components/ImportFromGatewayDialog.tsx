@@ -3,9 +3,7 @@ import {
   Button,
   Checkbox,
   Dialog,
-  DialogActions,
   DialogBody,
-  DialogContent,
   DialogSurface,
   DialogTitle,
   Field,
@@ -28,6 +26,12 @@ import { environmentFindingsQueryKey } from '../environments'
 import { AI_KIND_LABELS } from '../labels'
 import type { Gateway } from '../types'
 import { ErrorState, Loading } from './AsyncState'
+import {
+  WorkspaceDialog,
+  WorkspaceDialogActions,
+  WorkspaceDialogContent,
+} from './WorkspaceDialog'
+import { completeWorkspaceNavigation } from './WorkspaceLeaveGuard'
 import styles from './ImportFromGatewayDialog.module.css'
 
 export type ImportKind = 'apis' | 'mcpServers'
@@ -75,13 +79,15 @@ export function ImportFromGatewayDialog({
   initialGatewayId,
   onClose,
   onImported,
+  surface = 'workspace',
 }: {
   kind: ImportKind
   mutationKey?: readonly unknown[]
   open: boolean
   initialGatewayId?: string | null
-  onClose: () => void
+  onClose: (importedId?: string) => void
   onImported: (count: number) => void
+  surface?: 'workspace' | 'dialog'
 }) {
   const api = useMosaicApi()
   const queryClient = useQueryClient()
@@ -89,6 +95,7 @@ export function ImportFromGatewayDialog({
   const [gatewayId, setGatewayId] = useState('')
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [touched, setTouched] = useState(false)
+  const [gatewayTouched, setGatewayTouched] = useState(false)
   const appliedInitialGatewayRef = useRef(false)
 
   const gateways = useQuery({
@@ -102,6 +109,7 @@ export function ImportFromGatewayDialog({
   useEffect(() => {
     if (!open) {
       appliedInitialGatewayRef.current = false
+      setGatewayTouched(false)
       return
     }
     // The requested gateway is applied once per opening. Re-applying it on every gateway refetch
@@ -203,7 +211,7 @@ export function ImportFromGatewayDialog({
       })
       await queryClient.invalidateQueries({ queryKey: ['import-candidates'] })
       onImported(imported.length)
-      onClose()
+      completeWorkspaceNavigation(() => onClose(imported[0]?.id))
     },
   })
 
@@ -241,12 +249,19 @@ export function ImportFromGatewayDialog({
   const neverSynced = selectedGateway !== undefined && !selectedGateway.lastSyncedAt
   const unsupported = candidatesQuery.data?.unsupported === true
 
-  return (
-    <Dialog open={open} onOpenChange={(_, data) => !data.open && onClose()}>
-      <DialogSurface>
-        <DialogBody>
-          <DialogTitle>{copy.title}</DialogTitle>
-          <DialogContent>
+  const actions = (requestClose: () => void) => <WorkspaceDialogActions>
+    <Text size={200} className={styles.footerNote}>
+      {selectedCount} selected{!touched && selectedCount > 0 ? ' by detection' : ''}
+    </Text>
+    {surface === 'dialog' && <Button appearance="secondary" disabled={importMutation.isPending} onClick={requestClose}>Cancel</Button>}
+    <Button appearance="primary" disabled={selectedCount === 0} disabledFocusable={importMutation.isPending}
+      onClick={() => importMutation.mutate([...selected])}>
+      {importMutation.isPending ? 'Importing...' : `Import ${selectedCount}`}
+    </Button>
+  </WorkspaceDialogActions>
+  const content = (requestClose: () => void) => (
+        <>
+          <WorkspaceDialogContent>
             <div className={styles.intro}>
               <Text>
                 Importing records that MOSAIC governs {selectedCount === 1 ? 'this' : 'these'}{' '}
@@ -260,7 +275,8 @@ export function ImportFromGatewayDialog({
                 <Select
                   aria-label="Gateway to import from"
                   value={gatewayId}
-                  onChange={(event) => setGatewayId(event.target.value)}
+                  disabled={importMutation.isPending}
+                  onChange={(event) => { setGatewayTouched(true); setGatewayId(event.target.value) }}
                 >
                   {gatewayOptions.length === 0 && <option value="">No gateways registered</option>}
                   {gatewayOptions.map((gateway) => (
@@ -401,27 +417,17 @@ export function ImportFromGatewayDialog({
                   </Table>
                 </div>
               ))}
-          </DialogContent>
-          <DialogActions>
-            <Text size={200} className={styles.footerNote}>
-              {selectedCount} selected
-              {!touched && selectedCount > 0 ? ' by detection' : ''}
-            </Text>
-            <Button appearance="secondary" onClick={onClose}>
-              Cancel
-            </Button>
-            {/* A browser takes focus off a button that becomes disabled, so a busy button stays focusable. */}
-            <Button
-              appearance="primary"
-              disabled={selectedCount === 0}
-              disabledFocusable={importMutation.isPending}
-              onClick={() => importMutation.mutate([...selected])}
-            >
-              {importMutation.isPending ? 'Importing...' : `Import ${selectedCount}`}
-            </Button>
-          </DialogActions>
-        </DialogBody>
-      </DialogSurface>
-    </Dialog>
+          </WorkspaceDialogContent>
+          {surface === 'dialog' && actions(requestClose)}
+        </>
   )
+  if (surface === 'dialog') {
+    return <Dialog open={open} onOpenChange={(_, data) => !data.open && !importMutation.isPending && onClose()}>
+      <DialogSurface><DialogBody><DialogTitle>{copy.title}</DialogTitle>{content(() => onClose())}</DialogBody></DialogSurface>
+    </Dialog>
+  }
+  return <WorkspaceDialog open={open} title={copy.title} dirty={touched || gatewayTouched} actions={actions}
+    pending={importMutation.isPending} onOpenChange={(_, data) => !data.open && onClose()}>
+    {content}
+  </WorkspaceDialog>
 }

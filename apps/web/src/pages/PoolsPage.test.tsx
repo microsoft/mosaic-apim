@@ -2,326 +2,161 @@ import { FluentProvider, webLightTheme } from '@fluentui/react-components'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter, Route, Routes, useLocation, useParams } from 'react-router-dom'
+import { createMemoryRouter, RouterProvider, useLocation } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import {
-  anthropicPool,
-  draftPool,
-  governedAnthropicPool,
-  observedGateway,
-  poolCandidates,
-  poolGateway,
-  poolSummaries,
-} from '../test/pool-fixtures'
-import type { ModelPoolSummary, PoolSuggestion } from '../types'
+import { anthropicPool, anthropicPoolDetail, draftPool, observedGateway, poolCandidates, poolGateway, poolSummaries } from '../test/pool-fixtures'
+import type { PoolSuggestion } from '../types'
 import { PoolsPage } from './PoolsPage'
 
 const api = {
-  getEnvironmentCatalog: vi.fn(),
-  listModelPoolSummaries: vi.fn(),
-  listModelPoolSuggestions: vi.fn(),
-  listGateways: vi.fn(),
-  getPoolCandidates: vi.fn(),
-  createModelPool: vi.fn(),
+  getEnvironmentCatalog: vi.fn(), listModelPoolSummaries: vi.fn(), listModelPoolSuggestions: vi.fn(),
+  listGateways: vi.fn(), getPoolCandidates: vi.fn(), createModelPool: vi.fn(), updateModelPool: vi.fn(),
+  getModelPoolDetail: vi.fn(), listModelPoolRuns: vi.fn(), planModelPool: vi.fn(),
 }
-
-const sonnetSuggestion: PoolSuggestion = {
-  gatewayId: poolGateway.id,
-  gatewayName: poolGateway.name,
-  gatewayEnvironment: 'production',
-  vendor: 'Anthropic',
-  apiShape: 'anthropicMessages',
-  models: [
-    {
-      modelName: 'claude-sonnet-4-5',
-      modelFormat: 'Anthropic',
-      deploymentCount: 2,
-      endpointCount: 2,
-      regions: ['eastus2', 'westus3'],
-    },
-  ],
-  endpointCount: 2,
-  regions: ['eastus2', 'westus3'],
+const suggestion: PoolSuggestion = {
+  gatewayId: poolGateway.id, gatewayName: poolGateway.name, gatewayEnvironment: 'production',
+  vendor: 'Anthropic', apiShape: 'anthropicMessages', endpointCount: 2, regions: ['eastus2', 'westus3'],
+  models: [{ modelName: 'claude-sonnet-4-5', modelFormat: 'Anthropic', deploymentCount: 2, endpointCount: 2, regions: ['eastus2', 'westus3'] }],
   familyPools: [{ id: anthropicPool.id, displayName: anthropicPool.displayName }],
 }
-
-const createSuggestedName = 'Create pool for Anthropic on Contoso AI gateway'
-
 vi.mock('../api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api')>()
   return { ...actual, useMosaicApi: () => api }
 })
-
-function PoolProbe() {
-  const { poolId } = useParams()
+function LocationProbe() {
   const location = useLocation()
-  return (
-    <p>
-      Opened {poolId} with {JSON.stringify(location.state)}
-    </p>
-  )
+  return <output data-testid="location">{location.pathname}{location.search}</output>
 }
-
-function renderPage() {
+function renderPage(entry = '/pools') {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  render(
-    <QueryClientProvider client={queryClient}>
-      <FluentProvider theme={webLightTheme}>
-        <MemoryRouter initialEntries={['/pools']}>
-          <Routes>
-            <Route path="/pools" element={<PoolsPage />} />
-            <Route path="/pools/:poolId" element={<PoolProbe />} />
-            <Route path="/gateways" element={<p>Gateways</p>} />
-          </Routes>
-        </MemoryRouter>
-      </FluentProvider>
-    </QueryClientProvider>,
-  )
+  const router = createMemoryRouter([
+    { path: '/pools', element: <><PoolsPage /><LocationProbe /></> },
+    { path: '/pools/:poolId', element: <p>Expanded pool</p> },
+  ], { initialEntries: [entry] })
+  render(<QueryClientProvider client={queryClient}><FluentProvider theme={webLightTheme}>
+    <RouterProvider router={router} />
+  </FluentProvider></QueryClientProvider>)
+  return router
 }
-
-describe('PoolsPage', () => {
+describe('PoolsPage workbench', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    api.getEnvironmentCatalog.mockResolvedValue({
-      environments: [],
-      requireClassification: false,
-      unclassified: { gateways: 0, modelEndpoints: 0, mcpEndpoints: 0 },
-      compatibility: [],
-      updatedAt: null,
-    })
+    api.getEnvironmentCatalog.mockResolvedValue({ environments: [], requireClassification: false,
+      unclassified: { gateways: 0, modelEndpoints: 0, mcpEndpoints: 0 }, compatibility: [], updatedAt: null })
     api.listModelPoolSummaries.mockResolvedValue(poolSummaries)
     api.listModelPoolSuggestions.mockResolvedValue([])
     api.listGateways.mockResolvedValue([poolGateway])
     api.getPoolCandidates.mockResolvedValue(poolCandidates)
+    api.getModelPoolDetail.mockResolvedValue(anthropicPoolDetail)
+    api.listModelPoolRuns.mockResolvedValue([])
   })
-
-  it('lists each pool with what it serves, how it routes, and whether it’s ready', async () => {
+  it('uses concise selectable resources, not a squeezed comparison table', async () => {
     renderPage()
-
-    const table = await screen.findByRole('table', { name: 'Model pools' })
-    expect(screen.getByRole('heading', { name: 'Model pools', level: 1 })).toBeVisible()
-    expect(screen.queryByRole('button', { name: 'Collapse Pools sections' })).not.toBeInTheDocument()
-    const sections = screen.getByRole('navigation', { name: 'Pools sections' })
-    expect(within(sections).getByRole('button', { name: 'Pools' })).toHaveAttribute('aria-current', 'page')
-    expect(within(sections).getByRole('button', { name: 'Suggested pools' })).toBeVisible()
-    expect(screen.getByText('2 of 2 pools')).toBeVisible()
-    const [, published, draft] = within(table).getAllByRole('row')
-
-    expect(within(published).getByRole('link', { name: 'Anthropic Claude' })).toHaveAttribute(
-      'href',
-      `/pools/${anthropicPool.id}`,
-    )
-    expect(within(published).getByText('/mosaic/pool-anthropic-claude')).toBeVisible()
-    expect(within(published).getByText('Contoso AI gateway')).toBeVisible()
-    expect(within(published).getByText('Anthropic · Anthropic Messages')).toBeVisible()
-    expect(within(published).getByText('1 model')).toBeVisible()
-    expect(within(published).getByText('Breaker')).toBeVisible()
-    expect(within(published).getByText('1 provisioned · 1 pay-as-you-go')).toBeVisible()
-    expect(within(published).getByText('All ready')).toBeVisible()
-    expect(within(published).getByText('1 warning')).toBeVisible()
-    expect(within(published).getByText('Published')).toBeVisible()
-    expect(within(published).getByText('Shared key')).toBeVisible()
-
-    expect(within(draft).getByRole('link', { name: 'OpenAI chat' })).toHaveAttribute('href', `/pools/${draftPool.id}`)
-    expect(within(draft).getByText('No models yet')).toBeVisible()
-    expect(within(draft).getByText('Linear')).toBeVisible()
-    expect(within(draft).getByText('1 problem to fix')).toBeVisible()
-    expect(within(draft).getByText('Draft')).toBeVisible()
-
-    expect(screen.queryByRole('combobox', { name: /gateway/i })).not.toBeInTheDocument()
+    const list = await screen.findByRole('list', { name: 'Model pools' })
+    expect(within(list).getAllByRole('button')).toHaveLength(2)
+    expect(within(list).getByText('Anthropic Claude')).toBeVisible()
+    expect(within(list).getByText('Published')).toBeVisible()
+    expect(screen.queryByRole('table', { name: 'Model pools' })).not.toBeInTheDocument()
+    expect(screen.getByText('Select a resource to see its details.')).toBeVisible()
   })
-
-  it('marks a pool whose saved changes the gateway doesn’t run yet', async () => {
+  it('opens the selected full configuration and preserves selection while changing detail sections', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await user.click(await screen.findByRole('button', { name: /^Anthropic Claude/ }))
+    expect(await screen.findByRole('heading', { name: 'Anthropic Claude', level: 1 })).toBeVisible()
+    expect(screen.getByRole('link', { name: 'Open full detail' })).toHaveAttribute('href', `/pools/${anthropicPool.id}`)
+    await user.click(screen.getByRole('button', { name: 'Models and deployments' }))
+    expect(await screen.findByRole('table', { name: 'Deployments serving Claude Opus 4.5' })).toBeVisible()
+    const url = screen.getByTestId('location').textContent!
+    expect(url).toContain(`selected=${anthropicPool.id}`)
+    expect(url).toContain('poolTab=models')
+    expect(screen.getByRole('button', { name: /^Anthropic Claude/ })).toHaveAttribute('aria-pressed', 'true')
+  })
+  it('loads deep selection and reports a missing selection honestly', async () => {
+    renderPage('/pools?selected=missing')
+    expect(await screen.findByText('Pool not in this list')).toBeVisible()
+    expect(api.getModelPoolDetail).not.toHaveBeenCalled()
+  })
+  it('retains unapplied changes in the list', async () => {
     api.listModelPoolSummaries.mockResolvedValue([{ ...poolSummaries[0], unappliedChanges: true }])
     renderPage()
-
-    const table = await screen.findByRole('table', { name: 'Model pools' })
-    expect(within(table).getByText('Changes not applied')).toBeVisible()
+    expect(await screen.findByText('Changes not applied')).toBeVisible()
   })
-
-  it('says which pools give each caller their own grant, and how many are in force', async () => {
-    api.listModelPoolSummaries.mockResolvedValue([
-      { ...poolSummaries[0], pool: governedAnthropicPool },
-      {
-        ...poolSummaries[1],
-        pool: { ...draftPool, governedAccess: { keysEnabled: true, entraEnabled: false }, accessState: 'pending' },
-      },
-    ])
-    renderPage()
-
-    const table = await screen.findByRole('table', { name: 'Model pools' })
-    const [, governed, pending] = within(table).getAllByRole('row')
-    expect(within(governed).getByText('Governed')).toBeVisible()
-    expect(within(governed).getByText('2 grants in force')).toBeVisible()
-    expect(within(pending).getByText('Governed, not applied yet')).toBeVisible()
-    expect(within(pending).getByText('0 grants in force')).toBeVisible()
-  })
-
-  it('explains pools when there are none yet', async () => {
-    api.listModelPoolSummaries.mockResolvedValue([])
-    renderPage()
-
-    expect(await screen.findByText('No pools yet')).toBeVisible()
-    expect(screen.queryByRole('table', { name: 'Model pools' })).not.toBeInTheDocument()
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Create pool' })).toBeEnabled())
-  })
-
-  it('sends people to onboard a gateway before they can create a pool', async () => {
+  it('disables creation without a gateway', async () => {
     api.listModelPoolSummaries.mockResolvedValue([])
     api.listGateways.mockResolvedValue([])
     renderPage()
-
     expect(await screen.findByRole('link', { name: 'Onboard a gateway' })).toHaveAttribute('href', '/gateways')
     expect(screen.getByRole('button', { name: 'Create pool' })).toBeDisabled()
   })
-
-  it('filters pools by gateway when they run on more than one', async () => {
+  it('keeps the gateway filter in URL state', async () => {
     const user = userEvent.setup()
-    const observed: ModelPoolSummary = {
-      ...poolSummaries[1],
-      pool: { ...draftPool, id: 'modelpool_fabrikam', displayName: 'Fabrikam models', gatewayId: observedGateway.id },
+    api.listModelPoolSummaries.mockResolvedValue([...poolSummaries, {
+      ...poolSummaries[1], pool: { ...draftPool, id: 'fabrikam-pool', displayName: 'Fabrikam models', gatewayId: observedGateway.id },
       gatewayName: observedGateway.name,
-    }
-    api.listModelPoolSummaries.mockResolvedValue([...poolSummaries, observed])
+    }])
     renderPage()
-
-    const filter = await screen.findByRole('combobox', { name: /gateway/i })
-    await user.selectOptions(filter, observedGateway.id)
-
-    const table = screen.getByRole('table', { name: 'Model pools' })
-    expect(within(table).getByRole('link', { name: 'Fabrikam models' })).toBeVisible()
-    expect(within(table).queryByRole('link', { name: 'Anthropic Claude' })).not.toBeInTheDocument()
-    expect(screen.getByText('1 of 3 pools')).toBeVisible()
+    await user.selectOptions(await screen.findByRole('combobox', { name: 'Filter pools by gateway' }), observedGateway.id)
+    expect(await screen.findByRole('button', { name: /^Fabrikam models/ })).toBeVisible()
+    expect(screen.queryByRole('button', { name: /^Anthropic Claude/ })).not.toBeInTheDocument()
+    expect(screen.getByTestId('location')).toHaveTextContent(`gateway=${observedGateway.id}`)
   })
-
-  it('opens a new draft pool once it’s saved', async () => {
+  it('creates in the workspace and returns to the saved selection without applying', async () => {
     const user = userEvent.setup()
-    api.listModelPoolSummaries.mockResolvedValue([])
-    api.createModelPool.mockResolvedValue({ ...draftPool, id: 'modelpool_new', displayName: 'Anthropic' })
-    renderPage()
-
-    const create = screen.getByRole('button', { name: 'Create pool' })
-    await waitFor(() => expect(create).toBeEnabled())
-    await user.click(create)
-    const dialog = await screen.findByRole('dialog', { name: 'Create a model pool' })
-    await user.type(within(dialog).getByRole('textbox', { name: /^Name/ }), 'Anthropic')
-    await user.click(within(dialog).getByRole('tab', { name: '4. Limits and review' }))
-    await user.click(within(dialog).getByRole('button', { name: 'Save as draft' }))
-
-    expect(await screen.findByText('Opened modelpool_new with {"openPlan":false}')).toBeVisible()
-    expect(api.createModelPool).toHaveBeenCalledWith(
-      expect.objectContaining({ displayName: 'Anthropic', gatewayId: poolGateway.id, models: [] }),
-    )
-  })
-
-  it('suggests a pool for models deployed on two or more endpoints, and the pools that could take them', async () => {
-    api.listModelPoolSuggestions.mockResolvedValue([sonnetSuggestion])
-    renderPage()
-    await userEvent.setup().click(screen.getByRole('button', { name: 'Suggested pools' }))
-
-    const table = await screen.findByRole('table', { name: 'Suggested pools' })
-    expect(screen.getByRole('heading', { name: 'Suggested pools', level: 2 })).toBeVisible()
-    const [, row] = within(table).getAllByRole('row')
-    expect(within(row).getByText('Contoso AI gateway')).toBeVisible()
-    expect(within(row).getByText('Anthropic · Anthropic Messages')).toBeVisible()
-    expect(within(row).getByText('1 model')).toBeVisible()
-    expect(within(row).getByText('claude-sonnet-4-5')).toBeVisible()
-    expect(within(row).getByText('2 deployments on 2 endpoints · eastus2, westus3')).toBeVisible()
-    const family = within(row).getByRole('link', { name: 'Anthropic Claude' })
-    expect(family).toHaveAttribute('href', `/pools/${anthropicPool.id}`)
-    expect(family.closest('p')).toHaveTextContent(
-      'Or add it to Anthropic Claude, which already serves Anthropic models on this gateway.',
-    )
-    expect(within(row).getByRole('button', { name: createSuggestedName })).toBeVisible()
-  })
-
-  it('shows no suggestions when every model is pooled or on one endpoint', async () => {
-    renderPage()
-
-    await screen.findByRole('table', { name: 'Model pools' })
-    expect(api.listModelPoolSuggestions).not.toHaveBeenCalled()
-    await userEvent.setup().click(screen.getByRole('button', { name: 'Suggested pools' }))
-    await waitFor(() => expect(api.listModelPoolSuggestions).toHaveBeenCalled())
-    expect(screen.queryByRole('table', { name: 'Suggested pools' })).not.toBeInTheDocument()
-  })
-
-  it('shows only the suggestions for the gateway the list is filtered to', async () => {
-    const user = userEvent.setup()
-    const observed: ModelPoolSummary = {
-      ...poolSummaries[1],
-      pool: { ...draftPool, id: 'modelpool_fabrikam', displayName: 'Fabrikam models', gatewayId: observedGateway.id },
-      gatewayName: observedGateway.name,
-    }
-    api.listModelPoolSummaries.mockResolvedValue([...poolSummaries, observed])
-    api.listModelPoolSuggestions.mockResolvedValue([sonnetSuggestion])
-    renderPage()
-
-    await user.click(screen.getByRole('button', { name: 'Suggested pools' }))
-    expect(await screen.findByRole('table', { name: 'Suggested pools' })).toBeVisible()
-    await user.selectOptions(screen.getByRole('combobox', { name: /gateway/i }), observedGateway.id)
-    expect(screen.queryByRole('table', { name: 'Suggested pools' })).not.toBeInTheDocument()
-    await user.selectOptions(screen.getByRole('combobox', { name: /gateway/i }), poolGateway.id)
-    expect(screen.getByRole('table', { name: 'Suggested pools' })).toBeVisible()
-  })
-
-  it('opens a suggested pool in the editor with its name and models chosen', async () => {
-    const user = userEvent.setup()
-    api.listModelPoolSuggestions.mockResolvedValue([sonnetSuggestion])
-    api.createModelPool.mockResolvedValue({ ...draftPool, id: 'modelpool_new', displayName: 'Anthropic' })
-    renderPage()
-
-    await user.click(screen.getByRole('button', { name: 'Suggested pools' }))
-    await user.click(await screen.findByRole('button', { name: createSuggestedName }))
-    const dialog = await screen.findByRole('dialog', { name: 'Create a model pool' })
-    expect(api.getPoolCandidates).toHaveBeenCalledWith(poolGateway.id)
-    expect(within(dialog).getByRole('textbox', { name: /^Name/ })).toHaveValue('Anthropic')
-    await user.click(within(dialog).getByRole('tab', { name: '4. Limits and review' }))
-    await user.click(within(dialog).getByRole('button', { name: 'Save as draft' }))
-
-    expect(await screen.findByText('Opened modelpool_new with {"openPlan":false}')).toBeVisible()
-    expect(api.createModelPool).toHaveBeenCalledWith(
-      expect.objectContaining({
-        displayName: 'Anthropic',
-        gatewayId: poolGateway.id,
-        models: [
-          expect.objectContaining({
-            publicName: 'claude-sonnet-4-5',
-            members: [
-              expect.objectContaining({ modelEndpointId: 'endpoint_eastus2', deploymentName: 'claude-sonnet-4-5' }),
-              expect.objectContaining({ modelEndpointId: 'endpoint_westus3', deploymentName: 'claude-sonnet-4-5' }),
-            ],
-          }),
-        ],
-      }),
-    )
-  })
-
-  it('names a suggested pool so it doesn’t clash with a pool already on the gateway', async () => {
-    const user = userEvent.setup()
-    api.listModelPoolSummaries.mockResolvedValue([
-      { ...poolSummaries[0], pool: { ...anthropicPool, displayName: 'Anthropic' } },
-    ])
-    api.listModelPoolSuggestions.mockResolvedValue([sonnetSuggestion])
-    renderPage()
-
-    await user.click(screen.getByRole('button', { name: 'Suggested pools' }))
-    await user.click(await screen.findByRole('button', { name: createSuggestedName }))
-    const dialog = await screen.findByRole('dialog', { name: 'Create a model pool' })
-    expect(within(dialog).getByRole('textbox', { name: /^Name/ })).toHaveValue('Anthropic 2')
-  })
-
-  it('says so when it can’t load the deployments for a suggested pool', async () => {
-    const user = userEvent.setup()
-    api.listModelPoolSuggestions.mockResolvedValue([sonnetSuggestion])
-    api.getPoolCandidates.mockRejectedValue(new Error('The gateway didn’t answer.'))
-    renderPage()
-
-    await user.click(screen.getByRole('button', { name: 'Suggested pools' }))
-    await user.click(await screen.findByRole('button', { name: createSuggestedName }))
-
-    expect(
-      await screen.findByText(/MOSAIC couldn’t load the deployments for that pool\. The gateway didn’t answer\./),
-    ).toBeVisible()
+    const saved = { ...draftPool, id: 'modelpool_new', displayName: 'New pool' }
+    api.createModelPool.mockImplementation(async () => {
+      api.listModelPoolSummaries.mockResolvedValue([{ ...poolSummaries[1], pool: saved }])
+      api.getModelPoolDetail.mockResolvedValue({ ...anthropicPoolDetail, pool: saved, models: [] })
+      return saved
+    })
+    renderPage('/pools?gateway=all')
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Create pool' })).toBeEnabled())
+    await user.click(screen.getByRole('button', { name: 'Create pool' }))
+    const editor = await screen.findByRole('region', { name: 'Create a model pool' })
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(screen.queryByRole('list', { name: 'Model pools' })).not.toBeInTheDocument()
+    await user.type(within(editor).getByRole('textbox', { name: /^Name/ }), 'New pool')
+    await user.click(within(editor).getByRole('tab', { name: '4. Limits and review' }))
+    await user.click(within(editor).getByRole('button', { name: 'Save as draft' }))
+    expect(await screen.findByRole('heading', { name: 'New pool', level: 1 })).toBeVisible()
+    expect(screen.getByTestId('location')).toHaveTextContent('selected=modelpool_new')
+    expect(screen.getByTestId('location')).toHaveTextContent('gateway=all')
+    expect(api.planModelPool).not.toHaveBeenCalled()
+  })
+  it('shows suggested model membership only in the generous selected detail', async () => {
+    const user = userEvent.setup()
+    api.listModelPoolSuggestions.mockResolvedValue([suggestion])
+    renderPage()
+    await user.click(screen.getByRole('button', { name: 'Suggested pools' }))
+    const list = await screen.findByRole('list', { name: 'Suggested pools' })
+    expect(within(list).queryByText('claude-sonnet-4-5')).not.toBeInTheDocument()
+    await user.click(within(list).getByRole('button'))
+    expect(await screen.findByText('claude-sonnet-4-5')).toBeVisible()
+    expect(screen.getByText('2 deployments on 2 endpoints · eastus2, westus3')).toBeVisible()
+    expect(screen.getByRole('link', { name: 'Anthropic Claude' })).toHaveAttribute('href', `/pools/${anthropicPool.id}`)
+    await user.click(screen.getByRole('button', { name: 'Create pool for Anthropic on Contoso AI gateway' }))
+    expect(await screen.findByRole('region', { name: 'Create a model pool' })).toBeVisible()
+    expect(api.getPoolCandidates).toHaveBeenCalledWith(poolGateway.id)
+    expect(api.createModelPool).not.toHaveBeenCalled()
+  })
+  it('protects a dirty draft on section navigation and restores it when discard is canceled', async () => {
+    const user = userEvent.setup()
+    renderPage('/pools?mode=new')
+    const editor = await screen.findByRole('region', { name: 'Create a model pool' })
+    await user.type(within(editor).getByRole('textbox', { name: /^Name/ }), 'Keep this draft')
+    await user.click(screen.getByRole('button', { name: 'Suggested pools' }))
+    const confirm = await screen.findByRole('dialog', { name: 'Discard unsaved changes?' })
+    await user.click(within(confirm).getByRole('button', { name: 'Stay' }))
+    expect(within(editor).getByRole('textbox', { name: /^Name/ })).toHaveValue('Keep this draft')
+    expect(screen.getByTestId('location')).toHaveTextContent('mode=new')
+  })
+  it('reconstructs suggested defaults on a direct editor URL without persisting a form draft', async () => {
+    api.listModelPoolSuggestions.mockResolvedValue([suggestion])
+    const id = `${suggestion.gatewayId}|${suggestion.vendor}|${suggestion.apiShape}`
+    renderPage(`/pools?tab=suggestions&selected=${encodeURIComponent(id)}&mode=new`)
+    const editor = await screen.findByRole('region', { name: 'Create a model pool' })
+    expect(within(editor).getByRole('textbox', { name: /^Name/ })).toHaveValue('Anthropic')
+    expect(api.getPoolCandidates).toHaveBeenCalledWith(suggestion.gatewayId)
+    expect(api.createModelPool).not.toHaveBeenCalled()
   })
 })

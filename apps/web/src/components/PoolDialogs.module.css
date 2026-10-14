@@ -1,20 +1,13 @@
-/*
- * Fluent caps a dialog at 600px with a single-class rule it injects after this stylesheet, so the
- * doubled class outranks it and the deployment tables get room for every column.
- */
-.surface.surface {
-  width: 100%;
-  max-width: min(1040px, calc(100vw - 32px));
-}
-
 .content {
   display: grid;
+  min-width: 0;
   gap: 16px;
 }
 
 .intro {
   display: grid;
   gap: 4px;
+  max-width: 75ch;
 }
 
 /* One column that can shrink below its widest table, so long APIM names wrap or scroll inside it. */
@@ -61,7 +54,7 @@
 
 .fieldRow {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
   gap: 16px;
 }
 
@@ -85,7 +78,7 @@
 
 .typeOptions {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
   gap: 12px;
 }
 

@@ -1,10 +1,11 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { GatewaysPage } from './GatewaysPage'
 import type { Gateway, GatewaySuggestion } from '../types'
+import { telemetryFixture } from '../test/analytics-fixtures'
 
 const environmentCatalog = {
   environments: [
@@ -117,6 +118,10 @@ const api = {
   preflightGateway: vi.fn(),
   deleteGateway: vi.fn(),
   getEnvironmentCatalog: vi.fn(),
+  getGateway: vi.fn(),
+  listEnvironmentFindings: vi.fn(),
+  getGatewayTelemetry: vi.fn(),
+  listPublications: vi.fn(),
 }
 
 vi.mock('../api', () => ({
@@ -143,6 +148,13 @@ describe('GatewaysPage', () => {
     api.listGateways.mockResolvedValue([])
     api.listSuggestedGateways.mockResolvedValue([])
     api.getEnvironmentCatalog.mockResolvedValue(environmentCatalog)
+    api.getGateway.mockImplementation(async () => {
+      const lastRegistration = api.registerGateway.mock.results.at(-1)
+      return lastRegistration?.type === 'return' ? await lastRegistration.value : gateway()
+    })
+    api.listEnvironmentFindings.mockResolvedValue({ items: [], limitations: [], generatedAt: null })
+    api.getGatewayTelemetry.mockResolvedValue(telemetryFixture)
+    api.listPublications.mockResolvedValue([])
   })
 
   it('explains that MOSAIC observes rather than changes the gateway', async () => {
@@ -163,7 +175,9 @@ describe('GatewaysPage', () => {
     api.listSuggestedGateways.mockResolvedValue([suggestion])
     renderPage()
 
-    expect(await screen.findByRole('heading', { name: 'Detected gateway' })).toBeVisible()
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Detected gateways' }))
+    await userEvent.setup().click(await screen.findByRole('button', { name: /^apim-contoso-dev/ }))
+    expect(await screen.findByRole('heading', { name: 'apim-contoso-dev' })).toBeVisible()
     expect(screen.getByText(/Deployed alongside MOSAIC/)).toBeVisible()
   })
 
@@ -174,14 +188,22 @@ describe('GatewaysPage', () => {
     renderPage()
 
     await screen.findByText(/Changes require managed mode and a reviewed plan/)
-    expect(screen.queryByRole('heading', { name: 'Detected gateway' })).toBeNull()
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Detected gateways' }))
+    expect(await screen.findByText('No detected gateways')).toBeVisible()
+    expect(screen.queryByRole('button', { name: /^apim-contoso-dev/ })).toBeNull()
   })
 
   async function onboard(user: ReturnType<typeof userEvent.setup>) {
     await user.click(await screen.findByRole('button', { name: 'Onboard gateway' }))
     const input = await screen.findByRole('textbox', { name: /API Management resource ID/ })
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(screen.queryByRole('list', { name: 'Registered gateways' })).not.toBeInTheDocument()
     await user.click(input)
     await user.paste(RESOURCE_ID)
+    api.listGateways.mockImplementation(async () => {
+      const registration = api.registerGateway.mock.results.at(-1)
+      return registration?.type === 'return' ? [await registration.value] : []
+    })
     await user.click(screen.getByRole('button', { name: 'Check access and onboard' }))
   }
 
@@ -208,7 +230,9 @@ describe('GatewaysPage', () => {
     await onboard(user)
 
     expect(await screen.findByText('MOSAIC can read this gateway')).toBeVisible()
-    expect(screen.getByText(/API Management Service Contributor/)).toBeVisible()
+    for (const role of screen.getAllByText(/API Management Service Contributor/)) {
+      expect(role).toBeVisible()
+    }
     expect(screen.getByText(/az role assignment create/)).toBeVisible()
   })
 
@@ -246,23 +270,31 @@ describe('GatewaysPage', () => {
     api.listGateways.mockResolvedValue([gateway()])
     renderPage()
 
-    expect(await screen.findByRole('link', { name: 'Development gateway' })).toBeVisible()
+    const list = await screen.findByRole('list', { name: 'Registered gateways' })
+    const select = within(list).getByRole('button', { name: /^Development gateway/ })
+    expect(select).toBeVisible()
     expect(screen.getByText('Connected')).toBeVisible()
-    expect(screen.getByText('4 of 12')).toBeVisible()
+    expect(within(list).queryByText('4 / 12')).not.toBeInTheDocument()
+    await userEvent.setup().click(select)
+    expect(await screen.findByText('4 / 12')).toBeVisible()
+    expect(screen.getByRole('link', { name: 'Open full detail' })).toHaveAttribute('href', '/gateways/gateway_1')
   })
 
   it('says plainly that removal does not touch Azure', async () => {
     api.listGateways.mockResolvedValue([gateway()])
     renderPage()
 
-    expect(
-      await screen.findByText(/The API Management service itself is never modified/),
-    ).toBeVisible()
+    const user = userEvent.setup()
+    await user.click(await screen.findByRole('button', { name: /^Development gateway/ }))
+    await user.click(await screen.findByRole('button', { name: /^More actions for/ }))
+    await user.click(await screen.findByRole('menuitem', { name: 'Remove MOSAIC record' }))
+    const confirm = await screen.findByRole('alertdialog')
+    expect(within(confirm).getByText(/The API Management service itself is never modified/)).toBeVisible()
+    expect(api.deleteGateway).not.toHaveBeenCalled()
   })
 
   it('does not offer sync until MOSAIC can read the gateway', async () => {
-    api.listGateways.mockResolvedValue([
-      gateway({
+    const inaccessible = gateway({
         status: 'unauthorized',
         access: {
           canRead: false,
@@ -273,11 +305,12 @@ describe('GatewaysPage', () => {
           remediation: null,
           message: null,
         },
-      }),
-    ])
+      })
+    api.listGateways.mockResolvedValue([inaccessible])
+    api.getGateway.mockResolvedValue(inaccessible)
     renderPage()
 
-    await userEvent.setup().click(await screen.findByRole('button', { name: /^More actions for/ }))
-    expect(await screen.findByRole('menuitem', { name: 'Sync' })).toHaveAttribute('aria-disabled', 'true')
+    await userEvent.setup().click(await screen.findByRole('button', { name: /^Development gateway/ }))
+    expect(await screen.findByRole('button', { name: 'Sync now' })).toBeDisabled()
   })
 })

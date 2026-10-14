@@ -38,7 +38,7 @@ function renderEditor(pool?: ModelPool) {
 }
 
 async function openOnGateway(name: string, gatewayId: string) {
-  const dialog = await screen.findByRole('dialog', { name })
+  const dialog = await screen.findByRole('region', { name })
   await waitFor(() => expect(within(dialog).getByRole('combobox', { name: /^Gateway/ })).toHaveValue(gatewayId))
   return dialog
 }
@@ -53,8 +53,23 @@ describe('PoolEditorDialog', () => {
       compatibility: [],
       updatedAt: null,
     })
+
     api.listGateways.mockResolvedValue([poolGateway])
     api.getPoolCandidates.mockResolvedValue(poolCandidates)
+  })
+
+  it('fills the workspace and protects changed drafts when canceled', async () => {
+    const user = userEvent.setup()
+    const { onClose } = renderEditor()
+    const editor = await openOnGateway('Create a model pool', poolGateway.id)
+    expect(editor).toHaveAttribute('data-workspace-editor')
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    await user.type(within(editor).getByRole('textbox', { name: /^Name/ }), 'Unsaved pool')
+    await user.click(within(editor).getByRole('button', { name: 'Cancel' }))
+    const confirm = await screen.findByRole('dialog', { name: 'Discard unsaved changes?' })
+    await user.click(within(confirm).getByRole('button', { name: 'Stay' }))
+    expect(onClose).not.toHaveBeenCalled()
+    expect(within(editor).getByRole('textbox', { name: /^Name/ })).toHaveValue('Unsaved pool')
   })
 
   // Walks all four steps of the wizard, so it gets more than the default 5 seconds: a full parallel
@@ -194,7 +209,7 @@ describe('PoolEditorDialog', () => {
     const user = userEvent.setup()
     api.updateModelPool.mockResolvedValue(anthropicPool)
     const { onSaved } = renderEditor(anthropicPool)
-    const dialog = await screen.findByRole('dialog', { name: 'Edit Anthropic Claude' })
+    const dialog = await screen.findByRole('region', { name: 'Edit Anthropic Claude' })
 
     expect(within(dialog).getByText('mosaic-pool-anthropic-claude')).toBeVisible()
     expect(within(dialog).queryByRole('textbox', { name: 'API name' })).not.toBeInTheDocument()

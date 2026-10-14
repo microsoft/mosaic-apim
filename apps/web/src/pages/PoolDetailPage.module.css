@@ -1,5 +1,6 @@
 .page {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 20px;
   min-width: 0;
 }
@@ -23,8 +24,15 @@
   gap: 10px;
 }
 
+.headerActions :global(.fui-Button),
+.headerActions :global(.fui-Badge) {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
 .messages {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 10px;
 }
 
@@ -40,6 +48,7 @@
   min-width: 0;
   padding: 18px;
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 12px;
   border: 1px solid var(--mosaic-border-soft);
   background: var(--mosaic-surface);
@@ -56,6 +65,7 @@
 
 .section {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 12px;
 }
 
@@ -80,7 +90,7 @@
 .summaryList {
   margin: 0;
   display: grid;
-  grid-template-columns: max-content 1fr;
+  grid-template-columns: minmax(0, max-content) minmax(0, 1fr);
   gap: 8px 16px;
 }
 
@@ -212,6 +222,7 @@
 
 .healthBody {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 12px;
   transition: opacity 150ms ease-out;
 }
@@ -223,6 +234,7 @@
 
 .healthModel {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 12px;
 }
 

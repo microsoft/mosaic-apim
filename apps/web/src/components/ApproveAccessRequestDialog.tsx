@@ -1,11 +1,5 @@
 import {
   Button,
-  Dialog,
-  DialogActions,
-  DialogBody,
-  DialogContent,
-  DialogSurface,
-  DialogTitle,
   Field,
   Input,
   Checkbox,
@@ -40,6 +34,13 @@ import type {
   QuotaPeriod,
 } from '../types'
 import { ErrorState } from './AsyncState'
+import {
+  WorkspaceDialog as Dialog,
+  WorkspaceDialogActions as DialogActions,
+  WorkspaceDialogBody as DialogBody,
+  WorkspaceDialogContent as DialogContent,
+  WorkspaceDialogSurface as DialogSurface,
+} from './WorkspaceDialog'
 import styles from '../pages/EntitlementsPage.module.css'
 
 /** The per-person defaults a cost center sets on the requested resource, if any. */
@@ -75,6 +76,7 @@ export function ApproveAccessRequestDialog({
   pool,
   governed,
   existingGrant,
+  locked = false,
   pending,
   error,
   onCancel,
@@ -93,6 +95,8 @@ export function ApproveAccessRequestDialog({
   governed: boolean
   /** The requester already holds a direct grant for this resource, so approval would conflict. */
   existingGrant: boolean
+  /** The resource is applying or unknown, so approval must wait for recovery. */
+  locked?: boolean
   pending: boolean
   error: unknown
   onCancel: () => void
@@ -149,7 +153,7 @@ export function ApproveAccessRequestDialog({
   function submit(event: FormEvent) {
     event.preventDefault()
     // Approve stays focusable while pending, and a focusable submit button still submits the form.
-    if (rateError || existingGrant || pending || (environmentMoved && !confirmedMove)) return
+    if (rateError || existingGrant || locked || accessRequest.state !== 'pending' || pending || (environmentMoved && !confirmedMove)) return
     onApprove({
       note: note.trim() || null,
       enforcement: buildEnforcement(limits, governed),
@@ -173,6 +177,9 @@ export function ApproveAccessRequestDialog({
   return (
     <Dialog
       open
+      title="Approve access request"
+      description="Review the request and grant limits. Approval is final and saves intent only; it does not activate runtime access."
+      pending={pending}
       onOpenChange={(_, data) => {
         // Stay open while approving, so the outcome is always shown here or in the page banner.
         if (!data.open && !pending) onCancel()
@@ -181,8 +188,12 @@ export function ApproveAccessRequestDialog({
       <DialogSurface>
         <form onSubmit={submit}>
           <DialogBody>
-            <DialogTitle>Approve access request</DialogTitle>
             <DialogContent className={styles.dialogForm}>
+              {(locked || accessRequest.state !== 'pending') && <MessageBar intent="warning"><MessageBarBody>
+                {accessRequest.state !== 'pending'
+                  ? 'This request has already been decided. Decisions are final; no further approval can be made.'
+                  : 'Access is applying or its state is unknown. Recover the affected resource before approving.'}
+              </MessageBarBody></MessageBar>}
               {Boolean(error) && (
                 <div ref={errorRef} tabIndex={-1}>
                   <ErrorState error={error} />
@@ -372,14 +383,11 @@ export function ApproveAccessRequestDialog({
               </Field>
             </DialogContent>
             <DialogActions>
-              <Button appearance="secondary" disabled={pending} onClick={onCancel}>
-                Cancel
-              </Button>
               {/* A browser takes focus off a button that becomes disabled, so a busy button stays focusable. */}
               <Button
                 appearance="primary"
                 type="submit"
-                disabled={existingGrant || Boolean(rateError) || (environmentMoved && !confirmedMove)}
+                disabled={locked || accessRequest.state !== 'pending' || existingGrant || Boolean(rateError) || (environmentMoved && !confirmedMove)}
                 disabledFocusable={pending}
               >
                 Approve and create grant

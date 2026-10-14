@@ -3,15 +3,30 @@
 The MOSAIC administrator console is a React 19 and TypeScript application built with Vite. It uses
 Fluent UI, React Router, TanStack Query, MSAL, and runtime browser configuration.
 
-## Data-source boundaries
+## Administrator workbenches
 
-- **Live data:** users, workload identities, groups, memberships, service readiness, and
-  deterministic APIM policy preview.
-- **Sample data:** model deployment, telemetry, cost, policy metadata, and profile activity views.
-- **Local preview:** entitlement editing, integration settings, and support-ticket drafts.
+Models, MCP servers, pools, gateways, identities, cost centers, grants, and access requests use a
+compact selectable list with a generous detail workspace. New, edit, import, publish, and review
+flows take over that workspace; Back returns to the list and unsaved changes require a discard
+decision. Selection and modes support deep links and browser history without storing drafts or
+credentials in the URL. Both navigation rails have meaningful icons when collapsed and release
+their width to the content.
 
-Sample and local-preview panels are labeled in the UI. They never replace a failed API response or
-claim that Azure resources were changed.
+Analytics keeps applied report scope separate from the draft in its Filters popover. Apply filters
+commits the entire draft; Cancel or dismissal leaves the report unchanged. CSV export is an
+independent action using the applied scope.
+
+## Data and governance boundaries
+
+Production views render API-backed inventory, configuration, measured telemetry, and recorded
+runtime state. Failed or unavailable data is shown as an error or unknown state, never replaced
+with sample records. Local development authentication is explicitly disclosed. Fictional estates
+belong to tests and the screenshot capture script, not production pages.
+
+Registration records a resource reference; import governs an existing gateway API. Neither creates
+Azure resources. Saved entitlement intent and publication settings are distinct from applied
+gateway authorization. A reviewed plan describes its effects, and only explicit Apply changes
+enforcement. Deterministic policy previews remain read-only.
 
 ## Access
 

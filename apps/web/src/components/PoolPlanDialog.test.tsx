@@ -80,7 +80,8 @@ describe('PoolPlanDialog', () => {
   it('applies the plan the administrator reviewed, then reports the run', async () => {
     const user = userEvent.setup()
     const { onFinished } = renderDialog()
-    const dialog = await screen.findByRole('dialog', { name: 'Publish Anthropic Claude' })
+    const dialog = await screen.findByRole('region', { name: 'Review Anthropic Claude' })
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
 
     const review = await within(dialog).findByRole('region', { name: 'Plan review' })
     await waitFor(() => expect(review).toHaveFocus())
@@ -91,6 +92,8 @@ describe('PoolPlanDialog', () => {
     expect(within(first).getByText('Update')).toBeVisible()
     expect(within(first).getByText('A member was drained.')).toBeVisible()
     expect(within(second).getByText('No change')).toBeVisible()
+    expect(api.applyModelPool).not.toHaveBeenCalled()
+    expect(api.unpublishModelPool).not.toHaveBeenCalled()
     await user.click(within(dialog).getByRole('button', { name: 'Apply plan' }))
 
     expect(await within(dialog).findByText('Apply finished')).toBeVisible()
@@ -104,7 +107,7 @@ describe('PoolPlanDialog', () => {
     ).toBeVisible()
     await waitFor(() => expect(onFinished).toHaveBeenCalledWith(poolRun))
     expect(onFinished).toHaveBeenCalledTimes(1)
-    expect(within(dialog).getByRole('button', { name: 'Close' })).toBeEnabled()
+    expect(within(dialog).getByRole('button', { name: 'Cancel' })).toBeEnabled()
     expect(within(dialog).queryByRole('button', { name: 'Apply plan' })).not.toBeInTheDocument()
   })
 
@@ -117,7 +120,7 @@ describe('PoolPlanDialog', () => {
       steps: [],
     })
     renderDialog('unpublish')
-    const dialog = await screen.findByRole('alertdialog', { name: 'Unpublish Anthropic Claude?' })
+    const dialog = await screen.findByRole('region', { name: 'Unpublish Anthropic Claude?' })
 
     expect(await within(dialog).findByText('What MOSAIC deletes')).toBeVisible()
     expect(
@@ -140,12 +143,12 @@ describe('PoolPlanDialog', () => {
       }),
     )
     renderDialog()
-    const dialog = await screen.findByRole('dialog', { name: 'Publish Anthropic Claude' })
+    const dialog = await screen.findByRole('region', { name: 'Review Anthropic Claude' })
 
     expect(await within(dialog).findByText('Fix these before you publish Anthropic Claude')).toBeVisible()
     expect(within(dialog).getByText('Claude Opus 4.5: choose at least one deployment.')).toBeVisible()
     expect(within(dialog).queryByRole('button', { name: 'Apply plan' })).not.toBeInTheDocument()
-    expect(within(dialog).getByRole('button', { name: 'Close' })).toBeEnabled()
+    expect(within(dialog).getByRole('button', { name: 'Cancel' })).toBeEnabled()
   })
 
   it('plans again when MOSAIC refuses the plan that was reviewed', async () => {
@@ -156,7 +159,7 @@ describe('PoolPlanDialog', () => {
       new ApiError('The pool changed after this plan was made. Review a new plan.', 409),
     )
     renderDialog()
-    const dialog = await screen.findByRole('dialog', { name: 'Publish Anthropic Claude' })
+    const dialog = await screen.findByRole('region', { name: 'Review Anthropic Claude' })
 
     await user.click(await within(dialog).findByRole('button', { name: 'Apply plan' }))
 
@@ -174,7 +177,7 @@ describe('PoolPlanDialog', () => {
   it('has nothing to apply when the gateway already matches', async () => {
     api.planModelPool.mockResolvedValue({ ...poolPlan, steps: [poolPlan.steps[1]] })
     renderDialog()
-    const dialog = await screen.findByRole('dialog', { name: 'Publish Anthropic Claude' })
+    const dialog = await screen.findByRole('region', { name: 'Review Anthropic Claude' })
 
     expect(
       await within(dialog).findByText('API Management already matches Anthropic Claude. There’s nothing to apply.'),
@@ -187,7 +190,7 @@ describe('PoolPlanDialog', () => {
     const user = userEvent.setup()
     api.getModelPoolRun.mockResolvedValue({ ...poolRun, status: 'interrupted' })
     renderDialog()
-    const dialog = await screen.findByRole('dialog', { name: 'Publish Anthropic Claude' })
+    const dialog = await screen.findByRole('region', { name: 'Review Anthropic Claude' })
 
     await user.click(await within(dialog).findByRole('button', { name: 'Apply plan' }))
 
@@ -199,7 +202,7 @@ describe('PoolPlanDialog', () => {
   it('reviews every grant the first governed apply enforces, and says the shared subscription stops working', async () => {
     api.planModelPool.mockResolvedValue({ ...poolPlan, poolAccessSnapshot: governedAccess, previousAccessVersion: null })
     renderDialog()
-    const dialog = await screen.findByRole('dialog', { name: 'Publish Anthropic Claude' })
+    const dialog = await screen.findByRole('region', { name: 'Review Anthropic Claude' })
 
     const access = await within(dialog).findByRole('region', { name: 'Pool access review' })
     expect(within(access).getByRole('heading', { name: 'Who can call the pool' })).toBeVisible()

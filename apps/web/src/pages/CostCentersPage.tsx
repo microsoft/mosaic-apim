@@ -18,10 +18,10 @@ import {
   Textarea,
   Title3,
 } from '@fluentui/react-components'
-import { AddRegular } from '@fluentui/react-icons'
+import { AddRegular, BuildingRegular, MoneyRegular, PeopleRegular, SettingsRegular, GaugeRegular } from '@fluentui/react-icons'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { type FormEvent, useEffect, useMemo, useState } from 'react'
-import { Link as RouterLink, useNavigate, useParams } from 'react-router-dom'
+import { type FormEvent, useEffect, useMemo, useRef, useState } from 'react'
+import { Link as RouterLink, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { ApiError, useMosaicApi } from '../api'
 import { BUDGET_LEVEL_LABELS, budgetBadgeColor } from '../budgets'
 import { EmptyState, ErrorState, Loading } from '../components/AsyncState'
@@ -30,8 +30,12 @@ import { PageHeader } from '../components/PageHeader'
 import { RowActions } from '../components/RowActions'
 import { IdentityAvatar } from '../components/IdentityAvatar'
 import { SectionLayout, usePageSection } from '../components/SectionLayout'
+import { ResourceWorkbench } from '../components/ResourceWorkbench'
+import { WorkspaceEditorFrame } from '../components/WorkspaceEditorFrame'
+import { WorkspaceLeaveGuard, completeWorkspaceNavigation } from '../components/WorkspaceLeaveGuard'
+import { useWorkbenchLocation } from '../components/useWorkbenchLocation'
 import { PRINCIPAL_KIND_LABELS } from '../labels'
-import type { BudgetUpdate, BudgetView, CostCenter, CostCenterLimit, QuotaPeriod } from '../types'
+import type { BudgetUpdate, CostCenter, CostCenterLimit, QuotaPeriod } from '../types'
 import styles from './CostCentersPage.module.css'
 
 const CODE_PATTERN = /^[A-Za-z0-9._-]{1,64}$/
@@ -153,58 +157,46 @@ function CostCenterBadges({ costCenter, showKeys = true }: { costCenter: CostCen
   )
 }
 
-function CostCenterTable({ costCenters, budgets }: { costCenters: CostCenter[]; budgets: Map<string, BudgetView> }) {
+function CostCenterFields({ form, onChange, editing = false }: {
+  form: CostCenterForm
+  onChange: (form: CostCenterForm) => void
+  editing?: boolean
+}) {
+  const codeInvalid = Boolean(form.code) && !CODE_PATTERN.test(form.code)
   return (
-    <div className={styles.tableWrap}>
-      <table aria-label="Cost centers">
-        <thead>
-          <tr>
-            <th>Name</th>
-            <th>Code</th>
-            <th>Members</th>
-            <th>Grants</th>
-            <th>Keys allowed</th>
-            <th>Owners</th>
-          </tr>
-        </thead>
-        <tbody>
-          {costCenters.map((costCenter) => {
-            const budget = budgets.get(costCenter.id)
-            return (
-              <tr key={costCenter.id}>
-                <td>
-                  <div className={styles.nameCell}>
-                    <RouterLink to={`/cost-centers/${costCenter.id}`}>{costCenter.name}</RouterLink>
-                    <span className={styles.badges}>
-                      <CostCenterBadges costCenter={costCenter} showKeys={false} />
-                      {budget && budget.status.level !== 'ok' && (
-                        <Badge appearance="tint" color={budgetBadgeColor(budget.status.level)}>
-                          {BUDGET_LEVEL_LABELS[budget.status.level]}
-                        </Badge>
-                      )}
-                    </span>
-                  </div>
-                </td>
-                <td><code className={styles.code}>{costCenter.code}</code></td>
-                <td>{costCenter.isTenantDefault ? 'Everyone' : costCenter.members.length}</td>
-                <td>{costCenter.enabledGrantCount} / {costCenter.grantCount}</td>
-                <td>{costCenter.keysAllowed ? 'Yes' : 'No'}</td>
-                <td>{ownerText(costCenter)}</td>
-              </tr>
-            )
-          })}
-        </tbody>
-      </table>
-    </div>
+    <>
+      <div className={styles.formGrid}>
+        <Field label="Name" required>
+          <Input required aria-label="Name" value={form.name} onChange={(_, data) => onChange({ ...form, name: data.value })} />
+        </Field>
+        <Field label="Code" required
+          hint={editing ? 'Changing the code marks grants pending until their models are applied.' : 'Use 1 to 64 letters, numbers, dots, underscores, or hyphens.'}
+          validationMessage={codeInvalid ? 'Use only A-Z, a-z, 0-9, dot, underscore, or hyphen.' : undefined}>
+          <Input required aria-label="Code" value={form.code} onChange={(_, data) => onChange({ ...form, code: data.value })} />
+        </Field>
+      </div>
+      <Field label="Description">
+        <Textarea aria-label="Description" value={form.description} onChange={(_, data) => onChange({ ...form, description: data.value })} />
+      </Field>
+      <Field label="Owners" hint="Enter email addresses separated by commas or new lines.">
+        <Textarea aria-label="Owners" value={form.owners} onChange={(_, data) => onChange({ ...form, owners: data.value })} />
+      </Field>
+      <Switch checked={form.keysAllowed} label="Keys allowed"
+        onChange={(_, data) => onChange({ ...form, keysAllowed: data.checked })} />
+      {editing && <Text className={styles.muted}>
+        Turning keys off suspends this cost center&apos;s keys on the next apply. Changing the code or this switch marks grants pending until their models are applied.
+      </Text>}
+    </>
   )
 }
 
 export function CostCentersPage() {
   const sections = [
-    { value: 'centers', label: 'Cost centers' },
-    { value: 'organization', label: 'Organization-wide budget', description: 'Aggregate monthly spending across all cost centers and gateways. Warn-only: this budget never blocks calls.' },
+    { value: 'centers', label: 'Cost centers', icon: <BuildingRegular /> },
+    { value: 'organization', label: 'Organization-wide budget', icon: <MoneyRegular />, description: 'Aggregate monthly spending across all cost centers and gateways. Warn-only: this budget never blocks calls.' },
   ]
   const [section, selectSection] = usePageSection(sections)
+  const workbench = useWorkbenchLocation({ section })
   const api = useMosaicApi()
   const queryClient = useQueryClient()
   const [form, setForm] = useState<CostCenterForm>(emptyForm)
@@ -233,9 +225,10 @@ export function CostCentersPage() {
 
   const create = useMutation({
     mutationFn: () => api.createCostCenter(costCenterPayload(form)),
-    onSuccess: async () => {
+    onSuccess: async (created) => {
       setForm(emptyForm)
       await queryClient.invalidateQueries({ queryKey: ['cost-centers'] })
+      completeWorkspaceNavigation(() => workbench.close(created.id))
     },
   })
 
@@ -263,73 +256,63 @@ export function CostCentersPage() {
       <PageHeader
         title="Cost centers"
         description="Charge grants and keys to named cost centers across gateways."
-        source="live"
       />
-      <SectionLayout label="Cost centers" sections={sections} active={section} onSelect={selectSection}>
+      <SectionLayout label="Cost centers" sections={sections} active={section} onSelect={(value) => { if (value !== section) selectSection(value) }}>
       {section === 'centers' && (costCenters.isPending || settings.isPending) && <Loading label="Loading cost centers" />}
       {section === 'centers' && (costCenters.isError || settings.isError) && <ErrorState error={costCenters.error ?? settings.error} />}
       {section === 'centers' && costCenters.data && settings.data && (
-        <div className={styles.grid}>
-          <div className={styles.stack}>
-            <div className={styles.card}>
-              <div className={styles.cardHeader}>
-                <Title3 as="h2">Cost centers</Title3>
-                <Text className={styles.muted}>
-                  Every grant, and so every call, is charged to one. Everyone may charge the tenant
-                  default; others only their members.
-                </Text>
+        workbench.mode === 'new' ? (
+          <WorkspaceEditorFrame title="New cost center"
+            description="Create a named charge scope. Membership, resource limits, and its budget can be configured after saving."
+            onBack={() => { setForm(emptyForm); create.reset(); workbench.close() }}
+            onCancel={() => { setForm(emptyForm); create.reset(); workbench.close() }}
+            dirty={JSON.stringify(form) !== JSON.stringify(emptyForm)} pending={create.isPending}
+            error={create.isError ? errorMessage(create.error, 'Review the fields and try again.') : undefined}>
+            <form className={styles.editorForm} onSubmit={submit}>
+              <CostCenterFields form={form} onChange={setForm} />
+              <div className={styles.rowActions}>
+                <Button appearance="primary" icon={<AddRegular />} type="submit"
+                  disabled={create.isPending || codeInvalid || !form.name.trim() || !form.code.trim()}>
+                  Create cost center
+                </Button>
               </div>
-              {costCenters.data.length ? (
-                <CostCenterTable costCenters={costCenters.data} budgets={budgetsByCostCenter} />
-              ) : (
-                <EmptyState title="No cost centers">
-                  Create a cost center to charge grants separately.
-                </EmptyState>
-              )}
-            </div>
-
-          </div>
-
-          <div className={styles.card}>
-            <form className={styles.form} onSubmit={submit}>
-              <Title3 as="h2">New cost center</Title3>
-              {create.isError && (
-                <MessageBar intent="error">
-                  <MessageBarBody>
-                    <MessageBarTitle>Unable to create cost center</MessageBarTitle>
-                    {errorMessage(create.error, 'Review the fields and try again.')}
-                  </MessageBarBody>
-                </MessageBar>
-              )}
-              <Field label="Name" required>
-                <Input aria-label="Name" value={form.name} onChange={(_, data) => setForm({ ...form, name: data.value })} />
-              </Field>
-              <Field
-                label="Code"
-                hint="Use 1 to 64 letters, numbers, dots, underscores, or hyphens."
-                required
-                validationMessage={codeInvalid ? 'Use only A-Z, a-z, 0-9, dot, underscore, or hyphen.' : undefined}
-              >
-                <Input aria-label="Code" value={form.code} onChange={(_, data) => setForm({ ...form, code: data.value })} />
-              </Field>
-              <Field label="Description">
-                <Textarea aria-label="Description" value={form.description} onChange={(_, data) => setForm({ ...form, description: data.value })} />
-              </Field>
-              <Field label="Owners" hint="Enter email addresses separated by commas or new lines.">
-                <Textarea aria-label="Owners" value={form.owners} onChange={(_, data) => setForm({ ...form, owners: data.value })} />
-              </Field>
-              <Switch
-                checked={form.keysAllowed}
-                label="Keys allowed"
-                onChange={(_, data) => setForm({ ...form, keysAllowed: data.checked })}
-              />
-              <Button appearance="primary" icon={<AddRegular />} type="submit" disabled={create.isPending || codeInvalid}>
-                Create cost center
-              </Button>
             </form>
-
+          </WorkspaceEditorFrame>
+        ) : workbench.mode === 'edit' && workbench.selectedId ? (
+          <CostCenterWorkspace key={workbench.selectedId} costCenterId={workbench.selectedId} embedded />
+        ) : (
+          <div className={styles.stack}>
+            <ResourceWorkbench
+              title="Cost centers"
+              description="Everyone may charge the tenant default; other cost centers are available only to their members."
+              actions={<Button appearance="primary" icon={<AddRegular />}
+                onClick={() => { setForm(emptyForm); create.reset(); workbench.open('new') }}>New cost center</Button>}
+              items={costCenters.data}
+              getId={(costCenter) => costCenter.id}
+              selectedId={workbench.selectedId}
+              onSelect={workbench.select}
+              listLabel="Cost centers"
+              detailLabel="Selected cost center"
+              renderListItem={(costCenter) => {
+                const budget = budgetsByCostCenter.get(costCenter.id)
+                return <span className={styles.resourceRow}>
+                  <span className={styles.primary}>{costCenter.name}</span>
+                  <span className={styles.muted}>{costCenter.code} · {costCenter.isTenantDefault ? 'Everyone' : `${costCenter.members.length} members`} · {costCenter.enabledGrantCount} / {costCenter.grantCount} grants</span>
+                  <span className={styles.badges}>
+                    <CostCenterBadges costCenter={costCenter} />
+                    {budget && budget.status.level !== 'ok' && <Badge appearance="tint" color={budgetBadgeColor(budget.status.level)}>
+                      {BUDGET_LEVEL_LABELS[budget.status.level]}
+                    </Badge>}
+                  </span>
+                </span>
+              }}
+              renderDetail={(costCenter) => <CostCenterWorkspace key={costCenter.id} costCenterId={costCenter.id} embedded />}
+              emptyList={<EmptyState title="No cost centers">Create a cost center to charge grants separately.</EmptyState>}
+              emptySelection={<EmptyState title="Select a cost center">Inspect its ownership, members, limits, and budget.</EmptyState>}
+            />
+            <details className={styles.defaultSettings}>
+              <summary>Tenant default</summary>
             <form className={styles.form} onSubmit={(event) => { event.preventDefault(); saveSettings.mutate() }}>
-              <Title3 as="h2">Tenant default</Title3>
               {saveSettings.isError && (
                 <MessageBar intent="error">
                   <MessageBarBody>{errorMessage(saveSettings.error, 'Unable to save the default cost center.')}</MessageBarBody>
@@ -349,8 +332,9 @@ export function CostCentersPage() {
                 Save default
               </Button>
             </form>
+            </details>
           </div>
-        </div>
+        )
       )}
       {section === 'organization' && <div className={styles.card}>
         <div className={styles.cardHeader}>
@@ -418,17 +402,24 @@ function parsePositiveInteger(value: string) {
 }
 
 export function CostCenterDetailPage() {
+  const { costCenterId = '' } = useParams()
+  return <CostCenterWorkspace costCenterId={costCenterId} />
+}
+
+function CostCenterWorkspace({ costCenterId, embedded = false }: { costCenterId: string; embedded?: boolean }) {
   const sections = [
-    { value: 'overview', label: 'Overview' },
-    { value: 'members', label: 'Members' },
-    { value: 'limits', label: 'Limits' },
-    { value: 'budget', label: 'Budget' },
+    { value: 'overview', label: 'Overview', icon: <BuildingRegular /> },
+    { value: 'members', label: 'Members', icon: <PeopleRegular /> },
+    { value: 'limits', label: 'Limits', icon: <GaugeRegular /> },
+    { value: 'budget', label: 'Budget', icon: <MoneyRegular /> },
   ]
-  const [section, selectSection] = usePageSection(sections)
+  const [section, selectSection] = usePageSection(sections, 'overview', embedded ? 'centerTab' : 'tab')
+  const workbench = useWorkbenchLocation({ section: embedded ? 'centers' : section })
+  const editing = workbench.mode === 'edit'
   const api = useMosaicApi()
   const queryClient = useQueryClient()
   const navigate = useNavigate()
-  const { costCenterId = '' } = useParams()
+  const location = useLocation()
   const [form, setForm] = useState<CostCenterForm>(emptyForm)
   const [memberId, setMemberId] = useState('')
   const [removeMember, setRemoveMember] = useState<{ id: string; label: string; securityGroup: boolean } | null>(null)
@@ -436,6 +427,10 @@ export function CostCenterDetailPage() {
   const [limitDraft, setLimitDraft] = useState<LimitDraft>(emptyLimitDraft)
   const [limitValidation, setLimitValidation] = useState<string | null>(null)
   const [limits, setLimits] = useState<CostCenterLimit[]>([])
+  const draftLoadedId = useRef<string | null>(null)
+  const limitsLoadedId = useRef<string | null>(null)
+  const limitsBaseline = useRef<CostCenterLimit[]>([])
+  const previousLimitSection = useRef(section)
 
   const costCenter = useQuery({ queryKey: ['cost-centers', costCenterId], queryFn: () => api.getCostCenter(costCenterId), enabled: Boolean(costCenterId) })
   const budget = useQuery({
@@ -467,6 +462,8 @@ export function CostCenterDetailPage() {
 
   useEffect(() => {
     if (!data) return
+    if (editing && draftLoadedId.current === data.id) return
+    draftLoadedId.current = data.id
     setForm({
       name: data.name,
       code: data.code,
@@ -474,8 +471,21 @@ export function CostCenterDetailPage() {
       owners: data.owners.join(', '),
       keysAllowed: data.keysAllowed,
     })
-    setLimits(data.limits)
-  }, [data])
+  }, [data, editing])
+
+  useEffect(() => {
+    if (!data) return
+    const keepDraft = limitsLoadedId.current === data.id && previousLimitSection.current === section && section === 'limits'
+    const previousBaseline = limitsBaseline.current
+    setLimits((current) => keepDraft && JSON.stringify(current) !== JSON.stringify(previousBaseline) ? current : data.limits)
+    if (!keepDraft) {
+      setLimitDraft(emptyLimitDraft)
+      setLimitValidation(null)
+    }
+    limitsLoadedId.current = data.id
+    limitsBaseline.current = data.limits
+    previousLimitSection.current = section
+  }, [data, section])
 
   const update = useMutation({
     mutationFn: () => api.updateCostCenter(costCenterId, costCenterPayload(form)),
@@ -484,6 +494,7 @@ export function CostCenterDetailPage() {
         queryClient.invalidateQueries({ queryKey: ['cost-centers'] }),
         queryClient.invalidateQueries({ queryKey: ['cost-centers', costCenterId] }),
       ])
+      completeWorkspaceNavigation(() => workbench.close(embedded ? costCenterId : undefined))
     },
   })
   const addMember = useMutation({
@@ -502,11 +513,19 @@ export function CostCenterDetailPage() {
   })
   const saveLimits = useMutation({
     mutationFn: () => api.updateCostCenterLimits(costCenterId, limits),
-    onSuccess: async () => queryClient.invalidateQueries({ queryKey: ['cost-centers', costCenterId] }),
+    onSuccess: async (saved) => {
+      setLimits(saved.limits)
+      limitsBaseline.current = saved.limits
+      setLimitDraft(emptyLimitDraft)
+      await queryClient.invalidateQueries({ queryKey: ['cost-centers', costCenterId] })
+    },
   })
   const deleteCostCenter = useMutation({
     mutationFn: () => api.deleteCostCenter(costCenterId),
-    onSuccess: () => navigate('/cost-centers'),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['cost-centers'] })
+      completeWorkspaceNavigation(() => embedded ? workbench.close(null) : navigate('/cost-centers'))
+    },
   })
   const recheck = useMutation({
     mutationFn: () => api.recheckCostCenter(costCenterId),
@@ -571,8 +590,12 @@ export function CostCenterDetailPage() {
   }
 
   if (costCenter.isPending) return <Loading label="Loading cost center" />
-  if (costCenter.isError) return <ErrorState error={costCenter.error} />
-  if (!data) return null
+  if (costCenter.isError || !data) return <div className={styles.stack}>
+    {costCenter.isError
+      ? <ErrorState error={costCenter.error} />
+      : <EmptyState title="Cost center unavailable">This record may have been removed or is no longer accessible.</EmptyState>}
+    <Button onClick={() => embedded ? workbench.close(null) : navigate('/cost-centers')}>Back to cost centers</Button>
+  </div>
 
   const nonMembers = (principals.data ?? []).filter((principal) =>
     !data.memberDetails.some((member) => member.principalId === principal.id && member.explicit),
@@ -580,19 +603,67 @@ export function CostCenterDetailPage() {
   const codeInvalid = !CODE_PATTERN.test(form.code)
   const selectedLimitResource = resources.find((item) => item.key === limitDraft.resource)
   const limitResourceIsMcp = selectedLimitResource?.kind === 'mcpServer'
+  const originalForm: CostCenterForm = {
+    name: data.name,
+    code: data.code,
+    description: data.description ?? '',
+    owners: data.owners.join(', '),
+    keysAllowed: data.keysAllowed,
+  }
+  function cancelEditing() {
+    setForm(originalForm)
+    update.reset()
+    workbench.close()
+  }
+  function selectCostCenterSection(value: string) {
+    if (value === section) return
+    if (!embedded) {
+      selectSection(value)
+      return
+    }
+    const next = new URLSearchParams(location.search)
+    next.set('centerTab', value)
+    navigate({ pathname: location.pathname, search: `?${next}` }, { preventScrollReset: true })
+  }
+
+  if (editing) return (
+    <WorkspaceEditorFrame title={`Edit ${data.name}`}
+      description="Update ownership and local charge settings. Membership, resource limits, and budgets remain separate."
+      onBack={cancelEditing} onCancel={cancelEditing}
+      dirty={JSON.stringify(form) !== JSON.stringify(originalForm)} pending={update.isPending}
+      error={update.isError ? errorMessage(update.error, 'Unable to save the cost center.') : undefined}>
+      <form className={styles.editorForm} onSubmit={(event) => {
+        event.preventDefault()
+        if (!codeInvalid && form.name.trim()) update.mutate()
+      }}>
+        <CostCenterFields form={form} onChange={setForm} editing />
+        <div className={styles.rowActions}>
+          <Button appearance="primary" type="submit" disabled={update.isPending || codeInvalid || !form.name.trim()}>Save changes</Button>
+        </div>
+      </form>
+    </WorkspaceEditorFrame>
+  )
 
   return (
-    <section className={styles.page}>
-      <PageHeader
+    <WorkspaceLeaveGuard
+      dirty={section === 'limits' && (JSON.stringify(limits) !== JSON.stringify(data.limits) || JSON.stringify(limitDraft) !== JSON.stringify(emptyLimitDraft))}
+      pending={saveLimits.isPending}>
+    {() => <section className={`${styles.page} ${embedded ? styles.embedded : ''}`}>
+      {embedded ? <div className={styles.selectedHeader}>
+        <div className={styles.cardHeader}><Title3 as="h3">{data.name}</Title3><Text className={styles.muted}>{data.code} · {data.description ?? 'No description'}</Text></div>
+        <RouterLink to={`/cost-centers/${encodeURIComponent(data.id)}`}
+          state={{ from: `${location.pathname}${location.search}` }}>Open cost center</RouterLink>
+      </div> : <PageHeader
         title={data.name}
         description={`${data.code} · ${data.description ?? 'No description'}`}
-        source="live"
         actions={
-          <Button onClick={() => navigate(`/entitlements?costCenter=${encodeURIComponent(data.id)}`)}>
-            View grants
-          </Button>
+          <>
+            <Button onClick={() => navigate(typeof location.state?.from === 'string' && location.state.from.startsWith('/cost-centers?')
+              ? location.state.from : `/cost-centers?selected=${encodeURIComponent(data.id)}`)}>Back to cost centers</Button>
+            <Button onClick={() => navigate(`/entitlements?costCenter=${encodeURIComponent(data.id)}`)}>View grants</Button>
+          </>
         }
-      />
+      />}
       {(data.pendingRechecks?.length ?? 0) > 0 && (
         <MessageBar intent="warning">
           <MessageBarBody>
@@ -609,43 +680,27 @@ export function CostCenterDetailPage() {
           <MessageBarBody>{errorMessage(recheck.error, 'Unable to check the grants again.')}</MessageBarBody>
         </MessageBar>
       )}
-      <SectionLayout label="Cost center" sections={sections} active={section} onSelect={selectSection}>
+      <SectionLayout label="Cost center" orientation={embedded ? 'horizontal' : 'vertical'}
+        sections={sections} active={section} onSelect={selectCostCenterSection}>
       <Text className={styles.muted}>Scope: {data.name} ({data.code}) · This cost center only.</Text>
-      {section === 'overview' && <div className={styles.grid}>
-        <div className={styles.card}>
-          <form className={styles.form} onSubmit={(event) => { event.preventDefault(); if (!codeInvalid) update.mutate() }}>
-            <Title3 as="h2">Details</Title3>
-            {update.isError && (
-              <MessageBar intent="error"><MessageBarBody>{errorMessage(update.error, 'Unable to save the cost center.')}</MessageBarBody></MessageBar>
-            )}
-            <div className={styles.formGrid}>
-              <Field label="Name" required><Input aria-label="Name" value={form.name} onChange={(_, data) => setForm({ ...form, name: data.value })} /></Field>
-              <Field label="Code" hint="Changing the code marks grants pending until their models are applied." validationMessage={codeInvalid ? 'Use only A-Z, a-z, 0-9, dot, underscore, or hyphen.' : undefined} required>
-                <Input aria-label="Code" value={form.code} onChange={(_, data) => setForm({ ...form, code: data.value })} />
-              </Field>
-            </div>
-            <Field label="Description"><Textarea aria-label="Description" value={form.description} onChange={(_, data) => setForm({ ...form, description: data.value })} /></Field>
-            <Field label="Owners" hint="Email addresses separated by commas or new lines."><Textarea aria-label="Owners" value={form.owners} onChange={(_, data) => setForm({ ...form, owners: data.value })} /></Field>
-            <Switch
-              checked={form.keysAllowed}
-              label="Keys allowed"
-              onChange={(_, switchData) => setForm({ ...form, keysAllowed: switchData.checked })}
-            />
-            <Text className={styles.muted}>
-              Turning keys off suspends this cost center&apos;s keys on the next apply. Changing the code or this switch marks grants pending until their models are applied.
-            </Text>
-            <Button appearance="primary" type="submit" disabled={update.isPending || codeInvalid}>Save changes</Button>
-          </form>
-        </div>
-
+      {section === 'overview' && <div className={styles.stack}>
         <div className={styles.card}>
           <Title3 as="h2">Summary</Title3>
+          <div className={styles.rowActions}>
+            <Button appearance="primary" icon={<SettingsRegular />} onClick={() => { setForm(originalForm); update.reset(); workbench.open('edit', embedded ? data.id : undefined) }}>Edit cost center</Button>
+            {embedded && <Button onClick={() => navigate(`/entitlements?costCenter=${encodeURIComponent(data.id)}`)}>View grants</Button>}
+          </div>
           <dl className={styles.detailList}>
             <div><dt>Status</dt><dd><CostCenterBadges costCenter={data} /></dd></div>
             <div><dt>Grants</dt><dd>{data.enabledGrantCount} enabled of {data.grantCount}</dd></div>
             <div><dt>Owners</dt><dd>{ownerText(data)}</dd></div>
             <div><dt>Defaults</dt><dd>{data.defaultFor} principal{data.defaultFor === 1 ? '' : 's'}</dd></div>
+            <div><dt>Members</dt><dd>{data.isTenantDefault ? 'Everyone may charge this cost center' : `${data.memberDetails.length} listed or default members`}</dd></div>
+            <div><dt>Resource limits</dt><dd>{data.limits.length} configured</dd></div>
           </dl>
+          {budget.isPending && <Loading label="Loading budget" />}
+          {budget.isError && <ErrorState error={budget.error} />}
+          {budget.isSuccess && (budget.data ? <BudgetMeter budget={budget.data} label={data.name} /> : <Text className={styles.muted}>No budget set</Text>)}
           {!data.builtIn && (
             <>
               {deleteCostCenter.isError && (
@@ -768,7 +823,7 @@ export function CostCenterDetailPage() {
           </div>
         </div>}
 
-        {section === 'limits' && <div className={styles.card}>
+        {section === 'limits' && <div className={styles.card} data-workspace-editor>
           <Title3 as="h2">Limits</Title3>
           <Text className={styles.muted}>
             Per-person limits apply to each grant under this cost center that sets none of its own. A pooled quota is shared by every grant under the cost center on that model, per gateway. MCP servers use calls only.
@@ -864,6 +919,7 @@ export function CostCenterDetailPage() {
           </DialogBody>
         </DialogSurface>
       </Dialog>
-    </section>
+    </section>}
+    </WorkspaceLeaveGuard>
   )
 }

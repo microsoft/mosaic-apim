@@ -4,6 +4,50 @@
   min-width: 0;
 }
 
+.resourceRow {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+}
+
+.resourceRow > :first-child {
+  overflow-wrap: anywhere;
+}
+
+.rowBadges {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.rowBadges :global(.fui-Badge) {
+  white-space: nowrap;
+}
+
+.suggestionDetail {
+  display: grid;
+  gap: 20px;
+  min-width: 0;
+}
+
+.detailHeading {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: start;
+  gap: 16px;
+}
+
+.detailHeading h2 {
+  margin: 0 0 6px;
+}
+
+.detailHeading :global(.fui-Button) {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
 .listCard {
   overflow: hidden;
   border: 1px solid var(--mosaic-border-soft);

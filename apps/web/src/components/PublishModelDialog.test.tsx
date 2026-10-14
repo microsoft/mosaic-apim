@@ -104,7 +104,7 @@ async function advanceToReview(user: ReturnType<typeof userEvent.setup>) {
 // only when the key is pressed inside it. The dialog itself contains everything, so it doesn't count.
 function focused() {
   const element = document.activeElement as HTMLElement
-  const dialog = screen.getByRole('dialog')
+  const dialog = screen.getByRole('region', { name: /Publish a model|Review model access|Review model changes/ })
   expect(element).not.toBe(document.body)
   expect(element).not.toBe(dialog)
   expect(dialog).toContainElement(element)
@@ -120,7 +120,7 @@ type Frame = { title?: string; step?: string; choosing: boolean; text: string }
 // so this records even a frame that an effect replaces straight away, which no query after the render
 // can see.
 function recordFrame(frames: Frame[]) {
-  const dialog = document.querySelector('[role="dialog"]')
+  const dialog = document.querySelector('[data-workspace-editor]')
   if (!dialog) return
   const text = dialog.textContent ?? ''
   frames.push({
@@ -630,7 +630,8 @@ describe('PublishModelDialog', () => {
     expect(screen.getByText('Step 3 of 4')).toBeVisible()
     expect(screen.getByRole('table', { name: 'All target model grants' })).toBeVisible()
     expect(screen.queryByRole('combobox', { name: 'Gateway' })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Back' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Back' })).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Previous step' })).not.toBeInTheDocument()
     expect(api.listGateways).not.toHaveBeenCalled()
   })
 
@@ -641,7 +642,7 @@ describe('PublishModelDialog', () => {
     await user.click(screen.getByRole('button', { name: 'Open review 1' }))
 
     expect(document.activeElement).not.toBe(document.body)
-    expect(screen.getByRole('dialog')).toContainElement(document.activeElement as HTMLElement)
+    expect(screen.getByRole('region', { name: /Publish a model|Review model access|Review model changes/ })).toContainElement(document.activeElement as HTMLElement)
   })
 
   it('leaves focus where Fluent puts it as a review opens', async () => {
@@ -651,7 +652,7 @@ describe('PublishModelDialog', () => {
     await user.click(screen.getByRole('button', { name: 'Open review 1' }))
 
     // Fluent focuses the first control Tab reaches, which in this review is Close.
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Close' })).toHaveFocus())
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Review model access' })).toHaveFocus())
     expect(screen.getByText('Step 3 of 4')).not.toHaveFocus()
   })
 
@@ -665,7 +666,7 @@ describe('PublishModelDialog', () => {
 
     // The page stays aria-hidden for a moment after a modal closes.
     const openSecond = await screen.findByRole('button', { name: 'Open review 2' })
-    expect(screen.queryByRole('dialog', { hidden: true })).not.toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: /Publish a model|Review model access|Review model changes/ })).not.toBeInTheDocument()
     frames.length = 0
     await user.click(openSecond)
 
@@ -673,7 +674,7 @@ describe('PublishModelDialog', () => {
     expect(frames[0].text).toContain('Grace Hopper')
     expect(frames[0].text).toContain(secondReview.message)
     expect(frames.filter((frame) => frame.text.includes('Ada Lovelace'))).toEqual([])
-    expect(screen.getByRole('dialog')).toContainElement(document.activeElement as HTMLElement)
+    expect(screen.getByRole('region', { name: /Publish a model|Review model access|Review model changes/ })).toContainElement(document.activeElement as HTMLElement)
 
     // Closing forgets the review, so reopening the very same one starts on it again.
     await user.click(screen.getByRole('button', { name: 'Close' }))
@@ -683,10 +684,10 @@ describe('PublishModelDialog', () => {
 
     expect(new Set(frames.map((frame) => frame.step))).toEqual(new Set(['Step 3 of 4']))
     expect(frames[0].text).toContain('Grace Hopper')
-    expect(screen.getByRole('dialog')).toContainElement(document.activeElement as HTMLElement)
+    expect(screen.getByRole('region', { name: /Publish a model|Review model access|Review model changes/ })).toContainElement(document.activeElement as HTMLElement)
   })
 
-  it('keeps showing the review, as it was, while it closes', async () => {
+  it('does not flash another step while closing an unsuccessful review', async () => {
     const user = userEvent.setup()
     api.applyPublishPlan.mockRejectedValue(new Error('API Management refused the change.'))
     const frames = renderDialogParent([{ publication: modelPublication, plan: accessPlan }])
@@ -698,14 +699,8 @@ describe('PublishModelDialog', () => {
     await user.click(screen.getByRole('button', { name: 'Close' }))
 
     await screen.findByRole('button', { name: 'Open review 1' })
-    expect(screen.queryByRole('dialog', { hidden: true })).not.toBeInTheDocument()
-    // Every frame React committed while Fluent animated the dialog out.
-    expect(frames.length).toBeGreaterThan(0)
-    expect(new Set(frames.map((frame) => `${frame.title} · ${frame.step}`))).toEqual(
-      new Set(['Review model access · Step 3 of 4']),
-    )
-    expect(frames.filter((frame) => frame.choosing)).toEqual([])
-    expect(frames.filter((frame) => !frame.text.includes('API Management refused the change.'))).toEqual([])
+    expect(screen.queryByRole('region', { name: /Publish a model|Review model access|Review model changes/ })).not.toBeInTheDocument()
+    expect(frames).toEqual([])
   })
 
   it('keeps showing the publish step it was on while it closes, and starts over when opened again', async () => {
@@ -719,22 +714,18 @@ describe('PublishModelDialog', () => {
     await user.click(screen.getByRole('button', { name: 'Close' }))
 
     const startAgain = await screen.findByRole('button', { name: 'Start publishing' })
-    expect(screen.queryByRole('dialog', { hidden: true })).not.toBeInTheDocument()
-    expect(frames.length).toBeGreaterThan(0)
-    expect(new Set(frames.map((frame) => `${frame.title} · ${frame.step}`))).toEqual(
-      new Set(['Publish a model · Step 3 of 4']),
-    )
-    expect(frames.filter((frame) => frame.choosing)).toEqual([])
+    expect(screen.queryByRole('region', { name: /Publish a model|Review model access|Review model changes/ })).not.toBeInTheDocument()
+    expect(frames).toEqual([])
 
     frames.length = 0
     await user.click(startAgain)
 
     expect(new Set(frames.map((frame) => frame.step))).toEqual(new Set(['Step 1 of 4']))
     expect(await screen.findByRole('checkbox', { name: 'Publish gpt-4o-prod' })).not.toBeChecked()
-    expect(screen.getByRole('dialog')).toContainElement(document.activeElement as HTMLElement)
+    expect(screen.getByRole('region', { name: /Publish a model|Review model access|Review model changes/ })).toContainElement(document.activeElement as HTMLElement)
   })
 
-  it('does not announce an apply that finishes after closing, or carry it into the next opening', async () => {
+  it('prevents leaving during Apply and starts a clean session after it finishes', async () => {
     const user = userEvent.setup()
     let finishApply: (value: PublishRun) => void = () => {}
     api.applyPublishPlan.mockReturnValue(new Promise<PublishRun>((resolve) => { finishApply = resolve }))
@@ -744,42 +735,46 @@ describe('PublishModelDialog', () => {
     await user.click(screen.getByRole('button', { name: 'Open review 1' }))
     await user.click(screen.getByRole('button', { name: 'Apply plan' }))
     expect(await screen.findByRole('button', { name: 'Applying…' })).toHaveAttribute('aria-disabled', 'true')
-    await user.click(screen.getByRole('button', { name: 'Close' }))
-    const startPublishing = await screen.findByRole('button', { name: 'Start publishing' })
+    expect(screen.getByRole('button', { name: 'Close' })).toBeDisabled()
+    await user.click(screen.getByRole('button', { name: 'Back' }))
+    expect(await screen.findByRole('dialog', { name: 'Operation in progress' })).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Discard changes' })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Stay' }))
 
     // TanStack Query reports the result on a timer, so wait inside act for everything it sets off.
     await act(async () => {
       finishApply(run())
       await new Promise((resolve) => setTimeout(resolve, 50))
     })
-    expect(onPublished).not.toHaveBeenCalled()
+    await waitFor(() => expect(onPublished).toHaveBeenCalledTimes(1))
+    await user.click(screen.getByRole('button', { name: 'Close' }))
+    const startPublishing = await screen.findByRole('button', { name: 'Start publishing' })
 
     frames.length = 0
     await user.click(startPublishing)
 
     expect(new Set(frames.map((frame) => frame.step))).toEqual(new Set(['Step 1 of 4']))
     expect(screen.getByRole('combobox', { name: 'Gateway' })).toBeVisible()
-    expect(onPublished).not.toHaveBeenCalled()
+    expect(onPublished).toHaveBeenCalledTimes(1)
   })
 
   it('moves focus to the top of each step it moves to, forwards and back', async () => {
     const user = userEvent.setup()
     renderDialog()
 
-    // Opening leaves focus where Fluent puts it, on the first control.
-    await waitFor(() => expect(screen.getByRole('combobox', { name: 'Gateway' })).toHaveFocus())
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Publish a model' })).toHaveFocus())
     await user.click(await screen.findByRole('checkbox', { name: 'Publish gpt-4o-prod' }))
     await user.click(screen.getByRole('button', { name: 'Configure' }))
     await waitFor(() => expect(focused()).toBe(screen.getByText('Step 2 of 4')))
 
-    await user.click(screen.getByRole('button', { name: 'Back' }))
+    await user.click(screen.getByRole('button', { name: 'Previous step' }))
     await waitFor(() => expect(focused()).toBe(screen.getByText('Step 1 of 4')))
 
     await user.click(screen.getByRole('button', { name: 'Configure' }))
     await user.click(screen.getByRole('button', { name: 'Review plan' }))
     await waitFor(() => expect(focused()).toBe(screen.getByText('Step 3 of 4')))
 
-    await user.click(screen.getByRole('button', { name: 'Back' }))
+    await user.click(screen.getByRole('button', { name: 'Previous step' }))
     await waitFor(() => expect(focused()).toBe(screen.getByText('Step 2 of 4')))
   })
 
@@ -821,7 +816,7 @@ describe('PublishModelDialog', () => {
     await waitFor(() => expect(focused()).toContainElement(screen.getByRole('table', { name: 'Publish run steps' })))
   })
 
-  it('moves focus to the result once the apply finishes, where Escape closes the dialog', async () => {
+  it('moves focus to the result once the apply finishes, where Close returns to the list', async () => {
     const user = userEvent.setup()
     renderDialogParent([{ publication: modelPublication, plan: accessPlan }])
 
@@ -832,11 +827,11 @@ describe('PublishModelDialog', () => {
     await waitFor(() => expect(focused()).toContainElement(screen.getByRole('table', { name: 'Publish run steps' })))
     expect(focused()).toHaveTextContent('Local development service reported completion; live APIM apply is not verified.')
 
-    await user.keyboard('{Escape}')
+    await user.click(screen.getByRole('button', { name: 'Close' }))
 
     // The page stays aria-hidden for a moment after a modal closes.
     await screen.findByRole('button', { name: 'Open review 1' })
-    expect(screen.queryByRole('dialog', { hidden: true })).not.toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: /Publish a model|Review model access|Review model changes/ })).not.toBeInTheDocument()
   })
 
   it('moves focus from the apply step to the result when a running apply finishes', async () => {
@@ -876,7 +871,7 @@ describe('PublishModelDialog', () => {
     expect(focused()).toContainElement(screen.getByRole('table', { name: 'Publish run steps' }))
   })
 
-  it('moves focus to the refusal, above the fresh plan MOSAIC made instead, where Escape closes the dialog', async () => {
+  it('moves focus to the refusal, above the fresh plan MOSAIC made instead, where Close returns to the list', async () => {
     const user = userEvent.setup()
     const refusal =
       'This publication changed after the plan was produced. Re-plan it and review the new changes before applying.'
@@ -895,10 +890,10 @@ describe('PublishModelDialog', () => {
     expect(focused()).not.toContainElement(screen.getByRole('table', { name: 'Publish plan steps' }))
     expect(screen.getByRole('button', { name: 'Apply plan' })).toBeEnabled()
 
-    await user.keyboard('{Escape}')
+    await user.click(screen.getByRole('button', { name: 'Close' }))
 
     await screen.findByRole('button', { name: 'Open review 1' })
-    expect(screen.queryByRole('dialog', { hidden: true })).not.toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: /Publish a model|Review model access|Review model changes/ })).not.toBeInTheDocument()
   })
 
   it('moves focus to the refusal when MOSAIC cannot re-plan after refusing the reviewed plan', async () => {

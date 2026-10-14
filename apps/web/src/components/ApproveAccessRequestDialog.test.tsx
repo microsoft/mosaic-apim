@@ -138,11 +138,10 @@ function renderApproval(
   return { onCancel }
 }
 
-// The element that has focus, which has to be inside the open dialog: Fluent closes a dialog on Escape
-// only when the key is pressed inside it. The dialog itself contains everything, so it doesn't count.
+// Approval failures move focus into the workspace so the reason is announced.
 function focused() {
   const element = document.activeElement as HTMLElement
-  const dialog = screen.getByRole('dialog')
+  const dialog = screen.getByRole('region', { name: 'Approve access request' })
   expect(element).not.toBe(document.body)
   expect(element).not.toBe(dialog)
   expect(dialog).toContainElement(element)
@@ -151,7 +150,7 @@ function focused() {
 
 // Each line of the open dialog's Requester entry, in order.
 function requesterLines() {
-  const entry = within(screen.getByRole('dialog')).getByText('Requester').nextElementSibling as HTMLElement
+  const entry = within(screen.getByRole('region', { name: 'Approve access request' })).getByText('Requester').nextElementSibling as HTMLElement
   return [...entry.querySelectorAll(`.${textClassNames.root}`)].map((line) => line.textContent)
 }
 
@@ -159,7 +158,7 @@ describe('ApproveAccessRequestDialog', () => {
   it('shows who asked for what and why, with limits prefilled from the publication', async () => {
     renderDialog()
 
-    const dialog = await screen.findByRole('dialog')
+    const dialog = await screen.findByRole('region', { name: 'Approve access request' })
     expect(within(dialog).getByRole('heading', { name: 'Approve access request' })).toBeVisible()
     expect(within(dialog).getByText('Ada Lovelace')).toBeVisible()
     expect(within(dialog).getByText('user-object-1')).toBeVisible()
@@ -194,7 +193,7 @@ describe('ApproveAccessRequestDialog', () => {
   ])('shows %s', async (_, requester, lines) => {
     renderDialog({ requester })
 
-    await screen.findByRole('dialog')
+    await screen.findByRole('region', { name: 'Approve access request' })
     expect(requesterLines()).toEqual(lines)
   })
 
@@ -216,7 +215,7 @@ describe('ApproveAccessRequestDialog', () => {
     const researchCostCenter = { ...supportCostCenter, id: 'cc-research', name: 'Research', code: 'research' }
     const { onApprove } = renderDialog({ costCenters: [supportCostCenter, researchCostCenter] })
 
-    const dialog = await screen.findByRole('dialog')
+    const dialog = await screen.findByRole('region', { name: 'Approve access request' })
     await user.selectOptions(within(dialog).getByRole('combobox', { name: 'Cost center' }), researchCostCenter.id)
     await user.click(within(dialog).getByRole('button', { name: 'Approve and create grant' }))
 
@@ -235,7 +234,7 @@ describe('ApproveAccessRequestDialog', () => {
       costCenters: [supportCostCenter, researchCostCenter],
     })
 
-    const dialog = await screen.findByRole('dialog')
+    const dialog = await screen.findByRole('region', { name: 'Approve access request' })
     const select = within(dialog).getByRole('combobox', { name: 'Cost center' })
     expect(select).toHaveValue(researchCostCenter.id)
     expect(within(select).getAllByRole('option').map((option) => option.textContent)).toEqual([
@@ -251,7 +250,7 @@ describe('ApproveAccessRequestDialog', () => {
     const user = userEvent.setup()
     const { onApprove } = renderDialog({ costCenters: [supportCostCenter] })
 
-    const dialog = await screen.findByRole('dialog')
+    const dialog = await screen.findByRole('region', { name: 'Approve access request' })
     const select = within(dialog).getByRole('combobox', { name: 'Cost center' })
     expect(select).toHaveValue('')
     expect(within(select).getByRole('option', { name: "Requester's default cost center" })).toBeInTheDocument()
@@ -282,7 +281,7 @@ describe('ApproveAccessRequestDialog', () => {
       costCenters: [withDefaults, researchCostCenter],
     })
 
-    const dialog = await screen.findByRole('dialog')
+    const dialog = await screen.findByRole('region', { name: 'Approve access request' })
     const tokensPerMinute = within(dialog).getByRole('spinbutton', { name: 'Tokens per minute' })
     expect(tokensPerMinute).toHaveValue(null)
     expect(within(dialog).getByText(/Support sets per-person defaults here: 5,000 tokens per minute\./)).toBeVisible()
@@ -305,7 +304,7 @@ describe('ApproveAccessRequestDialog', () => {
     const user = userEvent.setup()
     const { onApprove } = renderDialog()
 
-    const dialog = await screen.findByRole('dialog')
+    const dialog = await screen.findByRole('region', { name: 'Approve access request' })
     const tokensPerMinute = within(dialog).getByRole('spinbutton', { name: 'Tokens per minute' })
     await user.clear(tokensPerMinute)
     await user.type(tokensPerMinute, '5000')
@@ -344,7 +343,7 @@ describe('ApproveAccessRequestDialog', () => {
       governed: false,
     })
 
-    const dialog = await screen.findByRole('dialog')
+    const dialog = await screen.findByRole('region', { name: 'Approve access request' })
     expect(within(dialog).getAllByText('new-object-1')).toHaveLength(1)
     expect(within(dialog).getByText(
       'Not registered in MOSAIC yet. Approving registers them as a user principal.',
@@ -362,7 +361,7 @@ describe('ApproveAccessRequestDialog', () => {
     const user = userEvent.setup()
     const { onApprove } = renderDialog()
 
-    const dialog = await screen.findByRole('dialog')
+    const dialog = await screen.findByRole('region', { name: 'Approve access request' })
     await user.clear(within(dialog).getByRole('spinbutton', { name: 'Tokens per minute' }))
     await user.click(within(dialog).getByRole('button', { name: 'Approve and create grant' }))
 
@@ -388,7 +387,7 @@ describe('ApproveAccessRequestDialog', () => {
       },
     })
 
-    const dialog = await screen.findByRole('dialog')
+    const dialog = await screen.findByRole('region', { name: 'Approve access request' })
     expect(within(dialog).getByText(/moved from Development to Production/)).toBeVisible()
     expect(within(dialog).getByText('This approval grants production-class access.')).toBeVisible()
     const approve = within(dialog).getByRole('button', { name: 'Approve and create grant' })
@@ -424,7 +423,7 @@ describe('ApproveAccessRequestDialog', () => {
       publication: undefined,
     })
 
-    const dialog = await screen.findByRole('dialog')
+    const dialog = await screen.findByRole('region', { name: 'Approve access request' })
     await user.click(within(dialog).getByRole('checkbox', { name: 'Approve access to Unclassified' }))
     await user.click(within(dialog).getByRole('button', { name: 'Approve and create grant' }))
 
@@ -462,7 +461,7 @@ describe('ApproveAccessRequestDialog', () => {
       }),
     })
 
-    const dialog = await screen.findByRole('dialog')
+    const dialog = await screen.findByRole('region', { name: 'Approve access request' })
     expect(within(dialog).getByText(/moved from Development to Production/)).toBeVisible()
     await user.click(within(dialog).getByRole('checkbox', { name: 'Approve access to Production' }))
     await user.click(within(dialog).getByRole('button', { name: 'Approve and create grant' }))
@@ -478,7 +477,7 @@ describe('ApproveAccessRequestDialog', () => {
     const user = userEvent.setup()
     const { onApprove } = renderDialog()
 
-    const dialog = await screen.findByRole('dialog')
+    const dialog = await screen.findByRole('region', { name: 'Approve access request' })
     await user.type(within(dialog).getByRole('spinbutton', { name: 'Calls' }), '30')
     await user.clear(within(dialog).getByRole('spinbutton', { name: 'Per how many seconds' }))
 
@@ -494,7 +493,7 @@ describe('ApproveAccessRequestDialog', () => {
   it('blocks approval when the requester already holds a grant for the resource', async () => {
     renderDialog({ existingGrant: true })
 
-    const dialog = await screen.findByRole('dialog')
+    const dialog = await screen.findByRole('region', { name: 'Approve access request' })
     expect(within(dialog).getByText(
       'Ada Lovelace already has a direct grant for Chat completions (model API). Deny this request, or change the existing grant instead.',
     )).toBeVisible()
@@ -506,7 +505,7 @@ describe('ApproveAccessRequestDialog', () => {
       error: new Error('An apply or mutation is already running for this publication.'),
     })
 
-    const dialog = await screen.findByRole('dialog')
+    const dialog = await screen.findByRole('region', { name: 'Approve access request' })
     expect(
       within(dialog).getByText('An apply or mutation is already running for this publication.'),
     ).toBeVisible()
@@ -517,11 +516,13 @@ describe('ApproveAccessRequestDialog', () => {
     const user = userEvent.setup()
     const { onApprove, onCancel } = renderDialog({ pending: true })
 
-    const dialog = await screen.findByRole('dialog')
+    const dialog = await screen.findByRole('region', { name: 'Approve access request' })
     const approve = within(dialog).getByRole('button', { name: 'Approve and create grant' })
     expect(approve).toHaveAttribute('aria-disabled', 'true')
     expect(approve).not.toBeDisabled()
-    expect(within(dialog).getByRole('button', { name: 'Cancel' })).toBeDisabled()
+    await user.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    expect(await screen.findByRole('dialog', { name: 'Operation in progress' })).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Stay' }))
     await user.click(approve)
     await user.keyboard('{Escape}')
     expect(onCancel).not.toHaveBeenCalled()
@@ -533,7 +534,7 @@ describe('ApproveAccessRequestDialog', () => {
     let refuse: (error: Error) => void = () => {}
     const approveAccessRequest = vi.fn(() => new Promise((_, reject) => { refuse = reject }))
     const { onCancel } = renderApproval(approveAccessRequest)
-    const approve = within(await screen.findByRole('dialog')).getByRole('button', { name: 'Approve and create grant' })
+    const approve = within(await screen.findByRole('region', { name: 'Approve access request' })).getByRole('button', { name: 'Approve and create grant' })
 
     await user.click(approve)
 
@@ -541,7 +542,9 @@ describe('ApproveAccessRequestDialog', () => {
     await waitFor(() => expect(approve).toHaveAttribute('aria-disabled', 'true'))
     expect(approve).toHaveFocus()
     expect(approve).not.toBeDisabled()
-    expect(within(screen.getByRole('dialog')).getByRole('button', { name: 'Cancel' })).toBeDisabled()
+    await user.click(within(screen.getByRole('region', { name: 'Approve access request' })).getByRole('button', { name: 'Cancel' }))
+    expect(await screen.findByRole('dialog', { name: 'Operation in progress' })).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Stay' }))
     // A focusable submit button still submits its form, so the dialog refuses a second submission itself.
     await user.click(approve)
     await user.keyboard('{Enter}')
@@ -557,7 +560,7 @@ describe('ApproveAccessRequestDialog', () => {
 
     await waitFor(() => expect(focused()).toHaveTextContent('An apply or mutation is already running for this publication.'))
     expect(approve).not.toHaveAttribute('aria-disabled')
-    await user.keyboard('{Escape}')
+    await user.click(screen.getByRole('button', { name: 'Cancel' }))
     expect(onCancel).toHaveBeenCalledOnce()
   })
 
@@ -566,7 +569,7 @@ describe('ApproveAccessRequestDialog', () => {
     let refuse: (error: Error) => void = () => {}
     const approveAccessRequest = vi.fn(() => new Promise((_, reject) => { refuse = reject }))
     renderApproval(approveAccessRequest)
-    const note = within(await screen.findByRole('dialog')).getByRole('textbox', { name: 'Decision note' })
+    const note = within(await screen.findByRole('region', { name: 'Approve access request' })).getByRole('textbox', { name: 'Decision note' })
 
     await user.type(note, 'Pilot team{Enter}')
     await waitFor(() => {
@@ -593,7 +596,7 @@ describe('ApproveAccessRequestDialog', () => {
       .mockRejectedValueOnce(new Error('An apply or mutation is already running for this publication.'))
       .mockReturnValueOnce(new Promise((_, reject) => { refuse = reject }))
     renderApproval(approveAccessRequest)
-    const approve = within(await screen.findByRole('dialog')).getByRole('button', { name: 'Approve and create grant' })
+    const approve = within(await screen.findByRole('region', { name: 'Approve access request' })).getByRole('button', { name: 'Approve and create grant' })
 
     await user.click(approve)
     await waitFor(() => expect(focused()).toHaveTextContent('An apply or mutation is already running for this publication.'))
@@ -640,7 +643,7 @@ describe('ApproveAccessRequestDialog', () => {
       },
       environmentCatalog: catalog,
     })
-    const dialog = await screen.findByRole('dialog')
+    const dialog = await screen.findByRole('region', { name: 'Approve access request' })
     const approve = within(dialog).getByRole('button', { name: 'Approve and create grant' })
 
     await user.click(approve)
@@ -656,14 +659,13 @@ describe('ApproveAccessRequestDialog', () => {
     expect(approveAccessRequest.mock.calls[1][0]).toMatchObject({ confirmedEnvironment: 'production' })
   })
 
-  it('leaves focus where Fluent puts it when the dialog opens showing a failure', async () => {
+  it('focuses the workspace heading when opening with an existing failure', async () => {
     renderDialog({
       error: new Error('An apply or mutation is already running for this publication.'),
     })
 
-    const dialog = await screen.findByRole('dialog')
-    // Fluent focuses the first control Tab reaches.
-    await waitFor(() => expect(within(dialog).getByRole('spinbutton', { name: 'Tokens per minute' })).toHaveFocus())
+    const dialog = await screen.findByRole('region', { name: 'Approve access request' })
+    await waitFor(() => expect(within(dialog).getByRole('heading', { name: 'Approve access request' })).toHaveFocus())
     expect(focused()).not.toHaveTextContent('An apply or mutation is already running for this publication.')
   })
 
@@ -671,11 +673,40 @@ describe('ApproveAccessRequestDialog', () => {
     const user = userEvent.setup()
     const { onApprove, onCancel } = renderDialog()
 
-    const dialog = await screen.findByRole('dialog')
+    const dialog = await screen.findByRole('region', { name: 'Approve access request' })
     await user.click(within(dialog).getByRole('button', { name: 'Cancel' }))
     expect(onCancel).toHaveBeenCalledOnce()
-    await user.keyboard('{Escape}')
+    await user.click(within(dialog).getByRole('button', { name: 'Back' }))
     expect(onCancel).toHaveBeenCalledTimes(2)
+    expect(onApprove).not.toHaveBeenCalled()
+  })
+
+  it('protects an edited decision note before canceling the workspace', async () => {
+    const user = userEvent.setup()
+    const { onApprove, onCancel } = renderDialog()
+    const workspace = await screen.findByRole('region', { name: 'Approve access request' })
+    await user.type(within(workspace).getByRole('textbox', { name: 'Decision note' }), 'Draft')
+    await user.click(within(workspace).getByRole('button', { name: 'Cancel' }))
+    expect(await screen.findByRole('dialog', { name: 'Discard unsaved changes?' })).toBeVisible()
+    expect(onCancel).not.toHaveBeenCalled()
+    await user.click(screen.getByRole('button', { name: 'Discard changes' }))
+    expect(onCancel).toHaveBeenCalledOnce()
+    expect(onApprove).not.toHaveBeenCalled()
+  })
+
+  it.each(['approved', 'denied', 'withdrawn'] as const)('cannot approve a %s request again', async (state) => {
+    const { onApprove } = renderDialog({ accessRequest: { ...accessRequest, state } })
+    const workspace = await screen.findByRole('region', { name: 'Approve access request' })
+    expect(within(workspace).getByRole('button', { name: 'Approve and create grant' })).toBeDisabled()
+    expect(within(workspace).getByText(/already been decided/)).toBeVisible()
+    expect(onApprove).not.toHaveBeenCalled()
+  })
+
+  it('keeps unknown or applying resource access locked', async () => {
+    const { onApprove } = renderDialog({ locked: true })
+    const workspace = await screen.findByRole('region', { name: 'Approve access request' })
+    expect(within(workspace).getByRole('button', { name: 'Approve and create grant' })).toBeDisabled()
+    expect(within(workspace).getByText(/Recover the affected resource/)).toBeVisible()
     expect(onApprove).not.toHaveBeenCalled()
   })
 
@@ -696,7 +727,7 @@ describe('ApproveAccessRequestDialog', () => {
       const user = userEvent.setup()
       const { onApprove } = renderDialog(poolProps)
 
-      const dialog = await screen.findByRole('dialog')
+      const dialog = await screen.findByRole('region', { name: 'Approve access request' })
       expect(within(dialog).getByText(
         'Approving creates grant intent only. API Management is unchanged until the Anthropic Claude plan is reviewed and applied.',
       )).toBeVisible()
@@ -716,7 +747,7 @@ describe('ApproveAccessRequestDialog', () => {
     it("says the grant waits while the pool doesn't govern access yet", async () => {
       renderDialog({ ...poolProps, pool: { displayName: 'Anthropic Claude', governedAccess: null } })
 
-      expect(within(await screen.findByRole('dialog')).getByText(
+      expect(within(await screen.findByRole('region', { name: 'Approve access request' })).getByText(
         "Approving creates grant intent only. Anthropic Claude doesn't use governed access yet, so the grant waits until it does and the pool's plan is applied.",
       )).toBeVisible()
     })
@@ -742,7 +773,7 @@ describe('ApproveAccessRequestDialog', () => {
         costCenters: [withDefaults],
       })
 
-      const dialog = await screen.findByRole('dialog')
+      const dialog = await screen.findByRole('region', { name: 'Approve access request' })
       expect(within(dialog).getByText(/Support sets per-person defaults here: 5,000 tokens per minute\./)).toBeVisible()
       expect(within(dialog).getByText(/The pool's shared token limit still applies\./)).toBeVisible()
       expect(within(dialog).getByRole('spinbutton', { name: 'Tokens per minute' })).toHaveValue(null)

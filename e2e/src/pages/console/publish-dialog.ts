@@ -8,7 +8,7 @@ const planPath = /^\/api\/v1\/publications\/[^/]+\/plan$/
 const applyPath = /^\/api\/v1\/publications\/[^/]+\/apply$/
 
 /**
- * The console's publish dialog. It publishes a model in four steps (choose, configure, review, apply), and it
+ * The console's publication workspace. It publishes a model in four steps (choose, configure, review, apply), and it
  * is also where a re-plan or a governed-access review is read and applied.
  */
 export class PublishDialog {
@@ -18,7 +18,7 @@ export class PublishDialog {
 
   constructor(page: Page, targets: Targets, title: string | RegExp) {
     this.page = page
-    this.root = page.getByRole('dialog', { name: title })
+    this.root = page.getByRole('region', { name: title })
     this.#apiOrigin = targets.origins.api
   }
 

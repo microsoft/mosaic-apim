@@ -78,6 +78,7 @@ test.describe('30 access', { tag: '@console' }, () => {
       expect.soft(grant?.runtime?.status, `${targets.roles.user}'s grant on ${label}`).toBe('applied')
       if (grant?.runtime) {
         await entitlements.selectSection('grants')
+        await entitlements.selectGrant(grant.id)
         await expect.soft(entitlements.grantState(grant.id, grant.runtime.status)).toBeVisible()
       }
     }

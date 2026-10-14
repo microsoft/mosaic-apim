@@ -1,6 +1,6 @@
 import { FluentProvider, webLightTheme } from '@fluentui/react-components'
 import { QueryClient, QueryClientProvider, useMutation } from '@tanstack/react-query'
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -32,6 +32,9 @@ const api = {
   deleteModelPool: vi.fn(),
   planModelPool: vi.fn(),
   planUnpublishModelPool: vi.fn(),
+  applyModelPool: vi.fn(),
+  unpublishModelPool: vi.fn(),
+  getModelPoolRun: vi.fn(),
   getModelPoolLock: vi.fn(),
   recoverModelPool: vi.fn(),
   getModelPoolHealth: vi.fn(),
@@ -93,6 +96,61 @@ describe('PoolDetailPage', () => {
     api.listModelPoolRuns.mockResolvedValue([poolRun])
     api.listGateways.mockResolvedValue([poolGateway])
     api.getModelPoolHealth.mockResolvedValue(notConfiguredPoolHealth)
+    api.planModelPool.mockResolvedValue(poolPlan)
+    api.planUnpublishModelPool.mockResolvedValue({ ...poolPlan, operation: 'unpublish' })
+    api.getModelPoolRun.mockResolvedValue(poolRun)
+  })
+
+  it('refuses a direct edit workspace while a pool apply is in progress', async () => {
+    api.getModelPoolDetail.mockResolvedValue({ ...anthropicPoolDetail, pool: { ...anthropicPool, status: 'applying' } })
+    renderPage(`/pools/${anthropicPool.id}?mode=edit`)
+    expect(await screen.findByText('Pool changes are locked')).toBeVisible()
+    expect(screen.queryByRole('region', { name: 'Edit Anthropic Claude' })).not.toBeInTheDocument()
+    expect(api.updateModelPool).not.toHaveBeenCalled()
+  })
+
+  it.each(['publish', 'unpublish'] as const)('refuses a new %s review during another active run', async (mode) => {
+    api.getModelPoolDetail.mockResolvedValue({ ...anthropicPoolDetail, pool: { ...anthropicPool, status: 'applying' } })
+    renderPage(`/pools/${anthropicPool.id}?mode=review&planAction=${mode}`)
+
+    expect(await screen.findByRole('region', { name: 'Pool changes are locked' })).toBeVisible()
+    expect(api.planModelPool).not.toHaveBeenCalled()
+    expect(api.planUnpublishModelPool).not.toHaveBeenCalled()
+    expect(api.applyModelPool).not.toHaveBeenCalled()
+    expect(api.unpublishModelPool).not.toHaveBeenCalled()
+  })
+
+  it.each(['publish', 'unpublish'] as const)('keeps its %s run and navigation guard when pool refresh reports applying', async (mode) => {
+    const user = userEvent.setup()
+    const running: PublishRun = { ...poolRun, status: 'running', completedAt: null, durationMs: null, steps: [] }
+    const apply = mode === 'publish' ? api.applyModelPool : api.unpublishModelPool
+    const plan = mode === 'publish' ? api.planModelPool : api.planUnpublishModelPool
+    apply.mockResolvedValue(running)
+    let finishRun!: (run: PublishRun) => void
+    api.getModelPoolRun.mockImplementationOnce(() => new Promise<PublishRun>((resolve) => { finishRun = resolve }))
+    api.getModelPoolDetail.mockResolvedValueOnce(anthropicPoolDetail)
+      .mockResolvedValue({ ...anthropicPoolDetail, pool: { ...anthropicPool, status: 'applying' } })
+    renderPage(`/pools/${anthropicPool.id}?mode=review&planAction=${mode}`)
+
+    await user.click(await screen.findByRole('button', { name: mode === 'publish' ? 'Apply plan' : 'Unpublish pool' }))
+
+    await waitFor(() => expect(api.getModelPoolDetail).toHaveBeenCalledTimes(2))
+    expect(await screen.findByText(mode === 'publish' ? 'Applying the plan for Anthropic Claude' : 'Unpublishing Anthropic Claude')).toBeVisible()
+    expect(screen.queryByRole('region', { name: 'Pool changes are locked' })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Back to pool' }))
+    expect(await screen.findByRole('dialog', { name: 'Operation in progress' })).toBeVisible()
+    await waitFor(() => expect(api.getModelPoolRun).toHaveBeenCalledWith(anthropicPool.id, running.id))
+
+    await act(async () => finishRun(poolRun))
+
+    await waitFor(() => expect(screen.queryByRole('dialog', { hidden: true })).not.toBeInTheDocument())
+    expect(await screen.findByText(mode === 'publish' ? 'Apply finished' : 'Unpublish finished')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Back to pool' })).toBeEnabled()
+    expect(plan).toHaveBeenCalledTimes(1)
+    expect(apply).toHaveBeenCalledExactlyOnceWith(anthropicPool.id, poolPlan.id)
+    await user.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(await screen.findByRole('heading', { name: 'Anthropic Claude', level: 1 })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Review changes' })).toBeDisabled()
   })
 
   it('allows section changes while an unrelated mutation is pending', async () => {
@@ -250,7 +308,7 @@ describe('PoolDetailPage', () => {
     api.planModelPool.mockResolvedValue({ ...poolPlan, publicationId: draftPool.id })
     renderPage({ pathname: `/pools/${draftPool.id}`, state: { openPlan: true } })
 
-    expect(await screen.findByRole('dialog', { name: 'Publish OpenAI chat' })).toBeVisible()
+    expect(await screen.findByRole('region', { name: 'Review OpenAI chat' })).toBeVisible()
     expect(api.planModelPool).toHaveBeenCalledWith(draftPool.id)
   })
 
@@ -290,7 +348,7 @@ describe('PoolDetailPage', () => {
     const [, fromNotice] = screen.getAllByRole('button', { name: 'Review changes' })
     await user.click(fromNotice)
 
-    expect(await screen.findByRole('dialog', { name: 'Publish Anthropic Claude' })).toBeVisible()
+    expect(await screen.findByRole('region', { name: 'Review Anthropic Claude' })).toBeVisible()
     expect(api.planModelPool).toHaveBeenCalledWith(anthropicPool.id)
   })
 
@@ -314,7 +372,7 @@ describe('PoolDetailPage', () => {
     renderPage()
 
     expect(await screen.findByText('Unable to load the pool')).toBeVisible()
-    expect(screen.getByRole('link', { name: '← Back to pools' })).toHaveAttribute('href', '/pools')
+    expect(screen.getByRole('link', { name: '← Back to pools' })).toHaveAttribute('href', `/pools?selected=${anthropicPool.id}`)
   })
 
   it('turns on governed access, warning that it can’t be turned off', async () => {

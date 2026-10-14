@@ -2,12 +2,6 @@ import {
   Badge,
   Button,
   Card,
-  Dialog,
-  DialogActions,
-  DialogBody,
-  DialogContent,
-  DialogSurface,
-  DialogTitle,
   Field,
   Input,
   MessageBar,
@@ -26,16 +20,16 @@ import {
   TabList,
   Text,
   Title3,
+  Tooltip,
   useRestoreFocusTarget,
 } from '@fluentui/react-components'
-import { AddRegular } from '@fluentui/react-icons'
+import { AddRegular, ArrowDownloadRegular, ArrowUploadRegular, ServerRegular } from '@fluentui/react-icons'
 import { useIsMutating, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { type FormEvent, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { useMosaicApi } from '../api'
 import { environmentLabel, lookupCompatibility, useEnvironmentCatalog } from '../environments'
 import { EmptyState, ErrorState, Loading } from '../components/AsyncState'
-import { ChangeEnvironmentDialog } from '../components/ChangeEnvironmentDialog'
 import { EnvironmentBadge } from '../components/EnvironmentBadge'
 import { EnvironmentPicker } from '../components/EnvironmentPicker'
 import { ImportFromGatewayDialog } from '../components/ImportFromGatewayDialog'
@@ -55,6 +49,11 @@ import { PageHeader } from '../components/PageHeader'
 import { SectionLayout, usePageSection } from '../components/SectionLayout'
 import { RemovalDialog } from '../components/RemovalDialog'
 import { RowActions } from '../components/RowActions'
+import { ResourceWorkbench } from '../components/ResourceWorkbench'
+import { useWorkbenchLocation } from '../components/useWorkbenchLocation'
+import { WorkspaceDialog } from '../components/WorkspaceDialog'
+import { ModelEndpointEditor, ModelEndpointEnvironmentEditor } from '../components/ModelEndpointEditor'
+import { completeWorkspaceNavigation } from '../components/WorkspaceLeaveGuard'
 import { UnpublishDialog } from '../components/UnpublishDialog'
 import { AI_KIND_LABELS, CAPACITY_TYPE_LABELS, PROCESSING_SCOPE_LABELS } from '../labels'
 import {
@@ -80,7 +79,6 @@ import type {
   PublishPlan,
   PublicationStatus,
   SubscriptionScanStatus,
-  SuggestionSource,
 } from '../types'
 import styles from './ModelsPage.module.css'
 
@@ -109,10 +107,8 @@ const providerLabels: Record<ModelProvider, string> = {
   awsBedrock: 'AWS Bedrock',
 }
 
-const sourceLabels: Record<SuggestionSource, string> = {
-  bootstrap: 'Deployed with MOSAIC',
-  gatewayBackend: 'Used by a gateway',
-  subscriptionScan: 'Found in a subscription',
+function providerLabel(provider: string): string {
+  return Object.hasOwn(providerLabels, provider) ? providerLabels[provider as ModelProvider] : provider
 }
 
 // A scan with nothing to read is explained. One that was never configured has nothing to say.
@@ -159,13 +155,22 @@ function PublicationStatusBadge({ publication }: { publication: Publication }) {
   )
 }
 
-function PublishedModels({ onMessage }: { onMessage: (message: string) => void }) {
+function PublishedModels({ onMessage, onPublish }: { onMessage: (message: string) => void; onPublish: () => void }) {
   const api = useMosaicApi()
   const queryClient = useQueryClient()
   const restoreFocus = useRestoreFocusTarget()
+  const workspace = useWorkbenchLocation({ section: 'published' })
+  const catalog = useEnvironmentCatalog()
   const [removing, setRemoving] = useState<Publication | null>(null)
   const [unpublishing, setUnpublishing] = useState<Publication | null>(null)
   const [review, setReview] = useState<{ publication: Publication; plan: PublishPlan } | null>(null)
+  const previousReviewMode = useRef(workspace.mode)
+
+  useEffect(() => {
+    const exitedReview = previousReviewMode.current === 'review' && workspace.mode !== 'review'
+    previousReviewMode.current = workspace.mode
+    if (exitedReview) setReview(null)
+  }, [workspace.mode])
 
   const publications = useQuery({
     queryKey: ['publications'],
@@ -181,6 +186,12 @@ function PublishedModels({ onMessage }: { onMessage: (message: string) => void }
     for (const gateway of gateways.data ?? []) map.set(gateway.id, gateway)
     return map
   }, [gateways.data])
+  const initializedSelection = useRef(false)
+  useEffect(() => {
+    if (!publications.isSuccess || initializedSelection.current) return
+    initializedSelection.current = true
+    if (!workspace.selectedId && !workspace.mode && publications.data[0]) workspace.close(publications.data[0].id)
+  }, [publications.isSuccess, publications.data, workspace])
   async function refresh() {
     await queryClient.invalidateQueries({ queryKey: ['publications'] })
     await queryClient.invalidateQueries({ queryKey: ['publishable-models'] })
@@ -189,8 +200,7 @@ function PublishedModels({ onMessage }: { onMessage: (message: string) => void }
     await queryClient.invalidateQueries({ queryKey: ['entitlement-connection'] })
   }
 
-  // The table never applies a plan. Re-plan opens a fresh plan in the publish dialog, and only its
-  // Apply plan applies it, so the administrator sees every plan before it runs. Unpublish works
+  // Review opens a fresh plan in the workspace; only Apply plan applies it. Unpublish works
   // the same way: its dialog plans the unpublish, and only its confirm button runs that plan.
   const reviewPlan = useMutation({
     mutationKey: MODELS_PAGE_MUTATION_KEY,
@@ -200,6 +210,7 @@ function PublishedModels({ onMessage }: { onMessage: (message: string) => void }
     }),
     onSuccess: ({ publication, plan }) => {
       setReview({ publication, plan })
+      workspace.open('review', publication.id)
       void queryClient.invalidateQueries({ queryKey: ['publications'] })
     },
   })
@@ -221,69 +232,71 @@ function PublishedModels({ onMessage }: { onMessage: (message: string) => void }
     setRemoving(publication)
   }
 
+  const requestedReview = useRef<string | null>(null)
+  useEffect(() => {
+    if (workspace.mode !== 'review') { requestedReview.current = null; return }
+    const target = publications.data?.find((item) => item.id === workspace.selectedId)
+    if (!target || review?.publication.id === target.id || requestedReview.current === target.id) return
+    requestedReview.current = target.id
+    if (target.status !== 'applying' && target.accessState !== 'applying' && target.accessState !== 'unknown') {
+      reviewPlan.mutate(target)
+    }
+  }, [workspace.mode, workspace.selectedId, publications.data, review, reviewPlan])
+
   return (
     <>
-    <Card className={styles.panel}>
-      <div className={styles.panelHeader}>
-        <div className={styles.panelHeading}>
-          <Title3 as="h2">Published models</Title3>
-          <Text block>Model deployments MOSAIC has planned or published into API Management.</Text>
-        </div>
-      </div>
       {reviewPlan.isError && <ErrorState error={reviewPlan.error} />}
       {publications.isPending && <Loading label="Loading published models" />}
       {publications.isError && <ErrorState error={publications.error} />}
-      {publications.isSuccess &&
-        (publications.data.length === 0 ? (
+      {!publications.isPending && (!publications.data?.length || workspace.selectedId || initializedSelection.current) && <ResourceWorkbench title="Published models"
+        description="Publish registered deployments through reviewed plans. Reviewing does not apply changes to API Management."
+        actions={<Button appearance="primary" icon={<AddRegular />} onClick={onPublish}>Publish a model</Button>}
+        items={publications.data ?? []} getId={(item) => item.id}
+        selectedId={workspace.selectedId}
+        onSelect={workspace.select} listLabel="Published models" detailLabel="Published model details"
+        emptyList={
           <EmptyState title="No models published yet">
             Publish a registered model deployment to create APIM resources through an explicit plan and apply flow.
           </EmptyState>
-        ) : (
-          <div className={styles.tableWrap}>
-            <Table className={styles.publicationTable} aria-label="Published models">
-              <TableHeader>
-                <TableRow>
-                  <TableHeaderCell>Publication</TableHeaderCell>
-                  <TableHeaderCell>Status</TableHeaderCell>
-                  <TableHeaderCell>Gateway</TableHeaderCell>
-                  <TableHeaderCell>API path</TableHeaderCell>
-                  <TableHeaderCell>Last applied</TableHeaderCell>
-                  <TableHeaderCell className={styles.publicationActionCell}>Actions</TableHeaderCell>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {publications.data.map((publication) => (
-                  <TableRow key={publication.id}>
-                    <TableCell>
-                      <div className={styles.cellStack}>
-                        <span className={styles.primaryCell}>{publication.displayName}</span>
-                        <span className={styles.secondaryCell}>{publication.deploymentName}</span>
-                      </div>
-                    </TableCell>
-                    <TableCell>
-                      <PublicationStatusBadge publication={publication} />
+        }
+        renderListItem={(publication) => <div className={styles.resourceRow}
+          data-resource-name={publication.displayName}
+          data-publication-path={`/${publication.apiPath}`}
+          data-publication-gateway={gatewaysById.get(publication.gatewayId)?.name ?? publication.gatewayId}>
+          <span className={styles.primaryCell}>{publication.displayName}</span>
+          <span className={styles.secondaryCell}>{publication.deploymentName} · {providerLabel(publication.provider)}</span>
+          <div className={styles.resourceBadges}><PublicationStatusBadge publication={publication} />
+            <EnvironmentBadge environment={gatewaysById.get(publication.gatewayId)?.environment ?? null} catalog={catalog.data} /></div>
+        </div>}
+        renderDetail={(publication) => <div className={styles.selectedDetail}>
+          <Title3 as="h3">{publication.displayName}</Title3>
+          <div className={styles.inlineActions}><PublicationStatusBadge publication={publication} />
+            <Badge appearance="outline">Access: {publication.accessState}</Badge></div>
                       {publication.accessState === 'unknown' && (
                         <Text block size={200}>Runtime unknown — retained apply lock. Use the recovery instructions in Entitlements before retrying.</Text>
                       )}
-                    </TableCell>
-                    <TableCell>
+          <dl className={styles.detailList}>
+            <div><dt>Deployment</dt><dd>{publication.deploymentName}</dd></div>
+            <div><dt>Provider</dt><dd>{providerLabel(publication.provider)}</dd></div>
+            <div><dt>Environment</dt><dd><EnvironmentBadge environment={gatewaysById.get(publication.gatewayId)?.environment ?? null} catalog={catalog.data} /></dd></div>
+            <div><dt>Gateway</dt><dd>
                       <Link to={`/gateways/${publication.gatewayId}`}>
                         {gatewaysById.get(publication.gatewayId)?.name ?? publication.gatewayId}
                       </Link>
-                    </TableCell>
-                    <TableCell>/{publication.apiPath}</TableCell>
-                    <TableCell>{lastAppliedLabel(publication)}</TableCell>
-                    <TableCell className={styles.publicationActionCell}>
+            </dd></div>
+            <div><dt>API path</dt><dd>/{publication.apiPath}</dd></div>
+            <div><dt>Last applied</dt><dd>{lastAppliedLabel(publication)}</dd></div>
+          </dl>
                       <RowActions
                         label={`More actions for ${publication.displayName}`}
-                        primary={<Button
+                        primary={<Tooltip content="Preview the changes MOSAIC would apply. Nothing changes until you select Apply plan." relationship="description"><Button
                           appearance="secondary"
                           disabled={reviewPlan.isPending || publication.status === 'applying' || publication.accessState === 'applying' || publication.accessState === 'unknown'}
                           onClick={() => reviewPlan.mutate(publication)}
                           {...restoreFocus}
                         >
                           {reviewPlan.isPending && reviewPlan.variables?.id === publication.id ? 'Planning…' : publication.status === 'published' || holdsApi(publication) ? 'Review changes' : 'Review publish plan'}
-                        </Button>}
+                        </Button></Tooltip>}
                         destructiveActions={[
                           {
                             label: 'Unpublish',
@@ -297,19 +310,15 @@ function PublishedModels({ onMessage }: { onMessage: (message: string) => void }
                           },
                         ]}
                       />
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </div>
-        ))}
-    </Card>
+          <Text>Preview the changes MOSAIC would apply. Nothing changes until you select Apply plan.</Text>
+          {publication.lastError && <MessageBar intent="error"><MessageBarBody>{publication.lastError}</MessageBarBody></MessageBar>}
+        </div>}
+      />}
     <PublishModelDialog
-      open={review !== null}
+      open={workspace.mode === 'review' && review?.publication.id === workspace.selectedId}
       mutationKey={MODELS_PAGE_MUTATION_KEY}
       initialReview={review}
-      onClose={() => setReview(null)}
+      onClose={() => workspace.close()}
       onPublished={onMessage}
     />
     <UnpublishDialog
@@ -392,9 +401,10 @@ function ScanRoleDelayNote() {
   )
 }
 
-function ImportedModelApis({ onRemoved }: { onRemoved: (message: string) => void }) {
+function ImportedModelApis({ onRemoved, onImport }: { onRemoved: (message: string) => void; onImport: () => void }) {
   const api = useMosaicApi()
   const queryClient = useQueryClient()
+  const workspace = useWorkbenchLocation({ section: 'imported' })
 
   const modelApis = useQuery({
     queryKey: ['model-apis'],
@@ -410,6 +420,12 @@ function ImportedModelApis({ onRemoved }: { onRemoved: (message: string) => void
     queryFn: () => api.listPublications(),
   })
   const catalog = useEnvironmentCatalog()
+  const initializedSelection = useRef(false)
+  useEffect(() => {
+    if (!modelApis.isSuccess || initializedSelection.current) return
+    initializedSelection.current = true
+    if (!workspace.selectedId && !workspace.mode && modelApis.data[0]) workspace.close(modelApis.data[0].id)
+  }, [modelApis.isSuccess, modelApis.data, workspace])
 
   const gatewaysById = useMemo(() => {
     const map = new Map<string, Gateway>()
@@ -430,6 +446,7 @@ function ImportedModelApis({ onRemoved }: { onRemoved: (message: string) => void
     mutationFn: (id: string) => api.deleteModelApi(id),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['model-apis'] })
+      workspace.select(null)
       onRemoved('Stopped governing that API. Nothing changed in API Management.')
     },
   })
@@ -445,67 +462,48 @@ function ImportedModelApis({ onRemoved }: { onRemoved: (message: string) => void
   })
 
   return (
-    <Card className={styles.panel}>
-      <div className={styles.panelHeader}>
-        <div>
-          <Title3 as="h2">Imported model APIs</Title3>
-          <Text>
-            APIs an administrator adopted from a gateway. Importing records governance intent and
-            never changes API Management.
-          </Text>
-        </div>
-      </div>
+    <>
       {removeMutation.isError && <ErrorState error={removeMutation.error} />}
+      {visibilityMutation.isError && <ErrorState error={visibilityMutation.error} />}
       {modelApis.isPending && <Loading label="Loading imported model APIs..." />}
       {modelApis.isError && <ErrorState error={modelApis.error} />}
-      {modelApis.isSuccess &&
-        (modelApis.data.length === 0 ? (
+      {!modelApis.isPending && (!modelApis.data?.length || workspace.selectedId || initializedSelection.current) && <ResourceWorkbench title="Imported model APIs"
+        description="Govern APIs already on a gateway. Importing does not change API Management."
+        actions={<Button appearance="primary" icon={<ArrowDownloadRegular />} onClick={onImport}>Import from gateway</Button>}
+        items={modelApis.data ?? []} getId={(item) => item.id}
+        selectedId={workspace.selectedId} onSelect={workspace.select}
+        listLabel="Imported model APIs" detailLabel="Imported model API details"
+        emptyList={
           <EmptyState title="No model APIs imported yet">
             Synchronise a gateway, then import the APIs that front your models. MOSAIC pre-selects
             the ones it recognises, and you decide what to adopt.
           </EmptyState>
-        ) : (
-          <div className={styles.tableWrap}>
-            <Table aria-label="Imported model APIs">
-              <TableHeader>
-                <TableRow>
-                  <TableHeaderCell>API</TableHeaderCell>
-                  <TableHeaderCell>Provider</TableHeaderCell>
-                  <TableHeaderCell>Operations</TableHeaderCell>
-                  <TableHeaderCell>Gateway</TableHeaderCell>
-                  <TableHeaderCell>Environment</TableHeaderCell>
-                  <TableHeaderCell>Catalog</TableHeaderCell>
-                  <TableHeaderCell>Actions</TableHeaderCell>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {modelApis.data.map((record) => (
-                  <TableRow key={record.id}>
-                    <TableCell>
-                      <div className={styles.cellStack}>
-                        <span className={styles.primaryCell}>{record.displayName}</span>
-                        <span className={styles.secondaryCell}>/{record.path}</span>
-                      </div>
-                    </TableCell>
-                    <TableCell>
-                      <div className={styles.cellStack}>
-                        <span className={styles.secondaryCell}>
-                          {AI_KIND_LABELS[record.aiKind] || 'Not recognised'}
-                        </span>
+        }
+        renderListItem={(record) => <div className={styles.resourceRow} data-resource-name={record.displayName}>
+          <span className={styles.primaryCell}>{record.displayName}</span>
+          <span className={styles.secondaryCell}>{AI_KIND_LABELS[record.aiKind] || 'Not recognised'} · {record.operationCount} operations</span>
+          <Badge appearance="outline">{environmentLabel(catalog.data, gatewaysById.get(record.gatewayId)?.environment ?? null)}</Badge>
+        </div>}
+        renderDetail={(record) => <div key={record.id} className={styles.selectedDetail}>
+          <Title3 as="h3">{record.displayName}</Title3>
+          <Text>{AI_KIND_LABELS[record.aiKind] || 'Not recognised'}</Text>
                         {record.selection === 'manual' && (
-                          <Badge appearance="tint" className={styles.statusSyncing}>
-                            Chosen by an administrator
-                          </Badge>
+                          <Text>Chosen by an administrator</Text>
                         )}
-                      </div>
-                    </TableCell>
-                    <TableCell>{record.operationCount}</TableCell>
-                    <TableCell>
+          <dl className={styles.detailList}>
+            <div><dt>API path</dt><dd>/{record.path}</dd></div>
+            <div><dt>Backend URL</dt><dd>{record.serviceUrl || 'Not reported'}</dd></div>
+            <div><dt>Operations</dt><dd>{record.operationCount}</dd></div>
+            <div><dt>Subscription required</dt><dd>{record.subscriptionRequired ? 'Yes' : 'No'}</dd></div>
+            <div><dt>Protocols</dt><dd>{record.protocols.join(', ') || 'Not reported'}</dd></div>
+            <div><dt>Products</dt><dd>{record.productNames.join(', ') || 'None'}</dd></div>
+            <div><dt>Imported</dt><dd>{formatTimestamp(record.importedAt)}</dd></div>
+            <div><dt>Gateway</dt><dd>
                       <Link to={`/gateways/${record.gatewayId}`}>
                         {gatewaysById.get(record.gatewayId)?.name ?? record.gatewayId}
                       </Link>
-                    </TableCell>
-                    <TableCell>
+            </dd></div>
+            <div><dt>Environment</dt><dd>
                       {(() => {
                         const gateway = gatewaysById.get(record.gatewayId)
                         return gateway ? (
@@ -517,8 +515,10 @@ function ImportedModelApis({ onRemoved }: { onRemoved: (message: string) => void
                           '—'
                         )
                       })()}
-                    </TableCell>
-                    <TableCell>
+            </dd></div>
+          </dl>
+          {record.aiSignals.map((signal) => <Text key={signal} size={200}>{signal}</Text>)}
+          <Field label="Catalog visibility">
                       <Select
                         aria-label={`Catalog visibility for ${record.displayName}`}
                         value={record.visibility}
@@ -538,23 +538,18 @@ function ImportedModelApis({ onRemoved }: { onRemoved: (message: string) => void
                           Hidden from the portal catalog while it isn&apos;t published.
                         </Text>
                       )}
-                    </TableCell>
-                    <TableCell>
+          </Field>
                       <Button
                         appearance="subtle"
                         disabled={removeMutation.isPending}
                         onClick={() => removeMutation.mutate(record.id)}
                       >
-                        Remove
+                        Remove import
                       </Button>
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </div>
-        ))}
-    </Card>
+          <Text size={200}>Removing this import stops MOSAIC governance. Nothing changes in API Management.</Text>
+        </div>}
+      />}
+    </>
   )
 }
 
@@ -607,8 +602,8 @@ function AccessPanel({
         : 'MOSAIC cannot read this endpoint'
 
   return (
-    <Card className={styles.accessCard}>
-      <Title3 as="h2">Access</Title3>
+    <section className={styles.detailSection}>
+      <Title3 as="h3">Access</Title3>
 
       <section className={styles.accessSection}>
         <MessageBar intent={accessIntent} layout="multiline">
@@ -681,7 +676,7 @@ function AccessPanel({
           ))
         )}
       </section>
-    </Card>
+    </section>
   )
 }
 
@@ -889,8 +884,8 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const restoreFocus = useRestoreFocusTarget()
-  const hasConsumedRegisterQueryRef = useRef(false)
-  const [dialogOpen, setDialogOpen] = useState(false)
+  const workspace = useWorkbenchLocation({ section: 'endpoints' })
+  const dialogOpen = workspace.mode === 'new'
   // Where the last registration came from, so a refusal is shown next to the button that asked.
   const [registerOrigin, setRegisterOrigin] = useState<'dialog' | 'suggestion'>('dialog')
   const [removing, setRemoving] = useState<ModelEndpoint | null>(null)
@@ -914,9 +909,7 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
   const [name, setName] = useState('')
   const [environment, setEnvironment] = useState<string | null>(null)
   const [environmentTouched, setEnvironmentTouched] = useState(false)
-  const [environmentFilter, setEnvironmentFilter] = useState('all')
-  const [selectedId, setSelectedId] = useState<string | null>(null)
-  const [changingEndpoint, setChangingEndpoint] = useState<ModelEndpoint | null>(null)
+  const environmentFilter = new URLSearchParams(location.search).get('environment') ?? 'all'
   const [suggestionEnvironment, setSuggestionEnvironment] = useState<
     { environment: string; evidence: string } | undefined
   >()
@@ -931,8 +924,14 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
     queryFn: api.listSuggestedModelEndpoints,
   })
 
-  const selected =
-    endpoints.data?.find((item) => item.id === selectedId) ?? endpoints.data?.[0] ?? null
+  const initializedSelection = useRef(false)
+  useEffect(() => {
+    if (!endpoints.isSuccess || initializedSelection.current) return
+    initializedSelection.current = true
+    const first = endpoints.data.find((item) => environmentFilter === 'all' || (environmentFilter === '__unclassified__' ? item.environment == null : item.environment === environmentFilter))
+    if (!workspace.selectedId && !workspace.mode && first) workspace.close(first.id)
+  }, [endpoints.isSuccess, endpoints.data, environmentFilter, workspace])
+  const selected = endpoints.data?.find((item) => item.id === workspace.selectedId) ?? null
 
   const deployments = useQuery({
     queryKey: ['model-deployments', selected?.id],
@@ -971,8 +970,7 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
       setEnvironment(null)
       setEnvironmentTouched(false)
       setSuggestionEnvironment(undefined)
-      closeDialog()
-      setSelectedId(endpoint.id)
+      completeWorkspaceNavigation(() => workspace.close(endpoint.id))
       await refresh()
     },
     onError: async () => {
@@ -1005,7 +1003,7 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
     mutationFn: (endpoint: ModelEndpoint) => api.deleteModelEndpoint(endpoint.id),
     onSuccess: async (_, endpoint) => {
       setRemoving(null)
-      setSelectedId(null)
+      workspace.select(null)
       onMessage(
         `Removed ${endpoint.name} from MOSAIC. Nothing changed in ` +
           `${endpoint.provider === 'awsBedrock' ? 'AWS' : 'Azure'}.`,
@@ -1026,7 +1024,7 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
   function openDialog() {
     register.reset()
     setSuggestionEnvironment(undefined)
-    setDialogOpen(true)
+    workspace.open('new')
   }
 
   function registerSuggestion(item: ModelEndpointSuggestion) {
@@ -1040,7 +1038,7 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
     setSuggestionEnvironment(item.suggestedEnvironment && item.azureEnvironmentTag
       ? { environment: item.suggestedEnvironment, evidence: `Azure tag environment = "${item.azureEnvironmentTag}"` }
       : undefined)
-    setDialogOpen(true)
+    workspace.open('new')
   }
 
   function submit(event: FormEvent) {
@@ -1139,22 +1137,6 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
         ? null
         : 'Nothing new to register.'
 
-  // The shell's "Add model endpoint" action lands here with ?register=1, so the button opens the
-  // real registration form rather than dropping the administrator on the page with no next step.
-  const requestedRegister = useMemo(
-    () => new URLSearchParams(location.search).get('register') === '1',
-    [location.search],
-  )
-
-  useEffect(() => {
-    if (requestedRegister && !hasConsumedRegisterQueryRef.current) {
-      hasConsumedRegisterQueryRef.current = true
-      setDialogOpen(true)
-    }
-    if (!requestedRegister) {
-      hasConsumedRegisterQueryRef.current = false
-    }
-  }, [requestedRegister])
   useEffect(() => {
     if (dialogOpen && !environment && !suggestionEnvironment && catalog.data?.environments[0]) {
       setEnvironment(catalog.data.environments[0].key)
@@ -1162,7 +1144,7 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
   }, [dialogOpen, environment, suggestionEnvironment, catalog.data])
 
   function closeDialog() {
-    setDialogOpen(false)
+    workspace.close()
     setResourceId('')
     setEndpointUrl('')
     setEndpointUrlChecked(false)
@@ -1176,60 +1158,57 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
     setEnvironment(null)
     setEnvironmentTouched(false)
     setSuggestionEnvironment(undefined)
-    const params = new URLSearchParams(location.search)
-    if (!params.has('register')) {
-      return
-    }
-    params.delete('register')
-    const nextSearch = params.toString()
-    navigate(
-      {
-        pathname: location.pathname,
-        search: nextSearch ? `?${nextSearch}` : '',
-        hash: location.hash,
-      },
-      { replace: true },
-    )
   }
+
+  function openEndpointEditor(endpoint: ModelEndpoint, environmentOnly = false) {
+    const params = new URLSearchParams(location.search)
+    params.set('selected', endpoint.id)
+    params.set('mode', 'edit')
+    params.set('workbench', `${location.pathname}:endpoints`)
+    if (environmentOnly) params.set('endpointEditor', 'environment')
+    else params.delete('endpointEditor')
+    navigate({ pathname: location.pathname, search: `?${params}`, hash: location.hash })
+  }
+
+  useEffect(() => {
+    if (!dialogOpen) {
+      setApiKey('')
+      setApiKeyTouched(false)
+      setKeySource('paste')
+      setSecretUri('')
+      setResourceId('')
+      setEndpointUrl('')
+      setEndpointUrlChecked(false)
+      setName('')
+      setEnvironment(null)
+      setEnvironmentTouched(false)
+      setSuggestionEnvironment(undefined)
+      setDeclarations([blankDeclaration(null)])
+      setBedrockDeclarations([blankDeclaration('awsBedrock')])
+    }
+  }, [dialogOpen])
 
   return (
     <>
-      <Card className={styles.panel}>
-        <div className={styles.panelHeader}>
-          <div>
-            <Title3 as="h2">Model endpoints</Title3>
-            <Text>
-              Azure OpenAI and Azure AI Foundry resources, and AWS Bedrock regions, that your
-              gateways front. MOSAIC lists the models on them; it never changes them and never
-              calls a model.
-            </Text>
-          </div>
-          <Button
-            appearance="primary"
-            icon={<AddRegular />}
-            onClick={openDialog}
-            {...restoreFocus}
-          >
-            Register endpoint
-          </Button>
-        </div>
-
         {endpoints.isPending && <Loading label="Loading model endpoints" />}
         {endpoints.isError && <ErrorState error={endpoints.error} />}
-        {endpoints.data?.length === 0 && (
-          <EmptyState title="No model endpoints yet">
-            Register an Azure OpenAI or Azure AI Foundry resource to see the models deployed on it.
-          </EmptyState>
-        )}
-
-        {endpoints.data && endpoints.data.length > 0 && (
-          <>
-            <div className={styles.filterBar}>
+        {sync.isError && <ErrorState error={sync.error} />}
+        {recheck.isError && <ErrorState error={recheck.error} />}
+        {!endpoints.isPending && (!filteredEndpoints.length || workspace.selectedId || initializedSelection.current) && <ResourceWorkbench title="Model endpoints"
+          description="Register provider endpoints and discover their models. MOSAIC never changes the provider or calls a model."
+          actions={<Button appearance="primary" icon={<AddRegular />} onClick={openDialog} {...restoreFocus}>Register endpoint</Button>}
+          toolbar={
               <Field label="Environment filter">
                 <Select
                   aria-label="Filter model endpoints by environment"
                   value={environmentFilter}
-                  onChange={(event) => setEnvironmentFilter(event.target.value)}
+                  onChange={(event) => {
+                    const params = new URLSearchParams(location.search)
+                    if (event.target.value === 'all') params.delete('environment')
+                    else params.set('environment', event.target.value)
+                    params.delete('selected')
+                    navigate({ pathname: location.pathname, search: `?${params}`, hash: location.hash })
+                  }}
                 >
                   <option value="all">All</option>
                   {catalog.data?.environments.map((item) => (
@@ -1238,101 +1217,84 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
                   <option value="__unclassified__">Unclassified</option>
                 </Select>
               </Field>
-            </div>
-            <div className={styles.tableWrap}>
-              <Table aria-label="Registered model endpoints">
-                <TableHeader>
-                  <TableRow>
-                    <TableHeaderCell>Endpoint</TableHeaderCell>
-                    <TableHeaderCell>Provider</TableHeaderCell>
-                    <TableHeaderCell>Environment</TableHeaderCell>
-                    <TableHeaderCell>Status</TableHeaderCell>
-                    <TableHeaderCell>Models</TableHeaderCell>
-                    <TableHeaderCell>Last synced</TableHeaderCell>
-                    <TableHeaderCell>Actions</TableHeaderCell>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {filteredEndpoints.map((endpoint) => (
-                    <TableRow
-                      key={endpoint.id}
-                      className={endpoint.id === selected?.id ? styles.selectedRow : undefined}
-                    >
-                      <TableCell>
-                        <div className={styles.cellStack}>
-                          <button
-                            type="button"
-                            className={styles.rowButton}
-                            onClick={() => setSelectedId(endpoint.id)}
-                          >
-                            {endpoint.name}
-                          </button>
-                          <span className={styles.secondaryCell}>{endpoint.endpoint}</span>
-                        </div>
-                      </TableCell>
-                      <TableCell>
-                        <div className={styles.cellStack}>
-                          <span>{providerLabels[endpoint.provider]}</span>
-                          {usesBackendKey(endpoint) && (
-                            <span className={styles.secondaryCell}>API key from Key Vault</span>
-                          )}
-                        </div>
-                      </TableCell>
-                      <TableCell>
-                        <div className={styles.cellStack}>
-                          <EnvironmentBadge environment={endpoint.environment} catalog={catalog.data} />
-                          {endpoint.environmentLabel && <span className={styles.secondaryCell}>Legacy label: {endpoint.environmentLabel}</span>}
-                        </div>
-                      </TableCell>
-                      <TableCell>
-                        <EndpointStatusBadge status={endpoint.status} />
-                      </TableCell>
-                      <TableCell>
-                        {usesBackendKey(endpoint)
-                          ? `${endpoint.declaredDeployments?.length ?? 0} declared`
-                          : endpoint.inventory.deployments}
-                      </TableCell>
-                      <TableCell>
-                        {usesBackendKey(endpoint) ? '—' : formatTimestamp(endpoint.lastSyncedAt)}
-                      </TableCell>
-                      <TableCell>
-                        <RowActions
-                          label={`More actions for ${endpoint.name}`}
-                          primary={<Button
-                            appearance="secondary"
-                            onClick={() => recheck.mutate(endpoint.id)}
-                            disabled={recheck.isPending}
-                          >
-                            Check access
-                          </Button>}
-                          actions={[
-                            ...(!usesBackendKey(endpoint) ? [{
-                              label: 'Sync models',
-                              disabled: sync.isPending || !endpoint.access.canRead,
-                              onClick: () => sync.mutate(endpoint.id),
-                            }] : []),
-                            { label: 'Change environment', onClick: () => setChangingEndpoint(endpoint) },
-                          ]}
-                          destructiveActions={[{
-                            label: 'Remove',
-                            disabled: remove.isPending,
-                            onClick: () => confirmRemoval(endpoint),
-                          }]}
-                        />
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
-            <Text size={200} className={styles.muted}>
-              Removing an endpoint deletes only what MOSAIC stored about it. Nothing changes in
-              Azure or AWS. MOSAIC refuses while a model from it is still published, on its own or
-              in a model pool.
-            </Text>
-          </>
-        )}
-      </Card>
+          }
+          items={filteredEndpoints} getId={(item) => item.id}
+          selectedId={workspace.selectedId} onSelect={workspace.select}
+          listLabel="Registered model endpoints" detailLabel="Model endpoint details"
+          emptyList={<EmptyState title={endpoints.data?.length ? 'No endpoints match this environment' : 'No model endpoints yet'}>
+            Register a provider endpoint to see its models, or choose another environment.
+          </EmptyState>}
+          renderListItem={(endpoint) => <div className={styles.resourceRow} data-resource-name={endpoint.name}>
+            <span className={styles.primaryCell}>{endpoint.name}</span>
+            <span className={styles.secondaryCell}>{providerLabels[endpoint.provider]} · {usesBackendKey(endpoint) ? `${endpoint.declaredDeployments?.length ?? 0} declared models` : `${endpoint.inventory.deployments} models`}</span>
+            <div className={styles.resourceBadges}><EndpointStatusBadge status={endpoint.status} /><EnvironmentBadge environment={endpoint.environment} catalog={catalog.data} /></div>
+          </div>}
+          renderDetail={(endpoint) => <div key={endpoint.id} className={styles.selectedDetail}>
+            <Title3 as="h3">{endpoint.name}</Title3>
+            <dl className={styles.detailList}>
+              <div><dt>Endpoint URL</dt><dd>{endpoint.endpoint}</dd></div>
+              {endpoint.azureResourceId && <div><dt>Azure resource ID</dt><dd>{endpoint.azureResourceId}</dd></div>}
+              <div><dt>Provider</dt><dd>{providerLabels[endpoint.provider]}</dd></div>
+              <div><dt>Environment</dt><dd><EnvironmentBadge environment={endpoint.environment} catalog={catalog.data} /></dd></div>
+              <div><dt>Status</dt><dd><EndpointStatusBadge status={endpoint.status} /></dd></div>
+              <div><dt>Models</dt><dd>{usesBackendKey(endpoint) ? `${endpoint.declaredDeployments?.length ?? 0} declared` : endpoint.inventory.deployments}</dd></div>
+              <div><dt>Authentication</dt><dd>{usesBackendKey(endpoint) ? 'API key from Key Vault' : 'Managed identity'}</dd></div>
+              <div><dt>Last synced</dt><dd>{usesBackendKey(endpoint) ? 'Not applicable — declared models' : formatTimestamp(endpoint.lastSyncedAt)}</dd></div>
+              {endpoint.environmentLabel && <div><dt>Legacy label</dt><dd>{endpoint.environmentLabel}</dd></div>}
+            </dl>
+            <RowActions label={`More actions for ${endpoint.name}`}
+              primary={<Button onClick={() => recheck.mutate(endpoint.id)} disabled={recheck.isPending}>Check access</Button>}
+              actions={[
+                { label: 'Edit endpoint', onClick: () => openEndpointEditor(endpoint) },
+                ...(!usesBackendKey(endpoint) ? [{ label: 'Sync models', disabled: sync.isPending || !endpoint.access.canRead, onClick: () => sync.mutate(endpoint.id) }] : []),
+                { label: 'Change environment', onClick: () => openEndpointEditor(endpoint, true) },
+              ]}
+              destructiveActions={[{ label: 'Remove', disabled: remove.isPending, onClick: () => confirmRemoval(endpoint) }]}
+            />
+            <Text size={200}>Removing an endpoint deletes only what MOSAIC stored about it. Nothing changes in Azure or AWS. MOSAIC refuses while a model from it is still published, on its own or in a model pool.</Text>
+            <AccessPanel endpoint={endpoint} onMessage={onMessage} />
+            {usesBackendKey(endpoint) ? <DeclaredDeploymentsCard endpoint={endpoint} className={styles.detailSection} /> : (
+              <section className={styles.detailSection}>
+                <Title3 as="h3">Models on {endpoint.name}</Title3>
+                {endpoint.lastSyncError && <MessageBar intent="warning"><MessageBarBody>
+                  <MessageBarTitle>The last sync was incomplete</MessageBarTitle>{endpoint.lastSyncError}
+                </MessageBarBody></MessageBar>}
+                {deployments.isPending && <Loading label="Loading models" />}
+                {deployments.isError && <ErrorState error={deployments.error} />}
+                {deployments.data?.length === 0 && <EmptyState title="No models discovered yet">Run a sync to read the deployments on this endpoint.</EmptyState>}
+                {Boolean(deployments.data?.length) && <div className={styles.tableWrap}>
+                  <Table aria-label="Discovered model deployments">
+                    <TableHeader><TableRow>
+                      <TableHeaderCell>Deployment</TableHeaderCell><TableHeaderCell>Model</TableHeaderCell>
+                      <TableHeaderCell>Version</TableHeaderCell><TableHeaderCell>Capacity</TableHeaderCell>
+                      <TableHeaderCell>Processing</TableHeaderCell><TableHeaderCell>State</TableHeaderCell>
+                      {showPools && <TableHeaderCell>Pools</TableHeaderCell>}
+                    </TableRow></TableHeader>
+                    <TableBody>{deployments.data?.map((deployment) => <TableRow key={deployment.id}>
+                      <TableCell><div className={styles.cellStack}>
+                        <span className={styles.primaryCell}>{deployment.deploymentName}</span>
+                        {deployment.requestPaths.length > 0 && <span className={styles.secondaryCell}>{deployment.requestPaths.join(', ')}</span>}
+                      </div></TableCell>
+                      <TableCell>{deployment.modelName ?? 'Unknown'}</TableCell>
+                      <TableCell>{deployment.modelVersion ?? '—'}</TableCell>
+                      <TableCell><div className={styles.cellStack}>
+                        <span>{CAPACITY_TYPE_LABELS[deployment.capacityType ?? 'unknown']}</span>
+                        {deployment.skuName && <span className={styles.secondaryCell}>
+                          {deployment.skuCapacity != null ? `${deployment.skuName} ${deployment.skuCapacity}` : deployment.skuName}
+                        </span>}
+                        {deployment.spilloverDeploymentName && <span className={styles.secondaryCell}>Azure spillover to {deployment.spilloverDeploymentName}</span>}
+                      </div></TableCell>
+                      <TableCell>{PROCESSING_SCOPE_LABELS[deployment.processingScope ?? 'unknown']}</TableCell>
+                      <TableCell>{deployment.provisioningState ?? 'Unknown'}</TableCell>
+                      {showPools && <TableCell><DeploymentPoolsCell deploymentName={deployment.deploymentName} pools={deploymentPools} /></TableCell>}
+                    </TableRow>)}</TableBody>
+                  </Table>
+                </div>}
+              </section>
+            )}
+            <EndpointPoolsCard endpoint={endpoint} className={styles.detailSection} />
+          </div>}
+        />}
 
       {(pending.length > 0 || scanSummary) && (
         <Card className={styles.panel}>
@@ -1355,7 +1317,6 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
                   <Text weight="semibold">
                     {item.accountName ?? item.endpoint ?? 'Unidentified endpoint'}
                   </Text>
-                  <Badge appearance="outline">{sourceLabels[item.source]}</Badge>
                 </div>
                 <Text size={200} className={styles.muted}>
                   {item.reason}
@@ -1431,107 +1392,13 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
         </Card>
       )}
 
-      {selected && <AccessPanel endpoint={selected} onMessage={onMessage} />}
-
-      {selected && usesBackendKey(selected) && (
-        <DeclaredDeploymentsCard endpoint={selected} className={styles.panel} />
-      )}
-
-      {selected && !usesBackendKey(selected) && (
-        <Card className={styles.panel}>
-          <Title3 as="h2">Models on {selected.name}</Title3>
-          {selected.lastSyncError && (
-            <MessageBar intent="warning">
-              <MessageBarBody>
-                <MessageBarTitle>The last sync was incomplete</MessageBarTitle>
-                {selected.lastSyncError}
-              </MessageBarBody>
-            </MessageBar>
-          )}
-          {deployments.isPending && <Loading label="Loading models" />}
-          {deployments.isError && <ErrorState error={deployments.error} />}
-          {deployments.data?.length === 0 && (
-            <EmptyState title="No models discovered yet">
-              Run a sync to read the deployments on this endpoint.
-            </EmptyState>
-          )}
-          {deployments.data && deployments.data.length > 0 && (
-            <div className={styles.tableWrap}>
-              <Table aria-label="Discovered model deployments">
-                <TableHeader>
-                  <TableRow>
-                    <TableHeaderCell>Deployment</TableHeaderCell>
-                    <TableHeaderCell>Model</TableHeaderCell>
-                    <TableHeaderCell>Version</TableHeaderCell>
-                    <TableHeaderCell>Capacity</TableHeaderCell>
-                    <TableHeaderCell>Processing</TableHeaderCell>
-                    <TableHeaderCell>State</TableHeaderCell>
-                    {showPools && <TableHeaderCell>Pools</TableHeaderCell>}
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {deployments.data.map((deployment) => (
-                    <TableRow key={deployment.id}>
-                      <TableCell>
-                        <div className={styles.cellStack}>
-                          <span className={styles.primaryCell}>
-                            {deployment.deploymentName}
-                          </span>
-                          {deployment.requestPaths.length > 0 && (
-                            <span className={styles.secondaryCell}>
-                              {deployment.requestPaths.join(', ')}
-                            </span>
-                          )}
-                        </div>
-                      </TableCell>
-                      <TableCell>{deployment.modelName ?? 'Unknown'}</TableCell>
-                      <TableCell>{deployment.modelVersion ?? '—'}</TableCell>
-                      <TableCell>
-                        <div className={styles.cellStack}>
-                          <span>{CAPACITY_TYPE_LABELS[deployment.capacityType ?? 'unknown']}</span>
-                          {deployment.skuName && (
-                            <span className={styles.secondaryCell}>
-                              {deployment.skuCapacity != null
-                                ? `${deployment.skuName} ${deployment.skuCapacity}`
-                                : deployment.skuName}
-                            </span>
-                          )}
-                          {deployment.spilloverDeploymentName && (
-                            <span className={styles.secondaryCell}>
-                              Azure spillover to {deployment.spilloverDeploymentName}
-                            </span>
-                          )}
-                        </div>
-                      </TableCell>
-                      <TableCell>
-                        {PROCESSING_SCOPE_LABELS[deployment.processingScope ?? 'unknown']}
-                      </TableCell>
-                      <TableCell>{deployment.provisioningState ?? 'Unknown'}</TableCell>
-                      {showPools && (
-                        <TableCell>
-                          <DeploymentPoolsCell
-                            deploymentName={deployment.deploymentName}
-                            pools={deploymentPools}
-                          />
-                        </TableCell>
-                      )}
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
-          )}
-        </Card>
-      )}
-
-      {selected && <EndpointPoolsCard endpoint={selected} className={styles.panel} />}
-
-      <Dialog open={dialogOpen} onOpenChange={(_, data) => (data.open ? setDialogOpen(true) : closeDialog())}>
-        <DialogSurface>
+      <WorkspaceDialog open={dialogOpen} title="Register model endpoint"
+        description="Registration records and discovers the endpoint. It does not publish a model or change API Management."
+        pending={register.isPending}
+        onOpenChange={(_, data) => !data.open && closeDialog()}>
+        {(requestClose) => (
           <form onSubmit={submit}>
-            <DialogBody>
-              <DialogTitle>Register model endpoint</DialogTitle>
-              <DialogContent className={styles.dialogForm}>
+              <div className={styles.dialogForm}>
                 <TabList
                   selectedValue={mode}
                   onTabSelect={(_, data) => {
@@ -1750,19 +1617,23 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
                     <ErrorState title={REGISTRATION_REFUSED} error={register.error} />
                   </div>
                 )}
-              </DialogContent>
-              <DialogActions>
-                <Button appearance="secondary" onClick={closeDialog}>
-                  Cancel
-                </Button>
+              </div>
+              <div className={styles.formActions}>
                 <Button appearance="primary" type="submit" disabledFocusable={register.isPending}>
                   {register.isPending ? 'Registering…' : 'Register'}
                 </Button>
-              </DialogActions>
-            </DialogBody>
+                <Button appearance="secondary" disabled={register.isPending} onClick={requestClose}>Cancel registration</Button>
+              </div>
           </form>
-        </DialogSurface>
-      </Dialog>
+        )}
+      </WorkspaceDialog>
+      {workspace.mode === 'edit' && selected && new URLSearchParams(location.search).get('endpointEditor') !== 'environment' && <ModelEndpointEditor endpoint={selected}
+        mutationKey={MODELS_PAGE_MUTATION_KEY} onClose={() => workspace.close()}
+        onSaved={async (endpoint) => {
+          completeWorkspaceNavigation(() => workspace.close(endpoint.id))
+          onMessage(`Updated ${endpoint.name}. Nothing changed in Azure or AWS.`)
+          await refresh()
+        }} />}
 
       <RemovalDialog
         open={removing !== null}
@@ -1808,20 +1679,14 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
           </>
         )}
       </RemovalDialog>
-      {changingEndpoint && (
-        <ChangeEnvironmentDialog
+      {workspace.mode === 'edit' && selected && new URLSearchParams(location.search).get('endpointEditor') === 'environment' && (
+        <ModelEndpointEnvironmentEditor
           mutationKey={MODELS_PAGE_MUTATION_KEY}
-          resource={{
-            resourceKind: 'modelEndpoint',
-            resourceId: changingEndpoint.id,
-            resourceName: changingEndpoint.name,
-            environment: changingEndpoint.environment,
-          }}
-          open={changingEndpoint !== null}
-          onClose={() => setChangingEndpoint(null)}
-          onChanged={async () => {
-            setChangingEndpoint(null)
-            onMessage(`Updated ${changingEndpoint.name}'s environment.`)
+          endpoint={selected}
+          onClose={() => workspace.close()}
+          onSaved={async () => {
+            completeWorkspaceNavigation(() => workspace.close(selected.id))
+            onMessage(`Updated ${selected.name}'s environment.`)
             await refresh()
           }}
         />
@@ -1831,9 +1696,9 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
 }
 
 const modelSections = [
-  { value: 'published', label: 'Published models', description: 'Publish a registered deployment to a managed gateway through a reviewed plan. Reviewing does not apply changes to API Management.' },
-  { value: 'imported', label: 'Imported model APIs', description: 'Record governance for APIs already on a gateway. Importing does not change API Management.' },
-  { value: 'endpoints', label: 'Model endpoints', description: 'Register provider endpoints and discover their models. Registration does not publish a model or change the provider.' },
+  { value: 'published', label: 'Published models', icon: <ArrowUploadRegular /> },
+  { value: 'imported', label: 'Imported model APIs', icon: <ArrowDownloadRegular /> },
+  { value: 'endpoints', label: 'Model endpoints', icon: <ServerRegular /> },
 ]
 
 export function ModelsPage() {
@@ -1841,12 +1706,11 @@ export function ModelsPage() {
   const location = useLocation()
   const navigate = useNavigate()
   const hasConsumedImportQueryRef = useRef(false)
-  const [importOpen, setImportOpen] = useState(false)
-  const [publishOpen, setPublishOpen] = useState(false)
   const [liveBanner, setLiveBanner] = useState<string | null>(null)
   const params = useMemo(() => new URLSearchParams(location.search), [location.search])
   const [section, selectSection] = usePageSection(modelSections,
     params.has('import') ? 'imported' : params.get('register') === '1' ? 'endpoints' : 'published')
+  const workspace = useWorkbenchLocation({ section })
 
   const requestedImportGatewayId = useMemo(
     () => new URLSearchParams(location.search).get('import'),
@@ -1854,26 +1718,31 @@ export function ModelsPage() {
   )
 
   useEffect(() => {
-    const requestedSection = requestedImportGatewayId ? 'imported' : params.get('register') === '1' ? 'endpoints' : null
-    if (requestedSection && params.get('tab') !== requestedSection) selectSection(requestedSection)
-  }, [params, requestedImportGatewayId, selectSection])
-
-  useEffect(() => {
-    if (requestedImportGatewayId && !hasConsumedImportQueryRef.current) {
-      hasConsumedImportQueryRef.current = true
-      setImportOpen(true)
+    const registrationRequested = params.get('register') === '1'
+    if (registrationRequested || (requestedImportGatewayId && !hasConsumedImportQueryRef.current)) {
+      if (requestedImportGatewayId) hasConsumedImportQueryRef.current = true
+      const target = requestedImportGatewayId ? 'imported' : 'endpoints'
+      const next = new URLSearchParams(location.search)
+      next.delete('register')
+      next.set('tab', target)
+      next.set('mode', target === 'imported' ? 'import' : 'new')
+      next.set('workbench', `${location.pathname}:${target}`)
+      navigate({ pathname: location.pathname, search: `?${next}`, hash: location.hash }, { replace: true })
     }
     if (!requestedImportGatewayId) {
       hasConsumedImportQueryRef.current = false
     }
-  }, [requestedImportGatewayId])
+  }, [requestedImportGatewayId, params, location, navigate])
 
-  function removeImportQueryIfPresent() {
+  function removeImportQueryIfPresent(importedId?: string) {
     const params = new URLSearchParams(location.search)
-    if (!params.has('import')) {
-      return
-    }
     params.delete('import')
+    params.delete('mode')
+    if (importedId) {
+      params.set('selected', importedId)
+      params.set('workbench', `${location.pathname}:imported`)
+    }
+    if (!params.has('selected')) params.delete('workbench')
     const nextSearch = params.toString()
     navigate(
       {
@@ -1890,17 +1759,6 @@ export function ModelsPage() {
       <PageHeader
         title="Models"
         description="Manage model publication, imported APIs, and provider endpoints."
-        source="live"
-        actions={
-          <div className={styles.actionRow}>
-            {section === 'published' && <Button appearance="primary" icon={<AddRegular />} onClick={() => setPublishOpen(true)}>
-              Publish a model
-            </Button>}
-            {section === 'imported' && <Button appearance="primary" onClick={() => setImportOpen(true)}>
-              Import from gateway
-            </Button>}
-          </div>
-        }
       />
 
       {liveBanner && (
@@ -1912,26 +1770,23 @@ export function ModelsPage() {
       {pendingOperations > 0 && <Text role="status">Finish the current operation before changing sections.</Text>}
       <SectionLayout label="Models" sections={modelSections} active={section}
         onSelect={(value) => { if (!pendingOperations) selectSection(value) }}>
-        {section === 'published' && <PublishedModels onMessage={setLiveBanner} />}
-        {section === 'imported' && <ImportedModelApis onRemoved={setLiveBanner} />}
+        {section === 'published' && <PublishedModels onMessage={setLiveBanner} onPublish={() => workspace.open('publish')} />}
+        {section === 'imported' && <ImportedModelApis onRemoved={setLiveBanner} onImport={() => workspace.open('import')} />}
         {section === 'endpoints' && <ModelEndpoints onMessage={setLiveBanner} />}
-      </SectionLayout>
-
       <PublishModelDialog
-        open={publishOpen}
+        open={section === 'published' && workspace.mode === 'publish'}
         mutationKey={MODELS_PAGE_MUTATION_KEY}
-        onClose={() => setPublishOpen(false)}
+        onClose={() => workspace.close()}
         onPublished={setLiveBanner}
       />
 
       <ImportFromGatewayDialog
         kind="apis"
         mutationKey={MODELS_PAGE_MUTATION_KEY}
-        open={importOpen}
+        open={section === 'imported' && workspace.mode === 'import'}
         initialGatewayId={requestedImportGatewayId}
-        onClose={() => {
-          setImportOpen(false)
-          removeImportQueryIfPresent()
+        onClose={(importedId) => {
+          removeImportQueryIfPresent(importedId)
         }}
         onImported={(count) =>
           setLiveBanner(
@@ -1940,6 +1795,7 @@ export function ModelsPage() {
           )
         }
       />
+      </SectionLayout>
     </section>
   )
 }

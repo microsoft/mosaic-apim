@@ -12,7 +12,8 @@ import {
 } from '@fluentui/react-components'
 import { useIsMutating, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
-import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
+import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom'
+import { HistoryRegular, HeartPulseRegular, InfoRegular, LayerRegular, ShieldKeyholeRegular } from '@fluentui/react-icons'
 import { useMosaicApi } from '../api'
 import { EmptyState, ErrorState, Loading } from '../components/AsyncState'
 import { CopyButton } from '../components/CopyButton'
@@ -37,6 +38,7 @@ import type { PoolPlanMode } from '../components/PoolPlanDialog'
 import { PoolTypeDiagram } from '../components/PoolTypeDiagram'
 import { RemovalDialog } from '../components/RemovalDialog'
 import { RowActions } from '../components/RowActions'
+import { useWorkbenchLocation } from '../components/useWorkbenchLocation'
 import { useEnvironmentCatalog } from '../environments'
 import { CAPACITY_TYPE_LABELS, PROCESSING_SCOPE_LABELS, plural } from '../labels'
 import {
@@ -387,35 +389,69 @@ function RunHistory({ runs }: { runs: PublishRun[] }) {
 }
 
 const poolDetailSections = [
-  { value: 'overview', label: 'Overview' },
-  { value: 'models', label: 'Models and deployments' },
-  { value: 'access', label: 'Access and connection' },
-  { value: 'health', label: 'Health' },
-  { value: 'plans', label: 'Policy and runs', description: 'Reviewing a plan does not apply it. Unpublishing removes MOSAIC-owned gateway resources; removing a record only changes MOSAIC.' },
+  { value: 'overview', label: 'Overview', icon: <InfoRegular /> },
+  { value: 'models', label: 'Models and deployments', icon: <LayerRegular /> },
+  { value: 'access', label: 'Access and connection', icon: <ShieldKeyholeRegular /> },
+  { value: 'health', label: 'Health', icon: <HeartPulseRegular /> },
+  { value: 'plans', label: 'Policy and runs', icon: <HistoryRegular />, description: 'Reviewing a plan does not apply it. Unpublishing removes MOSAIC-owned gateway resources; removing a record only changes MOSAIC.' },
 ]
 
-function PoolDetail({ poolId }: { poolId: string }) {
+function PoolDetail({ poolId, embedded = false }: { poolId: string; embedded?: boolean }) {
   const pendingOperations = useIsMutating({ mutationKey: POOL_DETAIL_MUTATION_KEY })
-  const [section, selectSection] = usePageSection(poolDetailSections)
+  const [section] = usePageSection(poolDetailSections, 'overview', embedded ? 'poolTab' : 'tab')
+  const [params, setParams] = useSearchParams()
+  const workbench = useWorkbenchLocation({ section: embedded ? 'pools' : 'pool-detail' })
+  function selectSection(value: string) {
+    setParams((current) => {
+      const next = new URLSearchParams(current)
+      next.set(embedded ? 'poolTab' : 'tab', value)
+      return next
+    })
+  }
   const api = useMosaicApi()
   const navigate = useNavigate()
   const location = useLocation()
+  const returnState = location.state as (PoolLocationState & { poolReturnTo?: string }) | null
+  const returnTo = returnState?.poolReturnTo
+  const listUrl = returnTo === '/pools' || returnTo?.startsWith('/pools?')
+    ? returnTo : `/pools?selected=${encodeURIComponent(poolId)}`
   const queryClient = useQueryClient()
   const catalog = useEnvironmentCatalog()
   const restoreFocus = useRestoreFocusTarget()
   // A pool the list just saved with "Save and review plan" opens its plan once it loads.
-  const [planMode, setPlanMode] = useState<PoolPlanMode | null>(() =>
-    (location.state as PoolLocationState | null)?.openPlan ? 'publish' : null,
-  )
-  const [editing, setEditing] = useState(false)
+  const planMode: PoolPlanMode | null = workbench.mode === 'review'
+    ? params.get('planAction') === 'unpublish' ? 'unpublish' : 'publish'
+    : (location.state as PoolLocationState | null)?.openPlan ? 'publish' : null
+  function setPlanMode(mode: PoolPlanMode | null) {
+    setParams((current) => {
+      const next = new URLSearchParams(current)
+      if (mode) {
+        next.set('mode', 'review')
+        next.delete('workbench')
+        next.set('selected', poolId)
+        next.set('planAction', mode)
+      } else {
+        next.delete('mode')
+        next.delete('planAction')
+      }
+      return next
+    }, { replace: mode === null, preventScrollReset: true })
+  }
+  const editing = workbench.mode === 'edit'
   const [removing, setRemoving] = useState(false)
   const [notice, setNotice] = useState('')
 
   useEffect(() => {
     if ((location.state as PoolLocationState | null)?.openPlan) {
-      navigate({ pathname: location.pathname, search: location.search }, { replace: true, state: null })
+      const next = new URLSearchParams(location.search)
+      next.set('mode', 'review')
+      next.delete('workbench')
+      next.set('selected', poolId)
+      navigate({ pathname: location.pathname, search: `?${next}` }, {
+        replace: true, state: { ...(location.state as PoolLocationState), openPlan: false }, preventScrollReset: true,
+      })
     }
-  }, [location.pathname, location.search, location.state, navigate])
+  }, [embedded, poolId, location.pathname, location.search, location.state, navigate])
 
   const detail = useQuery({
     queryKey: ['model-pools', 'detail', poolId],
@@ -453,7 +489,14 @@ function PoolDetail({ poolId }: { poolId: string }) {
     mutationKey: POOL_DETAIL_MUTATION_KEY,
     mutationFn: () => api.deleteModelPool(poolId),
     onSuccess: () => {
-      navigate('/pools', { replace: true })
+      if (embedded) workbench.close(null)
+      else {
+        const next = new URLSearchParams(listUrl.split('?')[1])
+        next.delete('selected')
+        next.delete('mode')
+        next.delete('workbench')
+        navigate({ pathname: '/pools', search: `?${next}` }, { replace: true })
+      }
       queryClient.removeQueries({ queryKey: ['model-pools', 'detail', poolId] })
       queryClient.removeQueries({ queryKey: ['model-pools', 'runs', poolId] })
       queryClient.removeQueries({ queryKey: ['model-pools', 'health', poolId] })
@@ -461,8 +504,8 @@ function PoolDetail({ poolId }: { poolId: string }) {
     },
   })
 
-  const backLink = (
-    <Link className={styles.backLink} to="/pools">
+  const backLink = !embedded && (
+    <Link className={styles.backLink} to={listUrl}>
       ← Back to pools
     </Link>
   )
@@ -479,6 +522,7 @@ function PoolDetail({ poolId }: { poolId: string }) {
     return (
       <div className={styles.page}>
         {backLink}
+        {embedded && workbench.mode && <Button onClick={() => workbench.close()}>Back to pools</Button>}
         <ErrorState error={detail.error} title="Unable to load the pool" />
       </div>
     )
@@ -503,13 +547,25 @@ function PoolDetail({ poolId }: { poolId: string }) {
     0,
   )
 
+  if (editing && applying) return <div className={styles.page}>
+    <Button onClick={() => workbench.close()}>Back to pool</Button>
+    <MessageBar intent="warning"><MessageBarBody><MessageBarTitle>Pool changes are locked</MessageBarTitle>
+      {interrupted ? 'The last run was interrupted. Reconcile the unknown gateway state before changing the pool.'
+        : 'A plan is being applied. Wait for it to finish before editing or reviewing another plan.'}
+    </MessageBarBody></MessageBar>
+    {interrupted && <ModelAccessRecovery publicationId={pool.id} runId={interrupted.id} target="pool" />}
+  </div>
+  if (editing) return <PoolEditorDialog pool={pool} onClose={() => workbench.close()}
+    onSaved={(_saved, review) => { if (review) setPlanMode('publish'); else workbench.close(pool.id) }} />
+  if (planMode) return <PoolPlanDialog pool={pool} mode={planMode} locked={applying}
+    interruptedRunId={interrupted?.id} onClose={() => setPlanMode(null)} />
+
   return (
     <div className={styles.page}>
       {backLink}
       <PageHeader
         title={pool.displayName}
         description={pool.description || `${family} · ${POOL_TYPE_LABELS[pool.poolType]} routing`}
-        source="live"
         actions={
           <div className={styles.headerActions}>
             <PoolStatusBadge pool={pool} />
@@ -517,15 +573,18 @@ function PoolDetail({ poolId }: { poolId: string }) {
             <EnvironmentBadge environment={detail.data.gatewayEnvironment ?? null} catalog={catalog.data} />
             <RowActions
               label={`More actions for ${pool.displayName}`}
-              primary={<Button appearance="primary" disabled={planBlocked} onClick={() => setPlanMode('publish')} {...restoreFocus}>
+              primary={<Button appearance="primary" title="Preview changes. Nothing changes until you select Apply plan."
+                disabled={planBlocked} onClick={() => setPlanMode('publish')} {...restoreFocus}>
               {published ? 'Review changes' : 'Review publish plan'}
               </Button>}
               actions={[{
                 label: 'Edit',
                 disabled: applying,
-                onClick: () => setEditing(true),
+                onClick: () => workbench.open('edit', pool.id),
               }]}
             />
+            {embedded && <Link className={styles.backLink} to={`/pools/${pool.id}`}
+              state={{ poolReturnTo: `${location.pathname}${location.search}` }}>Open full detail</Link>}
           </div>
         }
       />
@@ -616,7 +675,7 @@ function PoolDetail({ poolId }: { poolId: string }) {
       </div>
 
       {pendingOperations > 0 && <Text role="status">Finish the current operation before changing sections.</Text>}
-      <SectionLayout label="Pool" sections={poolDetailSections} active={section}
+      <SectionLayout label="Pool" sections={poolDetailSections} active={section} orientation={embedded ? 'horizontal' : 'vertical'}
         onSelect={(value) => { if (!pendingOperations) selectSection(value) }}>
       {section === 'overview' && <div className={styles.overview}>
         <Card className={styles.card} aria-labelledby="pool-routing-heading">
@@ -760,17 +819,6 @@ function PoolDetail({ poolId }: { poolId: string }) {
       </>}
       </SectionLayout>
 
-      {editing && (
-        <PoolEditorDialog
-          pool={pool}
-          onClose={() => setEditing(false)}
-          onSaved={(_saved, review) => {
-            setEditing(false)
-            if (review) setPlanMode('publish')
-          }}
-        />
-      )}
-      {planMode && <PoolPlanDialog pool={pool} mode={planMode} onClose={() => setPlanMode(null)} />}
       <RemovalDialog
         open={removing}
         title={`Remove ${pool.displayName}?`}
@@ -794,8 +842,9 @@ function PoolDetail({ poolId }: { poolId: string }) {
 }
 
 /** One pool: its models and the deployments behind them, how it routes, and how callers reach it. */
-export function PoolDetailPage() {
-  const { poolId = '' } = useParams()
+export function PoolDetailPage({ poolId: selectedPoolId, embedded = false }: { poolId?: string; embedded?: boolean } = {}) {
+  const { poolId: routePoolId = '' } = useParams()
+  const poolId = selectedPoolId ?? routePoolId
   // Keyed so moving between pools starts each with fresh state.
-  return <PoolDetail key={poolId} poolId={poolId} />
+  return <PoolDetail key={poolId} poolId={poolId} embedded={embedded} />
 }

@@ -5,13 +5,14 @@
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   color-scheme: light;
-  --mosaic-bg: #f3f6fa;
+  --mosaic-bg: #edf3fa;
   --mosaic-surface: #ffffff;
   --mosaic-surface-subtle: #f5f7fa;
   --mosaic-surface-strong: #e8edf4;
   --mosaic-border: #c6cfdb;
-  --mosaic-border-soft: #e1e7ef;
-  --mosaic-glass: rgba(250, 252, 255, 0.86);
+  --mosaic-border-soft: #dce5ef;
+  --mosaic-glass: rgba(250, 252, 255, 0.72);
+  --mosaic-chrome-tint: #d8e8f8;
   --mosaic-text: #1a1c1c;
   --mosaic-text-muted: #404752;
   --mosaic-primary: #005faa;
@@ -26,9 +27,9 @@
   --mosaic-danger-soft: #fde7e9;
   --mosaic-code-bg: #17212b;
   --mosaic-code-text: #e8eef4;
-  --mosaic-shadow: 0 2px 6px rgba(25, 44, 72, 0.04), 0 12px 32px rgba(25, 44, 72, 0.04);
-  --sidebar-width: 248px;
-  --topbar-height: 60px;
+  --mosaic-shadow: 0 2px 6px rgba(25, 44, 72, 0.035), 0 10px 28px rgba(25, 44, 72, 0.055);
+  --sidebar-width: 232px;
+  --topbar-height: 64px;
 }
 
 :root[data-theme="dark"] {
@@ -39,7 +40,8 @@
   --mosaic-surface-strong: #303e4e;
   --mosaic-border: #536479;
   --mosaic-border-soft: #354354;
-  --mosaic-glass: rgba(28, 37, 49, 0.88);
+  --mosaic-glass: rgba(28, 37, 49, 0.76);
+  --mosaic-chrome-tint: #1b3550;
   --mosaic-text: #f5f5f5;
   --mosaic-text-muted: #c8c6c4;
   --mosaic-primary: #69afe5;
@@ -92,6 +94,7 @@ code,
   grid-template:
     "nav header" var(--topbar-height)
     "nav content" minmax(0, 1fr) / var(--sidebar-width) minmax(0, 1fr);
+  background: linear-gradient(135deg, var(--mosaic-chrome-tint), var(--mosaic-bg) 65%);
 }
 
 .topbar {
@@ -379,7 +382,7 @@ code,
   .sidebar,
   .topbar {
     background: var(--mosaic-glass);
-    backdrop-filter: blur(16px);
+    backdrop-filter: blur(20px) saturate(140%);
   }
 }
 
@@ -396,13 +399,14 @@ code,
   width: 100%;
   min-width: 0;
   min-height: calc(100vh - var(--topbar-height));
-  background: var(--mosaic-bg);
+  background: transparent;
 }
 
 .content-inner {
-  width: min(100%, 1480px);
+  width: 100%;
   min-height: 100%;
-  padding: 32px 32px 48px;
+  padding: 28px 28px 40px;
+  container: workspace / inline-size;
 }
 
 @keyframes content-in {
@@ -419,13 +423,15 @@ code,
 .page-header {
   margin-bottom: 28px;
   display: flex;
-  align-items: end;
+  align-items: start;
+  flex-wrap: wrap;
   justify-content: space-between;
   gap: 24px;
 }
 
 .page-heading {
   min-width: 0;
+  flex: 1 1 360px;
 }
 
 .breadcrumbs {
@@ -448,8 +454,8 @@ code,
 .page-title-row h1 {
   margin: 0;
   color: var(--mosaic-text);
-  font-size: clamp(28px, 3vw, 36px);
-  line-height: 1.15;
+  font-size: 30px;
+  line-height: 1.2;
 }
 
 .page-description {
@@ -457,6 +463,7 @@ code,
   margin-top: 8px;
   display: block;
   color: var(--mosaic-text-muted);
+  line-height: 1.55;
 }
 
 .page-actions {
@@ -464,15 +471,12 @@ code,
   align-items: center;
   justify-content: flex-end;
   gap: 8px;
+  flex: 0 1 auto;
+  flex-wrap: wrap;
 }
 
 .source-badge {
   font-weight: 600;
-}
-
-.source-badge-live {
-  color: var(--mosaic-success) !important;
-  background: var(--mosaic-success-soft) !important;
 }
 
 .source-badge-sample {
@@ -531,12 +535,56 @@ code,
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+  flex-wrap: wrap;
   border-bottom: 1px solid var(--mosaic-border-soft);
 }
 
 .panel-header h2,
 .panel-header h3 {
   margin: 0;
+}
+
+.panel-header > div:first-child {
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.fui-Card h2 + .fui-Text,
+.fui-Card h3 + .fui-Text {
+  display: block;
+  margin-top: 6px;
+  line-height: 1.55;
+  color: var(--mosaic-text-muted);
+}
+
+.fui-Button {
+  flex-shrink: 0;
+  white-space: nowrap;
+  border-radius: 8px;
+}
+
+.fui-Button__icon {
+  flex-shrink: 0;
+}
+
+.fui-Badge {
+  flex-shrink: 0;
+  justify-self: start;
+  white-space: nowrap;
+  width: max-content;
+  max-width: none;
+  line-height: 1;
+}
+
+.nav-link:focus-visible,
+.profile-quick-link:focus-visible {
+  outline: 2px solid var(--mosaic-primary);
+  outline-offset: 2px;
+}
+
+.nav-link svg {
+  flex-shrink: 0;
 }
 
 .metric-grid {
@@ -560,6 +608,8 @@ code,
 }
 
 .table-scroll {
+  position: relative;
+  min-width: 0;
   margin-top: 20px;
   overflow-x: auto;
 }
@@ -759,6 +809,10 @@ tbody tr:focus-within {
     margin-bottom: 20px;
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .page-heading {
+    flex-basis: auto;
   }
 
   .page-actions {

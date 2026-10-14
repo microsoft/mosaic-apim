@@ -1,11 +1,5 @@
 import {
   Button,
-  Dialog,
-  DialogActions,
-  DialogBody,
-  DialogContent,
-  DialogSurface,
-  DialogTitle,
   Field,
   Input,
   MessageBar,
@@ -69,6 +63,8 @@ import { EnvironmentBadge } from './EnvironmentBadge'
 import { PoolModelsEditor } from './PoolModelsEditor'
 import { PoolTypeDiagram } from './PoolTypeDiagram'
 import styles from './PoolDialogs.module.css'
+import { WorkspaceEditorFrame } from './WorkspaceEditorFrame'
+import { completeWorkspaceNavigation } from './WorkspaceLeaveGuard'
 
 type EditorStep = 'basics' | 'routing' | 'models' | 'review'
 
@@ -147,6 +143,8 @@ export function PoolEditorDialog({ pool, initialGatewayId, prefill, onClose, onS
   const [drafts, setDrafts] = useState<DraftPoolModel[]>(() =>
     pool ? draftsFromPool(pool) : (prefill?.models ?? []),
   )
+  const initialDraft = useRef(JSON.stringify({ form, drafts }))
+  const dirty = JSON.stringify({ form, drafts }) !== initialDraft.current
   const [attempted, setAttempted] = useState(false)
   const [stepMoves, setStepMoves] = useState(0)
   const [blockedSaves, setBlockedSaves] = useState(0)
@@ -257,7 +255,7 @@ export function PoolEditorDialog({ pool, initialGatewayId, prefill, onClose, onS
     },
     onSuccess: ({ saved, review }) => {
       void queryClient.invalidateQueries({ queryKey: ['model-pools'] })
-      onSaved(saved, review)
+      completeWorkspaceNavigation(() => onSaved(saved, review))
     },
   })
 
@@ -288,11 +286,30 @@ export function PoolEditorDialog({ pool, initialGatewayId, prefill, onClose, onS
   const shown = (problem: string | null, value: string) => (problem && (attempted || value.trim()) ? problem : undefined)
 
   return (
-    <Dialog open onOpenChange={(_, data) => !data.open && onClose()}>
-      <DialogSurface className={styles.surface}>
-        <DialogBody>
-          <DialogTitle>{pool ? `Edit ${pool.displayName}` : 'Create a model pool'}</DialogTitle>
-          <DialogContent className={styles.content}>
+    <WorkspaceEditorFrame
+      title={pool ? `Edit ${pool.displayName}` : 'Create a model pool'}
+      description="Saving records MOSAIC intent. Review and explicitly apply a plan to change API Management."
+      onBack={onClose}
+      onCancel={onClose}
+      backLabel="Back to pools"
+      dirty={dirty}
+      pending={save.isPending}
+      actions={<>
+        {index > 0 && <Button onClick={() => move(STEPS[index - 1])}>Previous step</Button>}
+        {(pool || step === 'review') && (
+          <Button disabledFocusable={save.isPending} onClick={() => submit(false)}>
+            {save.isPending && save.variables === false ? 'Saving…' : pool ? 'Save changes' : 'Save as draft'}
+          </Button>
+        )}
+        {step === 'review' ? (
+          <Button appearance="primary" disabled={blocker != null} disabledFocusable={save.isPending}
+            onClick={() => submit(true)}>
+            {save.isPending && save.variables === true ? 'Saving…' : 'Save and review plan'}
+          </Button>
+        ) : <Button appearance="primary" onClick={() => move(STEPS[index + 1])}>Next</Button>}
+      </>}
+    >
+          <div className={styles.content}>
             <div className={styles.intro}>
               <Text>
                 A pool serves one vendor’s models through one API. Callers name a model, and the gateway
@@ -656,39 +673,7 @@ export function PoolEditorDialog({ pool, initialGatewayId, prefill, onClose, onS
                 <ErrorState error={save.error} title="MOSAIC couldn’t save the pool" />
               </div>
             )}
-          </DialogContent>
-          <DialogActions>
-            <Button appearance="secondary" onClick={onClose}>
-              Cancel
-            </Button>
-            {index > 0 && (
-              <Button appearance="secondary" onClick={() => move(STEPS[index - 1])}>
-                Back
-              </Button>
-            )}
-            {/* A browser takes focus off a button that becomes disabled, so a busy button stays focusable. */}
-            {(pool || step === 'review') && (
-              <Button appearance="secondary" disabledFocusable={save.isPending} onClick={() => submit(false)}>
-                {save.isPending && save.variables === false ? 'Saving…' : pool ? 'Save changes' : 'Save as draft'}
-              </Button>
-            )}
-            {step === 'review' ? (
-              <Button
-                appearance="primary"
-                disabled={blocker != null}
-                disabledFocusable={save.isPending}
-                onClick={() => submit(true)}
-              >
-                {save.isPending && save.variables === true ? 'Saving…' : 'Save and review plan'}
-              </Button>
-            ) : (
-              <Button appearance="primary" onClick={() => move(STEPS[index + 1])}>
-                Next
-              </Button>
-            )}
-          </DialogActions>
-        </DialogBody>
-      </DialogSurface>
-    </Dialog>
+          </div>
+    </WorkspaceEditorFrame>
   )
 }

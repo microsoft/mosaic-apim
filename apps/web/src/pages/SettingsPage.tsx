@@ -33,13 +33,20 @@ import {
   Title3,
   useId,
 } from '@fluentui/react-components'
+import {
+  GlobeRegular,
+  MailRegular,
+  SettingsRegular,
+  WarningRegular,
+  WeatherMoonRegular,
+} from '@fluentui/react-icons'
 import { type Dispatch, type FormEvent, type SetStateAction, useEffect, useMemo, useState } from 'react'
 import { ApiError, useMosaicApi } from '../api'
 import { EnvironmentBadge } from '../components/EnvironmentBadge'
 import { EnvironmentFindings } from '../components/EnvironmentFindings'
 import { PublicationsBlockedRefusal } from '../components/EnvironmentRefusal'
 import { ReviewEnvironmentSuggestionsDialog } from '../components/ReviewEnvironmentSuggestionsDialog'
-import { PageHeader, PreviewNotice, DataSourceBadge } from '../components/PageHeader'
+import { PageHeader } from '../components/PageHeader'
 import { SectionLayout, usePageSection } from '../components/SectionLayout'
 import { DirectoryConfiguration } from '../components/DirectoryConfiguration'
 import {
@@ -61,18 +68,6 @@ import type {
   EnvironmentUpdate,
 } from '../types'
 import styles from './SettingsPage.module.css'
-interface LocalIntegrationSettings {
-  supportAlias: string
-  workspaceTag: string
-  changeTemplate: string
-}
-
-const defaultIntegrations: LocalIntegrationSettings = {
-  supportAlias: 'mosaic-admin-preview',
-  workspaceTag: 'workspace-preview',
-  changeTemplate: 'CHG-MOSAIC-LOCAL',
-}
-
 const appearanceOptions: Array<{
   value: ThemePreference
   label: string
@@ -489,10 +484,7 @@ function EnvironmentsSettingsSection() {
     <Card className={`${styles.card} ${styles.wideCard}`}>
       <div className={styles.cardHeader}>
         <div>
-          <div className={styles.liveHeading}>
-            <Title3 as="h2">Environments</Title3>
-            <DataSourceBadge kind="live" />
-          </div>
+          <Title3 as="h2">Environments</Title3>
           <Text className={styles.cardDescription}>
             Classify gateways, model endpoints, and MCP servers before environment rules are
             enforced.
@@ -780,10 +772,7 @@ function EmailSettingsSection({ draft, setDraft }: {
     <Card className={`${styles.card} ${styles.wideCard}`}>
       <div className={styles.cardHeader}>
         <div>
-          <div className={styles.liveHeading}>
-            <Title3 as="h2">Email</Title3>
-            <DataSourceBadge kind="live" />
-          </div>
+          <Title3 as="h2">Email</Title3>
           <Text className={styles.cardDescription}>
             Budget warnings and blocks are emailed through Azure Communication Services. MOSAIC
             signs in to it as its own managed identity, so no key or connection string is kept.
@@ -803,7 +792,7 @@ function EmailSettingsSection({ draft, setDraft }: {
       )}
       {data && (
         <div className={styles.emailLayout}>
-          <form className={styles.integrationForm} onSubmit={submit} noValidate aria-label="Email settings">
+          <form className={styles.emailForm} onSubmit={submit} noValidate aria-label="Email settings">
             <div className={styles.emailSwitch}>
               <Switch
                 checked={form.enabled}
@@ -910,12 +899,11 @@ function EmailSettingsSection({ draft, setDraft }: {
 
 export function SettingsPage() {
   const sections = [
-    { value: 'environments', label: 'Environments', description: 'Shared environment classifications and enforcement settings saved to MOSAIC.' },
-    { value: 'findings', label: 'Findings', description: 'Live findings about environment classification and compatibility.' },
-    { value: 'email', label: 'Budget email', description: 'Shared budget email settings saved to MOSAIC. Test messages use the saved configuration.' },
-    { value: 'runtime', label: 'Runtime configuration', description: 'Read-only deployed configuration. Change deployment settings outside this page.' },
-    { value: 'appearance', label: 'Appearance', description: 'Preferences apply immediately and are saved only in this browser.' },
-    { value: 'integrations', label: 'Integration preview', description: 'Local page-state preview only. No deployed integrations are changed.' },
+    { value: 'environments', label: 'Environments', icon: <GlobeRegular />, description: 'Shared environment classifications and enforcement settings saved to MOSAIC.' },
+    { value: 'findings', label: 'Findings', icon: <WarningRegular />, description: 'Findings about environment classification and compatibility.' },
+    { value: 'email', label: 'Budget email', icon: <MailRegular />, description: 'Shared budget email settings saved to MOSAIC. Test messages use the saved configuration.' },
+    { value: 'runtime', label: 'Runtime configuration', icon: <SettingsRegular />, description: 'Read-only deployed configuration. Change deployment settings outside this page.' },
+    { value: 'appearance', label: 'Appearance', icon: <WeatherMoonRegular />, description: 'Preferences apply immediately and are saved only in this browser.' },
   ]
   const [section, selectSection] = usePageSection(sections)
   const [emailDraft, setEmailDraft] = useState<EmailDraftState>({
@@ -924,9 +912,6 @@ export function SettingsPage() {
   })
   const { accounts } = useMsal()
   const { preference, resolvedTheme, setPreference } = useMosaicTheme()
-  const [integrations, setIntegrations] =
-    useState<LocalIntegrationSettings>(defaultIntegrations)
-  const [saveMessage, setSaveMessage] = useState<string | null>(null)
 
   const administratorLabel = accounts[0]?.name ?? 'Local administrator'
   const safeRuntimeValues = [
@@ -939,26 +924,6 @@ export function SettingsPage() {
       value: runtimeConfig.applicationInsightsConnectionString ? 'Configured' : 'Not configured',
     },
   ]
-
-  function updateIntegrationField(
-    field: keyof LocalIntegrationSettings,
-    value: string,
-  ) {
-    setIntegrations((current) => ({ ...current, [field]: value }))
-    setSaveMessage(null)
-  }
-
-  function handleSavePreview(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-    setSaveMessage(
-      'Local preview saved in this page state only. Shared MOSAIC runtime configuration was not changed.',
-    )
-  }
-
-  function handleResetPreview() {
-    setIntegrations(defaultIntegrations)
-    setSaveMessage(null)
-  }
 
   return (
     <section className={styles.page}>
@@ -1029,51 +994,6 @@ export function SettingsPage() {
           </div>
         </Card>}
 
-        {section === 'integrations' && <Card className={styles.card}>
-          <div className={styles.cardHeader}>
-            <div>
-              <Title3 as="h2">Integration preview</Title3>
-              <Text className={styles.cardDescription}>
-                These fields are editable for local preview only and do not update deployed
-                integrations.
-              </Text>
-            </div>
-          </div>
-          <PreviewNotice kind="local">These values live only in this page state, not browser storage or MOSAIC.</PreviewNotice>
-          <form className={styles.integrationForm} onSubmit={handleSavePreview}>
-            <Field label="Support destination alias">
-              <Input
-                value={integrations.supportAlias}
-                onChange={(_, data) => updateIntegrationField('supportAlias', data.value)}
-              />
-            </Field>
-            <Field label="Observability workspace tag">
-              <Input
-                value={integrations.workspaceTag}
-                onChange={(_, data) => updateIntegrationField('workspaceTag', data.value)}
-              />
-            </Field>
-            <Field label="Change template ID">
-              <Input
-                value={integrations.changeTemplate}
-                onChange={(_, data) => updateIntegrationField('changeTemplate', data.value)}
-              />
-            </Field>
-            <div className={styles.formActions}>
-              <Button appearance="primary" type="submit">
-                Save local preview
-              </Button>
-              <Button type="button" onClick={handleResetPreview}>
-                Reset preview
-              </Button>
-            </div>
-          </form>
-          {saveMessage && (
-            <MessageBar intent="success">
-              <MessageBarBody>{saveMessage}</MessageBarBody>
-            </MessageBar>
-          )}
-        </Card>}
       </SectionLayout>
     </section>
   )

@@ -3,12 +3,13 @@ import type { Targets } from '../../config.ts'
 import type { PersonaPool } from '../../fixtures.ts'
 import { expectNoLoadError, field, responseTo } from '../common.ts'
 
-export type IdentityTab = 'users' | 'agents' | 'workloads' | 'security-groups'
+export type IdentityTab = 'users' | 'agents' | 'applications' | 'workloads' | 'security-groups'
 
 const tabs: Record<IdentityTab, { title: string; filter: string; add: string }> = {
   users: { title: 'People', filter: 'Filter by label or object ID', add: 'Add person' },
   agents: { title: 'Agents', filter: 'Filter by label, detail, object ID, or kind', add: 'Add agent' },
-  workloads: { title: 'Applications and managed identities', filter: 'Filter by label, detail, object ID, or kind', add: 'Add application or managed identity' },
+  applications: { title: 'Applications & managed identities', filter: 'Filter by label, detail, object ID, or kind', add: 'Add application or managed identity' },
+  workloads: { title: 'Applications & managed identities', filter: 'Filter by label, detail, object ID, or kind', add: 'Add application or managed identity' },
   'security-groups': { title: 'Entra security groups', filter: 'Filter by label, detail, object ID, or kind', add: 'Add security group' },
 }
 
@@ -17,7 +18,7 @@ export function identityTabFor(kind: string): IdentityTab {
   if (kind === 'user') return 'users'
   if (kind === 'agentIdentity' || kind === 'agentUser') return 'agents'
   if (kind === 'securityGroup') return 'security-groups'
-  return 'workloads'
+  return 'applications'
 }
 
 /** The console's Identity page, on one of its principal tabs. */
@@ -29,18 +30,24 @@ export class IdentityPage {
   constructor(page: Page, targets: Targets, tab: IdentityTab) {
     this.page = page
     this.targets = targets
-    this.tab = tab
+    this.tab = tab === 'workloads' ? 'applications' : tab
   }
 
   static async open(personas: PersonaPool, targets: Targets, tab: IdentityTab, personaKey = targets.roles.admin): Promise<IdentityPage> {
-    const identity = new IdentityPage(await personas.page(personaKey, 'web', `/identity?tab=${tab}`), targets, tab)
+    const activeTab = tab === 'workloads' ? 'applications' : tab
+    const identity = new IdentityPage(await personas.page(personaKey, 'web', `/identity?tab=${activeTab}`), targets, activeTab)
     await identity.loaded()
     return identity
   }
 
   async loaded(): Promise<void> {
     await expect(this.page.getByRole('heading', { level: 1, name: 'Identity', exact: true })).toBeVisible()
-    await expect(this.page.getByRole('navigation', { name: 'Identity sections' }).locator('[aria-current="page"]')).toBeVisible()
+    const selector = this.page.getByLabel('Identity section', { exact: true })
+    if (await selector.isVisible()) {
+      await expect(selector).toHaveValue(this.tab)
+    } else {
+      await expect(this.page.getByRole('navigation', { name: 'Identity sections' }).locator('[aria-current="page"]')).toBeVisible()
+    }
     await expect(this.shown).toBeVisible()
     await expectNoLoadError(this.page)
   }
@@ -54,24 +61,25 @@ export class IdentityPage {
     return this.page.getByText(/^\d+ of \d+ shown$/)
   }
 
-  /** A principal's row, found by filtering the list to its object ID. */
+  /** Filtering by the complete object ID identifies its native selection button, even when directory detail is shown instead. */
   async row(objectId: string): Promise<Locator> {
     await this.filter.fill(objectId)
-    return this.page.getByRole('row').filter({ has: this.page.locator('code', { hasText: objectId }) })
+    return this.page.getByRole('list', { name: tabs[this.tab].title, exact: true }).getByRole('button')
   }
 
-  /** "Verified in Entra" or "Entered by hand". */
+  /** Directory verification is separate from how the MOSAIC reference was entered. */
   provenance(row: Locator): Locator {
-    return row.getByText(/^(Verified in Entra|Entered by hand)$/)
+    return row.getByText(/^(Verified in Entra|Not directory-verified)$/)
   }
 
-  /** Opens the add dialog on its manual form, whether or not directory lookup is on. */
+  /** Retains the public method while opening the workspace's deliberate manual fallback. */
   async openAddDialog(): Promise<AddPrincipalDialog> {
     await this.page.getByRole('button', { name: tabs[this.tab].add, exact: true }).click()
     const dialog = new AddPrincipalDialog(this.page, this.targets)
     await expect(dialog.root).toBeVisible()
     const manual = dialog.root.getByRole('button', { name: 'Use manual entry', exact: true })
-    if (await manual.isVisible()) await manual.click()
+    await expect(manual).toBeVisible()
+    await manual.click()
     await expect(field(dialog.root, 'Entra object ID')).toBeVisible()
     return dialog
   }
@@ -84,7 +92,7 @@ export class AddPrincipalDialog {
 
   constructor(page: Page, targets: Targets) {
     this.page = page
-    this.root = page.getByRole('dialog', { name: /^Add / })
+    this.root = page.getByRole('region', { name: /^Add / })
     this.#apiOrigin = targets.origins.api
   }
 
@@ -104,6 +112,8 @@ export class AddPrincipalDialog {
 
   async cancel(): Promise<void> {
     await this.root.getByRole('button', { name: 'Cancel', exact: true }).click()
+    const discard = this.page.getByRole('dialog', { name: 'Discard unsaved changes?', exact: true })
+    if (await discard.isVisible()) await discard.getByRole('button', { name: 'Discard changes', exact: true }).click()
     await expect(this.root).toBeHidden()
   }
 }

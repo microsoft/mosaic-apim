@@ -1,7 +1,8 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter, useLocation } from 'react-router-dom'
+import { useEffect } from 'react'
+import { MemoryRouter, useLocation, useNavigate } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { AnalyticsPage } from './AnalyticsPage'
 import type { EnvironmentCatalogView } from '../types'
@@ -59,21 +60,33 @@ vi.mock('../api', () => ({
   },
 }))
 
-function LocationState() {
+function LocationState({ onChange }: { onChange: (search: string) => void }) {
   const location = useLocation()
+  useEffect(() => { onChange(location.search) }, [location.search, onChange])
   return <output aria-label="Current query">{location.search}</output>
+}
+
+function HistoryControls() {
+  const navigate = useNavigate()
+  return <>
+    <button onClick={() => navigate(-1)}>Browser back</button>
+    <button onClick={() => navigate(1)}>Browser forward</button>
+  </>
 }
 
 function renderPage(initial = '/analytics') {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  const queryChanges: string[] = []
   render(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={[initial]}>
         <AnalyticsPage />
-        <LocationState />
+        <LocationState onChange={(search) => queryChanges.push(search)} />
+        <HistoryControls />
       </MemoryRouter>
     </QueryClientProvider>,
   )
+  return { queryChanges }
 }
 
 describe('AnalyticsPage', () => {
@@ -105,7 +118,7 @@ describe('AnalyticsPage', () => {
     renderPage()
 
     expect(await screen.findByText('Alice Admin')).toBeVisible()
-    expect(screen.getAllByText('Live data').length).toBeGreaterThan(0)
+    expect(screen.queryByText('Live data')).not.toBeInTheDocument()
     expect(screen.queryByText('Sample data')).not.toBeInTheDocument()
     // Models and callers lead with the tokens they rank by; APIs, which include MCP servers, with calls.
     const models = screen.getByRole('list', { name: 'Top models' })
@@ -128,7 +141,10 @@ describe('AnalyticsPage', () => {
     renderPage()
 
     await screen.findByText('Alice Admin')
+    await user.click(screen.getByRole('button', { name: 'Filters' }))
     await user.selectOptions(screen.getByLabelText('Cost center'), 'cc-support')
+    expect(api.getAnalyticsOverview).toHaveBeenCalledTimes(1)
+    await user.click(screen.getByRole('button', { name: 'Apply filters' }))
 
     await waitFor(() => expect(api.getAnalyticsOverview).toHaveBeenLastCalledWith(expect.objectContaining({ costCenterId: 'cc-support' })))
     await user.click(screen.getByRole('button', { name: 'Export CSV' }))
@@ -144,6 +160,7 @@ describe('AnalyticsPage', () => {
     renderPage()
 
     await screen.findByText('Alice Admin')
+    await user.click(screen.getByRole('button', { name: 'Filters' }))
     const resource = screen.getByLabelText('Resource')
     const pools = await within(resource).findByRole('group', { name: 'Model pools' })
     expect(within(pools).getByRole('option', { name: 'Claude' })).toBeInTheDocument()
@@ -153,6 +170,7 @@ describe('AnalyticsPage', () => {
     expect(within(resource).queryByRole('option', { name: 'Draft pool' })).not.toBeInTheDocument()
 
     await user.selectOptions(resource, 'pool-claude')
+    await user.click(screen.getByRole('button', { name: 'Apply filters' }))
     await waitFor(() => expect(api.getAnalyticsOverview).toHaveBeenLastCalledWith(expect.objectContaining({ resourceId: 'pool-claude' })))
   })
 
@@ -309,8 +327,10 @@ describe('AnalyticsPage', () => {
     const user = userEvent.setup()
     renderPage('/analytics?range=custom&start=2026-03-01&end=2026-03-05&extra=kept')
 
-    await user.selectOptions(await screen.findByLabelText('Range'), '24h')
+    await user.click(await screen.findByRole('button', { name: /Filters/ }))
+    await user.selectOptions(screen.getByLabelText('Range'), '24h')
     await user.selectOptions(screen.getByLabelText('Gateway'), 'gateway-prod')
+    await user.click(screen.getByRole('button', { name: 'Apply filters' }))
     await user.click(screen.getByRole('button', { name: 'Consumers' }))
 
     await waitFor(() => {
@@ -323,8 +343,212 @@ describe('AnalyticsPage', () => {
     expect(query.get('extra')).toBe('kept')
     expect(query.has('start')).toBe(false)
     expect(query.has('end')).toBe(false)
-    expect(screen.getByLabelText('Gateway')).toHaveValue('gateway-prod')
     expect(screen.queryByRole('img', { name: /Requests and tokens trend/ })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: /Filters/ }))
+    expect(screen.getByLabelText('Gateway')).toHaveValue('gateway-prod')
+  })
+
+  it('keeps every scope in a draft and applies it in one URL update', async () => {
+    const user = userEvent.setup()
+    const initialQuery = '?tab=consumers&extra=kept'
+    const { queryChanges } = renderPage(`/analytics${initialQuery}`)
+
+    await screen.findByRole('table', { name: 'Consumers' })
+    expect(screen.queryByLabelText('Range')).not.toBeInTheDocument()
+    expect(screen.getByLabelText('Export')).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Filters' }))
+    const dialog = screen.getByRole('dialog', { name: 'Filters' })
+    expect(within(dialog).queryByLabelText('Export')).not.toBeInTheDocument()
+    await user.selectOptions(within(dialog).getByLabelText('Range'), '7d')
+    await user.selectOptions(within(dialog).getByLabelText('Gateway'), 'gateway-prod')
+    await user.selectOptions(within(dialog).getByLabelText('Environment'), 'production')
+    await user.selectOptions(within(dialog).getByLabelText('Resource'), 'mcp-tickets')
+    await user.selectOptions(within(dialog).getByLabelText('Cost center'), 'cc-support')
+    await user.selectOptions(within(dialog).getByLabelText('Subject kind'), 'application')
+    expect(queryChanges).toEqual([initialQuery])
+    expect(api.getAnalyticsConsumers).toHaveBeenCalledTimes(1)
+    await user.click(within(dialog).getByRole('button', { name: 'Apply filters' }))
+
+    await waitFor(() => expect(api.getAnalyticsConsumers).toHaveBeenLastCalledWith({
+      range: '7d', start: undefined, end: undefined, gatewayId: 'gateway-prod',
+      environment: 'production', resourceId: 'mcp-tickets', costCenterId: 'cc-support', subjectKind: 'application',
+    }))
+    expect(queryChanges).toHaveLength(2)
+    const applied = new URLSearchParams(queryChanges[1])
+    expect(applied.get('extra')).toBe('kept')
+    expect(applied.get('tab')).toBe('consumers')
+    expect(applied.get('range')).toBe('7d')
+    expect(applied.get('environment')).toBe('production')
+    expect(applied.get('gatewayId')).toBe('gateway-prod')
+    expect(applied.get('resourceId')).toBe('mcp-tickets')
+    expect(applied.get('costCenterId')).toBe('cc-support')
+    expect(applied.get('subjectKind')).toBe('application')
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Filters, 6 active' })).toHaveFocus()
+    await user.click(screen.getByRole('button', { name: 'Filters, 6 active' }))
+    expect(screen.getByLabelText('Range')).toHaveValue('7d')
+    expect(screen.getByLabelText('Gateway')).toHaveValue('gateway-prod')
+    expect(screen.getByLabelText('Environment')).toHaveValue('production')
+    expect(screen.getByLabelText('Resource')).toHaveValue('mcp-tickets')
+    expect(screen.getByLabelText('Cost center')).toHaveValue('cc-support')
+    expect(screen.getByLabelText('Subject kind')).toHaveValue('application')
+  })
+
+  it.each(['Escape', 'Close', 'Outside'])('cancels draft changes on %s and restores trigger focus', async (dismiss) => {
+    const user = userEvent.setup()
+    const initialQuery = '?range=7d&gatewayId=gateway-prod&extra=kept'
+    const { queryChanges } = renderPage(`/analytics${initialQuery}`)
+    await screen.findByText('Alice Admin')
+    const trigger = screen.getByRole('button', { name: 'Filters, 2 active' })
+    const outside = screen.getByRole('heading', { name: 'Analytics' })
+    await user.click(trigger)
+    await user.selectOptions(screen.getByLabelText('Range'), '90d')
+    await user.selectOptions(screen.getByLabelText('Gateway'), '')
+    if (dismiss === 'Escape') await user.keyboard('{Escape}')
+    else if (dismiss === 'Close') await user.click(screen.getByRole('button', { name: 'Close filters' }))
+    else await user.click(outside)
+
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(queryChanges).toEqual([initialQuery])
+    expect(api.getAnalyticsOverview).toHaveBeenCalledTimes(1)
+    expect(trigger).toHaveFocus()
+    await user.click(trigger)
+    expect(screen.getByLabelText('Range')).toHaveValue('7d')
+    expect(screen.getByLabelText('Gateway')).toHaveValue('gateway-prod')
+  })
+
+  it('resets only the draft until Apply and clears all scopes and custom dates', async () => {
+    const user = userEvent.setup()
+    const initialQuery = '?tab=consumers&extra=kept&range=custom&start=2026-03-01&end=2026-03-05&gatewayId=gateway-prod&environment=production&resourceId=mcp-tickets&costCenterId=cc-support&subjectKind=user'
+    const { queryChanges } = renderPage(`/analytics${initialQuery}`)
+    await screen.findByRole('table', { name: 'Consumers' })
+    await user.click(screen.getByRole('button', { name: 'Filters, 6 active' }))
+    expect(screen.getByLabelText('Start')).toHaveValue('2026-03-01')
+    expect(screen.getByLabelText('End')).toHaveValue('2026-03-05')
+    await user.click(screen.getByRole('button', { name: 'Reset' }))
+    expect(screen.getByLabelText('Range')).toHaveValue('30d')
+    for (const label of ['Gateway', 'Environment', 'Resource', 'Cost center', 'Subject kind']) {
+      expect(screen.getByLabelText(label)).toHaveValue('')
+    }
+    expect(screen.queryByLabelText('Start')).not.toBeInTheDocument()
+    expect(queryChanges).toEqual([initialQuery])
+    expect(api.getAnalyticsConsumers).toHaveBeenCalledTimes(1)
+    await user.keyboard('{Escape}')
+    await user.click(screen.getByRole('button', { name: 'Filters, 6 active' }))
+    expect(screen.getByLabelText('Start')).toHaveValue('2026-03-01')
+    expect(screen.getByLabelText('Cost center')).toHaveValue('cc-support')
+    await user.click(screen.getByRole('button', { name: 'Reset' }))
+    await user.click(screen.getByRole('button', { name: 'Apply filters' }))
+    await waitFor(() => expect(api.getAnalyticsConsumers).toHaveBeenLastCalledWith(expect.objectContaining({
+      range: '30d', gatewayId: undefined, environment: undefined, resourceId: undefined,
+      costCenterId: undefined, subjectKind: undefined, start: undefined, end: undefined,
+    })))
+    const applied = new URLSearchParams(queryChanges[1])
+    expect([...applied.keys()].sort()).toEqual(['extra', 'range', 'tab'])
+    expect(screen.getByRole('button', { name: 'Filters' })).toBeVisible()
+  })
+
+  it('validates nonempty ordered custom dates before applying', async () => {
+    const user = userEvent.setup()
+    const { queryChanges } = renderPage('/analytics?tab=overview&extra=kept')
+    await screen.findByText('Alice Admin')
+    await user.click(screen.getByRole('button', { name: 'Filters' }))
+    await user.selectOptions(screen.getByLabelText('Range'), 'custom')
+    await user.click(screen.getByRole('button', { name: 'Apply filters' }))
+    expect(screen.getByRole('alert')).toHaveTextContent('Choose both a start date and an end date.')
+    await user.type(screen.getByLabelText('Start'), '2026-03-05')
+    await user.click(screen.getByRole('button', { name: 'Apply filters' }))
+    expect(screen.getByRole('alert')).toHaveTextContent('Choose both a start date and an end date.')
+    await user.type(screen.getByLabelText('End'), '2026-03-01')
+    await user.click(screen.getByRole('button', { name: 'Apply filters' }))
+    expect(screen.getByRole('alert')).toHaveTextContent('The end date must be on or after the start date.')
+    expect(screen.getByLabelText('End')).toHaveAttribute('aria-invalid', 'true')
+    expect(queryChanges).toHaveLength(1)
+    expect(api.getAnalyticsOverview).toHaveBeenCalledTimes(1)
+    await user.clear(screen.getByLabelText('End'))
+    await user.type(screen.getByLabelText('End'), '2026-03-05')
+    await user.click(screen.getByRole('button', { name: 'Apply filters' }))
+    await waitFor(() => expect(api.getAnalyticsOverview).toHaveBeenLastCalledWith(expect.objectContaining({
+      range: 'custom', start: '2026-03-05', end: '2026-03-05',
+    })))
+    expect(queryChanges).toHaveLength(2)
+    expect(new URLSearchParams(queryChanges[1]).get('extra')).toBe('kept')
+  })
+
+  it('rejects malformed dates from a custom-range deep link', async () => {
+    const user = userEvent.setup()
+    const { queryChanges } = renderPage('/analytics?range=custom&start=2026-02-30&end=2026-03-05')
+    await screen.findByText('Alice Admin')
+    await user.click(screen.getByRole('button', { name: 'Filters, 1 active' }))
+    await user.click(screen.getByRole('button', { name: 'Apply filters' }))
+    expect(screen.getByRole('alert')).toHaveTextContent('Choose valid start and end dates.')
+    expect(queryChanges).toHaveLength(1)
+    expect(api.getAnalyticsOverview).toHaveBeenCalledTimes(1)
+  })
+
+  it('restores applied scopes through browser Back and Forward', async () => {
+    const user = userEvent.setup()
+    renderPage('/analytics?range=7d&extra=kept')
+    await screen.findByText('Alice Admin')
+    await user.click(screen.getByRole('button', { name: 'Filters, 1 active' }))
+    await user.selectOptions(screen.getByLabelText('Range'), '90d')
+    await user.selectOptions(screen.getByLabelText('Gateway'), 'gateway-prod')
+    await user.click(screen.getByRole('button', { name: 'Apply filters' }))
+    await user.click(screen.getByRole('button', { name: 'Browser back' }))
+    await user.click(screen.getByRole('button', { name: 'Filters, 1 active' }))
+    expect(screen.getByLabelText('Range')).toHaveValue('7d')
+    expect(screen.getByLabelText('Gateway')).toHaveValue('')
+    await user.keyboard('{Escape}')
+    await user.click(screen.getByRole('button', { name: 'Browser forward' }))
+    await user.click(screen.getByRole('button', { name: 'Filters, 2 active' }))
+    expect(screen.getByLabelText('Range')).toHaveValue('90d')
+    expect(screen.getByLabelText('Gateway')).toHaveValue('gateway-prod')
+    expect(new URLSearchParams(screen.getByLabelText('Current query').textContent ?? '').get('extra')).toBe('kept')
+  })
+
+  it('exports the applied scope, never uncommitted draft values', async () => {
+    const user = userEvent.setup()
+    renderPage('/analytics?tab=consumers&range=7d&costCenterId=cc-support')
+    await screen.findByRole('table', { name: 'Consumers' })
+    await user.selectOptions(screen.getByLabelText('Export'), 'groups')
+    const exportButton = screen.getByRole('button', { name: 'Export CSV' })
+    await user.click(screen.getByRole('button', { name: 'Filters, 2 active' }))
+    await user.selectOptions(screen.getByLabelText('Range'), '90d')
+    await user.selectOptions(screen.getByLabelText('Cost center'), '')
+    await user.click(exportButton)
+
+    await waitFor(() => expect(api.exportAnalytics).toHaveBeenCalledWith('groups', expect.objectContaining({
+      range: '7d', costCenterId: 'cc-support',
+    })))
+    expect(api.getAnalyticsConsumers).toHaveBeenCalledTimes(1)
+    expect(await screen.findByText('Security groups CSV downloaded.')).toBeVisible()
+  })
+
+  it('uses only the supported export choices after changing section', async () => {
+    const user = userEvent.setup()
+    renderPage('/analytics?tab=consumers')
+    await screen.findByRole('table', { name: 'Consumers' })
+    await user.selectOptions(screen.getByLabelText('Export'), 'groups')
+    await user.click(screen.getByRole('button', { name: 'Cost' }))
+    await screen.findByText('Spend this month')
+    expect(screen.getByLabelText('Export')).toHaveValue('chargeback')
+    await user.click(screen.getByRole('button', { name: 'Export CSV' }))
+    await waitFor(() => expect(api.exportAnalytics).toHaveBeenCalledWith('chargeback', expect.anything()))
+  })
+
+  it('keeps export progress and failure recoverable', async () => {
+    const user = userEvent.setup()
+    let rejectExport!: (error: Error) => void
+    api.exportAnalytics.mockReturnValueOnce(new Promise((_, reject) => { rejectExport = reject }))
+    renderPage()
+    await screen.findByText('Alice Admin')
+    await user.click(screen.getByRole('button', { name: 'Export CSV' }))
+    expect(screen.getByRole('button', { name: 'Exporting CSV…' })).toBeDisabled()
+    rejectExport(new Error('Export is unavailable. Try again.'))
+    expect(await screen.findByText('Export is unavailable. Try again.')).toHaveAttribute('role', 'status')
+    await user.click(screen.getByRole('button', { name: 'Export CSV' }))
+    expect(await screen.findByText('Trend CSV downloaded.')).toBeVisible()
+    expect(api.exportAnalytics).toHaveBeenCalledTimes(2)
   })
 
   it('shows notConfigured without invented numbers', async () => {

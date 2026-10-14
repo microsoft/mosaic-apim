@@ -3,7 +3,7 @@ import { fireEvent, render, screen, within } from '@testing-library/react'
 import { MemoryRouter, Route, Routes, useParams } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { DashboardPage } from './DashboardPage'
-import { overviewFixture, pricedOverviewFixture, spendFixture, statusFixture } from '../test/analytics-fixtures'
+import { notConfiguredOverview, overviewFixture, pricedOverviewFixture, spendFixture, statusFixture } from '../test/analytics-fixtures'
 import { budgetOverviewFixture, emptyBudgetOverviewFixture } from '../test/budget-fixtures'
 import { anthropicPool, draftPool, poolSummaries } from '../test/pool-fixtures'
 import type { ModelPool, ModelPoolSummary, PoolMemberProblem } from '../types'
@@ -335,7 +335,7 @@ describe('DashboardPage', () => {
     expect(within(inventoryCard('applications')).getByText('2')).toBeVisible()
     expect(within(inventoryCard('Entra security group')).getByText('1')).toBeVisible()
     expect(within(inventoryCard('MOSAIC group')).getByText('1')).toBeVisible()
-    expect(screen.getAllByText('Live data').length).toBeGreaterThan(0)
+    expect(screen.queryByText('Live data')).not.toBeInTheDocument()
     expect(screen.queryByText('Sample data')).not.toBeInTheDocument()
     expect(await screen.findByText('Alice Admin')).toBeVisible()
     const callers = screen.getByRole('list', { name: 'Top callers' })
@@ -367,6 +367,29 @@ describe('DashboardPage', () => {
     const spend = (await screen.findByText('This month')).closest('.fui-Card') as HTMLElement
     expect(await within(spend).findByText('$4,355.25')).toBeVisible()
     expect(within(spend).getByText('Projected $7,502.10 by Mar 31')).toBeVisible()
+  })
+
+  it('keeps telemetry not-configured guidance without live data decoration', async () => {
+    api.getAnalyticsOverview.mockResolvedValue(notConfiguredOverview)
+    api.getAnalyticsStatus.mockResolvedValue({ ...statusFixture, dataSource: 'notConfigured', gateways: [] })
+    renderPage()
+
+    expect(await screen.findByRole('heading', { name: 'Usage telemetry is not configured' })).toBeVisible()
+    expect(screen.getByText('Set MOSAIC_USAGE_SOURCE=rollups to enable usage telemetry.')).toBeVisible()
+    expect(await screen.findByText('No gateway health yet.')).toBeVisible()
+    expect(screen.queryByText('Live data')).not.toBeInTheDocument()
+  })
+
+  it('keeps telemetry errors visible without live data decoration', async () => {
+    api.getAnalyticsOverview.mockRejectedValue(new Error('Usage report unavailable'))
+    api.getAnalyticsStatus.mockRejectedValue(new Error('Telemetry health unavailable'))
+    renderPage()
+
+    expect(await screen.findByText('Telemetry health unavailable')).toBeVisible()
+    expect((await screen.findAllByText('Usage report unavailable')).length).toBeGreaterThan(0)
+    expect(screen.queryByText('Current')).not.toBeInTheDocument()
+    expect(screen.queryByText('Live data')).not.toBeInTheDocument()
+    expect(screen.queryByText('Alice Admin')).not.toBeInTheDocument()
   })
 
   it('waits for a day of figures before projecting, and says when there is no price list', async () => {

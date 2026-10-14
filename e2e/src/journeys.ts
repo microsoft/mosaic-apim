@@ -331,12 +331,13 @@ export async function setMethods(entitlements: EntitlementsPage, methods: Access
   await expect(entitlements.savedMethods).toHaveText(`Saved desired methods: ${methodsLabel(methods)}`)
 }
 
-/** The grants table's badge for a grant matches what MOSAIC's API reports for it. */
+/** Selected grant details match the runtime state MOSAIC's API reports. */
 export async function expectGrantBadge(ctx: SuiteContext, entitlements: EntitlementsPage, grantId: string): Promise<ApiEntitlement> {
   const grant = await ctx.api.entitlement(grantId)
   const status = grant.runtime?.status ?? skip('MOSAIC reports no runtime state for this grant, so the table shows none to compare.')
   await entitlements.reload()
   await entitlements.selectSection('grants')
+  await entitlements.selectGrant(grantId)
   await expect(entitlements.grantState(grantId, status)).toBeVisible()
   return grant
 }
@@ -543,7 +544,7 @@ export async function cleanupDisposable(ctx: SuiteContext, disposable: SuiteDisp
       await entitlements.selectSection('requests')
       for (const request of open) {
         if (!request.justification) throw new Error(`An open request for ${label} has no justification, so the suite can't find its row to deny it.`)
-        await expectOk(await entitlements.deny(entitlements.requestRow(request.justification)), `Denying an open request for ${label}`)
+        await expectOk(await entitlements.deny(await entitlements.selectRequest(request.id)), `Denying an open request for ${label}`)
       }
       did.push(`Denied ${open.length} open access request(s) for ${label}.`)
     }

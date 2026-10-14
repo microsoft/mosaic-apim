@@ -26,6 +26,8 @@ describe('SectionLayout', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Collapse Test models sections' }))
     expect(localStorage.getItem('mosaic.sections.Test models')).toBe('collapsed')
     expect(screen.getByRole('button', { name: 'Model endpoints' })).toHaveAttribute('title', 'Model endpoints')
+    expect(screen.getByRole('button', { name: 'Model endpoints' }).querySelector('svg')).not.toBeNull()
+    expect(screen.getByRole('button', { name: 'Model endpoints' })).not.toHaveTextContent(/^Mo$/)
     expect(screen.getByRole('button', { name: 'Expand Test models sections' })).toHaveAttribute('aria-expanded', 'false')
   })
   it('supports compact section selection', () => {

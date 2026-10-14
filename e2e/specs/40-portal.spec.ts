@@ -346,7 +346,9 @@ test.describe('40 portal', { tag: '@portal' }, () => {
 
       const entitlements = await EntitlementsPage.open(personas, targets)
       await entitlements.selectSection('requests')
-      const row = entitlements.requestRow(second)
+      const pending = (await ctx.api.accessRequests('pending')).filter((request) => request.justification === second)
+      expect(pending, 'the exact request created by the suite').toHaveLength(1)
+      const row = await entitlements.selectRequest(pending[0]!.id)
       await expect(row).toHaveCount(1)
       const dialog = await entitlements.approve(row)
       const approved = await jsonOf<ApiAccessRequest>(
@@ -364,6 +366,7 @@ test.describe('40 portal', { tag: '@portal' }, () => {
       expect.soft(intent.runtime?.status, 'the approved grant before its review').toBe('pending')
       await entitlements.reload()
       await entitlements.selectSection('grants')
+      await entitlements.selectGrant(grantId)
       await expect.soft(entitlements.grantState(grantId, 'pending')).toBeVisible()
 
       const requests = await MyRequestsPage.open(personas, targets, requester)
@@ -374,6 +377,7 @@ test.describe('40 portal', { tag: '@portal' }, () => {
       await reviewAndApply(ctx, entitlements, publication, `${requester}'s approved grant on ${label}`, { settle: [grantId] })
       await entitlements.reload()
       await entitlements.selectSection('grants')
+      await entitlements.selectGrant(grantId)
       await expect(entitlements.grantState(grantId, 'applied')).toBeVisible()
     })
 

@@ -3,9 +3,7 @@ import {
   Button,
   Checkbox,
   Dialog,
-  DialogActions,
   DialogBody,
-  DialogContent,
   DialogSurface,
   DialogTitle,
   Field,
@@ -49,6 +47,7 @@ import { EnvironmentBadge } from './EnvironmentBadge'
 import { PolicyFacetItem } from './PolicyFacets'
 import { ModelAccessReview } from './ModelAccessReview'
 import { ModelAccessRecovery } from './ModelAccessRecovery'
+import { WorkspaceDialog, WorkspaceDialogActions, WorkspaceDialogContent } from './WorkspaceDialog'
 import styles from './ImportFromGatewayDialog.module.css'
 
 type Step = 'choose' | 'configure' | 'review' | 'apply'
@@ -296,12 +295,13 @@ type PublishModelDialogProps = {
   onClose: () => void
   onPublished: (message: string) => void
   initialReview?: ModelReview | null
+  surface?: 'workspace' | 'dialog'
 }
 
 // Every opening starts a new session, so the first frame the dialog commits is already the step it opens on,
 // and Fluent moves focus into that step. Closing keeps the session, with the review it opened, until the
 // dialog next opens, so nothing in it changes while Fluent animates the dialog out.
-export function PublishModelDialog({ open, mutationKey, onClose, onPublished, initialReview }: PublishModelDialogProps) {
+export function PublishModelDialog({ open, mutationKey, onClose, onPublished, initialReview, surface }: PublishModelDialogProps) {
   const review = initialReview ?? null
   const [session, setSession] = useState({ open, review, key: 0 })
   if (open && (!session.open || review !== session.review)) {
@@ -317,11 +317,12 @@ export function PublishModelDialog({ open, mutationKey, onClose, onPublished, in
       initialReview={session.review}
       onClose={onClose}
       onPublished={onPublished}
+      surface={surface}
     />
   )
 }
 
-function PublishModelSession({ open, mutationKey, onClose, onPublished, initialReview }: PublishModelDialogProps) {
+function PublishModelSession({ open, mutationKey, onClose, onPublished, initialReview, surface = 'workspace' }: PublishModelDialogProps) {
   const api = useMosaicApi()
   const queryClient = useQueryClient()
   const [step, setStep] = useState<Step>(initialReview ? 'review' : 'choose')
@@ -505,14 +506,23 @@ function PublishModelSession({ open, mutationKey, onClose, onPublished, initialR
     plan && plan.steps.length > 0 && plan.steps.every((planStep) => planStep.action === 'noChange'),
   )
 
-  return (
-    <Dialog open={open} onOpenChange={(_, data) => !data.open && onClose()}>
-      <DialogSurface>
-        <DialogBody>
-          <DialogTitle>{initialReview?.plan.accessSnapshot ? 'Review model access' : 'Publish a model'}</DialogTitle>
-          <DialogContent>
+  const title = initialReview?.plan.accessSnapshot ? 'Review model access' : initialReview ? 'Review model changes' : 'Publish a model'
+  const pending = createAndPlan.isPending || apply.isPending || Boolean(runId && (!currentRun || currentRun.status === 'running'))
+  const actions = (requestClose: () => void) => <WorkspaceDialogActions>
+    <Button appearance="secondary" disabled={pending} onClick={requestClose}>Close</Button>
+    {step === 'configure' && <Button onClick={() => setStep('choose')}>Previous step</Button>}
+    {step === 'review' && !reviewingExistingPlan && <Button onClick={() => setStep('configure')}>Previous step</Button>}
+    {step === 'choose' && <Button appearance="primary" disabled={!canConfigure} onClick={() => setStep('configure')}>Configure</Button>}
+    {step === 'configure' && <Button appearance="primary" disabled={!canReview} disabledFocusable={createAndPlan.isPending}
+      onClick={() => createAndPlan.mutate()}>{createAndPlan.isPending ? 'Creating plan…' : 'Review plan'}</Button>}
+    {step === 'review' && <Button appearance="primary" disabled={invalidPlan || missingAccessReview || nothingToApply} disabledFocusable={apply.isPending}
+      onClick={() => apply.mutate()}>{apply.isPending ? 'Applying…' : 'Apply plan'}</Button>}
+  </WorkspaceDialogActions>
+  const content = (requestClose: () => void) => (
+        <>
+          <WorkspaceDialogContent>
             <div className={styles.intro}>
-              <Text>Plan the API Management resources first, then explicitly apply the plan.</Text>
+              <Text>Preview the changes MOSAIC would apply. Nothing changes until you select Apply plan.</Text>
               {runtimeConfig.authMode === 'local' && (
                 <Text>Local development mode: responses may be simulated and do not prove a live APIM change.</Text>
               )}
@@ -636,7 +646,7 @@ function PublishModelSession({ open, mutationKey, onClose, onPublished, initialR
             )}
 
             {step === 'configure' && (
-              <div className={styles.nameCell}>
+              <div className={styles.formSection}>
                 <Field label="Display name">
                   <Input value={form.displayName} onChange={(_, data) => setForm({ ...form, displayName: data.value })} />
                 </Field>
@@ -805,38 +815,18 @@ function PublishModelSession({ open, mutationKey, onClose, onPublished, initialR
                 )}
               </div>
             )}
-          </DialogContent>
-          <DialogActions>
-            <Button appearance="secondary" onClick={onClose}>Close</Button>
-            {step === 'configure' && <Button appearance="secondary" onClick={() => setStep('choose')}>Back</Button>}
-            {step === 'review' && !reviewingExistingPlan && <Button appearance="secondary" onClick={() => setStep('configure')}>Back</Button>}
-            {step === 'choose' && (
-              <Button appearance="primary" disabled={!canConfigure} onClick={() => setStep('configure')}>Configure</Button>
-            )}
-            {/* A browser takes focus off a button that becomes disabled, so a busy button stays focusable. */}
-            {step === 'configure' && (
-              <Button
-                appearance="primary"
-                disabled={!canReview}
-                disabledFocusable={createAndPlan.isPending}
-                onClick={() => createAndPlan.mutate()}
-              >
-                {createAndPlan.isPending ? 'Creating plan…' : 'Review plan'}
-              </Button>
-            )}
-            {step === 'review' && (
-              <Button
-                appearance="primary"
-                disabled={invalidPlan || missingAccessReview || nothingToApply}
-                disabledFocusable={apply.isPending}
-                onClick={() => apply.mutate()}
-              >
-                {apply.isPending ? 'Applying…' : 'Apply plan'}
-              </Button>
-            )}
-          </DialogActions>
-        </DialogBody>
-      </DialogSurface>
-    </Dialog>
+          </WorkspaceDialogContent>
+          {surface === 'dialog' && actions(requestClose)}
+        </>
   )
+  if (surface === 'dialog') {
+    return <Dialog open={open} onOpenChange={(_, data) => !data.open && !pending && onClose()}>
+      <DialogSurface><DialogBody><DialogTitle>{title}</DialogTitle>{content(onClose)}</DialogBody></DialogSurface>
+    </Dialog>
+  }
+  return <WorkspaceDialog open={open} title={title} pending={pending} actions={actions}
+    dirty={step === 'configure' || (step === 'choose' && Boolean(modelKey))}
+    onOpenChange={(_, data) => !data.open && onClose()}>
+    {content}
+  </WorkspaceDialog>
 }

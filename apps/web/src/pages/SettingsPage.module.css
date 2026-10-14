@@ -95,7 +95,7 @@
   font-weight: 600;
 }
 
-.integrationForm {
+.emailForm {
   display: grid;
   gap: 16px;
 }
@@ -124,12 +124,6 @@
 
 .wideCard {
   grid-column: 1 / -1;
-}
-
-.liveHeading {
-  display: flex;
-  align-items: center;
-  gap: 10px;
 }
 
 .tableWrap {

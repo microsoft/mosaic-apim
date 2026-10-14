@@ -1,15 +1,7 @@
 import {
   Badge,
   Button,
-  Card,
-  Dialog,
-  DialogActions,
-  DialogBody,
-  DialogContent,
-  DialogSurface,
-  DialogTitle,
   Field,
-  Input,
   MessageBar,
   MessageBarBody,
   MessageBarTitle,
@@ -20,25 +12,28 @@ import {
   TableHeader,
   TableHeaderCell,
   TableRow,
-  Tab,
-  TabList,
   Text,
   Title3,
+  Tooltip,
   useRestoreFocusTarget,
 } from '@fluentui/react-components'
-import { AddRegular } from '@fluentui/react-icons'
+import { AddRegular, ArrowDownloadRegular, PlugConnectedRegular, ServerRegular } from '@fluentui/react-icons'
 import { useIsMutating, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { type FormEvent, useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { useMosaicApi } from '../api'
 import { EmptyState, ErrorState, Loading } from '../components/AsyncState'
-import { ChangeEnvironmentDialog } from '../components/ChangeEnvironmentDialog'
 import { EnvironmentBadge } from '../components/EnvironmentBadge'
-import { EnvironmentPicker } from '../components/EnvironmentPicker'
 import { ImportFromGatewayDialog } from '../components/ImportFromGatewayDialog'
 import { PageHeader } from '../components/PageHeader'
 import { SectionLayout, usePageSection } from '../components/SectionLayout'
 import { PublishMcpServerDialog } from '../components/PublishMcpServerDialog'
+import { McpRegistrationForm } from '../components/McpRegistrationForm'
+import { McpEnvironmentForm } from '../components/McpEnvironmentForm'
+import { ResourceWorkbench } from '../components/ResourceWorkbench'
+import { WorkspaceEditorFrame } from '../components/WorkspaceEditorFrame'
+import { completeWorkspaceNavigation } from '../components/WorkspaceLeaveGuard'
+import { useWorkbenchLocation } from '../components/useWorkbenchLocation'
 import { RemovalDialog } from '../components/RemovalDialog'
 import { RowActions } from '../components/RowActions'
 import { ModelAccessRecovery } from '../components/ModelAccessRecovery'
@@ -70,6 +65,16 @@ import type {
 import styles from './McpsPage.module.css'
 
 const MCP_PAGE_MUTATION_KEY = ['mcp-page'] as const
+
+function useWorkspaceReturnFocus(mode: string | null, detailLabel: string) {
+  const previousMode = useRef(mode)
+  useEffect(() => {
+    if (previousMode.current && !mode) {
+      document.querySelector<HTMLElement>(`[aria-label="${detailLabel}"]`)?.focus({ preventScroll: true })
+    }
+    previousMode.current = mode
+  }, [mode, detailLabel])
+}
 
 const statusLabels: Record<McpEndpointStatus, string> = {
   pending: 'Not checked',
@@ -171,15 +176,15 @@ function transportLabel(server: McpServer): string {
 function Hint({ label, value }: { label: string; value?: boolean | null }) {
   if (value == null) {
     return (
-      <Badge appearance="outline" className={styles.unstatedBadge}>
+      <Text size={200} className={styles.muted}>
         {label}: not stated
-      </Badge>
+      </Text>
     )
   }
   return (
-    <Badge appearance="tint" className={styles.claimBadge}>
+    <Text size={200}>
       {label}: {value ? 'yes' : 'no'}
-    </Badge>
+    </Text>
   )
 }
 
@@ -202,7 +207,7 @@ function ToolsPanel({ endpoint }: { endpoint: McpEndpoint }) {
   })
 
   return (
-    <Card className={styles.panel}>
+    <section className={styles.toolsPanel}>
       <div className={styles.panelHeading}>
         <Title3 as="h2">Tools on {endpoint.name}</Title3>
         <Text size={200}>
@@ -281,7 +286,7 @@ function ToolsPanel({ endpoint }: { endpoint: McpEndpoint }) {
           </TableBody>
         </Table>
       )}
-    </Card>
+    </section>
   )
 }
 
@@ -304,27 +309,15 @@ function AccessNotice({ endpoint }: { endpoint: McpEndpoint }) {
   )
 }
 
-function RegisteredMcpServers({
-  onBanner,
-  onPublish,
-}: {
-  onBanner: (message: string) => void
-  onPublish: (endpointId?: string) => void
-}) {
+function RegisteredMcpServers({ onBanner }: { onBanner: (message: string) => void }) {
   const restoreFocus = useRestoreFocusTarget()
   const api = useMosaicApi()
   const queryClient = useQueryClient()
-  const [dialogOpen, setDialogOpen] = useState(false)
-  const [selectedId, setSelectedId] = useState<string | null>(null)
-  const [mode, setMode] = useState<McpAuthMode>('none')
-  const [url, setUrl] = useState('')
-  const [name, setName] = useState('')
-  const [environment, setEnvironment] = useState<string | null>(null)
-  const [environmentTouched, setEnvironmentTouched] = useState(false)
-  const [environmentFilter, setEnvironmentFilter] = useState('all')
-  const [secretUri, setSecretUri] = useState('')
-  const [audience, setAudience] = useState('')
-  const [changingEndpoint, setChangingEndpoint] = useState<McpEndpoint | null>(null)
+  const workbench = useWorkbenchLocation({ section: 'registered' })
+  useWorkspaceReturnFocus(workbench.mode, 'Registered server details')
+  const location = useLocation()
+  const navigate = useNavigate()
+  const environmentFilter = new URLSearchParams(location.search).get('environment') ?? 'all'
 
   const endpoints = useQuery({
     queryKey: ['mcp-endpoints'],
@@ -333,47 +326,14 @@ function RegisteredMcpServers({
   const catalog = useEnvironmentCatalog()
 
   const selected = useMemo(
-    () => endpoints.data?.find((item) => item.id === selectedId) ?? null,
-    [endpoints.data, selectedId],
+    () => endpoints.data?.find((item) => item.id === workbench.selectedId) ?? null,
+    [endpoints.data, workbench.selectedId],
   )
 
   async function invalidate() {
     await queryClient.invalidateQueries({ queryKey: ['mcp-endpoints'] })
     await queryClient.invalidateQueries({ queryKey: ['mcp-endpoint-tools'] })
   }
-
-  function closeDialog() {
-    setDialogOpen(false)
-    setUrl('')
-    setName('')
-    setEnvironment(null)
-    setEnvironmentTouched(false)
-    setSecretUri('')
-    setAudience('')
-    setMode('none')
-    register.reset()
-  }
-
-  const register = useMutation({
-    mutationKey: MCP_PAGE_MUTATION_KEY,
-    mutationFn: () =>
-      api.registerMcpEndpoint({
-        endpoint: url.trim(),
-        name: name.trim() || undefined,
-        environment,
-        authMode: mode,
-        credentialSecretUri: mode === 'apiKey' ? secretUri.trim() : undefined,
-        resourceAudience: mode === 'managedIdentity' ? audience.trim() : undefined,
-      }),
-    onSuccess: async (endpoint) => {
-      await invalidate()
-      setSelectedId(endpoint.id)
-      closeDialog()
-      onBanner(
-        `Registered ${endpoint.name}. MOSAIC recorded it as governed; nothing was created in Azure.`,
-      )
-    },
-  })
 
   const recheck = useMutation({
     mutationKey: MCP_PAGE_MUTATION_KEY,
@@ -395,277 +355,111 @@ function RegisteredMcpServers({
     mutationFn: (id: string) => api.deleteMcpEndpoint(id),
     onSuccess: async () => {
       await invalidate()
-      setSelectedId(null)
+      workbench.select(null)
       onBanner('Stopped governing that MCP server. The server itself is unchanged.')
     },
   })
 
-  function submit(event: FormEvent) {
-    event.preventDefault()
-    setEnvironmentTouched(true)
-    if (!environment) return
-    register.mutate()
-  }
   const filteredEndpoints = (endpoints.data ?? []).filter((endpoint) => {
     if (environmentFilter === 'all') return true
     if (environmentFilter === '__unclassified__') return endpoint.environment == null
     return endpoint.environment === environmentFilter
   })
-  useEffect(() => {
-    if (dialogOpen && !environment && catalog.data?.environments[0]) {
-      setEnvironment(catalog.data.environments[0].key)
-    }
-  }, [dialogOpen, environment, catalog.data])
+  if (workbench.mode === 'new') return (
+    <McpRegistrationForm mutationKey={MCP_PAGE_MUTATION_KEY} onClose={() => workbench.close()}
+      onRegistered={(endpoint) => {
+        completeWorkspaceNavigation(() => workbench.close(endpoint.id))
+        onBanner(`Registered ${endpoint.name}. MOSAIC recorded it as governed; nothing was created in Azure.`)
+      }} />
+  )
+  if (workbench.mode === 'edit') {
+    if (endpoints.isPending) return <Loading label="Loading registered server" />
+    if (endpoints.isError) return <ErrorState error={endpoints.error} />
+    return selected ? (
+      <McpEnvironmentForm endpoint={selected} mutationKey={MCP_PAGE_MUTATION_KEY}
+        onClose={() => workbench.close()} onChanged={() => {
+          completeWorkspaceNavigation(() => workbench.close())
+          onBanner(`Updated ${selected.name}'s environment.`)
+        }} />
+    ) : <WorkspaceEditorFrame title="Server unavailable" onBack={() => workbench.close()}>
+      <EmptyState title="This registered server is no longer available">Return to the list and select another server.</EmptyState>
+    </WorkspaceEditorFrame>
+  }
+  if (workbench.mode === 'publish') return (
+    <PublishMcpServerDialog surface="workspace" open mutationKey={MCP_PAGE_MUTATION_KEY}
+      initialEndpointId={workbench.selectedId} onClose={() => workbench.close()} onPublished={onBanner} />
+  )
 
   return (
     <>
-      <Card className={styles.panel}>
-        <div className={styles.panelHeader}>
-          <div className={styles.panelHeading}>
-            <Title3 as="h2">Registered MCP servers</Title3>
-            <Text size={200}>
-              Servers MOSAIC governs directly, whether or not a gateway fronts them yet. MOSAIC
-              connects to read what a server offers and never calls a tool.
-            </Text>
+      {recheck.isError && <ErrorState error={recheck.error} />}
+      {sync.isError && <ErrorState error={sync.error} />}
+      {remove.isError && <ErrorState error={remove.error} />}
+      {endpoints.isError && <ErrorState error={endpoints.error} />}
+      <ResourceWorkbench title="Registered MCP servers"
+        description="Servers MOSAIC governs directly. Connect to read what a server offers; never call its tools."
+        actions={<Button appearance="primary" icon={<AddRegular />} onClick={() => workbench.open('new')}>Register server</Button>}
+        toolbar={<Field label="Environment filter">
+          <Select aria-label="Filter MCP servers by environment" value={environmentFilter}
+            onChange={(event) => {
+              const params = new URLSearchParams(location.search)
+              params.set('environment', event.target.value)
+              navigate({ pathname: location.pathname, search: params.toString() })
+            }}>
+            <option value="all">All</option>
+            {catalog.data?.environments.map((item) => <option key={item.key} value={item.key}>{item.displayName}</option>)}
+            <option value="__unclassified__">Unclassified</option>
+          </Select>
+        </Field>}
+        items={filteredEndpoints} getId={(endpoint) => endpoint.id}
+        selectedId={workbench.selectedId} onSelect={workbench.select}
+        listLabel="Registered MCP servers" detailLabel="Registered server details"
+        missingSelection={endpoints.isPending ? <Loading label="Loading selected server" /> : <EmptyState title="Server not in this view">
+          This server is outside the selected environment or is no longer available. Change the environment filter or select another server.
+        </EmptyState>}
+        emptyList={endpoints.isPending ? <Loading label="Loading MCP servers" />
+          : endpoints.isError ? <Text>Server inventory could not be loaded.</Text>
+          : <EmptyState title={endpoints.data?.length ? 'No servers match this environment' : 'No MCP servers registered yet'}>
+          Register a Model Context Protocol server by URL to record its tools and put it under MOSAIC governance.
+        </EmptyState>}
+        renderListItem={(endpoint) => <div className={styles.resourceRow}>
+          <span className={styles.resourceName}>{endpoint.name}</span>
+          <span className={styles.secondaryCell}>{endpoint.inventory.tools} tools · {environmentLabel(catalog.data, endpoint.environment)}</span>
+          <Badge appearance="tint" className={statusClasses[endpoint.status]}>{statusLabels[endpoint.status]}</Badge>
+        </div>}
+        renderDetail={(endpoint) => <div className={styles.detailStack}>
+          <div className={styles.detailHeader}>
+            <Title3 as="h3">{endpoint.name}</Title3>
+            <RowActions label={`More actions for ${endpoint.name}`}
+              primary={<Button disabled={recheck.isPending} onClick={() => recheck.mutate(endpoint.id)} {...restoreFocus}>Check connection</Button>}
+              actions={[
+                { label: 'Sync tools', disabled: sync.isPending || !endpoint.access.canDiscover, onClick: () => sync.mutate(endpoint.id) },
+                { label: 'Publish through a gateway', onClick: () => workbench.open('publish', endpoint.id) },
+                { label: 'Change environment', onClick: () => workbench.open('edit', endpoint.id) },
+              ]}
+              destructiveActions={[{ label: 'Remove MOSAIC record', disabled: remove.isPending, onClick: () => remove.mutate(endpoint.id) }]} />
           </div>
-          <Button appearance="primary" icon={<AddRegular />} onClick={() => setDialogOpen(true)}>
-            Register server
-          </Button>
-        </div>
-
-        {!dialogOpen && register.isError && <ErrorState error={register.error} />}
-        {recheck.isError && <ErrorState error={recheck.error} />}
-        {sync.isError && <ErrorState error={sync.error} />}
-        {remove.isError && <ErrorState error={remove.error} />}
-
-        {endpoints.isPending && <Loading label="Loading MCP servers" />}
-        {endpoints.isError && <ErrorState error={endpoints.error} />}
-        {endpoints.data?.length === 0 && (
-          <EmptyState title="No MCP servers registered yet">
-            Register a Model Context Protocol server by URL to record its tools and put it under
-            MOSAIC governance.
-          </EmptyState>
-        )}
-
-        {endpoints.data && endpoints.data.length > 0 && (
-          <>
-            <div className={styles.actionRow}>
-              <Field label="Environment filter">
-                <Select
-                  aria-label="Filter MCP servers by environment"
-                  value={environmentFilter}
-                  onChange={(event) => setEnvironmentFilter(event.target.value)}
-                >
-                  <option value="all">All</option>
-                  {catalog.data?.environments.map((item) => (
-                    <option key={item.key} value={item.key}>{item.displayName}</option>
-                  ))}
-                  <option value="__unclassified__">Unclassified</option>
-                </Select>
-              </Field>
-            </div>
-            <Table aria-label="Registered MCP servers">
-              <TableHeader>
-                <TableRow>
-                  <TableHeaderCell>Server</TableHeaderCell>
-                  <TableHeaderCell>Environment</TableHeaderCell>
-                  <TableHeaderCell>Status</TableHeaderCell>
-                  <TableHeaderCell>Authentication</TableHeaderCell>
-                  <TableHeaderCell>Tools</TableHeaderCell>
-                  <TableHeaderCell>Last synced</TableHeaderCell>
-                  <TableHeaderCell>Actions</TableHeaderCell>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {filteredEndpoints.map((endpoint) => (
-                  <TableRow
-                    key={endpoint.id}
-                    className={endpoint.id === selectedId ? styles.selectedRow : undefined}
-                  >
-                    <TableCell>
-                      <div className={styles.cellStack}>
-                        <button
-                          type="button"
-                          className={styles.rowButton}
-                          onClick={() => setSelectedId(endpoint.id)}
-                        >
-                          {endpoint.name}
-                        </button>
-                        <span className={styles.secondaryCell}>{endpoint.endpoint}</span>
-                        {endpoint.capabilities.protocolVersion && (
-                          <span className={styles.secondaryCell}>
-                            Protocol {endpoint.capabilities.protocolVersion} · Streamable HTTP
-                          </span>
-                        )}
-                      </div>
-                    </TableCell>
-                    <TableCell>
-                      <div className={styles.cellStack}>
-                        <EnvironmentBadge environment={endpoint.environment} catalog={catalog.data} />
-                        {endpoint.environmentLabel && <span className={styles.secondaryCell}>Legacy label: {endpoint.environmentLabel}</span>}
-                      </div>
-                    </TableCell>
-                    <TableCell>
-                      <Badge appearance="tint" className={statusClasses[endpoint.status]}>
-                        {statusLabels[endpoint.status]}
-                      </Badge>
-                    </TableCell>
-                    <TableCell>{authLabels[endpoint.authMode]}</TableCell>
-                    <TableCell>
-                      <div className={styles.cellStack}>
-                        <Text size={200}>{endpoint.inventory.tools}</Text>
-                        {endpoint.inventory.unannotatedTools > 0 && (
-                          <span className={styles.secondaryCell}>
-                            {endpoint.inventory.unannotatedTools} state no behaviour
-                          </span>
-                        )}
-                      </div>
-                    </TableCell>
-                    <TableCell>{formatTimestamp(endpoint.lastSyncedAt)}</TableCell>
-                    <TableCell>
-                      <RowActions
-                        label={`More actions for ${endpoint.name}`}
-                        primary={<Button
-                          appearance="secondary"
-                          disabled={recheck.isPending}
-                          onClick={() => recheck.mutate(endpoint.id)}
-                          {...restoreFocus}
-                        >
-                          Check connection
-                        </Button>}
-                        actions={[
-                          {
-                            label: 'Sync tools',
-                            disabled: sync.isPending || !endpoint.access.canDiscover,
-                            onClick: () => sync.mutate(endpoint.id),
-                          },
-                          { label: 'Publish through a gateway', onClick: () => onPublish(endpoint.id) },
-                          { label: 'Change environment', onClick: () => setChangingEndpoint(endpoint) },
-                        ]}
-                        destructiveActions={[{
-                          label: 'Remove',
-                          disabled: remove.isPending,
-                          onClick: () => remove.mutate(endpoint.id),
-                        }]}
-                      />
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-            <Text size={200} className={styles.muted}>
-              Removing a server deletes only what MOSAIC stored about it. The server itself is
-              never modified.
-            </Text>
-          </>
-        )}
-      </Card>
-
-      {selected && <AccessNotice endpoint={selected} />}
-      {selected && <ToolsPanel endpoint={selected} />}
-
-      <Dialog
-        open={dialogOpen}
-        onOpenChange={(_, data) => (data.open ? setDialogOpen(true) : closeDialog())}
-      >
-        <DialogSurface>
-          <form onSubmit={submit}>
-            <DialogBody>
-              <DialogTitle>Register MCP server</DialogTitle>
-              <DialogContent className={styles.dialogForm}>
-                <Field
-                  label="Server URL"
-                  required
-                  hint="The Streamable HTTP endpoint, usually ending in /mcp. MOSAIC will not connect to a private or loopback address."
-                >
-                  <Input
-                    value={url}
-                    onChange={(_, data) => setUrl(data.value)}
-                    placeholder="https://contoso.azure-api.net/tools-mcp/mcp"
-                  />
-                </Field>
-
-                <TabList
-                  selectedValue={mode}
-                  onTabSelect={(_, data) => setMode(data.value as McpAuthMode)}
-                >
-                  <Tab value="none">No auth</Tab>
-                  <Tab value="apiKey">Key Vault secret</Tab>
-                  <Tab value="managedIdentity">Managed identity</Tab>
-                </TabList>
-
-                {mode === 'apiKey' && (
-                  <Field
-                    label="Key Vault secret URI"
-                    required
-                    hint="Store the bearer token in Key Vault and paste its secret identifier. MOSAIC stores only this URI, never the token."
-                  >
-                    <Input
-                      value={secretUri}
-                      onChange={(_, data) => setSecretUri(data.value)}
-                      placeholder="https://my-vault.vault.azure.net/secrets/mcp-token"
-                    />
-                  </Field>
-                )}
-
-                {mode === 'managedIdentity' && (
-                  <Field
-                    label="Token audience"
-                    required
-                    hint="Who the token is for. MOSAIC will not infer this: a token is only ever sent to an audience you named."
-                  >
-                    <Input
-                      value={audience}
-                      onChange={(_, data) => setAudience(data.value)}
-                      placeholder="api://contoso-mcp"
-                    />
-                  </Field>
-                )}
-
-                <Field label="Display name">
-                  <Input value={name} onChange={(_, data) => setName(data.value)} />
-                </Field>
-                <EnvironmentPicker
-                  catalog={catalog.data}
-                  value={environment}
-                  onChange={(value) => { setEnvironment(value); setEnvironmentTouched(true) }}
-                  required
-                  label="Environment"
-                  validationMessage={environmentTouched && !environment ? 'Choose an environment.' : undefined}
-                />
-
-                {register.isError && <ErrorState error={register.error} />}
-              </DialogContent>
-              <DialogActions>
-                <Button appearance="secondary" onClick={closeDialog}>
-                  Cancel
-                </Button>
-                <Button appearance="primary" type="submit" disabled={register.isPending}>
-                  Register
-                </Button>
-              </DialogActions>
-            </DialogBody>
-          </form>
-        </DialogSurface>
-      </Dialog>
-      {changingEndpoint && (
-        <ChangeEnvironmentDialog
-          mutationKey={MCP_PAGE_MUTATION_KEY}
-          resource={{
-            resourceKind: 'mcpEndpoint',
-            resourceId: changingEndpoint.id,
-            resourceName: changingEndpoint.name,
-            environment: changingEndpoint.environment,
-          }}
-          open={changingEndpoint !== null}
-          onClose={() => setChangingEndpoint(null)}
-          onChanged={async () => {
-            setChangingEndpoint(null)
-            onBanner(`Updated ${changingEndpoint.name}'s environment.`)
-            await invalidate()
-          }}
-        />
-      )}
+          <dl className={styles.metadata}>
+            <div><dt>Status</dt><dd><Badge appearance="tint" className={statusClasses[endpoint.status]}>{statusLabels[endpoint.status]}</Badge></dd></div>
+            <div><dt>Server URL</dt><dd>{endpoint.endpoint}</dd></div>
+            <div><dt>Protocol and transport</dt><dd>
+              {endpoint.capabilities.protocolVersion ? `Protocol ${endpoint.capabilities.protocolVersion} · ` : ''}
+              {endpoint.capabilities.transportType === 'sse' ? 'SSE'
+                : endpoint.capabilities.transportType === 'streamable' ? 'Streamable HTTP' : 'Transport not known'}
+            </dd></div>
+            <div><dt>Authentication</dt><dd>{authLabels[endpoint.authMode]}</dd></div>
+            {endpoint.resourceAudience && <div><dt>Token audience</dt><dd>{endpoint.resourceAudience}</dd></div>}
+            <div><dt>Environment</dt><dd><EnvironmentBadge environment={endpoint.environment} catalog={catalog.data} />
+              {endpoint.environmentLabel && <Text block size={200}>Legacy label: {endpoint.environmentLabel}</Text>}
+            </dd></div>
+            <div><dt>Last synced</dt><dd>{formatTimestamp(endpoint.lastSyncedAt)}</dd></div>
+            {endpoint.inventory.unannotatedTools > 0 && <div><dt>Behaviour annotations</dt><dd>{endpoint.inventory.unannotatedTools} state no behaviour</dd></div>}
+          </dl>
+          {endpoint.lastSyncError && <MessageBar intent="error"><MessageBarBody>{endpoint.lastSyncError}</MessageBarBody></MessageBar>}
+          <AccessNotice endpoint={endpoint} />
+          <Text size={200} className={styles.muted}>Removing a server deletes only what MOSAIC stored about it. The server itself is never modified.</Text>
+          <ToolsPanel endpoint={endpoint} />
+        </div>} />
     </>
   )
 }
@@ -724,6 +518,46 @@ function ModelCallerValue({
   )
 }
 
+function ModelCallerForm({ publication, principals, pending, error, onClose, onSave }: {
+  publication: McpPublication
+  principals: Principal[]
+  pending: boolean
+  error: unknown
+  onClose: () => void
+  onSave: (principalId: string) => void
+}) {
+  const eligible = principals.filter(canCallModelsAs).sort((left, right) =>
+    principalName(left).localeCompare(principalName(right), undefined, { sensitivity: 'base' }))
+  const [principalId, setPrincipalId] = useState(publication.modelCallerId ?? eligible[0]?.id ?? '')
+  return (
+    <WorkspaceEditorFrame title="Model-calling identity"
+      description="The identity this server uses when it calls a model."
+      onBack={onClose} onCancel={onClose}
+      dirty={principalId !== (publication.modelCallerId ?? '')} pending={pending}
+      primaryAction={{
+        label: 'Save',
+        disabled: Boolean(principalId) && !eligible.some((principal) => principal.id === principalId),
+        onClick: () => onSave(principalId),
+      }}>
+      <div className={styles.editorForm}>
+        <Text>Its own model grants decide access and pay for the calls. MOSAIC records the person each MCP call served, for usage only.</Text>
+        <Text>Saving changes the configured identity. Nothing changes at the gateway until you review changes and select Apply plan.</Text>
+        <Field label="Application principal">
+          <Select value={principalId} onChange={(event) => setPrincipalId(event.target.value)}>
+            <option value="">None</option>
+            {publication.modelCallerId && !eligible.some((principal) => principal.id === publication.modelCallerId) &&
+              <option value={publication.modelCallerId} disabled>Current identity unavailable</option>}
+            {eligible.map((principal) => <option key={principal.id} value={principal.id}>
+              {principalName(principal)} — {PRINCIPAL_KIND_LABELS[principal.kind]}
+            </option>)}
+          </Select>
+        </Field>
+        {error != null && <ErrorState error={error} />}
+      </div>
+    </WorkspaceEditorFrame>
+  )
+}
+
 function PublishedMcpServers({ onBanner }: { onBanner: (message: string) => void }) {
   const api = useMosaicApi()
   const queryClient = useQueryClient()
@@ -731,8 +565,9 @@ function PublishedMcpServers({ onBanner }: { onBanner: (message: string) => void
   const [removing, setRemoving] = useState<McpPublication | null>(null)
   const [unpublishing, setUnpublishing] = useState<McpPublication | null>(null)
   const [review, setReview] = useState<{ publication: McpPublication; plan: PublishPlan } | null>(null)
-  const [modelCallerTarget, setModelCallerTarget] = useState<McpPublication | null>(null)
-  const [modelCallerPrincipalId, setModelCallerPrincipalId] = useState('')
+  const workbench = useWorkbenchLocation({ section: 'published' })
+  useWorkspaceReturnFocus(workbench.mode, 'Published server details')
+  const requestedReview = useRef<string | null>(null)
 
   const publications = useQuery({
     queryKey: ['mcp-publications'],
@@ -746,19 +581,17 @@ function PublishedMcpServers({ onBanner }: { onBanner: (message: string) => void
     queryKey: ['principals'],
     queryFn: () => api.listPrincipals(),
   })
+  const servers = useQuery({
+    queryKey: ['mcp-servers'],
+    queryFn: () => api.listMcpServers(),
+  })
+  const selected = publications.data?.find((item) => item.id === workbench.selectedId) ?? null
 
   const gatewaysById = useMemo(() => {
     const map = new Map<string, Gateway>()
     for (const gateway of gateways.data ?? []) map.set(gateway.id, gateway)
     return map
   }, [gateways.data])
-  const eligibleModelCallers = useMemo(
-    () => (principals.data ?? []).filter(canCallModelsAs).sort((left, right) =>
-      principalName(left).localeCompare(principalName(right), undefined, { sensitivity: 'base' }),
-    ),
-    [principals.data],
-  )
-
   async function refresh() {
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: ['mcp-publications'] }),
@@ -776,6 +609,7 @@ function PublishedMcpServers({ onBanner }: { onBanner: (message: string) => void
     }),
     onSuccess: ({ publication, plan }) => {
       setReview({ publication, plan })
+      if (workbench.mode !== 'review') workbench.open('review', publication.id)
       void queryClient.invalidateQueries({ queryKey: ['mcp-publications'] })
     },
   })
@@ -786,6 +620,7 @@ function PublishedMcpServers({ onBanner }: { onBanner: (message: string) => void
     onSuccess: async () => {
       setRemoving(null)
       await refresh()
+      workbench.select(null)
       onBanner('Removed the MCP publication record. Nothing changed in API Management.')
     },
     onError: async () => {
@@ -798,9 +633,9 @@ function PublishedMcpServers({ onBanner }: { onBanner: (message: string) => void
     mutationFn: ({ publication, principalId }: { publication: McpPublication; principalId: string }) =>
       api.setMcpModelCaller(publication.id, principalId),
     onSuccess: async (updated, { publication, principalId }) => {
-      setModelCallerTarget(null)
       await queryClient.invalidateQueries({ queryKey: ['mcp-publications'] })
-      onBanner(`${publication.displayName} now calls models as ${modelCallerLabel(principalId, principals.data, updated)}. Plan and apply it to start attributing its model calls.`)
+      completeWorkspaceNavigation(() => workbench.close())
+      onBanner(`${publication.displayName}'s model-calling identity is now configured as ${modelCallerLabel(principalId, principals.data, updated)}. Review changes and apply the plan to start attributing its model calls.`)
     },
   })
 
@@ -809,72 +644,118 @@ function PublishedMcpServers({ onBanner }: { onBanner: (message: string) => void
     mutationFn: (publication: McpPublication) => api.clearMcpModelCaller(publication.id),
     onSuccess: async (_updated, publication) => {
       await queryClient.invalidateQueries({ queryKey: ['mcp-publications'] })
-      onBanner(`${publication.displayName} no longer calls models as an application. Plan and apply it to stop attributing model calls.`)
+      completeWorkspaceNavigation(() => workbench.close())
+      onBanner(`${publication.displayName}'s model-calling identity is cleared. Review changes and apply the plan to stop attributing model calls.`)
     },
   })
 
-  function openModelCallerDialog(publication: McpPublication) {
+  function openModelCaller(publication: McpPublication) {
     setModelCaller.reset()
-    setModelCallerTarget(publication)
-    setModelCallerPrincipalId(
-      publication.modelCallerId && eligibleModelCallers.some((principal) => principal.id === publication.modelCallerId)
-        ? publication.modelCallerId
-        : (eligibleModelCallers[0]?.id ?? ''),
+    clearModelCaller.reset()
+    workbench.open('edit', publication.id)
+  }
+  const requestReview = reviewPlan.mutate
+  useEffect(() => {
+    if (workbench.mode !== 'review') { requestedReview.current = null; return }
+    if (!selected || review?.publication.id === selected.id || requestedReview.current === selected.id) return
+    if (selected.status === 'applying' || selected.accessState === 'applying' || selected.accessState === 'unknown') return
+    requestedReview.current = selected.id
+    requestReview(selected)
+  }, [workbench.mode, selected, review?.publication.id, requestReview])
+
+  if (workbench.mode === 'publish') return (
+    <PublishMcpServerDialog surface="workspace" open mutationKey={MCP_PAGE_MUTATION_KEY}
+      onClose={() => workbench.close()} onPublished={onBanner} />
+  )
+  if (workbench.mode === 'edit' || workbench.mode === 'review') {
+    if (publications.isPending || (workbench.mode === 'edit' && principals.isPending)) return <Loading label="Loading MCP publication" />
+    if (publications.isError) return <ErrorState error={publications.error} />
+    if (workbench.mode === 'edit' && principals.isError) return <ErrorState error={principals.error} />
+    if (!selected) return (
+      <WorkspaceEditorFrame title="Publication unavailable" onBack={() => workbench.close()}>
+        <EmptyState title="This MCP publication is no longer available">Return to the list and select another publication.</EmptyState>
+      </WorkspaceEditorFrame>
     )
+    const locked = selected.status === 'applying' || selected.accessState === 'applying' || selected.accessState === 'unknown'
+    if (workbench.mode === 'edit' && isUnpublished(selected)) return (
+      <WorkspaceEditorFrame title="Model-calling identity" onBack={() => workbench.close()}>
+        <Text>Publish this server again before changing its model-calling identity.</Text>
+      </WorkspaceEditorFrame>
+    )
+    if (locked && (workbench.mode === 'edit' || review?.publication.id !== selected.id)) return (
+      <WorkspaceEditorFrame title={selected.displayName} onBack={() => workbench.close()}>
+        <Text>Resolve the current gateway operation before changing this publication.</Text>
+        {selected.accessState === 'unknown' && <ModelAccessRecovery publicationId={selected.id} runId={selected.lastRunId} target="mcp" />}
+      </WorkspaceEditorFrame>
+    )
+    if (workbench.mode === 'edit') return (
+      <ModelCallerForm key={selected.id} publication={selected} principals={principals.data ?? []}
+        pending={setModelCaller.isPending || clearModelCaller.isPending}
+        error={setModelCaller.error ?? clearModelCaller.error} onClose={() => workbench.close()}
+        onSave={(principalId) => principalId
+          ? setModelCaller.mutate({ publication: selected, principalId })
+          : clearModelCaller.mutate(selected)} />
+    )
+    if (review?.publication.id === selected.id) return (
+      <PublishMcpServerDialog surface="workspace" open mutationKey={MCP_PAGE_MUTATION_KEY}
+        initialReview={review} onClose={() => { setReview(null); workbench.close() }} onPublished={onBanner} />
+    )
+    return <WorkspaceEditorFrame title="Review MCP access" onBack={() => workbench.close()} pending={reviewPlan.isPending}>
+      {reviewPlan.isError ? <ErrorState error={reviewPlan.error} /> : <Loading label="Preparing MCP review" />}
+      {reviewPlan.isError && <Button onClick={() => reviewPlan.mutate(selected)}>Retry plan</Button>}
+    </WorkspaceEditorFrame>
   }
 
   return (
     <>
-      <Card className={styles.panel}>
-        <div className={styles.panelHeader}>
-          <div className={styles.panelHeading}>
-            <Title3 as="h2">Published MCP servers</Title3>
-            <Text size={200}>
-              Registered MCP servers MOSAIC owns in API Management. Publishing creates the MCP API,
-              protected resource metadata, and gateway-enforced grant policy.
-            </Text>
-          </div>
-        </div>
         {reviewPlan.isError && <ErrorState error={reviewPlan.error} />}
         {setModelCaller.isError && <ErrorState error={setModelCaller.error} />}
         {clearModelCaller.isError && <ErrorState error={clearModelCaller.error} />}
-        {publications.isPending && <Loading label="Loading published MCP servers" />}
         {publications.isError && <ErrorState error={publications.error} />}
-        {publications.isSuccess &&
-          (publications.data.length === 0 ? (
-            <EmptyState title="No MCP servers published yet">
+      <ResourceWorkbench title="Published MCP servers"
+        description="Registered servers MOSAIC publishes in API Management through a reviewed plan and explicit Apply."
+        actions={<Button appearance="primary" icon={<AddRegular />} onClick={() => workbench.open('publish')}>Publish an MCP server</Button>}
+        items={publications.data ?? []} getId={(publication) => publication.id}
+        selectedId={workbench.selectedId} onSelect={workbench.select}
+        listLabel="Published MCP servers" detailLabel="Published server details"
+        missingSelection={publications.isPending ? <Loading label="Loading selected publication" />
+          : <EmptyState title="Publication not available">Select another publication or return to the list.</EmptyState>}
+        emptyList={publications.isPending ? <Loading label="Loading published MCP servers" />
+          : publications.isError ? <Text>Publication inventory could not be loaded.</Text>
+          : <EmptyState title="No MCP servers published yet">
               Publish a registered MCP server to create APIM resources through an explicit plan and
               apply flow.
-            </EmptyState>
-          ) : (
-            <Table aria-label="Published MCP servers">
-              <TableHeader>
-                <TableRow>
-                  <TableHeaderCell>Publication</TableHeaderCell>
-                  <TableHeaderCell>Status</TableHeaderCell>
-                  <TableHeaderCell>Gateway</TableHeaderCell>
-                  <TableHeaderCell>Calls models as</TableHeaderCell>
-                  <TableHeaderCell>Server URL</TableHeaderCell>
-                  <TableHeaderCell>Last applied</TableHeaderCell>
-                  <TableHeaderCell>Actions</TableHeaderCell>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {publications.data.map((publication) => (
-                  <TableRow key={publication.id}>
-                    <TableCell>
-                      <div className={styles.cellStack}>
-                        <Text weight="semibold">{publication.displayName}</Text>
-                        <span className={styles.secondaryCell}>{publication.apiName}</span>
-                        {publication.lastError && (
-                          <span className={styles.secondaryCell}>{publication.lastError}</span>
-                        )}
-                      </div>
-                    </TableCell>
-                    <TableCell>
-                      <div className={styles.cellStack}>
+            </EmptyState>}
+        renderListItem={(publication) => <div className={styles.resourceRow}>
+          <span className={styles.resourceName}>{publication.displayName}</span>
+          <span className={styles.secondaryCell}>
+            {gatewaysById.get(publication.gatewayId)?.name ?? 'Gateway unavailable'} ·{' '}
+            {servers.data?.find((server) => server.id === publication.mcpServerId)?.toolCount ?? 'Unknown'} tools
+          </span>
+          <PublicationStatusBadge publication={publication} />
+        </div>}
+        renderDetail={(publication) => <div className={styles.detailStack}>
+          <div className={styles.detailHeader}>
+            <Title3 as="h3">{publication.displayName}</Title3>
+            <RowActions label={`More actions for ${publication.displayName}`}
+              primary={<Tooltip relationship="description" content="Preview the changes MOSAIC would apply. Nothing changes until you select Apply plan.">
+                <Button disabled={publication.status === 'applying' || publication.accessState === 'applying' || publication.accessState === 'unknown'}
+                  disabledFocusable={reviewPlan.isPending}
+                  onClick={() => { setReview(null); workbench.open('review', publication.id) }} {...restoreFocus}>
+                  {reviewPlan.isPending && reviewPlan.variables?.id === publication.id ? 'Planning…' : publication.status === 'published' || holdsApi(publication) ? 'Review changes' : 'Review publish plan'}
+                </Button>
+              </Tooltip>}
+              destructiveActions={[
+                { label: 'Unpublish', disabled: publication.status === 'applying' || publication.accessState === 'applying' || publication.accessState === 'unknown', onClick: () => setUnpublishing(publication) },
+                { label: 'Remove MOSAIC record', disabled: remove.isPending, onClick: () => setRemoving(publication) },
+              ]} />
+          </div>
+          <Text size={200}>Preview the changes MOSAIC would apply. Nothing changes until you select Apply plan.</Text>
+          <dl className={styles.metadata}>
+            <div><dt>Publication</dt><dd>
                         <PublicationStatusBadge publication={publication} />
-                        {/* Once unpublished, the gateway has no MCP API for access to apply to. */}
+            </dd></div>
+            <div><dt>Gateway access</dt><dd>
                         {!isUnpublished(publication) && <AccessStateBadge publication={publication} />}
                         {publication.accessState === 'unknown' && (
                           <ModelAccessRecovery
@@ -883,77 +764,35 @@ function PublishedMcpServers({ onBanner }: { onBanner: (message: string) => void
                             target="mcp"
                           />
                         )}
-                      </div>
-                    </TableCell>
-                    <TableCell>
+              {isUnpublished(publication) && <Text>No published API to apply access to.</Text>}
+            </dd></div>
+            <div><dt>Gateway</dt><dd>
                       <Link className={styles.gatewayLink} to={`/gateways/${publication.gatewayId}`}>
                         {gatewaysById.get(publication.gatewayId)?.name ?? publication.gatewayId}
                       </Link>
-                    </TableCell>
-                    <TableCell>
-                      <div className={styles.cellStack}>
+            </dd></div>
+            <div><dt>Server URL</dt><dd>{mcpServerUrl(publication, gatewaysById.get(publication.gatewayId))}</dd></div>
+            <div><dt>API name</dt><dd>{publication.apiName}</dd></div>
+            <div><dt>Last applied</dt><dd>{lastAppliedLabel(publication)}</dd></div>
+            <div><dt>Tools</dt><dd>{servers.data?.find((server) => server.id === publication.mcpServerId)?.toolCount ?? 'Tool count unavailable'}</dd></div>
+          </dl>
+          {servers.isError && <ErrorState error={servers.error} />}
+          {publication.lastError && <MessageBar intent="error"><MessageBarBody>{publication.lastError}</MessageBarBody></MessageBar>}
+          <section className={styles.detailSection} aria-label="Model-calling identity">
+            <div className={styles.detailHeader}>
+              <h3>Model-calling identity</h3>
+              {!isUnpublished(publication) && <Button
+                disabled={publication.status === 'applying' || publication.accessState === 'applying' || publication.accessState === 'unknown' || !principals.isSuccess ||
+                  (!publication.modelCallerId && !(principals.data ?? []).some(canCallModelsAs))}
+                onClick={() => openModelCaller(publication)}>
+                {publication.modelCallerId ? 'Change' : 'Choose'}
+              </Button>}
+            </div>
+            <Text size={200}>The identity this server uses when it calls a model.</Text>
                         <ModelCallerValue publication={publication} principals={principals.data} />
-                        {!isUnpublished(publication) && (
-                          <RowActions
-                            label={`More model caller actions for ${publication.displayName}`}
-                            primary={<Button
-                              appearance="secondary"
-                              size="small"
-                              disabled={publication.status === 'applying' || publication.accessState === 'applying' || publication.accessState === 'unknown' || eligibleModelCallers.length === 0}
-                              onClick={() => openModelCallerDialog(publication)}
-                            >
-                              {publication.modelCallerId ? 'Change' : 'Choose'}
-                            </Button>}
-                            destructiveActions={publication.modelCallerId ? [{
-                              label: 'Clear',
-                              disabled: publication.status === 'applying' || publication.accessState === 'applying' || publication.accessState === 'unknown' || clearModelCaller.isPending,
-                              onClick: () => clearModelCaller.mutate(publication),
-                            }] : []}
-                          />
-                        )}
-                      </div>
-                    </TableCell>
-                    <TableCell>{mcpServerUrl(publication, gatewaysById.get(publication.gatewayId))}</TableCell>
-                    <TableCell>{lastAppliedLabel(publication)}</TableCell>
-                    <TableCell>
-                      <RowActions
-                        label={`More actions for ${publication.displayName}`}
-                        primary={<Button
-                          appearance="secondary"
-                          disabled={publication.status === 'applying' || publication.accessState === 'applying' || publication.accessState === 'unknown'}
-                          disabledFocusable={reviewPlan.isPending}
-                          onClick={() => reviewPlan.mutate(publication)}
-                          {...restoreFocus}
-                        >
-                          {reviewPlan.isPending && reviewPlan.variables?.id === publication.id ? 'Planning…' : publication.status === 'published' || holdsApi(publication) ? 'Review changes' : 'Review publish plan'}
-                        </Button>}
-                        destructiveActions={[
-                          {
-                            label: 'Unpublish',
-                            disabled: publication.status === 'applying' || publication.accessState === 'applying' || publication.accessState === 'unknown',
-                            onClick: () => setUnpublishing(publication),
-                          },
-                          {
-                            label: 'Remove MOSAIC record',
-                            disabled: remove.isPending,
-                            onClick: () => setRemoving(publication),
-                          },
-                        ]}
-                      />
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          ))}
-      </Card>
-      <PublishMcpServerDialog
-        open={review !== null}
-        mutationKey={MCP_PAGE_MUTATION_KEY}
-        initialReview={review}
-        onClose={() => setReview(null)}
-        onPublished={onBanner}
-      />
+            {principals.isError && <ErrorState error={principals.error} />}
+          </section>
+        </div>} />
       <UnpublishDialog
         open={unpublishing !== null}
         target="mcp"
@@ -962,50 +801,6 @@ function PublishedMcpServers({ onBanner }: { onBanner: (message: string) => void
         onClose={() => setUnpublishing(null)}
         onUnpublished={onBanner}
       />
-      <Dialog open={modelCallerTarget !== null} onOpenChange={(_, data) => !data.open && setModelCallerTarget(null)}>
-        <DialogSurface>
-          <DialogBody>
-            <DialogTitle>Calls models as</DialogTitle>
-            <DialogContent>
-              <div className={styles.dialogForm}>
-                <Text>
-                  Choose the application this MCP server&apos;s tools call governed models as. Its own
-                  model grants decide access and pay for the calls. MOSAIC records the person each MCP
-                  call served, for usage only.
-                </Text>
-                <Field label="Application principal">
-                  <Select
-                    value={modelCallerPrincipalId}
-                    onChange={(event) => setModelCallerPrincipalId(event.target.value)}
-                  >
-                    {eligibleModelCallers.map((principal) => (
-                      <option key={principal.id} value={principal.id}>
-                        {principalName(principal)} — {PRINCIPAL_KIND_LABELS[principal.kind]}
-                      </option>
-                    ))}
-                  </Select>
-                </Field>
-                {setModelCaller.isError && <ErrorState error={setModelCaller.error} />}
-              </div>
-            </DialogContent>
-            <DialogActions>
-              <Button appearance="secondary" onClick={() => setModelCallerTarget(null)}>
-                Cancel
-              </Button>
-              <Button
-                appearance="primary"
-                disabled={!modelCallerTarget || !modelCallerPrincipalId || setModelCaller.isPending}
-                onClick={() =>
-                  modelCallerTarget &&
-                  setModelCaller.mutate({ publication: modelCallerTarget, principalId: modelCallerPrincipalId })
-                }
-              >
-                Save
-              </Button>
-            </DialogActions>
-          </DialogBody>
-        </DialogSurface>
-      </Dialog>
       <RemovalDialog
         open={removing !== null}
         title={`Remove ${removing?.displayName ?? 'this MCP publication'}?`}
@@ -1035,11 +830,11 @@ function ImportedMcpServers({ onBanner }: { onBanner: (message: string) => void 
   const queryClient = useQueryClient()
   const location = useLocation()
   const navigate = useNavigate()
-  const hasConsumedImportQueryRef = useRef(false)
-  const [importOpen, setImportOpen] = useState(false)
+  const workbench = useWorkbenchLocation({ section: 'imported' })
+  useWorkspaceReturnFocus(workbench.mode, 'Imported server details')
 
   const requestedGatewayId = useMemo(
-    () => new URLSearchParams(location.search).get('import'),
+    () => new URLSearchParams(location.search).get('importGateway'),
     [location.search],
   )
 
@@ -1072,26 +867,20 @@ function ImportedMcpServers({ onBanner }: { onBanner: (message: string) => void 
     return !publication || !holdsApi(publication)
   }
 
-  useEffect(() => {
-    if (requestedGatewayId && !hasConsumedImportQueryRef.current) {
-      hasConsumedImportQueryRef.current = true
-      setImportOpen(true)
-    }
-    if (!requestedGatewayId) {
-      hasConsumedImportQueryRef.current = false
-    }
-  }, [requestedGatewayId])
-
-  function clearImportQuery() {
+  function clearImportQuery(importedId?: string) {
     const params = new URLSearchParams(location.search)
-    if (!params.has('import')) {
-      return
-    }
+    params.delete('mode')
     params.delete('import')
+    params.delete('importGateway')
+    if (importedId) {
+      params.set('selected', importedId)
+      params.set('workbench', `${location.pathname}:imported`)
+    }
+    if (!params.has('selected')) params.delete('workbench')
     const nextSearch = params.toString()
     navigate(
-      { pathname: location.pathname, search: nextSearch ? `?${nextSearch}` : '' },
-      { replace: true },
+      { pathname: location.pathname, search: nextSearch ? `?${nextSearch}` : '', hash: location.hash },
+      { replace: true, preventScrollReset: true },
     )
   }
 
@@ -1100,6 +889,7 @@ function ImportedMcpServers({ onBanner }: { onBanner: (message: string) => void 
     mutationFn: (id: string) => api.deleteMcpServer(id),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['mcp-servers'] })
+      workbench.select(null)
       onBanner('Stopped governing that MCP server. Nothing changed in API Management.')
     },
   })
@@ -1114,102 +904,59 @@ function ImportedMcpServers({ onBanner }: { onBanner: (message: string) => void 
     },
   })
 
+  if (workbench.mode === 'import') return (
+    <ImportFromGatewayDialog surface="workspace" kind="mcpServers" mutationKey={MCP_PAGE_MUTATION_KEY}
+      open initialGatewayId={requestedGatewayId} onClose={clearImportQuery}
+      onImported={(count) => onBanner(`Imported ${count} MCP server${count === 1 ? '' : 's'}. MOSAIC recorded them as governed; API Management is unchanged.`)} />
+  )
   return (
     <>
-      <Card className={styles.panel}>
-        <div className={styles.panelHeader}>
-          <div className={styles.panelHeading}>
-            <Title3 as="h2">Imported from gateways</Title3>
-            <Text size={200}>
-              MCP servers your API Management gateways already host. Importing records that MOSAIC
-              governs a server. It never creates or changes one in Azure.
-            </Text>
-          </div>
-          <Button appearance="secondary" icon={<AddRegular />} onClick={() => setImportOpen(true)}>
-            Import from gateway
-          </Button>
-        </div>
-
-        {removeMutation.isError && <ErrorState error={removeMutation.error} />}
-
-        {servers.isPending && <Loading label="Loading MCP servers..." />}
-        {servers.isError && <ErrorState error={servers.error} />}
-        {servers.isSuccess &&
-          (servers.data.length === 0 ? (
-            <EmptyState title="No MCP servers imported yet">
+      {removeMutation.isError && <ErrorState error={removeMutation.error} />}
+      {visibilityMutation.isError && <ErrorState error={visibilityMutation.error} />}
+      {servers.isError && <ErrorState error={servers.error} />}
+      <ResourceWorkbench title="Imported from gateways"
+        description="Servers already hosted by a gateway. Importing records governance; it never creates or changes a server in Azure."
+        actions={<Button appearance="primary" icon={<ArrowDownloadRegular />} onClick={() => workbench.open('import')}>Import from gateway</Button>}
+        items={servers.data ?? []} getId={(server) => server.id}
+        selectedId={workbench.selectedId} onSelect={workbench.select}
+        listLabel="Imported MCP servers" detailLabel="Imported server details"
+        missingSelection={servers.isPending ? <Loading label="Loading selected import" />
+          : <EmptyState title="Import not available">Select another import or return to the list.</EmptyState>}
+        emptyList={servers.isPending ? <Loading label="Loading MCP servers..." />
+          : servers.isError ? <Text>Imported server inventory could not be loaded.</Text>
+          : <EmptyState title="No MCP servers imported yet">
               Import the MCP servers you want MOSAIC to govern from a synchronised gateway. MCP
               servers require an API Management service on a management API version that supports
               them.
-            </EmptyState>
-          ) : (
-            <Table aria-label="Imported MCP servers">
-              <TableHeader>
-                <TableRow>
-                  <TableHeaderCell>Server</TableHeaderCell>
-                  <TableHeaderCell>Transport</TableHeaderCell>
-                  <TableHeaderCell>Tools</TableHeaderCell>
-                  <TableHeaderCell>Gateway</TableHeaderCell>
-                  <TableHeaderCell>Environment</TableHeaderCell>
-                  <TableHeaderCell>Catalog</TableHeaderCell>
-                  <TableHeaderCell>Actions</TableHeaderCell>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {servers.data.map((server) => (
-                  <TableRow key={server.id}>
-                    <TableCell>
-                      <div className={styles.nameCell}>
-                        <Text weight="semibold">{server.displayName}</Text>
-                        <Text size={200} className={styles.pathText}>
-                          /{server.path}
-                        </Text>
-                        {server.publicationId && (
-                          <Badge appearance="tint" className={styles.claimBadge}>
-                            Published by MOSAIC
-                          </Badge>
-                        )}
-                      </div>
-                    </TableCell>
-                    <TableCell>
-                      <Badge appearance="tint" className={styles.transportBadge}>
-                        {transportLabel(server)}
-                      </Badge>
-                    </TableCell>
-                    <TableCell>
-                      <div className={styles.nameCell}>
-                        <Text size={200}>
-                          {server.toolCount} tool{server.toolCount === 1 ? '' : 's'}
-                        </Text>
-                        {server.tools.length > 0 && (
-                          <ul className={styles.toolList}>
-                            {server.tools.slice(0, 3).map((tool) => (
-                              <li key={tool.name}>
-                                <Text size={200}>{tool.displayName}</Text>
-                              </li>
-                            ))}
-                          </ul>
-                        )}
-                      </div>
-                    </TableCell>
-                    <TableCell>
-                      <Link className={styles.gatewayLink} to={`/gateways/${server.gatewayId}`}>
-                        {gatewayNames.get(server.gatewayId)?.name ?? server.gatewayId}
-                      </Link>
-                    </TableCell>
-                    <TableCell>
-                      {(() => {
-                        const gateway = gatewayNames.get(server.gatewayId)
-                        return gateway ? (
-                          <Text size={200}>
-                            Environment: {environmentLabel(catalog.data, gateway.environment)} (from
-                            gateway {gateway.name})
-                          </Text>
-                        ) : (
-                          '—'
-                        )
-                      })()}
-                    </TableCell>
-                    <TableCell>
+            </EmptyState>}
+        renderListItem={(server) => <div className={styles.resourceRow}>
+          <span className={styles.resourceName}>{server.displayName}</span>
+          <span className={styles.secondaryCell}>{server.toolCount} tool{server.toolCount === 1 ? '' : 's'} · {gatewayNames.get(server.gatewayId)?.name ?? 'Gateway unavailable'}</span>
+          <span className={styles.secondaryCell}>{server.publicationId ? 'Published by MOSAIC' : 'Imported'}</span>
+        </div>}
+        renderDetail={(server) => <div className={styles.detailStack}>
+          <div className={styles.detailHeader}>
+            <Title3 as="h3">{server.displayName}</Title3>
+            {server.publicationId ? <Text size={200}>Remove the publication record instead.</Text> : (
+              <Button appearance="subtle" disabled={removeMutation.isPending} onClick={() => removeMutation.mutate(server.id)}>Remove import</Button>
+            )}
+          </div>
+          <Text size={200}>Grants are recorded in MOSAIC. This imported server&apos;s own gateway policy decides who can call it.</Text>
+          <dl className={styles.metadata}>
+            <div><dt>Governance</dt><dd>{server.publicationId ? 'Published by MOSAIC' : 'Imported from gateway'}</dd></div>
+            <div><dt>Transport</dt><dd>{transportLabel(server)}</dd></div>
+            <div><dt>Path</dt><dd>/{server.path}</dd></div>
+            {server.serviceUrl && <div><dt>Backend URL</dt><dd>{server.serviceUrl}</dd></div>}
+            <div><dt>Gateway</dt><dd><Link className={styles.gatewayLink} to={`/gateways/${server.gatewayId}`}>
+              {gatewayNames.get(server.gatewayId)?.name ?? server.gatewayId}
+            </Link></dd></div>
+            <div><dt>Environment</dt><dd>{(() => {
+              const gateway = gatewayNames.get(server.gatewayId)
+              return gateway ? `${environmentLabel(catalog.data, gateway.environment)} (from gateway ${gateway.name})` : 'Gateway environment unavailable'
+            })()}</dd></div>
+            <div><dt>Imported</dt><dd>{formatTimestamp(server.importedAt)}</dd></div>
+          </dl>
+          <Field label="Catalog visibility" hint="Controls discovery in the portal, not gateway authorization.">
                       <Select
                         aria-label={`Catalog visibility for ${server.displayName}`}
                         value={server.visibility}
@@ -1229,68 +976,48 @@ function ImportedMcpServers({ onBanner }: { onBanner: (message: string) => void 
                           Hidden from the portal catalog while it isn&apos;t published.
                         </Text>
                       )}
-                    </TableCell>
-                    <TableCell>
-                      <div className={styles.rowActions}>
-                        {server.publicationId ? (
-                          <Text size={200} className={styles.muted}>
-                            Remove the publication record instead.
-                          </Text>
-                        ) : (
-                          <Button
-                            appearance="subtle"
-                            disabled={removeMutation.isPending}
-                            onClick={() => removeMutation.mutate(server.id)}
-                          >
-                            Remove
-                          </Button>
-                        )}
-                      </div>
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          ))}
-      </Card>
-
-      <ImportFromGatewayDialog
-        kind="mcpServers"
-        mutationKey={MCP_PAGE_MUTATION_KEY}
-        open={importOpen}
-        initialGatewayId={requestedGatewayId}
-        onClose={() => {
-          setImportOpen(false)
-          clearImportQuery()
-        }}
-        onImported={(count) =>
-          onBanner(
-            `Imported ${count} MCP server${count === 1 ? '' : 's'}. MOSAIC recorded them as ` +
-              'governed; API Management is unchanged.',
-          )
-        }
-      />
+          </Field>
+          <section className={styles.detailSection}>
+            <h3>Tools</h3>
+            <Text>{server.toolCount} tool{server.toolCount === 1 ? '' : 's'}</Text>
+            {server.tools.length > 0 && <ul className={styles.toolList}>
+              {server.tools.map((tool) => <li key={tool.name}>
+                <Text weight="semibold">{tool.displayName}</Text>
+                {tool.description && <Text block size={200}>{tool.description}</Text>}
+              </li>)}
+            </ul>}
+          </section>
+          <Text size={200}>Removing an import deletes only the MOSAIC record. Nothing changes in API Management.</Text>
+        </div>} />
     </>
   )
 }
 
 const mcpSections = [
-  { value: 'published', label: 'Published MCP servers', description: 'Publish a registered server through a reviewed plan. Reviewing does not apply changes to API Management.' },
-  { value: 'imported', label: 'Imported MCP servers', description: 'Record governance for servers already on a gateway. Importing never changes API Management.' },
-  { value: 'registered', label: 'Registered MCP servers', description: 'Register a server and sync its tools before publication. MOSAIC reads tools; it never calls them.' },
+  { value: 'published', label: 'Published MCP servers', icon: <ServerRegular /> },
+  { value: 'imported', label: 'Imported MCP servers', icon: <ArrowDownloadRegular /> },
+  { value: 'registered', label: 'Registered MCP servers', icon: <PlugConnectedRegular /> },
 ]
 
 export function McpsPage() {
   const pendingOperations = useIsMutating({ mutationKey: MCP_PAGE_MUTATION_KEY })
   const location = useLocation()
+  const navigate = useNavigate()
   const params = useMemo(() => new URLSearchParams(location.search), [location.search])
   const [section, selectSection] = usePageSection(mcpSections, params.has('import') ? 'imported' : 'published')
-  const restoreFocus = useRestoreFocusTarget()
   const [banner, setBanner] = useState<string | null>(null)
-  const [publishOpen, setPublishOpen] = useState(false)
   useEffect(() => {
-    if (params.has('import') && params.get('tab') !== 'imported') selectSection('imported')
-  }, [params, selectSection])
+    if (!params.has('import')) return
+    const next = new URLSearchParams(params)
+    const gatewayId = next.get('import')
+    next.delete('import')
+    if (gatewayId) next.set('importGateway', gatewayId)
+    if (next.get('tab') !== 'imported') next.delete('selected')
+    next.set('tab', 'imported')
+    next.set('mode', 'import')
+    next.set('workbench', `${location.pathname}:imported`)
+    navigate({ pathname: location.pathname, search: next.toString(), hash: location.hash }, { replace: true, preventScrollReset: true })
+  }, [params, navigate, location.pathname, location.hash])
 
   return (
     <section className={styles.page}>
@@ -1298,11 +1025,6 @@ export function McpsPage() {
         title="MCPs"
         description="Model Context Protocol servers MOSAIC governs, whether you registered them directly or imported them from a gateway."
         source="live"
-        actions={
-          section === 'published' ? <Button {...restoreFocus} appearance="primary" icon={<AddRegular />} onClick={() => setPublishOpen(true)}>
-            Publish an MCP server
-          </Button> : undefined
-        }
       />
 
       <MessageBar intent="info">
@@ -1324,15 +1046,9 @@ export function McpsPage() {
       <SectionLayout label="MCPs" sections={mcpSections} active={section}
         onSelect={(value) => { if (!pendingOperations) selectSection(value) }}>
         {section === 'published' && <PublishedMcpServers onBanner={setBanner} />}
-        {section === 'registered' && <RegisteredMcpServers onBanner={setBanner} onPublish={() => setPublishOpen(true)} />}
+        {section === 'registered' && <RegisteredMcpServers onBanner={setBanner} />}
         {section === 'imported' && <ImportedMcpServers onBanner={setBanner} />}
       </SectionLayout>
-      <PublishMcpServerDialog
-        open={publishOpen}
-        mutationKey={MCP_PAGE_MUTATION_KEY}
-        onClose={() => setPublishOpen(false)}
-        onPublished={setBanner}
-      />
     </section>
   )
 }

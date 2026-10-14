@@ -17,29 +17,13 @@
   box-shadow: var(--mosaic-shadow);
 }
 
-.identityHeader,
-.sectionHeader {
+.identityHeader {
   display: flex;
   align-items: flex-start;
   gap: 16px;
 }
 
-.avatar {
-  width: 56px;
-  height: 56px;
-  flex-shrink: 0;
-  display: grid;
-  place-items: center;
-  border-radius: 50%;
-  background: var(--mosaic-primary-soft);
-  color: var(--mosaic-primary);
-  font-size: 18px;
-  font-weight: 700;
-}
-
-.cardDescription,
-.helperText,
-.scope {
+.cardDescription {
   color: var(--mosaic-text-muted);
 }
 
@@ -66,8 +50,7 @@
   border-bottom: 0;
 }
 
-.definitionRow dt,
-.infoLabel {
+.definitionRow dt {
   color: var(--mosaic-text-muted);
   font-size: 12px;
   font-weight: 600;
@@ -82,73 +65,12 @@
   font-weight: 600;
 }
 
-.titleRow {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 10px;
-}
-
-.sampleBadge {
-  color: var(--mosaic-warning) !important;
-  background: var(--mosaic-warning-soft) !important;
-  font-weight: 700;
-}
-
-.emphasis {
-  font-weight: 600;
-}
-
-.list,
-.timeline {
-  display: grid;
-  gap: 12px;
-}
-
-.listItem,
-.timelineItem {
-  padding: 14px 16px;
-  display: grid;
-  gap: 6px;
-  border: 1px solid var(--mosaic-border-soft);
-  border-radius: 8px;
-  background: var(--mosaic-surface-subtle);
-}
-
-.itemHeader {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.metadataGrid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: 12px;
-}
-
-.metadataItem {
-  display: grid;
-  gap: 8px;
-}
-
-.actionRow {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
-}
-
 @media (max-width: 680px) {
   .card {
     padding: 20px;
   }
 
-  .definitionRow,
-  .itemHeader {
+  .definitionRow {
     grid-template-columns: 1fr;
-  }
-
-  .itemHeader {
-    display: grid;
   }
 }
